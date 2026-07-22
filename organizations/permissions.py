@@ -24,11 +24,11 @@ class OrganizationManagementPermission(BasePermission):
         except AttributeError:
             return True
 
-        # Phase 5: any authenticated user may create an additional organisation
-        # (they become its admin via a fresh membership). Gating create to
+        # Any authenticated user may create an additional organisation
+        # (they become its admin via a fresh membership). Restricting create to
         # membership-less users would block the "create additional org" use-case.
         # All other actions still require the user to have no active membership
-        # (the onboarding gate).
+        # (the onboarding check).
         if view.action == "create":
             return bool(user and user.is_authenticated)
 

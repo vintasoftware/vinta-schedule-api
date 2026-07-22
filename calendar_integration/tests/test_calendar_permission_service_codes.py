@@ -1,4 +1,4 @@
-"""Unit tests for CalendarPermissionService booking-code methods (Phase 0 and Phase 5b).
+"""Unit tests for CalendarPermissionService booking-code methods.
 
 Covers:
 - create_booking_token() persists scope, permissions, expiry, and minter.
@@ -6,7 +6,7 @@ Covers:
 - validate_code() raises the right exception for each terminal state
   (expired / used / revoked / unknown).
 - can_perform_scheduling() group-scoped token branch, including the cross-org
-  isolation case introduced in Phase 5b.
+  isolation case.
 """
 
 import base64
@@ -329,7 +329,7 @@ def test_validate_code_future_expiry_is_valid(service, org, calendar):
 
 
 # ---------------------------------------------------------------------------
-# can_perform_scheduling() — group-scoped token branch (Phase 5b)
+# can_perform_scheduling() — group-scoped token branch
 # ---------------------------------------------------------------------------
 
 
@@ -389,8 +389,7 @@ def test_can_perform_scheduling_group_token_member_calendar_with_create_returns_
 ):
     """Group-scoped token + CREATE + member calendar → True.
 
-    This is the fix verified by Phase 5b's happy-path test.  Before the fix,
-    this would have returned False for a restricted calendar.
+    Before the fix, this returned False for a restricted calendar.
     """
     token, _ = service.create_booking_token(
         organization_id=org.id,

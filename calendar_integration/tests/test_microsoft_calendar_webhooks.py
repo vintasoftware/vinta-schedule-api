@@ -1,6 +1,4 @@
-"""
-Tests for Microsoft Calendar Webhook functionality (Phase 3) - Pytest Format
-"""
+"""Tests for Microsoft Calendar webhook functionality."""
 
 import json
 from unittest.mock import Mock, patch

@@ -8,9 +8,9 @@ from organizations.models import Organization
 
 def assert_org_can_invite(acting_org: Organization) -> None:
     """
-    Gate: raise PermissionDenied unless the acting org can invite/create other orgs.
+    Raise PermissionDenied unless the acting org can invite/create other orgs.
 
-    Every reseller-bundle operation checks both this gate and the token's OrganizationResourceAccess
+    Every reseller-bundle operation checks both this and the token's OrganizationResourceAccess
     scope. The DB flag is the operator's switch; the scope is the reseller's least-privilege control
     over its own tokens.
 
@@ -27,11 +27,11 @@ def assert_org_can_invite(acting_org: Organization) -> None:
 
 
 def is_target_in_subtree(acting_org: Organization, target_org: Organization) -> bool:
-    """Boolean predicate: is ``target_org`` the acting org or a descendant of it?
+    """Return whether ``target_org`` is the acting org or a descendant of it.
 
     Walks the target_org's parent chain upward looking for acting_org, with a
-    cycle guard (visited set) against pathological data. Transport-neutral so both
-    the GraphQL reseller mutations (via ``assert_target_in_subtree``, which raises)
+    cycle check (visited set) against bad data. Transport-neutral so both the
+    GraphQL reseller mutations (via ``assert_target_in_subtree``, which raises)
     and the REST billing permission (``IsBillingOwnerOrAdmin``, which only needs
     the boolean) can share one walk without the REST layer importing a GraphQL
     error type.
@@ -55,12 +55,12 @@ def is_target_in_subtree(acting_org: Organization, target_org: Organization) -> 
 
 def assert_target_in_subtree(acting_org: Organization, target_org: Organization) -> None:
     """
-    Guard: raise GraphQLError unless target_org is the acting org or a descendant of it.
+    Raise GraphQLError unless target_org is the acting org or a descendant of it.
 
     Thin raising wrapper over ``is_target_in_subtree`` (the shared walk).
 
-    Reusable by Phases 5 and 9 (createSystemUserToken, createSystemUser) which need the
-    same subtree membership check.
+    Reused by createSystemUserToken and createSystemUser, which need the same subtree
+    membership check.
 
     Args:
         acting_org: The organization that is performing the action (the reseller).

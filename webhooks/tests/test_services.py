@@ -601,7 +601,7 @@ class TestWebhookService:
         """
         Integration: an existing calendar-event delivery now produces the enveloped shape.
 
-        This is the intentional breaking change for Phase 1. Any previously registered
+        This is an intentional breaking change. Any previously registered
         consumer receiving the raw calendar payload now receives it inside data{}.
         """
         config = baker.make(

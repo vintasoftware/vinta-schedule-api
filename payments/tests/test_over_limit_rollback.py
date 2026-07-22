@@ -1,14 +1,14 @@
 """``OverLimitError`` must roll the request transaction back, not commit it.
 
-BLOCKER 1, Phase 5 review. ``common.exception_handlers.vinta_exception_handler``
-returns a ``Response`` for ``OverLimitError``, which *swallows* the exception.
-Under ``ATOMIC_REQUESTS = True`` (production) a swallowed exception means the
-request transaction **commits** — so anything a guarded service wrote before it
-reached the limit check would persist while the client is told 402. Phase 6a
-guards ``accept_invitation`` (after a ``membership.is_active = True`` save),
-``invite_user_to_organization`` (after an ``OrganizationInvitation``
-``get_or_create``), and ``reactivate``, and the audit service writes on all three
-— every one of those is a row that would survive a "rejected" request.
+``common.exception_handlers.vinta_exception_handler`` returns a ``Response`` for
+``OverLimitError``, which *swallows* the exception. Under ``ATOMIC_REQUESTS = True``
+(production) a swallowed exception means the request transaction **commits** — so
+anything a guarded service wrote before it reached the limit check would persist
+while the client is told 402. The limit check runs on ``accept_invitation`` (after
+a ``membership.is_active = True`` save), ``invite_user_to_organization`` (after an
+``OrganizationInvitation`` ``get_or_create``), and ``reactivate``, and the audit
+service writes on all three — every one of those is a row that would survive a
+"rejected" request.
 
 Exercised **through a real request**, not by calling the handler directly: the
 handler in isolation cannot observe transaction state, and a direct-call test
@@ -46,7 +46,7 @@ current_organization_id: contextvars.ContextVar[int | None] = contextvars.Contex
 
 
 class WriteThenExceedLimitView(APIView):
-    """Stands in for a Phase 6a/6b guarded service method.
+    """Stands in for a guarded service method.
 
     Writes a row and *then* raises ``OverLimitError``, which is the real ordering:
     ``invite_user_to_organization`` creates the invitation and audit rows before

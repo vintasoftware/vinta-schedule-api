@@ -1,7 +1,7 @@
-"""Phase 6b: pre-paid limit guards on calendar/group/bundle/availability creation.
+"""Pre-paid limit guards on calendar/group/bundle/availability creation.
 
-Spec use-case 2 ("an organization hits a pre-paid limit and is blocked"), applied
-to the four resource-creation paths this phase adds guards to:
+Covers an organization hitting a pre-paid limit and being blocked, across the
+four resource-creation paths checked here:
 ``resource_calendars`` (``CalendarService.create_resource_calendar``),
 ``calendar_groups`` (``CalendarGroupService.create_group``), ``bundle_calendars``
 (``CalendarService.create_bundle_calendar``), and ``availability_windows``
@@ -9,8 +9,7 @@ to the four resource-creation paths this phase adds guards to:
 ``batch_modify_available_times``).
 
 Every test in this module was confirmed to fail when its corresponding guard was
-removed (a guard's own test would otherwise pass whether or not the invariant
-holds -- exactly the failure mode this plan has repeatedly shipped).
+removed. A guard's own test would otherwise pass whether or not the rule holds.
 """
 
 import datetime
@@ -40,10 +39,10 @@ def _organization_with_limit(resource_key: str, limit_value: int | None) -> Orga
     """A standalone (non-reseller) organization with a ceiling on ``resource_key``.
 
     ``limit_value=None`` builds an ``unlimited``-shaped subscription (NULL ceiling).
-    The plan's "no feature flag -- the ``unlimited`` plan is the switch" decision makes
-    that the rollout's only off switch, so every guard here is exercised against it as
-    well as against a finite ceiling: a guard that is not inert at NULL breaks every
-    existing organization the day it ships.
+    There is no feature flag -- the ``unlimited`` plan is the switch, and it is the
+    rollout's only off switch. So every guard here is exercised against it as well as
+    against a finite ceiling: a guard that is not inert at NULL breaks every existing
+    organization the day it ships.
     """
     organization = baker.make(Organization, parent=None, can_invite_organizations=False)
     now = timezone.now()

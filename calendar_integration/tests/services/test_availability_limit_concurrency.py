@@ -163,8 +163,8 @@ def _run_two_racing_net_zero_batches(
 
 @pytest.mark.django_db(transaction=True)
 def test_two_net_zero_batches_on_the_same_delete_serialize_and_do_not_overshoot():
-    """The guarantee this SHOULD-FIX closes: a net-zero replace batch must not be
-    the one case that skips the guard lock."""
+    """The guarantee here: a net-zero replace batch must not be the one case that
+    skips the guard lock."""
     organization, calendar, shared = _organization_at_the_ceiling_with_one_shared_row()
 
     outcomes = _run_two_racing_net_zero_batches(organization, calendar, shared.id)

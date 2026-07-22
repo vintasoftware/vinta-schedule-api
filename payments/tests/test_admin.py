@@ -1,8 +1,8 @@
-"""``SubscriptionAdmin.save_formset`` — verifies the claim its docstring makes
-(Phase 4 review SHOULD-FIX 9): a row an admin merely viewed without changing is
-not returned by ``formset.save(commit=False)`` and therefore is not stamped
-``is_overridden=True``. A wrong answer here stamps every row on save and
-effectively freezes the whole subscription against future plan changes.
+"""``SubscriptionAdmin.save_formset`` — verifies the claim its docstring makes: a
+row an admin merely viewed without changing is not returned by
+``formset.save(commit=False)`` and therefore is not stamped ``is_overridden=True``.
+A wrong answer here stamps every row on save and effectively freezes the whole
+subscription against future plan changes.
 """
 
 from django.contrib.admin.sites import AdminSite
@@ -82,9 +82,9 @@ class TestSubscriptionAdminSaveFormsetLimits:
         assert unchanged_row.is_overridden is False
 
     def test_unchecking_is_overridden_alone_actually_clears_it(self, rf, superuser):
-        """Phase 4 verification review BLOCKER: the previous ``save_formset`` was
-        documented as letting an admin clear ``is_overridden`` by unchecking the
-        box, but always re-stamped it ``True`` because unchecking the box makes
+        """The previous ``save_formset`` was documented as letting an admin clear
+        ``is_overridden`` by unchecking the box, but always re-stamped it ``True``
+        because unchecking the box makes
         ``form.has_changed()`` true, landing the row in ``formset.save(commit=False)``.
         This proves the fix: a save where ``is_overridden`` is the *only* changed
         field must leave the new (cleared) value in place.
@@ -183,12 +183,11 @@ class TestSubscriptionAdminSaveFormsetEntitlements:
 class TestBillingPlanAdminLimitCoverage:
     """``BillingPlanAdmin`` must refuse to author an incomplete plan.
 
-    Plan completeness is the invariant that stops a downgrade from handing a
-    resource an infinite ceiling (BLOCKER 3, Phase 5 review), and the admin is the
-    one surface where a support admin can introduce a gap. Checked on the *inline
-    formset* rather than on the parent form: the parent is validated before the
-    inline rows are saved, so ``BillingPlan.clean`` there would reject the very
-    edit that completes the plan.
+    Plan completeness is the rule that stops a downgrade from handing a resource an
+    infinite ceiling, and the admin is the one surface where a support admin can
+    introduce a gap. Checked on the *inline formset* rather than on the parent form:
+    the parent is validated before the inline rows are saved, so ``BillingPlan.clean``
+    there would reject the very edit that completes the plan.
     """
 
     def _formset_data(self, resource_keys, prefix="limits"):
@@ -288,10 +287,9 @@ class TestBillingPlanAdminLimitCoverage:
         assert form.is_valid(), form.errors
 
     def test_get_extra_pre_renders_one_blank_row_per_missing_resource(self, rf, superuser):
-        """SHOULD-FIX 1 (Phase 5 third review): with `extra = 0`, fixing an
-        incomplete plan required clicking "Add another" once per missing row
-        before a single row could be saved. One blank row per gap should already
-        be on the page."""
+        """With `extra = 0`, fixing an incomplete plan required clicking "Add
+        another" once per missing row before a single row could be saved. One blank
+        row per gap should already be on the page."""
         plan = baker.make(BillingPlan, is_default_for_new_organizations=False, slug="gappy-extra")
         baker.make(
             PlanLimit,
@@ -310,10 +308,9 @@ class TestBillingPlanAdminLimitCoverage:
         assert inline.get_extra(request, plan) == missing_count
 
     def test_an_incomplete_plan_can_be_deactivated_without_adding_rows(self, rf, superuser):
-        """SHOULD-FIX 1 (Phase 5 third review): retiring a broken plan --
-        setting `is_active=False` -- must not be blocked by the coverage check,
-        or an incomplete plan can never be taken out of service through the
-        admin without first backfilling every missing row."""
+        """Retiring a broken plan -- setting `is_active=False` -- must not be blocked
+        by the coverage check, or an incomplete plan can never be taken out of service
+        through the admin without first backfilling every missing row."""
         plan = baker.make(
             BillingPlan,
             is_default_for_new_organizations=False,

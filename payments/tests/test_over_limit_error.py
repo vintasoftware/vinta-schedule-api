@@ -97,14 +97,12 @@ def test_over_limit_error_is_a_billing_error():
 
 
 def test_over_limit_error_is_not_a_value_error():
-    """SHOULD-FIX 1, Phase 5 review.
-
-    ``public_api/mutations.py`` (:1319, :1379) and ``calendar_integration/views.py``
+    """``public_api/mutations.py`` (:1319, :1379) and ``calendar_integration/views.py``
     (:833, :1392, :1501, :1632, :1697, :1741, :1861) wrap service calls in
     ``except ValueError as e: raise ...(str(e))``, which flattens an exception to
     its message. Several of those call sites touch resources that are
     ``LimitedResource`` members -- ``webhook_subscriptions`` among them -- so the
-    moment a later phase guards one, a ``ValueError`` lineage would silently drop
+    moment a later change guards one, a ``ValueError`` lineage would silently drop
     ``code`` / ``resource`` / ``current_usage`` / ``limit`` / ``remedy`` and break
     the byte-identical-across-surfaces contract this error exists to provide.
 
@@ -134,12 +132,12 @@ def test_payment_error_keeps_its_value_error_lineage():
 
 
 class TestFromCheckResultInvariantViolations:
-    """NIT, Phase 6a review: ``from_check_result`` raising a broken-invariant
-    signal must not be a bare ``ValueError`` -- ``PaymentError`` is itself a
-    ``ValueError``, so an upstream ``except ValueError`` wrapper (the same idiom
-    ``test_over_limit_error_is_not_a_value_error`` guards ``OverLimitError``
-    itself against) would flatten a genuine programming-error invariant
-    violation into a user-facing validation message."""
+    """``from_check_result`` raising a broken-rule signal must not be a bare
+    ``ValueError`` -- ``PaymentError`` is itself a ``ValueError``, so an upstream
+    ``except ValueError`` wrapper (the same idiom
+    ``test_over_limit_error_is_not_a_value_error`` protects ``OverLimitError``
+    itself against) would flatten a genuine programming-error rule violation into a
+    user-facing validation message."""
 
     def _allowed_result(self):
         return LimitCheckResult(

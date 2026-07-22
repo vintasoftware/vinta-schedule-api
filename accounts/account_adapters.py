@@ -91,15 +91,14 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):
         )
         user.profile = profile
         self._enqueue_profile_picture_download(profile, sociallogin)
-        # Phase 6 — Auto-join invited org on social signup.
-        # At this point the user is persisted (has a pk) and the Profile
-        # invariant is satisfied.  Attempt to provision a tenant: if a
-        # pending invitation matches the social email the user becomes a MEMBER
-        # of the inviting org immediately, skipping the create-org prompt.
-        # When there is no matching invitation, provision_tenant_for_user
-        # returns None and the user stays membership-less (gated), preserving
-        # the Phase 5 uninvited-stays-gated behavior.
-        # UserAlreadyHasMembershipError is treated as a no-op so that a social
+        # Auto-join an invited org on social signup.
+        # At this point the user is persisted (has a pk) and has a Profile.
+        # Try to provision a tenant: if a pending invitation matches the social
+        # email the user becomes a MEMBER of the inviting org immediately,
+        # skipping the create-org prompt. When no invitation matches,
+        # provision_tenant_for_user returns None and the user stays
+        # membership-less (gated).
+        # UserAlreadyHasMembershipError is treated as a no-op so a social
         # re-login for a user who is already a member does not raise.
         self._provision_org_membership(user)
         self._request_calendar_import(user, sociallogin)
@@ -410,9 +409,9 @@ class AccountAdapter(DefaultAccountAdapter):
 
         if membership is not None:
             # Clear the stashed org name now that provisioning succeeded.
-            # Only write if there is actually something to clear (avoids a
-            # redundant "" -> "" save on the invite path where Phase 2 already
-            # left the field blank).
+            # Only write if there is something to clear (avoids a redundant
+            # "" -> "" save on the invite path, where the form already left the
+            # field blank).
             if profile.pending_organization_name:
                 profile.pending_organization_name = ""
                 profile.save(update_fields=["pending_organization_name"])
@@ -470,14 +469,13 @@ class AccountAdapter(DefaultAccountAdapter):
         """
         Sends a verification code.
 
-        Security-critical gate: no verification SMS is ever dispatched to a
-        phone without a recorded SMS_CONSENT ``UserConsent`` row for that
-        phone, recorded by this same `user` (fail closed). Phase 8 moved this
-        gate from user-keyed to phone-keyed consent, and a later fix
-        (BLOCKER 1) tied it to phone ownership: `has_sms_consent_for_phone_and_user`
-        requires the consent row to belong to `user` themselves, rather than
-        just any user, closing a spoofing hole where an unrelated account
-        could fabricate a consent row for a phone it doesn't own. This is the
+        Security-critical check: no verification SMS is ever sent to a phone
+        without a recorded SMS_CONSENT ``UserConsent`` row for that phone,
+        recorded by this same `user` (fail closed). The consent is phone-keyed
+        and tied to phone ownership: `has_sms_consent_for_phone_and_user`
+        requires the consent row to belong to `user` themselves, not just any
+        user. This closes a spoofing hole where an unrelated account could
+        fabricate a consent row for a phone it doesn't own. This is the
         authoritative, server-side guarantee behind the consent capture UX —
         see ``legal.services.ConsentService.has_sms_consent_for_phone_and_user``
         and ``accounts.exceptions.ConsentRequiredError``.
@@ -524,10 +522,10 @@ class AccountAdapter(DefaultAccountAdapter):
         unlisted phone number, this method is invoked to send a text explaining that no account
         is on file.
 
-        Consent gate (Phase 8): this fires for a raw submitted `phone` with no
-        `user` at all (there is no account), so it cannot use the user-keyed
-        gate. If `phone` has no recorded SMS_CONSENT, this is a silent no-op —
-        no SMS, no raised error — which preserves allauth's uniform,
+        Consent check: this fires for a raw submitted `phone` with no `user`
+        at all (there is no account), so it cannot use the user-keyed check.
+        If `phone` has no recorded SMS_CONSENT, this is a silent no-op — no
+        SMS, no raised error — which preserves allauth's uniform,
         enumeration-safe response (the caller can't distinguish "no consent"
         from "SMS sent") while never sending an unconsented SMS.
         """
@@ -558,9 +556,9 @@ class AccountAdapter(DefaultAccountAdapter):
         number that already has an account, this method is invoked to send a text explaining
         that an account is already on file (instead of revealing this via the signup response).
 
-        Consent gate (Phase 8): this fires with only a raw submitted `phone`
-        (no `user` parameter), so it uses the phone-keyed gate. If `phone` has
-        no recorded SMS_CONSENT, this is a silent no-op — no SMS, no raised
+        Consent check: this fires with only a raw submitted `phone` (no `user`
+        parameter), so it uses the phone-keyed check. If `phone` has no
+        recorded SMS_CONSENT, this is a silent no-op — no SMS, no raised
         error — which preserves allauth's uniform, enumeration-safe response
         while never sending an unconsented SMS.
         """

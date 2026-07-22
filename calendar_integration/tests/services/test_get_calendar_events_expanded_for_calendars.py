@@ -530,7 +530,7 @@ def test_single_recurring_series_via_owning_calendar_full_count(
 
 
 # ---------------------------------------------------------------------------
-# (i) calendar_ids passed as a set (Phase 2 passes a set) → works
+# (i) calendar_ids passed as a set → works
 # ---------------------------------------------------------------------------
 
 
@@ -541,7 +541,7 @@ def test_calendar_ids_as_set_is_accepted(
     calendar_b: Calendar,
     organization: Organization,
 ) -> None:
-    """``calendar_ids`` may be any iterable, including a set (as Phase 2 passes)."""
+    """``calendar_ids`` may be any iterable, including a set."""
     evt_a = _make_event("Event on A", calendar_a, organization, start_offset_days=0)
     evt_b = _make_event("Event on B", calendar_b, organization, start_offset_days=1)
 

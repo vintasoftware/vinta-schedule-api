@@ -111,9 +111,9 @@ def authenticated_facade(social_account, social_token, mock_google_adapter, cale
 def event_service(authenticated_facade):
     """``CalendarEventService`` wired from the facade's shared context.
 
-    The facade is supplied as the ``host`` (availability — Phase 4, bundle fan-out —
-    Phase 3, and the shared write-adapter / attendee-permission helpers route through
-    it), exactly the wiring the facade uses internally.
+    The facade is supplied as the ``host`` (availability, bundle fan-out, and the
+    shared write-adapter / attendee-permission helpers route through it), exactly
+    the wiring the facade uses internally.
     """
     return CalendarEventService(
         context=authenticated_facade._context,
@@ -337,7 +337,7 @@ def test_facade_create_event_delegates_to_event_service(
 
 
 # ----------------------------------------------------------------------------------------
-# Owner-scoped public-API event-creation allowance (Phase 3)
+# Owner-scoped public-API event-creation allowance
 #
 # ``create_event`` hard-blocks all SystemUser callers EXCEPT a token that is owner-scoped
 # AND whose owner independently owns the target calendar (verified against CalendarOwnership,
@@ -547,7 +547,7 @@ def test_create_event_owner_scoped_audit_actor_is_system_user(scoped_event_setup
 
 
 # ----------------------------------------------------------------------------------------
-# Public-token update/delete write allowance (Phase 0a)
+# Public-token update/delete write allowance
 #
 # ``update_event`` and ``delete_event`` now accept:
 #   - Owner-scoped tokens whose owner owns the target calendar.
@@ -1254,7 +1254,7 @@ def test_delete_event_owner_scoped_audit_actor_is_system_user(write_allowance_se
 
 
 # ----------------------------------------------------------------------------------------
-# Single-occurrence reschedule / cancel service methods (Phase 0b)
+# Single-occurrence reschedule / cancel service methods
 #
 # ``reschedule_event_occurrence`` and ``cancel_event_occurrence`` address ONE occurrence of
 # a recurring series by ``(calendar_id, master_event_id, recurrence_id)`` and link it via an

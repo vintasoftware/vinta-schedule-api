@@ -4,9 +4,9 @@ Module rationale — OrganizationMembershipForeignKey
 ----------------------------------------------------
 Django 6 forbids a real ``ForeignKey`` (with a DB-level FK constraint) to a
 model whose primary key is composite (``CompositePrimaryKey``).  Even before
-``OrganizationMembership`` gains a composite PK (Phase 7), using a
-``ForeignObject`` for the relationship is the only design that will survive
-that migration without a second round of model rewrites.
+``OrganizationMembership`` gains a composite PK, using a ``ForeignObject`` for
+the relationship is the only design that will survive that migration without a
+second round of model rewrites.
 
 Why denormalize ``user_id``?
     A bare ``ForeignObject`` on ``(organization_id, …)`` requires the *host*
@@ -22,8 +22,8 @@ Why no real DB foreign-key constraint here?
     at the Python/SQL level.  PROTECT delete semantics are enforced by a
     raw-SQL composite ``FOREIGN KEY (organization_id, <name>_user_id)
     REFERENCES organization_membership(organization_id, user_id) ON DELETE
-    RESTRICT`` constraint added per referencing table in the cutover phases
-    (Phases 2, 4, 6).  This separation is intentional: the ORM field provides
+    RESTRICT`` constraint added per referencing table.  This separation is
+    intentional: the ORM field provides
     ``select_related`` / descriptor / queryset conveniences; the DB constraint
     provides integrity.
 """
@@ -221,7 +221,7 @@ class OrganizationMembershipForeignKey(models.Field):
        - The real integrity constraint we need is at the *membership* level —
          ``(organization_id, <name>_user_id)`` → ``OrganizationMembership`` —
          not at the bare ``User`` level.  That composite FK is added as a
-         raw-SQL constraint per table in the cutover phases (Phases 2, 4, 6).
+         raw-SQL constraint per table.
        - The ``ForeignObject`` below already provides all ORM relationship
          features (``select_related``, reverse-accessor, filter traversal).
 
@@ -232,8 +232,7 @@ class OrganizationMembershipForeignKey(models.Field):
        A bare single-column index on ``<name>_user_id`` alone would be mostly
        wasted.  Adopting models MUST declare a composite index on
        ``(organization_id, <name>_user_id)`` in the migration that adds this
-       field — alongside the raw-SQL composite FK constraint added in the
-       cutover phase.
+       field — alongside the raw-SQL composite FK constraint.
 
     2. **ForeignObject descriptor** ``<name>`` — a non-editable ``ForeignObject``
        joining::
@@ -249,8 +248,8 @@ class OrganizationMembershipForeignKey(models.Field):
     Why no ``on_delete`` DB constraint at the membership level?
         ``ForeignObject`` creates no DB constraint.  PROTECT semantics against
         membership deletion are enforced by a per-table raw-SQL composite FK
-        added through the project's raw-SQL migration framework in the cutover
-        phases.  The ``on_delete`` kwarg is stored and forwarded to the
+        added through the project's raw-SQL migration framework.  The
+        ``on_delete`` kwarg is stored and forwarded to the
         ``ForeignObject`` for ORM bookkeeping only.
 
     Usage::
@@ -288,7 +287,7 @@ class OrganizationMembershipForeignKey(models.Field):
         # 1. Concrete column: plain BigIntegerField matching the User PK type
         #    (DEFAULT_AUTO_FIELD = BigAutoField → 64-bit integer).  No DB FK
         #    constraint — the composite FK to OrganizationMembership is added
-        #    per table as raw SQL in the cutover phases.
+        #    per table as raw SQL.
         user_id_field = models.BigIntegerField(
             null=self.null,
             blank=self.blank,
@@ -310,7 +309,7 @@ class OrganizationMembershipForeignKey(models.Field):
         #    The ForeignObject is wired with ``on_delete=DO_NOTHING`` regardless of
         #    the configured ``self.on_delete``. Delete integrity (PROTECT) is
         #    enforced exclusively by the per-table raw-SQL composite FK to
-        #    OrganizationMembership, which the cutover migrations add as
+        #    OrganizationMembership, which the raw-SQL migrations add as
         #    ``DEFERRABLE INITIALLY DEFERRED`` so the check fires at COMMIT. If the
         #    ForeignObject itself carried ``on_delete=PROTECT``, Django's *Python*
         #    cascade collector would raise ``ProtectedError`` eagerly — even for a

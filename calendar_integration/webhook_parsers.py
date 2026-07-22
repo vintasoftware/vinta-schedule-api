@@ -80,8 +80,8 @@ class MicrosoftWebhookParser(BaseWebhookParser):
 
     def parse(self, headers: dict[str, str], payload: dict[str, Any] | str) -> tuple[str, str]:
         """Parse Microsoft Graph webhook to extract event info."""
-        # For now, Microsoft webhooks default to notification type
-        # In Phase 2, we'll implement proper payload parsing
+        # For now, Microsoft webhooks default to notification type.
+        # Proper payload parsing is not yet implemented.
         event_type = "notification"
 
         # Try to extract calendar ID from payload

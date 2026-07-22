@@ -13,35 +13,35 @@ Five properties carry that weight:
    ``reconcile_period`` recomputes its identity set from the *same*
    ``for_billing_period`` rows. What is charged and what is audited can never be
    two different numbers. The allowance boundary is **not** recomputed at close
-   time; it was stamped at meter time (Phase 7) on purpose, so a later limit change
-   cannot retroactively reprice a closed period.
+   time; it was stamped at meter time on purpose, so a later limit change cannot
+   retroactively reprice a closed period.
 
 2. **One period boundary, the meter's own.** The closing period is the stored
    ``current_period_start``/``current_period_end`` — exactly the values
    ``resolve_billing_period`` returns for any occurrence inside the current cycle,
    which is what the meter stamped ``billing_period_start`` with. Close never
-   derives a second period; a second derivation is the plan's recurring
-   two-predicates defect, here charging real money.
+   derives a second period; a second derivation would repeat the recurring
+   two-period-derivation defect, here charging real money.
 
 3. **Idempotent on ``(subscription, period_start)``.** The overage charge carries
    an idempotency key derived from the subscription and the closing period start,
-   forwarded to the provider (Phase 9 plumbing), so a crash between charge and
-   period-roll cannot double-charge on retry — the provider itself refuses the
+   forwarded to the provider, so a crash between charge and period-roll cannot
+   double-charge on retry — the provider itself refuses the
    second charge. The **durable marker** that a period is already closed is the
    rolled ``current_period_start`` itself: once rolled, ``current_period_end`` is in
    the future, so the sweep's ``current_period_end <= now`` guard makes a re-run a
    no-op. No period-close record model is needed. Concurrent sweeps serialise on a
    ``SELECT ... FOR UPDATE`` of the subscription row.
 
-4. **Real-money overage is GATED to Phase 14.** Every organization is on
+4. **Real-money overage is not activated yet.** Every organization is on
    ``unlimited`` (NULL ``event_occurrences`` limit) for the whole rollout, so the
    overage sum is always zero and no charge is ever issued today. That is
-   deliberate: the recurrence pk-aliasing defect (Phase 7 finding) can inflate the
-   metered occurrence count, and turning an inflated count into money before that
-   upstream calendar bug is fixed would bill for occurrences that never happened.
+   deliberate: the recurrence pk-aliasing defect can inflate the metered
+   occurrence count, and turning an inflated count into money before that upstream
+   calendar bug is fixed would bill for occurrences that never happened.
    ``_charge_overage`` therefore short-circuits on a NULL/unlimited limit — close
-   still rolls the period and reconciles, but charges nothing. **Do not remove this
-   gate until Phase 14 lands alongside the recurrence fix.**
+   still rolls the period and reconciles, but charges nothing. **Do not activate
+   this before the recurrence fix ships.**
 
 5. **Best-effort across subscriptions.** One subscription's close failing (a
    declined charge, a provider error) must not abort the sweep for the rest — the
@@ -83,9 +83,9 @@ def overage_idempotency_key(subscription: Subscription, period_start: datetime.d
     """The overage charge's idempotency key, derived from ``(subscription,
     period_start)``.
 
-    **The single most important line in this phase.** It is forwarded to the
-    provider's own idempotency header (Phase 9 plumbing, via
-    ``PaymentService.create_payment`` -> ``BasePaymentAdapter.process``), so two
+    **The single most important line here.** It is forwarded to the provider's own
+    idempotency header (via ``PaymentService.create_payment`` ->
+    ``BasePaymentAdapter.process``), so two
     attempts to close the *same* period — a Celery redelivery, or a retry after a
     crash between the charge and the period-roll — resolve to **one** charge at the
     provider even when the local ``Payment`` row from the first attempt was rolled
@@ -98,7 +98,7 @@ def overage_idempotency_key(subscription: Subscription, period_start: datetime.d
 
 class CycleCloseService:
     """Closes elapsed billing periods: settles accrued overage, rolls the period
-    forward, and applies the period-boundary actions earlier phases deferred here.
+    forward, and applies the period-boundary actions deferred to close time.
 
     Stateless; injected via ``di_core.containers``. Runs from a Celery task, never a
     request, so it opens its own ``transaction.atomic`` blocks (there is no
@@ -219,15 +219,15 @@ class CycleCloseService:
 
         Returns ``(overage_total, payment_or_None)``.
 
-        **Real-money gate — do not remove before Phase 14 + the recurrence fix.**
+        **Real-money charge — do not activate before the recurrence fix ships.**
         If the effective ``event_occurrences`` limit is NULL (unlimited), this
         charges nothing and returns immediately. Every organization is on
         ``unlimited`` for the whole rollout, so this is the branch taken today: the
         machinery is exercised and reconciled, but no money moves. Turning the
         metered count into a charge before the upstream recurrence pk-aliasing
-        defect (Phase 7 finding — an open-ended series can duplicate indefinitely,
-        inflating the count) is fixed would bill for occurrences that never
-        happened. Activation is gated to Phase 14, alongside that fix.
+        defect (an open-ended series can duplicate indefinitely, inflating the
+        count) is fixed would bill for occurrences that never happened. Activation
+        waits for that fix.
 
         The stamped ``is_within_allowance`` columns make this doubly safe: under an
         unlimited plan the meter stamps every occurrence as within-allowance at zero
@@ -241,7 +241,7 @@ class CycleCloseService:
             logger.debug(
                 "Cycle close: subscription %s has an unlimited event_occurrences allowance; "
                 "rolling the period and reconciling but charging no overage (real-money overage "
-                "is gated to Phase 14).",
+                "is not activated yet).",
                 subscription.pk,
             )
             return Decimal("0"), None
@@ -295,13 +295,13 @@ class CycleCloseService:
         subscription.save(update_fields=["current_period_start", "current_period_end", "modified"])
 
     # ------------------------------------------------------------------
-    # Deferred period-boundary actions (from earlier phases)
+    # Deferred period-boundary actions
     # ------------------------------------------------------------------
 
     def _apply_pending_plan_change_if_due(
         self, subscription: Subscription, now: datetime.datetime
     ) -> None:
-        """Apply a scheduled downgrade whose effective moment has passed (Phase 9's
+        """Apply a scheduled downgrade whose effective moment has passed (the
         deferred flip).
 
         ``SubscriptionService._schedule_downgrade`` stamped ``pending_plan`` /
@@ -315,10 +315,10 @@ class CycleCloseService:
 
         ``billing_state`` is deliberately left untouched: a downgrade-originated
         grace episode's resolution is ``DunningService``'s job (it inspects the
-        window on every ``process_dunning`` tick), and Phase 11 recorded the
-        downgrade-grace/billing-state interaction as needing product sign-off. That
-        is inert today — no organization can voluntarily downgrade while every plan
-        is ``unlimited`` — so this flip cannot fire against real data before Phase 14.
+        window on every ``process_dunning`` tick), and the downgrade-grace/
+        billing-state interaction still needs product sign-off. That is inert today
+        — no organization can voluntarily downgrade while every plan is
+        ``unlimited`` — so this flip cannot fire against real data yet.
         """
         pending_plan = subscription.pending_plan
         if (
@@ -354,7 +354,7 @@ class CycleCloseService:
 
     def _apply_cancelled_to_free_if_due(self, subscription: Subscription) -> None:
         """Move a ``CANCELLED`` subscription that has run out its paid cycle to
-        ``FREE`` (Phase 10's deferred period-close transition).
+        ``FREE`` (the deferred period-close transition).
 
         A cancellation takes effect at the end of the paid cycle, not immediately —
         ``SubscriptionService.cancel_subscription`` moves the subscription to
@@ -386,14 +386,14 @@ class CycleCloseService:
 
     @staticmethod
     def _log_reconciliation(subscription: Subscription, report: ReconciliationReport) -> None:
-        """Surface the drift ``reconcile_period`` can see, and never present a clean
+        """Report the drift ``reconcile_period`` can see, and never present a clean
         report as proof the invoice is correct.
 
         ``reconcile_period`` compares occurrence *identity* (which occurrences the
         calendar still expands to vs. which were metered). It reports the
         already-metered ``orphaned`` case it *can* see, but it has a **known blind
-        spot**: in the modify-then-sweep-once case (Phase 7 finding) it recomputes
-        from the same inflated calendar the meter read, so it reports the period
+        spot**: in the modify-then-sweep-once case it recomputes from the same
+        inflated calendar the meter read, so it reports the period
         clean while the metered count is over-billed. A clean report therefore means
         "the metered set matches the calendar's current expansion", not "this
         invoice is correct" — pricing (``is_within_allowance`` / ``unit_price``) is
@@ -403,7 +403,7 @@ class CycleCloseService:
             logger.info(
                 "Cycle close: subscription %s period %s reconciled clean (metered=%s). NOTE: a "
                 "clean reconcile audits occurrence identity only, not pricing, and is blind to "
-                "the modify-then-sweep-once over-count (Phase 7); it is not proof the invoice is "
+                "the modify-then-sweep-once over-count; it is not proof the invoice is "
                 "correct.",
                 subscription.pk,
                 report.billing_period_start.isoformat(),

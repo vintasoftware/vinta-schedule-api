@@ -403,16 +403,16 @@ class TestDunningLadder:
         organization,
         billing_profile,
     ):
-        """Regression for the grace/dunning BLOCKER: two genuine retry attempts
+        """Regression test for a grace/dunning bug: two genuine retry attempts
         must reach the provider with *distinct* idempotency keys even when both
         land on the same UTC calendar day.
 
         The earlier design bucketed the key by calendar date while the retry
         throttle opened again ``MIN_DUNNING_RETRY_INTERVAL`` (~20h) later, so a
-        first attempt landing before 04:00 UTC opened the gate a second time the
-        *same* day and the second charge was silently deduplicated by the
-        provider -- a real collection attempt dropped. Both the gate and the key
-        now derive from one retry-bucket ordinal, so a second attempt in a later
+        first attempt landing before 04:00 UTC opened the throttle a second time
+        the *same* day and the second charge was silently deduplicated by the
+        provider -- a real collection attempt dropped. Both the throttle and the
+        key now derive from one retry-bucket ordinal, so a second attempt in a later
         bucket is a genuinely distinct charge.
         """
         _seed_members(organization, 6)
@@ -507,11 +507,11 @@ class TestDunningLadderFreeFallback:
         card on file, so free-fallback is withheld until grace *expiry*, not run
         on the first tick.
 
-        Regression for the SHOULD-FIX: the earlier code checked free-fallback
-        before the retry on every GRACE tick and flipped such an org to FREE on
-        the very first tick, abandoning a genuine collection attempt. Now the
-        ladder runs across the window and only falls to FREE at expiry if still
-        unpaid.
+        Regression test for an earlier bug: the earlier code checked
+        free-fallback before the retry on every GRACE tick and flipped such an
+        org to FREE on the very first tick, abandoning a genuine collection
+        attempt. Now the ladder runs across the window and only falls to FREE at
+        expiry if still unpaid.
         """
         _add_admin_membership(organization)
         # No `_seed_members`: usage already fits under the free plan's limits.

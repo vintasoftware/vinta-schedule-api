@@ -436,7 +436,7 @@ def _client_ip_from_request(request: object) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Booking-code mint mutations (Phase 1)
+# Booking-code creation mutations
 # ---------------------------------------------------------------------------
 
 
@@ -550,7 +550,7 @@ class RevokeBookingCodeInput:
 
 
 # ---------------------------------------------------------------------------
-# With-code booking inputs (Phase 5a)
+# With-code booking inputs
 # ---------------------------------------------------------------------------
 
 
@@ -643,10 +643,10 @@ class CalendarGroupMutations:
             return CalendarGroupResult(success=False, error_message="Organization not found")
         deps = get_calendar_group_mutation_dependencies()
         deps.calendar_group_service.initialize(organization=organization)
-        # Phase 6b: create_group raises OverLimitError at the organization's
-        # calendar_groups limit. Rendered identically to the REST 402 body via
-        # raise_over_limit_graphql_error (also rolls back the request transaction --
-        # graphql-core swallows resolver exceptions and always returns 200).
+        # create_group raises OverLimitError when the organization is at its
+        # calendar_groups limit. raise_over_limit_graphql_error renders the same
+        # body as the REST 402 response and rolls back the request transaction
+        # (graphql-core swallows resolver exceptions and always returns 200).
         try:
             group = deps.calendar_group_service.create_group(
                 CalendarGroupInputData(
@@ -1289,12 +1289,12 @@ class CalendarGroupMutations:
                 error_code=BookingCodeErrorCode.SLOT_UNAVAILABLE,
                 error_message="The requested time slot is not available.",
             )
-        # Phase 8: create_event raises OverLimitError at the organization's postpaid
+        # create_event raises OverLimitError at the organization's postpaid
         # event_occurrences allowance (no payment method on file). Unlike the domain
         # errors above, this is not a booking-code-specific outcome the patient can
         # retry around, so it is rendered via the shared over-limit GraphQL contract
-        # (raise_over_limit_graphql_error, also rolls back the request transaction --
-        # see its docstring) rather than a CodeEventResult error_code.
+        # (raise_over_limit_graphql_error, which also rolls back the request
+        # transaction -- see its docstring) rather than a CodeEventResult error_code.
         except OverLimitError as exc:
             raise_over_limit_graphql_error(exc)
 
@@ -1472,10 +1472,11 @@ class CalendarGroupMutations:
                 error_code=BookingCodeErrorCode.SLOT_UNAVAILABLE,
                 error_message="The requested time slot is not available.",
             )
-        # Phase 8: create_grouped_event raises OverLimitError at the organization's
-        # postpaid event_occurrences allowance (no payment method on file). Rendered
-        # via raise_over_limit_graphql_error (also rolls back the request transaction
-        # -- see its docstring), like the single-calendar booking-code path above.
+        # create_grouped_event raises OverLimitError at the organization's postpaid
+        # event_occurrences allowance (no payment method on file). Rendered via
+        # raise_over_limit_graphql_error (which also rolls back the request
+        # transaction -- see its docstring), like the single-calendar booking-code
+        # path above.
         except OverLimitError as exc:
             raise_over_limit_graphql_error(exc)
 
@@ -1547,7 +1548,7 @@ class CalendarGroupMutations:
                 error_message="This code is not bound to a specific event.",
             )
 
-        # A group-reschedule code has calendar_group set; route to Phase 6b instead.
+        # A group-reschedule code has calendar_group set; route to the group path instead.
         if token.calendar_group is not None:
             return CodeEventResult(
                 success=False,
@@ -1772,7 +1773,7 @@ class CalendarGroupMutations:
                 error_message="This code is not bound to a specific event.",
             )
 
-        # A single-calendar reschedule code has no calendar_group; route to Phase 6a.
+        # A single-calendar reschedule code has no calendar_group; route to the single-calendar path.
         if token.calendar_group is None:
             return CodeEventResult(
                 success=False,
@@ -1837,7 +1838,7 @@ class CalendarGroupMutations:
         # Update FIRST, then consume — so on a race the loser's consume_code raises under
         # the row lock and the whole transaction (including the just-updated event) rolls
         # back, leaving exactly one update and the code consumed once.
-        # ``deps.calendar_service`` is explicitly wired into ``deps.calendar_group_service``
+        # ``deps.calendar_service`` is connected to ``deps.calendar_group_service``
         # so that the update runs on the same code-initialized CalendarService instance.
         try:
             with transaction.atomic():
@@ -2221,7 +2222,7 @@ class ExternalEventChangeRequestMutations:
 
         Authentication for the outbound provider write is established using the
         calendar owner's social account credentials — the same pattern used by the
-        REST Phase 8a reject action. The calendar's primary ownership row is resolved
+        REST reject action. The calendar's primary ownership row is resolved
         to find the owner's SocialAccount for the calendar's provider.
 
         The acting membership is resolved from the token's ``scoped_to_membership``.
@@ -2272,7 +2273,7 @@ class ExternalEventChangeRequestMutations:
             raise GraphQLError("Event has no associated calendar; cannot authenticate provider.")
 
         # Resolve the calendar owner and authenticate the CalendarService using the
-        # owner's social account credentials (matching the REST phase 8a pattern).
+        # owner's social account credentials (matching the REST reject pattern).
         # The calendar's primary ownership row determines which social account to use.
         ownership = (
             CalendarOwnership.objects.filter(
@@ -2296,12 +2297,12 @@ class ExternalEventChangeRequestMutations:
             )
 
         # Authenticate the CalendarService and resolve the write adapter.
-        # Phase 6c: both of these raise OverLimitError when the organization lacks the
+        # Both of these raise OverLimitError when the organization lacks the
         # relevant external-calendar entitlement -- authenticate() on the *authenticated
         # account's* provider, _get_write_adapter_for_calendar() on the *calendar's*
         # (they can differ; see that method's docstring). Rendered via
-        # raise_over_limit_graphql_error (also rolls back the request transaction -- see
-        # that function's docstring for why that matters under ATOMIC_REQUESTS).
+        # raise_over_limit_graphql_error (which also rolls back the request transaction
+        # -- see that function's docstring for why that matters under ATOMIC_REQUESTS).
         try:
             deps.calendar_service.authenticate(
                 account=owner_social_account,

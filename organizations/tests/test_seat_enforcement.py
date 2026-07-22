@@ -1,11 +1,11 @@
-"""Phase 6a integration: the seat-limit guard blocks identically across every
-surface — REST invite, REST accept, the GraphQL ``createInvitation`` mutation,
-and member reactivation — with a byte-identical error body between REST and
-GraphQL, an ``unlimited`` organization is never blocked, and the row lock
-genuinely serializes a race for the last seat.
+"""The seat-limit check blocks identically across every entry point — REST
+invite, REST accept, the GraphQL ``createInvitation`` mutation, and member
+reactivation — with a byte-identical error body between REST and GraphQL, an
+``unlimited`` organization is never blocked, and the row lock genuinely
+serializes a race for the last seat.
 
-Spec acceptance scenario 6 (race for the last seat) and scenario 7 (the partner
-API is not a bypass) are automated here.
+The race for the last seat and the fact that the partner API is not a bypass
+are automated here.
 """
 
 import datetime
@@ -100,9 +100,9 @@ def _organization_with_seat_limit(
         kind=LimitKind.PREPAID,
     )
     if can_invite_organizations:
-        # Phase 6c: a reseller org used to exercise the GraphQL surface needs
+        # A reseller org used to exercise the GraphQL API needs
         # `partner_api` granted, or `PublicApiSystemUserMiddleware`'s entitlement
-        # gate blocks it before the seat-limit guard this test targets ever runs.
+        # check blocks it before the seat-limit check this test targets ever runs.
         # A real reseller on any real plan carries this row (every seeded plan
         # grants it); this fixture only needs to say so explicitly because it
         # builds a bare `Subscription` rather than going through
@@ -125,9 +125,9 @@ def _organization_with_seat_limit(
 
 @pytest.mark.django_db
 class TestInviteBlockedIdenticallyAcrossRestAndGraphQL:
-    """Use-case 2 (blocked with a useful message) and Use-case 7 (the partner API
-    is not a bypass), against organizations built identically so the two bodies
-    can be compared directly."""
+    """The invite is blocked with a useful message, and the partner API is not a
+    bypass, against organizations built identically so the two bodies can be
+    compared directly."""
 
     def test_rest_invite_is_blocked_with_the_shared_over_limit_body(self):
         admin = baker.make(get_user_model(), email="rest-admin@example.com")
@@ -318,8 +318,8 @@ class TestAcceptInvitationBlockedAtTheLimit:
 
 @pytest.mark.django_db
 class TestAcceptInvitationMarksAcceptedInsideTheSameTransaction:
-    """SHOULD-FIX 3: ``accept_invitation`` must mark the invitation accepted
-    inside the same ``transaction.atomic()`` block as the guard and the
+    """``accept_invitation`` must mark the invitation accepted
+    inside the same ``transaction.atomic()`` block as the check and the
     membership create, not as a separate write after that block exits. Outside
     a request (Celery, management command, shell) there is no outer
     ``ATOMIC_REQUESTS`` transaction to fold a later failure into: if the
@@ -363,7 +363,7 @@ class TestAcceptInvitationMarksAcceptedInsideTheSameTransaction:
 
 @pytest.mark.django_db
 class TestProvisionTenantForUserMarksAcceptedInsideTheSameTransaction:
-    """SHOULD-FIX 1, Phase 6a verification review: ``provision_tenant_for_user``'s
+    """``provision_tenant_for_user``'s
     pending-invitation (signup) branch has the exact same twin bug
     ``accept_invitation`` had -- marking the invitation accepted after the inner
     ``transaction.atomic()`` block that creates the membership has already exited,
@@ -467,15 +467,15 @@ class TestReactivationBlockedAtTheLimit:
 
 @pytest.mark.django_db
 class TestResendAtTheCeiling:
-    """BLOCKER 2: a resend creates nothing new — the pending invitation being
+    """A resend creates nothing new — the pending invitation being
     resent already counts toward the ceiling — so it must be net-zero exactly
     like an accept, not a false block at the exact limit."""
 
     def test_resend_succeeds_at_the_seat_limit(self):
         # The requesting admin itself occupies a seat, so the ceiling has to
         # account for it: limit=2 covers the admin (1) plus the one pending
-        # invitation (1) -- exactly full, mirroring the finding's "4 active
-        # members + 1 pending invite at limit 5" scenario at a smaller scale.
+        # invitation (1) -- exactly full, a smaller-scale version of the "4 active
+        # members + 1 pending invite at limit 5" scenario.
         admin = baker.make(get_user_model(), email="resend-admin@example.com")
         organization = _organization_with_seat_limit(seat_limit=2, existing_active_members=0)
         baker.make(
@@ -510,9 +510,9 @@ class TestResendAtTheCeiling:
 
 @pytest.mark.django_db
 class TestUnlimitedPlanIsNeverBlocked:
-    """The plan's own rollout switch: every organization starts on ``unlimited``,
-    and this feature must not change behavior for one until it is migrated onto
-    a real plan."""
+    """The rollout switch: every organization starts on ``unlimited``, and this
+    feature must not change behavior for one until it is migrated onto a real
+    plan."""
 
     def test_invites_past_every_typical_threshold_succeed(self):
         creator = baker.make(get_user_model(), email="unlimited-creator@example.com")
@@ -535,7 +535,7 @@ class TestUnlimitedPlanIsNeverBlocked:
         assert OrganizationInvitation.objects.filter(organization=organization).count() == 25
 
     def test_query_count_does_not_scale_with_existing_pending_invitations(self):
-        """Phase 5 deliberately skips usage counting on the unlimited path — this
+        """The unlimited path deliberately skips usage counting — this
         pins that an org already sitting on a pile of pending invitations pays no
         more query cost per invite than a brand-new org does."""
         creator = baker.make(get_user_model(), email="unlimited-creator2@example.com")
@@ -654,7 +654,7 @@ def _run_two_racing_invites(organization: Organization, force_unlocked: bool) ->
 
 @pytest.mark.django_db(transaction=True)
 class TestConcurrentInvitesForTheLastSeat:
-    """Spec acceptance scenario 6: two admins inviting for one remaining seat at
+    """Two admins inviting for one remaining seat at
     the same time — exactly one succeeds, and the organization never exceeds its
     limit."""
 

@@ -82,7 +82,7 @@ class TestOrganizationService:
     ):
         """Test creating an organization with room syncing enabled.
 
-        Phase 18: a newly-created org has no GoogleCalendarServiceAccount yet.
+        A newly-created org has no GoogleCalendarServiceAccount yet.
         ``request_rooms_sync`` raises ``NoServiceAccountConfiguredError`` which
         ``create_organization`` catches and logs; the org is still created and
         the calendar service is NOT called (no import enqueued until the admin
@@ -105,7 +105,7 @@ class TestOrganizationService:
         assert db_organization.name == organization_name
         assert db_organization.should_sync_rooms is True
 
-        # Phase 18: no service account → neither authenticate nor the import is called.
+        # No service account → neither authenticate nor the import is called.
         mock_calendar_service.authenticate.assert_not_called()
         mock_calendar_service.request_organization_calendar_resources_import.assert_not_called()
 
@@ -146,7 +146,7 @@ class TestOrganizationService:
     ):
         """Test that multiple calls to create_organization work correctly.
 
-        Phase 1: OrganizationMembership.user is now a ForeignKey (not OneToOne),
+        OrganizationMembership.user is a ForeignKey (not OneToOne),
         so a user may be admin of multiple organizations. Each call creates a
         distinct org and a distinct (user, org) membership — no IntegrityError.
         The unique constraint is (user, organization), not (user,) alone.
@@ -160,7 +160,7 @@ class TestOrganizationService:
         assert org1.name == "Organization 1"
         assert org1.should_sync_rooms is False
 
-        # Create second organization with same user — allowed post-Phase 1.
+        # Create second organization with same user — this is allowed.
         org2 = organization_service.create_organization(
             creator=user, name="Organization 2", should_sync_rooms=False
         )
@@ -177,7 +177,7 @@ class TestOrganizationService:
     ):
         """Test behavior when calendar service raises an exception during room sync.
 
-        Phase 18: ``request_rooms_sync`` raises ``NoServiceAccountConfiguredError``
+        ``request_rooms_sync`` raises ``NoServiceAccountConfiguredError``
         (a DRF ValidationError) before touching the calendar service because no
         ``GoogleCalendarServiceAccount`` exists for a brand-new org.
         ``create_organization`` catches ONLY that error and swallows it; the org
@@ -192,7 +192,7 @@ class TestOrganizationService:
         with container.calendar_service.override(mock_calendar_service):
             service = OrganizationService()
 
-            # Phase 18: org creation must succeed even though no SA is configured
+            # Org creation must succeed even though no SA is configured
             # (the NoServiceAccountConfiguredError is caught and logged internally).
             org = service.create_organization(
                 creator=user, name="Test Organization Exception", should_sync_rooms=True
@@ -210,7 +210,7 @@ class TestOrganizationService:
     ):
         """Parametrized test for both sync_rooms scenarios.
 
-        Phase 18: when ``should_sync_rooms=True`` and no service account is
+        When ``should_sync_rooms=True`` and no service account is
         configured (as is always the case for a brand-new org), the import is
         skipped gracefully — the calendar service is never called.
         """
@@ -223,7 +223,7 @@ class TestOrganizationService:
         # Verify organization was created correctly
         assert organization.should_sync_rooms == should_sync_rooms
 
-        # Phase 18: whether should_sync_rooms is True or False, the calendar service
+        # Whether should_sync_rooms is True or False, the calendar service
         # is never called during org creation because there is no service account yet.
         mock_calendar_service.authenticate.assert_not_called()
         mock_calendar_service.request_organization_calendar_resources_import.assert_not_called()
@@ -386,7 +386,7 @@ class TestOrganizationService:
         assert invitation.membership == membership
 
     def test_accept_invitation_propagates_admin_role(self, organization_service, organization):
-        """BLOCKER fix: accept_invitation must honour the invitation's role.
+        """accept_invitation must honour the invitation's role.
 
         An ADMIN invitation accepted via the token/REST path must produce an
         OrganizationMembership with role=ADMIN, not the default MEMBER.
@@ -635,9 +635,9 @@ class TestOrganizationService:
     def test_provision_tenant_for_user_already_has_membership_no_invite_no_name_returns_none(
         self, organization_service, organization
     ):
-        """Phase 4: user with a membership, no pending invite, no org name → returns None.
+        """User with a membership, no pending invite, no org name → returns None.
 
-        The top-level blanket guard is gone.  With no pending invitation and no
+        There is no top-level blanket check.  With no pending invitation and no
         organization_name, the function falls through to the no-op branch and returns None.
         """
         user = baker.make(User, email="member@example.com")
@@ -678,9 +678,9 @@ class TestOrganizationService:
     def test_accept_invitation_user_in_org_a_can_accept_invite_to_org_b(
         self, organization_service, organization
     ):
-        """Phase 4 / Use-case 6: a user already in org A can accept an invitation to org B.
+        """A user already in org A can accept an invitation to org B.
 
-        The old blanket guard ("any membership → refuse") is relaxed.  The per-org guard
+        There is no blanket "any membership → refuse" check.  The per-org check
         only refuses a duplicate in the SAME organization.  Accepting into a DIFFERENT org
         must succeed and yield a second OrganizationMembership.
         """
@@ -707,14 +707,14 @@ class TestOrganizationService:
             membership_user_id=None,
         )
 
-        # Phase 4: this must SUCCEED — user joins other_org as their second org.
+        # This must SUCCEED — user joins other_org as their second org.
         membership = organization_service.accept_invitation(token=token, user=user)
         assert membership.user == user
         assert membership.organization == other_org
         assert OrganizationMembership.objects.filter(user=user).count() == 2
 
     def test_accept_invitation_same_org_duplicate_raises(self, organization_service, organization):
-        """Phase 4: accepting an invitation to an org the user already belongs to raises UserAlreadyHasMembershipError."""
+        """Accepting an invitation to an org the user already belongs to raises UserAlreadyHasMembershipError."""
         from common.utils.authentication_utils import (
             generate_long_lived_token,
             hash_long_lived_token,
@@ -879,7 +879,7 @@ class TestOrganizationService:
                 organization_service.accept_invitation(token=token, user=user)
 
     # -----------------------------------------------------------------------
-    # SHOULD-FIX 2, Phase 6a verification review: an IntegrityError raised by the
+    # An IntegrityError raised by the
     # *invitation* write (not the membership create) must not be reported as
     # UserAlreadyHasMembershipError -- the ``try`` around the create is narrow
     # enough that a failure saving the invitation propagates as itself.
@@ -1004,15 +1004,15 @@ class TestOrganizationService:
         assert count >= 0, "DB query after backstop must succeed (transaction not poisoned)"
 
     # -----------------------------------------------------------------------
-    # Phase 4 — Multi-org invite accept (Use-case 6)
+    # Multi-org invite accept
     # -----------------------------------------------------------------------
 
     def test_provision_pending_invite_org_b_user_already_in_org_a(
         self, organization_service, organization
     ):
-        """Phase 4: pending invite for org B + user already in org A → creates org-B membership.
+        """Pending invite for org B + user already in org A → creates org-B membership.
 
-        The per-org guard on the invite branch only fires when the user is already in the
+        The per-org check on the invite branch only fires when the user is already in the
         INVITATION's org.  A user already in org A joining org B via a pending invite must
         succeed.
         """
@@ -1036,7 +1036,7 @@ class TestOrganizationService:
         assert OrganizationMembership.objects.filter(user=user).count() == 2
 
     def test_provision_pending_invite_same_org_raises(self, organization_service, organization):
-        """Phase 4: pending invite for org A + user already in org A → UserAlreadyHasMembershipError."""
+        """Pending invite for org A + user already in org A → UserAlreadyHasMembershipError."""
         user = baker.make(User, email="same_org_invite@example.com")
         baker.make(OrganizationMembership, user=user, organization=organization)
         user.refresh_from_db()
@@ -1050,9 +1050,9 @@ class TestOrganizationService:
     def test_provision_organization_name_user_already_has_membership_raises(
         self, organization_service, organization
     ):
-        """Phase 4: organization_name branch retains the blanket guard — no second-org auto-create.
+        """The organization_name branch keeps the blanket check — no second-org auto-create.
 
-        Creating an additional org on the signup path is Phase 5's concern.  A user with
+        Creating an additional org on the signup path is out of scope here.  A user with
         an existing membership supplying organization_name must still be refused.
         """
         user = baker.make(User, email="has_org_name@example.com")
@@ -1066,7 +1066,7 @@ class TestOrganizationService:
         assert OrganizationMembership.objects.filter(user=user).count() == 1
 
     def test_concurrent_orgs_can_both_invite_same_email_coexist(self, organization):
-        """Phase 4: two orgs can each have a pending invitation for the same email simultaneously.
+        """Two orgs can each have a pending invitation for the same email simultaneously.
 
         The relaxed unique constraint ``uniq_invitation_email_organization`` allows the
         same email to appear once per org — both rows must coexist without IntegrityError.
@@ -1100,7 +1100,7 @@ class TestOrganizationService:
     def test_invite_user_to_organization_second_call_resets_not_duplicates(
         self, organization_service_with_mocks, user, organization
     ):
-        """Finding 4: calling invite_user_to_organization twice for the SAME (email, org) resets
+        """Calling invite_user_to_organization twice for the SAME (email, org) resets
         the existing invitation (new token/expiry), rather than creating a duplicate row.
 
         Verifies the get_or_create path: created=False means the row already existed and
@@ -1151,7 +1151,7 @@ class TestOrganizationService:
     def test_invite_user_same_email_different_orgs_allowed(
         self, organization_service_with_mocks, user, organization
     ):
-        """Finding 4: the same email can be invited to two different orgs — one row per org.
+        """The same email can be invited to two different orgs — one row per org.
 
         The per-org unique constraint ``uniq_invitation_email_organization`` allows (email,
         org_A) and (email, org_B) to coexist. This test confirms invite_user_to_organization
@@ -1191,7 +1191,7 @@ class TestOrganizationService:
     def test_accept_invitation_inactive_membership_blocks_re_accept(
         self, organization_service, organization
     ):
-        """Finding 3: the per-org guard does NOT filter on is_active, so an inactive membership
+        """The per-org check does NOT filter on is_active, so an inactive membership
         in the inviting org still blocks re-accept (prevents a silent second-row scenario where
         a deactivated user re-accepts an invitation to regain access).
 
@@ -1230,7 +1230,7 @@ class TestOrganizationService:
     def test_provision_tenant_inactive_membership_blocks_same_org_invite(
         self, organization_service, organization
     ):
-        """Finding 3 (provision_tenant level): inactive membership in the inviting org blocks
+        """At the provision_tenant level: inactive membership in the inviting org blocks
         provision_tenant_for_user just as accept_invitation does — no second row is created.
         """
         user = baker.make(User, email="inactive_provision@example.com")
@@ -1246,7 +1246,7 @@ class TestOrganizationService:
         assert OrganizationMembership.objects.filter(user=user).count() == 1
 
     # -----------------------------------------------------------------------
-    # Phase 2 — organization_member_created webhook emission on accept_invitation
+    # organization_member_created webhook emission on accept_invitation
     # -----------------------------------------------------------------------
 
     @pytest.fixture
@@ -1451,7 +1451,7 @@ class TestOrganizationService:
         assert event.payload["membership_role"] == OrganizationRole.MEMBER
 
     # -----------------------------------------------------------------------
-    # Phase 3 — organization_member_created webhook emission on create_organization
+    # organization_member_created webhook emission on create_organization
     # -----------------------------------------------------------------------
 
     def test_create_organization_calls_on_member_created_for_admin_membership(
@@ -1542,7 +1542,7 @@ class TestOrganizationService:
         assert call["payload"]["membership_role"] == OrganizationRole.ADMIN
 
     # -----------------------------------------------------------------------
-    # Phase 4 — provision_tenant_for_user pending-invitation branch + multi-org
+    # provision_tenant_for_user pending-invitation branch + multi-org
     # -----------------------------------------------------------------------
 
     def test_provision_pending_invite_calls_on_member_created(

@@ -1,6 +1,6 @@
 """Integration tests for reschedule and cancel booking-code mint mutations.
 
-Covers Phase 2: createCalendarRescheduleBookingCode,
+Covers createCalendarRescheduleBookingCode,
 createCalendarGroupRescheduleBookingCode, createCalendarCancellationBookingCode,
 createCalendarGroupCancellationBookingCode.
 """

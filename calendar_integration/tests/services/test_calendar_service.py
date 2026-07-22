@@ -3258,13 +3258,13 @@ def test_update_event_with_unchanged_orphan_attendee_requires_no_attendee_permis
 ):
     """A pre-existing orphan attendee left unchanged must not be seen as an attendee change.
 
-    BLOCKER regression: ``serialize_event`` drops orphan attendances (no membership)
-    but the input serializer used to resolve EVERY input ``user_id`` and include
-    non-members. A persisted orphan that is unchanged in the payload then appeared only
-    on the ``new`` side of the permission diff and was falsely flagged as "attendance
-    added", forcing ``UPDATE_ATTENDEES`` and raising ``PermissionDenied`` for a caller
-    who changed nothing. The fix routes the input serializer through the same membership
-    guard so both sides agree on the member set and the orphan is symmetrically dropped.
+    ``serialize_event`` drops orphan attendances (no membership), but the input
+    serializer used to resolve EVERY input ``user_id`` and include non-members. A
+    persisted orphan that is unchanged in the payload then appeared only on the ``new``
+    side of the permission diff and was falsely flagged as "attendance added", forcing
+    ``UPDATE_ATTENDEES`` and raising ``PermissionDenied`` for a caller who changed
+    nothing. The fix routes the input serializer through the same membership check so
+    both sides agree on the member set and the orphan is symmetrically dropped.
 
     The token here intentionally LACKS ``UPDATE_ATTENDEES``: if the orphan were still
     flagged as an attendee change the update would be denied.
@@ -3345,9 +3345,9 @@ def test_create_event_persists_membership_user_id_for_mixed_attendees(
 ):
     """create_event persists membership_user_id = user id for members, NULL for non-members.
 
-    SHOULD-FIX A: drive the service bulk-write path with a MIXED member + non-member
-    attendee list and assert the denormalized ``membership_user_id`` (member -> id,
-    non-member -> NULL).
+    Drives the service bulk-write path with a MIXED member + non-member attendee list
+    and asserts the denormalized ``membership_user_id`` (member -> id, non-member ->
+    NULL).
     """
     member_user = User.objects.create_user(email="member@example.com")
     OrganizationMembership.objects.create(user=member_user, organization=calendar.organization)
@@ -9931,7 +9931,7 @@ class TestDisableResourceCalendarService:
 
 
 class TestUpdateBlockedTimeService:
-    """Unit tests for CalendarService.update_blocked_time (Phase 3f)."""
+    """Unit tests for CalendarService.update_blocked_time."""
 
     def _make_calendar(self, organization: Organization) -> Calendar:
         """Create a resource calendar for testing."""
@@ -10094,7 +10094,7 @@ class TestUpdateBlockedTimeService:
 
 @pytest.mark.django_db
 class TestDeleteBlockedTimeService:
-    """Unit tests for CalendarService.delete_blocked_time (Phase 3g)."""
+    """Unit tests for CalendarService.delete_blocked_time."""
 
     def _make_calendar(self, organization: Organization) -> Calendar:
         """Create a resource calendar for testing."""

@@ -120,7 +120,7 @@ def test_process_forwards_idempotency_key_to_stripe(mock_payment_intent, adapter
     """The client-supplied key must reach Stripe as its `Idempotency-Key` so a
     retried charge (e.g. after a rolled-back local transaction) resolves to the
     same PaymentIntent instead of charging twice. No live Stripe here -- assert
-    the key is threaded into the SDK call (see the Phase 2b live-provider caveat)."""
+    the key is passed into the SDK call."""
     mock_payment_intent.create.return_value = Mock(id="pi_created_123")
 
     adapter.process(mock_payment, "pm_test_token", idempotency_key="idem-key-1")

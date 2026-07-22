@@ -1,8 +1,8 @@
 """A per-request memo for boolean entitlement checks.
 
 ``EntitlementService.has_entitlement`` costs a billing-root walk (a query per level of
-the ``parent`` chain) plus a subscription fetch plus an entitlement-row fetch. Phase 6c
-puts it on the two hottest call sites:
+the ``parent`` chain) plus a subscription fetch plus an entitlement-row fetch. This memo
+is used on the two hottest call sites:
 
 - ``PublicApiSystemUserMiddleware._has_partner_api_entitlement`` checks ``partner_api``
   on every request that resolved an authenticated organization.

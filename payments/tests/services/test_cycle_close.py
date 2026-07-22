@@ -5,7 +5,7 @@ on an invoice. The properties under test:
 
 - only occurrences **outside** the allowance are charged, priced at the stamped
   ``unit_price`` (not ``count * current_price``);
-- an **unlimited** allowance charges nothing (the inert-today real-money gate —
+- an **unlimited** allowance charges nothing (so no real money moves today —
   the state every organization is in for the whole rollout);
 - overage settles **monthly** even for an annually-billed plan;
 - rolling the period forward resets the postpaid counter (period-scoped) and is
@@ -458,7 +458,7 @@ class TestDeferredBoundaryActions:
     ):
         """A scheduled downgrade whose ``pending_plan_effective_at`` (the old period
         end) has passed is flipped at close: ``plan`` moves to the pending plan and
-        the pending markers clear (Phase 9's deferred flip)."""
+        the pending markers clear. This is the deferred flip."""
         pending_plan = _make_complete_plan("downgrade-target")
         original_plan_id = subscription.plan_id
         subscription.pending_plan = pending_plan

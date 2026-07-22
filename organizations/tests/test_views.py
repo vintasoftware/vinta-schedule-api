@@ -232,10 +232,10 @@ class TestOrganizationViewSet:
     def test_create_organization_authenticated_with_existing_membership(
         self, auth_client, user, organization_with_membership
     ):
-        """Phase 5 / Use-case 7: a member with an existing membership can create
+        """A member with an existing membership can create
         an additional organization and becomes its ADMIN.
 
-        Prior to Phase 5 this returned 403 (OrganizationManagementPermission
+        Previously this returned 403 (OrganizationManagementPermission
         blocked members). The permission is now action-aware: ``create`` is open
         to any authenticated user.
         """
@@ -560,7 +560,7 @@ class TestOrganizationQuerySet:
 
 @pytest.mark.django_db
 class TestCurrentMembershipAction:
-    """Test suite for GET /organizations/current/ (Phase 9).
+    """Test suite for GET /organizations/current/.
 
     This action must be reachable by onboarded users (the whole reason for its
     dedicated ``permission_classes=[IsAuthenticated]`` override — bypassing the
@@ -1219,7 +1219,7 @@ class TestAcceptInvitationView:
     def test_accept_invitation_already_accepted(self, auth_client, user, organization):
         """Accepting an invitation to an org the user already belongs to returns 400.
 
-        Phase 4: the per-org guard fires — the user is already a member of the SAME
+        The per-org check fires — the user is already a member of the SAME
         organization that issued the invitation.  ``UserAlreadyHasMembershipError`` (a
         DRF ValidationError) is raised before the DB write, yielding a typed 400.
         """
@@ -1249,9 +1249,9 @@ class TestAcceptInvitationView:
     def test_accept_invitation_member_of_org_a_can_accept_invite_to_org_b(
         self, auth_client, user, organization
     ):
-        """Phase 4 / Use-case 6: an already-member user accepts a valid token for a DIFFERENT org.
+        """An already-member user accepts a valid token for a DIFFERENT org.
 
-        Acceptance criteria (Phase 4):
+        Expected:
         - HTTP 201.
         - The user ends up with TWO active memberships.
         - The existing membership (org + role) is unchanged.
@@ -1293,9 +1293,9 @@ class TestAcceptInvitationView:
         assert invitation.membership is not None
 
     def test_accept_invitation_same_org_duplicate_returns_400(self, auth_client, user):
-        """Phase 4: accepting an invitation to an org the user is already a member of returns 400.
+        """Accepting an invitation to an org the user is already a member of returns 400.
 
-        The per-org guard fires and the error body shape must be stable for clients.
+        The per-org check fires and the error body shape must be stable for clients.
         """
         own_org = OrganizationTestFactory.create_organization(name="Own Org")
         OrganizationTestFactory.create_organization_membership(user, own_org)
@@ -2349,7 +2349,7 @@ class TestOrganizationMembershipViewSet:
 
 @pytest.mark.django_db
 class TestSyncRoomsAction:
-    """Test suite for POST /organizations/{id}/sync-rooms/ (Phase 7).
+    """Test suite for POST /organizations/{id}/sync-rooms/.
 
     Only org admins may trigger the sync.  The view calls request_rooms_sync
     directly; the service layer owns the on_commit deferral.  Tests verify
@@ -2373,10 +2373,10 @@ class TestSyncRoomsAction:
     def test_admin_sync_rooms_default_times_returns_202(self, mock_sync, user):
         """Admin POST without body → 202; request_rooms_sync called with no explicit times.
 
-        Phase 18: a GoogleCalendarServiceAccount must exist for the org or the
+        A GoogleCalendarServiceAccount must exist for the org or the
         view returns 400.  Provide one so the pre-flight check passes.
 
-        Phase 19: the view calls request_rooms_sync directly (no view-level
+        The view calls request_rooms_sync directly (no view-level
         on_commit); the service owns the on_commit deferral internally.
         """
         organization = OrganizationTestFactory.create_organization(name="Sync Org")
@@ -2407,10 +2407,10 @@ class TestSyncRoomsAction:
     def test_admin_sync_rooms_explicit_times_returns_202(self, mock_sync, user):
         """Admin POST with ISO start_time/end_time → 202; service called with parsed datetimes.
 
-        Phase 18: a GoogleCalendarServiceAccount must exist for the org or the
+        A GoogleCalendarServiceAccount must exist for the org or the
         view returns 400.  Provide one so the pre-flight check passes.
 
-        Phase 19: the view calls request_rooms_sync directly (no view-level
+        The view calls request_rooms_sync directly (no view-level
         on_commit); the service owns the on_commit deferral internally.
         """
         import datetime
@@ -2531,10 +2531,10 @@ class TestShouldSyncRoomsTransition:
     def test_patch_false_to_true_fires_sync_once(self, mock_sync, user):
         """Admin PATCH should_sync_rooms False→True → 200; request_rooms_sync called once.
 
-        Phase 18: the view checks for a service account before firing the sync.
+        The view checks for a service account before firing the sync.
         Provide one so the check passes.
 
-        Phase 19: the view calls request_rooms_sync directly (no view-level
+        The view calls request_rooms_sync directly (no view-level
         on_commit); the service owns the on_commit deferral internally.
         """
         client, org = self._make_admin_client_and_org(user, should_sync_rooms=False)
@@ -2658,10 +2658,10 @@ class TestShouldSyncRoomsTransition:
     def test_admin_can_set_should_sync_rooms_value_persists(self, mock_sync, user):
         """Admin PATCH should_sync_rooms → value persists in DB (configure-org use-case).
 
-        Phase 18: the view checks for a service account before firing the sync.
+        The view checks for a service account before firing the sync.
         Provide one so the check passes and the PATCH returns 200.
 
-        Phase 19: no view-level on_commit; service owns the deferral.
+        No view-level on_commit; the service owns the deferral.
         """
         client, org = self._make_admin_client_and_org(user, should_sync_rooms=False)
         # Provide a service account so the False→True transition check passes.
@@ -2687,10 +2687,10 @@ class TestShouldSyncRoomsTransition:
 
 
 # ---------------------------------------------------------------------------
-# Phase 18 — Rooms-sync configuration via org PATCH + working trigger
+# Rooms-sync configuration via org PATCH + working trigger
 # ---------------------------------------------------------------------------
 
-# Reusable service-account payload used across Phase 18 tests.
+# Reusable service-account payload used across the rooms-sync tests.
 _SA_PAYLOAD = {
     "email": "rooms-sa@example.iam.gserviceaccount.com",
     "admin_email": "admin@example.com",
@@ -3347,12 +3347,12 @@ class TestPhase20ServiceAccountCRUD:
 
 @pytest.mark.django_db
 class TestPhase11ServiceAccountRestrictedGuard:
-    """Phase 11: a ``RESTRICTED`` organization cannot write its service account.
+    """A ``RESTRICTED`` organization cannot write its service account.
 
     ``GoogleCalendarServiceAccount`` is an ``OrganizationModel`` subclass, so
     create/rotate/delete of the org-level service account are real user-initiated
-    writes that the restricted-state guard must block -- consulting the same
-    ``EntitlementService.check_not_restricted`` predicate every other guarded write
+    writes that the restricted-state check must block -- consulting the same
+    ``EntitlementService.check_not_restricted`` helper every other blocked write
     uses. ``ACTIVE`` and ``GRACE`` organizations keep writing normally (only
     ``RESTRICTED`` blocks).
     """
@@ -3577,7 +3577,7 @@ class TestPhase20SyncAllCalendars:
 
 @pytest.mark.django_db
 class TestOrganizationMineAction:
-    """Tests for GET /organizations/mine/ (Use-case 5 — list caller's memberships)."""
+    """Tests for GET /organizations/mine/ (list caller's memberships)."""
 
     # ------------------------------------------------------------------
     # Happy paths
@@ -3621,7 +3621,7 @@ class TestOrganizationMineAction:
 
         # Verify the membership objects that were created are retrievable from the DB
         # by composite PK — confirming the (user_id, organization_id) identity is
-        # persisted correctly after the Phase 7b PK swap.
+        # persisted correctly by the composite PK.
         assert (
             OrganizationMembership.objects.get(
                 pk=(membership_a.user_id, membership_a.organization_id)
@@ -3864,9 +3864,9 @@ class TestOrganizationMineAction:
 
 @pytest.mark.django_db
 class TestCreateAdditionalOrganization:
-    """Phase 5 / Use-case 7 — a member creates an additional organization.
+    """A member creates an additional organization.
 
-    Acceptance criteria:
+    Expected:
     - POST /organizations/ succeeds for a user who already has memberships.
     - The caller becomes ADMIN of the new org.
     - The response is HTTP 201 with the newly created org body.
@@ -3876,7 +3876,7 @@ class TestCreateAdditionalOrganization:
     """
 
     def test_member_with_one_existing_org_can_create_additional_org(self, user):
-        """Use-case 7 core: user in org A creates org C → 201, becomes ADMIN of C, 2 memberships."""
+        """Core case: user in org A creates org C → 201, becomes ADMIN of C, 2 memberships."""
         # Existing org A with membership
         org_a = baker.make(Organization, name="Org A")
         OrganizationMembership.objects.create(
@@ -3958,7 +3958,7 @@ class TestCreateAdditionalOrganization:
     def test_multi_org_member_two_existing_orgs_can_create_third(self, user):
         """A user with TWO existing memberships can POST /organizations/ with NO header → 201.
 
-        This is the carry-forward concern from Phase 2b: the create action must NOT 400
+        The create action must NOT 400
         even when the caller already has 2+ active memberships and omits the header.
         The post-write re-resolve must also NOT 400/403.
         """

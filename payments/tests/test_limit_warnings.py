@@ -1,14 +1,13 @@
-"""Integration tests for Phase 12's approaching-limit warning beat entry points
+"""Integration tests for the approaching-limit warning beat entry points
 (``payments.tasks.check_approaching_limits`` /
 ``check_approaching_limits_for_subscription``).
 
-Drives the real, DI-wired ``UsageWarningService`` -- not a hand-written double
--- with only ``notification_service`` swapped out, the same pattern
+Drives the real, DI-wired ``UsageWarningService`` (not a hand-written double)
+with only ``notification_service`` swapped out, the same pattern
 ``payments/tests/test_dunning_schedule.py`` uses for the dunning beat task.
 
-The load-bearing assertion is the debounce: a warning must fire **once**,
-never repeatedly across beat runs while usage stays above the threshold --
-the plan's own framing for this phase's key test.
+The key assertion is the debounce: a warning must fire **once**, never
+repeatedly across beat runs while usage stays above the threshold.
 """
 
 from decimal import Decimal

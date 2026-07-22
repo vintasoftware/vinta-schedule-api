@@ -1,4 +1,4 @@
-"""Integration tests for createCalendarEventWithCode (Phase 5a).
+"""Integration tests for createCalendarEventWithCode.
 
 All requests are unauthenticated (no Authorization header).  The booking
 code provides the org scope, calendar scope, and CREATE permission.

@@ -1,4 +1,4 @@
-"""Tests for Phase 4 webhook management and monitoring features."""
+"""Tests for webhook management and monitoring features."""
 
 import datetime
 from unittest.mock import patch
@@ -273,7 +273,7 @@ class TestWebhookAdmin(TestCase):
 
 
 class TestPhase4Integration(TestCase):
-    """Integration tests for Phase 4 features."""
+    """Integration tests for the webhook GraphQL types and mutations."""
 
     def setUp(self):
         """Set up test data."""

@@ -158,10 +158,10 @@ logger = logging.getLogger(__name__)
 # Sentinel for partial updates: distinguishes "omit capacity" from "explicit null"
 _UNCHANGED = object()
 
-# The boolean entitlement gating each external provider, checked in `authenticate()` --
-# the chokepoint both the Google and Microsoft connection paths flow through. Providers
-# with no entry (INTERNAL, APPLE, ICS) are ungated: the spec's `Entitlement` closed set
-# only names Google and Microsoft.
+# The boolean entitlement required for each external provider, checked in
+# `authenticate()` -- the chokepoint both the Google and Microsoft connection paths
+# flow through. Providers with no entry (INTERNAL, APPLE, ICS) are unrestricted: the
+# `Entitlement` closed set only names Google and Microsoft.
 _PROVIDER_ENTITLEMENTS: dict[str, str] = {
     CalendarProvider.GOOGLE: Entitlement.EXTERNAL_CALENDAR_GOOGLE,
     CalendarProvider.MICROSOFT: Entitlement.EXTERNAL_CALENDAR_MICROSOFT,
@@ -425,11 +425,11 @@ class CalendarService(BaseCalendarService):
         ), token.account
 
     def _assert_provider_entitlement(self, provider: str | None) -> None:
-        """Raise ``OverLimitError`` if ``provider`` is gated and the organization is not
-        entitled to it.
+        """Raise ``OverLimitError`` if ``provider`` requires an entitlement and the
+        organization is not entitled to it.
 
         Providers with no ``_PROVIDER_ENTITLEMENTS`` entry (INTERNAL, APPLE, ICS) are
-        ungated: the spec's closed ``Entitlement`` set only names Google and Microsoft.
+        unrestricted: the closed ``Entitlement`` set only names Google and Microsoft.
         A no-op when the service has no ``entitlement_service`` injected, or when
         ``authenticate(bypass_limits=True)`` put this instance in bypass mode.
         """
@@ -443,7 +443,7 @@ class CalendarService(BaseCalendarService):
 
     def _check_not_restricted(self, bypass_limits: bool = False) -> None:
         """Raise ``OverLimitError`` if this facade's organization's billing root is
-        ``RESTRICTED`` (Phase 11).
+        ``RESTRICTED``.
 
         A no-op when ``entitlement_service`` is not injected, ``self.organization``
         is not yet resolved, ``bypass_limits`` is ``True`` for this call, or
@@ -592,7 +592,7 @@ class CalendarService(BaseCalendarService):
         """Return the event sub-service bound to the facade's current auth context.
 
         The event service shares the facade-owned calendar cache and recurrence
-        manager, and routes availability (Phase 4), bundle fan-out (Phase 3), and the
+        manager, and routes availability, bundle fan-out, and the
         shared write-adapter / attendee-permission helpers back through the facade
         (``host=self``). The context is rebuilt from the live facade attributes each
         call (a cheap dataclass construction — no network / adapter rebuild), so it
@@ -608,7 +608,7 @@ class CalendarService(BaseCalendarService):
     def _get_bundle_service(self) -> CalendarBundleService:
         """Return the bundle sub-service bound to the facade's current auth context.
 
-        The bundle service routes availability (Phase 4), event CRUD, and the
+        The bundle service routes availability, event CRUD, and the
         shared write-adapter / permission helpers back through the facade
         (``host=self``). The context is rebuilt from the live facade attributes each
         call (a cheap dataclass construction — no network / adapter rebuild), so it
@@ -623,7 +623,7 @@ class CalendarService(BaseCalendarService):
         """Return the availability sub-service bound to the facade's current auth context.
 
         The availability service shares the facade-owned recurrence manager and routes
-        event reads (Phase 2), facade-resident blocked-time bulk creation, and the
+        event reads, facade-resident blocked-time bulk creation, and the
         shared recurrence-rule helper back through the facade (``host=self``). The
         context is rebuilt from the live facade attributes each call (a cheap dataclass
         construction — no network / adapter rebuild), so it never goes stale across
@@ -639,7 +639,7 @@ class CalendarService(BaseCalendarService):
         """Return the sync sub-service bound to the facade's current auth context.
 
         The sync service shares the facade-owned calendar cache and routes
-        available-time pruning (Phase 4) and the shared owner-permission helper back
+        available-time pruning and the shared owner-permission helper back
         through the facade (``host=self``). The context is rebuilt from the live facade
         attributes each call (a cheap dataclass construction — no network / adapter
         rebuild), so it never goes stale across re-authentication or direct attribute
@@ -656,7 +656,7 @@ class CalendarService(BaseCalendarService):
         """Return the webhook sub-service bound to the facade's current auth context.
 
         The webhook service shares the facade-owned calendar cache and routes
-        sync triggering (Phase 5 seam), adapter-class lookup, write-adapter resolution,
+        sync triggering, adapter-class lookup, write-adapter resolution,
         and external-id calendar lookup back through the facade (``host=self``). The
         context is rebuilt from the live facade attributes each call (a cheap dataclass
         construction — no network / adapter rebuild), so it never goes stale across
@@ -722,11 +722,11 @@ class CalendarService(BaseCalendarService):
         """
         Create a new application calendar using the calendar adapter.
 
-        Phase 6b: **not** guarded by a limit check. ``LimitedResource`` (the closed
-        set defined in Phase 3) caps only ``resource_calendars`` (type RESOURCE) and
+        This is **not** subject to a limit check. ``LimitedResource`` (the closed
+        set of limited resources) caps only ``resource_calendars`` (type RESOURCE) and
         ``bundle_calendars`` (type BUNDLE) among calendar types; this method creates
         an application-owned calendar with no ``calendar_type`` counted by either. See
-        ``create_resource_calendar`` for the guarded sibling.
+        ``create_resource_calendar`` for the limit-checked sibling.
         :return: Created ApplicationCalendarData instance.
         """
         if not is_authenticated_calendar_service(self):
@@ -841,9 +841,9 @@ class CalendarService(BaseCalendarService):
         """
         Create a new calendar in the application without linking to an external provider.
 
-        Phase 6b: **not** guarded by a limit check -- ``calendar_type=VIRTUAL`` is not a
-        member of ``LimitedResource`` (see ``create_resource_calendar`` for the guarded
-        sibling and the closed-set rationale).
+        This is **not** subject to a limit check -- ``calendar_type=VIRTUAL`` is not a
+        member of ``LimitedResource`` (see ``create_resource_calendar`` for the
+        limit-checked sibling and the closed-set rationale).
         :param name: Name of the calendar.
         :param description: Description of the calendar.
         :return: Created Calendar instance.
@@ -972,9 +972,9 @@ class CalendarService(BaseCalendarService):
         ``calendar_type=PERSONAL``). Unlike resource or bundle calendars, they carry no
         capacity or availability-window management semantics.
 
-        Phase 6b: **not** guarded by a limit check -- ``calendar_type=PERSONAL`` is not a
-        member of ``LimitedResource`` (see ``create_resource_calendar`` for the guarded
-        sibling and the closed-set rationale).
+        This is **not** subject to a limit check -- ``calendar_type=PERSONAL`` is not a
+        member of ``LimitedResource`` (see ``create_resource_calendar`` for the
+        limit-checked sibling and the closed-set rationale).
 
         :param name: Name of the calendar.
         :param description: Description of the calendar.
@@ -1431,18 +1431,18 @@ class CalendarService(BaseCalendarService):
         Steps:
         1. Skip entirely when ``booking_policy_service`` is not injected or no
            policy resolves for the target (``EffectivePolicy.unconstrained()``) —
-           preserving byte-for-byte pre-feature behavior (the data-presence gate).
+           preserving byte-for-byte pre-feature behavior (the data-presence check).
         2. Resolve the EffectivePolicy: ``resolve_for_bundle`` for bundle calendars,
            ``resolve_for_calendar`` for all others.
         3. Build a single ``BookableSlotProposal(start_time, end_time)`` and fetch
-           the buffer blocking spans the same way Phase 5 does (all target calendars,
-           window widened by the buffer magnitudes).
+           the buffer blocking spans the same way slot discovery does (all target
+           calendars, window widened by the buffer magnitudes).
         4. Call ``slot_engine.apply_policy_filter`` — if the result is empty, the
            booking violates the policy and ``BookingPolicyViolationError`` is raised.
 
         This re-reads current calendar state inside the existing ``create_event``
         transaction, so a slot valid at discovery but invalidated by a concurrent
-        booking is correctly rejected (the concurrency guard).
+        booking is correctly rejected (the concurrency check).
         """
         if self.booking_policy_service is None or self.organization is None:
             return
@@ -1463,11 +1463,11 @@ class CalendarService(BaseCalendarService):
             target_calendar_ids = {calendar.id}
 
         if policy == EffectivePolicy.unconstrained():
-            # No policy → skip all enforcement (data-presence gate).
+            # No policy → skip all enforcement (data-presence check).
             return
 
         # Fetch buffer blocking spans across all target calendars (managed + unmanaged),
-        # widening the window by the buffer magnitudes — mirrors Phase 5's
+        # widening the window by the buffer magnitudes — mirrors
         # ``BookableSlotsService._buffer_blocking_spans``.
         no_buffer = policy.buffer_before <= datetime.timedelta(
             0

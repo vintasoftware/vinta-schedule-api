@@ -1,5 +1,5 @@
 """
-Integration tests for the authenticated consent-record endpoint (Phase 4).
+Integration tests for the authenticated consent-record endpoint.
 
 `POST /consents/` is the OAuth post-signup step: OAuth signups collect no
 phone/consent at signup, so the frontend calls this endpoint (authenticated,

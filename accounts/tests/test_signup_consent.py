@@ -1,6 +1,5 @@
 """
-Tests for consent capture in the email/password signup form (Phase 4 / Phase 8 /
-Phase 9).
+Tests for consent capture in the email/password signup form.
 
 Covers:
 - Completing the signup form with `accepted_terms=True` and
@@ -10,11 +9,11 @@ Covers:
 - Missing / false `accepted_terms` -> form invalid, signup never runs.
 - Missing / false `accepted_sms_consent` -> form invalid, signup never runs.
 - SMS_CONSENT recording is driven specifically by `accepted_sms_consent`,
-  independently of `accepted_terms` (Phase 9 — separate SMS consent
-  checkbox, Twilio/TCPA compliance).
-- A document type with no published version yet is guarded (logged, not
+  independently of `accepted_terms` (a separate SMS consent checkbox, for
+  Twilio/TCPA compliance).
+- A document type with no published version yet is handled (logged, not
   raised) -- signup still succeeds.
-- Phase 8: every recorded consent row carries `phone_number=user.phone_number`
+- Every recorded consent row carries `phone_number=user.phone_number`
   (phone-keyed consent) -- blank for the email path (no phone collected at
   signup), populated when the user already has one on the model.
 """
@@ -75,7 +74,7 @@ class TestEmailSignupRecordsConsent:
     def test_records_the_users_phone_number_when_already_set(self, rf):
         """The email/password path collects no phone at signup, but if the User
         already carries one (e.g. set by an earlier step), it must land on the
-        consent row -- phone-keyed consent (Phase 8) is keyed off whatever
+        consent row -- phone-keyed consent is keyed off whatever
         `user.phone_number` holds at record time."""
         PolicyDocumentFactory().create(document_type=PolicyDocumentType.SMS_CONSENT, version=1)
         user = UserFactory().create_user(email="consent-phone@example.com")
@@ -171,7 +170,7 @@ class TestAcceptedTermsRequired:
 class TestAcceptedSmsConsentRequired:
     """`accepted_sms_consent` is its own required, must-be-True acknowledgement
     field -- Twilio / TCPA compliance requires SMS consent to be a distinct,
-    explicit opt-in, not bundled with Terms/Privacy acceptance (Phase 9)."""
+    explicit opt-in, not bundled with Terms/Privacy acceptance."""
 
     def test_missing_acceptance_makes_form_invalid(self):
         data = _signup_form_data()

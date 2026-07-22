@@ -1,4 +1,4 @@
-"""Integration tests for Phase 7 — in-app notifications on PENDING request creation.
+"""Integration tests for in-app notifications on PENDING request creation.
 
 Tests exercise ``ExternalEventChangeRequestService._notify_eligible_approvers`` via
 the two public entry-points: ``create_or_supersede_update_request`` and

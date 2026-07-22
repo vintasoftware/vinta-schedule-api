@@ -1,4 +1,4 @@
-"""Integration tests for Phase 8b — group booking policy enforcement at the mutation layer.
+"""Integration tests for group booking policy enforcement at the mutation layer.
 
 Coverage:
 - ``createCalendarGroupEvent`` (authenticated path):

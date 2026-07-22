@@ -249,7 +249,7 @@ def test_consume_recheck_after_lock_rejects_stale_token(org, live_token):
 # ---------------------------------------------------------------------------
 # Concurrency: genuine two-connection / two-thread serialisation
 #
-# This test proves the plan's "atomic single-use under concurrency" acceptance:
+# This test verifies atomic single-use under concurrency:
 # two CONCURRENT transactions (each on its own DB connection in its own thread)
 # call consume() on the same token, and exactly one wins while the other raises
 # TokenAlreadyUsedError.  We use transaction=True so the committed token row is

@@ -1,4 +1,4 @@
-"""Integration tests for Phase 5b — reject a change request (outbound undo).
+"""Integration tests for rejecting a change request (outbound undo).
 
 Tests exercise ``ExternalEventChangeRequestService.reject`` and the supporting
 ``_undo_on_provider`` outbound path. The provider write adapter is MOCKED — these
@@ -122,7 +122,7 @@ def ineligible_membership(organization: Organization) -> OrganizationMembership:
 def event(calendar: Calendar, organization: Organization) -> CalendarEvent:
     """A synced event in its retained (pre-inbound-change) state.
 
-    Phase 3/4 interception never mutates the local event, so its current field values
+    The interception path never mutates the local event, so its current field values
     *are* the retained values used for the outbound undo.
     """
     return CalendarEvent.objects.create(

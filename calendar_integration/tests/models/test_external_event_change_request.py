@@ -1,4 +1,4 @@
-"""Unit tests for ExternalEventChangeRequest model (Phase 2).
+"""Unit tests for ExternalEventChangeRequest model.
 
 Covers:
 - factory builds a valid instance;

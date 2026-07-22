@@ -1,6 +1,6 @@
 """BookableSlotsService — policy-aware single-calendar / bundle slot discovery.
 
-This is the keystone read surface for the booking-policy feature.  It walks a
+This is the main read path for the booking-policy feature.  It walks a
 single calendar (or a bundle calendar's children) over a search window, stepping
 by ``slot_step``, and returns every ``[start, start + duration)`` window that is
 free, then applies the resolved :class:`EffectivePolicy` (lead-time, max-horizon,
@@ -10,11 +10,11 @@ Design notes:
 
 - **Personal vs bundle** is detected from ``calendar.calendar_type``.  A bundle is
   bookable for a window only when **every** ``bundle_children`` calendar is free
-  (``is_primary`` gets no availability special-casing — Guiding Decisions).
-- **Free predicate** reuses :mod:`calendar_integration.services.slot_engine`'s
+  (``is_primary`` gets no availability special-casing).
+- **Free check** reuses :mod:`calendar_integration.services.slot_engine`'s
   management split + ``calendar_free_for_window`` so a one-calendar discovery
   yields exactly what a one-calendar group would.
-- **No-policy byte-for-byte guarantee**: when the resolved policy is
+- **No-policy identical-output guarantee**: when the resolved policy is
   ``EffectivePolicy.unconstrained()`` we skip ALL policy work — no managed-calendar
   blocking-span fetch, no envelope math — so the candidate set is exactly the
   pre-feature engine output.

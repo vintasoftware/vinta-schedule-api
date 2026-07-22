@@ -163,9 +163,9 @@ class SystemUserAdmin(admin.ModelAdmin):
                 organization=form.cleaned_data["organization"],
             )
         except OverLimitError as exc:
-            # Phase 6c: the organization is at its `public_api_system_users` ceiling.
-            # Surface it as an admin error message; letting it escape renders a 500
-            # traceback for what is an ordinary, actionable business outcome.
+            # The organization is at its `public_api_system_users` ceiling. Show it as
+            # an admin error message; letting it escape renders a 500 traceback for what
+            # is an ordinary, actionable business outcome.
             self.message_user(request, exc.as_error_body()["detail"], messages.ERROR)
             return None
 

@@ -1,17 +1,17 @@
-"""Phase 6c: the pre-paid limit guard on ``PublicAPIAuthService.create_system_user``.
+"""The pre-paid limit check on ``PublicAPIAuthService.create_system_user``.
 
-Spec use-case 2 ("an organization hits a pre-paid limit and is blocked"), applied
-to the ``public_api_system_users`` resource. Every REST, GraphQL, and admin
-creation path routes through this single function (see its docstring), so guarding
-it here guards all of them at once.
+Checks that an organization hitting a pre-paid limit is blocked, applied to the
+``public_api_system_users`` resource. Every REST, GraphQL, and admin creation path
+routes through this single function (see its docstring), so a check here covers all
+of them at once.
 
-The guard's predicate is derived from the counter it guards
+The limit check reads the same counter it enforces
 (``EntitlementService._count_public_api_system_users``, which counts
 ``SystemUser.objects.live()`` -- ``is_active=True`` and ``deleted_at__isnull=True``):
 a freshly created row defaults to both, so there is nothing to keep in sync between
 the two.
 
-Every test in this module was confirmed to fail when the guard was removed.
+Every test in this module was confirmed to fail when the check was removed.
 """
 
 import datetime
@@ -37,8 +37,8 @@ pytestmark = pytest.mark.no_auto_subscription
 def _organization_with_limit(limit_value: int | None) -> Organization:
     """A standalone (non-reseller) organization with a ceiling on
     ``public_api_system_users``. ``limit_value=None`` builds an
-    ``unlimited``-shaped subscription (NULL ceiling) -- the plan's "no feature
-    flag" rollout switch -- so the guard is exercised against it as well as a
+    ``unlimited``-shaped subscription (NULL ceiling), which is the rollout switch
+    (there is no feature flag), so the check is exercised against it as well as a
     finite ceiling.
     """
     organization = baker.make(Organization, parent=None, can_invite_organizations=False)

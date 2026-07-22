@@ -38,7 +38,7 @@ class TenantScopedViewMixin:
       reads this stash so all ~60 existing call sites are header-aware without
       change.
 
-    Resolution table (Phase 2b: multi-org-no-header 400; Phase 2c: non-member 403):
+    Resolution table (multi-org with no header → 400; non-member → 403):
 
     +-----------------------+---------------------------------+------------------------------------------+
     | Memberships (active)  | Header                          | Result                                   |
@@ -127,7 +127,7 @@ class TenantScopedViewMixin:
         """Resolve ``X-Organization-Id`` → membership and stash on ``request`` + user.
 
         This method is extracted from ``initial()`` so tests can call it in isolation
-        and so Phase 2b/2c can override or extend it without touching ``initial()``.
+        and so subclasses can override or extend it without touching ``initial()``.
         """
         # Lazily import to avoid a circular import (organizations → common → organizations).
         from organizations.models import OrganizationMembership  # noqa: PLC0415

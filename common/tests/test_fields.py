@@ -101,7 +101,7 @@ class TestOrganizationMembershipForeignKey:
         assert isinstance(fo_field, models.ForeignObject), (
             f"Expected 'membership' to be a ForeignObject, got {type(fo_field)}"
         )
-        # Verify the from_fields / to_fields match the plan specification.
+        # Verify the from_fields / to_fields are configured as expected.
         assert fo_field.from_fields == ["membership_user_id", "organization_id"], (
             f"Unexpected from_fields: {fo_field.from_fields}"
         )

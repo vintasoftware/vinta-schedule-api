@@ -1870,9 +1870,9 @@ class TestGraphQLQueries:
     ):
         """Public API users query must exclude users with is_active=False memberships.
 
-        SHOULD-FIX 5 — confirms that adding organization_membership__is_active=True to
-        the filter in public_api/queries.py actually removes inactive members from the
-        result set, and that active members are still returned.
+        Confirms that adding organization_membership__is_active=True to the filter in
+        public_api/queries.py actually removes inactive members from the result set,
+        and that active members are still returned.
         """
         mock_rate_limiter.return_value = iter([None])
 
@@ -2744,7 +2744,7 @@ class TestChildOrganizationsQuery:
     def test_membership_count_includes_inactive(self, mock_rate_limiter):
         """membership_count includes ALL memberships (active=True and active=False).
 
-        The plan spec says 'memberships' with no active-only qualifier.
+        "memberships" has no active-only qualifier, so all rows count.
         """
         mock_rate_limiter.return_value = iter([None])
 
@@ -3032,9 +3032,9 @@ class TestCalendarBundlesQuery:
     def test_inactive_bundle_excluded_from_results(self, mock_rate_limiter, bundle_graphql_client):
         """Bundles with visibility=INACTIVE must be absent; active bundles still appear.
 
-        BLOCKER — calendarBundles must honour .only_listed() so that bundles
-        disabled by Phase 4d's disableCalendarBundle mutation drop out of the
-        public listing, matching the behaviour of the `calendars` query.
+        calendarBundles must honour .only_listed() so that bundles disabled by the
+        disableCalendarBundle mutation drop out of the public listing, matching the
+        behaviour of the `calendars` query.
         """
         mock_rate_limiter.return_value = iter([None])
         client, org = bundle_graphql_client
@@ -3062,7 +3062,7 @@ class TestCalendarBundlesQuery:
 
 
 # ---------------------------------------------------------------------------
-# Owner-scoped public API token read enforcement tests (Phase 1)
+# Owner-scoped public API token read enforcement tests
 # ---------------------------------------------------------------------------
 
 _CALENDARS_QUERY = """
@@ -3217,7 +3217,7 @@ def _make_scoped_client(organization: Organization, owner: User) -> tuple[APICli
 @pytest.mark.django_db
 @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
 class TestOwnerScopedTokenReadEnforcement:
-    """Phase 1: verify scoped tokens only return their owner's data; org-wide unchanged.
+    """Verify scoped tokens only return their owner's data; org-wide unchanged.
 
     Each resolver shape gets a scoped-sees-own, scoped-blocked-cross-owner, and
     an org-wide-unchanged assertion.
@@ -4300,7 +4300,7 @@ class TestOwnerScopedTokenReadEnforcement:
         assert data["unavailableWindows"][0]["id"] == 88
 
     # ------------------------------------------------------------------ #
-    # Post-expansion filter (BLOCKER) behavioral test                     #
+    # Post-expansion filter behavioral test                               #
     # ------------------------------------------------------------------ #
 
     def test_scoped_token_post_expansion_filter_strips_other_calendar_rows(
@@ -4398,7 +4398,7 @@ _CALENDARS_WITH_OWNERS_QUERY = """
 @pytest.mark.django_db
 @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
 class TestCalendarOwnersField:
-    """Phase 1: CalendarGraphQLType.owners — shape, org-scoping, and N+1 guard.
+    """CalendarGraphQLType.owners — shape, org-scoping, and N+1 check.
 
     Tests:
         (a) Shape: a calendar with two ownership rows returns both with the
@@ -4674,7 +4674,7 @@ class TestCalendarOwnersField:
 
 
 # ---------------------------------------------------------------------------
-# Phase 2 — N+1 hardening: calendarGroups and calendarBundles entry points
+# N+1 hardening: calendarGroups and calendarBundles entry points
 # ---------------------------------------------------------------------------
 
 _CALENDAR_GROUPS_WITH_OWNERS_QUERY = """
@@ -4815,7 +4815,7 @@ def _make_bundle_wide_client(organization: Organization) -> tuple[APIClient, Sys
 @pytest.mark.django_db
 @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
 class TestCalendarGroupOwnersN1:
-    """Phase 2: calendarGroups -> slots -> calendars -> owners is N+1-free.
+    """calendarGroups -> slots -> calendars -> owners is N+1-free.
 
     Tests:
         (a) Shape: owners are returned correctly through the group -> slot -> calendar path.
@@ -5027,7 +5027,7 @@ class TestCalendarGroupOwnersN1:
 @pytest.mark.django_db
 @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
 class TestCalendarBundleOwnersN1:
-    """Phase 2: calendarBundles -> children -> owners is N+1-free.
+    """calendarBundles -> children -> owners is N+1-free.
 
     Tests:
         (a) Shape: owners are returned correctly for both bundle children through the
@@ -5246,7 +5246,7 @@ class TestCalendarBundleOwnersN1:
 
 
 # ---------------------------------------------------------------------------
-# Phase 3 — owners on CalendarBundleGraphQLType (bundle parent)
+# owners on CalendarBundleGraphQLType (bundle parent)
 # ---------------------------------------------------------------------------
 
 _CALENDAR_BUNDLES_PARENT_OWNERS_QUERY = """
@@ -5271,7 +5271,7 @@ _CALENDAR_BUNDLES_PARENT_OWNERS_QUERY = """
 @pytest.mark.django_db
 @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
 class TestCalendarBundleParentOwners:
-    """Phase 3: CalendarBundleGraphQLType.owners — shape, org-scoping, and N+1 guard.
+    """CalendarBundleGraphQLType.owners — shape, org-scoping, and N+1 check.
 
     Tests:
         (a) Shape: a bundle calendar with one or two ownership rows returns both
@@ -5533,7 +5533,7 @@ class TestCalendarBundleParentOwners:
 
 
 # ---------------------------------------------------------------------------
-# calendarEvents userId filter integration tests (Phase 2)
+# calendarEvents userId filter integration tests
 # ---------------------------------------------------------------------------
 
 _CALENDAR_EVENTS_BY_USER_QUERY = """
@@ -6498,7 +6498,7 @@ class TestEventIcsQuery:
 @pytest.mark.django_db
 @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
 class TestReturnUrlSurvivesBrandingDowngrade:
-    """Phase 6c: the ``white_label_branding`` entitlement must not gate the OAuth
+    """The ``white_label_branding`` entitlement must not control the OAuth
     return flow.
 
     ``resolve_branding`` backs two very different callers: ``brandingForTenant``

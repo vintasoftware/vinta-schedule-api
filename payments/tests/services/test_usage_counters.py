@@ -2,10 +2,9 @@
 
 ``test_every_limited_resource_has_a_counter`` proves each ``LimitedResource``
 member is *registered*. It says nothing about whether the registered counter counts
-the right rows — and for the two counters whose semantics this phase had to choose
-without the plan dictating them (``availability_windows`` and
-``public_api_system_users``), getting that wrong is an over-report, and an
-over-report is a lockout *below* real usage.
+the right rows — and for the two counters whose semantics were not obvious
+(``availability_windows`` and ``public_api_system_users``), getting that wrong is an
+over-report, and an over-report is a lockout *below* real usage.
 
 The availability tests deliberately drive the **real** ``AvailabilityService``
 rather than hand-building ``AvailableTime`` rows: the whole defect was that editing
@@ -141,9 +140,7 @@ class TestAvailabilityWindowCounter:
     def test_editing_one_occurrence_does_not_add_a_window(
         self, entitlement_service, availability_service, managed_calendar, organization
     ):
-        """BLOCKER 2, Phase 5 review.
-
-        ``create_recurring_available_time_exception`` implements "edit this one
+        """``create_recurring_available_time_exception`` implements "edit this one
         occurrence" by calling ``create_available_time`` — i.e. by **inserting a
         second row**. Counting every ``AvailableTime`` row therefore reported 2 for
         one window the user created. An organization on a limit of 5 that created 3

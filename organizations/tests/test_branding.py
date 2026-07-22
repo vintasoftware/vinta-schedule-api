@@ -1,4 +1,4 @@
-"""Tests for OrganizationBranding model and resolve_branding function (Phase 6)."""
+"""Tests for OrganizationBranding model and resolve_branding function."""
 
 import datetime
 
@@ -150,7 +150,7 @@ def _reseller_with_entitlement(entitlement_key: str, is_enabled: bool) -> Organi
 
 @pytest.mark.django_db
 class TestResolveBrandingForDisplayEntitlementGate:
-    """Phase 6c: ``white_label_branding`` gates branding resolution for *presentation*.
+    """``white_label_branding`` gates branding resolution for *presentation*.
 
     A reseller whose plan does not grant the entitlement is treated identically to one
     with no branding row at all -- every presentation caller already falls back to the

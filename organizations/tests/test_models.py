@@ -1,4 +1,4 @@
-"""Tests for OrganizationMembership model additions (Phase 1)."""
+"""Tests for OrganizationMembership model additions."""
 
 import django.db.transaction
 from django.contrib.auth import get_user_model
@@ -182,7 +182,7 @@ class TestInactiveMembershipGating:
 
 @pytest.mark.django_db
 class TestOrganizationParentAndCapabilities:
-    """Unit tests for Phase 0 — parent FK and can_invite_organizations flag."""
+    """Unit tests for the parent FK and can_invite_organizations flag."""
 
     def test_can_invite_organizations_defaults_false(self):
         """A freshly created Organization has can_invite_organizations=False."""
@@ -281,7 +281,7 @@ class TestOrganizationParentAndCapabilities:
 
 @pytest.mark.django_db
 class TestMultiOrgMembership:
-    """Unit tests for Phase 1 — FK cardinality + unique constraint."""
+    """Unit tests for FK cardinality + unique constraint."""
 
     def test_user_can_hold_memberships_in_two_different_orgs(self):
         """A user may have OrganizationMembership rows in two distinct orgs."""
@@ -352,7 +352,7 @@ class TestMultiOrgMembership:
 
 @pytest.mark.django_db
 class TestOrganizationMembershipCompositePK:
-    """Unit tests for Phase 7b — composite primary key (user_id, organization_id)."""
+    """Unit tests for the composite primary key (user_id, organization_id)."""
 
     def test_pk_tuple_lookup_returns_membership(self):
         """OrganizationMembership.objects.get(pk=(user.id, org.id)) returns the membership."""

@@ -1,7 +1,6 @@
 """Recurrence utilities: splitting and validating recurrence rules.
 
-This module implements the Phase 2 helpers from the plan: a
-`RecurrenceRuleSplitter` and an `OccurrenceValidator`.
+Provides two helpers: a `RecurrenceRuleSplitter` and an `OccurrenceValidator`.
 
 Notes:
 - Functions return new, unsaved ``RecurrenceRule`` model instances when

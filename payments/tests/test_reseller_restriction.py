@@ -1,12 +1,11 @@
-"""Phase 11: the reseller cascade -- Use-case 6 combined with the restricted
-half of Use-case 5.
+"""Tests for the reseller restriction cascade.
 
-``resolve_billing_root`` already routes a reseller child to its root's
-``Subscription`` (Phase 5), so a restricted root restricts the whole subtree
-"by construction": every write guard and sync-pause site resolves
-``EntitlementService.is_billing_root_restricted`` at the *root*, never at the
-child asking the question. Nothing here re-implements the cascade -- these
-tests exist to prove it holds, not to build it.
+``resolve_billing_root`` routes a reseller child to its root's
+``Subscription``, so a restricted root restricts the whole subtree
+"by construction": every write check and sync-pause site resolves
+``EntitlementService.is_billing_root_restricted`` at the root, never at the
+child asking the question. Nothing here re-implements the cascade. These
+tests prove it holds.
 """
 
 import datetime
@@ -120,9 +119,9 @@ class TestReservedCascadeBlocksTheWholeSubtree:
         assert exc_info.value.remedy == "resolve_billing"
 
     def test_child_writes_are_unaffected_when_the_root_is_only_in_grace(self):
-        """The cascade is specific to RESTRICTED -- a GRACE root must not
-        restrict its subtree (Phase 10's inherited constraint, proven again
-        here at the pooled-child level, not just at the root)."""
+        """The cascade is specific to RESTRICTED. A GRACE root must not
+        restrict its subtree. This checks the rule at the pooled-child level,
+        not just at the root."""
         _root, child = _reseller_tree(BillingState.GRACE)
         service = CalendarService()
         service.initialize_without_provider(organization=child)

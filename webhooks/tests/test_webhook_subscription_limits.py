@@ -1,13 +1,13 @@
-"""Phase 6c: the pre-paid limit guard on ``WebhookService.create_configuration``.
+"""The pre-paid limit check on ``WebhookService.create_configuration``.
 
-Spec use-case 2 ("an organization hits a pre-paid limit and is blocked"), applied
-to the ``webhook_subscriptions`` resource. The guard's predicate is derived from
-the counter it guards (``EntitlementService._count_webhook_subscriptions``, which
-counts ``WebhookConfiguration.objects.live()`` -- ``deleted_at__isnull=True``): a
-freshly created row always has ``deleted_at=None``, so there is nothing to keep in
-sync between the two.
+An organization that hits a pre-paid limit is blocked, here for the
+``webhook_subscriptions`` resource. The check reads the same counter it
+enforces (``EntitlementService._count_webhook_subscriptions``, which counts
+``WebhookConfiguration.objects.live()`` -- ``deleted_at__isnull=True``): a
+freshly created row always has ``deleted_at=None``, so there is nothing to keep
+in sync between the two.
 
-Every test in this module was confirmed to fail when the guard was removed.
+Every test in this module was confirmed to fail when the check was removed.
 """
 
 import datetime
@@ -34,8 +34,8 @@ pytestmark = pytest.mark.no_auto_subscription
 def _organization_with_limit(limit_value: int | None) -> Organization:
     """A standalone (non-reseller) organization with a ceiling on
     ``webhook_subscriptions``. ``limit_value=None`` builds an ``unlimited``-shaped
-    subscription (NULL ceiling) -- the plan's "no feature flag" rollout switch --
-    so the guard is exercised against it as well as a finite ceiling.
+    subscription (NULL ceiling), which is the rollout switch (there is no feature
+    flag), so the check is exercised against it as well as a finite ceiling.
     """
     organization = baker.make(Organization, parent=None, can_invite_organizations=False)
     now = timezone.now()

@@ -1,20 +1,18 @@
-"""Unit tests for the grace/dunning state machine (Phase 10).
+"""Unit tests for the grace/dunning state machine.
 
-Two things this module exists to pin, per the phase's own warning about its
-recurring failure shape:
+Two things this module exists to pin:
 
 - **The diagram is exhaustively enforced.** ``TestBillingStateMachineDiagram``
   drives every ``(from_state, to_state)`` pair the closed ``BillingState`` set
   can produce (5x5 = 25) through ``billing_state_machine.transition_billing_state``
-  and asserts it is permitted exactly when it is on the spec's lifecycle diagram
-  and raises otherwise -- not a sample of the diagram's edges, all of them, plus
+  and asserts it is permitted exactly when it is on the lifecycle diagram and
+  raises otherwise. Not a sample of the diagram's edges, all of them, plus
   every non-edge.
 - **``DunningService``'s higher-level methods are the only way the webhook
-  handlers and the beat task touch ``billing_state``** -- every test below drives
-  those methods, never ``subscription.billing_state = ...`` directly, mirroring
-  the contract the phase report has to confirm.
+  handlers and the beat task touch ``billing_state``.** Every test below drives
+  those methods, never ``subscription.billing_state = ...`` directly.
 
-Also carries the two hard constraints inherited from Phases 8/9:
+Also carries the two hard constraints:
 ``TestConstraint1PaymentMethodStaysTrueInGrace`` and
 ``TestConstraint2ClearsPlanChangePendingConfirmation``.
 """
@@ -388,11 +386,11 @@ class TestEnterGrace:
 @pytest.mark.django_db
 class TestConstraint2ClearsPlanChangePendingConfirmation:
     def test_enter_grace_clears_the_flag(self, dunning_service, organization, billing_profile):
-        """Phase 9 sets ``plan_change_pending_confirmation`` on ``_initiate_upgrade``
-        and only clears it on an APPROVED webhook -- a first-upgrade whose charge
-        *fails* never reaches that branch. Phase 10 owns the failed-charge path
-        and must clear it here, or the org is stuck unable to request a different
-        plan (``UnconfirmedPlanChangeError``)."""
+        """``_initiate_upgrade`` sets ``plan_change_pending_confirmation`` and
+        only clears it on an APPROVED webhook. A first-upgrade whose charge
+        *fails* never reaches that branch. The failed-charge path must clear it
+        here, or the org is stuck unable to request a different plan
+        (``UnconfirmedPlanChangeError``)."""
         plan = make_complete_plan(grace_period_days=7)
         subscription = _subscription_for(
             organization,
@@ -519,14 +517,14 @@ class TestExpireGrace:
 
 @pytest.mark.django_db
 class TestDowngradeOriginatedGrace:
-    """Phase 11: a GRACE episode driven by ``SubscriptionService
-    ._schedule_downgrade`` (rather than a failed charge) resolves differently
-    -- no charge to retry, and expiry checks the just-applied (lower) limits
-    rather than the catalog ``free`` plan. ``pending_plan`` being set is what
-    marks a subscription this way (``DunningService._is_downgrade_grace``);
-    these tests set it directly rather than driving the full
-    ``request_plan_change`` flow, which ``test_plan_change.py``'s
-    ``TestDowngradeDrivesGraceForTheSweep`` already covers end to end.
+    """A GRACE episode driven by ``SubscriptionService._schedule_downgrade``
+    (rather than a failed charge) resolves differently. There is no charge to
+    retry, and expiry checks the just-applied (lower) limits rather than the
+    catalog ``free`` plan. ``pending_plan`` being set is what marks a
+    subscription this way (``DunningService._is_downgrade_grace``). These tests
+    set it directly rather than driving the full ``request_plan_change`` flow,
+    which ``test_plan_change.py``'s ``TestDowngradeDrivesGraceForTheSweep``
+    already covers end to end.
     """
 
     def test_resolves_to_active_when_usage_fits_the_new_limits(
@@ -597,9 +595,9 @@ class TestDowngradeOriginatedGrace:
     def test_still_expires_on_the_deadline_despite_never_having_retried(
         self, dunning_service, organization, billing_profile
     ):
-        """The sweep the Phase 10 dead edge left unswept: a downgrade-origin
-        grace with a deadline in the past must still expire, even though
-        ``process_subscription`` never drove a charge retry for it."""
+        """A downgrade-origin grace with a deadline in the past must still
+        expire, even though ``process_subscription`` never drove a charge retry
+        for it. This is the dead edge that was left unswept."""
         plan = make_complete_plan({LimitedResource.ORGANIZATION_MEMBERS: 1})
         subscription = _subscription_for(
             organization,
@@ -773,8 +771,8 @@ class TestProcessSubscriptionDispatch:
 
         dunning_service.process_subscription(subscription)
 
-        # No charge retry for RESTRICTED -- Phase 11 write-blocks it; only the
-        # free-fallback check runs.
+        # No charge retry for RESTRICTED -- the write-block prevents it; only
+        # the free-fallback check runs.
         assert fake_payment_service.calls == []
 
     @pytest.mark.parametrize(

@@ -26,7 +26,7 @@ class SystemUser(OrganizationModel):
     )
     # Membership reference via the (organization_id, scoped_to_membership_user_id)
     # composite join rather than a real FK. Django 6 forbids a real FK to a
-    # composite-PK model (OrganizationMembership becomes composite-PK in Phase 7b).
+    # composite-PK model, and OrganizationMembership has a composite PK.
     # This contributes a concrete ``scoped_to_membership_user_id`` column plus a
     # ForeignObject descriptor ``scoped_to_membership``. NULL = organization-wide token.
     scoped_to_membership = OrganizationMembershipForeignKey(

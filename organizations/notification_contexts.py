@@ -45,8 +45,8 @@ def organization_invitation_context(
             last_name = invitation.invited_by.profile.last_name
         except ObjectDoesNotExist as e:  # noqa: BLE001
             raise NotificationContextGenerationError("Failed to retrieve inviter's profile") from e
-        # Compute invited_by_name in the normal path without strip() for byte-for-byte
-        # compatibility with phase-7 (preserves trailing space when last_name is empty).
+        # Compute invited_by_name without strip() to preserve the trailing space when
+        # last_name is empty (byte-for-byte compatible with the earlier behavior).
         invited_by_name = f"{first_name} {last_name}"
 
     # Resolve branding: walks to the nearest reseller ancestor and uses its branding row.

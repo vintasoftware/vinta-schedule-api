@@ -125,7 +125,7 @@ def test_admin_can_manage_group_without_ownership(organization, group):
     OrganizationMembership.objects.create(
         user=admin, organization=organization, role=OrganizationRole.ADMIN
     )
-    # Intentionally no CalendarOwnership → prior to PR7 this would be False.
+    # Intentionally no CalendarOwnership → before the admin override was added, this was False.
     svc = CalendarPermissionService()
     assert svc.can_manage_calendar_group(user=admin, group=group) is True
 

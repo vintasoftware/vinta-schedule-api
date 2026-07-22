@@ -1834,19 +1834,20 @@ paths:
         resource, plus ``billing_state``. Resolved at the billing root, same as
         every other read in this app.
 
-        Phase 12's "pull" half of Use-case 8 ("an organization can see where it
-        stands"). It reads usage through the identical
+        The "pull" half of "an organization can see where it stands". It reads
+        usage through the identical
         ``EntitlementService.get_effective_limit`` / ``get_current_usage`` methods
         ``check_limit`` / ``check_postpaid_allowance`` count against, and that
         ``payments.services.usage_warning_service.UsageWarningService`` (the
         "push" half -- proactive approaching-limit notifications) also reads its
-        ceiling from -- so this endpoint, the enforcement guards, and the beat
+        ceiling from -- so this endpoint, the enforcement checks, and the beat
         warning can never disagree about a number.
 
         No permission beyond ``IsAuthenticated``, deliberately -- a read never
-        blocks, including for a ``RESTRICTED`` organization (Phase 11 blocks
-        writes and pauses sync, never reads; an organization must be able to see
-        exactly what it needs to resolve before it can act on it).
+        blocks, including for a ``RESTRICTED`` organization (a RESTRICTED
+        organization has its writes blocked and sync paused, never its reads; an
+        organization must be able to see exactly what it needs to resolve before it
+        can act on it).
       summary: Get current usage against effective limits
       parameters:
       - in: header
@@ -1879,19 +1880,20 @@ paths:
         resource, plus ``billing_state``. Resolved at the billing root, same as
         every other read in this app.
 
-        Phase 12's "pull" half of Use-case 8 ("an organization can see where it
-        stands"). It reads usage through the identical
+        The "pull" half of "an organization can see where it stands". It reads
+        usage through the identical
         ``EntitlementService.get_effective_limit`` / ``get_current_usage`` methods
         ``check_limit`` / ``check_postpaid_allowance`` count against, and that
         ``payments.services.usage_warning_service.UsageWarningService`` (the
         "push" half -- proactive approaching-limit notifications) also reads its
-        ceiling from -- so this endpoint, the enforcement guards, and the beat
+        ceiling from -- so this endpoint, the enforcement checks, and the beat
         warning can never disagree about a number.
 
         No permission beyond ``IsAuthenticated``, deliberately -- a read never
-        blocks, including for a ``RESTRICTED`` organization (Phase 11 blocks
-        writes and pauses sync, never reads; an organization must be able to see
-        exactly what it needs to resolve before it can act on it).
+        blocks, including for a ``RESTRICTED`` organization (a RESTRICTED
+        organization has its writes blocked and sync paused, never its reads; an
+        organization must be able to see exactly what it needs to resolve before it
+        can act on it).
       summary: Get current usage against effective limits
       parameters:
       - in: header
@@ -6252,7 +6254,7 @@ paths:
         or be an org admin. Non-owner non-admins receive 403.\n\n\n**Bundle semantics:**
         disabling a bundle sets only the bundle calendar inactive. Child calendars,
         bundle events, and their representation BlockedTimes/events are deliberately
-        left untouched (event cancellation is out of scope; see plan Phase 11)."
+        left untouched (event cancellation is out of scope)."
       summary: Soft-disable a calendar
       parameters:
       - in: header
@@ -6426,7 +6428,7 @@ paths:
         or be an org admin. Non-owner non-admins receive 403.\n\n\n**Bundle semantics:**
         disabling a bundle sets only the bundle calendar inactive. Child calendars,
         bundle events, and their representation BlockedTimes/events are deliberately
-        left untouched (event cancellation is out of scope; see plan Phase 11)."
+        left untouched (event cancellation is out of scope)."
       summary: Soft-disable a calendar
       parameters:
       - in: header
@@ -9195,8 +9197,8 @@ paths:
       description: |-
         Reactivate a member (set is_active=True).
 
-        The seat-limit guard lives in ``OrganizationService.reactivate_membership``
-        (service layer, not the viewset — see the plan's Guiding Decisions), so this
+        The seat-limit check lives in ``OrganizationService.reactivate_membership``
+        (the service layer, not the viewset), so this
         action only resolves the target and serializes the result. Idempotency:
         reactivating an already-active member is a no-op success.
       summary: Reactivate an organization member
@@ -9251,8 +9253,8 @@ paths:
       description: |-
         Reactivate a member (set is_active=True).
 
-        The seat-limit guard lives in ``OrganizationService.reactivate_membership``
-        (service layer, not the viewset — see the plan's Guiding Decisions), so this
+        The seat-limit check lives in ``OrganizationService.reactivate_membership``
+        (the service layer, not the viewset), so this
         action only resolves the target and serializes the result. Idempotency:
         reactivating an already-active member is a no-op success.
       summary: Reactivate an organization member
@@ -9436,7 +9438,7 @@ paths:
         Create a new organization for the authenticated user.
 
         Overrides ``CreateModelMixin.create`` to handle the post-write refetch
-        correctly for members who already have one or more memberships (Phase 5).
+        correctly for members who already have one or more memberships.
 
         We skip the base mixin's post-write ``_resolve_active_organization`` call
         entirely.  For the ``create`` action — exempted via
@@ -9479,7 +9481,7 @@ paths:
         Create a new organization for the authenticated user.
 
         Overrides ``CreateModelMixin.create`` to handle the post-write refetch
-        correctly for members who already have one or more memberships (Phase 5).
+        correctly for members who already have one or more memberships.
 
         We skip the base mixin's post-write ``_resolve_active_organization`` call
         entirely.  For the ``create`` action — exempted via
@@ -10459,7 +10461,7 @@ paths:
         A plain DRF ``ReadOnlyModelViewSet`` mirrors the existing precedent in
         ``organizations.views.ServiceAccountViewSet`` for this shape.
 
-        Auth split (per the plan's Open Questions):
+        Auth split:
         - ``latest`` / ``latest_by_type`` are **public** (``AllowAny``) — the
           frontend must be able to render policy text before a session exists
           (mid-signup, pre-OAuth-completion).
@@ -10522,7 +10524,7 @@ paths:
         A plain DRF ``ReadOnlyModelViewSet`` mirrors the existing precedent in
         ``organizations.views.ServiceAccountViewSet`` for this shape.
 
-        Auth split (per the plan's Open Questions):
+        Auth split:
         - ``latest`` / ``latest_by_type`` are **public** (``AllowAny``) — the
           frontend must be able to render policy text before a session exists
           (mid-signup, pre-OAuth-completion).
@@ -10592,7 +10594,7 @@ paths:
         A plain DRF ``ReadOnlyModelViewSet`` mirrors the existing precedent in
         ``organizations.views.ServiceAccountViewSet`` for this shape.
 
-        Auth split (per the plan's Open Questions):
+        Auth split:
         - ``latest`` / ``latest_by_type`` are **public** (``AllowAny``) — the
           frontend must be able to render policy text before a session exists
           (mid-signup, pre-OAuth-completion).
@@ -10634,7 +10636,7 @@ paths:
         A plain DRF ``ReadOnlyModelViewSet`` mirrors the existing precedent in
         ``organizations.views.ServiceAccountViewSet`` for this shape.
 
-        Auth split (per the plan's Open Questions):
+        Auth split:
         - ``latest`` / ``latest_by_type`` are **public** (``AllowAny``) — the
           frontend must be able to render policy text before a session exists
           (mid-signup, pre-OAuth-completion).
@@ -11224,9 +11226,8 @@ paths:
         GET /public-api-docs/webhook-events/ — one entry per ``WebhookEventType`` member.
 
         Returned in enum declaration order. Must stay ``detail=False`` so the router
-        registers it before the ``{slug}`` detail route — see the routing trap in the
-        plan's API Design 4.2: ``webhook-events`` is therefore a reserved slug that a
-        concept doc may never use.
+        registers it before the ``{slug}`` detail route. ``webhook-events`` is therefore
+        a reserved slug that a concept doc may never use.
       summary: List the webhook event catalog
       tags:
       - Docs
@@ -11248,9 +11249,8 @@ paths:
         GET /public-api-docs/webhook-events/ — one entry per ``WebhookEventType`` member.
 
         Returned in enum declaration order. Must stay ``detail=False`` so the router
-        registers it before the ``{slug}`` detail route — see the routing trap in the
-        plan's API Design 4.2: ``webhook-events`` is therefore a reserved slug that a
-        concept doc may never use.
+        registers it before the ``{slug}`` detail route. ``webhook-events`` is therefore
+        a reserved slug that a concept doc may never use.
       summary: List the webhook event catalog
       parameters:
       - in: path
@@ -11279,8 +11279,7 @@ paths:
       description: |-
         Admin-only viewset for managing public-API tokens (SystemUser + ResourceAccess rows).
 
-        Phase 12: create only.  Phase 13: list + retrieve.
-        List / retrieve / revoke / edit-grants are supported phases.
+        Supports create, list, retrieve, revoke, and editing resource grants.
 
         ``POST /public-api-tokens/`` creates a new ``SystemUser`` for the caller's
         organisation, persists the requested ``ResourceAccess`` rows, and returns the
@@ -11358,8 +11357,7 @@ paths:
       description: |-
         Admin-only viewset for managing public-API tokens (SystemUser + ResourceAccess rows).
 
-        Phase 12: create only.  Phase 13: list + retrieve.
-        List / retrieve / revoke / edit-grants are supported phases.
+        Supports create, list, retrieve, revoke, and editing resource grants.
 
         ``POST /public-api-tokens/`` creates a new ``SystemUser`` for the caller's
         organisation, persists the requested ``ResourceAccess`` rows, and returns the
@@ -11452,8 +11450,7 @@ paths:
       description: |-
         Admin-only viewset for managing public-API tokens (SystemUser + ResourceAccess rows).
 
-        Phase 12: create only.  Phase 13: list + retrieve.
-        List / retrieve / revoke / edit-grants are supported phases.
+        Supports create, list, retrieve, revoke, and editing resource grants.
 
         ``POST /public-api-tokens/`` creates a new ``SystemUser`` for the caller's
         organisation, persists the requested ``ResourceAccess`` rows, and returns the
@@ -11575,8 +11572,7 @@ paths:
       description: |-
         Admin-only viewset for managing public-API tokens (SystemUser + ResourceAccess rows).
 
-        Phase 12: create only.  Phase 13: list + retrieve.
-        List / retrieve / revoke / edit-grants are supported phases.
+        Supports create, list, retrieve, revoke, and editing resource grants.
 
         ``POST /public-api-tokens/`` creates a new ``SystemUser`` for the caller's
         organisation, persists the requested ``ResourceAccess`` rows, and returns the
@@ -13299,8 +13295,8 @@ components:
       type: object
       description: |-
         Body of ``POST /billing/add-ons/``. See ``ChangePlanRequestSerializer``
-        for why ``payment_token`` is present despite not being in the plan's
-        literal request shape -- an add-on purchase is a one-time charge and needs
+        for why ``payment_token`` is present despite not being in the documented
+        request shape -- an add-on purchase is a one-time charge and needs
         an instrument to charge, exactly like a first-ever plan upgrade does.
       properties:
         resource_key:
@@ -14425,17 +14421,16 @@ components:
       description: |-
         Body of ``POST /billing/subscription/change-plan/``.
 
-        ``payment_token`` is not in the plan's documented request body (``API
-        Design`` lists only ``plan_slug``/``billing_interval``/``idempotency_key``)
-        but is required in practice the *first* time a billing root ever attaches a
-        payment instrument -- there is otherwise no provider-facing card/token to
-        create the provider-side subscription against. Optional here (blank by
-        default) because it is only actually required when
-        ``Subscription.external_id`` is still blank; see
-        ``SubscriptionService._initiate_upgrade`` for the exact condition and
-        ``PaymentTokenRequiredError`` for the 400 a caller gets if it omits the
-        token when one was needed. Documented in the phase report as a deliberate
-        deviation from the plan's literal request shape.
+        ``payment_token`` is not part of the documented request body (only
+        ``plan_slug``/``billing_interval``/``idempotency_key``) but is required in
+        practice the *first* time a billing root ever attaches a payment instrument
+        -- there is otherwise no provider-facing card/token to create the
+        provider-side subscription against. Optional here (blank by default) because
+        it is only actually required when ``Subscription.external_id`` is still
+        blank; see ``SubscriptionService._initiate_upgrade`` for the exact condition
+        and ``PaymentTokenRequiredError`` for the 400 a caller gets if it omits the
+        token when one was needed. This is a deliberate deviation from the
+        documented request shape.
       properties:
         plan_slug:
           type: string
@@ -14499,8 +14494,8 @@ components:
 
         ``document_type`` is required — the consenting user comes from the
         authenticated request, and audit metadata (IP, user-agent, source) is
-        captured server-side in the view. ``phone_number`` is optional (Phase 8 —
-        phone-keyed consent): an OAuth user can consent a phone number here,
+        captured server-side in the view. ``phone_number`` is optional
+        (phone-keyed consent): an OAuth user can consent a phone number here,
         before phone verification, so the SMS gate can later be satisfied for
         that phone.
       properties:
@@ -14893,8 +14888,8 @@ components:
       description: |-
         Read-only serializer for in-app notification objects.
 
-        Works for both vintasend Notification dataclasses (Phase 1 — returned by
-        get_in_app_unread) and vintasend_django model instances (Phase 2 — ORM rows).
+        Works for both vintasend Notification dataclasses (returned by
+        get_in_app_unread) and vintasend_django model instances (ORM rows).
 
         Fields:
         - id, title, notification_type, status: present on both dataclass and model.
@@ -16165,7 +16160,7 @@ components:
     PatchedSystemUserTokenUpdate:
       type: object
       description: |-
-        Input serializer for updating a public-API token's resource grants (Phase 15).
+        Input serializer for updating a public-API token's resource grants.
 
         Accepts ``available_resources`` (a non-empty list of valid ``PublicAPIResources`` values)
         only.  ``integration_name`` and ``token`` are never accepted or changed.
@@ -16859,7 +16854,7 @@ components:
     SystemUserTokenUpdate:
       type: object
       description: |-
-        Input serializer for updating a public-API token's resource grants (Phase 15).
+        Input serializer for updating a public-API token's resource grants.
 
         Accepts ``available_resources`` (a non-empty list of valid ``PublicAPIResources`` values)
         only.  ``integration_name`` and ``token`` are never accepted or changed.

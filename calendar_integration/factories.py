@@ -30,8 +30,8 @@ def create_calendar_ownership(
     - ensures an active ``OrganizationMembership`` exists for ``(user,
       calendar.organization)`` (unless ``with_membership=False``, which models
       an *orphan* ownership for the orphan-behaviour tests);
-    - sets the ``membership_user_id`` denormalized column (the ``user`` FK was
-      dropped in Phase 2b — ownership is membership-only).
+    - sets the ``membership_user_id`` denormalized column. Ownership is
+      membership-only; there is no ``user`` FK.
 
     Pass ``with_membership=False`` to create an orphan ownership whose
     ``(user, organization)`` pair has no membership: ``membership_user_id`` is
@@ -71,9 +71,9 @@ def create_event_attendance(
 ) -> EventAttendance:
     """Create an ``EventAttendance`` wired for the membership-scoped read path.
 
-    Phase 4b dropped the legacy ``user`` FK; attendee identity is now carried by
-    the denormalized ``membership_user_id`` column and the ``membership``
-    ForeignObject join to ``OrganizationMembership(organization_id, user_id)``.
+    Attendee identity is carried by the denormalized ``membership_user_id``
+    column and the ``membership`` ForeignObject join to
+    ``OrganizationMembership(organization_id, user_id)``. There is no ``user`` FK.
     This helper:
 
     - ensures an active ``OrganizationMembership`` exists for ``(user,

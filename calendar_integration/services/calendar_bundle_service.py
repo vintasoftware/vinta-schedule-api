@@ -12,21 +12,21 @@ constructor:
   through ``self._context``; the auth guards in ``type_guards.py`` inspect the
   same ``organization`` / ``account`` / ``calendar_adapter`` attributes the
   context exposes so behavior is byte-for-byte identical to the former methods.
-- ``host`` — the :class:`BundleServiceHost` (in Phase 3 the facade itself).
+- ``host`` — the :class:`BundleServiceHost` (currently the facade itself).
   The bundle concern routes three things back through it:
 
-  - **availability** (``get_availability_windows_in_range``) — not extracted
-    until Phase 4, stays on the facade.
+  - **availability** (``get_availability_windows_in_range``) — not yet
+    extracted, stays on the facade.
   - **event CRUD** (``create_event`` / ``update_event`` / ``delete_event``) —
-    extracted in Phase 2 but still reached via the facade's public surface so
-    the call graph the existing test suite asserts on is preserved.
+    extracted, but still reached via the facade's public surface so the call
+    graph the existing test suite asserts on is preserved.
   - **timezone conversion** (``convert_naive_utc_datetime_to_timezone``) —
-    extracted as a util in Phase 0 but delegated through the host for
-    byte-for-byte consistency with the original call pattern in blocked-time
-    updates.
+    extracted as a util, but delegated through the host for byte-for-byte
+    consistency with the original call pattern in blocked-time updates.
 
 Routing through the host keeps single implementations and behaviour
-byte-for-byte; later phases swap concerns in without touching this service.
+byte-for-byte; individual concerns may be swapped out later without touching
+this service.
 
 The facade's ``_create_bundle_event`` / ``_update_bundle_event`` /
 ``_delete_bundle_event`` methods become one-line delegations to this service.
@@ -90,9 +90,9 @@ if TYPE_CHECKING:
 class BundleServiceHost(Protocol):
     """The collaborator surface the bundle concern routes back to the facade for.
 
-    Three concerns are not extracted in Phase 3 and stay on the facade:
+    Three concerns are not extracted here and stay on the facade:
 
-    - **availability** (``get_availability_windows_in_range``) — extracted in Phase 4;
+    - **availability** (``get_availability_windows_in_range``);
     - **event CRUD** (``create_event`` / ``update_event`` / ``delete_event``) —
       the public facade methods; reaching them through the host keeps the call
       graph the existing test suite patches via the facade;
@@ -100,8 +100,8 @@ class BundleServiceHost(Protocol):
       a util but exposed on the facade so blocked-time update paths keep the
       exact delegation chain the original used.
 
-    In Phase 3 the facade supplies *itself*. Later phases may swap individual
-    concerns without changing this service's call sites.
+    The facade currently supplies itself; individual concerns may be swapped out
+    later without changing this service's call sites.
     """
 
     def get_availability_windows_in_range(
@@ -147,8 +147,8 @@ class CalendarBundleService:
         host: BundleServiceHost,
     ) -> None:
         self._context = context
-        # Phase 3 seam: availability (Phase 4), event CRUD, and the shared
-        # write-adapter / permission helpers are reached through the host (the facade).
+        # Delegation seam: availability, event CRUD, and the shared write-adapter /
+        # permission helpers are reached through the host (the facade).
         # See ``BundleServiceHost``.
         self._host = host
 
@@ -494,7 +494,7 @@ class CalendarBundleService:
         # entry (using resolve_for_bundle). Skip re-enforcement for all child creates to
         # avoid: (a) N redundant policy resolutions and buffer fetches, and (b) false
         # rejections when a child has its own stricter individual policy that would block
-        # a booking the bundle policy (and Phase-5 discovery) correctly permits.
+        # a booking the bundle policy (and slot discovery) correctly permits.
         primary_event = self._host.create_event(
             primary_calendar.id,
             primary_event_data,
@@ -710,20 +710,19 @@ class CalendarBundleService:
     ) -> int:
         """How many ``event_occurrences`` units one bundle-event booking costs.
 
-        Binding decision (Phase 7 tracking doc, "what a bundle booking costs"):
-        **1 + n_internal_children**. The primary calendar always gets a real
-        ``CalendarEvent`` (the actual booking); every other child gets one too only
-        when ``_child_gets_full_event`` says so -- the exact predicate
+        The cost is **1 + n_internal_children**. The primary calendar always gets
+        a real ``CalendarEvent`` (the actual booking); every other child gets one
+        too only when ``_child_gets_full_event`` says so -- the exact helper
         ``create_bundle_event``'s write loop uses to decide "full CalendarEvent vs.
-        BlockedTime" for that same calendar. A ``BlockedTime`` is never billable
-        anywhere in this plan, so a bundle over five Google calendars costs 1, not
-        5, and this must never be computed a second, independent way.
+        BlockedTime" for that same calendar. A ``BlockedTime`` is never billable,
+        so a bundle over five Google calendars costs 1, not 5, and this must never
+        be computed a second, independent way.
 
         Not derived by calling ``MeteringService.expand_occurrence_identities``:
         nothing exists to expand yet -- the events this counts are about to be
-        created, not already in the database. This exists so the guard counts
+        created, not already in the database. This exists so the check counts
         exactly the rows the write loop below is about to write, using the same
-        predicate the write loop uses, rather than a second guess at what the
+        helper the write loop uses, rather than a second guess at what the
         meter will later see.
         """
         return 1 + sum(

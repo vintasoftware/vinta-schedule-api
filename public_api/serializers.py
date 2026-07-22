@@ -52,8 +52,7 @@ class SystemUserTokenCreateSerializer(serializers.Serializer):
         """Cross-field validation: when scoped_to_user is present and non-null, resolve the
         active OrganizationMembership of that user in the caller's org and enforce the provider
         allow-list on available_resources.  When scoped_to_user is absent or null, no
-        additional constraints are applied — the no-owner path is byte-for-byte identical
-        to the pre-Phase-3 behaviour.
+        additional constraints are applied and the token stays org-wide.
 
         The input field ``scoped_to_user`` is a User id (external REST API contract).  Internally
         the membership FK is resolved and stashed as ``_resolved_membership``; only the membership
@@ -264,7 +263,7 @@ class WebhookEventDocSerializer(serializers.Serializer):
 
 
 class SystemUserTokenUpdateSerializer(serializers.Serializer):
-    """Input serializer for updating a public-API token's resource grants (Phase 15).
+    """Input serializer for updating a public-API token's resource grants.
 
     Accepts ``available_resources`` (a non-empty list of valid ``PublicAPIResources`` values)
     only.  ``integration_name`` and ``token`` are never accepted or changed.

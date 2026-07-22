@@ -1,7 +1,7 @@
-"""Phase 6c: boolean entitlement gates.
+"""Boolean entitlement gates.
 
-Spec use-case 2 (blocked with a useful message) and use-case 7 (the partner API
-is not a bypass), applied to the three named chokepoints:
+Two behaviors: an organization is blocked with a useful message, and the partner
+API is not a bypass. Both applied to the three named chokepoints:
 
 - ``partner_api`` in ``PublicApiSystemUserMiddleware`` -- an organization without
   it cannot use the GraphQL API at all, not just individual mutations.
@@ -92,7 +92,7 @@ def _organization_with_entitlement(entitlement_key: str, is_enabled: bool) -> Or
 def _unlimited_organization() -> Organization:
     """An organization on the seeded ``unlimited`` plan -- every entitlement
     enabled. The rollout's own kill switch: this is what "no feature flag" means
-    in practice, and every enforcement phase carries a test against it."""
+    in practice, and every enforcement point carries a test against it."""
     from payments.services.subscription_service import SubscriptionService
 
     organization = baker.make(Organization, parent=None, can_invite_organizations=False)
@@ -129,8 +129,8 @@ def _make_system_user(organization: Organization, *, with_user_access: bool = Fa
         organization=organization,
     )
     if with_user_access:
-        # OrganizationResourceAccess (unrelated to this phase's gate) requires an
-        # explicit grant per resource. Only needed on the positive-control paths
+        # OrganizationResourceAccess (unrelated to the entitlement check here) requires
+        # an explicit grant per resource. Only needed on the positive-control paths
         # below that expect the `users` query to actually resolve.
         baker.make(ResourceAccess, system_user=system_user, resource_name="user")
     return system_user, token
@@ -364,7 +364,7 @@ def _organization_with_entitlements(**grants: bool) -> Organization:
 class TestExternalCalendarMicrosoftGate:
     """The Microsoft half of ``_PROVIDER_ENTITLEMENTS``.
 
-    The phase body names both providers; only Google was exercised, so a Microsoft-only
+    Both providers are supported, but only Google was exercised, so a Microsoft-only
     regression (a typo in the mapping, a provider constant drift) would have gone
     unnoticed.
     """

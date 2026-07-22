@@ -2872,8 +2872,8 @@ class BookingPolicySerializer(serializers.ModelSerializer):
         """Reject a ``membership_user_id`` that is not a member of the caller's org.
 
         Skipped on update (targets are immutable and already stripped in ``validate``).
-        A bogus or cross-org id would otherwise reach the Phase-1 composite PROTECT FK
-        at commit time and raise an ``IntegrityError`` (HTTP 500); surfacing it here
+        A bogus or cross-org id would otherwise reach the composite PROTECT FK
+        at commit time and raise an ``IntegrityError`` (HTTP 500); returning it here
         gives a clean 400 instead.
         """
         if value is None:

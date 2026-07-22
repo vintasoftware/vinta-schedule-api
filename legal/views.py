@@ -34,7 +34,7 @@ class PolicyDocumentViewSet(ReadOnlyModelViewSet):
     A plain DRF ``ReadOnlyModelViewSet`` mirrors the existing precedent in
     ``organizations.views.ServiceAccountViewSet`` for this shape.
 
-    Auth split (per the plan's Open Questions):
+    Auth split:
     - ``latest`` / ``latest_by_type`` are **public** (``AllowAny``) — the
       frontend must be able to render policy text before a session exists
       (mid-signup, pre-OAuth-completion).

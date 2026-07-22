@@ -38,8 +38,7 @@ logger = logging.getLogger(__name__)
 class SystemUserTokenViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
     """Admin-only viewset for managing public-API tokens (SystemUser + ResourceAccess rows).
 
-    Phase 12: create only.  Phase 13: list + retrieve.
-    List / retrieve / revoke / edit-grants are supported phases.
+    Supports create, list, retrieve, revoke, and editing resource grants.
 
     ``POST /public-api-tokens/`` creates a new ``SystemUser`` for the caller's
     organisation, persists the requested ``ResourceAccess`` rows, and returns the
@@ -298,9 +297,8 @@ class PublicApiDocsViewSet(ViewSet):
         """GET /public-api-docs/webhook-events/ — one entry per ``WebhookEventType`` member.
 
         Returned in enum declaration order. Must stay ``detail=False`` so the router
-        registers it before the ``{slug}`` detail route — see the routing trap in the
-        plan's API Design 4.2: ``webhook-events`` is therefore a reserved slug that a
-        concept doc may never use.
+        registers it before the ``{slug}`` detail route. ``webhook-events`` is therefore
+        a reserved slug that a concept doc may never use.
         """
         docs = [
             {

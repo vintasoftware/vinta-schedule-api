@@ -1,5 +1,5 @@
-"""Phase 6c's closing acceptance check: every ``kind=prepaid`` ``LimitedResource``
-member has a guarded creation path.
+"""Closing acceptance check: every ``kind=prepaid`` ``LimitedResource`` member has
+a guarded creation path.
 
 This is the acceptance condition for spec objective 1 on pre-paid resources
 ("no unmetered creation path exists for any limited resource").
@@ -233,9 +233,9 @@ def _probe_public_api_system_users() -> None:
 
 # Every currently-known ``kind=prepaid`` ``LimitedResource`` member maps to a probe
 # that drives its real guarded creation path. ``event_occurrences`` is the one
-# ``LimitedResource`` member deliberately absent: it is ``kind=postpaid`` (Phase 8's
-# allowance guard, not a pre-paid ceiling), so it is correctly excluded below rather
-# than missing by oversight -- the test asserts that distinction explicitly.
+# ``LimitedResource`` member deliberately absent: it is ``kind=postpaid`` (a
+# post-paid allowance, not a pre-paid ceiling), so it is correctly excluded below
+# rather than missing by oversight -- the test asserts that distinction explicitly.
 GUARDED_CREATION_PROBES = {
     LimitedResource.ORGANIZATION_MEMBERS: _probe_organization_members,
     LimitedResource.RESOURCE_CALENDARS: _probe_resource_calendars,

@@ -1,9 +1,9 @@
-"""Integration tests for the Phase 9 self-serve billing surface
+"""Integration tests for the self-serve billing endpoints
 (``payments/billing_views.py``): plan catalog, usage, subscription detail,
 upgrade/downgrade, and add-on purchase, driven through DRF routing exactly
-like a real client -- permissions, idempotency, and the spec's acceptance
-scenario (a blocked invitation succeeds after an upgrade, with no manual
-step) are all exercised through real HTTP requests.
+like a real client. Permissions, idempotency, and the key acceptance scenario
+(a blocked invitation succeeds after an upgrade, with no manual step) are all
+exercised through real HTTP requests.
 """
 
 import datetime
@@ -361,10 +361,10 @@ class TestPermissions:
     def test_admin_of_a_child_org_cannot_change_the_pooled_roots_plan(
         self, auth_client, user, pro_plan
     ):
-        """SHOULD-FIX 4: exercise the *object-level* DENY branch of
-        ``IsBillingOwnerOrAdmin``, not the coarse ``has_permission`` gate. The
+        """Exercise the *object-level* DENY branch of
+        ``IsBillingOwnerOrAdmin``, not the coarse ``has_permission`` check. The
         caller is a genuine admin (so ``has_permission`` passes), but of a child
-        org that pools against a reseller root it does not administer -- the
+        org that pools against a reseller root it does not administer. The
         subscription lives at the root, so ``has_object_permission`` must reject
         managing it. A split permission whose object check never fires would
         wrongly allow this."""
@@ -373,7 +373,7 @@ class TestPermissions:
         # The root (the billing root the child pools against) has the subscription.
         root_plan = make_complete_plan({LimitedResource.ORGANIZATION_MEMBERS: 1})
         SubscriptionService().create_subscription_for_organization(reseller_root, plan=root_plan)
-        # The caller is an ADMIN of the child only -- coarse gate passes.
+        # The caller is an ADMIN of the child only -- the coarse check passes.
         baker.make(
             OrganizationMembership,
             user=user,

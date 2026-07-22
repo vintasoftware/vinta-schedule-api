@@ -1,4 +1,4 @@
-"""Phase 4a integration tests — EventAttendance membership cutover (app-layer).
+"""EventAttendance membership cutover tests at the app layer.
 
 Covers the membership-scoped read/write path that replaces the bare ``user`` FK on
 ``EventAttendance``:
@@ -6,15 +6,14 @@ Covers the membership-scoped read/write path that replaces the bare ``user`` FK 
 - attendance creation through ``CalendarEventService`` sets ``membership_user_id``
   for members and leaves it NULL for non-member (orphan) attendees;
 - attendee identity serialization resolves name/email via the denormalized
-  ``membership_user_id`` (so it survives the later ``user`` column drop);
+  ``membership_user_id`` (so it survives the ``user`` column drop);
 - the ``CalendarEvent.attendee_memberships`` M2M returns the attendee memberships
   and excludes orphan attendances;
 - the GraphQL + REST attendance API expose the membership identity
   ``{ user_id, organization_id, role }`` (None for orphans).
 
-The ``user`` column is retained in this phase; these tests assert membership
-behaviour without depending on the (now unused-by-app-code) ``user`` reverse
-accessors.
+The ``user`` column still exists; these tests assert membership behaviour without
+depending on the (now unused-by-app-code) ``user`` reverse accessors.
 """
 
 from __future__ import annotations

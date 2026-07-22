@@ -1,12 +1,12 @@
-"""Phase 9: the self-serve billing surface -- an organization on the free plan
+"""The self-serve billing surface -- an organization on the free plan
 chooses a paid plan, pays, and sees its limits lift with no support or
-engineering intervention (spec objective 2).
+engineering intervention.
 
 Every viewset here resolves the *billing root* (``resolve_billing_root``) for
 whichever action needs a ``Subscription`` -- a reseller child asks the same
 questions its root would answer, exactly like ``EntitlementService``. Reads
 (usage, plan catalog, subscription detail) stay open to any authenticated
-member; purchase/change actions are gated by ``IsBillingOwnerOrAdmin``
+member; purchase/change actions require ``IsBillingOwnerOrAdmin``
 (admin-or-billing-owner-of-this-org, or an acting reseller root -- see that
 permission's docstring).
 """
@@ -85,19 +85,20 @@ class BillingUsageViewSet(TenantScopedViewMixin, ViewSet):
     resource, plus ``billing_state``. Resolved at the billing root, same as
     every other read in this app.
 
-    Phase 12's "pull" half of Use-case 8 ("an organization can see where it
-    stands"). It reads usage through the identical
+    The "pull" half of "an organization can see where it stands". It reads
+    usage through the identical
     ``EntitlementService.get_effective_limit`` / ``get_current_usage`` methods
     ``check_limit`` / ``check_postpaid_allowance`` count against, and that
     ``payments.services.usage_warning_service.UsageWarningService`` (the
     "push" half -- proactive approaching-limit notifications) also reads its
-    ceiling from -- so this endpoint, the enforcement guards, and the beat
+    ceiling from -- so this endpoint, the enforcement checks, and the beat
     warning can never disagree about a number.
 
     No permission beyond ``IsAuthenticated``, deliberately -- a read never
-    blocks, including for a ``RESTRICTED`` organization (Phase 11 blocks
-    writes and pauses sync, never reads; an organization must be able to see
-    exactly what it needs to resolve before it can act on it).
+    blocks, including for a ``RESTRICTED`` organization (a RESTRICTED
+    organization has its writes blocked and sync paused, never its reads; an
+    organization must be able to see exactly what it needs to resolve before it
+    can act on it).
     """
 
     permission_classes = (IsAuthenticated,)
@@ -154,8 +155,8 @@ class SubscriptionViewSet(TenantScopedViewMixin, GenericVirtualModelViewMixin, G
     queryset = Subscription.objects.all()
     permission_classes = (IsAuthenticated,)
 
-    #: Purchase/change actions require billing-owner-or-admin (plan's Phase 9
-    #: permission rule); plain reads stay open to any authenticated member.
+    #: Purchase/change actions require billing-owner-or-admin; plain reads stay
+    #: open to any authenticated member.
     write_actions = ("change_plan", "cancel")
     #: The write actions drive real provider round trips (``change_plan`` a
     #: charge); throttle them per the same ``ScopedRateThrottle`` bound-abuse

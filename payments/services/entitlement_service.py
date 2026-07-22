@@ -1,7 +1,7 @@
 """Effective limits, pooled usage counting, and entitlement lookups.
 
-This is the engine every enforcement phase calls. Three rules are load-bearing
-and easy to break by accident:
+This is the engine every enforcement call site uses. Three rules matter and are
+easy to break by accident:
 
 1. **NULL is unlimited, never zero.** A ``SubscriptionPlanLimit.limit_value`` of
    ``None`` means no ceiling. So does the *absence* of a row for a resource. Both
@@ -175,8 +175,8 @@ def _count_event_occurrences(context: UsageContext) -> int:
     ``timezone.now()`` — and **not** from ``Subscription.current_period_start``.
     Reading the column directly is the bug this replaced: the meter stamps
     ``billing_period_start`` by resolving each occurrence's own start time, and
-    nothing advances the stored column (cycle close is Phase 13), so once the
-    stored period elapsed the meter wrote one period while this counter asked for
+    nothing advances the stored column (cycle close is not implemented yet), so once
+    the stored period elapsed the meter wrote one period while this counter asked for
     an earlier one and got zero permanently. Both sides now go through
     ``resolve_billing_period_start``.
     """
@@ -304,12 +304,12 @@ class EntitlementService:
                 overage_unit_price=limit.overage_unit_price,
             )
 
-        # NOTE: no period/expiry filter. `is_active` is the only gate, so a
+        # NOTE: no period/expiry filter. `is_active` is the only check, so a
         # one-time (`is_recurring=False`) add-on raises the ceiling forever rather
         # than for the period it was bought for. Deactivating it is currently a
-        # manual act. Owned by the add-on *purchase* phase, which is what
-        # introduces one-time purchases in the first place; leaving it here would
-        # be inventing an expiry semantic this phase has no spec for.
+        # manual act. This belongs with the add-on purchase work that introduces
+        # one-time purchases in the first place; handling expiry here would invent
+        # a semantic with no spec.
         add_on_quantity = (
             subscription.add_ons.filter(resource_key=resource_key, is_active=True).aggregate(
                 total=Sum("quantity")
@@ -403,9 +403,9 @@ class EntitlementService:
         self._lock_billing_root_row(resolve_billing_root(organization))
 
     def is_billing_root_restricted(self, organization: Organization) -> bool:
-        """The single predicate for "must this organization's writes be blocked and
-        its calendar sync paused?" (Phase 11) -- ``True`` only when the *billing
-        root*'s ``Subscription.billing_state`` is ``RESTRICTED``.
+        """The single check for "must this organization's writes be blocked and
+        its calendar sync paused?" -- ``True`` only when the *billing root*'s
+        ``Subscription.billing_state`` is ``RESTRICTED``.
 
         Resolved at the billing root, like every other check in this service, so a
         reseller child answers exactly the question its root would -- the reseller
@@ -414,12 +414,13 @@ class EntitlementService:
         anywhere else.
 
         This is the **one** semantic definition of "restricted" both halves of
-        Phase 11 consult: the write guard (every explicit ``check_not_restricted``
-        call site on an update/delete path, which routes through here) and every
+        the restriction behavior consult: the write block (every explicit
+        ``check_not_restricted`` call site on an update/delete path, which routes
+        through here) and every
         calendar-sync-pause site (``calendar_integration.tasks.calendar_sync_tasks``,
         the ``request_*`` methods on ``CalendarSyncService``, and
         ``CalendarWebhookService``'s webhook-triggered sync). Two *independently
-        derived* answers to "is this org restricted" is exactly the plan's recurring
+        derived* answers to "is this org restricted" is exactly the recurring
         two-predicates defect; the definition here is the only one.
 
         Two hot-path guards -- ``check_limit`` and ``check_postpaid_allowance``
@@ -530,7 +531,7 @@ class EntitlementService:
             self._lock_billing_root_row(root)
 
         subscription = self._get_subscription_for_root(root)
-        # Phase 11: RESTRICTED blocks every write outright, independent of the
+        # RESTRICTED blocks every write outright, independent of the
         # numeric ceiling below -- an organization whose plan carries no ceiling at
         # all (``unlimited``, every organization's actual plan for this whole
         # rollout) could otherwise create freely while RESTRICTED, since the
@@ -616,24 +617,22 @@ class EntitlementService:
         Resolved at the billing root, like every other check in this service, so a
         reseller child asks the same question its root would answer.
 
-        **Queries the real record** (``PaymentMethod``, ``is_active=True``) —
-        Phase 8 answered this from a ``Subscription.billing_state`` allow-list
-        proxy (``PAYMENT_METHOD_BILLING_STATES = {ACTIVE}``), because no
-        payment-method record existed yet. Phase 9 introduces one
-        (``SubscriptionService.record_payment_method``, written from the webhook
-        path once a charge against an instrument is confirmed) and this method
-        is re-pointed at it, not widened onto more billing states: once an
-        instrument is actually persisted, ``billing_state`` stops being evidence
-        of whether one is on file at all. An organization can be ``ACTIVE`` from
-        a past cycle with no *current* instrument (e.g. after an admin removed
-        it), or hold a valid card on file while ``GRACE`` — Phase 10 moves
-        ``ACTIVE -> GRACE`` **on a failed charge**, which says nothing about
-        whether the card itself is still attached, and a ``GRACE`` organization
-        stays fully operational (only ``RESTRICTED`` write-blocks, in Phase 11).
-        Under the old proxy ``GRACE`` had to read ``False`` categorically, even
-        for an organization whose card is fine and whose *next* retry will
-        succeed; the real record answers that case correctly instead of by
-        state-based inference.
+        **Queries the real record** (``PaymentMethod``, ``is_active=True``). This
+        used to be answered from a ``Subscription.billing_state`` allow-list proxy,
+        because no payment-method record existed yet. Now
+        ``SubscriptionService.record_payment_method`` writes a real record from the
+        webhook path once a charge against an instrument is confirmed, and this
+        method reads that record instead of inferring from billing states: once an
+        instrument is actually persisted, ``billing_state`` stops being evidence of
+        whether one is on file at all. An organization can be ``ACTIVE`` from a past
+        cycle with no *current* instrument (e.g. after an admin removed it), or hold
+        a valid card on file while ``GRACE`` — a failed charge moves
+        ``ACTIVE -> GRACE`` but says nothing about whether the card itself is still
+        attached, and a ``GRACE`` organization stays fully operational (only
+        ``RESTRICTED`` blocks writes). Under the old proxy ``GRACE`` had to read
+        ``False`` categorically, even for an organization whose card is fine and
+        whose *next* retry will succeed; the real record answers that case correctly
+        instead of by state-based inference.
 
         A missing subscription's organization has no billing root ``PaymentMethod``
         row either, so this still reads ``False`` for it — nothing to charge.
@@ -675,19 +674,19 @@ class EntitlementService:
         ``MeteringService`` later meters it; this method never writes, it only
         decides whether creation may proceed). An organization **without** one is
         blocked the moment ``delta`` would take it to or past the allowance,
-        because there is nothing to charge the overage to. This is the plan's
-        "an organization with a payment method accrues past its included allowance
+        because there is nothing to charge the overage to. This matches the rule:
+        an organization with a payment method accrues past its included allowance
         and is never interrupted; one without a payment method is blocked at the
-        allowance" contract.
+        allowance.
 
         On the unlimited path (``limit_value is None``), usage is not counted at
         all and ``current_usage``/``ceiling`` are ``None`` — identical to
         ``check_limit``'s unlimited branch, and for the same reason: every
         organization is on the ``unlimited`` plan for this whole rollout, so this
-        method can never block anybody today. See the phase's own tests for that
-        inertness guarantee on every guarded path.
+        method can never block anybody today. See the tests for that inertness
+        guarantee on every guarded path.
 
-        **Phase 11 exception to all of the above: a ``RESTRICTED`` billing root
+        **Exception to all of the above: a ``RESTRICTED`` billing root
         blocks unconditionally**, before the unlimited check, before counting
         usage, and regardless of whether a payment method is on file — a
         ``RESTRICTED`` organization may not create more events even if it could
@@ -704,13 +703,12 @@ class EntitlementService:
         rather than a hand-counted ``delta``.
 
         The other established value is the bundle fan-out's
-        ``1 + n_internal_children`` (the Phase 7 binding decision: a bundle booking is
-        billed as the primary calendar's event plus one more per
-        ``CalendarProvider.INTERNAL`` child, never per member calendar). A caller
-        that invents its own number here reproduces the "two predicates that must
-        agree" defect this plan keeps producing — derive it from the same
-        provider/parent predicates the meter and the fan-out writer use, never
-        recompute it independently.
+        ``1 + n_internal_children`` (a bundle booking is billed as the primary
+        calendar's event plus one more per ``CalendarProvider.INTERNAL`` child, never
+        per member calendar). A caller that invents its own number here reproduces
+        the "two checks that must agree" defect — derive it from the same
+        provider/parent checks the meter and the fan-out writer use, never recompute
+        it independently.
 
         :param delta_resolver: Lazy alternative to ``delta`` for a caller whose unit
             count is itself a query — specifically, expanding a just-created recurring
@@ -744,7 +742,7 @@ class EntitlementService:
         """
         root = resolve_billing_root(organization)
         subscription = self._get_subscription_for_root(root)
-        # Phase 11: RESTRICTED blocks outright, ahead of the unlimited check and
+        # RESTRICTED blocks outright, ahead of the unlimited check and
         # the payment-method check both. The identical test
         # ``is_billing_root_restricted`` performs, inlined here against the already
         # resolved ``root`` / ``subscription`` so this hot event-creation path does
@@ -844,7 +842,7 @@ class EntitlementService:
         runs on the blocked branch of ``check_limit``, which has one in hand.
 
         The ``RESTRICTED`` half of the ``in (...)`` below is unreachable in
-        practice as of Phase 11: ``check_limit`` now short-circuits a ``RESTRICTED``
+        practice: ``check_limit`` short-circuits a ``RESTRICTED``
         subscription unconditionally, before this is ever called (see
         ``is_billing_root_restricted``). Left in rather than narrowed to
         ``GRACE`` alone — both source the same remedy, and removing it would make

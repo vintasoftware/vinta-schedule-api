@@ -1,7 +1,7 @@
-"""Phase 2b cutover (DB half) — CalendarOwnership membership PROTECT FK + unique.
+"""CalendarOwnership membership PROTECT FK + unique (DB half of the cutover).
 
-After Phase 2b the legacy ``user`` column is gone and ownership integrity is
-enforced at the DB level:
+The legacy ``user`` column is gone and ownership integrity is enforced at the DB
+level:
 
 - a raw-SQL composite FK ``(membership_user_id, organization_id) ->
   OrganizationMembership(user_id, organization_id) ON DELETE NO ACTION DEFERRABLE
@@ -68,10 +68,9 @@ def test_delete_membership_with_live_ownership_is_blocked(organization, member_u
 def test_delete_user_with_live_ownership_is_blocked(organization, member_user, calendar):
     """Deleting the User cascades to its membership, which the PROTECT FK blocks.
 
-    Documented behaviour change introduced in Phase 2b: a User that owns a calendar
-    through their membership can no longer be deleted while the ownership is live —
-    the membership-cascade trips the deferred PROTECT FK at COMMIT (the close of
-    the ``transaction.atomic`` block).
+    A User that owns a calendar through their membership can no longer be deleted
+    while the ownership is live — the membership-cascade trips the deferred PROTECT
+    FK at COMMIT (the close of the ``transaction.atomic`` block).
     """
     create_calendar_ownership(calendar=calendar, user=member_user)
 

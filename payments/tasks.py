@@ -4,14 +4,14 @@
 occurrences into billable rows, so the correctness of post-paid billing rests on
 it running — and on it being harmless when it runs twice.
 
-``process_dunning`` is Phase 10's beat entry point for the grace/dunning state
+``process_dunning`` is the beat entry point for the grace/dunning state
 machine: it fans out one tick per subscription currently GRACE or RESTRICTED to
 ``DunningService.process_subscription`` — the single dispatch point that also
 backs the webhook handlers in ``payments/views.py`` — so the transitions this
 task can drive and the transitions the webhooks can drive are the same set,
 defined once (``payments.services.billing_state_machine``).
 
-``check_approaching_limits`` is Phase 12's beat entry point for the proactive
+``check_approaching_limits`` is the beat entry point for the proactive
 usage-warning half of "an organization can see where it stands, and is warned
 before it is blocked" — it fans out one tick per subscription (excluding
 ``RESTRICTED``/``CANCELLED``, see ``UsageWarningService.check_subscription``)
@@ -179,8 +179,8 @@ def close_billing_periods() -> None:
     The window (which subscriptions are due) is decided **once here** from
     ``timezone.now()`` and each subscription is closed in its own task, so one
     subscription's close failing (a declined overage charge, a provider error)
-    records its failure and does not abort the rest of the sweep — the plan's
-    best-effort-across-subscriptions rule. Each close is idempotent (the rolled
+    records its failure and does not abort the rest of the sweep — a
+    best-effort-across-subscriptions approach. Each close is idempotent (the rolled
     ``current_period_start`` is the durable marker; the overage charge carries a
     ``(subscription, period_start)`` idempotency key), so a
     ``CELERY_TASK_ACKS_LATE`` redelivery is harmless.

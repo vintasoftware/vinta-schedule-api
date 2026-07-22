@@ -95,9 +95,9 @@ class MeteredOccurrenceManager(Manager):
 
 
 class LimitWarningNotificationManager(Manager):
-    """Manager for the approaching-limit / limit-reached debounce ledger
-    (Phase 12). A plain ``Manager`` -- no custom queryset, since the only query
-    this model needs is the idempotent claim below; see the model docstring
+    """Manager for the approaching-limit / limit-reached debounce ledger.
+    A plain ``Manager`` -- no custom queryset, since the only query this model
+    needs is the idempotent claim below; see the model docstring
     for why a durable row, not an in-memory flag, is what makes
     ``check_approaching_limits`` safe to re-run every beat tick.
     """

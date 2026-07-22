@@ -396,7 +396,7 @@ mutation CreateInvitation($input: CreateInvitationInput!) {
 
 @pytest.mark.django_db
 class TestCreateInvitationMutation:
-    """Unit tests for the createInvitation mutation (Phase 3: branded-email path)."""
+    """Unit tests for the createInvitation mutation (branded-email path)."""
 
     def setup_method(self):
         self.client = APIClient()
@@ -458,7 +458,7 @@ class TestCreateInvitationMutation:
         data = response.json()
         assert "errors" not in data or len(data.get("errors", [])) == 0
         assert data["data"]["createInvitation"]["invitation"]["email"] == user_email
-        # token and invite_url are null in the sendEmail=true (Phase 3) path
+        # token and invite_url are null in the sendEmail=true path
         assert data["data"]["createInvitation"]["token"] is None
         assert data["data"]["createInvitation"]["inviteUrl"] is None
 
@@ -765,13 +765,13 @@ class TestCreateInvitationMutation:
         ).exists()
 
     # -------------------------------------------------------------------------
-    # Phase 4: self-managed invitations (sendEmail=false path)
+    # Self-managed invitations (sendEmail=false path)
     # -------------------------------------------------------------------------
 
     def test_send_email_false_no_email_sent_returns_token_and_invite_url(self):
         """sendEmail=false sends no email and returns a non-null token + inviteUrl.
 
-        This is the core Phase-4 happy path: the reseller opts out of vinta's invitation
+        This is the core happy path: the reseller opts out of vinta's invitation
         email and receives the raw token + invite URL once so it can render the link in
         its own UI.
 
@@ -989,7 +989,7 @@ mutation CreateSystemUserToken($input: CreateSystemUserTokenInput!) {
 
 @pytest.mark.django_db
 class TestCreateSystemUserTokenMutation:
-    """Unit tests for the createSystemUserToken mutation (Phase 5: token delegation)."""
+    """Unit tests for the createSystemUserToken mutation (token delegation)."""
 
     def setup_method(self):
         self.client = APIClient()
@@ -1421,7 +1421,7 @@ class TestCreateSystemUserTokenMutation:
 
 @pytest.mark.django_db
 class TestUpdateBranding:
-    """Test updateBranding mutation (Phase 6)."""
+    """Test updateBranding mutation."""
 
     def setup_method(self):
         self.client = APIClient()
@@ -1947,7 +1947,7 @@ mutation CreateResourceCalendar($input: CreateResourceCalendarInput!) {
 
 @pytest.mark.django_db
 class TestCreateResourceCalendarMutation:
-    """Tests for the createResourceCalendar mutation (Phase 2a)."""
+    """Tests for the createResourceCalendar mutation."""
 
     def setup_method(self):
         self.client = APIClient()
@@ -2241,7 +2241,7 @@ mutation DisableResourceCalendar($input: DisableResourceCalendarInput!) {
 
 @pytest.mark.django_db
 class TestDisableResourceCalendarMutation:
-    """Tests for the disableResourceCalendar mutation (Phase 2b)."""
+    """Tests for the disableResourceCalendar mutation."""
 
     def setup_method(self):
         self.client = APIClient()
@@ -2416,7 +2416,7 @@ mutation ImportResourceCalendars($input: ImportResourceCalendarsInput!) {
 
 @pytest.mark.django_db
 class TestImportResourceCalendarsMutation:
-    """Tests for the importResourceCalendars mutation (Phase 2c)."""
+    """Tests for the importResourceCalendars mutation."""
 
     def setup_method(self):
         self.client = APIClient()
@@ -2615,7 +2615,7 @@ mutation CreateAvailabilityWindow($input: CreateAvailableTimeInput!) {
 
 @pytest.mark.django_db
 class TestCreateAvailabilityWindowMutation:
-    """Tests for the createAvailabilityWindow mutation (Phase 3a)."""
+    """Tests for the createAvailabilityWindow mutation."""
 
     def setup_method(self):
         self.client = APIClient()
@@ -2912,7 +2912,7 @@ mutation UpdateAvailabilityWindow($input: UpdateAvailableTimeInput!) {
 
 @pytest.mark.django_db
 class TestUpdateAvailabilityWindowMutation:
-    """Tests for the updateAvailabilityWindow mutation (Phase 3b)."""
+    """Tests for the updateAvailabilityWindow mutation."""
 
     def setup_method(self):
         self.client = APIClient()
@@ -3255,7 +3255,7 @@ mutation DeleteAvailabilityWindow($input: DeleteAvailableTimeInput!) {
 
 @pytest.mark.django_db
 class TestDeleteAvailabilityWindowMutation:
-    """Tests for the deleteAvailabilityWindow mutation (Phase 3c)."""
+    """Tests for the deleteAvailabilityWindow mutation."""
 
     def setup_method(self):
         self.client = APIClient()
@@ -3621,7 +3621,7 @@ mutation BatchUpdateAvailabilityWindows($input: BatchAvailabilityInput!) {
 
 @pytest.mark.django_db
 class TestBatchUpdateAvailabilityWindowsMutation:
-    """Tests for the batchUpdateAvailabilityWindows mutation (Phase 3d)."""
+    """Tests for the batchUpdateAvailabilityWindows mutation."""
 
     def setup_method(self):
         self.client = APIClient()
@@ -4044,7 +4044,7 @@ mutation CreateBlockedTime($input: CreateBlockedTimeInput!) {
 
 @pytest.mark.django_db
 class TestCreateBlockedTimeMutation:
-    """Tests for the createBlockedTime mutation (Phase 3e)."""
+    """Tests for the createBlockedTime mutation."""
 
     def setup_method(self):
         self.client = APIClient()
@@ -4366,7 +4366,7 @@ mutation UpdateBlockedTime($input: UpdateBlockedTimeInput!) {
 
 @pytest.mark.django_db
 class TestUpdateBlockedTimeMutation:
-    """Tests for the updateBlockedTime mutation (Phase 3f)."""
+    """Tests for the updateBlockedTime mutation."""
 
     def setup_method(self):
         self.client = APIClient()
@@ -4640,7 +4640,7 @@ mutation DeleteBlockedTime($input: DeleteBlockedTimeInput!) {
 
 @pytest.mark.django_db
 class TestDeleteBlockedTimeMutation:
-    """Tests for the deleteBlockedTime mutation (Phase 3g)."""
+    """Tests for the deleteBlockedTime mutation."""
 
     def setup_method(self):
         self.client = APIClient()
@@ -4913,7 +4913,7 @@ mutation CreateCalendarBundle($input: CreateCalendarBundleInput!) {
 
 @pytest.mark.django_db
 class TestCreateCalendarBundleMutation:
-    """Tests for the createCalendarBundle mutation (Phase 4b)."""
+    """Tests for the createCalendarBundle mutation."""
 
     def setup_method(self):
         self.client = APIClient()
@@ -5448,7 +5448,7 @@ mutation UpdateCalendarBundle($input: UpdateCalendarBundleInput!) {
 
 @pytest.mark.django_db
 class TestUpdateCalendarBundleMutation:
-    """Tests for the updateCalendarBundle mutation (Phase 4c)."""
+    """Tests for the updateCalendarBundle mutation."""
 
     def setup_method(self):
         self.client = APIClient()
@@ -6301,7 +6301,7 @@ _CALENDAR_BUNDLES_QUERY = """
 
 @pytest.mark.django_db
 class TestDisableCalendarBundleMutation:
-    """Tests for the disableCalendarBundle mutation (Phase 4d)."""
+    """Tests for the disableCalendarBundle mutation."""
 
     def setup_method(self):
         self.client = APIClient()
@@ -6528,7 +6528,7 @@ mutation CreateScopedSystemUser($input: CreateScopedSystemUserInput!) {
 
 @pytest.mark.django_db
 class TestCreateScopedSystemUserMutation:
-    """Integration tests for the createScopedSystemUser mutation (Phase 2)."""
+    """Integration tests for the createScopedSystemUser mutation."""
 
     def setup_method(self):
         self.client = APIClient()
@@ -6969,7 +6969,7 @@ class TestCreateScopedSystemUserMutation:
 
 
 # ---------------------------------------------------------------------------
-# Phase 1 — Owner-guard blocked-time writes
+# Owner-scoped blocked-time writes
 # ---------------------------------------------------------------------------
 #
 # GraphQL mutations reused from the existing blocked-time test sections.
@@ -7014,7 +7014,7 @@ mutation DeleteBlockedTime($input: DeleteBlockedTimeInput!) {
 
 @pytest.mark.django_db
 class TestScopedTokenBlockedTimeWrites:
-    """Integration tests for owner-scoped blocked-time mutations (Phase 1).
+    """Integration tests for owner-scoped blocked-time mutations.
 
     Coverage:
     - Scoped token can create/update/delete on its owned calendar (happy path).
@@ -7845,7 +7845,7 @@ mutation BatchUpdateAvailabilityWindows($input: BatchAvailabilityInput!) {
 
 @pytest.mark.django_db
 class TestScopedTokenAvailabilityWrites:
-    """Integration tests for owner-scoped availability-window mutations (Phase 2).
+    """Integration tests for owner-scoped availability-window mutations.
 
     Coverage:
     - Scoped token can create (no rrule + rrule) / update / delete / batch on its owned calendar.
@@ -8861,7 +8861,7 @@ mutation ScheduleEvent($input: ScheduleEventInput!) {
 
 @pytest.mark.django_db
 class TestScopedTokenScheduleEvent:
-    """Integration tests for the owner-scoped ``scheduleEvent`` mutation (Phase 3).
+    """Integration tests for the owner-scoped ``scheduleEvent`` mutation.
 
     Coverage:
     - Scoped token schedules on its owner's calendar (covering availability window) -> success.
@@ -9447,7 +9447,7 @@ def _make_recurring_event_on_calendar(org, calendar) -> tuple:
 
 @pytest.mark.django_db
 class TestScopedTokenRescheduleCalendarEvent:
-    """Integration tests for the owner-scoped ``rescheduleCalendarEvent`` mutation (Phase 1).
+    """Integration tests for the owner-scoped ``rescheduleCalendarEvent`` mutation.
 
     Coverage:
     - Scoped token reschedules its own event (whole event) → times change, title preserved.
@@ -10116,7 +10116,7 @@ def _make_grouped_event(org, group, primary_calendar, secondary_calendar):
 
 @pytest.mark.django_db
 class TestScopedTokenRescheduleCalendarGroupEvent:
-    """Integration tests for the owner-scoped ``rescheduleCalendarGroupEvent`` mutation (Phase 2).
+    """Integration tests for the owner-scoped ``rescheduleCalendarGroupEvent`` mutation.
 
     Coverage:
     - Scoped token reschedules its own grouped event → primary event times change AND
@@ -10449,7 +10449,7 @@ class TestScopedTokenRescheduleCalendarGroupEvent:
         ) == original_start.replace(tzinfo=None)
 
     # ------------------------------------------------------------------
-    # SHOULD-FIX: PermissionDenied sentinel mapping (defense-in-depth)
+    # PermissionDenied sentinel mapping (defense-in-depth)
     # ------------------------------------------------------------------
 
     def test_permission_denied_calendar_sentinel_maps_to_event_not_found(self):
@@ -10498,7 +10498,7 @@ class TestScopedTokenRescheduleCalendarGroupEvent:
         assert msg != sentinel
 
     # ------------------------------------------------------------------
-    # SHOULD-FIX: error-mapping branch coverage (no 500 on service error)
+    # Error-mapping branch coverage (no 500 on service error)
     # ------------------------------------------------------------------
 
     def test_service_validation_error_returns_clean_graphql_error(self):
@@ -10554,7 +10554,7 @@ mutation CancelEvent($input: CancelEventInput!) {
 
 @pytest.mark.django_db
 class TestScopedTokenCancelEvent:
-    """Integration tests for the owner-scoped ``cancelEvent`` mutation (Phase 3).
+    """Integration tests for the owner-scoped ``cancelEvent`` mutation.
 
     Coverage:
     - Single-event success: scoped token cancels its own non-recurring event →
@@ -11078,7 +11078,7 @@ class TestScopedTokenCancelEvent:
         assert data["errors"][0]["message"] == "Event not found."
 
     # ------------------------------------------------------------------
-    # NIT: event on a different owned calendar → "Event not found."
+    # Event on a different owned calendar → "Event not found."
     # ------------------------------------------------------------------
 
     def test_cancel_event_on_different_owned_calendar_not_found(self):
@@ -11144,7 +11144,7 @@ class TestScopedTokenCancelEvent:
         )
 
     # ------------------------------------------------------------------
-    # NIT: missing CALENDAR_EVENT grant → permission denied
+    # Missing CALENDAR_EVENT grant → permission denied
     # ------------------------------------------------------------------
 
     def test_cancel_event_missing_calendar_event_grant_denied(self):

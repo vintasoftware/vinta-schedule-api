@@ -2,9 +2,9 @@
 Unit tests for NotificationSerializer.
 
 Covers:
-- Serializing a vintasend Notification dataclass (Phase 1 path):
+- Serializing a vintasend Notification dataclass:
   created/modified → None, body renders from body_template.
-- Serializing a vintasend_django model instance (Phase 2 path):
+- Serializing a vintasend_django model instance:
   created/modified → ISO datetime strings.
 - body renders using context_used when present.
 - body falls back to context_kwargs when context_used is absent.
@@ -64,7 +64,7 @@ def _make_dataclass(
 
 
 class TestNotificationSerializerWithDataclass:
-    """Serializer with a vintasend Notification dataclass instance (Phase 1 path)."""
+    """Serializer with a vintasend Notification dataclass instance."""
 
     def test_fields_present(self) -> None:
         dc = _make_dataclass()
@@ -145,7 +145,7 @@ class TestNotificationSerializerWithDataclass:
 
 @pytest.mark.django_db
 class TestNotificationSerializerWithModel:
-    """Serializer with a vintasend_django Notification model instance (Phase 2 path)."""
+    """Serializer with a vintasend_django Notification model instance."""
 
     def test_created_and_modified_populate_for_model_instance(self, user) -> None:
         """created and modified are ISO datetime strings for ORM model rows."""

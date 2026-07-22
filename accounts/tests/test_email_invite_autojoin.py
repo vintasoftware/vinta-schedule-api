@@ -1,7 +1,7 @@
 """
-Phase 4 — Integration tests: Auto-join invited org on email verification.
+Integration tests: Auto-join invited org on email verification.
 
-These tests prove Use-case 2 end-to-end: a user who signed up with an invited email
+These tests prove end-to-end that a user who signed up with an invited email
 address automatically joins the inviting organisation as MEMBER the moment their email
 is confirmed, with no separate accept step and no stray organisations created.
 
@@ -18,8 +18,8 @@ Four scenarios are covered:
    auto-join.
 
 All tests drive confirmation through AccountAdapter.confirm_email (the imperative
-override introduced in Phase 3), which is the same hook invoked by the headless
-verify-email endpoint at runtime (same pattern as test_email_confirmation_provisioning.py).
+override), which is the same hook invoked by the headless verify-email endpoint at
+runtime (same pattern as test_email_confirmation_provisioning.py).
 """
 
 import datetime
@@ -88,7 +88,7 @@ def _pending_invitation(
 
 @pytest.mark.django_db
 class TestInvitedEmailAutoJoin:
-    """Integration: invited-email auto-join on confirmation (Use-case 2)."""
+    """Integration: invited-email auto-join on confirmation."""
 
     def test_full_end_to_end_invited_signup_autojoin(self, rf):
         """
@@ -97,9 +97,9 @@ class TestInvitedEmailAutoJoin:
         zero new organisations created.
 
         The signup form is invoked with signup_email matching the invitation so the
-        Phase 2 capture-skip fires (pending_organization_name ends blank).  Then
-        AccountAdapter.confirm_email is driven so the Phase 3 adapter override fires
-        and hands off to provision_tenant_for_user, whose invite-first branch auto-joins.
+        capture-skip fires (pending_organization_name ends blank).  Then
+        AccountAdapter.confirm_email is driven so the adapter override fires and
+        hands off to provision_tenant_for_user, whose invite-first branch auto-joins.
         """
         from accounts.base_forms import BaseVintaScheduleSignupForm
 
@@ -110,7 +110,7 @@ class TestInvitedEmailAutoJoin:
         # A non-expired, unaccepted invitation exists for the signup email.
         invitation = _pending_invitation(org, inviter, invited_email)
 
-        # Create the user and drive the REAL signup form so Phase 2 capture-skip runs.
+        # Create the user and drive the real signup form so the capture-skip runs.
         user = UserFactory().create_user(email=invited_email)
 
         form_data = {
@@ -123,7 +123,7 @@ class TestInvitedEmailAutoJoin:
         form = BaseVintaScheduleSignupForm(data=form_data)
         assert form.is_valid(), form.errors
 
-        # Drive signup() — Phase 2: detects the invitation and leaves
+        # Drive signup() — it detects the invitation and leaves
         # pending_organization_name blank.
         form.signup(request=None, user=user)
 
@@ -133,7 +133,7 @@ class TestInvitedEmailAutoJoin:
             "Signup form should leave pending_organization_name blank for invited users"
         )
 
-        # Now confirm the email via AccountAdapter.confirm_email (Phase 3 adapter override).
+        # Now confirm the email via AccountAdapter.confirm_email (the adapter override).
         email_address = _create_email_address(user)
         confirmed = _confirm_email(rf, email_address)
 
@@ -159,8 +159,8 @@ class TestInvitedEmailAutoJoin:
         Invite-first: even when pending_organization_name is non-blank at confirmation
         time, the invite branch fires and NO stray org is created.
 
-        This guards the edge case described in the plan: a user who somehow carries a
-        non-blank pending_organization_name (e.g. set directly, or a bug in the form)
+        This guards the edge case where a user somehow carries a non-blank
+        pending_organization_name (e.g. set directly, or a bug in the form) and
         still ends up in the inviting org as MEMBER — never as ADMIN of a new org.
         """
         inviter = UserFactory().create_user(email="boss@strayorgtest.com")

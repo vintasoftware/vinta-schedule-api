@@ -1,25 +1,23 @@
-"""Phase 11: the RESTRICTED write guard.
+"""Tests for the RESTRICTED write block.
 
-Spec use-case 5 (restricted half): a restricted organization cannot write --
-independent of whether the resource in question is even at its numeric
-ceiling -- while its data stays fully readable and it can still pay its way
-out. This module proves the single predicate behind that,
-``EntitlementService.is_billing_root_restricted``, resolved at the billing
-root and consulted by every guarded create/update/delete path:
+A restricted organization cannot write, independent of whether the resource in
+question is even at its numeric ceiling, while its data stays fully readable
+and it can still pay its way out. This module proves the single helper behind
+that, ``EntitlementService.is_billing_root_restricted``, resolved at the
+billing root and consulted by every guarded create/update/delete path:
 
 - Writes are blocked for a ``RESTRICTED`` organization: create, update, *and*
-  delete, across a representative slice of the guarded resource surface
-  (prepaid and postpaid alike).
-- ``GRACE`` is never blocked -- only ``RESTRICTED`` write-blocks (the Phase 10
-  inherited constraint).
-- A missing subscription is not restricted -- absence of billing is not the
-  same thing as a resolved "this org is restricted" answer.
+  delete, across a representative slice of the guarded resources (prepaid and
+  postpaid alike).
+- ``GRACE`` is never blocked -- only ``RESTRICTED`` write-blocks.
+- A missing subscription is not restricted. Absence of billing is not the same
+  thing as a resolved "this org is restricted" answer.
 - Reads and every ``/billing/`` endpoint stay open for a restricted org.
 
 Every probe below drives the *real* guarded service method (not a hand-built
 assertion against ``is_billing_root_restricted`` in isolation) against an
 organization that is nowhere near its numeric ceiling, so a probe that only
-happened to trip the ordinary limit guard would not pass here by accident.
+happened to trip the ordinary limit check would not pass here by accident.
 """
 
 import datetime
@@ -155,10 +153,10 @@ def _create_resource_calendar(organization: Organization) -> None:
     service.initialize_without_provider(organization=organization)
     # description="" (not the default None): Calendar.description is NOT NULL
     # at the DB level (TextField(blank=True) is a form-validation relaxation,
-    # not a schema one) -- unrelated to this phase, but this is the first test
-    # in the suite that lets this specific call reach a real INSERT rather than
-    # being blocked before it (every existing coverage probe for this method
-    # blocks at the ceiling first).
+    # not a schema one). This is the first test in the suite that lets this
+    # specific call reach a real INSERT rather than being blocked before it
+    # (every existing coverage probe for this method blocks at the ceiling
+    # first).
     service.create_resource_calendar(name="Blocked Room", description="")
 
 
@@ -497,10 +495,10 @@ def _probe_params() -> list[tuple[str, Callable[[Organization], None]]]:
 
 
 class TestRestrictedWriteProbeCoverage:
-    """Bind the hand-written probe set to the real guarded surface, so a future
-    unguarded (or un-probed) write fails CI instead of passing silently -- the
-    same silent-escape shape Phase 6c's ``test_prepaid_resource_coverage`` closes
-    for the create half, applied here to the restricted write guard.
+    """Bind the hand-written probe set to the real guarded methods, so a future
+    unguarded (or un-probed) write fails CI instead of passing silently. This
+    is the same silent-escape shape ``test_prepaid_resource_coverage`` closes
+    for the create half, applied here to the restricted write block.
     """
 
     def test_every_limited_resource_has_a_create_probe(self):
@@ -562,19 +560,18 @@ class TestRestrictedOrganizationBlocksEveryWrite:
 
     @pytest.mark.parametrize("resource_key,action", _probe_params(), ids=_probe_ids())
     def test_active_is_unaffected(self, resource_key, action):
-        """An ``ACTIVE`` organization (unlimited plan) sees byte-for-byte
-        pre-Phase-11 behavior -- the rollout's own "no organization is blocked
-        as a consequence of the rollout itself" rule, applied to this phase."""
+        """An ``ACTIVE`` organization (unlimited plan) writes normally, exactly
+        as it did before the write-block existed. No organization is blocked as
+        a consequence of the rollout itself."""
         organization = _organization_with_billing_state(BillingState.ACTIVE)
 
         action(organization)  # must not raise
 
     @pytest.mark.parametrize("resource_key,action", _probe_params(), ids=_probe_ids())
     def test_grace_is_unaffected(self, resource_key, action):
-        """Phase 10's inherited constraint: ``GRACE`` is never write-blocked --
-        only ``RESTRICTED`` is. A ``GRACE`` organization with an unlimited plan
-        keeps writing normally; escalation is the dunning ladder, not a write
-        block."""
+        """``GRACE`` is never write-blocked, only ``RESTRICTED`` is. A ``GRACE``
+        organization with an unlimited plan keeps writing normally. Escalation
+        is the dunning ladder, not a write block."""
         organization = _organization_with_billing_state(BillingState.GRACE)
 
         action(organization)  # must not raise
@@ -666,11 +663,11 @@ def _plan(
 
 @pytest.mark.django_db
 class TestRestrictedOrganizationBillingSurfaceStaysOpen:
-    """The single worst failure this phase could ship: a restricted org that
-    cannot reach ``/billing/`` to pay its way out. None of the ``/billing/``
-    viewsets call ``EntitlementService`` at all (confirmed by reading
-    ``payments/billing_views.py``) -- these tests prove that from the outside,
-    driving the real HTTP surface for a RESTRICTED organization."""
+    """The worst failure this feature could ship: a restricted org that cannot
+    reach ``/billing/`` to pay its way out. None of the ``/billing/`` viewsets
+    call ``EntitlementService`` at all (confirmed by reading
+    ``payments/billing_views.py``). These tests prove that from the outside,
+    driving the real HTTP endpoints for a RESTRICTED organization."""
 
     def _client_for_restricted_org(self):
         from users.factories import UserFactory

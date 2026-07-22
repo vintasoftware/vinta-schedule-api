@@ -229,7 +229,7 @@ class CalendarOwnership(OrganizationModel):
     Represents the ownership of a calendar by an organization.
     This is used to link calendars to their respective organizations.
 
-    Phase 2b (cutover): the legacy ``user`` FK is dropped. Ownership is now
+    The legacy ``user`` FK has been dropped. Ownership is now
     membership-only — resolved through the denormalized ``membership_user_id``
     column and the ``membership`` ForeignObject join to
     ``OrganizationMembership(organization_id, user_id)``.
@@ -443,15 +443,15 @@ class EventAttendance(OrganizationModel):
     """
     Represents the attendance of an organization member at an event.
 
-    Phase 4b (cutover): the legacy ``user`` FK has been dropped. Attendee identity
+    The legacy ``user`` FK has been dropped. Attendee identity
     is now carried solely by the membership-scoped ``membership`` ForeignObject and
     its denormalized ``membership_user_id`` column. Orphan rows
     (``membership_user_id IS NULL`` — the attendee is not, or is no longer, a member
     of the event's organization) permanently lose attendee identity; they were
-    CSV-reported in the Phase 3 backfill before the column was dropped. PROTECT
+    CSV-reported in the backfill before the column was dropped. PROTECT
     delete semantics against the referenced membership are enforced by the raw-SQL
     composite FK ``evattendance_membership_protect_fk`` (DEFERRABLE INITIALLY
-    DEFERRED), not by the ForeignObject (which is wired ``DO_NOTHING``).
+    DEFERRED), not by the ForeignObject (which is set to ``DO_NOTHING``).
     """
 
     event = OrganizationForeignKey(
@@ -1731,7 +1731,7 @@ class CalendarManagementToken(OrganizationModel):
     used_at = models.DateTimeField(null=True)
     revoked_at = models.DateTimeField(null=True)
 
-    # Booking-code audit / lifecycle columns (Phase 0)
+    # Booking-code audit / lifecycle columns
     expires_at = models.DateTimeField(
         null=True,
         blank=True,
@@ -1751,9 +1751,9 @@ class CalendarManagementToken(OrganizationModel):
         help_text="IP address of the client that consumed (used) this token.",
     )
 
-    # Phase 6: the legacy ``user`` FK is dropped; a token's internal actor is now
+    # The legacy ``user`` FK has been dropped; a token's internal actor is now
     # the membership-scoped ``membership`` reference below. Tokens backed by
-    # ``external_attendee`` (null membership) carry no internal actor — not orphans.
+    # ``external_attendee`` (null membership) carry no internal actor, and are not orphans.
     membership = OrganizationMembershipForeignKey(
         on_delete=models.PROTECT,
         related_name="calendar_event_management_tokens",

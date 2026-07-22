@@ -24,15 +24,15 @@ class BaseVintaScheduleSignupForm(forms.Form):
     Captures first_name, last_name, an optional organization_name, and two
     required policy-acceptance acknowledgements. At signup time, the intended
     org name is persisted on Profile.pending_organization_name so it can be
-    consumed during email-confirmation provisioning (Phase 3).
+    consumed during email-confirmation provisioning.
 
     When a non-expired, unaccepted OrganizationInvitation exists for the
     signup email, the org name is left blank — the user will auto-join the
     inviting org instead of creating a new one.
 
-    Consent acceptance is split into two separate fields (Phase 9) rather
-    than one combined checkbox: Twilio / TCPA require SMS consent to be its
-    own explicit, distinct opt-in, not bundled with Terms/Privacy acceptance.
+    Consent acceptance is split into two separate fields rather than one
+    combined checkbox: Twilio / TCPA require SMS consent to be its own
+    explicit, distinct opt-in, not bundled with Terms/Privacy acceptance.
     """
 
     first_name = forms.CharField(max_length=255, required=True, label="First Name")
@@ -88,31 +88,30 @@ class BaseVintaScheduleSignupForm(forms.Form):
         """Record acceptance of every published policy document type.
 
         Consent is captured for all three ``PolicyDocumentType`` values at
-        signup (privacy policy, terms of use, SMS consent) — only
-        ``SMS_CONSENT`` gates SMS sending (Phase 5), but recording the other
-        two is captured for completeness per the plan's Open Questions.
+        signup (privacy policy, terms of use, SMS consent). Only
+        ``SMS_CONSENT`` controls whether SMS is sent, but the other two are
+        recorded for completeness.
 
-        Each document type is driven by the checkbox that covers it (Phase 9
-        — separate SMS consent checkbox): ``PRIVACY_POLICY`` /
-        ``TERMS_OF_USE`` are recorded because ``accepted_terms`` is required
-        and checked, and ``SMS_CONSENT`` is recorded because
-        ``accepted_sms_consent`` is required and checked, independently. Both
-        fields are required today so all three document types are always
-        recorded on a successful signup, but the SMS row is driven
-        specifically by ``accepted_sms_consent`` — if that field ever became
-        optional, only the SMS_CONSENT recording would stop, leaving terms
-        recording untouched.
+        Each document type is driven by the checkbox that covers it:
+        ``PRIVACY_POLICY`` / ``TERMS_OF_USE`` are recorded because
+        ``accepted_terms`` is required and checked, and ``SMS_CONSENT`` is
+        recorded because ``accepted_sms_consent`` is required and checked,
+        independently. Both fields are required today so all three document
+        types are always recorded on a successful signup, but the SMS row is
+        driven specifically by ``accepted_sms_consent`` — if that field ever
+        became optional, only the SMS_CONSENT recording would stop, leaving
+        terms recording untouched.
 
-        Each row is recorded with ``phone_number=user.phone_number`` (Phase 8
-        — phone-keyed consent). The email/password signup form collects no
-        phone number, so this is ``""`` at this point in that path; the
-        phone-keyed SMS gate never matches a blank value, and a later phone
+        Each row is recorded with ``phone_number=user.phone_number``
+        (phone-keyed consent). The email/password signup form collects no
+        phone number, so this is ``""`` at this point in that path. The
+        phone-keyed SMS check never matches a blank value, and a later phone
         submission (e.g. login-by-phone / change-phone) records its own
         consent row for that specific number.
 
         A document type with no published version yet raises
         ``NoPolicyDocumentError``; that is logged and swallowed per document
-        type so signup still succeeds — the SMS gate independently fails
+        type so signup still succeeds — the SMS check independently fails
         closed if no ``SMS_CONSENT`` record exists.
         """
         client_ip = client_ip_from_request(request)
@@ -170,7 +169,7 @@ class BaseVintaScheduleSignupForm(forms.Form):
         organization_name = self.cleaned_data.get("organization_name", "")
 
         # If a pending invitation exists for this email, leave the org name blank
-        # so Phase 3's provisioning hook falls through to the invite-auto-join path.
+        # so the provisioning hook falls through to the invite-auto-join path.
         if self._has_pending_invitation(user.email):
             organization_name = ""
 

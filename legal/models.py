@@ -72,7 +72,7 @@ class UserConsent(BaseModel):
     ANY `UserConsent` row whose document is of type `SMS_CONSENT`, regardless
     of version — see `UserConsentManager.has_sms_consent`.
 
-    Phone-keyed consent (Phase 8): `phone_number` records the phone submitted
+    Phone-keyed consent: `phone_number` records the phone submitted
     at consent time (signup, or the OAuth-step `/consents/` endpoint),
     normalized via `common.utils.phone_utils.normalize_phone_number`. `user`
     stays required — every recording site has one — and the SMS gate ties

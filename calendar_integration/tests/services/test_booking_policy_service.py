@@ -1,4 +1,4 @@
-"""Unit tests for BookingPolicyService (Phase 2).
+"""Unit tests for BookingPolicyService.
 
 Covers:
 - ``EffectivePolicy`` dataclass methods (``unconstrained``, ``from_model``,

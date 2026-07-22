@@ -22,8 +22,8 @@ if TYPE_CHECKING:
 
 # Ordered set of allowed ordering fields. Only these values are accepted in
 # DjangoORMAuditRepository.query; anything else falls back to the default.
-# Phase 6 (admin) must extend this whitelist if it needs to order by additional
-# fields (e.g. action, actor_type); unknown orderings silently fall back to
+# Code that needs to order by additional fields (e.g. action, actor_type) must
+# extend this allow-list; unknown orderings silently fall back to
 # _DEFAULT_ORDERING rather than raising.
 _ALLOWED_ORDERING_FIELDS: frozenset[str] = frozenset(
     [
@@ -119,8 +119,8 @@ class DjangoORMAuditRepository(AuditRepository):
         Diff invariant: diff is always either None or a NON-EMPTY dict.  An
         empty dict ({}) means "no changes" and is normalized to None here so
         that the has_diff filter (which uses diff__isnull) is meaningful.
-        Phase 4's compute_diff returns None for no-change, so callers should
-        rarely pass {} — but we normalize defensively.
+        compute_diff returns None for no-change, so callers should rarely pass
+        {} — but we normalize defensively.
 
         Returns:
             The persisted AuditRecord.

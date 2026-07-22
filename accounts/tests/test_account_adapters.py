@@ -27,8 +27,8 @@ pytestmark = pytest.mark.no_auto_subscription
 
 def _org_at_seat_limit_with_pending_invitation(email: str) -> Organization:
     """A one-seat organization already full, with a still-pending invitation to
-    ``email`` — the exact BLOCKER 1 scenario: signup would take the org over its
-    seat limit, so ``provision_tenant_for_user`` raises ``OverLimitError``."""
+    ``email``: signup would take the org over its seat limit, so
+    ``provision_tenant_for_user`` raises ``OverLimitError``."""
     organization = baker.make(Organization, parent=None, can_invite_organizations=False)
     now = timezone.now()
     subscription = baker.make(
@@ -254,9 +254,9 @@ class TestSocialAccountAdapter:
             assert result == "fallback"
 
     def test_provision_org_membership_does_not_wedge_signup_at_the_seat_limit(self):
-        """BLOCKER 1: without catching OverLimitError, this raises out of a
-        headless (non-DRF) view — a bare 500 for social signup. With the fix,
-        the user is left membership-less (gated) instead."""
+        """Without catching OverLimitError, this raises out of a headless
+        (non-DRF) view — a bare 500 for social signup. Instead, the user is
+        left membership-less (gated)."""
         organization = _org_at_seat_limit_with_pending_invitation("dana@example.com")
         new_user = baker.make(User, email="dana@example.com")
         adapter = SocialAccountAdapter()
@@ -371,12 +371,11 @@ class TestAccountAdapter:
         assert found is None
 
     def test_send_verification_code_sms_success(self, adapter, user):
-        # The SMS consent gate (Phase 5, phone-keyed since Phase 8) requires a
-        # recorded SMS_CONSENT UserConsent for the submitted phone, recorded
-        # by this same user, before any verification SMS is dispatched
-        # (BLOCKER 1 -- ties the gate to the requesting user's own consent
-        # row); see accounts/tests/test_sms_consent_gate.py for the gate's
-        # own tests.
+        # The phone-keyed SMS consent check requires a recorded SMS_CONSENT
+        # UserConsent for the submitted phone, recorded by this same user,
+        # before any verification SMS is sent. The check is tied to the
+        # requesting user's own consent row; see
+        # accounts/tests/test_sms_consent_gate.py for the check's own tests.
         UserConsentFactory().create(user=user, phone_number="+123456789")
 
         with patch("accounts.account_adapters.logger.info") as log_info:
@@ -397,13 +396,12 @@ class TestAccountAdapter:
             )
 
     def test_send_unknown_account_sms_is_a_no_op_even_with_a_consent_row(self, adapter):
-        # BLOCKER 1 fix: the gate is tied to phone ownership
-        # (`user__phone_number == phone`). `send_unknown_account_sms` only
-        # ever fires when *no* user anywhere has `phone_number == phone`
-        # (that's what makes the account "unknown"), so a consent row
-        # recorded by an unrelated user (whose own phone differs) can never
-        # satisfy the ownership join -- see
-        # accounts/tests/test_sms_consent_gate.py for the gate's own tests.
+        # The check is tied to phone ownership (`user__phone_number ==
+        # phone`). `send_unknown_account_sms` only ever fires when *no* user
+        # anywhere has `phone_number == phone` (that's what makes the account
+        # "unknown"), so a consent row recorded by an unrelated user (whose
+        # own phone differs) can never satisfy the ownership join -- see
+        # accounts/tests/test_sms_consent_gate.py for the check's own tests.
         UserConsentFactory().create(user=baker.make(User), phone_number="+123456789")
 
         adapter.send_unknown_account_sms("+123456789")
@@ -415,12 +413,12 @@ class TestAccountAdapter:
             log_warn.assert_called_with("No phone number provided for sending unknown account SMS.")
 
     def test_confirm_email_does_not_wedge_signup_at_the_seat_limit(self, adapter):
-        """BLOCKER 1: without catching OverLimitError, this raises out of a
-        headless (non-DRF) view *after* the email has already been marked
-        verified — under ATOMIC_REQUESTS the whole request (including that
-        verification) rolls back, wedging the user with an unverified email
-        and no way to make a retry succeed. With the fix, confirm_email still
-        reports success and the user is left membership-less (gated)."""
+        """Without catching OverLimitError, this raises out of a headless
+        (non-DRF) view *after* the email has already been marked verified —
+        under ATOMIC_REQUESTS the whole request (including that verification)
+        rolls back, wedging the user with an unverified email and no way to
+        make a retry succeed. Instead, confirm_email still reports success and
+        the user is left membership-less (gated)."""
         organization = _org_at_seat_limit_with_pending_invitation("erin@example.com")
         new_user = baker.make(User, email="erin@example.com")
         profile = Profile.objects.create(

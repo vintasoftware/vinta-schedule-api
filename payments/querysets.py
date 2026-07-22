@@ -21,13 +21,12 @@ class MeteredOccurrenceQuerySet(QuerySet):
     """QuerySet for ``MeteredOccurrence``, the post-paid usage ledger.
 
     **The single definition of "an occurrence that belongs to this billing
-    period".** Three callers need that predicate and they must not each write
-    their own: the meter (deciding what a sweep has already recorded and how much
-    of the allowance is left), the usage counter behind
+    period".** Three callers need that rule and they must not each write their
+    own: the meter (deciding what a sweep has already recorded and how much of
+    the allowance is left), the usage counter behind
     ``LimitedResource.EVENT_OCCURRENCES``, and ``reconcile_period``. Two
-    hand-written filters that are supposed to agree is the failure mode that has
-    produced a defect in every phase of this plan, and here it would surface as
-    silent revenue drift rather than as an exception.
+    hand-written filters that are supposed to agree is a recurring failure mode,
+    and here it would show up as silent revenue drift rather than as an exception.
     """
 
     def for_billing_period(
@@ -57,8 +56,8 @@ class MeteredOccurrenceQuerySet(QuerySet):
     def overage(self) -> MeteredOccurrenceQuerySet:
         """Only the rows that fell **outside** the included allowance.
 
-        ``is_within_allowance`` is stamped at meter time (Phase 7) against the
-        effective limit in force then, so this reads the meter's own decision
+        ``is_within_allowance`` is stamped at meter time against the effective
+        limit in force then, so this reads the meter's own decision
         rather than recomputing the allowance boundary at close time — a later
         limit change must not retroactively reprice an already-metered period.
         """

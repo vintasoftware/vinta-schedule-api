@@ -58,8 +58,7 @@ class BillingPlan(BaseModel):
     There is no feature flag for the limits/entitlements rollout: the ``unlimited``
     plan — every ``PlanLimit.limit_value`` NULL, every ``PlanEntitlement`` enabled —
     *is* the kill switch. Catalog edits here never propagate to an already-sold
-    subscription; see ``SubscriptionPlanLimit`` (a later phase) for the
-    per-subscription copy.
+    subscription; see ``SubscriptionPlanLimit`` for the per-subscription copy.
     """
 
     slug = models.SlugField(max_length=100, unique=True)
@@ -192,9 +191,9 @@ class BillingProfile(BaseModel):
         related_name="billing_profile",
     )
     # Payer identity sent to the payment gateway. Distinct from the future
-    # `OrganizationMembership.is_billing_owner` (Phase 9), which is about who may
-    # *manage* billing — these fields are about what the gateway needs to charge
-    # the organization (e.g. MercadoPago rejects a payer with no email).
+    # `OrganizationMembership.is_billing_owner`, which is about who may *manage*
+    # billing — these fields are about what the gateway needs to charge the
+    # organization (e.g. MercadoPago rejects a payer with no email).
     contact_first_name = models.CharField(max_length=255)
     contact_last_name = models.CharField(max_length=255, blank=True)
     contact_email = models.EmailField()
@@ -239,28 +238,27 @@ class Subscription(BaseModel):
     current_period_start = models.DateTimeField()
     current_period_end = models.DateTimeField(db_index=True)
     grace_period_ends_at = models.DateTimeField(null=True, blank=True, db_index=True)
-    # Phase 10: the last time `DunningService`'s beat task (`process_dunning`)
-    # retried the charge / sent that day's rung of the dunning ladder for this
-    # subscription. The per-attempt idempotency gate that keeps a Celery task
+    # The last time `DunningService`'s beat task (`process_dunning`) retried the
+    # charge / sent that day's rung of the dunning ladder for this subscription.
+    # This is the per-attempt idempotency check that keeps a Celery task
     # redelivery (`CELERY_TASK_ACKS_LATE`) or an accidental double beat-tick from
     # double-charging the provider for the same logical attempt or double-sending
     # that attempt's notification. Provider-side idempotency (the retry charge's
     # `idempotency_key`) is what makes the charge itself safe either way; this is
-    # what keeps the *notification* side just as safe. Cleared whenever the
+    # what keeps the notification side just as safe. Cleared whenever the
     # subscription leaves GRACE, so a later re-entry starts its own ladder fresh.
     last_dunning_attempt_at = models.DateTimeField(null=True, blank=True)
     external_id = models.CharField(max_length=255, blank=True, db_index=True)
     plan_external_id = models.CharField(max_length=255, blank=True)
     payment_provider = models.CharField(max_length=50, choices=PaymentProviders)
 
-    # Phase 9: a downgrade takes no cash refund and does not touch `plan` (or the
-    # price the org is billed) until the next period boundary — only the lower
+    # A downgrade takes no cash refund and does not touch `plan` (or the price the
+    # org is billed) until the next period boundary — only the lower
     # `SubscriptionPlanLimit`/`SubscriptionEntitlement` rows apply immediately (see
-    # `SubscriptionService._schedule_downgrade`). These three fields record *that a
-    # flip is owed* and to what; nothing in this phase applies it yet (there is no
-    # cycle-close sweep — that is Phase 13's job), so a scheduled downgrade sits
-    # here until Phase 13 reads it. `pending_plan` doubles as the marker: `None`
-    # means "no plan change scheduled".
+    # `SubscriptionService._schedule_downgrade`). These three fields record that a
+    # flip is owed and to what; the cycle-close sweep is what applies it at the
+    # next boundary, so a scheduled downgrade sits here until that sweep reads it.
+    # `pending_plan` doubles as the marker: `None` means "no plan change scheduled".
     pending_plan = models.ForeignKey(
         BillingPlan,
         on_delete=models.SET_NULL,
@@ -271,13 +269,13 @@ class Subscription(BaseModel):
     pending_billing_interval = models.CharField(max_length=10, choices=BillingInterval, blank=True)
     pending_plan_effective_at = models.DateTimeField(null=True, blank=True)
 
-    # Phase 9: set when `_initiate_upgrade` has driven the provider for an upgrade
-    # whose charge has not yet been confirmed by a subscription-payment webhook,
-    # and cleared by `confirm_plan_change` once it is. Guards against a *second*
-    # upgrade being initiated to a different plan before the first confirms —
-    # otherwise the first webhook would grant whatever plan `subscription.plan`
-    # currently points at (the latest requested tier), not the plan its charge
-    # actually paid for (see `SubscriptionService.request_plan_change`).
+    # Set when `_initiate_upgrade` has driven the provider for an upgrade whose
+    # charge has not yet been confirmed by a subscription-payment webhook, and
+    # cleared by `confirm_plan_change` once it is. Prevents a second upgrade being
+    # initiated to a different plan before the first confirms — otherwise the first
+    # webhook would grant whatever plan `subscription.plan` currently points at
+    # (the latest requested tier), not the plan its charge actually paid for (see
+    # `SubscriptionService.request_plan_change`).
     plan_change_pending_confirmation = models.BooleanField(default=False)
 
     limits: "RelatedManager[SubscriptionPlanLimit]"
@@ -294,15 +292,15 @@ class Subscription(BaseModel):
 class PaymentMethod(BaseModel):
     """A payment instrument on file for an organization's billing root.
 
-    The real record ``EntitlementService.has_payment_method`` re-points at in
-    Phase 9, replacing the ``Subscription.billing_state`` allow-list proxy Phase 8
-    used before any instrument actually existed (see that method's docstring for
-    the full history). Deliberately decoupled from ``billing_state``: an
-    organization can be ``ACTIVE`` from a past cycle with no current instrument on
-    file (e.g. after an admin edit), or have a valid card on file while ``GRACE``
-    (Phase 10 moves ``ACTIVE -> GRACE`` on a failed *charge*, which says nothing
-    about whether the card itself is still attached) — querying this table is what
-    makes those cases resolve correctly instead of by inference from state.
+    The real record ``EntitlementService.has_payment_method`` points at, replacing
+    the earlier ``Subscription.billing_state`` allow-list proxy that was used
+    before any instrument actually existed (see that method's docstring for the
+    full history). Deliberately decoupled from ``billing_state``: an organization
+    can be ``ACTIVE`` from a past cycle with no current instrument on file (e.g.
+    after an admin edit), or have a valid card on file while ``GRACE`` (a failed
+    *charge* moves ``ACTIVE -> GRACE``, which says nothing about whether the card
+    itself is still attached) — querying this table is what makes those cases
+    resolve correctly instead of by inference from state.
 
     Written only on **confirmed** evidence that the provider accepted the
     instrument: the subscription-payment and payment webhook paths
@@ -310,8 +308,8 @@ class PaymentMethod(BaseModel):
     charge against it is reported ``APPROVED`` — never synchronously from the
     request that merely *attempts* to attach one. Not tenant-scoped
     (``OrganizationModel``) for the same reason as the other billing models in this
-    module: see the plan's Data Model Changes on why cross-organization billing
-    reads would force an ``original_manager`` escape at nearly every call site.
+    module: cross-organization billing reads would otherwise force an
+    ``original_manager`` escape at nearly every call site.
     """
 
     organization = models.ForeignKey(
@@ -631,7 +629,7 @@ class MeteredOccurrence(BaseModel):
 
 class LimitWarningNotification(BaseModel):
     """Durable idempotency marker for the approaching-limit / limit-reached
-    in-app notification (Phase 12's ``check_approaching_limits`` beat task).
+    in-app notification (the ``check_approaching_limits`` beat task).
 
     **The unique constraint is the correctness mechanism, not the code path** --
     the same pattern ``MeteredOccurrence`` and ``ProviderWebhookEvent`` use
@@ -655,7 +653,7 @@ class LimitWarningNotification(BaseModel):
     above the threshold across the boundary is allowed to warn again, rather
     than being permanently silenced by a marker from a prior cycle. For a
     pre-paid resource (no natural billing-period semantics of its own) this
-    still ties the debounce to the one cycle notion every other Phase 12/13
+    still ties the debounce to the one cycle notion every other billing-cycle
     computation shares, rather than inventing a second one.
 
     ``level`` (``LimitWarningLevel``) keeps "approaching" and "reached" as two

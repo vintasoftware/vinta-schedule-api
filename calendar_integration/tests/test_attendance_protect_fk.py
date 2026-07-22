@@ -1,7 +1,7 @@
-"""Phase 4b cutover (DB half) — EventAttendance membership PROTECT FK.
+"""EventAttendance membership PROTECT FK (DB half of the cutover).
 
-After Phase 4b the legacy ``user`` column is gone and attendance integrity is
-enforced at the DB level by a raw-SQL composite FK ``(membership_user_id,
+The legacy ``user`` column is gone and attendance integrity is enforced at the DB
+level by a raw-SQL composite FK ``(membership_user_id,
 organization_id) -> OrganizationMembership(user_id, organization_id) ON DELETE NO
 ACTION DEFERRABLE INITIALLY DEFERRED`` (constraint
 ``evattendance_membership_protect_fk``). The check fires at COMMIT, so it raises
@@ -79,10 +79,9 @@ def test_delete_membership_with_live_attendance_is_blocked(organization, member_
 def test_delete_user_with_live_attendance_is_blocked(organization, member_user, event):
     """Deleting the User cascades to its membership, which the PROTECT FK blocks.
 
-    Documented behaviour change introduced in Phase 4b: a User attending an event
-    through their membership can no longer be deleted while the attendance is live —
-    the membership-cascade trips the deferred PROTECT FK at COMMIT (the close of the
-    ``transaction.atomic`` block).
+    A User attending an event through their membership can no longer be deleted
+    while the attendance is live — the membership-cascade trips the deferred PROTECT
+    FK at COMMIT (the close of the ``transaction.atomic`` block).
     """
     create_event_attendance(event=event, user=member_user)
 

@@ -158,8 +158,8 @@ def provision_default_subscription(request):
     would have given it.
 
     Production organizations are created through ``OrganizationService``, which calls
-    ``SubscriptionService.create_subscription_for_organization`` — so Phase 4's "no
-    plan-less state" invariant holds for every billing root, and every one of them lands
+    ``SubscriptionService.create_subscription_for_organization`` — so the "no
+    plan-less state" rule holds for every billing root, and every one of them lands
     on the seeded ``unlimited`` plan (``is_default_for_new_organizations=True``), whose
     ``_sync_entitlements`` writes every entitlement enabled. Tests that build an
     ``Organization`` with ``baker.make`` bypass that service and produce an organization
@@ -191,7 +191,7 @@ def provision_default_subscription(request):
             return
         # Deferred import: `di_core.containers.container` is only *assigned* in
         # `DICoreConfig.ready()` -- a module-level import binds `None` forever. The
-        # container-built service is what production and the rest of this phase's
+        # container-built service is what production and the rest of the suite's
         # tests use (see e.g. `public_api/tests/test_system_user_limits.py`'s
         # `service` fixture and `payments/tests/test_prepaid_resource_coverage.py`'s
         # `_container()` helper) rather than a hand-constructed one.

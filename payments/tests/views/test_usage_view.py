@@ -1,14 +1,13 @@
-"""Integration test for ``GET /billing/usage/`` -- the anti-drift check the
-phase exists for: **the usage number the API reports and the number
-enforcement actually counts against must be the same derivation.**
+"""Integration test for ``GET /billing/usage/`` -- an anti-drift check: **the
+usage number the API reports and the number enforcement actually counts
+against must be the same derivation.**
 
 The resource set under test is derived from ``LimitedResource`` itself (its
-whole member list, ``LimitedResource.values``), not a hand-typed subset --
-per the plan's explicit instruction, a newly added ``LimitedResource`` member
-must fail this test until the usage API covers it, the same anti-drift
-discipline ``test_prepaid_resource_coverage.py`` and
-``test_entitlement_service.py::test_every_limited_resource_has_a_counter``
-already apply elsewhere in this phase's ancestry.
+whole member list, ``LimitedResource.values``), not a hand-typed subset. A
+newly added ``LimitedResource`` member must fail this test until the usage API
+covers it, the same anti-drift discipline ``test_prepaid_resource_coverage.py``
+and ``test_entitlement_service.py::test_every_limited_resource_has_a_counter``
+already apply elsewhere.
 
 For each resource, real usage is seeded (not left at zero, which even a
 broken implementation could trivially "agree" on) and the endpoint's reported

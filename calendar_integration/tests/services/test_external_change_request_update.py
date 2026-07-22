@@ -1,4 +1,4 @@
-"""Integration tests for Phase 3 — inbound UPDATE interception under CHANGE_REQUEST policy.
+"""Integration tests for inbound UPDATE interception under CHANGE_REQUEST policy.
 
 Tests exercise the full sync diff engine path via ``CalendarSyncService._execute_calendar_sync``.
 A real ``ExternalEventChangeRequestService`` is wired in (with its ``audit_service`` set to a
@@ -14,7 +14,7 @@ Test matrix:
 - Re-edit (supersede): a second inbound edit marks the first request ``STALE`` and creates a
   new ``PENDING`` one — two rows total, history preserved.
 - Under ``ALLOW``: the same edit applies directly (existing behavior); no change request is
-  created. Backward-compat load-bearing test.
+  created. Backward-compatibility test.
 - Audit: a ``PENDING`` request creation records the expected audit entry.
 """
 

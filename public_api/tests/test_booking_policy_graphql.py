@@ -1,4 +1,4 @@
-"""Integration tests for the BookingPolicy GraphQL CRUD surface (Phase 4).
+"""Integration tests for the BookingPolicy GraphQL CRUD surface.
 
 Covers:
 - bookingPolicies query: happy path (all, filtered by target); cross-org

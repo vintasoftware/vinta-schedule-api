@@ -29,13 +29,13 @@ class BillingPlanFactory(BaseSubscriptionPlanFactory):
             currency=plan.currency,
             # The day-of-month the provider bills on. Derived from when the current
             # period started rather than stored separately — `Subscription` carries
-            # no standalone `billing_day` field. Clamped to 28 (Phase 9): both
-            # MercadoPago and Stripe reject or mishandle billing_day > 28 for
-            # monthly recurrence (not every month has a 29th/30th/31st), so a
-            # period that started on one of those days bills on the 28th instead
-            # of failing the provider call outright.
+            # no standalone `billing_day` field. Clamped to 28: both MercadoPago and
+            # Stripe reject or mishandle billing_day > 28 for monthly recurrence (not
+            # every month has a 29th/30th/31st), so a period that started on one of
+            # those days bills on the 28th instead of failing the provider call
+            # outright.
             billing_day=min(subscription.current_period_start.day, 28),
-            # Required since the Stripe adapter landed: `Plan` no longer defaults to
+            # Required since the Stripe adapter was added: `Plan` no longer defaults to
             # a monthly cadence, because that silently made annual plans impossible.
             # Sourced from the subscription rather than the catalog plan — the same
             # plan can be sold monthly or annually.

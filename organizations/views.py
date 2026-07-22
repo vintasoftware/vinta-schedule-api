@@ -84,7 +84,7 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
     #: *discover* which org ids are available.
     #:
     #: The ``create`` action is also exempt so that a member with existing
-    #: memberships can POST /organizations/ without a header (Phase 5). Without
+    #: memberships can POST /organizations/ without a header. Without
     #: this exemption, the multi-org 400 would fire in ``initial()`` before
     #: ``perform_create`` runs, and the post-create re-resolve in
     #: ``CreateModelMixin.create`` would again raise 400 (the user now has one
@@ -100,10 +100,10 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
           can only reach their own org because get_queryset is scoped by
           membership, so cross-org attempts return 404.
         - All other actions keep the class-level defaults (IsAuthenticated +
-          OrganizationManagementPermission).  As of Phase 5, ``create`` is open
-          to any authenticated user (not gated to membership-less users); the
+          OrganizationManagementPermission).  ``create`` is open
+          to any authenticated user (not restricted to membership-less users); the
           other default-permission actions (retrieve, destroy) keep the full
-          membership gate.
+          membership check.
         """
         if self.action in ("update", "partial_update"):
             return [IsAuthenticated(), IsOrganizationAdmin()]
@@ -130,7 +130,7 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
         """Create a new organization for the authenticated user.
 
         Overrides ``CreateModelMixin.create`` to handle the post-write refetch
-        correctly for members who already have one or more memberships (Phase 5).
+        correctly for members who already have one or more memberships.
 
         We skip the base mixin's post-write ``_resolve_active_organization`` call
         entirely.  For the ``create`` action — exempted via
@@ -242,10 +242,10 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
 
             # Upsert the service account if provided.
             if sa_data is not None:
-                # Guard (Phase 11): a RESTRICTED organization may not write, and the
-                # service-account upsert below is a real user-initiated write on an
+                # A RESTRICTED organization may not write, and the service-account
+                # upsert below is a real user-initiated write on an
                 # ``OrganizationModel`` (``GoogleCalendarServiceAccount``) -- block it
-                # here, the same predicate every other guarded write consults.
+                # here, the same check every other blocked write consults.
                 self.organization_service.entitlement_service.check_not_restricted(instance)
                 GoogleCalendarServiceAccount.objects.filter_by_organization(instance.id).filter(
                     calendar_fk__isnull=True
@@ -507,9 +507,8 @@ class ServiceAccountViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        # Guard (Phase 11): a RESTRICTED organization may not write, including
-        # provisioning a service account -- the same predicate every other guarded
-        # write consults.
+        # A RESTRICTED organization may not write, including provisioning a service
+        # account -- the same check every other blocked write consults.
         self.entitlement_service.check_not_restricted(membership.organization)
 
         serializer = ServiceAccountWriteSerializer(data=request.data)
@@ -551,8 +550,8 @@ class ServiceAccountViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
         partial = kwargs.get("partial", False)
         account = self.get_object()
 
-        # Guard (Phase 11): a RESTRICTED organization may not rotate/update its
-        # service account. ``partial_update`` routes through this method, so both
+        # A RESTRICTED organization may not rotate/update its service account.
+        # ``partial_update`` routes through this method, so both
         # PUT and PATCH are covered here.
         self.entitlement_service.check_not_restricted(account.organization)
 
@@ -573,8 +572,8 @@ class ServiceAccountViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
         """Delete the org-level service account. HTTP 204."""
         account = self.get_object()
 
-        # Guard (Phase 11): a RESTRICTED organization may not delete its service
-        # account -- the same predicate every other guarded write consults.
+        # A RESTRICTED organization may not delete its service account -- the same
+        # check every other blocked write consults.
         self.entitlement_service.check_not_restricted(account.organization)
 
         account.delete()
@@ -750,12 +749,11 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
         )  # Permission checks via IsOrganizationAdmin.has_object_permission
         user = request.user
 
-        # Guard (Phase 11): a restricted organization may not write, including
-        # deactivating one of its own members. Checked here rather than in
-        # ``OrganizationService`` -- this write, unlike every other membership
-        # write in this module, has never gone through the service layer (see
-        # the module-level guiding decision this predates); moving the whole
-        # action there is a larger refactor than this phase's guard warrants.
+        # A restricted organization may not write, including deactivating one of
+        # its own members. Checked here rather than in ``OrganizationService`` --
+        # this write, unlike every other membership write in this module, has never
+        # gone through the service layer; moving the whole action there is a larger
+        # refactor than this check warrants.
         self.organization_service.entitlement_service.check_not_restricted(target.organization)
 
         # Guard: prevent self-deactivation
@@ -807,8 +805,8 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
     def reactivate(self, request, user_id=None):
         """Reactivate a member (set is_active=True).
 
-        The seat-limit guard lives in ``OrganizationService.reactivate_membership``
-        (service layer, not the viewset — see the plan's Guiding Decisions), so this
+        The seat-limit check lives in ``OrganizationService.reactivate_membership``
+        (the service layer, not the viewset), so this
         action only resolves the target and serializes the result. Idempotency:
         reactivating an already-active member is a no-op success.
         """
@@ -844,9 +842,9 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
             self.get_object()
         )  # Permission checks via IsOrganizationAdmin.has_object_permission
 
-        # Guard (Phase 11): a restricted organization may not write, including
-        # changing a member's role. See ``deactivate`` above for why this is
-        # checked directly here rather than in ``OrganizationService``.
+        # A restricted organization may not write, including changing a member's
+        # role. See ``deactivate`` above for why this is checked directly here
+        # rather than in ``OrganizationService``.
         self.organization_service.entitlement_service.check_not_restricted(target.organization)
 
         serializer = UpdateMembershipRoleSerializer(data=request.data)
@@ -921,7 +919,7 @@ class AcceptInvitationView(generics.CreateAPIView):
     def create(self, request, *args, **kwargs):
         """Accept invitation and return success response.
 
-        Phase 4: ``UserAlreadyHasMembershipError`` now means the caller is already a
+        ``UserAlreadyHasMembershipError`` means the caller is already a
         member of *this specific organization* (same-org duplicate), not of any
         organization.  A user in org A who accepts a valid invitation from org B will
         receive 201 and end up with two active memberships.

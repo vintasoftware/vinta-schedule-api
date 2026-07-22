@@ -4,16 +4,18 @@
 approves, rejects, and auto-undoes change requests. It is DI-injected and consumes
 ``AuditService`` for audit trail emission.
 
-Phase 3 implements the *create / supersede for inbound updates* path.
-Phase 4 adds *create / supersede for inbound deletions*.
-Phase 5a adds ``approve`` (apply locally) + the ``can_resolve`` eligibility gate.
-Phase 5b adds ``reject`` (outbound undo): re-converge the external provider to the
-retained (approved) state.
-Phase 6 adds ``auto_undo_inbound_change`` (FORBIDDEN auto-undo): called during sync to
-immediately undo inbound edits/deletions, record an AUTO_UNDONE row, and emit an audit
-entry — all without requiring any approver.
+The service handles several paths:
 
-**Outbound-undo seam (Phase 5b / 6).** Re-converging the provider needs an
+- *create / supersede for inbound updates*.
+- *create / supersede for inbound deletions*.
+- ``approve`` (apply locally) plus the ``can_resolve`` eligibility check.
+- ``reject`` (outbound undo): re-converge the external provider to the retained
+  (approved) state.
+- ``auto_undo_inbound_change`` (FORBIDDEN auto-undo): called during sync to
+  immediately undo inbound edits/deletions, record an AUTO_UNDONE row, and emit an
+  audit entry — all without requiring any approver.
+
+**Outbound-undo seam.** Re-converging the provider needs an
 *authenticated* write adapter for the event's calendar. Rather than injecting a
 ``CalendarService`` into this service (``CalendarSyncService`` already depends on this
 service, so injecting the facade back would risk an import cycle and couple the two),
@@ -22,10 +24,10 @@ the outbound-undo logic accepts the authenticated write capability **as a parame
 write_adapter)`` take a ``CalendarAdapter`` the caller has already authenticated. This
 keeps the service free of provider-credential concerns and import-cycle-free.
 
-- **Phase 8 (API reject)** authenticates a ``CalendarService`` for the event's calendar,
+- **API reject** authenticates a ``CalendarService`` for the event's calendar,
   resolves the write adapter via ``CalendarService._get_write_adapter_for_calendar`` and
   passes it to ``reject``.
-- **Phase 6 (FORBIDDEN auto-undo, during sync)** already holds an authenticated adapter
+- **FORBIDDEN auto-undo (during sync)** already holds an authenticated adapter
   (``context.calendar_adapter``) and passes it directly to
   ``auto_undo_inbound_change(..., write_adapter=context.calendar_adapter)``.
 
@@ -409,7 +411,7 @@ class ExternalEventChangeRequestService:
 
         For a deletion there are no proposed values to apply — instead,
         ``retained_values`` captures the local event's current state (title,
-        description, start_time, end_time) so Phase 5b can re-create the event
+        description, start_time, end_time) so ``reject`` can re-create the event
         on GCal when a delete request is rejected.  ``payload`` is the raw
         inbound provider payload stored for debugging / replay.
 
@@ -422,7 +424,7 @@ class ExternalEventChangeRequestService:
             event: The local ``CalendarEvent`` the inbound deletion targets.
             retained_values: Snapshot of the local event fields (title,
                 description, start_time, end_time as ISO strings) used to
-                re-create on rejection (Phase 5b).
+                re-create on rejection.
             payload: Raw provider payload (for debugging / replay).
             provider: Calendar provider string (``CalendarProvider.GOOGLE``).
 
@@ -484,8 +486,8 @@ class ExternalEventChangeRequestService:
         - **Member-attendee**: the membership has an ``EventAttendance`` row for
           the same event as the request.
 
-        This is the single eligibility gate consumed by ``approve``, ``reject``
-        (Phase 5b), and the Phase 8 REST/GraphQL API layer.
+        This is the single eligibility check consumed by ``approve``, ``reject``,
+        and the REST/GraphQL API layer.
 
         Args:
             request: The ``ExternalEventChangeRequest`` to check.
@@ -644,7 +646,7 @@ class ExternalEventChangeRequestService:
         return request
 
     # ------------------------------------------------------------------
-    # Outbound undo (Phase 5b / Phase 6)
+    # Outbound undo
     # ------------------------------------------------------------------
 
     def _undo_on_provider_for_event(
@@ -656,8 +658,8 @@ class ExternalEventChangeRequestService:
     ) -> str | None:
         """Re-converge the external provider to the retained (approved) local state.
 
-        The shared provider-write body used by both ``reject`` (Phase 5b) and the
-        FORBIDDEN auto-undo path (Phase 6). Callers must supply an already-authenticated
+        The shared provider-write body used by both ``reject`` and the
+        FORBIDDEN auto-undo path. Callers must supply an already-authenticated
         ``write_adapter`` — this service never resolves provider credentials itself (see
         module docstring for the rationale).
 

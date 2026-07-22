@@ -1,4 +1,4 @@
-"""Adversarial nested-field owner-scope security tests (Phase 4).
+"""Adversarial nested-field owner-scope security tests.
 
 The top-level read resolvers and write mutations are already owner-scoped. But
 Strawberry permission/field logic runs ONLY on the decorated top-level field — a

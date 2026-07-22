@@ -1,11 +1,10 @@
 """``SubscriptionService`` — placing organizations on a plan and moving them
 between plans.
 
-The load-bearing behavior under test: plan change re-copies non-overridden
+The key behavior under test: plan change re-copies non-overridden
 ``SubscriptionPlanLimit`` / ``SubscriptionEntitlement`` rows and leaves
 ``is_overridden=True`` rows untouched, and catalog edits never propagate to an
-already-sold subscription. See the plan's "Per-subscription limit copy" guiding
-decision.
+already-sold subscription. Each subscription keeps its own copy of the limits.
 """
 
 import pytest
@@ -137,7 +136,7 @@ class TestResolveBillingRoot:
     def test_nested_reseller_is_its_own_billing_root(self):
         """A nested reseller (``can_invite_organizations=True`` with ``parent``
         set) is its own billing root, not a child pooling against a
-        grandparent's subscription (BLOCKER 1, Phase 4 review)."""
+        grandparent's subscription."""
         root = baker.make(Organization, parent=None, can_invite_organizations=True)
         mid = baker.make(Organization, parent=root, can_invite_organizations=True)
         leaf = baker.make(Organization, parent=mid, can_invite_organizations=False)
@@ -184,7 +183,7 @@ class TestCreateSubscriptionForOrganization:
     def test_nested_reseller_gets_its_own_subscription(self, service, plan):
         """root(can_invite=True) -> mid(can_invite=True) -> leaf: mid is its own
         billing root and must get its own `Subscription`, not pool against
-        root's (BLOCKER 1, Phase 4 review)."""
+        root's."""
         root = baker.make(Organization, parent=None, can_invite_organizations=True)
         mid = baker.make(Organization, parent=root, can_invite_organizations=True)
         leaf = baker.make(Organization, parent=mid, can_invite_organizations=False)
@@ -199,7 +198,7 @@ class TestCreateSubscriptionForOrganization:
 
     def test_default_plan_lookup_ignores_inactive_default_plan(self, service):
         """A deactivated default plan must not 500 organization creation with an
-        uncaught `BillingPlan.DoesNotExist` (SHOULD-FIX 2, Phase 4 review)."""
+        uncaught `BillingPlan.DoesNotExist`."""
         BillingPlan.objects.filter(slug="unlimited").update(is_active=False)
         org = baker.make(Organization, parent=None)
 
@@ -212,7 +211,7 @@ class TestCreateSubscriptionForOrganization:
         """A `Subscription` that already exists but has no `SubscriptionPlanLimit`
         / `SubscriptionEntitlement` rows (e.g. created via `SubscriptionAdmin`
         with empty inlines, or `payment_service.create_subscription`) must not be
-        returned silently untouched (SHOULD-FIX 1, Phase 4 verification review)."""
+        returned silently untouched."""
         org = baker.make(Organization, parent=None)
         subscription = baker.make(
             Subscription,
@@ -323,8 +322,8 @@ class TestChangePlan:
         assert sub_limit.limit_value == 5
 
     def test_downgrade_revokes_an_entitlement_absent_from_the_new_plan(self, service):
-        """SHOULD-FIX 4, Phase 4 review: a non-overridden `SubscriptionEntitlement`
-        whose key the new plan does not carry is a grant the org no longer pays for.
+        """A non-overridden `SubscriptionEntitlement` whose key the new plan does not
+        carry is a grant the org no longer pays for.
 
         Entitlements fail *closed* in `has_entitlement` -- absence means "not
         granted" -- so deleting the row is exactly a revocation. The limits side
@@ -380,7 +379,7 @@ class TestChangePlan:
     def test_downgrade_from_unlimited_onto_an_incomplete_plan_is_refused(
         self, service, entitlement_service
     ):
-        """BLOCKER 3, Phase 5 review -- the dominant real starting state.
+        """The dominant real starting state.
 
         Every organization is on `unlimited` for the whole rollout, and every one of
         that plan's rows has `limit_value=None`. Downgrading onto a plan that omits

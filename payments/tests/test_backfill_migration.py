@@ -1,7 +1,7 @@
 """Verifies the ``0009_backfill_unlimited_subscriptions`` data migration's end
 state — every pre-existing billing-root organization is on ``unlimited``
-afterward, never ``free`` (objective 6: no organization is blocked as a
-consequence of the rollout itself).
+afterward, never ``free``, so no organization is blocked as a consequence of the
+rollout itself.
 
 Like ``test_plan_seed_migration.py``, the test DB is already fully migrated
 before any test runs, so the migration ran once already (against an empty
@@ -9,7 +9,7 @@ before any test runs, so the migration ran once already (against an empty
 function directly against freshly created organizations to verify its actual
 behavior, per that same file's precedent.
 
-Deviation from strict migration-isolation testing (Phase 4 review finding 12):
+Deviation from strict migration-isolation testing:
 this calls ``backfill_unlimited_subscriptions`` with the *live* app registry
 (``django.apps.apps``), not the historical one a real ``RunPython`` step
 receives via ``schema_editor``'s migration state. ``test_plan_seed_migration.py``
@@ -67,8 +67,7 @@ class TestBackfillUnlimitedSubscriptionsMigration:
         """`Subscription.plan` is `on_delete=PROTECT`, so `payments.0007`'s
         reverse (deleting the seeded plans) would raise `ProtectedError` unless
         `0009`'s reverse can identify and delete exactly the rows it created —
-        the `meta.backfilled_by` stamp is what makes that possible (BLOCKER 5,
-        Phase 4 review)."""
+        the `meta.backfilled_by` stamp is what makes that possible."""
         org = baker.make(Organization, parent=None)
 
         backfill_unlimited_subscriptions(apps, None)
@@ -108,10 +107,9 @@ class TestBackfillUnlimitedSubscriptionsMigration:
         assert not Subscription.objects.filter(organization=child).exists()
 
     def test_nested_reseller_gets_its_own_subscription(self):
-        """BLOCKER 1, Phase 4 review: a nested reseller
-        (`can_invite_organizations=True` with `parent` set) is its own billing
-        root and must be backfilled onto its own `Subscription`, not skipped as
-        if it were an ordinary child."""
+        """A nested reseller (`can_invite_organizations=True` with `parent` set) is
+        its own billing root and must be backfilled onto its own `Subscription`,
+        not skipped as if it were an ordinary child."""
         root = baker.make(Organization, parent=None, can_invite_organizations=True)
         mid = baker.make(Organization, parent=root, can_invite_organizations=True)
         leaf = baker.make(Organization, parent=mid, can_invite_organizations=False)
@@ -151,10 +149,9 @@ class TestBackfillUnlimitedSubscriptionsMigration:
 
     def test_keyset_loop_runs_more_than_one_batch(self, monkeypatch):
         """No other test exercises the keyset-paginated `while` loop across more
-        than one batch (`BATCH_SIZE = 500`, Phase 4 verification review NIT).
-        Shrinking `BATCH_SIZE` to 2 against 5 organizations forces at least three
-        iterations and verifies every organization is still backfilled exactly
-        once."""
+        than one batch (`BATCH_SIZE = 500`). Shrinking `BATCH_SIZE` to 2 against 5
+        organizations forces at least three iterations and verifies every
+        organization is still backfilled exactly once."""
         monkeypatch.setattr(migration_module, "BATCH_SIZE", 2)
         orgs = [baker.make(Organization, parent=None) for _ in range(5)]
 
@@ -166,9 +163,9 @@ class TestBackfillUnlimitedSubscriptionsMigration:
         assert Subscription.objects.filter(organization__in=orgs).count() == len(orgs)
 
     def test_missing_unlimited_plan_raises_instead_of_silently_no_opping(self):
-        """BLOCKER 2, Phase 4 review: a missing seeded plan means a corrupted or
-        out-of-order deploy — every organization would otherwise stay plan-less
-        permanently with no signal and no re-run path. Must fail loudly."""
+        """A missing seeded plan means a corrupted or out-of-order deploy — every
+        organization would otherwise stay plan-less permanently with no signal and
+        no re-run path. Must fail loudly."""
         baker.make(Organization, parent=None)
         BillingPlan.objects.filter(slug="unlimited").delete()
 

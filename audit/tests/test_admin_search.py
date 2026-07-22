@@ -1,8 +1,6 @@
 """Tests for the audit admin search and affected-membership filtering.
 
-Phase 7: Search and affected-membership-id filtering in the admin changelist.
-
-Covers:
+Covers search and affected-membership-id filtering in the admin changelist:
 - Search by subject type/id/label via ?search=<term>
 - Search by numeric actor id via ?search=<digit-only term>
 - Filter by affected membership id via ?affected_membership_id=<int>

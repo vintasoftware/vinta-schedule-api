@@ -30,13 +30,12 @@ class OrganizationMembershipQuerySet(QuerySet):
     def billing_recipients(self, organization_id: int) -> OrganizationMembershipQuerySet:
         """Active memberships eligible to receive billing/dunning notifications for
         ``organization_id``: admins and billing owners (``is_billing_owner=True``)
-        -- the same two roles ``IsBillingOwnerOrAdmin`` gates billing writes to.
+        -- the same two roles ``IsBillingOwnerOrAdmin`` allows billing writes from.
 
         Used by ``DunningService`` (``payments/services/dunning_service.py``) to
         resolve who receives the dunning ladder's email/in-app notifications --
-        billing is organization-owned, not user-owned (Phase 1's guiding
-        decision), so there is no single "the" recipient; every eligible member
-        gets one.
+        billing is organization-owned, not user-owned, so there is no single "the"
+        recipient; every eligible member gets one.
 
         ``OrganizationRole`` is imported here rather than at module level to avoid
         a cycle: ``organizations.models`` imports this module (via

@@ -94,8 +94,8 @@ class CalendarIncomingWebhookService:
             if channel_id:
                 subscription = self._get_subscription_by_channel_id(channel_id)
         elif provider == CalendarProvider.MICROSOFT:
-            # For Microsoft, we would extract subscription_id from headers or payload
-            # This is a placeholder for Phase 2 implementation
+            # For Microsoft, we would extract subscription_id from headers or payload.
+            # This is a placeholder for a future implementation.
             pass
 
         # Create webhook event record with parsed values and subscription
@@ -111,7 +111,7 @@ class CalendarIncomingWebhookService:
         )
 
         # Process the webhook - for now, just mark as processed
-        # TODO: Implement webhook processing logic in Phase 2
+        # TODO: Implement webhook processing logic.
         try:
             self._process_webhook_content(webhook_event)
             logger.info(
@@ -160,7 +160,7 @@ class CalendarIncomingWebhookService:
 
     def _process_webhook_content(self, webhook_event: CalendarWebhookEvent) -> None:
         """Process webhook content and update event status."""
-        # Mark as processed for now - actual processing logic will be in Phase 2
+        # Mark as processed for now - actual processing logic is not yet implemented.
         webhook_event.processing_status = IncomingWebhookProcessingStatus.PROCESSED
         webhook_event.processed_at = timezone.now()
         webhook_event.save()

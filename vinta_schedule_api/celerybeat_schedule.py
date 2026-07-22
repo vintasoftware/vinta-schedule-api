@@ -21,17 +21,17 @@ CELERYBEAT_SCHEDULE = {
         "schedule": crontab(minute="*/15"),
         "task": "payments.tasks.meter_event_occurrences",
     },
-    # Grace/dunning sweep (Phase 10). Hourly rather than daily so a subscription
-    # whose grace window elapses moves to RESTRICTED promptly rather than sitting
-    # unresolved for up to a day; `DunningService`'s own per-subscription gate
+    # Grace/dunning sweep. Hourly rather than daily so a subscription whose grace
+    # window elapses moves to RESTRICTED promptly rather than sitting unresolved
+    # for up to a day; `DunningService`'s own per-subscription check
     # (`Subscription.last_dunning_attempt_at`, ~20h) is what keeps the actual
     # charge retry / ladder email to roughly once a day despite the hourly beat.
     "process_dunning": {
         "schedule": crontab(minute=0),
         "task": "payments.tasks.process_dunning",
     },
-    # Proactive approaching-limit / limit-reached warnings (Phase 12). Every 15
-    # minutes, same cadence as `meter_event_occurrences` -- usage that crosses a
+    # Proactive approaching-limit / limit-reached warnings. Every 15 minutes,
+    # same cadence as `meter_event_occurrences` -- usage that crosses a
     # threshold shows up as a warning within a quarter of an hour, and
     # `LimitWarningNotification`'s per-cycle unique constraint (not the beat
     # cadence) is what keeps a still-crossed threshold from re-notifying on
@@ -40,7 +40,7 @@ CELERYBEAT_SCHEDULE = {
         "schedule": crontab(minute="*/15"),
         "task": "payments.tasks.check_approaching_limits",
     },
-    # Cycle close (Phase 13). Hourly so a subscription whose period ends is settled
+    # Cycle close. Hourly so a subscription whose period ends is settled
     # (accrued overage charged, period rolled, postpaid counter reset) within the
     # hour rather than up to a day late. Idempotent per period: the rolled
     # `current_period_start` is the durable "already closed" marker and the overage

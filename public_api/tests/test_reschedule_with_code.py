@@ -1,4 +1,4 @@
-"""Integration tests for rescheduleCalendarEventWithCode (Phase 6a).
+"""Integration tests for rescheduleCalendarEventWithCode.
 
 All requests are unauthenticated (no Authorization header).  The reschedule
 code provides the org scope, the specific event scope, and the RESCHEDULE
@@ -568,7 +568,7 @@ class TestRescheduleCalendarEventWithCodeWrongPermission:
 
 @pytest.mark.django_db
 class TestRescheduleCalendarEventWithCodeWrongScope:
-    """Scenario 5: Group-scoped reschedule code → NOT_PERMITTED (routes to Phase 6b)."""
+    """Scenario 5: Group-scoped reschedule code → NOT_PERMITTED (routes to the group reschedule path)."""
 
     @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
     def test_group_code_returns_not_permitted(

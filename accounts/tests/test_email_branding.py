@@ -1,5 +1,5 @@
 """
-Phase 8 — Integration tests: Reseller-branded transactional emails.
+Integration tests: Reseller-branded transactional emails.
 
 These tests prove that:
 1. An invite to a user in a branded subtree renders the reseller's app_name/logo
@@ -7,7 +7,7 @@ These tests prove that:
 2. An invite under no reseller renders today's vinta email byte-for-byte
    (backwards-compat guarantee).
 3. Confirmation templates (confirmation.body.html + confirmation_signup.body.html)
-   remain byte-for-byte identical to their pre-phase-8 original (URL not substituted).
+   render their original URL unchanged (URL not substituted).
 4. A public-API invite (invited_by=None) produces a renderable context — no raise.
 """
 
@@ -275,7 +275,7 @@ class TestInvitationTemplateRendering:
     ):
         """
         When an inviter has an empty last_name, the invited_by_name must preserve
-        the trailing space (no .strip()) for byte-for-byte compatibility with phase-7.
+        the trailing space (no .strip()) for byte-for-byte compatibility.
         This test verifies the exact rendered substring "invited by John  to join"
         (double space) appears in the body.
         """
@@ -324,7 +324,7 @@ class TestInvitationTemplateRendering:
 
 
 # ---------------------------------------------------------------------------
-# BLOCKER 2: public-API invite (invited_by=None) must not raise
+# Public-API invite (invited_by=None) must not raise
 # ---------------------------------------------------------------------------
 
 
@@ -416,16 +416,16 @@ class TestPublicApiInviteInvitedByNone:
 
 
 # ---------------------------------------------------------------------------
-# BLOCKER 1 regression lock: confirmation templates must preserve original URL
+# Regression lock: confirmation templates must preserve original URL
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.django_db
 class TestConfirmationTemplatesPreserveOriginalUrl:
     """
-    Confirm that the confirmation email templates were NOT changed by phase-8:
-    they must still contain the literal URL https://vinta_schedule.com.br/
-    and must NOT use {{ app_name }} where the URL belongs.
+    Confirm that the confirmation email templates still contain the literal
+    URL https://vinta_schedule.com.br/ and do not use {{ app_name }} where the
+    URL belongs.
     """
 
     def _user_ctx(self):
