@@ -1,10 +1,10 @@
-"""Proactive approaching-limit / limit-reached warnings (Phase 12).
+"""Proactive approaching-limit / limit-reached warnings.
 
 ``GET /billing/usage/`` (``payments/billing_views.py``) is the *pull* side of
-"an organization can see where it stands"; this is the *push* side -- "it is
-warned before it is blocked rather than by being blocked" (spec Use-case 8).
+"an organization can see where it stands"; this is the *push* side -- an
+organization is warned before it is blocked rather than by being blocked.
 
-Both sides -- and the enforcement guards themselves
+Both sides -- and the enforcement checks themselves
 (``EntitlementService.check_limit`` / ``check_postpaid_allowance``) -- read
 the *same* ceiling: ``EntitlementService.get_effective_limit`` /
 ``get_current_usage``. There is deliberately no second "how close is this
@@ -37,8 +37,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 #: Usage/limit ratio at which an organization is warned it is *approaching* its
-#: effective limit, before it is ever blocked -- the plan's stated default
-#: ("crosses a threshold (default 80%)"). The *only* definition of
+#: effective limit, before it is ever blocked. The default threshold is 80%.
+#: This is the *only* definition of
 #: "approaching" in this codebase: ``UsageWarningService`` is the sole reader,
 #: and it resolves the ceiling from ``EntitlementService.get_effective_limit``
 #: -- the identical method ``check_limit``/``check_postpaid_allowance`` resolve
@@ -72,7 +72,7 @@ class UsageWarningService:
 
         A no-op for a subscription whose billing root is already ``RESTRICTED``
         or ``CANCELLED``: a ``RESTRICTED`` organization already knows it is
-        blocked (Phase 11's own notification), and warning it that it is
+        blocked (from the restricted notification), and warning it that it is
         "approaching" a limit it is already over adds nothing; ``CANCELLED``
         is running out the clock to ``FREE``, not accruing toward anything
         that will block it. ``subscription.billing_state`` is read directly

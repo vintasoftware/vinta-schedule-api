@@ -1,18 +1,18 @@
 """
-Phase 4 / Phase 9 — HTTP-level test: consent capture through the real headless
-signup endpoint (`POST /auth/{client}/v1/auth/signup`).
+HTTP-level test: consent capture through the real headless signup endpoint
+(`POST /auth/{client}/v1/auth/signup`).
 
 ``HEADLESS_ONLY = True`` (see ``vinta_schedule_api/settings/base.py``), so the
 headless endpoint -- not a direct call to
 ``BaseVintaScheduleSignupForm.signup()`` -- is the only production
-email/password signup surface. The form-level tests in
+email/password signup entry point. The form-level tests in
 ``test_signup_consent.py`` cover the consent-capture behavior in detail; this
 file proves the same behavior fires end-to-end through the real HTTP request
 allauth-headless routes to ``form.signup(request, user)``.
 
-Phase 9 split the single ``accepted_policies`` checkbox into two required,
-independent fields (`accepted_terms`, `accepted_sms_consent`) — Twilio / TCPA
-require SMS consent to be its own explicit, separate opt-in.
+Signup uses two required, independent checkboxes (`accepted_terms`,
+`accepted_sms_consent`) — Twilio / TCPA require SMS consent to be its own
+explicit, separate opt-in.
 """
 
 from django.urls import reverse
@@ -66,7 +66,7 @@ class TestHeadlessSignupRecordsConsent:
             user=user, policy_document__document_type=PolicyDocumentType.SMS_CONSENT
         )
         assert consent.source == ConsentSource.SIGNUP_FORM
-        # Phase 8 -- phone-keyed consent: allauth's adapter.save_user() sets
+        # Phone-keyed consent: allauth's adapter.save_user() sets
         # user.phone_number from the submitted "phone" field before our custom
         # form's signup() runs, so the phone lands on the recorded consent.
         assert user.phone_number == "+123456789"

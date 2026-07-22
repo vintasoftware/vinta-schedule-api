@@ -1,13 +1,11 @@
 """Integration tests for code-gated (unauthenticated) availability read fields.
 
-Covers Phase 4:
+Covers these fields:
 - availableTimesWithCode
 - availabilityWindowsWithCode
 - unavailableWindowsWithCode
 - calendarGroupBookableSlotsWithCode
 - calendarGroupAvailabilityWithCode
-
-Covers Phase 6:
 - calendarBookableSlotsWithCode
 
 All fields are unauthenticated (no Authorization header required).  The booking
@@ -992,7 +990,7 @@ class TestCrossOrgIsolation:
 
 
 # ---------------------------------------------------------------------------
-# SHOULD-FIX 1: tampered-secret test (valid id, wrong secret)
+# Tampered-secret code (valid id, wrong secret)
 # ---------------------------------------------------------------------------
 
 
@@ -1091,7 +1089,7 @@ class TestTamperedSecretCode:
 
 
 # ---------------------------------------------------------------------------
-# SHOULD-FIX 2: real (non-mocked) cross-org isolation test
+# Real (non-mocked) cross-org isolation
 # ---------------------------------------------------------------------------
 
 
@@ -1170,7 +1168,7 @@ class TestRealCrossOrgIsolation:
 
 
 # ---------------------------------------------------------------------------
-# SHOULD-FIX 3: range clamp guard
+# Range clamp check
 # ---------------------------------------------------------------------------
 
 
@@ -1255,7 +1253,7 @@ class TestCodeGatedRangeClamp:
 
 
 # ---------------------------------------------------------------------------
-# Calendar bookable slots with code (Phase 6)
+# Calendar bookable slots with code
 # ---------------------------------------------------------------------------
 
 CALENDAR_BOOKABLE_SLOTS_WITH_CODE = """
@@ -1437,7 +1435,7 @@ class TestCalendarBookableSlotsWithCode:
 
 
 # ---------------------------------------------------------------------------
-# Phase 6 — strengthened: real-service, policy-filtering, equivalence,
+# Strengthened tests: real-service, policy-filtering, equivalence,
 # bundle, expired/revoked/used, no-policy-field-disclosure
 # ---------------------------------------------------------------------------
 
@@ -1553,7 +1551,7 @@ def _authed_client_with_bookable_slots(org):
 
 @pytest.mark.django_db
 class TestCalendarBookableSlotsWithCodeStrengthened:
-    """Strengthened Phase-6 tests: real service, policy filtering, equivalence,
+    """Strengthened tests: real service, policy filtering, equivalence,
     bundle, expired/revoked/used, and no policy-field disclosure."""
 
     # ------------------------------------------------------------------
@@ -1832,7 +1830,7 @@ class TestCalendarBookableSlotsWithCodeStrengthened:
             calendar_id=bundle.id,
         )
 
-        # --- Phase A: only child_a available → no bundle slot ---
+        # --- Only child_a available → no bundle slot ---
         data_a = post_graphql(
             anon_client,
             CALENDAR_BOOKABLE_SLOTS_WITH_CODE,
@@ -1848,7 +1846,7 @@ class TestCalendarBookableSlotsWithCodeStrengthened:
             "Bundle slot must not appear when child_b has no availability"
         )
 
-        # --- Phase B: both children available → slot appears ---
+        # --- Both children available → slot appears ---
         _available_time(org, child_b, window_start, window_end)
 
         data_b = post_graphql(

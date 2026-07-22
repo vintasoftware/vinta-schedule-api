@@ -1,9 +1,9 @@
-"""Phase 6b integration: the bulk resource-calendar import writer.
+"""Integration tests for the bulk resource-calendar import writer.
 
-The plan's Review models note for this phase calls the bulk sync writers "the
-single most likely place for an unmetered path to survive" objective 1. These
-tests exercise ``CalendarSyncService._execute_organization_calendar_resources_import``
-directly -- the same seam identified there -- proving:
+The bulk sync writers are the single most likely place for an unmetered path to
+survive. These tests exercise
+``CalendarSyncService._execute_organization_calendar_resources_import`` directly --
+that seam -- proving:
 
 * headroom is checked *before* the bulk write, not per-row after it;
 * an org with headroom for N rooms importing more than N gets exactly N, plus a
@@ -125,7 +125,7 @@ def _organization_with_resource_calendar_limit(limit_value: int | None) -> Organ
     """A standalone organization with a ``resource_calendars`` ceiling.
 
     ``limit_value=None`` builds an ``unlimited``-shaped subscription (NULL ceiling),
-    matching the plan's "unlimited plan is the switch" rollout rule.
+    matching the "unlimited plan is the switch" rollout rule.
     """
     organization = baker.make(Organization, parent=None, can_invite_organizations=False)
     now = timezone.now()
@@ -560,8 +560,8 @@ class TestPartialImportIsDistinguishableFromSuccess:
 
 @pytest.mark.django_db
 class TestUnlimitedPlanFullSyncIsUnchanged:
-    """The plan's own rollout switch: an org on ``unlimited`` must import
-    everything a full sync discovers, with no change in behavior."""
+    """An org on ``unlimited`` must import everything a full sync discovers, with no
+    change in behavior — ``unlimited`` is the rollout switch."""
 
     def test_unlimited_org_imports_all_discovered_resources(self):
         organization = _organization_with_resource_calendar_limit(None)
@@ -666,8 +666,8 @@ _with_google_credentials = override_settings(
 
 @pytest.mark.django_db
 class TestSyncTasksSkipRatherThanFailOnMissingEntitlement:
-    """Phase 6c: an unentitled organization must make scheduled syncs a **skip**, not a
-    task failure.
+    """An unentitled organization must make scheduled syncs a **skip**, not a task
+    failure.
 
     These tasks are scheduled, declare no ``autoretry_for``, and run under
     ``CELERY_TASK_ACKS_LATE=True`` -- so letting ``OverLimitError`` escape would turn a

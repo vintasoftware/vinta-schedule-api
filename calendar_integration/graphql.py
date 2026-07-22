@@ -767,7 +767,7 @@ class BookableSlotProposalGraphQLType:
 
 
 # ---------------------------------------------------------------------------
-# Single-use booking-code types (Phase 0 — defined here, wired in later phases)
+# Single-use booking-code types
 # ---------------------------------------------------------------------------
 
 
@@ -834,7 +834,7 @@ class CodeEventResult:
 
 
 # ---------------------------------------------------------------------------
-# BookingPolicy types (Phase 4 — public GraphQL CRUD)
+# BookingPolicy types (public GraphQL CRUD)
 # ---------------------------------------------------------------------------
 
 

@@ -142,15 +142,15 @@ class CalendarGroupService:
 
     def _check_not_restricted(self) -> None:
         """Raise ``OverLimitError`` if this service's organization's billing root is
-        ``RESTRICTED`` (Phase 11) -- the same guard the sibling
+        ``RESTRICTED`` -- the same check the sibling
         ``CalendarService._check_not_restricted`` makes before an update/delete write.
 
         Honors the same bypass source those siblings do: a no-op when no
         ``entitlement_service`` is injected, or when the bound ``calendar_service``
-        is in bypass mode (``authenticate(bypass_limits=True)``). Every other guarded
+        is in bypass mode (``authenticate(bypass_limits=True)``). Every other blocked
         service short-circuits on that bypass flag; checking it here too keeps a
         legitimate bypass path (management commands, repair scripts) from being
-        stopped at this one guard while every peer guard lets it through.
+        stopped at this one check while every peer check lets it through.
         """
         if self.entitlement_service is None:
             return
@@ -515,22 +515,22 @@ class CalendarGroupService:
     ) -> None:
         """Enforce the resolved EffectivePolicy for a group booking request.
 
-        Mirrors the shape of ``CalendarService._check_booking_policy`` (Phase 8a) for
+        Mirrors the shape of ``CalendarService._check_booking_policy`` for
         the group write path.  Steps:
 
         1. Skip when ``booking_policy_service`` is not injected or when the resolved
            policy is ``EffectivePolicy.unconstrained()`` — preserving byte-for-byte
-           pre-feature behavior (the data-presence gate).
+           pre-feature behavior (the data-presence check).
         2. Resolve the ``EffectivePolicy`` via ``resolve_for_group`` — the same
-           resolver Phase 7 uses in ``find_bookable_slots``, so enforcement and
+           resolver ``find_bookable_slots`` uses, so enforcement and
            discovery agree.
         3. Collect ALL participant calendar IDs across every slot pool of the group
            (the same ``all_calendar_ids`` set ``find_bookable_slots`` uses), so the
            buffer dead-zone check is conservative: any participant that would
            individually reject the window blocks the booking.
         4. Fetch buffer blocking spans across the full participant set (managed +
-           unmanaged), widening the window by the buffer magnitudes — mirrors Phase
-           7's buffer fetch in ``find_bookable_slots``.
+           unmanaged), widening the window by the buffer magnitudes — mirrors the
+           buffer fetch in ``find_bookable_slots``.
         5. Build a single ``BookableSlotProposal`` and call
            ``slot_engine.apply_policy_filter``; empty result → raise
            ``BookingPolicyViolationError``.
@@ -587,7 +587,7 @@ class CalendarGroupService:
     def create_grouped_event(self, data: CalendarGroupEventInputData) -> CalendarEvent:
         """Create an event booked through a CalendarGroup.
 
-        Persistence strategy (per the plan — "Option B"): the event is created
+        Persistence strategy: the event is created
         on the primary calendar via `CalendarService.create_event` so existing
         side-effects, permissions, and external-provider sync run unchanged.
         Non-primary selected calendars get `BlockedTime` rows so they appear as
@@ -749,7 +749,7 @@ class CalendarGroupService:
             (``calendar_group_fk`` set) belonging to this service's organization.
         """
         self._assert_initialized()
-        # Phase 11: checked explicitly, and before any write -- ``delete_event``
+        # Checked explicitly, and before any write -- ``delete_event``
         # below (called after this method has already deleted the non-primary
         # BlockedTime rows) would catch a RESTRICTED org too, but only after this
         # method's own deletes already ran outside of any transaction this method
@@ -829,9 +829,9 @@ class CalendarGroupService:
         intentionally unenforced for this time-only reschedule path.
         """
         self._assert_initialized()
-        # Phase 11: checked explicitly and first, for the same reason as
+        # Checked explicitly and first, for the same reason as
         # ``cancel_grouped_event`` above -- this method writes non-primary
-        # BlockedTime rows itself, ahead of (and outside of) the guarded
+        # BlockedTime rows itself, ahead of (and outside of) the blocked
         # ``calendar_service.update_event`` call below.
         self._check_not_restricted()
         if self.calendar_service is None:
@@ -869,7 +869,7 @@ class CalendarGroupService:
             )
 
         # Build the update input preserving all non-time details so that only
-        # RESCHEDULE permission is required (same approach as Phase 6a).
+        # RESCHEDULE permission is required (same approach as the single-calendar path).
         preserved_attendances = [
             EventAttendanceInputData(user_id=attendance.membership_user_id)
             for attendance in event.attendances.all()
@@ -1130,7 +1130,7 @@ class CalendarGroupService:
         for the whole search window and then walks candidates in Python — one
         query per type instead of one query per candidate. For a 24h window at
         15-minute steps that turns 96 round-trips into 3, which is the core of
-        the "SQL generate_series" optimization the plan called for.
+        the SQL generate_series optimization.
 
         Set `with_bulk_modifications=True` to expand recurring events through
         their bulk-modification continuation series.
@@ -1140,7 +1140,7 @@ class CalendarGroupService:
         this method without the ``now`` argument (default accepted) — no signature
         change at the GraphQL layer.
 
-        Policy-awareness gate: when no ``BookingPolicy`` resolves for the group
+        Policy-awareness check: when no ``BookingPolicy`` resolves for the group
         (i.e. the resolved policy is ``EffectivePolicy.unconstrained()``), the
         output is byte-for-byte identical to the pre-feature engine result — no
         buffer fetch, no filter applied.
@@ -1150,8 +1150,8 @@ class CalendarGroupService:
         of ``required_count``) has an event within the buffer dead zone.  This is
         the conservative "reject if any participant would reject" rule — even a
         calendar that is not counted toward a slot's ``required_count`` can block
-        the candidate.  This aligns with the plan's intent to never offer a slot
-        that a participant would individually reject.
+        the candidate.  The intent is to never offer a slot that a participant
+        would individually reject.
         """
         self._assert_initialized()
         if slot_step <= datetime.timedelta(0):

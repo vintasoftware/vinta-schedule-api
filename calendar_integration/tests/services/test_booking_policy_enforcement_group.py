@@ -1,4 +1,4 @@
-"""Integration tests for Phase 8b — booking-time policy enforcement on ``create_grouped_event``.
+"""Integration tests for booking-time policy enforcement on ``create_grouped_event``.
 
 Coverage:
 - **Lead-time violation**: group booking too soon is rejected.

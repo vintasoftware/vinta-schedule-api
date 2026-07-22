@@ -288,7 +288,7 @@ class CalendarViewSet(VintaScheduleModelViewSet):
             "\n\n"
             "**Bundle semantics:** disabling a bundle sets only the bundle calendar inactive. "
             "Child calendars, bundle events, and their representation BlockedTimes/events are "
-            "deliberately left untouched (event cancellation is out of scope; see plan Phase 11)."
+            "deliberately left untouched (event cancellation is out of scope)."
         ),
         responses={204: None},
     )
@@ -303,10 +303,9 @@ class CalendarViewSet(VintaScheduleModelViewSet):
 
         if calendar.calendar_type == CalendarType.BUNDLE:
             # Bundle calendars are management resources — admin-only disable.
-            # Intentionally: only the bundle wrapper is hidden; child calendars, bundle
-            # events, and their representation BlockedTimes/events are left intact.
-            # Event cancellation is explicitly out of scope (see plan Phase 11, Open Q #3:
-            # "Leave events, hide bundle; surface a follow-up if cancellation is desired.").
+            # Only the bundle wrapper is hidden; child calendars, bundle events, and
+            # their representation BlockedTimes/events are left intact. Event
+            # cancellation is out of scope: leave the events, hide the bundle.
             if not request.user.is_organization_admin(calendar.organization_id):
                 raise PermissionDenied("Only org admins can disable a bundle calendar.")
         else:
@@ -2150,9 +2149,8 @@ class BookingPolicyViewSet(VintaScheduleModelViewSet):
     ) -> Response:
         """DELETE /booking-policies/{id}/ — idempotent policy removal.
 
-        Returns 204 regardless of whether the policy existed.  The plan's
-        Guiding Decisions mandate delete-absent semantics: a missing row is not
-        an error on the caller's side.
+        Returns 204 regardless of whether the policy existed. Delete is idempotent:
+        a missing row is not an error on the caller's side.
         """
         service = self._build_service(booking_policy_service)
 

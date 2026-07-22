@@ -38,14 +38,14 @@ def get_active_organization_membership(
 ) -> OrganizationMembership | None:
     """Return the user's active OrganizationMembership, or None.
 
-    This is the canonical helper for all tenant-access gates. Call it wherever
+    This is the shared helper for all tenant-access checks. Call it wherever
     a view, permission, or serializer needs to resolve an active membership:
 
         membership = get_active_organization_membership(request.user)
         if not membership:
             return <empty queryset / clean denial>
 
-    On the DRF request path (Phase 2a+), ``TenantScopedViewMixin.initial()``
+    On the DRF request path, ``TenantScopedViewMixin.initial()``
     resolves the active membership from the ``X-Organization-Id`` header and
     stashes it on ``user._active_membership``. This helper reads the stash so
     the ~60 existing call sites are automatically header-aware without change.
@@ -193,25 +193,25 @@ class OrganizationMembership(BaseModel):
     Represents a membership of a user in a calendar organization.
     This is used to link users to their respective calendar organizations.
 
-    Hard-gate invariant:
+    Access rule:
         Every authenticated user is in exactly one of two states:
         1. **Has active membership** — ``get_active_organization_membership(user)``
            returns an ``OrganizationMembership`` instance and all tenant-scoped
            endpoints are open to them.
         2. **Gated (zero active memberships)** — ``get_active_organization_membership``
-           returns ``None``. Only the onboarding surfaces respond:
+           returns ``None``. Only the onboarding endpoints respond:
            ``POST /organizations/`` (create own org) and ``POST /invitations/accept``
            (join an invited org). All other tenant-scoped endpoints must return an
            empty queryset or permission denial — never a 500.
 
-        A user may hold memberships in multiple organizations. Resolution of the
-        *active* organization is handled by ``get_active_organization_membership``,
-        which in Phase 1 returns the user's single active membership. Phase 2a
-        introduces header-driven resolution for multi-org users.
+        A user may hold memberships in multiple organizations.
+        ``get_active_organization_membership`` resolves the *active* one: for a
+        single-membership user it returns that membership; for a multi-org user it
+        resolves the active org from the ``X-Organization-Id`` header.
 
         Never read ``user.organization_memberships`` directly in permission /
         scoping code — always go through ``get_active_organization_membership`` so
-        the resolution seam is centralised.
+        the resolution stays in one place.
     """
 
     user = models.ForeignKey(
@@ -252,20 +252,17 @@ class OrganizationMembership(BaseModel):
         help_text=(
             "Whether this membership may manage the organization's billing (change "
             "plan, purchase add-ons, manage payment method) in addition to admins. "
-            "The permission that reads this flag (IsBillingOwnerOrAdmin) lands in a "
-            "later phase; this field only marks the membership. No db_index yet "
-            "(Phase 4 review finding 10) — nothing reads this field until Phase 9, "
-            "and a boolean index on this table takes a SHARE lock for no present "
-            "benefit. Add it (via AddIndexConcurrently in a non-atomic migration, "
-            "given table size) alongside the phase that starts querying it."
+            "This flag only marks the membership; the permission check that reads it "
+            "is IsBillingOwnerOrAdmin."
         ),
     )
 
     # Composite primary key on (user, organization) — a membership's identity is the
-    # (user, org) pair. The implicit ``id`` BigAutoField is dropped in the Phase 7b
-    # migration. The legacy ``uniq_membership_user_organization`` unique constraint is
-    # retained (it is what the three raw-SQL calendar PROTECT FKs bind to); it is
-    # redundant with the composite-PK unique index but kept so the FKs need no rebind.
+    # (user, org) pair. The implicit ``id`` BigAutoField is dropped; this composite
+    # key replaces it. The legacy ``uniq_membership_user_organization`` unique
+    # constraint is kept (it is what the three raw-SQL calendar PROTECT FKs bind to);
+    # it is redundant with the composite-PK unique index but kept so the FKs need no
+    # rebind.
     #
     # ``SafeCompositePrimaryKey`` (not stock ``models.CompositePrimaryKey``) is used so
     # class-level ``OrganizationMembership.pk`` access does not crash third-party model
@@ -299,7 +296,7 @@ class OrganizationInvitation(BaseModel):
 
     The uniqueness constraint is ``unique(email, organization)`` — the same email address
     may hold concurrent pending invitations in different organizations (multi-org invite
-    accept, Phase 4). A duplicate invite to the *same* org is still rejected by the
+    accept). A duplicate invite to the *same* org is still rejected by the
     ``uniq_invitation_email_organization`` constraint.
     """
 
@@ -334,7 +331,7 @@ class OrganizationInvitation(BaseModel):
     expires_at = models.DateTimeField()
     # Membership reference via the (organization_id, membership_user_id) composite join
     # rather than a real FK. Django 6 forbids a real FK to a composite-PK model
-    # (OrganizationMembership becomes composite-PK in Phase 7b). This contributes a
+    # (OrganizationMembership uses a composite PK). This contributes a
     # concrete ``membership_user_id`` column plus a ForeignObject descriptor ``membership``.
     # OneToOne semantics are preserved by the partial UniqueConstraint below
     # (one accepted invitation per membership). ``related_name="invitation"`` keeps the

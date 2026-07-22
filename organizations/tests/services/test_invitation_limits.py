@@ -1,12 +1,12 @@
-"""``OrganizationService.invite_user_to_organization`` — the seat-limit guard.
+"""``OrganizationService.invite_user_to_organization`` — the seat-limit check.
 
-Phase 6a, spec Use-case 2: an organization at its seat limit cannot add another
-member. ``organization_members`` usage is active memberships **plus** pending
+An organization at its seat limit cannot add another member.
+``organization_members`` usage is active memberships **plus** pending
 invitations (``EntitlementService._count_organization_members``), so a pending
-invitation itself already occupies a seat — the second half of these tests pins
-that down directly, since a guard that only looked at ``OrganizationMembership``
-would let an organization invite arbitrarily many people past its ceiling as
-long as none of them had accepted yet.
+invitation itself already occupies a seat. The second half of these tests pins
+that down directly: a check that only looked at ``OrganizationMembership`` would
+let an organization invite arbitrarily many people past its ceiling as long as
+none of them had accepted yet.
 """
 
 import datetime
@@ -373,12 +373,11 @@ class TestProvisionTenantForUserInviteBranchSeatLimitGuard:
 
 @pytest.mark.django_db
 class TestReactivateMembershipSeatLimitGuard:
-    """SHOULD-FIX 2: the seat-limit guard lives in
-    ``OrganizationService.reactivate_membership``, not the viewset -- see the
-    plan's Guiding Decisions ("Enforcement layer: service layer, not
-    viewsets"). A caller that bypasses the viewset entirely (management
-    command, admin action, shell) must still hit the guard by default, and
-    must be able to opt out explicitly via ``bypass_limits``."""
+    """The seat-limit check lives in ``OrganizationService.reactivate_membership``,
+    not the viewset: enforcement belongs in the service layer, not viewsets. A
+    caller that bypasses the viewset entirely (management command, admin action,
+    shell) must still hit the check by default, and must be able to opt out
+    explicitly via ``bypass_limits``."""
 
     def test_reactivate_at_the_limit_raises_and_leaves_the_member_inactive(self, service):
         organization = _organization_with_seat_limit(seat_limit=1, existing_active_members=1)

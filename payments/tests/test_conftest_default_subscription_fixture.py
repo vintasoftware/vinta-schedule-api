@@ -1,6 +1,6 @@
-"""Phase 6c review: the root ``conftest.py``'s autouse ``provision_default_subscription``
-fixture must build its ``SubscriptionService`` from the DI container, not hand-construct
-one, matching what the rest of this phase's own tests were moved onto (see
+"""The root ``conftest.py``'s autouse ``provision_default_subscription`` fixture
+must build its ``SubscriptionService`` from the DI container, not hand-construct one,
+matching what the rest of the billing tests use (see
 ``public_api/tests/test_system_user_limits.py``'s ``service`` fixture and
 ``payments/tests/test_prepaid_resource_coverage.py``'s ``_container()`` helper).
 
@@ -8,7 +8,7 @@ one, matching what the rest of this phase's own tests were moved onto (see
 hand-constructed instance behaves identically to a container-built one -- this test
 is about wiring, not behavior: it proves the fixture actually asks the container
 (so a future dependency added to ``SubscriptionService`` -- and wired only via the
-container -- is not silently missed here the way BLOCKER 4 was).
+container -- is not silently missed here).
 """
 
 from unittest.mock import MagicMock

@@ -319,14 +319,14 @@ class TestSerializeEventDataInputResourceAllocations:
     """Pin the behavior of serialize_event_data_input on the resource-allocation path.
 
     NOTE: This test documents and pins a *known pre-existing latent bug* that the
-    Phase 0 refactor deliberately preserves byte-for-byte. The resources comprehension
+    refactor deliberately preserves byte-for-byte. The resources comprehension
     iterates ``Calendar`` objects (the ``Calendar.objects.filter(...)`` result) but then
     accesses ``resource_allocation.calendar.name`` / ``.status`` as if each item were a
     ``ResourceAllocation``. A ``Calendar`` has no ``.calendar`` attribute, so when the
     resource_allocations match a RESOURCE calendar in the org, evaluating the resources
     list raises ``AttributeError``. We assert that here so the preserved behavior is
     explicit and any future "fix" is a deliberate, reviewed change rather than an
-    accidental Phase 0 deviation.
+    accidental deviation.
     """
 
     def test_matching_resource_allocation_raises_attribute_error(self, db, organization):

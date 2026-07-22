@@ -137,13 +137,12 @@ class PaymentsViewSet(ViewSet):
     def _apply_confirmed_payment_side_effects(
         self, status_update: PaymentStatusUpdateModel
     ) -> None:
-        """Phase 9: a one-time payment (``payment_update`` webhook) confirmed
+        """A one-time payment (``payment_update`` webhook) confirmed
         ``APPROVED`` is what grants an add-on's capacity and records a
         confirmed payment method -- never the request that merely *initiates*
         the purchase. See ``SubscriptionService.purchase_add_on`` /
-        ``activate_add_on`` / ``record_payment_method`` for the guiding-decision
-        reasoning; this is the one place both are wired to a real webhook
-        delivery.
+        ``activate_add_on`` / ``record_payment_method`` for the reasoning; this
+        is the one place both are connected to a real webhook delivery.
         """
         if status_update.status != PaymentStatuses.APPROVED:
             return
@@ -221,11 +220,11 @@ class PaymentsViewSet(ViewSet):
     def _apply_subscription_payment_side_effects(
         self, status_update: PaymentStatusUpdateModel
     ) -> None:
-        """Phase 9/10: react to a subscription charge's outcome.
+        """React to a subscription charge's outcome.
 
         - **Approved**: grants the capacity for whichever plan the subscription
           is currently on (``SubscriptionService.confirm_plan_change``), records
-          a confirmed payment method, and -- **first**, Phase 10 -- resolves any
+          a confirmed payment method, and -- **first** -- resolves any
           GRACE/RESTRICTED dunning state back to ACTIVE
           (``DunningService.resolve_payment_success``). Runs on every approved
           charge, not only the first one after an upgrade or a dunning retry;
@@ -235,7 +234,7 @@ class PaymentsViewSet(ViewSet):
           ``billing_state`` write is a same-state no-op by the time it runs --
           the two never disagree about which write actually happened.
         - **Failed** (``FAILED_SUBSCRIPTION_PAYMENT_STATUSES``): moves the
-          subscription into GRACE (``DunningService.enter_grace``) -- Phase 10's
+          subscription into GRACE (``DunningService.enter_grace``) -- the
           dunning ladder owns everything from here (retry schedule, escalating
           notification, eventual RESTRICTED on expiry). Never touches
           ``PaymentMethod`` -- see ``DunningService``'s module docstring.

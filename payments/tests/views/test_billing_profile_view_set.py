@@ -15,7 +15,7 @@ def organization():
 
 @pytest.fixture
 def membership(user, organization):
-    """An active ADMIN membership: billing profile writes require admin (SHOULD-FIX 4)."""
+    """An active ADMIN membership: billing profile writes require admin."""
     return baker.make(
         OrganizationMembership,
         user=user,
@@ -407,7 +407,7 @@ class TestBillingProfileViewSet:
 
     def test_update_billing_profile_no_membership_forbidden(self, auth_client):
         """A user with no active organization membership cannot update a billing
-        profile. `IsOrganizationAdmin` (gating writes, SHOULD-FIX 4) denies a
+        profile. `IsOrganizationAdmin` (required for writes) denies a
         membership-less caller before the lookup is even attempted."""
         url = reverse("api:BillingProfile-update")
         data = {"document_type": "SSN", "document_number": "123456789"}
@@ -521,7 +521,7 @@ class TestBillingProfileViewSet:
 
     def test_partial_update_billing_profile_no_membership_forbidden(self, auth_client):
         """A user with no active organization membership cannot partially update a
-        billing profile. `IsOrganizationAdmin` (gating writes, SHOULD-FIX 4) denies
+        billing profile. `IsOrganizationAdmin` (required for writes) denies
         a membership-less caller before the lookup is even attempted."""
         url = reverse("api:BillingProfile-partial_update")
         data = {"document_number": "NEW123"}

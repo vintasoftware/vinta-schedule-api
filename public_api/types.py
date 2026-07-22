@@ -56,7 +56,7 @@ class CreateInvitationInput:
     """Input for creating a pending organization invitation (reseller bundle).
 
     organizationId must be the acting org or a descendant of it.
-    sendEmail defaults to True (Phase 3 only supports the email path).
+    sendEmail defaults to True.
     role defaults to MEMBER — admin invitations must be explicit.
     """
 
@@ -79,8 +79,8 @@ class InvitationResult:
 class CreateInvitationResult:
     """Result of creating an organization invitation.
 
-    token and invite_url are null in the sendEmail=true path (Phase 3).
-    Phase 4 will populate them for sendEmail=false.
+    token and invite_url are null when sendEmail is true (the email path).
+    When sendEmail is false, they hold the raw token and invite URL.
     """
 
     invitation: InvitationResult

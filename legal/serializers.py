@@ -49,8 +49,8 @@ class ConsentCreateSerializer(serializers.Serializer):
 
     ``document_type`` is required — the consenting user comes from the
     authenticated request, and audit metadata (IP, user-agent, source) is
-    captured server-side in the view. ``phone_number`` is optional (Phase 8 —
-    phone-keyed consent): an OAuth user can consent a phone number here,
+    captured server-side in the view. ``phone_number`` is optional
+    (phone-keyed consent): an OAuth user can consent a phone number here,
     before phone verification, so the SMS gate can later be satisfied for
     that phone.
     """

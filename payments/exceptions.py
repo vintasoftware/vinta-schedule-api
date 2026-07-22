@@ -83,7 +83,7 @@ class BillingRootCycleError(PaymentError):
     ``parent`` is user-mutable data (Django admin), so a cycle is reachable in
     practice. Returning an arbitrary node from the cycle (as opposed to raising)
     would silently leave every organization on the cycle without a resolvable
-    billing root, which Phase 5's ``get_effective_limit`` would then be handed.
+    billing root, which ``get_effective_limit`` would then be handed.
     """
 
     def __init__(self, organization_id: int, visited_ids: set[int]):
@@ -222,7 +222,7 @@ class OverLimitError(BillingError):
     that are ``LimitedResource`` members (``webhook_subscriptions`` among them), so
     the byte-identical-across-surfaces contract below depends on this base class.
 
-    Carries the four fields of the plan's shared over-limit error contract so
+    Carries the four fields of the shared over-limit error contract so
     every surface — DRF (via ``common.exception_handlers.vinta_exception_handler``)
     and the public GraphQL API — renders a byte-identical body:
 
@@ -319,7 +319,7 @@ class OverLimitError(BillingError):
     @classmethod
     def from_restricted_organization(cls) -> "OverLimitError":
         """Build the error for a write attempted while the caller's billing root is
-        ``RESTRICTED`` (Phase 11) -- an expired grace window with no resolution.
+        ``RESTRICTED`` -- an expired grace window with no resolution.
 
         Not a ``LimitedResource`` at all, so there is no unit to count:
         ``current_usage``/``limit`` are both ``0``, the same "0 of an allowance of
@@ -430,12 +430,12 @@ class UnconfirmedPlanChangeError(PaymentError):
 
 class IllegalBillingStateTransitionError(BillingError):
     """Raised by ``payments.services.billing_state_machine.transition_billing_state``
-    when the requested ``(from_state, to_state)`` pair is not an edge on the spec's
-    lifecycle diagram (Billing Plans and Limits spec, Use-case 5).
+    when the requested ``(from_state, to_state)`` pair is not an allowed edge in
+    the billing state machine's transition table.
 
-    The diagram is the authority on which transitions exist -- Phase 10's guiding
-    decision is that an illegal transition is refused outright, never silently
-    coerced or turned into a no-op. Inherits ``BillingError`` rather than
+    The transition table is the authority on which transitions exist -- an
+    illegal transition is refused outright, never silently coerced or turned into
+    a no-op. Inherits ``BillingError`` rather than
     ``PaymentError`` (a ``ValueError``) so the ``except ValueError`` wrappers
     scattered across the codebase cannot flatten a state-machine violation into a
     generic validation message.
@@ -455,7 +455,7 @@ class AddOnNotPurchasableError(PaymentError):
     """Raised when ``purchase_add_on`` is asked to sell capacity for a resource
     whose current ``SubscriptionPlanLimit`` carries no ``overage_unit_price`` —
     there is no catalog-derived price to charge, and inventing one here would be
-    exactly the "bespoke pricing" the plan's Non-goals rule out.
+    exactly the "bespoke pricing" this billing model deliberately does not support.
     """
 
     def __init__(self, resource_key: str):

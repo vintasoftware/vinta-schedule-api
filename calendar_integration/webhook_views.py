@@ -84,7 +84,7 @@ class MicrosoftCalendarWebhookView(View):
     """
     Webhook endpoint for Microsoft Calendar notifications.
 
-    This will be implemented in Phase 3 of the plan.
+    This is not implemented yet.
     """
 
     @inject

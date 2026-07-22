@@ -1,6 +1,6 @@
 """Records event occurrences as billable usage, exactly once, ever.
 
-This is the highest-severity code in the billing plan: occurrences of a recurring
+This is the highest-severity code in the billing system: occurrences of a recurring
 series are computed in Postgres and never stored, so nothing exists to bill until
 this service writes it — and a double-count here is silent revenue drift or an
 overcharge, invisible until a customer disputes an invoice. There is no exception,
@@ -30,11 +30,11 @@ Four properties carry that weight, in order of importance:
 
    Identity is ``(series root pk, occurrence start time)``. The series root half
    is durable — splits are normalised back to the original master. The start-time
-   half is **not**: re-timing an occurrence mints a new identity and bills it
+   half is **not**: re-timing an occurrence creates a new identity and bills it
    again. See ``expand_occurrence_identities`` for why no durable alternative
    exists in the expansion today, and ``test_metering_reconciliation.py`` for the
-   measured magnitude of the two identity-churn paths this leaves open. Both are
-   Phase 13 preconditions.
+   measured magnitude of the two identity-churn paths this leaves open. Both must
+   be fixed before cycle close.
 4. **Price is stamped at meter time.** ``is_within_allowance`` and ``unit_price``
    are resolved against the effective limit in force when the occurrence is
    recorded, so a later plan change or limit override cannot retroactively
@@ -200,11 +200,11 @@ class MeteringService:
         # Acceptable today because every occurrence in a period carries the same
         # price, so ordering cannot change any row's `unit_price` — only which rows
         # sit inside the allowance, and the totals are identical either way.
-        # Phase 9 (mid-period plan changes) breaks that assumption: once two prices
-        # can apply within one period, ordering decides which one a row gets, and
-        # this must become a chronological rank. Re-ranking rows already stamped
-        # would contradict "price is stamped at meter time and never repriced", so
-        # that is a Phase 9 design decision, not a local fix.
+        # Mid-period plan changes break that assumption: once two prices can apply
+        # within one period, ordering decides which one a row gets, and this must
+        # become a chronological rank. Re-ranking rows already stamped would
+        # contradict "price is stamped at meter time and never repriced", so that is
+        # a design decision for that work, not a local fix.
         consumed_by_period: dict[datetime.datetime, int] = {}
         for identity in new_identities:
             period_start = resolve_billing_period_start(subscription, identity.occurrence_start)
@@ -332,7 +332,7 @@ class MeteringService:
         **An occurrence is identified by its series root and its current start
         time** — ``(series root pk, occurrence start)``. Exactly one half of that is
         durable, and being precise about which is the difference between a bound on
-        this phase's residual risk and a guess:
+        the residual risk and a guess:
 
         - *The series root, not the row that generated it.* A bulk modification
           moves later occurrences onto a continuation event with a new pk. The walk
@@ -340,7 +340,7 @@ class MeteringService:
           a split does **not** re-bill the tail under the continuation's pk. This
           half genuinely holds, and is tested.
         - *The current start time, which is not durable.* Re-timing an occurrence
-          mints a **new identity** and therefore a new billable row. An earlier
+          creates a **new identity** and therefore a new billable row. An earlier
           revision of this code claimed the opposite — that identity was pinned to
           the "recurrence slot" the occurrence was generated from and so survived a
           move. That was false: ``calculate_recurring_events`` emits a modified
@@ -353,9 +353,9 @@ class MeteringService:
         bills the moved occurrence a second time under its new start, and the unique
         constraint cannot catch it because the two rows genuinely differ. It is
         characterised (with measured magnitudes) in
-        ``payments/tests/test_metering_reconciliation.py`` and surfaced by
+        ``payments/tests/test_metering_reconciliation.py`` and reported by
         ``reconcile_period`` as ``orphaned`` drift. Giving occurrences a durable
-        identity is a Phase 13 precondition, not something to bolt on here.
+        identity must happen before cycle close, not something to bolt on here.
 
         The result is deduplicated on the identity tuple. That is belt-and-braces —
         the enumeration is designed not to produce a duplicate — but the alternative
@@ -397,14 +397,14 @@ class MeteringService:
         **Public, and deliberately so: this is the single definition of "how many
         billable units does this master cost".** Two callers share it — the meter's
         own ``expand_occurrence_identities`` (which turns each start into an
-        identity and writes a row for it) and Phase 8's post-paid allowance guard in
+        identity and writes a row for it) and the post-paid allowance check in
         ``CalendarEventService`` (which counts them to decide whether a *new*
         recurring master fits the organization's remaining allowance). Before that,
-        the guard charged 1 unit per master, so a free organization one unit below
+        the check charged 1 unit per master, so a free organization one unit below
         its ceiling could create an open-ended daily series and accrue ~30
-        unbillable occurrences a month forever. A guard and a meter that count
-        different things is the failure shape this plan keeps producing; there is
-        one function, and both call it.
+        unbillable occurrences a month forever. A check and a meter that count
+        different things is a recurring failure shape here; there is one function,
+        and both call it.
 
         A ``@staticmethod`` for the same reason: the guard can call it as
         ``MeteringService.occurrence_starts_of(...)`` without a DI-injected
@@ -418,7 +418,7 @@ class MeteringService:
 
         Reads ``start_time`` off ``get_occurrences_in_range`` — the ordinary calendar
         expansion, with no billing-specific variant. An earlier revision of this
-        phase threaded a separate "recurrence slot" out of the expansion in the
+        code threaded a separate "recurrence slot" out of the expansion in the
         belief that it differed from the occurrence's own ``start_time`` and would
         therefore survive an occurrence being re-timed. It does not: for a modified
         exception ``calculate_recurring_events`` emits ``me.start_time`` (the moved
@@ -536,9 +536,9 @@ class MeteringService:
         calendar's current state — so a recompute has no reproducible expected value
         to compare against and would report false drift on correctly-priced rows.
         Making prices reconcilable requires first making allowance ranking
-        deterministic (chronological), which is the same change Phase 9's mid-period
-        plan changes force. Gated on Phase 13 alongside cycle close, which is the
-        first point anything reads these columns to produce money.
+        deterministic (chronological), which is the same change mid-period plan
+        changes force. This waits for cycle close, the first point anything reads
+        these columns to produce money.
         """
         period_start, period_end = resolve_settlement_period(subscription, period)
         expected = set(self.expand_occurrence_identities(subscription, period_start, period_end))

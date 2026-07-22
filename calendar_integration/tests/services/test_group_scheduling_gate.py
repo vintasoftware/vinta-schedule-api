@@ -1,4 +1,4 @@
-"""Phase 7 tests: gate codeless public group booking on CalendarGroup.accepts_public_scheduling.
+"""Tests that codeless public group booking checks CalendarGroup.accepts_public_scheduling.
 
 Tests cover:
 - Public group (accepts_public_scheduling=True): codeless group booking succeeds.
@@ -7,10 +7,10 @@ Tests cover:
 - Backward-compat: single-Calendar and bundle booking behavior is unchanged.
 
 Implementation notes:
-  The group-level gate lives in CalendarGroupService.create_grouped_event via
+  The group-level check lives in CalendarGroupService.create_grouped_event via
   CalendarPermissionService.can_perform_group_scheduling.  The ``group_authorized=True``
   field on CalendarEventInputData bypasses the per-member-calendar
-  accepts_public_scheduling gate so private member calendars don't independently
+  accepts_public_scheduling check so private member calendars don't independently
   block a group booking the group itself permits.
 """
 
@@ -175,7 +175,7 @@ def _build_event_input(group, internal_calendars, start, end) -> CalendarGroupEv
 
 
 # ---------------------------------------------------------------------------
-# Phase 7 core gate tests
+# Core group authorization tests
 # ---------------------------------------------------------------------------
 
 
@@ -186,8 +186,8 @@ def test_public_group_with_private_member_calendars_codeless_booking_succeeds(
     """Public group (accepts_public_scheduling=True) with private member calendars:
     codeless booking must succeed.
 
-    This is the key regression guard for Phase 7: the group-level authorization
-    (group_authorized=True) must bypass each member calendar's own private gate.
+    This is the key regression check: the group-level authorization
+    (group_authorized=True) must bypass each member calendar's own private check.
     """
     group = _make_group(organization, internal_calendars, accepts_public_scheduling=True)
 
@@ -243,7 +243,7 @@ def test_private_group_with_group_scoped_token_booking_succeeds(
     """Private group + valid group-scoped token: booking must succeed.
 
     This verifies the existing token path (can_perform_group_scheduling case 2)
-    is preserved after the Phase 7 gate is added.
+    is preserved after the group-level check is added.
     """
     group = _make_group(organization, internal_calendars, accepts_public_scheduling=False)
 
@@ -362,8 +362,8 @@ def test_can_perform_group_scheduling_private_group_calendar_scoped_token_reject
 def test_single_calendar_public_codeless_booking_succeeds_unchanged(organization):
     """Single-calendar public booking: gate still keys on Calendar.accepts_public_scheduling.
 
-    Phase 7 must NOT change the behavior of the per-calendar gate for direct
-    single-calendar bookings (only the GROUP path changes).
+    The per-calendar check for direct single-calendar bookings is unchanged;
+    only the GROUP path changes.
     """
     public_cal = Calendar.objects.create(
         organization=organization,
@@ -409,7 +409,7 @@ def test_single_calendar_public_codeless_booking_succeeds_unchanged(organization
 def test_single_calendar_private_codeless_booking_still_rejected(organization):
     """Single-calendar private booking: still rejected by Calendar.accepts_public_scheduling.
 
-    Phase 7 must NOT soften the per-calendar gate for direct bookings.
+    The per-calendar check for direct bookings is not softened.
     """
     private_cal = Calendar.objects.create(
         organization=organization,
@@ -503,8 +503,8 @@ def test_group_authorized_flag_bypasses_private_member_calendar_gate(organizatio
 def test_can_perform_scheduling_unchanged_by_phase_7(organization):
     """can_perform_scheduling still gates single-calendar bookings exactly as before.
 
-    Phase 7 must NOT change the CalendarPermissionService.can_perform_scheduling
-    signature or behavior for single-calendar booking cases.
+    The CalendarPermissionService.can_perform_scheduling signature and behavior
+    for single-calendar booking cases are unchanged.
     """
     cal = Calendar.objects.create(
         organization=organization,
@@ -550,7 +550,7 @@ def test_can_perform_scheduling_unchanged_by_phase_7(organization):
 
 
 # ---------------------------------------------------------------------------
-# Fix 1: Fail-closed gate — None permission service raises PermissionDenied
+# Fail-closed gate — None permission service raises PermissionDenied
 # ---------------------------------------------------------------------------
 
 
@@ -561,9 +561,9 @@ def test_create_grouped_event_fail_closed_with_none_permission_service(
     """create_grouped_event on a PRIVATE group with calendar_permission_service=None
     (non-authenticated caller) must raise PermissionDenied — the gate must fail closed.
 
-    Before Fix 1 the gate was ``if not caller_is_authenticated_user and
+    Previously the gate was ``if not caller_is_authenticated_user and
     self.calendar_permission_service is not None:``, which let the booking through
-    when the permission service was None.  After Fix 1 it is
+    when the permission service was None.  Now it is
     ``if self.calendar_permission_service is None or not ...: raise``.
     """
     group = _make_group(organization, internal_calendars, accepts_public_scheduling=False)
@@ -583,7 +583,7 @@ def test_create_grouped_event_fail_closed_with_none_permission_service(
 
 
 # ---------------------------------------------------------------------------
-# Fix 5: Bundle backward-compat — group_authorized does NOT leak into bundle gate
+# Bundle backward-compat — group_authorized does NOT leak into bundle gate
 # ---------------------------------------------------------------------------
 
 
@@ -595,8 +595,8 @@ def test_bundle_can_perform_scheduling_still_keys_on_accepts_public_scheduling(o
     but the can_perform_scheduling logic itself is unchanged: a private bundle with no
     token returns False; a public bundle returns True.
 
-    This is a backward-compat unit test: Phase 7 must NOT change
-    CalendarPermissionService.can_perform_scheduling for bundle calendars.
+    This is a backward-compat unit test: CalendarPermissionService.can_perform_scheduling
+    is unchanged for bundle calendars.
     """
     from calendar_integration.constants import CalendarType
 

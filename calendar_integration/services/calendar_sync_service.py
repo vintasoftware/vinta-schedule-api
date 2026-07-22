@@ -13,14 +13,14 @@ via the constructor:
   same ``organization`` / ``account`` / ``calendar_adapter`` attributes the
   context exposes, so behavior is byte-for-byte identical to the former methods.
 - ``calendar_cache`` — the facade-owned, per-instance ``{(org_id, id): Calendar}``
-  cache (the lru_cache multi-tenant fix from Phase 0). Shared so lookups are not
+  cache (the multi-tenant fix for lru_cache). Shared so lookups are not
   duplicated across the facade and this service.
-- ``host`` — the :class:`SyncServiceHost` (in Phase 5 the facade itself). The sync
+- ``host`` — the :class:`SyncServiceHost` (currently the facade itself). The sync
   concern routes two things back through it:
 
   - **available-time pruning** (``_remove_available_time_windows_that_overlap_with_blocked_times_and_events``)
-    — the availability concern, extracted in Phase 4; reaching it through the host
-    keeps a single implementation and the call graph the existing test suite asserts on.
+    — the availability concern; reaching it through the host keeps a single
+    implementation and the call graph the existing test suite asserts on.
   - **owner-permission granting** (``_grant_calendar_owner_permissions``) — a shared
     facade helper used by import flows; routed through the host so it has one
     implementation and stays byte-for-byte.
@@ -120,7 +120,7 @@ class SyncServiceHost(Protocol):
 
     - **available-time pruning**
       (``_remove_available_time_windows_that_overlap_with_blocked_times_and_events``)
-      — the availability concern (Phase 4); reached through the host to keep one
+      — the availability concern; reached through the host to keep one
       implementation and the call graph the existing test suite patches via the facade;
     - **owner-permission granting** (``_grant_calendar_owner_permissions``) — a shared
       facade helper used by the import flows; routed through the host for a single
@@ -136,8 +136,8 @@ class SyncServiceHost(Protocol):
     point; when unpatched, the facade simply re-delegates to a fresh sync service, so
     behavior is byte-for-byte identical.
 
-    In Phase 5 the facade supplies *itself*. Later phases may swap individual concerns
-    without changing this service's call sites.
+    The facade currently supplies itself; individual concerns may be swapped out
+    later without changing this service's call sites.
     """
 
     def _remove_available_time_windows_that_overlap_with_blocked_times_and_events(
@@ -181,10 +181,10 @@ class CalendarSyncService:
     ) -> None:
         self._context = context
         self._calendar_cache = calendar_cache
-        # Phase 5 seam: available-time pruning (Phase 4) and the shared owner-permission
+        # Delegation seam: available-time pruning and the shared owner-permission
         # helper are reached through the host (the facade). See ``SyncServiceHost``.
         self._host = host
-        # Phase 3 seam: inbound-update interception under CHANGE_REQUEST/FORBIDDEN policy.
+        # Inbound-update interception under CHANGE_REQUEST/FORBIDDEN policy.
         # Optional so existing tests that build the service under ALLOW policy (without DI)
         # remain valid. None is only tolerated when the organization policy is ALLOW;
         # CHANGE_REQUEST and FORBIDDEN require the service to be injected.
@@ -192,8 +192,8 @@ class CalendarSyncService:
 
     def _check_not_restricted(self) -> None:
         """Raise ``OverLimitError`` (``remedy=resolve_billing``) if this context's
-        organization's billing root is ``RESTRICTED`` (Phase 11) -- **sync pause**,
-        the other half of the write guard defined once on
+        organization's billing root is ``RESTRICTED`` -- **sync pause**,
+        the other half of the write check defined once on
         ``EntitlementService.is_billing_root_restricted``.
 
         Called by every ``request_*`` method on this service (``request_calendar_sync``,
@@ -311,10 +311,10 @@ class CalendarSyncService:
     ) -> tuple[list[CalendarResourceData], str | None]:
         """Cap ``resources`` to the organization's remaining ``resource_calendars`` headroom.
 
-        Phase 6b: the bulk room-import writer is a request-scoped guard's blind spot --
+        The bulk room-import writer is a request-scoped check's blind spot --
         it loops ``Calendar.objects.update_or_create`` with no per-row check, so it is
-        the "single most likely place for an unmetered path to survive" the plan calls
-        out. This is checked and capped *before* the bulk write, not per-row after it.
+        the single most likely place for an unmetered path to survive. This is checked
+        and capped *before* the bulk write, not per-row after it.
 
         The rule is **"will this write increase**
         ``payments.services.entitlement_service._count_resource_calendars``**?"** -- not
@@ -329,7 +329,7 @@ class CalendarSyncService:
         ``get_account_calendars`` and ``get_calendar_resources`` both list the same
         calendars with the same ``external_id`` space.
 
-        The split predicate consequently lives on ``CalendarQuerySet`` as
+        The split helper consequently lives on ``CalendarQuerySet`` as
         ``external_ids_not_newly_counted_as_type`` / ``not_newly_counted_as_type``, defined
         immediately next to the ``live_of_type`` the usage counter counts with, as the
         complement of *newly entering* it (not of ``live_of_type`` itself -- a row already
@@ -340,13 +340,13 @@ class CalendarSyncService:
         (no row at all, or a live row of another type) consumes headroom. When the
         chargeable resources do not all fit, as many as fit are imported (not zero, not
         all-or-nothing) and a human-readable warning is returned for the caller to
-        record -- the spec accepts a partial import over an unmetered one, never the
+        record -- a partial import is preferred over an unmetered one, never the
         reverse.
 
         Checked and locked (``SELECT ... FOR UPDATE`` on the billing root's
         subscription) inside the caller's own transaction, so two concurrent imports for
         the same organization's last unit of capacity serialize on that row exactly like
-        every other guarded creation path in this phase. The lock is taken *before* the
+        every other checked creation path. The lock is taken *before* the
         split query, not by ``check_limit`` after it: the delta itself is derived from
         that read, so reading it outside the lock lets the loser of a race compute its
         headroom from a snapshot the winner has already invalidated.
@@ -424,13 +424,13 @@ class CalendarSyncService:
         The whole method runs in one transaction, which means the guard lock taken by
         ``_cap_resources_to_resource_calendar_headroom`` (a row lock on the billing
         root's ``Subscription``) is held across the write loop below. Not narrowed
-        here: the invariant is that each authorized write commits with the lock that
+        here: the rule is that each authorized write commits with the lock that
         authorized it (see ``EntitlementService.check_limit``'s ``lock`` docs), not
         that the whole import must share one transaction -- a chunked version that
-        re-locked and re-checked headroom per chunk would preserve that invariant too,
-        and is tracked as a follow-up (see the phase's tracking doc) rather than
+        re-locked and re-checked headroom per chunk would preserve that rule too,
+        and is tracked as a follow-up rather than
         implemented here. As shipped, the cost is real for a reseller billing root --
-        every guarded creation path in its subtree serializes for the duration of a
+        every checked creation path in its subtree serializes for the duration of a
         large import -- and is bounded deliberately: the loop does database work only
         (an upsert plus a ``CalendarSync`` row per resource; the provider call and
         every Celery dispatch happen outside it, the former before the lock is taken
@@ -442,8 +442,8 @@ class CalendarSyncService:
         :param import_workflow_state: When given, a partial-import warning (headroom
             exhausted on ``resource_calendars``) is recorded on its ``error_message``
             and its status set to ``PARTIAL``, both persisted immediately -- the import
-            is not failed, per the spec's "partial import over unmetered creation" rule.
-        :param bypass_limits: When True, skips the ``resource_calendars`` headroom guard.
+            is not failed, following the "partial import over unmetered creation" rule.
+        :param bypass_limits: When True, skips the ``resource_calendars`` headroom check.
             Only management commands and one-off repair scripts should pass this.
         :return: The resources actually imported -- the provider's discovery minus
             anything a partial-import cap dropped. Not the raw discovery: a caller that
@@ -463,7 +463,7 @@ class CalendarSyncService:
         )
 
         # Check remaining headroom *before* the bulk write -- a per-row check after the
-        # fact is exactly the unmetered path this phase closes.
+        # fact is exactly the unmetered path this check closes.
         resources_to_import, warning = self._cap_resources_to_resource_calendar_headroom(
             context.organization, resources, bypass_limits
         )
@@ -551,10 +551,11 @@ class CalendarSyncService:
         Import calendars associated with the authenticated account and create them as Calendar
         records.
 
-        Phase 6b: **not** guarded by a limit check. Every calendar this method creates is
+        This is **not** subject to a limit check. Every calendar this method creates is
         seeded with ``calendar_type=PERSONAL`` (``create_defaults`` below); it never sets
         ``calendar_type=RESOURCE``, so it never creates anything counted by the
-        ``resource_calendars`` member of ``LimitedResource`` (the closed set from Phase 3).
+        ``resource_calendars`` member of ``LimitedResource`` (the closed set of limited
+        resources).
         A pre-existing RESOURCE calendar that also shows up in this account's calendar list
         (e.g. a domain-wide account listing a room mailbox) is matched by ``update_or_create``
         and only *updated* -- ``calendar_type`` is not in ``defaults`` below, so its type is
@@ -627,7 +628,7 @@ class CalendarSyncService:
                 continue
 
             owner_user = context.account.user if context.account else None
-            # Ownership is membership-scoped after Phase 2b: the lookup key is the
+            # Ownership is membership-scoped: the lookup key is the
             # denormalized `membership_user_id`, matched by the partial unique
             # constraint (calendar_fk, membership_user_id). A non-NULL
             # `membership_user_id` is enforced by the raw-SQL composite FK to
@@ -864,12 +865,11 @@ class CalendarSyncService:
             calendar_sync.next_sync_token = next_sync_token or ""
             calendar_sync.save(update_fields=["next_sync_token"])
 
-        # Postpaid ``event_occurrences`` allowance guard -- checked *before* the bulk
+        # Postpaid ``event_occurrences`` allowance check -- checked *before* the bulk
         # write, not per-row after it, exactly like ``_cap_resources_to_resource_calendar_headroom``
-        # above. Unlike that prepaid guard this never bypasses (no ``bypass_limits``
-        # param): the plan's guiding decision keeps calendar sync fully enforced, since
-        # it is a named enforcement point in the spec, not something a management
-        # command routes through.
+        # above. Unlike that prepaid check this never bypasses (no ``bypass_limits``
+        # param): calendar sync stays fully enforced, since it is a named enforcement
+        # point, not something a management command routes through.
         #
         # Raising here (rather than dropping the offending rows and importing a partial
         # batch) fails the whole sync pass: ``sync_events`` already wraps this call in
@@ -1159,7 +1159,7 @@ class CalendarSyncService:
             }
             # Derive the provider from the sync adapter when available; fall back to
             # the local event's calendar provider so non-Google adapters are recorded
-            # correctly when wired in the future.
+            # correctly when added in the future.
             if context.calendar_adapter is not None:
                 provider = context.calendar_adapter.provider
             elif existing_event.calendar is not None:

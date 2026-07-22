@@ -980,14 +980,15 @@ class Query:
         when multiple Count() calls are combined in a single annotate() call across
         different related models.
 
-        Membership count includes ALL memberships (active + inactive) — the plan
-        says "memberships" with no active-only qualifier, so all rows are counted.
+        Membership count includes ALL memberships (active + inactive): "memberships"
+        has no active-only qualifier, so all rows are counted.
 
-        "Children" means DIRECT children (parent = acting_org). The plan says
-        "its child organizations"/"its children" — literal parent FK match.
+        "Children" means DIRECT children (parent = acting_org) — a literal parent FK
+        match.
 
-        Gate: acting org must have can_invite_organizations=True (assert_org_can_invite)
-        AND the token must carry CHILD_ORG_ANALYTICS scope (OrganizationResourceAccess).
+        Access: the acting org must have can_invite_organizations=True
+        (assert_org_can_invite) AND the token must carry CHILD_ORG_ANALYTICS scope
+        (OrganizationResourceAccess).
         """
         org = _get_org(info)
         assert_org_can_invite(org)
@@ -1157,7 +1158,7 @@ class Query:
         )
 
     # ------------------------------------------------------------------
-    # BookingPolicy queries (Phase 4)
+    # BookingPolicy queries
     # ------------------------------------------------------------------
 
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])

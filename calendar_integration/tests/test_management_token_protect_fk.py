@@ -1,7 +1,7 @@
-"""Phase 6 cutover (DB half) — CalendarManagementToken membership PROTECT FK.
+"""CalendarManagementToken membership PROTECT FK (DB half of the cutover).
 
-After Phase 6 the legacy ``user`` column is gone and a token's internal-actor
-integrity is enforced at the DB level by a raw-SQL composite FK:
+The legacy ``user`` column is gone and a token's internal-actor integrity is
+enforced at the DB level by a raw-SQL composite FK:
 
     (membership_user_id, organization_id) ->
         OrganizationMembership(user_id, organization_id)
@@ -82,9 +82,9 @@ def test_delete_membership_with_live_token_is_blocked(organization, member_user,
 def test_delete_user_with_live_token_is_blocked(organization, member_user, calendar):
     """Deleting the User cascades to its membership, which the PROTECT FK blocks.
 
-    Documented behaviour change introduced in Phase 6: a User holding a live member
-    token can no longer be deleted while the token is live — the membership-cascade
-    trips the deferred PROTECT FK at COMMIT (the close of the ``atomic`` block).
+    A User holding a live member token can no longer be deleted while the token is
+    live — the membership-cascade trips the deferred PROTECT FK at COMMIT (the close
+    of the ``atomic`` block).
     """
     _make_member_token(organization, calendar, member_user)
 

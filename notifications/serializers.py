@@ -28,8 +28,8 @@ class NotificationSerializer(serializers.Serializer):
     """
     Read-only serializer for in-app notification objects.
 
-    Works for both vintasend Notification dataclasses (Phase 1 — returned by
-    get_in_app_unread) and vintasend_django model instances (Phase 2 — ORM rows).
+    Works for both vintasend Notification dataclasses (returned by
+    get_in_app_unread) and vintasend_django model instances (ORM rows).
 
     Fields:
     - id, title, notification_type, status: present on both dataclass and model.

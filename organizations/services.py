@@ -104,7 +104,7 @@ class OrganizationService:
             create_kwargs["external_event_update_policy"] = external_event_update_policy
         self.organization = Organization.objects.create(**create_kwargs)
         # Every organization always has exactly one active plan, from creation —
-        # there is no plan-less state (billing plans and limits plan, objective 2).
+        # there is no plan-less state.
         # A no-op for a reseller child (parent set): it pools against its root's
         # subscription instead. See SubscriptionService.create_subscription_for_organization.
         self.subscription_service.create_subscription_for_organization(self.organization)
@@ -403,12 +403,12 @@ class OrganizationService:
         invitation._raw_token = token  # type: ignore[attr-defined]
 
         if send_email:
-            # TODO(phase-8 follow-up): set From=support_email when branded.
+            # TODO: set From=support_email when branded.
             # resolve_branding(invitation.organization) gives the reseller's support_email,
             # but DjangoEmailNotificationAdapter.send() always uses
             # NOTIFICATION_DEFAULT_FROM_EMAIL and does not accept a per-notification
-            # from_email override. Wiring this requires extending the vintasend
-            # adapter API, which is out of scope for this phase.
+            # from_email override. Connecting this requires extending the vintasend
+            # adapter API.
             transaction.on_commit(
                 lambda: self.notification_service.create_one_off_notification(
                     email_or_phone=email,
@@ -438,12 +438,12 @@ class OrganizationService:
         """
         Accept an invitation to join an organization.
 
-        Phase 4: raises UserAlreadyHasMembershipError only when the user is already a
-        member of the *specific* organization named in the matched invitation — allowing
-        a user in org A to accept a valid invitation from org B and gain a second
-        membership.  The composite unique constraint ``uniq_membership_user_organization``
-        (user, organization) on OrganizationMembership acts as the DB backstop against
-        any race that bypasses the per-org pre-check.
+        Raises UserAlreadyHasMembershipError only when the user is already a
+        member of the *specific* organization named in the matched invitation. A
+        user in org A can accept a valid invitation from org B and gain a second
+        membership. The composite unique constraint ``uniq_membership_user_organization``
+        (user, organization) on OrganizationMembership is the DB safety net for
+        any race that slips past the per-org pre-check.
 
         :param token: Invitation token.
         :param user: User who is accepting the invitation.
@@ -467,7 +467,7 @@ class OrganizationService:
         )
         for invitation in invitations:
             if verify_long_lived_token(token, invitation.token_hash):
-                # Per-org guard (Phase 4): refuse only a duplicate in the SAME org.
+                # Per-org check: refuse only a duplicate in the SAME org.
                 # A user already in a different org is allowed to join this one.
                 if user.organization_memberships.filter(
                     organization=invitation.organization
@@ -542,12 +542,12 @@ class OrganizationService:
         """
         Provision a tenant for a user on the signup / invite-accept path.
 
-        Phase 4 changes: the top-level blanket "user has any membership → refuse" guard
-        is removed from the pending-invitation branch so that a user already in org A can
-        accept a pending invitation to org B via the signup adapter.  The
-        ``organization_name`` branch (create-new-org on signup) retains its guard — auto-
-        creating an additional org for an existing member is Phase 5's concern (relaxing
-        ``OrganizationManagementPermission``), not this path.
+        The pending-invitation branch has no blanket "user has any membership → refuse"
+        check, so a user already in org A can accept a pending invitation to org B via
+        the signup adapter. The ``organization_name`` branch (create-new-org on signup)
+        keeps its check: auto-creating an additional org for an existing member is
+        handled by ``OrganizationManagementPermission`` on the create endpoint, not this
+        path.
 
         Logic (in order):
         1. If a non-expired, unaccepted OrganizationInvitation exists for user.email:
@@ -558,7 +558,7 @@ class OrganizationService:
               elsewhere).
         2. Else if organization_name is truthy:
            a. If the user already has ANY membership → raise UserAlreadyHasMembershipError.
-              Creating an additional org on the signup path is out of scope here (Phase 5).
+              Creating an additional org on the signup path is out of scope here.
            b. Otherwise → delegate to create_organization (user becomes ADMIN of a new org).
         3. Else → return None (caller decides — gated onboarding).
 
@@ -589,7 +589,7 @@ class OrganizationService:
         ).first()
 
         if pending_invitation is not None:
-            # Per-org guard (Phase 4): refuse only a duplicate in the SAME org.
+            # Per-org check: refuse only a duplicate in the SAME org.
             # A user already in a different org is allowed to join the inviting org.
             if user.organization_memberships.filter(
                 organization=pending_invitation.organization
@@ -649,9 +649,9 @@ class OrganizationService:
             return membership
 
         if organization_name:
-            # DESIGN: auto-creating a second org for an existing member is Phase 5's
-            # concern (relaxing OrganizationManagementPermission on POST /organizations/).
-            # This signup-path branch keeps the original single-membership guard.
+            # Auto-creating a second org for an existing member is handled by the create
+            # endpoint (OrganizationManagementPermission on POST /organizations/).
+            # This signup-path branch keeps the original single-membership check.
             if user.organization_memberships.exists():
                 raise UserAlreadyHasMembershipError()
             try:
@@ -667,11 +667,11 @@ class OrganizationService:
         """
         Revoke an invitation to join an organization.
         :param invitation_id: ID of the invitation to revoke.
-        :param bypass_limits: When True, skips the restricted-organization guard
+        :param bypass_limits: When True, skips the restricted-organization check
             below. Only management commands and one-off repair scripts should
             pass this — never a request-handling path.
         :raises OverLimitError: When the invitation's organization is restricted
-            (Phase 11) — a restricted org may not write, including revoking one
+            — a restricted org may not write, including revoking one
             of its own invitations. Read-then-check, not check-then-read: the
             organization to check is only known once the invitation is resolved.
         """
@@ -707,10 +707,9 @@ class OrganizationService:
         membership: OrganizationMembership,
         bypass_limits: bool = False,
     ) -> OrganizationMembership:
-        """Reactivate a member (set is_active=True), enforced here rather than at
-        the viewset — see the plan's Guiding Decisions ("Enforcement layer: service
-        layer, not viewsets") and the ``bypass_limits`` convention every guarded
-        method in this module follows.
+        """Reactivate a member (set is_active=True). The seat-limit check lives here in
+        the service layer rather than at the viewset, matching the ``bypass_limits``
+        convention every limit-checked method in this module follows.
 
         Reactivating occupies a seat again (``OrganizationMembershipQuerySet
         .occupying_a_seat`` only counts ``is_active=True`` rows), so — unlike every

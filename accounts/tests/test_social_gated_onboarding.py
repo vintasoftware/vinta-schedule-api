@@ -1,13 +1,12 @@
 """
 Integration tests: Gated onboarding for uninvited social signup.
 
-Use-case 3: A social user who signed up without a pending invitation lands
-authenticated but membership-less (gated).  They then create their own
-organisation via the existing OrganizationViewSet create endpoint and become
-ADMIN.
+A social user who signed up without a pending invitation lands authenticated
+but membership-less (gated).  They then create their own organisation via the
+existing OrganizationViewSet create endpoint and become ADMIN.
 
-Phase 5 update: a second create attempt now also SUCCEEDS — any authenticated
-user may POST /organizations/ and become ADMIN of the new org (Use-case 7).
+A second create attempt also SUCCEEDS — any authenticated user may POST
+/organizations/ and become ADMIN of the new org.
 
 Four scenarios are covered:
 
@@ -15,7 +14,7 @@ Four scenarios are covered:
    Organisation is created, no OrganizationMembership row exists.
 2. Gated → create org → ADMIN: a membership-less authenticated user POSTs the
    org-create endpoint, succeeds, and is recorded as ADMIN of the new org.
-3. Second create succeeds (Phase 5): the now-member user POSTs org-create again
+3. Second create succeeds: the now-member user POSTs org-create again
    and creates a second org; they end up with two ADMIN memberships.
 4. Membership-less user blocked from a member-only tenant endpoint: a
    membership-less user hitting OrganizationInvitationViewSet gets 403 (no
@@ -93,7 +92,7 @@ def _membership_less_auth_client(user: User) -> APIClient:
 
 @pytest.mark.django_db
 class TestSocialGatedOnboarding:
-    """Phase 5 / Use-case 3: uninvited social signup → gated → create org → ADMIN."""
+    """Uninvited social signup → gated → create org → ADMIN."""
 
     # ------------------------------------------------------------------
     # Scenario 1 — save_user leaves the user membership-less
@@ -169,12 +168,11 @@ class TestSocialGatedOnboarding:
     # ------------------------------------------------------------------
 
     def test_second_org_create_succeeds_after_first_succeeds(self):
-        """Phase 5 / Use-case 7: after creating a first org, a member can create a second one.
+        """After creating a first org, a member can create a second one.
 
-        Prior to Phase 5 this was expected to return 403 (OrganizationManagementPermission
-        blocked members from the create action).  Phase 5 relaxes the permission so any
-        authenticated user may POST /organizations/ and become ADMIN of the new org.
-        The second create must therefore:
+        Any authenticated user may POST /organizations/ and become ADMIN of the new
+        org (OrganizationManagementPermission no longer blocks members from the create
+        action). The second create must therefore:
         - Return HTTP 201.
         - Create the second org with the caller as ADMIN.
         - Leave the caller with TWO active memberships.
@@ -193,7 +191,7 @@ class TestSocialGatedOnboarding:
         )
         assert OrganizationMembership.objects.filter(user=user, is_active=True).count() == 1
 
-        # Second create — Phase 5: now succeeds for an authenticated member.
+        # Second create — now succeeds for an authenticated member.
         second_response = client.post(
             url, {"name": "Second Org", "should_sync_rooms": False}, format="json"
         )
@@ -252,7 +250,7 @@ class TestSocialGatedOnboarding:
 
 @pytest.mark.django_db
 class TestSocialSignupCrossOrgInviteAccept:
-    """Phase 4 / Finding 2 — Cross-org invite accept via the social signup adapter.
+    """Cross-org invite accept via the social signup adapter.
 
     An existing org-A member completes a SOCIAL SIGNUP (re-login or a new OAuth
     connection) while a pending org-B invitation exists for their email.  The
@@ -279,7 +277,7 @@ class TestSocialSignupCrossOrgInviteAccept:
             return adapter.save_user(None, sociallogin, form=None)
 
     def test_existing_org_a_member_social_signup_with_org_b_invite_gains_second_membership(self):
-        """Finding 2 integration test: existing org-A member + pending org-B invite → TWO memberships.
+        """Existing org-A member + pending org-B invite → TWO memberships.
 
         Simulates the real-world cross-org-via-invite path through the adapter:
         1. A user is already a member of org A.

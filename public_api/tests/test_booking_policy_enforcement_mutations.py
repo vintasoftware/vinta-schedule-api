@@ -1,4 +1,4 @@
-"""Integration tests for Phase 8a — booking-time policy enforcement at the GraphQL layer.
+"""Integration tests for booking-time policy enforcement at the GraphQL layer.
 
 Coverage:
 - ``scheduleEvent`` (authenticated single-calendar):
@@ -465,7 +465,7 @@ class TestCreateCalendarEventWithCodePolicyEnforcement:
     def test_discovery_enforcement_agreement_lead_time(self):
         """A slot NOT offered by the slot engine (lead-time) is also rejected at booking time.
 
-        This test asserts the discovery/enforcement agreement: a slot the Phase 5
+        This test asserts the discovery/enforcement agreement: a slot the
         ``BookableSlotsService`` would reject is also rejected by ``create_event``.
         """
         from calendar_integration.services.bookable_slots_service import BookableSlotsService

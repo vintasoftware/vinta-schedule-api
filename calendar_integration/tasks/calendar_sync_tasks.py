@@ -31,20 +31,19 @@ logger = logging.getLogger(__name__)
 def _restricted_or_skip(
     entitlement_service: EntitlementService, organization: Organization
 ) -> bool:
-    """``True`` when ``organization``'s billing root is ``RESTRICTED`` (Phase 11) --
+    """``True`` when ``organization``'s billing root is ``RESTRICTED`` --
     logs and lets the caller early-return rather than run the sync.
 
     Consults ``EntitlementService.is_billing_root_restricted`` -- the **same**
-    predicate the write guard (``EntitlementService.check_limit`` /
+    helper the write check (``EntitlementService.check_limit`` /
     ``check_postpaid_allowance`` / ``check_not_restricted``) and the
-    ``request_*`` enqueue guards (``CalendarSyncService._check_not_restricted``)
+    ``request_*`` enqueue checks (``CalendarSyncService._check_not_restricted``)
     all consult. One definition of "restricted", not a second one re-derived at
     the task layer: if this checked something else (a local flag, a different
     query), an organization could be write-blocked while its sync kept running
-    (continued third-party spend) or sync-paused while still writable -- the
-    plan's own named recurring failure shape.
+    (continued third-party spend) or sync-paused while still writable.
 
-    This is defense in depth, not the primary gate: the ``request_*`` methods
+    This is defense in depth, not the primary check: the ``request_*`` methods
     already refuse to enqueue a restricted organization's sync work in the
     first place (``CalendarSyncService._check_not_restricted``, raised as
     ``OverLimitError`` before anything is queued). This early-return exists for
@@ -260,7 +259,7 @@ def resync_organization_calendars_task(
     entitlement_service: Annotated[EntitlementService, Provide["entitlement_service"]],
 ) -> None:
     """Reconcile ``organization``'s calendars after its billing root recovers out
-    of ``RESTRICTED`` (Phase 11).
+    of ``RESTRICTED``.
 
     Sync is paused for the whole time an organization's billing root is
     ``RESTRICTED`` (see ``CalendarSyncService._check_not_restricted`` and this

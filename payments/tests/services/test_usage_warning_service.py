@@ -1,14 +1,13 @@
-"""Unit tests for ``UsageWarningService`` (Phase 12) -- the proactive "you're
-approaching a limit" / "you've reached a limit" push notifications.
+"""Unit tests for ``UsageWarningService`` -- the proactive "you're approaching
+a limit" / "you've reached a limit" push notifications.
 
-The two things this module exists to pin, per the phase's own warning about
-its recurring failure shape:
+The two things this module exists to pin:
 
 - **"Approaching" is defined exactly once**, at
   ``usage_warning_service.APPROACHING_LIMIT_THRESHOLD``, and read from the
   identical ``EntitlementService.get_effective_limit`` /
-  ``get_current_usage`` methods the enforcement guards use -- there is no
-  second ratio computed anywhere else in this module.
+  ``get_current_usage`` methods enforcement uses. There is no second ratio
+  computed anywhere else in this module.
 - **The debounce is durable, not an in-memory flag**: a warning fires at most
   once per ``(subscription, resource_key, billing_period_start, level)``,
   proven by calling ``check_subscription`` more than once against the same

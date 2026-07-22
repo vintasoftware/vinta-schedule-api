@@ -72,11 +72,11 @@ class TestPlanLimit:
 
 @pytest.mark.django_db
 class TestBillingPlanLimitCoverage:
-    """Plan completeness as a model-level invariant.
+    """Plan completeness as a model-level rule.
 
     It used to be asserted only over *seed data*, which cannot see a plan an admin
     authors at runtime — and an incomplete plan is what turns a downgrade into an
-    infinite ceiling (BLOCKER 3, Phase 5 review).
+    infinite ceiling.
     """
 
     def test_clean_rejects_a_plan_missing_a_limited_resource(self, billing_plan):

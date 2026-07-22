@@ -15,11 +15,11 @@ class OrganizationAdminForm(forms.ModelForm):
     organization tree.
 
     ``parent`` is freely editable in admin with no other acyclicity check, which
-    is how a cycle like the one ``resolve_billing_root``'s cycle guard exists for
-    gets created in the first place (Phase 4 review BLOCKER 4/3). Left editable
-    rather than made read-only after creation: reparenting an organization
-    between resellers is a legitimate admin operation with no other UI path, and
-    this validation — not immutability — is what protects the invariant.
+    is how a cycle — the kind ``resolve_billing_root``'s cycle check exists to
+    catch — gets created in the first place. It stays editable rather than
+    read-only after creation: reparenting an organization between resellers is a
+    legitimate admin operation with no other UI path, and this validation, not
+    immutability, is what protects the rule.
     """
 
     class Meta:
@@ -66,7 +66,7 @@ class OrganizationAdmin(admin.ModelAdmin):
     Also exposes external_event_update_policy for managing event edit/delete policies.
 
     A fourth organization-creation path alongside the REST funnel, signup, and the
-    reseller GraphQL mutation (Phase 4 review BLOCKER 4) — ``save_model`` places a
+    reseller GraphQL mutation — ``save_model`` places a
     newly created organization on the default billing plan the same way
     ``OrganizationService.create_organization`` does, so an org created here is
     never left plan-less.
@@ -76,7 +76,7 @@ class OrganizationAdmin(admin.ModelAdmin):
     into its own billing root (``is_billing_root``). ``save_model`` therefore calls
     ``create_subscription_for_organization`` on every save, not just creation — it
     is idempotent (``get_or_create``) and already a no-op for non-roots, so it is
-    safe to call unconditionally (Phase 4 verification review BLOCKER).
+    safe to call unconditionally.
     """
 
     form = OrganizationAdminForm

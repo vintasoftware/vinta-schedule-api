@@ -5,8 +5,8 @@ from django.utils.translation import gettext as _
 class BillingState(TextChoices):
     """Billing lifecycle state of an organization's ``Subscription``.
 
-    The spec's lifecycle diagram is the authority on the transitions between
-    these states (see the Billing Plans and Limits spec).
+    The billing state machine's transition table is the authority on the
+    transitions between these states.
     """
 
     FREE = ("free", _("Free"))
@@ -88,7 +88,7 @@ class Entitlement(TextChoices):
 
 class LimitWarningLevel(TextChoices):
     """How close usage is to the effective limit, as reported by
-    ``UsageWarningService`` (Phase 12).
+    ``UsageWarningService``.
 
     Two distinct notifications, each debounced independently (see
     ``LimitWarningNotification``'s unique constraint) so an organization gets

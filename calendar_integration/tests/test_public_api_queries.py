@@ -428,7 +428,7 @@ class TestCalendarQueries:
     def test_calendars_query_excludes_disabled_calendars(
         self, mock_request, mock_dependencies
     ) -> None:
-        """Phase 19: public GraphQL calendars query must exclude non-active calendars."""
+        """The public GraphQL calendars query must exclude non-active calendars."""
         from calendar_integration.models import Calendar
         from public_api.queries import Query
 

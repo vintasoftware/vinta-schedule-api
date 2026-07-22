@@ -53,10 +53,10 @@ class CalendarServiceContext:
     # records for the business writes they perform. Defaults to None so contexts built
     # directly in tests (without DI) still construct.
     audit_service: AuditService | None = None
-    # Phase 6b: pre-paid limit enforcement, threaded from the facade so sub-services
-    # (bundle, availability, sync) can guard their own creation paths without each
+    # Pre-paid limit enforcement, passed from the facade so sub-services
+    # (bundle, availability, sync) can check their own creation paths without each
     # taking a separate DI-injected constructor parameter. Defaults to None so
-    # contexts built directly in tests (without DI) still construct; a guarded method
+    # contexts built directly in tests (without DI) still construct; a checked method
     # skips its check when this is None, mirroring ``audit_service``'s no-op-when-absent
     # convention -- the facade (the only production entry point) always injects a real
     # instance, so this only matters for tests that build a sub-service directly.

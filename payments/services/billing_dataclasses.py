@@ -6,12 +6,12 @@ limits/entitlements domain and are consumed by non-payments callers — the
 organization, calendar, webhooks, and public-API services that ask "may I create
 one more of these?".
 
-Deferred from this phase: ``UsageSnapshot``. The plan's data-model section names it
-as the periodic materialization of ``EntitlementService.get_current_usage`` (so
-dashboards and invoices do not each re-run the subtree aggregate), but nothing
-reads a snapshot yet — every consumer in Phases 5-6 wants a point-in-time count,
-and a stale snapshot behind a *guard* would be an enforcement bug rather than an
-optimization. It belongs with the phase that introduces the first reader.
+Not yet added: ``UsageSnapshot``, the periodic materialization of
+``EntitlementService.get_current_usage`` (so dashboards and invoices do not each
+re-run the subtree aggregate). Nothing reads a snapshot yet — every consumer wants
+a point-in-time count, and a stale snapshot behind a limit check would be an
+enforcement bug rather than an optimization. It belongs with the change that
+introduces the first reader.
 """
 
 import datetime
@@ -28,11 +28,11 @@ class EffectiveLimit:
     **``None`` means unlimited, never zero** — a resource with no
     ``SubscriptionPlanLimit`` row at all also resolves to ``None``, so a missing
     seed row cannot lock an organization out of a resource it used to be able to
-    create (the fail-open rule from the plan's Phase 5 body).
+    create (the fail-open rule).
 
-    Deliberately carries no ``current_usage`` field, unlike the sketch in the
-    plan's *Type plumbing* section: usage is a subtree-wide aggregate over several
-    tables, and folding it in here would make every cheap ceiling lookup pay for a
+    Deliberately carries no ``current_usage`` field: usage is a subtree-wide
+    aggregate over several tables, and folding it in here would make every cheap
+    ceiling lookup pay for a
     count it does not need. ``EntitlementService.get_current_usage`` returns it
     separately, and ``check_limit`` pairs the two.
     """
@@ -143,9 +143,9 @@ class ClosedPeriod:
 class ReconciliationReport:
     """Drift between what a closed period *should* have metered and what it did.
 
-    The plan's named mitigation for this feature's highest-severity risk: metering
-    depends on a scheduled task, occurrences are computed rather than stored, and a
-    miscount is invisible until a customer disputes a bill. Nothing here writes —
+    The safeguard against this feature's highest-severity risk: metering depends on
+    a scheduled task, occurrences are computed rather than stored, and a miscount is
+    invisible until a customer disputes a bill. Nothing here writes —
     reconciliation reports, it does not repair, so a surprising number is escalated
     rather than silently absorbed.
 

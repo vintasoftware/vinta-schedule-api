@@ -116,7 +116,7 @@ def membership_less_client(membership_less_user):
 
 @pytest.mark.django_db
 class TestSystemUserTokenViewSetCreate:
-    """POST /public-api-tokens/ — Phase 12 create-only endpoint."""
+    """POST /public-api-tokens/ — create endpoint."""
 
     CREATE_URL = "api:PublicAPITokens-list"
 
@@ -370,7 +370,7 @@ class TestSystemUserTokenViewSetCreate:
 
 @pytest.mark.django_db
 class TestSystemUserTokenViewSetList:
-    """GET /public-api-tokens/ — Phase 13 list endpoint."""
+    """GET /public-api-tokens/ — list endpoint."""
 
     LIST_URL = "api:PublicAPITokens-list"
 
@@ -560,7 +560,7 @@ class TestSystemUserTokenViewSetList:
 
 @pytest.mark.django_db
 class TestSystemUserTokenViewSetRetrieve:
-    """GET /public-api-tokens/{id}/ — Phase 13 retrieve endpoint."""
+    """GET /public-api-tokens/{id}/ — retrieve endpoint."""
 
     def _url(self, token_id):
         return reverse("api:PublicAPITokens-detail", kwargs={"pk": token_id})
@@ -674,7 +674,7 @@ class TestSystemUserTokenViewSetRetrieve:
 
 @pytest.mark.django_db
 class TestSystemUserTokenViewSetRevoke:
-    """POST /public-api-tokens/{id}/revoke/ — Phase 14 revoke action."""
+    """POST /public-api-tokens/{id}/revoke/ — revoke action."""
 
     def _url(self, token_id):
         return reverse("api:PublicAPITokens-revoke", kwargs={"pk": token_id})
@@ -845,7 +845,7 @@ class TestSystemUserTokenViewSetRevoke:
 
 @pytest.mark.django_db
 class TestSystemUserTokenViewSetUpdate:
-    """PATCH /public-api-tokens/{id}/ — Phase 15 update action."""
+    """PATCH /public-api-tokens/{id}/ — update action."""
 
     def _url(self, token_id):
         return reverse("api:PublicAPITokens-detail", kwargs={"pk": token_id})
@@ -1141,7 +1141,7 @@ class TestSystemUserTokenViewSetUpdate:
 
 @pytest.mark.django_db
 class TestSystemUserTokenViewSetPartialUpdate:
-    """PUT /public-api-tokens/{id}/ — Phase 15 full update action."""
+    """PUT /public-api-tokens/{id}/ — full update action."""
 
     def _url(self, token_id):
         return reverse("api:PublicAPITokens-detail", kwargs={"pk": token_id})
@@ -1238,7 +1238,7 @@ class TestSystemUserTokenViewSetPartialUpdate:
 
 @pytest.mark.django_db
 class TestSystemUserTokenViewSetScopedCreate:
-    """POST /public-api-tokens/ — Phase 3 owner-scoped token creation."""
+    """POST /public-api-tokens/ — owner-scoped token creation."""
 
     CREATE_URL = "api:PublicAPITokens-list"
 

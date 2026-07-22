@@ -3,9 +3,9 @@
 The test DB is fully migrated before any test runs (pytest-django), so asserting
 against `BillingPlan.objects` here is asserting against what the seed migration
 actually produced — not a factory standing in for it. `LimitedResource.values` is
-enumerated dynamically (never a hardcoded list) so a limited resource added in a
-later phase is caught here if its `unlimited` row goes missing, per the plan's
-"no feature flag / unlimited is the rollback plan" guiding decision.
+enumerated dynamically (never a hardcoded list) so a limited resource added later is
+caught here if its `unlimited` row goes missing. There is no feature flag: keeping
+every organization on the `unlimited` plan is the rollback path.
 """
 
 import importlib
@@ -69,20 +69,19 @@ class TestPlanSeedMigration:
         assert limit.overage_unit_price is not None
 
     def test_every_seeded_plan_covers_every_limited_resource(self):
-        """The plan-completeness invariant, stated once for the whole catalog.
+        """The plan-completeness rule, stated once for the whole catalog.
 
         `SubscriptionService.assert_plan_is_complete` enforces this at runtime for
         *any* plan a subscription is placed on, including one authored through the
         admin. This test is the seed-data half: it proves no shipped plan trips that
-        guard, so nobody is refused a plan change on catalog data we control.
+        check, so nobody is refused a plan change on catalog data we control.
 
-        The invariant itself: a plan carrying a row for every `LimitedResource`
-        member can never leave a subscription in the absent-row state on a plan
-        change, and absent-row (like a stale `limit_value=None`) is what
+        The rule itself: a plan carrying a row for every `LimitedResource` member can
+        never leave a subscription in the absent-row state on a plan change, and
+        absent-row (like a stale `limit_value=None`) is what
         `EntitlementService.get_effective_limit` reads as **unlimited**. Without it,
         adding a resource to `LimitedResource` and forgetting one plan would let a
-        downgrade onto that plan hand the resource an infinite ceiling (BLOCKER 3,
-        Phase 5 review).
+        downgrade onto that plan hand the resource an infinite ceiling.
 
         Enumerated over every seeded plan, not just `unlimited`, so a plan added to
         the catalog later is held to the same rule.

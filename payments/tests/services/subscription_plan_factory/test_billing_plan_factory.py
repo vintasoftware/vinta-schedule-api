@@ -78,8 +78,8 @@ class TestBillingPlanFactory:
 
     def test_billing_day_is_clamped_to_28(self, organization, billing_plan):
         """Providers commonly reject or mishandle billing_day > 28 for monthly
-        recurrence (not every month has a 29th/30th/31st) -- a period anchored on
-        one of those days must still resolve to a billable day (Phase 9)."""
+        recurrence (not every month has a 29th/30th/31st). A period anchored on
+        one of those days must still resolve to a billable day."""
         now = datetime.datetime(2026, 1, 31, tzinfo=datetime.UTC)
         subscription = baker.make(
             Subscription,

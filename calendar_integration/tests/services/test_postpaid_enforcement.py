@@ -1,13 +1,13 @@
-"""Phase 8: the post-paid ``event_occurrences`` allowance guard.
+"""The post-paid ``event_occurrences`` allowance check.
 
-Spec use-case 4 (enforcement half): an organization **with** a payment method
-accrues past its included allowance and is never interrupted; one **without** a
-payment method is blocked at the allowance.
+Enforcement half: an organization **with** a payment method accrues past its
+included allowance and is never interrupted; one **without** a payment method is
+blocked at the allowance.
 
-These tests drive the real guarded path (``CalendarService.create_event`` /
+These tests drive the real enforcement path (``CalendarService.create_event`` /
 ``EntitlementService.check_postpaid_allowance`` / ``has_payment_method``) rather
-than asserting on a hand-built queryset -- a guard's own test would otherwise pass
-whether or not the invariant holds.
+than asserting on a hand-built queryset -- a check tested only against itself
+would otherwise pass whether or not the rule holds.
 """
 
 import datetime
@@ -47,8 +47,8 @@ def _organization_with_postpaid_limit(
     """A standalone (non-reseller) organization with a ceiling on ``event_occurrences``.
 
     ``limit_value=None`` builds an ``unlimited``-shaped subscription (NULL ceiling) --
-    every organization's actual state for the whole rollout, and the property this
-    phase's tests must prove is inert.
+    every organization's actual state for the whole rollout, and the property these
+    tests must prove is inert.
     """
     organization = baker.make(Organization, parent=None, can_invite_organizations=False)
     now = timezone.now()
@@ -91,8 +91,8 @@ def _seed_metered_occurrences(organization: Organization, subscription: Subscrip
 
 def _attach_payment_method(organization: Organization, is_active: bool = True) -> PaymentMethod:
     """A confirmed, chargeable instrument on file for ``organization`` -- the real
-    record ``has_payment_method`` reads (Phase 9), replacing the Phase 8
-    ``billing_state`` allow-list proxy this module used to drive through
+    record ``has_payment_method`` reads, replacing the old ``billing_state``
+    allow-list proxy this module used to drive through
     ``_organization_with_postpaid_limit``'s ``billing_state`` parameter."""
     return baker.make(
         PaymentMethod,
@@ -146,22 +146,21 @@ def _service_for(organization: Organization) -> CalendarService:
 # ----------------------------------------------------------------------------------
 
 
-#: Every ``BillingState``, paired with whether an *organization on that state* can
-#: still answer ``has_payment_method`` correctly in both directions (card present /
-#: card absent). Phase 8 pinned this table keyed by ``billing_state`` alone, because
-#: ``billing_state`` *was* the (proxy) answer. Phase 9 re-points ``has_payment_method``
-#: at the real ``PaymentMethod`` record and deletes that proxy, so the meaningful
-#: table is no longer "state -> answer" (a card can be present or absent on *any*
-#: state) -- it is "does presence/absence of a real row still decide it correctly
-#: regardless of state", exercised below by ``TestHasPaymentMethod`` and
+#: Every ``BillingState``. ``has_payment_method`` used to be keyed off
+#: ``billing_state`` alone, because ``billing_state`` *was* the proxy answer. It
+#: now reads the real ``PaymentMethod`` record and the proxy is gone, so the
+#: meaningful question is no longer "state -> answer" (a card can be present or
+#: absent on *any* state) -- it is "does presence/absence of a real row still
+#: decide it correctly regardless of state", exercised below by
+#: ``TestHasPaymentMethod`` and
 #: ``TestCheckPostpaidAllowance.test_accrual_past_the_allowance_follows_the_payment_method_record``.
-#: Kept only as the enumeration of every state this module's fixtures must cover.
+#: Kept as the enumeration of every state this module's fixtures must cover.
 ALL_BILLING_STATES = list(BillingState)
 
-#: ``ALL_BILLING_STATES`` minus ``RESTRICTED`` -- Phase 11 makes ``RESTRICTED``
-#: block unconditionally, ahead of the payment-method check, so it is no longer
-#: true that a payment method lets accrual through "regardless of billing
-#: state". See ``TestCheckPostpaidAllowance.test_restricted_blocks_even_with_a_payment_method``
+#: ``ALL_BILLING_STATES`` minus ``RESTRICTED`` -- ``RESTRICTED`` blocks
+#: unconditionally, ahead of the payment-method check, so it is no longer true
+#: that a payment method lets accrual through "regardless of billing state". See
+#: ``TestCheckPostpaidAllowance.test_restricted_blocks_even_with_a_payment_method``
 #: for the ``RESTRICTED``-specific behavior this excludes.
 NON_RESTRICTED_BILLING_STATES = [
     state for state in ALL_BILLING_STATES if state != BillingState.RESTRICTED
@@ -170,10 +169,9 @@ NON_RESTRICTED_BILLING_STATES = [
 
 @pytest.mark.django_db
 class TestHasPaymentMethod:
-    """Phase 9: ``has_payment_method`` reads the real ``PaymentMethod`` record, not
-    ``Subscription.billing_state`` -- these tests replace Phase 8's
-    ``EXPECTED_HAS_PAYMENT_METHOD`` (state -> answer) table, which pinned the dead
-    proxy rather than the real source of truth.
+    """``has_payment_method`` reads the real ``PaymentMethod`` record, not
+    ``Subscription.billing_state``. These tests replace the old state -> answer
+    table, which pinned the dead proxy rather than the real source of truth.
     """
 
     @pytest.mark.parametrize(
@@ -182,7 +180,7 @@ class TestHasPaymentMethod:
         ids=[state.value for state in ALL_BILLING_STATES],
     )
     def test_active_payment_method_is_true_regardless_of_billing_state(self, billing_state):
-        """The load-bearing case the old proxy could never express: a card can be
+        """The key case the old proxy could never express: a card can be
         on file while the subscription sits in *any* billing state -- most notably
         ``GRACE``, which the old allow-list had to hard-pin ``False`` even when the
         organization's card was perfectly fine and the very next retry would
@@ -280,13 +278,12 @@ class TestCheckPostpaidAllowance:
     )
     def test_accrual_past_the_allowance_follows_the_payment_method_record(self, billing_state):
         """Who may accrue past the allowance is exactly ``has_payment_method`` --
-        which, since Phase 9, is a real ``PaymentMethod`` row, not
-        ``billing_state``. ``GRACE`` is the load-bearing case: an organization
-        whose card is still on file must accrue even while ``GRACE`` (Phase 10
-        moves ``ACTIVE -> GRACE`` on a failed *charge*, not on the card being
-        removed), proven here for every non-``RESTRICTED`` state. ``RESTRICTED``
-        is excluded -- Phase 11 makes it block unconditionally regardless of
-        payment method, see ``test_restricted_blocks_even_with_a_payment_method``.
+        which is now a real ``PaymentMethod`` row, not ``billing_state``. ``GRACE``
+        is the important case: an organization whose card is still on file must
+        accrue even while ``GRACE`` (a failed *charge* moves ``ACTIVE -> GRACE``,
+        not the card being removed), proven here for every non-``RESTRICTED``
+        state. ``RESTRICTED`` is excluded -- it blocks unconditionally regardless
+        of payment method, see ``test_restricted_blocks_even_with_a_payment_method``.
         """
         organization, subscription = _organization_with_postpaid_limit(5, billing_state)
         _attach_payment_method(organization)
@@ -297,10 +294,10 @@ class TestCheckPostpaidAllowance:
         assert result.allowed is True
 
     def test_restricted_blocks_even_with_a_payment_method(self):
-        """Phase 11: unlike every other billing state, ``RESTRICTED`` blocks
-        event creation outright -- a payment method on file does not lift it,
-        because the block is not about capacity or ability to pay; it is a
-        write block that only resolving the restriction lifts."""
+        """Unlike every other billing state, ``RESTRICTED`` blocks event creation
+        outright -- a payment method on file does not lift it, because the block
+        is not about capacity or ability to pay; it is a write block that only
+        resolving the restriction lifts."""
         organization, subscription = _organization_with_postpaid_limit(5, BillingState.RESTRICTED)
         _attach_payment_method(organization)
         _seed_metered_occurrences(organization, subscription, 5)

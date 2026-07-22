@@ -1,4 +1,4 @@
-"""Integration tests for rescheduleCalendarGroupEventWithCode (Phase 6b).
+"""Integration tests for rescheduleCalendarGroupEventWithCode.
 
 All requests are unauthenticated (no Authorization header).  The group
 reschedule code provides the org scope, the calendar-group scope, the
@@ -178,12 +178,13 @@ def grouped_event(organization, group, primary_calendar, secondary_calendar):
 
     Constructed directly with baker/model calls (bypassing the group service
     create_event path) so that the test is independent of the RESTRICTED-calendar
-    guard in can_perform_scheduling.  This mirrors how Phase 6a builds its test
-    event — the reschedule mutation is what we are testing, not event creation.
+    check in can_perform_scheduling.  This mirrors how the single-calendar reschedule
+    tests build their test event — the reschedule mutation is what we are testing, not
+    event creation.
 
     Structure created:
     - Primary CalendarEvent on primary_calendar, calendar_group_fk = group.
-    - BlockedTime on secondary_calendar with the canonical external_id pattern.
+    - BlockedTime on secondary_calendar with the standard external_id pattern.
     - One EventExternalAttendance (patient@example.com) on the primary event.
     """
     from calendar_integration.models import EventExternalAttendance, ExternalAttendee
@@ -845,7 +846,7 @@ class TestRescheduleGroupWithCodeLifecycleRejections:
 
 
 # ---------------------------------------------------------------------------
-# Non-UTC regression: BLOCKER fix — create and reschedule agree on timezone
+# Non-UTC regression: create and reschedule agree on timezone
 # ---------------------------------------------------------------------------
 
 # America/Recife is UTC-3 (no DST).
@@ -869,7 +870,7 @@ class TestRescheduleGroupWithCodeNonUTCTimezone:
 
     The test builds the grouped event via the real CalendarGroupService
     (``create_grouped_event``) so that the BlockedTime rows are written by the
-    same fixed ``_create_non_primary_blocked_times`` path.  If the BLOCKER fix
+    same fixed ``_create_non_primary_blocked_times`` path.  If this timezone fix
     is reverted, the BlockedTime's ``start_time``/``end_time`` GeneratedField
     instants will disagree with the primary event's instants by 3 hours (the
     America/Recife offset).

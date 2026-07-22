@@ -95,18 +95,18 @@ class PublicApiSystemUserMiddleware:
     ) -> bool:
         """Is ``organization`` (or its billing root) entitled to use the partner API?
 
-        Fails closed defensively when DI wiring itself is broken (``entitlement_service``
-        is ``None``): denying an authenticated request beats silently granting every
-        organization unrestricted API access because a container failed to wire.
+        Fails closed when DI wiring is broken (``entitlement_service`` is ``None``).
+        Denying an authenticated request is safer than granting every organization
+        unrestricted API access because a container failed to wire.
 
-        Under normal operation this cannot lock out a legitimate organization:
+        Under normal operation this cannot lock out a legitimate organization.
         ``EntitlementService.has_entitlement`` resolves at the billing root, and every
-        billing root always holds exactly one ``Subscription`` (the "no plan-less
-        state" invariant from Phase 4) whose entitlement rows are synced from its plan
-        on creation -- including the seeded ``unlimited`` default, which grants every
-        ``Entitlement`` member. An org only loses this gate by being placed on a plan
-        that explicitly omits or disables ``partner_api``, which is the intended
-        enforcement, not an accident of a missing row.
+        billing root always holds exactly one ``Subscription`` (there is no plan-less
+        state) whose entitlement rows are synced from its plan on creation -- including
+        the seeded ``unlimited`` default, which grants every ``Entitlement`` member. An
+        org only loses this access by being placed on a plan that omits or disables
+        ``partner_api``, which is the intended enforcement, not an accident of a missing
+        row.
         """
         if entitlement_service is None:
             return False
@@ -137,16 +137,15 @@ class PublicApiSystemUserMiddleware:
                     or self._get_organization_from_request(extended_request)
                 )
 
-            # Entitlement gate: an organization without `partner_api` cannot use the
+            # Entitlement check: an organization without `partner_api` cannot use the
             # GraphQL API at all, not just individual mutations. Scoped to requests that
             # actually resolved an authenticated organization above (anonymous / public
             # GraphQL queries -- e.g. brandingForTenant -- never reach here, since
-            # `public_api_organization` stays None for them) so this can never reject an
+            # `public_api_organization` stays None for them), so this can never reject an
             # unauthenticated request the normal `IsAuthenticated` permission class would
             # otherwise handle. Bypasses GraphQL execution entirely and returns a real
-            # HTTP 402 (rather than the graphql-core-swallowed 200 + `errors` shape a
-            # resolver-level rejection would produce), matching the plan's contract for
-            # this specific chokepoint.
+            # HTTP 402, rather than the graphql-core-swallowed 200 + `errors` shape a
+            # resolver-level rejection would produce.
             if extended_request.public_api_organization is not None and not (
                 self._has_partner_api_entitlement(extended_request.public_api_organization)
             ):

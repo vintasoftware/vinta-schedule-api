@@ -1,8 +1,8 @@
-"""Unit tests for the ``BookingPolicy`` model (Phase 1 scaffold).
+"""Unit tests for the ``BookingPolicy`` model.
 
-Covers the single-target invariant (check constraint), the per-target partial
-unique indexes, negative-value rejection, the factory, and the manager's
-per-target lookups.
+Covers the single-target rule (check constraint), the per-target partial unique
+indexes, negative-value rejection, the factory, and the manager's per-target
+lookups.
 """
 
 from django.db import IntegrityError, transaction

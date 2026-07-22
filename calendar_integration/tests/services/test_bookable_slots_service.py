@@ -1,4 +1,4 @@
-"""Tests for BookableSlotsService + slot_engine (Phase 5).
+"""Tests for BookableSlotsService + slot_engine.
 
 Integration coverage:
 - A single managed calendar yields the same slots a one-calendar group would.

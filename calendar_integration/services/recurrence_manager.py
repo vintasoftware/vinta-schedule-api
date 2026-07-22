@@ -91,14 +91,14 @@ class RecurrenceManager:
         ):
             raise
 
-        # Phase 11: a RESTRICTED billing root may not create, modify, or cancel a
-        # recurring exception. This is the single engine every recurring-object
-        # family (CalendarEvent, BlockedTime, AvailableTime) routes its exception
+        # A RESTRICTED billing root may not create, modify, or cancel a recurring
+        # exception. This is the single engine every recurring-object family
+        # (CalendarEvent, BlockedTime, AvailableTime) routes its exception
         # writes through, so the check belongs here once rather than at each
         # facade method that calls in with its own callbacks -- see
         # ``EntitlementService.is_billing_root_restricted``. Honours the same
         # ``context.bypass_entitlement_limits`` flag every other entitlement
-        # guard on this context respects.
+        # check on this context respects.
         if context is not None and not context.bypass_entitlement_limits:
             entitlement_service = context.entitlement_service
             if entitlement_service is not None and context.organization is not None:
@@ -226,7 +226,7 @@ class RecurrenceManager:
         ):
             raise
 
-        # Phase 11: see the identical guard in ``create_recurring_exception_generic``
+        # See the identical check in ``create_recurring_exception_generic``
         # above -- the same reasoning applies here for bulk modifications
         # (including cancel-from-date, which is a bulk modification with
         # ``is_bulk_cancelled=True``).

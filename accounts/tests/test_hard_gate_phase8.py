@@ -1,5 +1,5 @@
 """
-Phase 8 — Hard-gate regression tests.
+Hard-gate regression tests.
 
 Ensures that authenticated users with NO OrganizationMembership (gated / onboarding
 state) are uniformly refused (empty queryset or permission denial) at every
@@ -9,7 +9,7 @@ Also confirms:
 - Onboarding endpoints (create-org, accept-invite) remain reachable for gated users.
 - Account-level self-management endpoints are not over-blocked.
 
-Pattern: mirror the membership-less user helper from test_social_gated_onboarding.py.
+Mirrors the membership-less user helper from test_social_gated_onboarding.py.
 """
 
 from django.urls import reverse
@@ -387,7 +387,7 @@ class TestWriteBulkGatedRefusal:
         the missing membership raises no exception.  The group belongs to another
         org; the gated user is denied at the list-level permission check (has_permission
         returns False) before has_object_permission is even invoked.
-        Covers FIX 1: the guarded has_object_permission path.
+        Covers the guarded has_object_permission path.
         """
         from calendar_integration.models import CalendarGroup
 

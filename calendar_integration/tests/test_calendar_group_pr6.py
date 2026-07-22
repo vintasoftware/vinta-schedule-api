@@ -1,5 +1,5 @@
-"""Tests for PR6 follow-ups: bulk-modification parity, batched
-`find_bookable_slots`, and `CalendarPermissionService.can_manage_calendar_group`."""
+"""Tests for bulk-modification parity, batched `find_bookable_slots`, and
+`CalendarPermissionService.can_manage_calendar_group`."""
 
 from datetime import timedelta
 from unittest.mock import Mock
@@ -243,7 +243,7 @@ def test_find_bookable_slots_single_query_per_type(
     _seed_availability(managed_calendars.values(), start, start + timedelta(hours=6))
     # 6h at 15min step = 24 candidates. Pre-optimization this was ~24 round-trips.
     # The batched implementation should use a small constant count instead.
-    # Phase 7 adds policy-resolution queries (1 group policy + 1 participant-id fetch +
+    # Policy resolution adds queries (1 group policy + 1 participant-id fetch +
     # 1 calendar fetch + O(participants) per-calendar resolution) — bounded by the number
     # of participant calendars, NOT the number of candidates.  The group in this test has
     # 3 participant calendars so the total stays well under 25.

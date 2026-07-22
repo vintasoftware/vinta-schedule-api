@@ -1,7 +1,7 @@
 """End-to-end tests for the ``calendarBookableSlots`` and
-``calendarGroupBookableSlots`` public GraphQL queries (Phase 5 + Phase 7).
+``calendarGroupBookableSlots`` public GraphQL queries.
 
-Asserts the queries are org-scoped, resource-gated, and return discretized slots.
+Asserts the queries are org-scoped, require a resource grant, and return discretized slots.
 Policy filtering (lead-time, max-horizon, buffers) is verified at the GraphQL
 resolver level for both the single-calendar and group variants.
 """
@@ -151,7 +151,7 @@ class TestCalendarBookableSlotsQuery:
 
 
 # ---------------------------------------------------------------------------
-# calendarGroupBookableSlots — policy-aware resolver (Phase 7)
+# calendarGroupBookableSlots — policy-aware resolver
 # ---------------------------------------------------------------------------
 
 _GROUP_BOOKABLE_SLOTS_QUERY = """

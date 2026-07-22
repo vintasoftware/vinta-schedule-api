@@ -4,8 +4,7 @@ Drives the *real* meter over a recurring series, then closes the cycle, and
 asserts two things that must agree:
 
 - ``reconcile_period`` reports **zero drift** — the metered set matches a fresh
-  recomputation of the calendar (the plan's named mitigation for silent revenue
-  drift, spec objective 3);
+  recomputation of the calendar, which is what catches silent revenue drift;
 - the overage **charged** equals the overage the meter **stamped**, which equals
   what reconciliation audits the identity of — one derivation over
   ``MeteredOccurrence.for_billing_period``, never two.

@@ -1,6 +1,6 @@
 """Integration tests for single-use booking-code mint mutations.
 
-Covers Phase 1: createCalendarBookingCode + createCalendarGroupBookingCode.
+Covers createCalendarBookingCode and createCalendarGroupBookingCode.
 """
 
 import datetime

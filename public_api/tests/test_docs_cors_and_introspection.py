@@ -1,7 +1,5 @@
 """Tests locking in CORS and GraphQL introspection for the docs origin.
 
-Phase 1 of the Public API Docs backend implementation plan.
-
 Guarantees:
 - Introspection is enabled on /graphql/ (so docs build-time schema fetch works).
 - CORS allows the configured docs origins to make cross-origin requests.

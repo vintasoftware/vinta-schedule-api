@@ -13,15 +13,14 @@ via the constructor:
   same ``organization`` / ``account`` / ``calendar_adapter`` attributes the
   context exposes, so behavior is byte-for-byte identical to the former methods.
 - ``calendar_cache`` — the facade-owned, per-instance ``{(org_id, id): Calendar}``
-  cache (the lru_cache multi-tenant fix from Phase 0). Shared so lookups are not
+  cache (the multi-tenant fix for lru_cache). Shared so lookups are not
   duplicated across the facade and this service.
-- ``host`` — the :class:`WebhookServiceHost` (in Phase 6 the facade itself).
+- ``host`` — the :class:`WebhookServiceHost` (currently the facade itself).
   The webhook concern routes things back through it:
 
-  - **sync triggering** (``request_calendar_sync``) — the sync concern, extracted
-    in Phase 5; reached through the host so the facade's delegation seam is
-    preserved and the existing test suite can patch it on the facade without
-    changing this service.
+  - **sync triggering** (``request_calendar_sync``) — the sync concern; reached
+    through the host so the facade's delegation seam is preserved and the existing
+    test suite can patch it on the facade without changing this service.
   - **webhook-triggered sync** (``request_webhook_triggered_sync``) — defined on
     this service but ``process_webhook_notification`` routes it through the host so
     ``@patch.object(CalendarService, "request_webhook_triggered_sync")`` in the
@@ -31,7 +30,7 @@ via the constructor:
   - **write-adapter resolution** (``_get_write_adapter_for_calendar``) — the
     shared write-adapter helper on the facade.
   - **external-id calendar lookup** (``_get_calendar_by_external_id``) — uses the
-    shared per-instance calendar cache (Phase 0 lru fix); routed through the host
+    shared per-instance calendar cache (the lru fix); routed through the host
     so cache sharing is preserved.
 
 Organization-context in ``handle_webhook``: the facade's ``handle_webhook``
@@ -112,7 +111,7 @@ class WebhookServiceHost(Protocol):
     Concerns not part of the webhook surface that stay on the facade (or the facade
     re-delegates from here):
 
-    - **sync triggering** (``request_calendar_sync``) — the sync concern (Phase 5);
+    - **sync triggering** (``request_calendar_sync``) — the sync concern;
       reached through the host to keep one implementation and the call graph the
       existing test suite patches on the facade.
     - **webhook-triggered sync** (``request_webhook_triggered_sync``) — defined on
@@ -124,11 +123,11 @@ class WebhookServiceHost(Protocol):
     - **write-adapter resolution** (``_get_write_adapter_for_calendar``) — the
       shared write-adapter helper on the facade.
     - **external-id calendar lookup** (``_get_calendar_by_external_id``) — uses the
-      shared per-instance calendar cache (Phase 0 lru fix); routed through the host
+      shared per-instance calendar cache (the lru fix); routed through the host
       so cache sharing is preserved.
 
-    In Phase 6 the facade supplies *itself*. Later phases may swap individual
-    concerns without changing this service's call sites.
+    The facade currently supplies itself; individual concerns may be swapped out
+    later without changing this service's call sites.
     """
 
     def request_calendar_sync(
@@ -165,7 +164,7 @@ class CalendarWebhookService:
     ) -> None:
         self._context = context
         self._calendar_cache = calendar_cache
-        # Phase 6 seam: sync triggering and shared adapter/lookup helpers are
+        # Delegation seam: sync triggering and shared adapter/lookup helpers are
         # reached through the host (the facade). See ``WebhookServiceHost``.
         self._host = host
 
@@ -200,8 +199,8 @@ class CalendarWebhookService:
         # mypy can verify .organization.id access below.
         narrowed = cast("InitializedOrAuthenticatedCalendarService", context)
 
-        # Phase 11: sync pause. A restricted organization's inbound provider
-        # webhook must not trigger a sync -- same predicate as every other sync
+        # Sync pause. A restricted organization's inbound provider
+        # webhook must not trigger a sync -- same helper as every other sync
         # pause site (EntitlementService.is_billing_root_restricted), consulted
         # here rather than raised: this is a server-to-server provider push with
         # no user to show a 402 to (Google/Microsoft would just retry against an
@@ -255,8 +254,8 @@ class CalendarWebhookService:
         start_datetime = now - datetime.timedelta(hours=sync_window_hours // 2)
         end_datetime = now + datetime.timedelta(hours=sync_window_hours // 2)
 
-        # Use existing request_calendar_sync method via the host (the sync concern,
-        # Phase 5 seam) so the facade's delegation path is preserved.
+        # Use existing request_calendar_sync method via the host (the sync concern)
+        # so the facade's delegation path is preserved.
         calendar_sync = self._host.request_calendar_sync(
             calendar=calendar,
             start_datetime=start_datetime,

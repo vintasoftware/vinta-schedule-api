@@ -1,4 +1,4 @@
-"""Integration tests for Phase 4 — inbound DELETION interception under CHANGE_REQUEST policy.
+"""Integration tests for inbound DELETION interception under CHANGE_REQUEST policy.
 
 Tests exercise the full sync diff engine path via ``CalendarSyncService._execute_calendar_sync``.
 A real ``ExternalEventChangeRequestService`` is wired in (with its ``audit_service`` set to a
@@ -14,7 +14,7 @@ Test matrix:
 - Re-cancel (supersede): a second inbound cancellation marks the first request ``STALE`` and
   creates a new ``PENDING`` one — two rows total, history preserved.
 - Under ``ALLOW``: the same cancellation deletes the local event (existing behavior); no change
-  request is created. Backward-compat load-bearing test.
+  request is created. Backward-compatibility test.
 - Fail-loud: ``CHANGE_REQUEST`` + service None → raises ``ImproperlyConfigured``.
 - Audit: a ``PENDING`` delete request creation records the expected audit entry.
 """

@@ -15,18 +15,18 @@ constructor:
 - ``recurrence_manager`` — the stateless :class:`RecurrenceManager` the facade
   also holds; the recurrence event methods delegate to it.
 - ``calendar_cache`` — the facade-owned, per-instance ``{(org_id, id): Calendar}``
-  cache (the lru_cache multi-tenant fix from Phase 0). Shared so lookups are not
+  cache (the multi-tenant fix for lru_cache). Shared so lookups are not
   duplicated across the facade and this service.
-- ``host`` — the :class:`EventServiceHost` (in Phase 2 the facade itself). The event
+- ``host`` — the :class:`EventServiceHost` (currently the facade itself). The event
   concern routes three things back through it: availability queries
-  (``get_availability_windows_in_range`` — extracted in Phase 4), bundle-event
-  fan-out (``_create_bundle_event`` / ``_update_bundle_event`` /
-  ``_delete_bundle_event`` — extracted in Phase 3), and the shared write-adapter /
+  (``get_availability_windows_in_range``), bundle-event fan-out
+  (``_create_bundle_event`` / ``_update_bundle_event`` /
+  ``_delete_bundle_event``), and the shared write-adapter /
   attendee-permission helpers (``_get_write_adapter_for_calendar`` /
   ``_grant_event_attendee_permissions``) that stay resident on the facade because the
   sync/availability flows and the existing test suite reference them there. Routing
   through the host keeps those single implementations and behavior byte-for-byte;
-  later phases swap concrete sub-services in without touching this service.
+  concrete sub-services may be swapped in later without touching this service.
 """
 
 from __future__ import annotations
@@ -112,8 +112,8 @@ def _resolve_token_audit_actor(
 ) -> User | CalendarManagementToken | None:
     """Resolve the side-effects audit actor for a permission token.
 
-    Before Phase 6 the actor was ``token.user`` (a User) when set, else the token
-    itself. The ``user`` FK is gone; the token's internal actor is now its
+    Before the ``user`` FK was dropped, the actor was ``token.user`` (a User) when
+    set, else the token itself. That FK is gone; the token's internal actor is now its
     membership-scoped ``membership_user_id``. We resolve that back to a ``User`` so
     the side-effects ``actor`` stays a User-or-token, exactly as before:
 
@@ -145,11 +145,11 @@ if TYPE_CHECKING:
 class EventServiceHost(Protocol):
     """The collaborator surface the event concern still routes back to the facade for.
 
-    Three concerns are not extracted in Phase 2 and stay on the facade:
+    Three concerns are not extracted here and stay on the facade:
 
-    - **availability** (``get_availability_windows_in_range``) — extracted in Phase 4;
+    - **availability** (``get_availability_windows_in_range``);
     - **bundle fan-out** (``_create_bundle_event`` / ``_update_bundle_event`` /
-      ``_delete_bundle_event``) — extracted in Phase 3;
+      ``_delete_bundle_event``);
     - **write-adapter resolution + attendee-permission granting**
       (``_get_write_adapter_for_calendar`` / ``_grant_event_attendee_permissions``) —
       these remain shared facade helpers (the existing test suite patches them on the
@@ -157,10 +157,10 @@ class EventServiceHost(Protocol):
       service calls them through the host to keep that single implementation and keep
       behavior byte-for-byte.
 
-    In Phase 2 the facade supplies *itself*. Later phases replace individual concerns
-    (e.g. Phase 3 swaps a ``CalendarBundleService`` in for the bundle methods, Phase 4
-    an ``AvailabilityService`` for availability) without changing this service's call
-    sites — they keep calling ``self._host.<method>``.
+    The facade currently supplies itself. Individual concerns may be replaced later
+    (e.g. a ``CalendarBundleService`` for the bundle methods, an ``AvailabilityService``
+    for availability) without changing this service's call sites — they keep calling
+    ``self._host.<method>``.
     """
 
     def get_availability_windows_in_range(
@@ -216,9 +216,9 @@ class CalendarEventService:
         self._context = context
         self._recurrence_manager = recurrence_manager
         self._calendar_cache = calendar_cache
-        # Phase 2 seam: availability (Phase 4), bundle fan-out (Phase 3), and the
-        # shared write-adapter / attendee-permission helpers are reached through the
-        # host (the facade). See ``EventServiceHost``.
+        # Delegation seam: availability, bundle fan-out, and the shared write-adapter /
+        # attendee-permission helpers are reached through the host (the facade).
+        # See ``EventServiceHost``.
         self._host = host
 
     # ------------------------------------------------------------------
@@ -434,7 +434,7 @@ class CalendarEventService:
 
     def _check_not_restricted(self) -> None:
         """Raise ``OverLimitError`` if the context's organization's billing root is
-        ``RESTRICTED`` (Phase 11).
+        ``RESTRICTED``.
 
         ``create_event`` and the recurring-master/exception paths already get this
         for free through ``check_postpaid_allowance`` (see its own restricted
@@ -533,10 +533,10 @@ class CalendarEventService:
         :param calendar_id: Internal ID of the calendar
         :param event_data: Dictionary containing event details.
         :param bypass_limits: When True, skips the post-paid ``event_occurrences``
-            allowance guard. The plan's Enforcement-bypass Guiding Decision: every
-            guarded write takes this so a management command, a data migration, or a
-            support-side repair can run against an organization that is over its
-            allowance. Same spelling and default as the pre-paid guards
+            allowance check. Every enforced write accepts this flag so a management
+            command, a data migration, or a support-side repair can run against an
+            organization that is over its allowance. Same spelling and default as the
+            pre-paid checks
             (``CalendarService.create_calendar`` / ``create_bundle_calendar`` /
             ``create_availability_windows``).
         :param _check_postpaid_allowance: Internal flag; callers must NOT pass this.
@@ -578,8 +578,8 @@ class CalendarEventService:
                 raise PermissionDenied("Events cannot be created through the Public API.")
             # Bundle calendars ARE permitted for an owner-scoped token that owns the
             # bundle calendar: creation routes to _create_bundle_event below (the
-            # designed fan-out). Org-wide tokens remain blocked above (the plan keeps
-            # create owner-scoped-only). Amended 2026-06-23 for parity with bundle
+            # designed fan-out). Org-wide tokens remain blocked above (create stays
+            # owner-scoped-only). Amended 2026-06-23 for parity with bundle
             # reschedule/cancel.
             is_owner_scoped_system_user = True
 
@@ -1425,7 +1425,7 @@ class CalendarEventService:
         manager (never bypassing the multi-tenancy guard); a miss raises
         ``CalendarEvent.DoesNotExist`` which callers map to a not-found.
 
-        Authorization reuses the ``_public_token_may_write`` seam (Phase 0a) so BOTH
+        Authorization reuses the ``_public_token_may_write`` seam so BOTH
         org-wide and owner-scoped public tokens are honored — this is deliberately NOT
         ``create_event``'s allowance (which blocks org-wide tokens). A cross-owner /
         cross-tenant token is denied with the not-found-parity message so it cannot
@@ -2087,8 +2087,8 @@ class CalendarEventService:
         # no net new billable capacity. (It is not perfectly net-zero for the
         # *meter*: the new master has a new pk, so occurrences already metered under
         # the old one are re-billed under the new identity. That is the known
-        # identity-churn defect recorded as a Phase 13 precondition, not something
-        # this guard could fix by charging a unit.)
+        # identity-churn defect recorded as a known precondition, not something
+        # this check could fix by charging a unit.)
         new_event = self._host.create_event(
             new_calendar.id, new_event_data, _check_postpaid_allowance=False
         )

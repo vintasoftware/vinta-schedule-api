@@ -1,12 +1,12 @@
 """Unit tests pinning two serialization/resolution rules of ``GET
-/billing/usage/`` (Phase 12) that are easy to get subtly wrong:
+/billing/usage/`` that are easy to get subtly wrong:
 
 - **Unlimited serializes as ``null``, never ``0``.** An unlimited resource has
-  no ceiling; reporting ``0`` would read as "0 of 0 -- fully consumed," which
+  no ceiling. Reporting ``0`` would read as "0 of 0 -- fully consumed," which
   is the opposite of what unlimited means.
-- **A reseller child reports the pooled *root* figures**, not its own --
-  resolved at the billing root, consistent with every other read/check in
-  this domain (``EntitlementService``).
+- **A reseller child reports the pooled *root* figures**, not its own. These
+  resolve at the billing root, consistent with every other read/check in this
+  domain (``EntitlementService``).
 """
 
 from decimal import Decimal

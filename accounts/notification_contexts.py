@@ -28,9 +28,9 @@ def password_reset_context(user_id: str, password_reset_url: str) -> dict[str, A
     """
     Provides a context for password reset-related notifications.
 
-    Uses vinta defaults for password reset emails — password resets are not part of
-    the invitation flow and typically occur after the user is already a member, so
-    there's no clear org context to brand from. Being conservative per Phase 8 guidance.
+    Uses vinta defaults for password reset emails. Password resets are not part of
+    the invitation flow and typically happen after the user is already a member, so
+    there is no clear org context to brand from.
     """
     return {
         "user": user_context(user_id)["user"],
@@ -43,8 +43,8 @@ def email_confirmation_context(user_id: str, **kwargs) -> dict[str, Any]:
     """
     Provides a context for email confirmation notifications.
 
-    Uses vinta defaults (conservative approach — confirmation templates are not
-    tied to invitation flow and should remain unchanged from pre-phase-8).
+    Uses vinta defaults. Confirmation templates are not tied to the invitation
+    flow, so they stay unchanged.
     """
     code = kwargs.get("code")
     key = kwargs.get("key")

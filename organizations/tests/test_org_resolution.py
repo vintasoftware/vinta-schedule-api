@@ -1,28 +1,19 @@
-"""Integration tests for active-org resolution (Phase 2a + 2b + 2c).
+"""Integration tests for active-org resolution.
 
 Verifies that the ``TenantScopedViewMixin`` resolver correctly resolves the
 active organization from the ``X-Organization-Id`` header and stashes the result
 so ``get_active_organization_membership`` reads it.
 
-Use-case 2: active org selected via header.
-Use-case 3: header-absent multi-org request is rejected with 400.
-
-Phase 2a covers the happy-path rows:
+Behaviors covered:
 
 * Header present + caller is active member → resolve to that org.
-* Header absent + exactly one active membership → resolve to it (unchanged).
-
-Phase 2b adds the multi-org-no-header rejection:
-
+* Header absent + exactly one active membership → resolve to it.
 * Header absent + 2+ active memberships → **400** ``X-Organization-Id header required.``
 * The 0-membership (gated) and single-membership rows are unchanged.
-* A view setting ``active_org_resolution_optional = True`` is exempt from the 400.
-
-Phase 2c adds the non-member rejection:
-
 * Header naming an org the caller is not an active member of (no membership, or
   an inactive membership) → **403** ``PermissionDenied``.
-* A view setting ``active_org_resolution_optional = True`` is exempt from the 403.
+* A view setting ``active_org_resolution_optional = True`` is exempt from both the
+  400 and the 403.
 """
 
 from django.contrib.auth import get_user_model
@@ -310,7 +301,7 @@ class TestActiveOrgStash:
 # Uses CalendarViewSet (GET /calendar/, POST /calendar/) because it is a
 # standard VintaScheduleModelViewSet with org-scoped get_queryset() and the
 # CalendarSerializer.create path goes through CreateModelMixin.create, making it
-# the ideal regression target for Finding 1 (del → re-resolve bug).
+# the ideal regression target for the del → re-resolve bug.
 # ---------------------------------------------------------------------------
 
 
@@ -384,7 +375,7 @@ class TestCalendarViewSetOrgScoping:
     ) -> None:
         """POST /calendar/ with X-Organization-Id: B creates the calendar under Org B.
 
-        Regression test for Finding 1 (Phase 2a review): before the fix, ``del
+        Regression test: before the fix, ``del
         user._active_membership`` in ``CreateModelMixin.create`` wiped the header-
         resolved stash so the post-create re-fetch of the queryset fell into the
         header-blind DB fallback (order_by("created").first() == Org A for this
@@ -493,9 +484,9 @@ class TestMalformedOrgIdHeader:
 
 
 # ---------------------------------------------------------------------------
-# Phase 2b — Tests: multi-org caller with no header is rejected with 400
+# Tests: multi-org caller with no header is rejected with 400
 # ---------------------------------------------------------------------------
-# Use-case 3: a user with 2+ active memberships who omits X-Organization-Id must
+# A user with 2+ active memberships who omits X-Organization-Id must
 # get a clear 400, never an ambiguous implicit org. We exercise a real
 # tenant-scoped viewset (CalendarViewSet list) so the 400 is asserted end-to-end
 # through TenantScopedViewMixin.initial().
@@ -573,14 +564,14 @@ class TestMultiOrgNoHeaderRejected:
 
 
 # ---------------------------------------------------------------------------
-# Phase 2b — Tests: active_org_resolution_optional opt-out
+# Tests: active_org_resolution_optional opt-out
 # ---------------------------------------------------------------------------
-# A concrete view may set ``active_org_resolution_optional = True`` (Phase 3's
+# A concrete view may set ``active_org_resolution_optional = True`` (e.g. the
 # GET /organizations/mine/ and onboarding flows) so that a multi-org caller with
 # no header is NOT rejected — the resolver falls through to gated (None) instead.
 #
 # We assert the opt-out by driving the mixin's resolver directly with a throwaway
-# view, since no shipped view sets the attribute in this phase.
+# view.
 # ---------------------------------------------------------------------------
 
 
@@ -657,12 +648,12 @@ class TestActiveOrgResolutionOptionalOptOut:
 
 
 # ---------------------------------------------------------------------------
-# Phase 2c — Tests: header naming a non-member org is rejected with 403
+# Tests: header naming a non-member org is rejected with 403
 # ---------------------------------------------------------------------------
 # A valid-integer X-Organization-Id that names an organization the caller is
 # *not* an active member of (org the user has no membership in, or a membership
 # that exists but is inactive) is rejected with 403 PermissionDenied. The
-# malformed-header and absent-header rules (Phase 2b) are unaffected. A view
+# malformed-header and absent-header rules are unaffected. A view
 # setting ``active_org_resolution_optional = True`` is exempt from the 403 and
 # resolves to gated (None).
 # ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-"""Phase 2a integration tests — CalendarOwnership membership cutover (app-layer).
+"""CalendarOwnership membership cutover tests at the app layer.
 
 Covers the membership-scoped read/write path that replaces the bare ``user`` FK:
 
@@ -8,11 +8,10 @@ Covers the membership-scoped read/write path that replaces the bare ``user`` FK:
   ForeignObject join;
 - the ``Calendar.memberships`` M2M returns the owning memberships;
 - orphan ownerships (``(user, org)`` with no membership) are NOT returned by any
-  membership-based read or the M2M — the intended Phase 2a end state.
+  membership-based read or the M2M — the intended end state.
 
-The ``user`` column is retained in this phase; these tests assert membership
-behaviour without depending on the (now unused-by-app-code) ``user`` reverse
-accessors.
+The ``user`` column still exists; these tests assert membership behaviour without
+depending on the (now unused-by-app-code) ``user`` reverse accessors.
 """
 
 from __future__ import annotations

@@ -385,8 +385,8 @@ SPECTACULAR_SETTINGS = {
         "RSVPStatusEnum": "calendar_integration.constants.RSVPStatus.choices",
         # `Subscription.pending_billing_interval` shares `BillingInterval`'s
         # choices with `Subscription.billing_interval` -- without this,
-        # drf-spectacular mints a second, redundant enum name for the same
-        # value set (Phase 9).
+        # drf-spectacular creates a second, redundant enum name for the same
+        # value set.
         "PendingBillingIntervalEnum": "payments.billing_constants.BillingInterval.choices",
     },
 }
@@ -527,8 +527,8 @@ MERCADOPAGO_ACCESS_TOKEN = config("MERCADOPAGO_ACCESS_TOKEN", default="")
 MERCADOPAGO_WEBHOOK_SECRET = config("MERCADOPAGO_WEBHOOK_SECRET", default="")
 
 # Secret API key used to authenticate outbound calls to Stripe. No organization is
-# routed onto Stripe yet (Phase 9), so an empty default is safe in every
-# environment until then.
+# routed onto Stripe yet, so an empty default is safe in every environment until
+# then.
 STRIPE_SECRET_KEY = config("STRIPE_SECRET_KEY", default="")
 # Shared secret used to verify Stripe's `Stripe-Signature` webhook header. Empty
 # by default, matching MERCADOPAGO_WEBHOOK_SECRET's fail-closed convention (see
@@ -542,12 +542,11 @@ STRIPE_WEBHOOK_SECRET = config("STRIPE_WEBHOOK_SECRET", default="")
 # setting rather than defining its own tolerance window.
 WEBHOOK_SIGNATURE_TOLERANCE_SECONDS = 300
 
-# Phase 10: the global fallback grace window (days) between a failed recurring
-# charge and an organization moving from GRACE to RESTRICTED, used whenever the
+# The global fallback grace window (days) between a failed recurring charge and
+# an organization moving from GRACE to RESTRICTED, used whenever the
 # subscription's BillingPlan.grace_period_days is NULL. A per-plan override can
 # still tune it without a deploy; this setting is only the catalog-wide default.
-# Tunable per environment with no code change, per the plan's "Grace and
-# proration" guiding decision.
+# Tunable per environment with no code change.
 BILLING_DEFAULT_GRACE_PERIOD_DAYS = config("BILLING_DEFAULT_GRACE_PERIOD_DAYS", default=7, cast=int)
 
 SALT_KEY = config("SALT_KEY")

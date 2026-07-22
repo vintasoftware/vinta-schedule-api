@@ -649,7 +649,7 @@ class CalendarPermissionService:
         return token
 
     # ------------------------------------------------------------------
-    # Single-use booking-code API (Phase 0+)
+    # Single-use booking-code API
     # ------------------------------------------------------------------
 
     def create_booking_token(

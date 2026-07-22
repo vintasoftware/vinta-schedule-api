@@ -1,4 +1,4 @@
-"""Integration tests for Phase 6 — FORBIDDEN mode auto-undo during sync.
+"""Integration tests for FORBIDDEN mode auto-undo during sync.
 
 Tests exercise ``CalendarSyncService._process_existing_event`` under the ``FORBIDDEN``
 policy and the ``ExternalEventChangeRequestService.auto_undo_inbound_change`` method
@@ -19,7 +19,7 @@ Test matrix:
 - Compensation: provider create succeeds but local commit fails → compensating
   ``delete_event`` called, no orphan (mirrors the reject compensation test).
 - ALLOW policy: inbound edit still applies directly and inbound cancellation still deletes
-  (backward-compat — load-bearing check that FORBIDDEN wiring doesn't regress ALLOW).
+  (backward-compat — check that FORBIDDEN wiring doesn't regress ALLOW).
 """
 
 from __future__ import annotations
@@ -1173,7 +1173,7 @@ def test_forbidden_update_supersedes_prior_pending_request(
 
 
 # ---------------------------------------------------------------------------
-# Tests: provider-call-raises regression guard for the BLOCKER fix
+# Tests: provider-call-raises regression guard
 # ---------------------------------------------------------------------------
 
 
@@ -1184,8 +1184,8 @@ def test_forbidden_update_provider_call_raises_no_db_mutation(
     fake_adapter: MagicMock,
     change_request_service: ExternalEventChangeRequestService,
 ) -> None:
-    """Regression guard for the BLOCKER fix: if the provider call (update_event) raises,
-    NO AUTO_UNDONE row is created and NO prior PENDING request is transitioned to STALE.
+    """Regression check: if the provider call (update_event) raises, NO AUTO_UNDONE row
+    is created and NO prior PENDING request is transitioned to STALE.
 
     Before the fix: the AUTO_UNDONE row + STALE supersede were committed in a separate
     atomic block BEFORE the provider call, leaving dangling orphans on provider failure.

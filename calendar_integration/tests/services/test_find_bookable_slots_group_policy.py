@@ -1,10 +1,10 @@
-"""Integration tests for Phase 7 — policy-aware group slot query.
+"""Integration tests for the policy-aware group slot query.
 
 Covers:
 - **Regression (byte-for-byte no-policy guarantee)**: with no BookingPolicy
   anywhere, ``CalendarGroupService.find_bookable_slots`` output is identical to
   the pre-feature output of the same method called WITHOUT a booking_policy_service
-  injected (the legacy / pre-Phase-7 code path that returns raw proposals).
+  injected (the legacy code path that returns raw proposals).
 - **Group-override policy**: an explicit policy on the group filters by lead-time,
   max-horizon, and buffer.
 - **Per-participant policies, no group override**: the most-restrictive combination
@@ -507,7 +507,7 @@ def test_group_policy_buffer_managed_calendar_event_creates_dead_zone(organizati
 
 
 # ---------------------------------------------------------------------------
-# SHOULD-FIX 1: Group-wide buffer suppression for required_count < pool
+# Group-wide buffer suppression for required_count < pool
 # ---------------------------------------------------------------------------
 
 
@@ -581,7 +581,7 @@ def test_buffer_drops_candidate_when_non_required_calendar_in_dead_zone(organiza
 
 
 # ---------------------------------------------------------------------------
-# SHOULD-FIX 2: Group override beats participant policies
+# Group override beats participant policies
 # ---------------------------------------------------------------------------
 
 
@@ -642,7 +642,7 @@ def test_explicit_group_policy_overrides_participant_policies(organization):
 
 
 # ---------------------------------------------------------------------------
-# SHOULD-FIX 3: Managed calendar buffer width test (multi-minute buffer)
+# Managed calendar buffer width test (multi-minute buffer)
 # ---------------------------------------------------------------------------
 
 

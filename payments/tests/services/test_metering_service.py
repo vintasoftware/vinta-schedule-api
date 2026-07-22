@@ -1,11 +1,11 @@
 """Unit tests for ``MeteringService`` — the meter behind post-paid event billing.
 
 Every assertion here is about a number that ends up on an invoice, so the tests
-are written to fail loudly on *silence*: the failure mode this phase exists to
-prevent produces no exception, no log line, and no red test — just a wrong count.
+are written to fail loudly on *silence*: the failure mode these tests prevent
+produces no exception, no log line, and no red test — just a wrong count.
 
-Three properties are load-bearing and each has a test that fails if the mechanism
-behind it is removed rather than merely if the code changes shape:
+Three properties are key, and each has a test that fails if the mechanism behind
+it is removed rather than merely if the code changes shape:
 
 - expansion is **window-bounded**, so an open-ended weekly series contributes a
   handful of occurrences per cycle rather than an unbounded charge at creation;
@@ -352,7 +352,7 @@ class TestAllowanceAndPriceStamping:
         recorded are counted, not re-ranked — so an occurrence back-dated into an
         already-swept period lands after everything recorded before it. Harmless
         while one price applies to a whole period; see ``MeteringService._record``
-        for why Phase 9 has to change it.
+        for why this will need to change.
         """
         self._set_allowance(subscription, 2, "0.2500")
 
@@ -499,8 +499,8 @@ class TestUsageCounterReadsTheMeter:
         """The counter and the meter must derive "this period" the same way.
 
         ``Subscription.current_period_start`` is written once at creation and never
-        advanced — cycle close is Phase 13 — so it goes stale the moment one billing
-        interval elapses. The meter has never depended on it: it stamps
+        advanced — cycle close is not implemented yet — so it goes stale the moment
+        one billing interval elapses. The meter has never depended on it: it stamps
         ``billing_period_start`` by resolving each occurrence's *own* start time
         through ``resolve_billing_period``, which steps whole intervals from the
         stored anchor and therefore keeps working. The counter used to read the
@@ -509,7 +509,7 @@ class TestUsageCounterReadsTheMeter:
         The consequence was total, not marginal: once the stored period elapsed the
         meter wrote (say) August rows while the counter asked for July, and the
         counter returned **0 permanently** — a customer-facing usage number frozen
-        at zero, and a post-paid guard (Phase 8) that could never fire.
+        at zero, and a post-paid limit check that could never fire.
 
         Here the subscription's stored period is June 2025 while "now" is two months
         later. Occurrences are metered in that later month; the counter must see

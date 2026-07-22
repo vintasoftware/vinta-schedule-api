@@ -1,8 +1,8 @@
-"""Phase 9: upgrade / downgrade / add-on purchase orchestration on
+"""Upgrade / downgrade / add-on purchase orchestration on
 ``SubscriptionService``.
 
 Every test here drives a hand-written ``FakePaymentService`` double rather than
-mocking individual adapter calls -- what matters to this suite is *when* the
+mocking individual adapter calls. What matters to this suite is *when* the
 provider is driven and *when* capacity is granted, not the wire shape of any one
 provider (that is the adapter tests' job, e.g.
 ``test_mercadopago_subscription_adapter.py``/``test_stripe_subscription_adapter.py``).
@@ -137,9 +137,9 @@ def _subscription_for(
 
 @dataclass
 class FakePaymentService:
-    """A hand-written double over the ``PaymentService`` surface
-    ``SubscriptionService`` drives -- precise about *when* each call happens,
-    which is exactly what this phase's tests need to prove."""
+    """A hand-written double over the ``PaymentService`` API
+    ``SubscriptionService`` drives. Precise about *when* each call happens,
+    which is exactly what these tests need to prove."""
 
     plan_external_id: str = "ext-plan-1"
     subscription_external_id: str = "ext-sub-1"
@@ -361,10 +361,10 @@ class TestUpgrade:
     def test_upgrade_forwards_idempotency_key_to_the_provider(
         self, service, fake_payment_service, organization, billing_profile
     ):
-        """BLOCKER 2 (provider-side guard): the client-supplied key must reach the
-        provider drive, so a crash-after-charge / retry cannot re-drive it into a
-        second subscription. Asserted at the seam regardless of transaction
-        settings -- it does not depend on any inner atomic committing."""
+        """The client-supplied key must reach the provider drive, so a
+        crash-after-charge / retry cannot re-drive it into a second
+        subscription. Asserted at the seam regardless of transaction settings.
+        It does not depend on any inner atomic committing."""
         free_plan = make_complete_plan(
             {LimitedResource.ORGANIZATION_MEMBERS: 3}, monthly_price=Decimal("0")
         )
@@ -388,7 +388,7 @@ class TestUpgrade:
         self, service, fake_payment_service, organization, billing_profile
     ):
         """A second request for the plan already initiated (e.g. a double-click,
-        or a client retry) is a no-op under the row-lock re-check -- it must not
+        or a client retry) is a no-op under the row-lock re-check. It must not
         drive the provider a second time."""
         free_plan = make_complete_plan(
             {LimitedResource.ORGANIZATION_MEMBERS: 3}, monthly_price=Decimal("0")
@@ -420,8 +420,8 @@ class TestUpgrade:
     def test_second_upgrade_to_a_different_plan_while_unconfirmed_is_rejected(
         self, service, fake_payment_service, organization, billing_profile
     ):
-        """SHOULD-FIX 2: initiating a *different* upgrade before the first's charge
-        confirms would make the first webhook grant the later tier's capacity --
+        """Initiating a *different* upgrade before the first's charge confirms
+        would make the first webhook grant the later tier's capacity. It is
         rejected until the in-flight change settles."""
         free_plan = make_complete_plan(
             {LimitedResource.ORGANIZATION_MEMBERS: 3}, monthly_price=Decimal("0")
@@ -533,10 +533,10 @@ class TestDowngrade:
     def test_confirm_during_the_grace_window_keeps_the_lower_limits(
         self, service, organization, billing_profile
     ):
-        """SHOULD-FIX 1: a subscription payment confirmed ``APPROVED`` while a
-        scheduled downgrade is in its grace window must NOT restore the old
-        higher plan's limits. `subscription.plan` is still the paid higher plan,
-        but `confirm_plan_change` must sync from the pending (lower) plan."""
+        """A subscription payment confirmed ``APPROVED`` while a scheduled
+        downgrade is in its grace window must NOT restore the old higher plan's
+        limits. `subscription.plan` is still the paid higher plan, but
+        `confirm_plan_change` must sync from the pending (lower) plan."""
         pro_plan = make_complete_plan(
             {LimitedResource.ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50")
         )
@@ -555,7 +555,7 @@ class TestDowngrade:
         )
         # Stays at the lower (downgrade-target) ceiling, not the paid plan's 50.
         assert limit.limit_value == 3
-        # The plan itself is untouched until the Phase 13 boundary sweep.
+        # The plan itself is untouched until the cycle-close boundary sweep.
         subscription.refresh_from_db()
         assert subscription.plan_id == pro_plan.pk
         assert subscription.pending_plan_id == free_plan.pk
@@ -585,14 +585,14 @@ class TestDowngrade:
 
 @pytest.mark.django_db
 class TestDowngradeDrivesGraceForTheSweep:
-    """Phase 11's fix for the Phase 10 dead-edge gap: before this,
+    """Covers a dead-edge gap in the downgrade path. Before the fix,
     ``_schedule_downgrade`` stamped ``grace_period_ends_at`` but left
     ``billing_state`` untouched, so ``process_dunning``'s GRACE/RESTRICTED
     sweep never looked at the row and the deadline never expired. Now the
     downgrade drives ``billing_state`` into GRACE too, putting it on the one
-    path the sweep already watches -- proven here at the driver; the sweep
-    side (``DunningService._process_grace`` skipping the charge retry, and
-    ``expire_grace`` resolving against the just-applied limits) is proven in
+    path the sweep already watches. This is checked here at the driver. The
+    sweep side (``DunningService._process_grace`` skipping the charge retry,
+    and ``expire_grace`` resolving against the just-applied limits) is proven in
     ``test_dunning_service.py``.
     """
 
@@ -805,11 +805,10 @@ class TestPurchaseAddOn:
     def test_purchase_forwards_idempotency_key_to_the_provider(
         self, service, fake_payment_service, organization, billing_profile
     ):
-        """BLOCKER 1 (provider-side guard): the client key must reach
-        `create_payment` -> the provider, so a charge that succeeded before a
-        rollback is not re-issued when the dedup row vanishes and the retry
-        `get_or_create`s a fresh one. Asserted at the seam, independent of whether
-        the local dedup row committed."""
+        """The client key must reach `create_payment` -> the provider, so a
+        charge that succeeded before a rollback is not re-issued when the dedup
+        row vanishes and the retry `get_or_create`s a fresh one. Asserted at
+        the seam, independent of whether the local dedup row committed."""
         plan = make_complete_plan(
             {LimitedResource.RESOURCE_CALENDARS: 3}, overage_unit_price=Decimal("2.5000")
         )

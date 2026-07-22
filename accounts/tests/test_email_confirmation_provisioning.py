@@ -1,5 +1,5 @@
 """
-Phase 3 — Integration tests: Create own org on email verification (no invite).
+Integration tests: Create own org on email verification (no invite).
 
 These tests exercise the AccountAdapter.confirm_email override, which is the
 imperative provisioning hook for the email/password signup path — symmetric
@@ -123,14 +123,14 @@ class TestProvisionOnEmailConfirmation:
     def test_invited_user_is_provisioned_as_member(self, rf):
         """User with a pending invite (and blank org name) joins as MEMBER on confirmation.
 
-        This verifies that Phase 1's invite-first branch works end-to-end through the
-        adapter override even when Phase 4 tests haven't landed yet.
+        This verifies that the invite-first branch works end-to-end through the
+        adapter override.
         """
         inviter = UserFactory().create_user(email="boss@example.com")
         org = baker.make(Organization, name="Invite Corp")
 
         invited_user = UserFactory().create_user(email="dave@example.com")
-        # Invited signup → pending_organization_name is blank (Phase 2 behaviour).
+        # Invited signup → pending_organization_name is blank.
         profile = invited_user.profile
         profile.pending_organization_name = ""
         profile.save()

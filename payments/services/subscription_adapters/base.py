@@ -67,8 +67,7 @@ class BaseSubscriptionAdapter:
         """
         Move `subscription`'s already-active provider-side subscription onto
         `new_plan`, with the provider computing and applying proration
-        server-side (Phase 9's "proration on upgrade computed provider-side"
-        guiding decision). This method does not return an amount and never
+        server-side. This method does not return an amount and never
         writes anything locally: the actual charge and its outcome are learned
         asynchronously, through the same subscription-payment webhook every
         other charge on this subscription already reports through

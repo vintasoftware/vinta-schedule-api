@@ -75,7 +75,7 @@ class ConsentService:
         :param ip: The client IP address that submitted the consent, if known.
         :param user_agent: The client user-agent string, if known.
         :param phone_number: The phone number consent applies to, if known
-            (Phase 8 — phone-keyed consent). Blank when the phone isn't known
+            (phone-keyed consent). Blank when the phone isn't known
             at consent time; the phone-keyed SMS gate never matches a blank
             value. Normalized (see
             ``common.utils.phone_utils.normalize_phone_number``) before
@@ -117,7 +117,7 @@ class ConsentService:
     def has_sms_consent_for_phone(self, phone: str) -> bool:
         """Return True if `phone` has an SMS_CONSENT row owned by `phone`.
 
-        Phone-keyed, ``user``-independent (Phase 8) — delegates to
+        Phone-keyed and ``user``-independent — delegates to
         ``UserConsentManager.has_sms_consent_for_phone`` (requires the
         consenting user's own ``phone_number`` to equal `phone`). Used to
         gate the two anti-enumeration sends, which carry no ``user``. See
@@ -129,7 +129,7 @@ class ConsentService:
     def has_sms_consent_for_phone_and_user(self, phone: str, user: User) -> bool:
         """Return True if `user` recorded an SMS_CONSENT row for `phone`.
 
-        Phone-keyed AND tied to `user` (Phase 8, BLOCKER-1 fix) — delegates
+        Phone-keyed and tied to `user` — delegates
         to ``UserConsentManager.has_sms_consent_for_phone_and_user``. Used to
         gate ``send_verification_code_sms``, which always carries a `user`;
         see that manager method's docstring for why this checks `user`

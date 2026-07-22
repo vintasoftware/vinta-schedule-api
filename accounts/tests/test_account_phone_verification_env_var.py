@@ -1,4 +1,4 @@
-"""Phase 6 — ``ACCOUNT_PHONE_VERIFICATION_ENABLED`` is env-driven, default off.
+"""``ACCOUNT_PHONE_VERIFICATION_ENABLED`` is env-driven, default off.
 
 Unit-level: exercises the exact ``decouple.config(...)`` expression used in
 ``vinta_schedule_api/settings/base.py`` directly, so it fails if the cast/

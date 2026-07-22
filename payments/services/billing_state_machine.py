@@ -37,9 +37,9 @@ logger = logging.getLogger(__name__)
 #: Every edge of the spec's lifecycle diagram, as ``(from_state, to_state)`` pairs.
 #: ``ACTIVE -> ACTIVE`` ("renewal succeeds") is the only self-loop the diagram draws
 #: explicitly; every *other* state's self-loop is granted separately by
-#: ``transition_billing_state``'s same-state short-circuit below (the guiding
-#: decision that a transition must be idempotent on its target state -- entering
-#: GRACE twice, or a dunning retry firing twice, must not raise).
+#: ``transition_billing_state``'s same-state short-circuit below (the rule that a
+#: transition must be idempotent on its target state -- entering GRACE twice, or a
+#: dunning retry firing twice, must not raise).
 LEGAL_BILLING_STATE_TRANSITIONS: frozenset[tuple[str, str]] = frozenset(
     {
         (BillingState.FREE, BillingState.ACTIVE),  # upgrade paid
@@ -47,7 +47,7 @@ LEGAL_BILLING_STATE_TRANSITIONS: frozenset[tuple[str, str]] = frozenset(
         # Two drivers reach this edge: a failed recurring charge
         # (DunningService.enter_grace) and a downgrade that leaves the
         # organization over its new (lower) limits
-        # (SubscriptionService._schedule_downgrade, Phase 11). Both stamp
+        # (SubscriptionService._schedule_downgrade). Both stamp
         # grace_period_ends_at and drive billing_state through this same
         # transition, so process_dunning's GRACE/RESTRICTED sweep (payments/tasks.py)
         # sees either kind of grace episode identically; DunningService
@@ -58,7 +58,7 @@ LEGAL_BILLING_STATE_TRANSITIONS: frozenset[tuple[str, str]] = frozenset(
         # Same two drivers as (ACTIVE, GRACE) above, from FREE: a failed
         # first-upgrade charge (DunningService.enter_grace), or a downgrade
         # requested while still FREE that leaves the organization over the new
-        # plan's limits (SubscriptionService._schedule_downgrade, Phase 11).
+        # plan's limits (SubscriptionService._schedule_downgrade).
         (BillingState.FREE, BillingState.GRACE),
         (BillingState.GRACE, BillingState.ACTIVE),  # payment succeeds
         (BillingState.GRACE, BillingState.FREE),  # org returns under free limits
@@ -67,13 +67,13 @@ LEGAL_BILLING_STATE_TRANSITIONS: frozenset[tuple[str, str]] = frozenset(
         (BillingState.RESTRICTED, BillingState.FREE),  # org returns under free limits
         (BillingState.ACTIVE, BillingState.CANCELLED),  # cancellation
         # Cancellation from the other live states. The spec diagram draws only
-        # ACTIVE -> CANCELLED, but the product's cancel action (Phase 9's endpoint,
-        # SubscriptionService.cancel_subscription) is offered from any live state,
+        # ACTIVE -> CANCELLED, but the product's cancel action
+        # (SubscriptionService.cancel_subscription) is offered from any live state,
         # so the machine must be able to perform what the product does:
         (BillingState.FREE, BillingState.CANCELLED),  # cancel a free-tier subscription
         (BillingState.GRACE, BillingState.CANCELLED),  # give up on dunning and cancel
         (BillingState.RESTRICTED, BillingState.CANCELLED),  # cancel instead of paying to recover
-        (BillingState.CANCELLED, BillingState.FREE),  # cycle ends (Phase 13 sweep)
+        (BillingState.CANCELLED, BillingState.FREE),  # cycle ends (cycle-close sweep)
     }
 )
 
@@ -99,7 +99,7 @@ def transition_billing_state(
     :raises IllegalBillingStateTransitionError: ``to_state`` is reachable from
         ``subscription``'s current state only through an edge that is not on the
         spec's lifecycle diagram. Rejected outright -- never silently coerced or
-        proceeded with -- per the plan's guiding decision. Every caller that can
+        proceeded with. Every caller that can
         legitimately be asked for a transition the diagram does not draw (e.g. a
         stray webhook confirming a charge for an already-``CANCELLED``
         subscription) is responsible for checking first or catching this, not

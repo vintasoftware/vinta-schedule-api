@@ -1,4 +1,4 @@
-"""Integration tests for the read-only PolicyDocument REST API (Phase 2).
+"""Integration tests for the read-only PolicyDocument REST API.
 
 Covers:
 - ``latest`` (list): one row per document_type, at its highest version. Public.

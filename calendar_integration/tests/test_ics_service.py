@@ -5,8 +5,8 @@ Tests verify that build_ics produces valid RFC 5545 iCalendar documents that:
 - Contain correct UID (external_id when present, synthetic fallback otherwise)
 - Contain correct SUMMARY, DTSTART, DTEND, STATUS, SEQUENCE, DTSTAMP
 - Properly escape special characters (commas, semicolons, newlines) in description
-- Phase 2: carry ORGANIZER, ATTENDEE, RRULE, EXDATE lines correctly
-- Phase 2: emit STATUS:CANCELLED for cancelled-exception events
+- Carry ORGANIZER, ATTENDEE, RRULE, EXDATE lines correctly
+- Emit STATUS:CANCELLED for cancelled-exception events
 """
 
 import datetime
@@ -447,7 +447,7 @@ def test_build_ics_multiple_events_each_valid():
 
 
 # ---------------------------------------------------------------------------
-# Phase 2 tests — ORGANIZER, ATTENDEE, RRULE, EXDATE, STATUS:CANCELLED
+# ORGANIZER, ATTENDEE, RRULE, EXDATE, STATUS:CANCELLED tests
 # ---------------------------------------------------------------------------
 
 

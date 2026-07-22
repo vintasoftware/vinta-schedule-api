@@ -50,7 +50,7 @@ class OrganizationResourceAccess(BasePermission):
         "createScopedSystemUser": PublicAPIResources.SYSTEM_USER,
         "updateBranding": PublicAPIResources.BRANDING,
         "childOrganizations": PublicAPIResources.CHILD_ORG_ANALYTICS,
-        # Single-use booking-code mint / revoke mutations (Phase 0+)
+        # Single-use booking-code create / revoke mutations
         "createCalendarBookingCode": PublicAPIResources.CALENDAR_BOOKING_CODE,
         "createCalendarGroupBookingCode": PublicAPIResources.CALENDAR_BOOKING_CODE,
         "createCalendarRescheduleBookingCode": PublicAPIResources.CALENDAR_BOOKING_CODE,

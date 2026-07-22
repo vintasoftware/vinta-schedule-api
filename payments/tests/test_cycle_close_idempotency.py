@@ -1,8 +1,8 @@
 """Integration test: closing the same period twice produces exactly one charge.
 
-This is the single most important property in Phase 13 — a double-charge is the
-high-severity, silent failure the spec rates worst. Two mechanisms make "exactly
-once" hold, and each has a test:
+This is the single most important property of cycle close — a double-charge is
+the high-severity, silent failure. Two mechanisms make "exactly once" hold, and
+each has a test:
 
 - **The durable marker.** A completed close rolls ``current_period_start`` forward,
   so a re-run's ``current_period_end <= now`` guard finds nothing to close. A

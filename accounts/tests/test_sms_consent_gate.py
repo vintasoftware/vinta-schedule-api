@@ -1,7 +1,7 @@
-"""Phase 5 / Phase 8 — SMS consent enforcement gate.
+"""SMS consent enforcement gate.
 
 Covers all three SMS-sending entry points on ``AccountAdapter``, all gated on
-phone-keyed consent tied to phone ownership (BLOCKER-1 security fix — see
+phone-keyed consent tied to phone ownership (a security fix — see
 ``legal.managers.UserConsentManager``):
 
 - ``send_verification_code_sms``: refuses to dispatch (zero calls to
@@ -26,8 +26,8 @@ phone-keyed consent tied to phone ownership (BLOCKER-1 security fix — see
   (``POST /auth/browser/v1/account/phone``) returns a deterministic, well-formed
   4xx (not a 500) for a consent-less phone and dispatches zero notifications; a
   consented phone still receives the OTP. ``ACCOUNT_PHONE_VERIFICATION_ENABLED``
-  is off in production settings until Phase 6 — it is overridden here, in-test
-  only, to exercise the gate through the real view/flow.
+  is off in production settings — it is overridden here, in-test only, to
+  exercise the gate through the real view/flow.
 """
 
 import json
@@ -122,7 +122,7 @@ class TestSendVerificationCodeSmsConsentGate:
 class TestSendUnknownAccountSmsConsentGate:
     """Anti-enumeration send for a phone with no matching account.
 
-    Phase 8: gated on phone-keyed consent. No consent -> silent no-op (no SMS,
+    Gated on phone-keyed consent. No consent -> silent no-op (no SMS,
     no error) so the caller can't distinguish "no consent" from "SMS sent",
     preserving allauth's enumeration-prevention guarantee.
     """
@@ -177,7 +177,7 @@ class TestSendUnknownAccountSmsConsentGate:
 class TestSendAccountAlreadyExistsSmsConsentGate:
     """Anti-enumeration send for a phone that already has an account.
 
-    Phase 8: gated on phone-keyed consent. No consent -> silent no-op (no SMS,
+    Gated on phone-keyed consent. No consent -> silent no-op (no SMS,
     no error).
     """
 
@@ -263,9 +263,9 @@ class TestPhoneVerifyConsentGateIntegration:
     def test_default_disabled_flag_phone_verify_is_inert_for_a_consent_less_phone(
         self, auth_client
     ):
-        """Phase 6 acceptance: "with it disabled (default), the phone-verify
-        flow is inert." No ``@override_settings`` here — this exercises the
-        actual out-of-the-box default (``ACCOUNT_PHONE_VERIFICATION_ENABLED``
+        """With the flag disabled (the default), the phone-verify flow is
+        inert. No ``@override_settings`` here — this exercises the actual
+        out-of-the-box default (``ACCOUNT_PHONE_VERIFICATION_ENABLED``
         unset/False, as in production today).
 
         Verified empirically: the vendored allauth ``ManagePhoneView`` /
@@ -274,7 +274,7 @@ class TestPhoneVerifyConsentGateIntegration:
         setting is only consulted by allauth's signup/login
         ``PhoneVerificationStage``, a different code path). So the endpoint
         stays reachable either way; what actually keeps it inert by default is
-        the SMS-consent gate (Phase 5/8) refusing a consent-less phone. The
+        the SMS-consent gate refusing a consent-less phone. The
         real, observed response for this exact request (no consent recorded,
         default settings) is a 403 with the ``consent_required`` error code
         and zero notification dispatches -- asserted below rather than
@@ -292,13 +292,13 @@ class TestPhoneVerifyConsentGateIntegration:
 
 @pytest.mark.django_db
 class TestAntiEnumerationSmsRealFlowIntegration:
-    """Security-review SHOULD-FIX: exercise the anti-enumeration gate through a
-    real ``ConsentService`` + DB (not a mocked ``consent_service``), proving the
-    silent no-op / dispatch behavior end-to-end.
+    """Exercise the anti-enumeration gate through a real ``ConsentService`` +
+    DB (not a mocked ``consent_service``), proving the silent no-op / dispatch
+    behavior end-to-end.
 
     ``send_unknown_account_sms`` fires only when no user anywhere has
     `phone_number == phone` (that is what makes the account "unknown"), so
-    under the ownership-joined gate (BLOCKER 1) it can never dispatch — a
+    under the ownership-joined gate it can never dispatch — a
     consent row's ownership check (`user__phone_number=phone`) is
     structurally unsatisfiable there. Only the unconsented (no-op) case is
     exercised for it; the "dispatches when owned" case is covered for
@@ -345,9 +345,9 @@ class TestAntiEnumerationSmsRealFlowIntegration:
 
 @pytest.mark.django_db
 class TestConsentPhoneNormalizationRegression:
-    """Security-review BLOCKER 2 regression: a human-formatted phone posted to
-    ``/consents/`` must still satisfy the SMS gate for the E.164-normalized
-    phone allauth passes to the adapter.
+    """Regression: a human-formatted phone posted to ``/consents/`` must still
+    satisfy the SMS gate for the E.164-normalized phone allauth passes to the
+    adapter.
     """
 
     def test_format_mismatched_consent_phone_still_satisfies_the_gate(self, auth_client, user):

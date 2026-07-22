@@ -15,12 +15,12 @@ constructor:
 - ``recurrence_manager`` — the stateless :class:`RecurrenceManager` the facade
   also holds; the recurring blocked/available methods delegate to it exactly as
   the former facade methods did.
-- ``host`` — the :class:`AvailabilityServiceHost` (in Phase 4 the facade
+- ``host`` — the :class:`AvailabilityServiceHost` (currently the facade
   itself). The availability concern routes three things back through it:
 
-  - **event reads** (``get_calendar_events_expanded``) — the event concern,
-    extracted in Phase 2; reaching it via the host keeps a single
-    implementation and the call graph the existing test suite asserts on.
+  - **event reads** (``get_calendar_events_expanded``) — the event concern;
+    reaching it via the host keeps a single implementation and the call graph
+    the existing test suite asserts on.
   - **blocked-time creation** (``bulk_create_manual_blocked_times``) — stays
     resident on the facade (other facade flows reference it and it is not part
     of the availability concern's extracted surface), so ``create_blocked_time``
@@ -31,7 +31,8 @@ constructor:
     implementation and stays byte-for-byte.
 
 Routing through the host keeps single implementations and behavior
-byte-for-byte; later phases swap concerns in without touching this service.
+byte-for-byte; individual concerns may be swapped out later without touching
+this service.
 
 The interval-subtraction math (``_subtract_busy_intervals``) and the
 recurrence-expansion reads (``get_available_times_expanded`` /
@@ -98,9 +99,9 @@ class AvailabilityServiceHost(Protocol):
     Three concerns are not part of the availability concern's extracted surface and
     stay on the facade:
 
-    - **event reads** (``get_calendar_events_expanded``) — the event concern
-      (Phase 2); reached through the host to keep one implementation and the call
-      graph the existing test suite patches via the facade;
+    - **event reads** (``get_calendar_events_expanded``) — the event concern;
+      reached through the host to keep one implementation and the call graph the
+      existing test suite patches via the facade;
     - **blocked-time bulk creation** (``bulk_create_manual_blocked_times``) — a
       facade-resident helper (not part of the availability surface); ``create_blocked_time``
       routes through it;
@@ -108,8 +109,8 @@ class AvailabilityServiceHost(Protocol):
       facade helper used by availability writes and facade-resident blocked-time bulk
       creation alike; routed through the host for a single implementation.
 
-    In Phase 4 the facade supplies *itself*. Later phases may swap individual
-    concerns without changing this service's call sites.
+    The facade currently supplies itself; individual concerns may be swapped out
+    later without changing this service's call sites.
     """
 
     def get_calendar_events_expanded(
@@ -141,7 +142,7 @@ class AvailabilityService:
     ) -> None:
         self._context = context
         self._recurrence_manager = recurrence_manager
-        # Phase 4 seam: event reads, blocked-time bulk creation, and the shared
+        # Delegation seam: event reads, blocked-time bulk creation, and the shared
         # recurrence-rule helper are reached through the host (the facade).
         # See ``AvailabilityServiceHost``.
         self._host = host
@@ -533,7 +534,7 @@ class AvailabilityService:
         transaction — any failure rolls the whole batch back. Update/delete operations
         are scoped to this calendar (and organization); a missing id raises ValueError.
 
-        Phase 6b: a batch with ``create`` operations is itself a bulk-creation path --
+        A batch with ``create`` operations is itself a bulk-creation path --
         without a check here, the ``availability_windows`` ceiling would be reachable
         only through ``create_available_time`` and trivially bypassed via this endpoint.
         Headroom for the batch's **net** growth is checked *before* any operation in the
@@ -576,8 +577,8 @@ class AvailabilityService:
         ]
 
         entitlement_service = self._context.entitlement_service
-        # Phase 11: RESTRICTED must block this batch outright, including an
-        # update-only or delete-only batch -- the ``delta``-gated ``check_limit``
+        # RESTRICTED must block this batch outright, including an
+        # update-only or delete-only batch -- the ``delta``-based ``check_limit``
         # call further below is skipped entirely when the batch creates nothing
         # net (a pure update/delete batch always has ``delta == 0``), so it alone
         # would never catch a restricted organization editing or deleting its

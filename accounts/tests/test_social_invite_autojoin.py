@@ -1,15 +1,15 @@
 """
-Phase 6 — Integration tests: Auto-join invited org on social signup.
+Integration tests: Auto-join invited org on social signup.
 
-Use-case 4: A social user whose email matches a pending invitation automatically
+A social user whose email matches a pending invitation automatically
 joins the inviting organisation as MEMBER at save_user time — no create-org step
 needed.  Four scenarios are covered:
 
 1. Invited social signup auto-joins: pending invitation + social save_user →
    MEMBER membership in the inviting org, invitation marked accepted + linked,
    no new org created, user is no longer gated.
-2. Uninvited social signup stays gated (Phase 5 regression): no invitation → no
-   membership, no org created.
+2. Uninvited social signup stays gated: no invitation → no membership, no org
+   created.
 3. Case-insensitive invite: invitation stored with a case-differing local part
    still triggers auto-join.
 4. Re-entry / already-member is a no-op: calling save_user a second time for an
@@ -18,7 +18,7 @@ needed.  Four scenarios are covered:
 The social save_user path is simulated exactly as in test_social_gated_onboarding.py
 and test_account_adapters.py: super().save_user is replaced by a minimal stub that
 persists the user, then the real SocialAccountAdapter.save_user runs so that all
-profile-creation and Phase 6 provisioning logic executes as in production.
+profile-creation and provisioning logic executes as in production.
 """
 
 import datetime
@@ -50,7 +50,7 @@ def _social_save_user(email: str) -> User:
 
     Mirrors the helper in test_social_gated_onboarding.py: the super() call is
     replaced by a minimal stub that persists the user, then the real
-    SocialAccountAdapter.save_user() runs so that profile creation and Phase 6
+    SocialAccountAdapter.save_user() runs so that profile creation and
     provisioning logic execute exactly as in production.
     """
     adapter = SocialAccountAdapter()
@@ -93,7 +93,7 @@ def _pending_invitation(
 
 @pytest.mark.django_db
 class TestSocialInviteAutojoin:
-    """Phase 6 / Use-case 4: invited social signup auto-joins the inviting org."""
+    """Invited social signup auto-joins the inviting org."""
 
     # ------------------------------------------------------------------
     # Scenario 1 — invited social signup auto-joins
@@ -138,7 +138,7 @@ class TestSocialInviteAutojoin:
         assert invitation.membership_user_id == membership.user_id
 
     # ------------------------------------------------------------------
-    # Scenario 2 — uninvited social signup stays gated (Phase 5 regression)
+    # Scenario 2 — uninvited social signup stays gated
     # ------------------------------------------------------------------
 
     def test_uninvited_social_signup_stays_gated(self):
@@ -148,7 +148,6 @@ class TestSocialInviteAutojoin:
         After save_user:
         - No OrganizationMembership row exists for the user.
         - No Organisation was created by the adapter.
-        (Preserves the Phase 5 uninvited-stays-gated behavior.)
         """
         org_count_before = Organization.objects.count()
 

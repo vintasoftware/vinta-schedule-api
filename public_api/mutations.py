@@ -939,8 +939,8 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         2. Validates organizationId is the acting org or a descendant (subtree guard).
         3. Checks the user is not already an active member of the target org.
         4. Creates (or resets) a pending OrganizationInvitation via OrganizationService.
-        5. Sends the invitation email (Phase 3: sendEmail=true path only).
-           Phase 4 will add the sendEmail=false branch returning the raw token.
+        5. Sends the invitation email when sendEmail=true.
+           When sendEmail=false, suppresses the email and returns the raw token instead.
         6. Returns the invitation with token=None and invite_url=None (email path).
 
         The token's OrganizationResourceAccess must include the INVITATION resource.
@@ -987,12 +987,12 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         # first_name/last_name are empty strings — invite_user_to_organization creates (or
         # reuses) the user and stores names for email rendering only.
         #
-        # Phase 4: when send_email=False the service suppresses the email and attaches the raw
+        # When send_email=False the service suppresses the email and attaches the raw
         # token as invitation._raw_token (transient, never persisted in plaintext).
         #
-        # Phase 6a: invite_user_to_organization raises OverLimitError at the organization's
-        # seat limit. Rendered identically to the REST 402 body via
-        # raise_over_limit_graphql_error (Use-case 7 — the partner API is not a bypass).
+        # invite_user_to_organization raises OverLimitError at the organization's seat
+        # limit. Rendered identically to the REST 402 body via
+        # raise_over_limit_graphql_error — the partner API is not a bypass.
         try:
             invitation = deps.organization_service.invite_user_to_organization(
                 email=input.user_email,
@@ -1014,8 +1014,9 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             # inadvertently retained beyond this scope.
             raw_token = invitation._raw_token  # type: ignore[attr-defined]
             # Build the invite URL using the same template the branded email uses.
-            # Phase 6+ may refine this URL from the reseller's return_url_allowlist once
-            # OrganizationBranding is available; for now we use the same base as the email.
+            # A later change may refine this URL from the reseller's return_url_allowlist
+            # once OrganizationBranding is available; for now we use the same base as the
+            # email.
             url_template: str = getattr(settings, "HEADLESS_FRONTEND_URLS", {}).get(
                 "account_accept_invitation", ""
             )
@@ -1083,8 +1084,8 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
                 f"Valid values are: {', '.join(sorted(valid_values))}."
             )
 
-        # Mint the system user and persist ResourceAccess rows (mirrors REST create).
-        # Phase 6c: create_system_user raises OverLimitError at the organization's
+        # Create the system user and persist ResourceAccess rows (mirrors REST create).
+        # create_system_user raises OverLimitError at the organization's
         # public_api_system_users ceiling. Caught outside the IntegrityError branch and
         # rendered via raise_over_limit_graphql_error (also rolls back the request
         # transaction -- see that function's docstring for why that matters under
@@ -1177,7 +1178,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             )
 
         # Create the system user and resource-access rows atomically.
-        # Phase 6c: create_system_user raises OverLimitError at the organization's
+        # create_system_user raises OverLimitError at the organization's
         # public_api_system_users ceiling. Caught outside the IntegrityError branch and
         # rendered via raise_over_limit_graphql_error (also rolls back the request
         # transaction -- see that function's docstring for why that matters under
@@ -1332,7 +1333,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
 
         headers: dict = cast(dict, input.headers) if input.headers is not None else {}
 
-        # Phase 6c: create_configuration raises OverLimitError at the organization's
+        # create_configuration raises OverLimitError at the organization's
         # webhook_subscriptions ceiling. Caught before the ValueError branch and rendered
         # via raise_over_limit_graphql_error (also rolls back the request transaction --
         # see that function's docstring for why that matters under ATOMIC_REQUESTS).
@@ -1468,7 +1469,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         """
         calendar_service, _org = _get_org_and_init_calendar_service(info)
 
-        # Phase 6b: create_resource_calendar raises OverLimitError at the organization's
+        # create_resource_calendar raises OverLimitError at the organization's
         # resource_calendars limit. Rendered identically to the REST 402 body via
         # raise_over_limit_graphql_error, which also rolls back the request transaction
         # (graphql-core swallows resolver exceptions and always returns 200).
@@ -1507,10 +1508,10 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         """
         calendar_service, _org = _get_org_and_init_calendar_service(info)
 
-        # Phase 6b: CalendarService.create_calendar creates a PERSONAL calendar, which
-        # is not a member of LimitedResource (only resource_calendars and
-        # bundle_calendars are limited among calendar types) -- no OverLimitError guard
-        # applies here. See CalendarService.create_calendar's docstring.
+        # CalendarService.create_calendar creates a PERSONAL calendar, which is not a
+        # member of LimitedResource (only resource_calendars and bundle_calendars are
+        # limited among calendar types) -- no OverLimitError check applies here. See
+        # CalendarService.create_calendar's docstring.
         try:
             calendar = calendar_service.create_calendar(
                 name=input.name,
@@ -1720,7 +1721,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
                 success=False, error_message="Calendar not found."
             )
 
-        # Phase 6b: create_available_time raises OverLimitError at the organization's
+        # create_available_time raises OverLimitError at the organization's
         # availability_windows limit. Rendered identically to the REST 402 body via
         # raise_over_limit_graphql_error (also rolls back the request transaction).
         try:
@@ -1933,9 +1934,9 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
                 op["rrule_string"] = op_input.rrule_string
             ops.append(op)
 
-        # Phase 6b: a batch containing `create` operations raises OverLimitError when it
-        # would take the organization past its availability_windows limit -- a batch of
-        # N creates is exactly the kind of bulk path a single-window guard would miss.
+        # A batch containing `create` operations raises OverLimitError when it would take
+        # the organization past its availability_windows limit -- a batch of N creates is
+        # exactly the kind of bulk path a single-window check would miss.
         try:
             available_times = calendar_service.batch_modify_available_times(
                 calendar=calendar, operations=ops
@@ -2142,7 +2143,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
                 )
             primary = next(c for c in children if c.id == input.primary_calendar_id)
 
-        # Phase 6b: create_bundle_calendar raises OverLimitError at the organization's
+        # create_bundle_calendar raises OverLimitError at the organization's
         # bundle_calendars limit. Rendered identically to the REST 402 body via
         # raise_over_limit_graphql_error (also rolls back the request transaction).
         try:
@@ -2371,7 +2372,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             raise GraphQLError(
                 str(exc) or "You do not have permission to schedule this event."
             ) from exc
-        # Phase 8: create_event raises OverLimitError at the organization's postpaid
+        # create_event raises OverLimitError at the organization's postpaid
         # event_occurrences allowance (no payment method on file); rendered via
         # raise_over_limit_graphql_error (also rolls back the request transaction --
         # see its docstring).
@@ -2728,7 +2729,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         return CancelEventResult(success=True)
 
     # ------------------------------------------------------------------
-    # BookingPolicy mutations (Phase 4)
+    # BookingPolicy mutations
     # ------------------------------------------------------------------
 
     @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
@@ -2885,7 +2886,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         actor = AuditService.actor_from_system_user(request.public_api_system_user)
         service.set_actor(actor)
 
-        # Idempotent: a missing policy is a no-op success (per Guiding Decisions).
+        # Idempotent: a missing policy is a no-op success.
         try:
             policy: BookingPolicy | None = BookingPolicy.objects.filter_by_organization(org.id).get(
                 id=input.policy_id

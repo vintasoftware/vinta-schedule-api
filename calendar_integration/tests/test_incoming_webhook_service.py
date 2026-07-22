@@ -1,6 +1,4 @@
-"""
-Tests for Phase 1: Core Webhook Infrastructure
-"""
+"""Tests for the core webhook infrastructure."""
 
 from django.db import IntegrityError
 from django.test import TestCase

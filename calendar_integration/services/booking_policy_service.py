@@ -1,7 +1,7 @@
 """BookingPolicyService — resolver and CRUD for BookingPolicy.
 
 Resolves the effective booking policy for a single calendar, a bundle calendar,
-or a calendar group via the deterministic precedence chain defined in the plan:
+or a calendar group via a deterministic precedence chain:
 
 - **Single calendar**: calendar policy → owning-membership policy → org-default
   policy → unconstrained.  Owning membership is resolved through
@@ -53,7 +53,7 @@ class BookingPolicyService:
 
     Must be initialized with ``initialize(organization)`` before use.  All query
     paths are fully organization-scoped through the ``BookingPolicyManager``
-    helpers introduced in Phase 1 — no raw or unscoped queries are made.
+    helpers — no raw or unscoped queries are made.
     """
 
     organization: Organization | None
@@ -163,7 +163,7 @@ class BookingPolicyService:
     def _resolve_owning_membership_user_id(self, calendar: Calendar) -> int | None:
         """Resolve the single owning-membership user id for ``calendar``.
 
-        Rules (from the plan's Guiding Decisions):
+        Rules:
         1. Exactly one ``CalendarOwnership`` with non-NULL ``membership_user_id``
            → return that user id.
         2. Multiple ownerships → return the ``is_default=True`` one's user id.
@@ -430,9 +430,8 @@ class BookingPolicyService:
     def delete_booking_policy(self, policy: BookingPolicy | None) -> None:
         """Delete a BookingPolicy.
 
-        Idempotent no-op when ``policy`` is ``None`` (delete-absent semantics from
-        the plan's Guiding Decisions).  Emits an ``AuditService`` DELETE record
-        when an actual row is deleted.
+        Idempotent no-op when ``policy`` is ``None`` (delete-absent semantics).
+        Emits an ``AuditService`` DELETE record when an actual row is deleted.
         """
         self._assert_initialized()
 

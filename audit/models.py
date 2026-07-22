@@ -3,12 +3,12 @@
 `Audit` and `AuditAffectedMembership` are both OrganizationModel subclasses.
 They are append-only by intent — the repository never calls update or delete.
 
-Unscoped read access (Phase 3):
+Unscoped read access:
   OrganizationModel already provides `original_manager = models.Manager()` on
-  every subclass.  Phase 3's DjangoORMAuditRepository and Phase 6's admin
-  should use `Audit.original_manager.all()` (filtered by `organization_id`
-  where needed) rather than the tenant-scoped `objects` manager, because
-  staff context has no active-membership tenant scope.
+  every subclass. The audit repository and admin should use
+  `Audit.original_manager.all()` (filtered by `organization_id` where needed)
+  rather than the tenant-scoped `objects` manager, because staff context has no
+  active-membership tenant scope.
 """
 
 from typing import ClassVar

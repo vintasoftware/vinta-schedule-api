@@ -5,11 +5,11 @@ re-run and a crash-retry. Neither exercises the property the close docstring lea
 on hardest: two sweeps of the *same* subscription running at the *same time*
 serialise on ``SELECT ... FOR UPDATE`` so the period is charged **once**, without
 relying on the provider's crash-safety dedup (a different failure mode). That is
-the highest-severity failure this phase can have — a double-charge under a race.
+the highest-severity failure cycle close can have — a double-charge under a race.
 
 This runs against a **real** database with ``transaction=True`` and two OS threads
-holding two separate connections, the pattern Phase 6b established
-(``payments/tests/services/test_limit_concurrency.py``). The row lock is inside
+holding two separate connections, the pattern
+``payments/tests/services/test_limit_concurrency.py`` established. The row lock is inside
 ``close_subscription``'s own ``transaction.atomic()``, so the two transactions must
 actually be open at once for the block to be observable.
 
@@ -20,7 +20,7 @@ un-rolled period and both close it — ``[1, 1]`` with two charge attempts — w
 assertion fails on loudly. A separate "without the lock" negative control would have
 to monkeypatch ``select_for_update`` out of the service (fragile), and because the
 overage key is derived from ``period_start`` the provider would still dedup a
-lock-less double-attempt to one *distinct* key anyway — so the load-bearing fact is
+lock-less double-attempt to one *distinct* key anyway — so the fact that matters is
 "exactly one create_payment *call*", which the positive assertion proves directly.
 """
 

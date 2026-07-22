@@ -1,6 +1,4 @@
-"""
-Tests for Phase 2: Google Calendar Webhook Receiver
-"""
+"""Tests for the Google Calendar webhook receiver."""
 
 import datetime
 from unittest.mock import Mock, patch
@@ -499,7 +497,7 @@ class GoogleCalendarWebhookIntegrationTest(TestCase):
 
 
 class GoogleCalendarWebhookOverLimitEntitlementTest(TestCase):
-    """Phase 6c BLOCKER: an ``OverLimitError`` raised by the entitlement-gated
+    """An ``OverLimitError`` raised by the entitlement-gated
     ``_get_write_adapter_for_calendar`` must not 500 the webhook endpoint.
 
     ``_get_write_adapter_for_calendar`` (the second, calendar-provider-scoped

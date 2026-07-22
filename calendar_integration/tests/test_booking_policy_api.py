@@ -1,4 +1,4 @@
-"""Integration tests for the BookingPolicy REST API (Phase 3).
+"""Integration tests for the BookingPolicy REST API.
 
 Covers:
 - Authenticated CRUD happy paths (create, read, update, delete) — org admin only for writes.
@@ -541,8 +541,8 @@ class TestBookingPolicyDestroy:
     def test_delete_cross_org_returns_204_no_op(self):
         """Deleting a pk that belongs to a different org is an idempotent no-op, not a 403.
 
-        The plan's delete-absent semantics mean: if the policy isn't resolvable in
-        the caller's org, treat it the same as absent → 204 no-op.
+        The delete-absent rule: if the policy isn't resolvable in the caller's org,
+        treat it the same as absent → 204 no-op.
         """
         _, membership = _make_org_with_member(is_admin=True)
         client = _auth_client(membership)

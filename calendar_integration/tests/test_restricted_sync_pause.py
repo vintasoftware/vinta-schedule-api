@@ -1,17 +1,15 @@
-"""Phase 11: sync pause and resync-on-recovery.
+"""Sync pause and resync-on-recovery.
 
-Spec use-case 5 (restricted half): a restricted organization stops costing us
-third-party spend -- background calendar sync pauses -- and, on recovering
-out of RESTRICTED, resumes with a real reconciliation, not merely "sync
-resumes from here forward".
+A restricted organization stops costing us third-party spend -- background
+calendar sync pauses -- and, on recovering out of RESTRICTED, resumes with a
+real reconciliation, not merely "sync resumes from here forward".
 
-Both the ``request_*`` enqueue guards (``CalendarSyncService
+Both the ``request_*`` enqueue checks (``CalendarSyncService
 ._check_not_restricted``) and the task-body early returns
 (``calendar_integration.tasks.calendar_sync_tasks._restricted_or_skip``)
-consult the same predicate the write guard uses --
-``EntitlementService.is_billing_root_restricted`` -- proven here by driving
-the real methods/tasks rather than asserting against the predicate in
-isolation.
+consult the same helper the write check uses --
+``EntitlementService.is_billing_root_restricted`` -- exercised here by driving
+the real methods/tasks rather than asserting against the helper in isolation.
 """
 
 import datetime
@@ -79,8 +77,8 @@ def _organization_with_billing_state(
         current_period_end=now + datetime.timedelta(days=30),
     )
     if grant_google_entitlement:
-        # `authenticate()`'s provider-entitlement gate (Phase 6c) fails closed on
-        # an absent row -- irrelevant to what this module tests, but needed for
+        # `authenticate()`'s provider-entitlement check fails closed on an absent
+        # row -- irrelevant to what this module tests, but needed for
         # a real `CalendarService.authenticate()` call to succeed rather than
         # being silently skipped by `_authenticate_or_skip`.
         baker.make(
@@ -405,12 +403,12 @@ class TestResellerChildSyncPausesWithRestrictedRoot:
 
     def test_child_sync_is_not_paused_when_the_root_is_only_in_grace(self):
         """The pause is specific to RESTRICTED -- a GRACE root must not pause the
-        child's sync (the same GRACE-is-not-blocked rule the write guard follows,
-        proven here at the pooled-child level). The ``request_*`` guard lets the
+        child's sync (the same GRACE-is-not-blocked rule the write check follows,
+        exercised here at the pooled-child level). The ``request_*`` check lets the
         request through and the ``CalendarSync`` row is created (the actual
         ``sync_calendar_task.delay`` is a deferred ``transaction.on_commit`` that a
         non-transactional test never fires -- creation of the row is what proves
-        the billing guard did not block)."""
+        the billing check did not block)."""
         _root, child = _reseller_tree(BillingState.GRACE)
         calendar = baker.make(
             Calendar,

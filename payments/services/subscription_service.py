@@ -226,9 +226,9 @@ def resolve_billing_period_start(
     ``event_occurrences`` usage counter read back
     ``subscription.current_period_start`` directly. Those agree only while the
     stored period happens to contain "now" — and nothing advances
-    ``current_period_start`` (cycle close is Phase 13), so once the stored period
-    elapses the meter writes one period and the counter asks for another, and the
-    counter reads zero forever.
+    ``current_period_start`` (cycle close is not implemented yet), so once the
+    stored period elapses the meter writes one period and the counter asks for
+    another, and the counter reads zero forever.
 
     Callers differ only in the ``moment`` they pass: the meter passes each
     occurrence's own start (so an occurrence is billed to the cycle it happened
@@ -245,8 +245,8 @@ def current_billing_period_start(subscription: Subscription) -> datetime.datetim
 
     Deliberately derived from ``timezone.now()`` rather than read off
     ``Subscription.current_period_start``. That column records the cycle the
-    subscription was created or last advanced into; until Phase 13 introduces
-    cycle close, nothing ever moves it forward, so it goes stale as soon as one
+    subscription was created or last advanced into; until cycle close is
+    implemented, nothing ever moves it forward, so it goes stale as soon as one
     interval elapses.
     """
     return resolve_billing_period_start(subscription, timezone.now())
@@ -285,7 +285,7 @@ class SubscriptionService:
     """Places organizations on a ``BillingPlan`` and keeps their per-subscription
     limit/entitlement copies in sync with plan changes.
 
-    Per the plan's "no plan-less state" rule, every organization that is its own
+    Under the "no plan-less state" rule, every organization that is its own
     billing root (see ``resolve_billing_root``) has exactly one ``Subscription``.
     A reseller child never gets one of its own — it pools against its root's.
     """
@@ -295,7 +295,7 @@ class SubscriptionService:
         self,
         payment_service: Annotated["PaymentService | None", Provide["payment_service"]] = None,
     ) -> None:
-        """``payment_service`` drives the provider round-trips Phase 9's plan-change
+        """``payment_service`` drives the provider round-trips the plan-change
         and add-on purchase flows need (creating/updating the provider-side plan,
         attaching or moving a subscription onto it). Injected via DI, like every
         other cross-service dependency in this codebase (``OrganizationService``'s
@@ -342,7 +342,7 @@ class SubscriptionService:
         :param organization: The organization to place on a plan.
         :param plan: The catalog plan to subscribe to. Defaults to the catalog's
             active ``is_default_for_new_organizations=True`` plan (the ``unlimited``
-            plan at rollout — the plan's declared "no feature flag" rollout switch).
+            plan at rollout, which acts as the "no feature flag" rollout switch).
         """
         if not is_billing_root(organization):
             logger.debug(
@@ -369,9 +369,9 @@ class SubscriptionService:
                     "current_period_start": now,
                     "current_period_end": period_end,
                     # Placeholder: this subscription never touches a payment gateway
-                    # (unlimited/free plans are $0). Phase 2b adds Stripe as a second
-                    # provider; a real paid subscription will set this per the
-                    # organization's chosen provider instead of hardcoding it here.
+                    # (unlimited/free plans are $0). A real paid subscription will set
+                    # this per the organization's chosen provider instead of
+                    # hardcoding it here.
                     "payment_provider": PaymentProviders.MERCADOPAGO,
                 },
             )
@@ -449,8 +449,8 @@ class SubscriptionService:
         Upgrade vs. downgrade is decided **once**, from ``_plan_price`` compared
         against ``subscription``'s current plan/interval, and that one decision
         is what both the provider is charged against and what capacity is
-        eventually granted from — the plan's recurring "two predicates that must
-        agree" failure shape, avoided by having only one.
+        eventually granted from — this avoids the recurring "two checks that
+        must agree" failure shape by having only one.
 
         - **Upgrade** (``_initiate_upgrade``): drives the provider (proration
           computed server-side); capacity is granted later, when the resulting
@@ -463,7 +463,7 @@ class SubscriptionService:
           **immediately** (re-copied here); the plan itself, and what the org is
           billed, do not flip until the next period boundary — recorded on
           ``pending_plan``/``pending_billing_interval``/``pending_plan_effective_at``
-          for a future cycle-close sweep (Phase 13) to apply.
+          for the cycle-close sweep to apply later.
 
         A request for the plan/interval ``subscription`` is *already* fully
         settled on (no pending change either) is a no-op.
@@ -578,8 +578,8 @@ class SubscriptionService:
         catalog ``BillingPlan``: the catalog carries no per-provider external id
         of its own (``plan_external_id`` lives on ``Subscription``, one per
         subscriber, not on ``BillingPlan``), and there is no live provider to
-        validate a caching scheme against in this environment (see the phase
-        report). Correct, if not maximally efficient — a follow-up could add a
+        validate a caching scheme against in this environment. Correct, if not
+        maximally efficient — a follow-up could add a
         provider-keyed external id to the catalog plan itself.
         """
         payment_service = self._require_payment_service()
@@ -612,7 +612,7 @@ class SubscriptionService:
         ``idempotency_key`` reaches the provider's own idempotency header (see
         ``BaseSubscriptionAdapter.change_subscription_plan``), so a Celery task
         redelivery of the same logical dunning attempt (``CELERY_TASK_ACKS_LATE``)
-        cannot double-charge -- the same fail-closed-for-money plumbing Phase 9
+        cannot double-charge -- the same fail-closed-for-money handling
         built for plan-change/add-on charges, reused rather than re-invented here.
 
         Writes nothing about the outcome locally -- success or a further failure
@@ -646,13 +646,13 @@ class SubscriptionService:
         boundary while applying its (lower, or equal-price) limits immediately.
 
         ``grace_period_ends_at`` is stamped so the org has a window to reduce
-        usage before anything past Phase 8/6's ordinary "no new creates over the
+        usage before anything past the ordinary "no new creates over the
         ceiling" enforcement applies -- nothing here evicts or deletes existing
         over-count resources; ``check_limit`` never has.
 
-        **Also drives ``billing_state`` into GRACE** (Phase 11's fix for a dead
-        edge Phase 10 left behind): before this, ``grace_period_ends_at`` was
-        stamped here but ``billing_state`` stayed ACTIVE/FREE, so
+        **Also drives ``billing_state`` into GRACE** (fixes a dead edge where a
+        downgrade left the state ACTIVE/FREE): before this, ``grace_period_ends_at``
+        was stamped here but ``billing_state`` stayed ACTIVE/FREE, so
         ``process_dunning``'s GRACE/RESTRICTED sweep (``payments/tasks.py``) never
         looked at this row and the stamped deadline never expired -- a downgrade
         that left an organization over its new limits could sit indefinitely with
@@ -730,7 +730,7 @@ class SubscriptionService:
           sync from the pending (lower) plan instead. This is the fix for a
           redelivered APPROVED webhook silently lifting the ceiling back up
           mid-downgrade; ``subscription.plan`` stays on the paid plan until the
-          Phase 13 boundary sweep flips it.
+          cycle-close boundary sweep flips it.
 
         Idempotent / safe to call on every approved subscription payment (not
         only the first one after an upgrade) — both sync paths are bulk upserts —
@@ -739,7 +739,7 @@ class SubscriptionService:
 
         The ``billing_state -> ACTIVE`` write goes through
         ``billing_state_machine.transition_billing_state`` — the same validator
-        ``DunningService`` uses for every other transition (Phase 10) — rather
+        ``DunningService`` uses for every other transition — rather
         than writing the field directly, so this and the dunning ladder can never
         define "which transitions are legal" two different ways. In practice
         this is a same-state no-op on every call that lands here: a webhook's
@@ -803,9 +803,9 @@ class SubscriptionService:
         deadline the dunning sweep would otherwise ignore anyway.
 
         The spec's full "runs to the end of the paid cycle, then reverts to
-        FREE" lifecycle is Phase 13's cycle-close sweep (the
+        FREE" lifecycle is handled by the cycle-close sweep (the
         ``CANCELLED -> FREE`` edge) -- this method only exposes the immediate
-        cancel action Phase 9's endpoint needs.
+        cancel action the endpoint needs.
         """
         payment_service = self._require_payment_service()
         if subscription.external_id:
@@ -839,12 +839,12 @@ class SubscriptionService:
         level): the same key posted twice always resolves to the same row and
         the provider is charged **at most once**, regardless of whether the
         first attempt's charge is still pending, already succeeded, or already
-        failed -- this is the phase's fail-closed-for-money rule: when in doubt
+        failed -- this is the fail-closed-for-money rule: when in doubt
         whether a prior attempt already charged, do not charge again. The
         ``get_or_create`` below is the single decision both "was this already
         purchased" and "was this already charged" hang off, on purpose -- a
         second, independently-derived answer to either question is exactly the
-        "two predicates" defect shape this plan keeps producing.
+        "two checks that must agree" defect shape to avoid.
 
         The ``get_or_create`` dedup alone is **not** durable against a crash: the
         row only commits when the surrounding request transaction commits, and
@@ -919,7 +919,7 @@ class SubscriptionService:
         Behind ``DELETE /billing/add-ons/{id}/`` ("cancel a recurring add-on at
         period end"). Flips ``is_recurring`` off rather than deactivating
         immediately: capacity already purchased for the current period must
-        stay in effect, and there is no cycle-close sweep yet (Phase 13) to
+        stay in effect, and there is no cycle-close sweep yet to
         apply an immediate deactivation against a period boundary anyway -- a
         future renewal-processing sweep simply has nothing left to renew.
         """
@@ -935,8 +935,8 @@ class SubscriptionService:
         chargeable payment instrument on file with ``provider``.
 
         The write behind ``EntitlementService.has_payment_method``'s real
-        source of truth (Phase 9's re-point away from the ``billing_state``
-        proxy). Called only from the webhook path, once a charge against the
+        source of truth, replacing the earlier ``billing_state`` proxy.
+        Called only from the webhook path, once a charge against the
         instrument is confirmed ``APPROVED`` -- never synchronously from a
         request that merely attempts to attach one.
 

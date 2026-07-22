@@ -10,8 +10,8 @@ purposes since re-persisting a duplicate audit record creates an additional row
 (not a conflict), which is acceptable for an append-only audit log.
 
 Task failures are logged and swallowed (not re-raised) so a bad payload does
-not crash the worker process. The record is lost in that case — acceptable for
-the fire-and-forget audit trail (see Guiding Decisions §Write path).
+not crash the worker process. The record is lost in that case, which is
+acceptable for the fire-and-forget audit trail.
 
 DI injection pattern: this task uses @app.task (on top) + @inject (below), with
 the repository injected as a keyword argument via Annotated[..., Provide[...]] = None

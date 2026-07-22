@@ -1,5 +1,5 @@
 """
-Tests for BaseVintaScheduleSignupForm (Phase 2).
+Tests for BaseVintaScheduleSignupForm.
 
 Covers:
 - org name stored on profile when no pending invitation matches the signup email

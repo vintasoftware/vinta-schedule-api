@@ -1,4 +1,4 @@
-"""Integration tests for WebhookConfiguration CRUD and WebhookEvent history over the public GraphQL API (Phases 6 & 7)."""
+"""Integration tests for WebhookConfiguration CRUD and WebhookEvent history over the public GraphQL API."""
 
 import pytest
 from model_bakery import baker
@@ -781,7 +781,7 @@ class TestDeleteWebhookConfigurationMutation:
 
 
 # ---------------------------------------------------------------------------
-# Tests: webhookDeliveryEvents query (Phase 7)
+# Tests: webhookDeliveryEvents query
 # ---------------------------------------------------------------------------
 
 

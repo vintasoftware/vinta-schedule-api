@@ -188,7 +188,7 @@ class TestHasSmsConsent:
 
 
 class TestHasSmsConsentForPhone:
-    """Phase 8 — phone-keyed consent gate, tied to phone ownership.
+    """Phone-keyed consent gate, tied to phone ownership.
 
     A consent row only satisfies the gate when its own `user.phone_number`
     also equals the checked phone (ownership join) — this stops an attacker
@@ -254,7 +254,7 @@ class TestHasSmsConsentForPhone:
         assert user  # sanity: user exists but is irrelevant to the phone-keyed check
 
     def test_false_when_consent_recorded_by_a_user_who_does_not_own_the_phone(self) -> None:
-        """BLOCKER: an attacker fabricating a row for a victim's phone must not satisfy the gate.
+        """An attacker fabricating a row for a victim's phone must not satisfy the gate.
 
         `user_a` owns phone X but records a consent row claiming phone Y (the
         victim's phone) — `has_sms_consent_for_phone(Y)` must stay False,
@@ -282,7 +282,7 @@ class TestHasSmsConsentForPhone:
 
 
 class TestHasSmsConsentForPhoneAndUser:
-    """Phase 8 / BLOCKER 1 — user-tied phone-keyed gate for ``send_verification_code_sms``.
+    """User-tied phone-keyed gate for ``send_verification_code_sms``.
 
     Unlike ``has_sms_consent_for_phone`` (which requires `user.phone_number ==
     phone`), this variant requires the consent row to belong to the specific
@@ -302,7 +302,7 @@ class TestHasSmsConsentForPhoneAndUser:
         assert service.has_sms_consent_for_phone_and_user("+15555550100", user) is True
 
     def test_false_when_a_different_user_recorded_the_row_for_that_phone(self) -> None:
-        """BLOCKER: user A's fabricated row for phone Y must not satisfy user B's check."""
+        """User A's fabricated row for phone Y must not satisfy user B's check."""
         user_a: User = baker.make(User)
         user_b: User = baker.make(User)
         document = PolicyDocumentFactory().create(

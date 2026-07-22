@@ -1,6 +1,6 @@
 """Integration tests for single-use booking-code revoke mutation.
 
-Covers Phase 3: revokeBookingCode.
+Covers revokeBookingCode.
 """
 
 import pytest

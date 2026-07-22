@@ -463,17 +463,16 @@ class PaymentService[
         current_period_end: datetime.datetime,
         billing_interval: str = BillingInterval.MONTHLY,
     ) -> SubscriptionModel:
-        # NOTE (Phase 4 verification review, carried forward, not fixed here — out
-        # of Phase 4 scope): this is an unconditional ``SubscriptionModel.objects.create``
-        # against a ``OneToOneField`` to ``organization``. Since Phase 4,
-        # every billing-root organization already has a ``Subscription`` (see
+        # NOTE: this is an unconditional ``SubscriptionModel.objects.create`` against
+        # a ``OneToOneField`` to ``organization``. Every billing-root organization
+        # already has a ``Subscription`` (see
         # ``SubscriptionService.create_subscription_for_organization``), so calling
-        # this against one will raise ``IntegrityError``, and it does not create
+        # this against one raises ``IntegrityError``, and it does not create
         # ``SubscriptionPlanLimit`` / ``SubscriptionEntitlement`` rows even when it
-        # succeeds. Currently exercised only by tests (latent). Do not build new
+        # succeeds. Currently exercised only by tests. Do not build new
         # subscription-creation flows on this path — use ``SubscriptionService``
-        # instead; this needs reconciling with the Phase 4 "no plan-less state"
-        # invariant before it is used for real.
+        # instead; this needs reconciling with the "no plan-less state" rule before
+        # it is used for real.
         if not BillingProfileModel.objects.filter(organization=organization).exists():
             raise MissingBillingProfileError
 

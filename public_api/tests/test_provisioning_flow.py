@@ -1,4 +1,4 @@
-"""Integration tests for the provisioning flow (Phase 1 & 3: createOrganization, createInvitation)."""
+"""Integration tests for the provisioning flow: createOrganization, createInvitation."""
 
 import datetime
 from unittest.mock import MagicMock, patch
@@ -419,7 +419,7 @@ class TestCreateInvitationProvisioning:
         assert invite.membership_user_id == membership.user_id
 
     # -------------------------------------------------------------------------
-    # Phase 4: self-managed invitation (sendEmail=false) integration tests
+    # Self-managed invitation (sendEmail=false) integration tests
     # -------------------------------------------------------------------------
 
     def test_send_email_false_token_drives_successful_accept_auto_join(self):
@@ -583,7 +583,7 @@ mutation CreateOrganization($input: CreateOrganizationInput!) {
 
 @pytest.mark.django_db
 class TestCreateSystemUserTokenProvisioning:
-    """Integration tests for the createSystemUserToken mutation (Phase 5: token delegation).
+    """Integration tests for the createSystemUserToken mutation (token delegation).
 
     These tests verify the end-to-end token-delegation story:
     - A minted token bearing ORGANIZATION can create a child under the reseller's subtree.
@@ -672,7 +672,7 @@ class TestCreateSystemUserTokenProvisioning:
     def test_minted_token_cannot_reach_another_resellers_tree(self):
         """createSystemUserToken with organizationId in R2's tree is rejected when acting as R1.
 
-        Phase 5 subtree guard: R1's SYSTEM_USER-scoped token must not be able to mint a
+        Subtree check: R1's SYSTEM_USER-scoped token must not be able to create a
         delegated token whose target org belongs to R2's tree.
 
         Asserts:

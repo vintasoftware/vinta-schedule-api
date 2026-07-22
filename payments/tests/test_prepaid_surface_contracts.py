@@ -1,14 +1,15 @@
-"""Phase 6c: every *surface* over a guarded pre-paid creation path returns the shared
+"""Every *surface* over a guarded pre-paid creation path returns the shared
 over-limit contract.
 
 ``test_prepaid_resource_coverage.py`` proves each ``kind=prepaid`` resource has a guarded
-creation *service*. That rests on a load-bearing claim -- "every REST, GraphQL, and admin
+creation *service*. That rests on a key claim -- "every REST, GraphQL, and admin
 call site routes through this single function" -- which nothing pinned. If a surface grew
 its own creation path, or swallowed / reshaped the error on the way out, the coverage
 suite would stay green while a real client saw a 500, a 200, or an unrecognisable body.
 
-So this module drives the HTTP/admin surfaces themselves for the two resources Phase 6c
-added, and asserts both the status and the *shared body*
+So this module drives the HTTP/admin surfaces themselves for the two resources
+``webhook_subscriptions`` and ``public_api_system_users``, and asserts both the status
+and the *shared body*
 (``OverLimitError.as_error_body()``: ``detail`` / ``code`` / ``resource`` /
 ``current_usage`` / ``limit`` / ``remedy``) -- REST as a 402 response body, GraphQL as the
 same dict carried verbatim in the error's ``extensions``, admin (driven through

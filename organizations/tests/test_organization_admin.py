@@ -1,10 +1,10 @@
-"""``OrganizationAdmin`` — the fourth organization-creation path (Phase 4 review
-BLOCKER 4), and the ``parent`` cycle guard on its form (BLOCKER 4/3).
+"""``OrganizationAdmin`` — the fourth organization-creation path, and the
+``parent`` cycle check on its form.
 
 Before this fix, adding an Organization through Django admin created a
 parent-less org with no ``Subscription``, breaking the "no plan-less state"
-invariant; and ``parent`` was freely editable with no acyclicity check, which is
-how a cycle that ``resolve_billing_root``'s cycle guard exists for gets created.
+rule; and ``parent`` was freely editable with no acyclicity check, which is
+how a cycle that ``resolve_billing_root``'s cycle check exists for gets created.
 """
 
 from django.contrib.auth import get_user_model
@@ -79,7 +79,7 @@ class TestOrganizationAdminPlacesNewOrgOnDefaultPlan:
         its own (it pools against its root's). Flipping ``can_invite_organizations``
         on via admin makes it its own billing root (``is_billing_root``), and
         ``save_model`` must provision a ``Subscription`` for it on that same save
-        — not just on creation (Phase 4 verification review BLOCKER).
+        — not just on creation.
         """
         root = baker.make(Organization, name="Root", parent=None, can_invite_organizations=True)
         SubscriptionService().create_subscription_for_organization(root)

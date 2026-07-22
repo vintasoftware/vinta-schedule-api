@@ -1,7 +1,7 @@
-"""Phase 8: the postpaid ``event_occurrences`` guard, driven through every real
-entry point that reaches ``CalendarEventService.create_event``.
+"""The postpaid ``event_occurrences`` guard, driven through every real entry point
+that reaches ``CalendarEventService.create_event``.
 
-The Guiding Decision behind this phase names six distinct entry points: REST
+Six distinct entry points reach ``create_event``: REST
 (``calendar_integration/views.py`` -- ``CalendarEventViewSet``), the token surface
 (``calendar_integration/token_views.py``), and three GraphQL mutations
 (``public_api/mutations.py``'s ``scheduleEvent``, and
@@ -9,13 +9,13 @@ The Guiding Decision behind this phase names six distinct entry points: REST
 ``createCalendarGroupEventWithCode``), plus the bulk sync writer
 (``calendar_integration/services/calendar_sync_service.py``). Guarding a viewset
 would leave the sync path unmetered, so the enforcement layer is the service --
-these tests exist to prove every *surface* still reaches it and renders the
-resulting ``OverLimitError`` correctly rather than a raw 500 or a silent success.
+these tests prove every *surface* still reaches it and renders the resulting
+``OverLimitError`` correctly rather than a raw 500 or a silent success.
 
-Also covers the fan-out case Phase 7's tracking doc names as the plan's own
-recurring failure shape (guard and meter disagreeing on what one booking costs):
-a bundle event over five ``INTERNAL`` children costs 5 units of headroom, one over
-five Google children costs 1 -- because a ``BlockedTime`` is never billable.
+Also covers a recurring failure shape where the guard and the meter disagree on
+what one booking costs: a bundle event over five ``INTERNAL`` children costs 5
+units of headroom, one over five Google children costs 1 -- because a
+``BlockedTime`` is never billable.
 """
 
 import ast
@@ -125,7 +125,7 @@ def _organization_with_postpaid_limit(
 
 def _attach_payment_method(organization: Organization) -> PaymentMethod:
     """A confirmed, chargeable instrument on file for ``organization`` -- the real
-    record ``has_payment_method`` reads (Phase 9), replacing the earlier
+    record ``has_payment_method`` reads, replacing the earlier
     ``billing_state=ACTIVE`` proxy this module used before it existed."""
     return baker.make(
         PaymentMethod,
@@ -1531,9 +1531,8 @@ class TestInternalCreateEventReentries:
         assert not CalendarEvent.objects.filter(pk=event.pk).exists()
 
     def test_bypass_limits_skips_the_guard(self):
-        """The plan's Enforcement-bypass Guiding Decision: every guarded write takes
-        ``bypass_limits`` so a management command or a support repair can run against
-        an organization that is over its allowance."""
+        """Every guarded write takes ``bypass_limits`` so a management command or a
+        support repair can run against an organization that is over its allowance."""
         organization, subscription = _organization_with_postpaid_limit(1, BillingState.FREE)
         _seed_metered_occurrences(organization, subscription, 1)
         calendar = _bookable_calendar(organization, "bypass-cal")

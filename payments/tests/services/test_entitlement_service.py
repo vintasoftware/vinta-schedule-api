@@ -1,6 +1,6 @@
 """``EntitlementService`` — effective limits, usage counting, and entitlements.
 
-The load-bearing behavior under test is the fail-open rule: a NULL ``limit_value``
+The key behavior under test is the fail-open rule: a NULL ``limit_value``
 *and* a missing ``SubscriptionPlanLimit`` row both mean **unlimited**, never zero.
 A missing seed row locking an organization out of a resource it could use
 yesterday is the failure mode this whole feature is most likely to produce, and
@@ -366,9 +366,9 @@ class TestCheckLimit:
 
         This assertion used to be vacuous: it requested ``django_assert_num_queries``
         and never used it, and its only check (``allowed is True``) passed
-        identically if ``lock=True`` were ignored outright. Since the whole
-        concurrency guarantee of this phase rests on this one statement being
-        emitted against the right row, the SQL itself is what gets asserted.
+        identically if ``lock=True`` were ignored outright. The whole concurrency
+        guarantee rests on this one statement being emitted against the right row,
+        so the SQL itself is what gets asserted.
         """
         make_limit(subscription, LimitedResource.CALENDAR_GROUPS, 3)
 
@@ -398,12 +398,10 @@ class TestCheckLimit:
         assert not [query for query in captured.captured_queries if "FOR UPDATE" in query["sql"]]
 
     def test_unlimited_does_not_count_usage_at_all(self, service, organization, subscription):
-        """SHOULD-FIX 3, Phase 5 review.
-
-        Every organization is on the ``unlimited`` plan for the whole rollout, so
-        every guarded create in Phases 6a/6b runs this path. Counting usage there
-        buys nothing — the answer cannot depend on it — and Phase 6a's required test
-        pins "no change in behavior **or query count**" for an unlimited org.
+        """Every organization is on the ``unlimited`` plan for the whole rollout, so
+        every guarded create runs this path. Counting usage there buys nothing — the
+        answer cannot depend on it — and the required test pins "no change in
+        behavior **or query count**" for an unlimited org.
 
         Asserted as "no query touched the counted tables", which is what actually
         matters, rather than a brittle absolute query number.
@@ -428,9 +426,7 @@ class TestCheckLimit:
     def test_check_limit_resolves_the_billing_root_and_subscription_once(
         self, service, subscription
     ):
-        """SHOULD-FIX 4, Phase 5 review.
-
-        ``resolve_billing_root`` walks ``parent`` with one query per level and used
+        """``resolve_billing_root`` walks ``parent`` with one query per level and used
         to run three times per ``check_limit``, with the subscription re-fetched
         twice more on top. On a three-level tree that is ~9 avoidable queries on a
         guarded create path.
@@ -459,7 +455,7 @@ class TestCheckLimit:
 
 @pytest.mark.django_db
 class TestSeatCountingOnTheAcceptPath:
-    """SHOULD-FIX 2, Phase 5 review — accepting an invitation is net zero.
+    """Accepting an invitation is net zero.
 
     ``_count_organization_members`` counts pending invitations *and* active
     memberships, which is right for the invite path (an outstanding invitation is a
@@ -519,11 +515,10 @@ class TestSeatCountingOnTheAcceptPath:
     def test_the_named_accept_entry_point_applies_the_exclusion(
         self, service, organization, subscription
     ):
-        """SHOULD-FIX 2, Phase 5 verification review. ``exclude_invitation_id`` is a
-        kwarg six other call sites must *not* pass and the accept path must never
-        forget — and forgetting it is a silent permanent lockout, not an error.
-        ``check_seat_limit_for_invitation_accept`` turns that into a missing *call*,
-        which a reviewer can see.
+        """``exclude_invitation_id`` is a kwarg six other call sites must *not* pass
+        and the accept path must never forget — and forgetting it is a silent
+        permanent lockout, not an error. ``check_seat_limit_for_invitation_accept``
+        turns that into a missing *call*, which a reviewer can see.
         """
         make_limit(subscription, LimitedResource.ORGANIZATION_MEMBERS, 5)
         baker.make(OrganizationMembership, organization=organization, is_active=True, _quantity=4)
@@ -552,10 +547,9 @@ class TestSeatCountingOnTheAcceptPath:
     def test_excluding_an_invitation_on_a_non_seat_resource_raises(
         self, service, organization, subscription
     ):
-        """SHOULD-FIX 3, Phase 5 verification review: only
-        ``_count_organization_members`` reads ``exclude_invitation_id``, so passing it
-        for any other resource used to be a silent no-op that reads as an exclusion
-        that never happened."""
+        """Only ``_count_organization_members`` reads ``exclude_invitation_id``, so
+        passing it for any other resource used to be a silent no-op that reads as an
+        exclusion that never happened."""
         invitation = self._make_pending_invitation(organization)
 
         with pytest.raises(InapplicableInvitationExclusionError):

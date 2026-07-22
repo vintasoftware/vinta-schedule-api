@@ -34,8 +34,7 @@ class WebhookMembershipSideEffectsService:
     def on_member_created(self, membership: OrganizationMembership) -> None:
         """Emit the organization_member_created event for an active membership.
 
-        Returns early without emitting anything when the membership is not active,
-        following the plan's active-gate decision.
+        Returns early without emitting anything when the membership is not active.
 
         Args:
             membership: The newly created OrganizationMembership. Must have

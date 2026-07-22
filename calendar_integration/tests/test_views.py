@@ -948,7 +948,7 @@ class TestCalendarEventViewSet:
         )
 
         # Orphan ownership: membership_user_id is NULL so the membership-scoped
-        # owner resolution skips it (the `user` FK was dropped in Phase 2b).
+        # owner resolution skips it (the `user` FK was dropped).
         baker.make(
             CalendarOwnership,
             membership_user_id=None,
@@ -2603,7 +2603,7 @@ class TestCalendarViewSet:
         assert_response_status_code(response, status.HTTP_401_UNAUTHORIZED)
 
     def test_create_bundle_with_disabled_calendar_rejected(self, auth_client, organization, user):
-        """Phase 19: inactive calendars cannot be used as bundle children or primary.
+        """Inactive calendars cannot be used as bundle children or primary.
 
         CalendarBundleCreateSerializer filters bundle_calendars + primary_calendar
         querysets to exclude inactive, so passing an inactive calendar id should
@@ -3214,7 +3214,7 @@ class TestCalendarViewSet:
 
         calendar = CalendarIntegrationTestFactory.create_calendar(organization=organization)
         # Orphan ownership: membership_user_id is NULL so the membership-scoped owner
-        # resolution skips it (the `user` FK was dropped in Phase 2b).
+        # resolution skips it (the `user` FK was dropped).
         baker.make(
             CalendarOwnership,
             membership_user_id=None,
@@ -5713,7 +5713,7 @@ class TestCalendarBundleUpdateAction:
 
 @pytest.mark.django_db
 class TestCalendarDisableGating:
-    """Tests for Phase 11: object-type-aware gating on DELETE /calendar/{id}/.
+    """Tests for object-type-aware permission checks on DELETE /calendar/{id}/.
 
     BUNDLE   → admin-only; 403 for non-admins.
     Non-bundle → owner or admin; 403 for non-owner non-admins.

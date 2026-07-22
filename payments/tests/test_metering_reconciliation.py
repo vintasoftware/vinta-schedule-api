@@ -2,16 +2,15 @@
 
 The unit tests build series with the factory. These drive
 ``CalendarEventService`` — the code an actual user's edit runs through — because
-the whole risk in this phase lives in what that machinery does to event *identity*
-when a series is edited. A recurrence exception and a bulk-modification
-continuation are both separate ``CalendarEvent`` rows that represent occurrences
-of an existing series; counting either one alongside the series it came from is a
-double charge that the unique constraint cannot catch, because the two rows have
-genuinely different ids.
+the whole risk lives in what that machinery does to event *identity* when a series
+is edited. A recurrence exception and a bulk-modification continuation are both
+separate ``CalendarEvent`` rows that represent occurrences of an existing series;
+counting either one alongside the series it came from is a double charge that the
+unique constraint cannot catch, because the two rows have genuinely different ids.
 
-``reconcile_period`` reporting zero drift over a closed cycle is this phase's
-acceptance criterion and the plan's named mitigation for silent revenue drift, so
-it is asserted after every scenario here rather than only in its own test.
+``reconcile_period`` reporting zero drift over a closed cycle is the acceptance
+criterion and the safeguard against silent revenue drift, so it is asserted after
+every scenario here rather than only in its own test.
 """
 
 import datetime
@@ -599,7 +598,7 @@ class TestFirstOccurrenceSplitIsNotDeduplicated:
     second occurrence — with no ``bulk_modification_parent``, no
     ``parent_recurring_object``, and no other link back to the series it replaced.
 
-    Every other identity-churn path in this phase is absorbed because the meter can
+    Every other identity-churn path here is absorbed because the meter can
     find its way back to the series root. This one cannot: there is nothing to
     follow. Re-metering a stretch that has already been billed therefore records the
     surviving occurrences a second time, under the replacement series' pk, and the
@@ -722,8 +721,8 @@ class TestBulkModificationWithOffsetOverBills:
     produces **eight** billable occurrences, and applied to a stretch that has
     already been metered, **nine**.
 
-    The mechanism is *not* the identity churn this phase was designed around, and
-    saying so precisely matters because it changes the size of the exposure:
+    The mechanism is *not* the identity churn the metering design was built around,
+    and saying so precisely matters because it changes the size of the exposure:
 
     The **rule arithmetic is correct**. ``RecurrenceRuleSplitter.split_at_date``
     returns a truncated parent rule (``count=None``, ``until=<Monday #1>``) and a
@@ -831,8 +830,8 @@ class TestBulkModificationWithOffsetOverBills:
         ``reconcile_period`` compares the ledger against a fresh expansion of the
         same calendar. Both say eight, so it reports a clean period. There is no
         ``orphaned`` signal for finance to act on — the over-bill is genuinely
-        silent, which is the failure mode this phase's module docstring opens by
-        naming.
+        silent, which is the failure mode the metering tests' module docstring opens
+        by naming.
         """
         self._split_with_offset(event_service, social_account, weekly_series)
         _meter_the_period(metering_service, subscription)
@@ -863,7 +862,7 @@ class TestBulkModificationWithOffsetOverBills:
           edit and the series no longer generates it, because the occurrence moved
           to 10:30 and a moved occurrence has a different identity.
 
-        Only that last row is the hazard this phase's design is responsible for,
+        Only that last row is the hazard this design is responsible for,
         and it behaves exactly as documented: bounded by an already-metered window,
         and surfaced as ``orphaned``.
         """
@@ -889,8 +888,8 @@ class TestBulkModificationWithOffsetOverBills:
         reported as drift — the moved occurrence's superseded row. The other three
         extra rows are inside ``expected``, because the calendar really does contain
         them. An operator reading ``drift == 1`` would materially underestimate the
-        problem; that is precisely why the upstream ``truncate_parent`` defect is a
-        Phase 13 gating precondition rather than something reconciliation covers.
+        problem; that is precisely why the upstream ``truncate_parent`` defect gates
+        cycle close rather than being something reconciliation covers.
         """
         _meter_the_period(metering_service, subscription)
         self._split_with_offset(event_service, social_account, weekly_series)

@@ -109,11 +109,11 @@ class WebhookService:
     ) -> WebhookConfiguration:
         """Update ``configuration``.
 
-        :param bypass_limits: When True, skips the restricted-organization guard
+        :param bypass_limits: When True, skips the restricted-organization check
             below. Only management commands and one-off repair scripts should
             pass this -- never a request-handling path.
         :raises OverLimitError: When ``configuration``'s organization is
-            restricted (Phase 11).
+            restricted.
         """
         if not bypass_limits and self.entitlement_service is not None:
             self.entitlement_service.check_not_restricted(configuration.organization)
@@ -129,11 +129,11 @@ class WebhookService:
     ) -> bool:
         """Soft-delete ``configuration``.
 
-        :param bypass_limits: When True, skips the restricted-organization guard
+        :param bypass_limits: When True, skips the restricted-organization check
             below. Only management commands and one-off repair scripts should
             pass this -- never a request-handling path.
         :raises OverLimitError: When ``configuration``'s organization is
-            restricted (Phase 11).
+            restricted.
         """
         if not bypass_limits and self.entitlement_service is not None:
             self.entitlement_service.check_not_restricted(configuration.organization)

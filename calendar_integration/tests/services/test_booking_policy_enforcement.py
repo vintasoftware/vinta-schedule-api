@@ -1,4 +1,4 @@
-"""Integration tests for Phase 8a — booking-time policy enforcement on ``create_event``.
+"""Integration tests for booking-time policy enforcement on ``create_event``.
 
 Coverage:
 - **Single calendar (auth path)**:
@@ -427,8 +427,9 @@ class TestBookingPolicyEnforcementBundle:
 
         Expected: booking SUCCEEDS because enforcement uses ``resolve_for_bundle``
         (precedence #1 = explicit bundle policy), not ``resolve_for_calendar`` on
-        the child.  This mirrors what Phase-5 discovery returns (it also uses
-        ``resolve_for_bundle``).  Regression guard for SHOULD-FIX 1.
+        the child.  This mirrors what discovery returns (it also uses
+        ``resolve_for_bundle``).  Regression check that enforcement does not
+        re-check the child policy.
         """
         from calendar_integration.services.bookable_slots_service import BookableSlotsService
         from calendar_integration.services.booking_policy_service import BookingPolicyService
@@ -442,7 +443,7 @@ class TestBookingPolicyEnforcementBundle:
         lead_seconds_strict = int((_BOOKING_START - _NOW).total_seconds()) + 3600
         create_booking_policy(calendar=child, lead_time_seconds=lead_seconds_strict)
 
-        # 1. Discovery: Phase-5 slot engine uses resolve_for_bundle → should OFFER the slot.
+        # 1. Discovery: the slot engine uses resolve_for_bundle → should OFFER the slot.
         slots_svc = BookableSlotsService(booking_policy_service=BookingPolicyService())
         slots_svc.initialize(org)
         slots = slots_svc.find_bookable_slots_for_calendar(

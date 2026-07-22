@@ -6,8 +6,8 @@ Two properties worth a test beyond the service's own unit tests:
   billing roots), and dispatches one task each — the beat task decides "who is due"
   once, so a redelivery of a per-subscription task does not re-scan;
 - a per-subscription close that raises is **caught and logged**, not re-raised, so
-  one failing subscription never aborts the sweep for the rest (the plan's
-  best-effort rule) and a poison task never spins.
+  one failing subscription never aborts the sweep for the rest (the best-effort
+  rule) and a poison task never spins.
 """
 
 import datetime

@@ -1,4 +1,4 @@
-"""Integration tests for Phase 5a — approve a change request.
+"""Integration tests for approving a change request.
 
 Tests exercise ``ExternalEventChangeRequestService.approve`` and the
 supporting ``can_resolve`` eligibility helper directly against the real test

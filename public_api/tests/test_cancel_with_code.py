@@ -1,4 +1,4 @@
-"""Integration tests for cancelEventWithCode (Phase 6c).
+"""Integration tests for cancelEventWithCode.
 
 All requests are unauthenticated (no Authorization header).  The cancel code
 provides the org scope, the specific event scope, and the CANCEL permission.

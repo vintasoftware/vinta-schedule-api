@@ -1,4 +1,4 @@
-"""Grace, dunning, and the restricted transition (Phase 10).
+"""Grace, dunning, and the restricted transition.
 
 Orchestrates every ``BillingState`` transition that follows a payment outcome --
 entering GRACE on a failed charge, retrying across the grace window with
@@ -12,7 +12,7 @@ directly -- see ``billing_state_machine.LEGAL_BILLING_STATE_TRANSITIONS`` for
 why that matters: the set of transitions the diagram permits and the set the
 code can actually perform must be the same set, defined once.
 
-Two things load-bearing enough to repeat here (see their docstrings for the
+Two things important enough to repeat here (see their docstrings for the
 full reasoning):
 
 - **Never touches ``PaymentMethod``.** A failed charge says nothing about
@@ -22,9 +22,9 @@ full reasoning):
   what escalates it.
 - **Clears ``plan_change_pending_confirmation``** whenever it moves a
   subscription into GRACE, so a first-upgrade whose initial charge fails does
-  not leave the organization stuck unable to request a different plan (Phase 9
-  set the flag; a failed charge never reaches the APPROVED webhook branch that
-  would otherwise clear it).
+  not leave the organization stuck unable to request a different plan (the flag
+  was set when the upgrade was initiated; a failed charge never reaches the
+  APPROVED webhook branch that would otherwise clear it).
 """
 
 import datetime
@@ -148,9 +148,9 @@ class DunningService:
 
         Stamps ``grace_period_ends_at`` from ``BillingPlan.grace_period_days``,
         falling back to the ``BILLING_DEFAULT_GRACE_PERIOD_DAYS`` setting, and
-        clears ``plan_change_pending_confirmation`` (Constraint 2 -- see module
-        docstring) in the same transition, so a failed first-upgrade charge does
-        not leave the organization stuck.
+        clears ``plan_change_pending_confirmation`` (see module docstring) in
+        the same transition, so a failed first-upgrade charge does not leave the
+        organization stuck.
 
         Does **not** touch ``PaymentMethod`` -- see module docstring.
         """
@@ -202,8 +202,7 @@ class DunningService:
 
     def _trigger_resync_after_recovery(self, subscription: Subscription) -> None:
         """Queue a resync of every calendar this billing root's pooled subtree
-        owns (Phase 11's resync-on-recovery), once ``subscription`` has just left
-        ``RESTRICTED`` for a live state.
+        owns, once ``subscription`` has just left ``RESTRICTED`` for a live state.
 
         Callers pass this **only** when the *prior* state was ``RESTRICTED`` --
         sync was never paused for a ``GRACE`` organization (only ``RESTRICTED``
@@ -257,7 +256,7 @@ class DunningService:
         if subscription.billing_state == BillingState.GRACE:
             self._process_grace(subscription)
         elif subscription.billing_state == BillingState.RESTRICTED:
-            # No charge to retry -- Phase 11 write-blocks RESTRICTED, so there is
+            # No charge to retry -- RESTRICTED is write-blocked, so there is
             # nothing left to do here except notice a manual fix (e.g. deleting
             # resources) already brought usage back under the free plan.
             self.check_free_fallback(subscription)
@@ -285,8 +284,8 @@ class DunningService:
         no reason field to make mid-window, so the only safe place to collapse
         it is at expiry).
 
-        A **downgrade-originated** grace episode (``_is_downgrade_grace``,
-        Phase 11) skips the charge-retry-and-notify step entirely, every tick,
+        A **downgrade-originated** grace episode (``_is_downgrade_grace``)
+        skips the charge-retry-and-notify step entirely, every tick,
         not only past expiry: unlike a payment-failure grace there is no failed
         charge to retry -- ``SubscriptionService._schedule_downgrade`` already
         applied the lower ceiling immediately, and this window exists solely to
@@ -352,8 +351,8 @@ class DunningService:
         -- the retry bucket ``now`` falls in (``_retry_attempt_ordinal``). It is
         stable across a ``CELERY_TASK_ACKS_LATE`` redelivery of the same logical
         attempt (a redelivery lands in the same bucket, so the provider itself
-        refuses a second charge for it, per Phase 9's provider-idempotency
-        plumbing) and distinct from the previous and next bucket's attempt, so a
+        refuses a second charge for it, through the provider's own idempotency
+        key) and distinct from the previous and next bucket's attempt, so a
         genuinely new retry is never mistaken for a redelivery of the last one.
         """
         idempotency_key = f"dunning-retry-{subscription.pk}-{attempt_ordinal}"
@@ -383,8 +382,8 @@ class DunningService:
         course, so collapsing to the cheaper of the two terminal states is the
         right call.
 
-        A **downgrade-originated** grace episode (``_is_downgrade_grace``, Phase
-        11) resolves differently: ``_expire_downgrade_grace`` checks against the
+        A **downgrade-originated** grace episode (``_is_downgrade_grace``)
+        resolves differently: ``_expire_downgrade_grace`` checks against the
         limits ``SubscriptionService._schedule_downgrade`` already applied (the
         pending, lower plan's), not the catalog ``free`` plan -- the org may have
         downgraded to any paid tier, not necessarily ``free`` -- and restores
@@ -408,7 +407,7 @@ class DunningService:
         return subscription
 
     def _expire_downgrade_grace(self, subscription: Subscription) -> Subscription:
-        """Resolve a downgrade-originated grace window (Phase 11) that elapsed
+        """Resolve a downgrade-originated grace window that elapsed
         with the organization still over its new, lower limits: GRACE -> ACTIVE
         if usage now fits, otherwise GRACE -> RESTRICTED.
 
@@ -425,7 +424,7 @@ class DunningService:
         (which only ever reaches FREE by fitting under the *catalog's* free
         ceilings), an organization here remains a paying subscriber of its
         still-active, pre-boundary ``subscription.plan`` -- the downgrade itself
-        has not taken effect yet (that is Phase 13's cycle-close sweep). Both
+        has not taken effect yet (that is the cycle-close sweep). Both
         ``(GRACE, ACTIVE)`` and ``(GRACE, RESTRICTED)`` are already legal edges
         on the diagram; no new edge is needed for this branch.
         """
@@ -445,16 +444,16 @@ class DunningService:
     @staticmethod
     def _is_downgrade_grace(subscription: Subscription) -> bool:
         """True when this GRACE episode originated from a scheduled downgrade
-        (``SubscriptionService._schedule_downgrade``, Phase 11) rather than a
-        failed recurring charge (``enter_grace``).
+        (``SubscriptionService._schedule_downgrade``) rather than a failed
+        recurring charge (``enter_grace``).
 
         Inferred from ``pending_plan_id`` being set -- only ``_schedule_downgrade``
         stamps it; ``enter_grace`` never touches it. It is cleared once a later
         upgrade supersedes the scheduled downgrade (``_initiate_upgrade`` clears
-        ``pending_plan``) or, once Phase 13 ships cycle close, once the downgrade
-        is applied at the boundary.
+        ``pending_plan``) or, once cycle close ships, once the downgrade is
+        applied at the boundary.
 
-        **Known limitation**, accepted as out of this phase's scope: an
+        **Known limitation**, accepted as out of scope here: an
         organization with a downgrade already scheduled whose *currently active*
         (still higher, pre-boundary) plan then also fails a renewal charge reads
         as a downgrade-grace here too, and the genuinely failed charge does not
@@ -464,7 +463,7 @@ class DunningService:
         is rare (a renewal charge landing inside a downgrade's typically
         much-shorter grace window) and, either way, the organization still lands
         on a state the sweep inspects and can expire -- it no longer sits
-        forever on an unswept row, which is the gap this phase closes.
+        forever on an unswept row, which is the gap this method closes.
         """
         return subscription.pending_plan_id is not None
 
@@ -507,11 +506,11 @@ class DunningService:
         lets ``billing_state`` and ``plan`` disagree for the length of a
         downgrade's grace window (see ``pending_plan``). Whether the org's
         nominal ``plan``/billing should also snap to free is a product decision
-        this phase does not make -- see the phase report's open questions.
+        left open here.
 
         Resolved by ``slug`` (``FREE_PLAN_SLUG``), **not**
         ``is_default_for_new_organizations`` -- that flag currently marks the
-        rollout's ``unlimited`` kill-switch plan (Phase 3), whose every
+        rollout's ``unlimited`` kill-switch plan, whose every
         ``PlanLimit.limit_value`` is ``NULL``. Every ceiling check below skips a
         ``NULL`` limit (it means "no ceiling"), so resolving "the free plan" via
         the default-for-new-organizations flag would make *every* usage trivially

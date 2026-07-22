@@ -1,5 +1,5 @@
 """Every organization always has exactly one active plan, from creation — no
-plan-less state (billing plans and limits plan, Phase 4).
+plan-less state.
 
 There are exactly four organization-creation paths in the codebase:
 
@@ -14,7 +14,7 @@ There are exactly four organization-creation paths in the codebase:
    entirely. Its child always has ``parent`` set, so it correctly resolves to its
    root's subscription rather than getting one of its own.
 4. Django admin (``organizations.admin.OrganizationAdmin``) — a fourth, previously
-   unhooked path (Phase 4 review BLOCKER 4). ``save_model`` now places a newly
+   unhooked path. ``save_model`` now places a newly
    created organization on the default plan the same way path 1 does.
 
 This file drives all four (plus the reseller-child no-subscription case, a
@@ -150,7 +150,7 @@ class TestResellerGraphQLMutationOrganizationCreation:
         child_org = Organization.objects.get(name="Child Org")
         assert child_org.parent_id == reseller_org.id
 
-        # The plan's core invariant: a reseller child never gets its own
+        # The core rule here: a reseller child never gets its own
         # subscription — it pools against its root's.
         assert not Subscription.objects.filter(organization=child_org).exists()
         assert resolve_billing_root(child_org) == reseller_org
@@ -191,7 +191,7 @@ class TestResolveBillingRootTreeShapes:
     def test_nested_reseller_is_its_own_billing_root(self):
         """A nested reseller (``can_invite_organizations=True`` with a ``parent``
         set) is its own billing root — it does not pool against its parent's
-        subscription, unlike a plain child (BLOCKER 1, Phase 4 review)."""
+        subscription, unlike a plain child."""
         root = baker.make(Organization, parent=None, can_invite_organizations=True)
         mid = baker.make(Organization, parent=root, can_invite_organizations=True)
         leaf = baker.make(Organization, parent=mid, can_invite_organizations=False)
@@ -214,8 +214,8 @@ class TestResolveBillingRootTreeShapes:
         org_a.save(update_fields=["parent"])
 
         # Must raise a named error rather than returning an arbitrary node from
-        # the cycle (BLOCKER 3, Phase 4 review) — the previous assertion
-        # (`result.pk in (org_a.pk, org_b.pk)`) passed while the invariant was
+        # the cycle — the previous assertion
+        # (`result.pk in (org_a.pk, org_b.pk)`) passed while the rule was
         # broken: every organization on the cycle was left without a resolvable
         # billing root.
         with pytest.raises(BillingRootCycleError):
