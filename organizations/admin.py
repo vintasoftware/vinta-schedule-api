@@ -24,6 +24,14 @@ class OrganizationAdminForm(forms.ModelForm):
     immutability, is what protects the rule.
     """
 
+    # Explicitly declared as CharField (rather than left to ModelForm
+    # auto-build from Organization.slug's models.SlugField, and NOT as
+    # forms.SlugField) so Django does NOT auto-attach the SlugField's
+    # ASCII-only RegexValidator: it would run before clean_slug() below and
+    # preempt the confusables/reserved-word rules, which are the sole source
+    # of format/confusable/reserved validation on this form.
+    slug = forms.CharField(required=False)
+
     class Meta:
         model = Organization
         fields = (

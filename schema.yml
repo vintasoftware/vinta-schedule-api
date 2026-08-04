@@ -14969,7 +14969,6 @@ components:
           type: string
           nullable: true
           maxLength: 63
-          pattern: ^[-a-zA-Z0-9_]+$
         should_sync_rooms:
           type: boolean
           description: Whether to sync rooms for this organization.
@@ -16065,7 +16064,6 @@ components:
           type: string
           nullable: true
           maxLength: 63
-          pattern: ^[-a-zA-Z0-9_]+$
         should_sync_rooms:
           type: boolean
           description: Whether to sync rooms for this organization.

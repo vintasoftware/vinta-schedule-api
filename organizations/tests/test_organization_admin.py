@@ -249,6 +249,62 @@ class TestOrganizationAdminSlugValidation:
         organization.refresh_from_db()
         assert organization.slug is None
 
+    def test_confusable_slug_is_rejected_with_confusable_message(self, admin_client):
+        """A mixed-script lookalike slug is rejected by the confusables rule, not
+        Django's generic ASCII-only SlugField regex message. This exercises the
+        actual admin surface: ``OrganizationAdminForm.slug`` must not be left as
+        the auto-built ``forms.SlugField`` (whose RegexValidator would preempt
+        ``clean_slug`` and raise the generic message before the
+        confusable-specific one is reached).
+        """
+        organization = baker.make(Organization, name="Confusable Org", parent=None)
+
+        change_url = reverse("admin:organizations_organization_change", args=[organization.pk])
+        # Built from chr() rather than typed as a literal character so the
+        # ambiguous codepoint doesn't trip ruff's homoglyph lint (RUF001) on
+        # this file (see test_slug_validation.py's TestConfusableSlugs).
+        cyrillic_a = chr(0x0430)  # CYRILLIC SMALL LETTER A — visually "a"
+        lookalike_slug = cyrillic_a + "cme"
+        response = admin_client.post(
+            change_url,
+            data={
+                "name": organization.name,
+                "slug": lookalike_slug,
+                "should_sync_rooms": "",
+                "external_event_update_policy": "change_request",
+            },
+        )
+
+        assert response.status_code == 200
+        form = response.context["adminform"].form
+        assert "slug" in form.errors
+        message = form.errors["slug"][0]
+        assert "non-ASCII character" in message
+        assert "lookalike" in message
+        organization.refresh_from_db()
+        assert organization.slug is None
+
+    def test_super_route_slug_is_rejected_as_reserved(self, admin_client):
+        """The real admin path segment ``super`` (see ``vinta_schedule_api/urls.py``)
+        is rejected as reserved through the admin form.
+        """
+        organization = baker.make(Organization, name="Super Org", parent=None)
+
+        change_url = reverse("admin:organizations_organization_change", args=[organization.pk])
+        response = admin_client.post(
+            change_url,
+            data={
+                "name": organization.name,
+                "slug": "super",
+                "should_sync_rooms": "",
+                "external_event_update_policy": "change_request",
+            },
+        )
+
+        assert response.status_code == 200
+        organization.refresh_from_db()
+        assert organization.slug is None
+
     def test_blank_slug_is_accepted_and_stored_as_null(self, admin_client):
         organization = baker.make(Organization, name="Blank Slug Org", parent=None, slug="was-set")
 

@@ -106,15 +106,19 @@ class OrganizationSerializer(VirtualModelSerializer):
 
     google_service_account = serializers.SerializerMethodField()
 
-    # Explicitly declared (rather than left to ModelSerializer auto-build) so we
-    # control allow_null/allow_blank/required ourselves and, more importantly, so
-    # DRF does NOT auto-attach a model-derived UniqueValidator: that validator runs
-    # before validate_slug() below and would compare a blank submission's raw ""
-    # against other organizations' "" — colliding two orgs that both left the slug
-    # unset. validate_slug() normalizes blank/None to None (matching the model's
-    # NULL-when-unset contract) and performs the uniqueness check itself, after
-    # normalization.
-    slug = serializers.SlugField(
+    # Explicitly declared as CharField (rather than left to ModelSerializer
+    # auto-build, and NOT as SlugField) so we control allow_null/allow_blank/
+    # required ourselves and, more importantly, so DRF does NOT auto-attach a
+    # model-derived UniqueValidator or the SlugField's ASCII-only
+    # RegexValidator: both would run before validate_slug() below.  The
+    # UniqueValidator would compare a blank submission's raw "" against other
+    # organizations' "" — colliding two orgs that both left the slug unset.
+    # The RegexValidator would preempt the confusables/reserved-word rules in
+    # validate_slug(), which is the sole source of format/confusable/reserved
+    # validation. validate_slug() normalizes blank/None to None (matching the
+    # model's NULL-when-unset contract) and performs the uniqueness check
+    # itself, after normalization.
+    slug = serializers.CharField(
         required=False,
         allow_null=True,
         allow_blank=True,

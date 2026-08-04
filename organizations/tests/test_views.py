@@ -554,6 +554,46 @@ class TestOrganizationSlugUpdate:
         organization.refresh_from_db()
         assert organization.slug is None
 
+    def test_confusable_slug_returns_400_naming_the_confusable_rule(self):
+        """A mixed-script lookalike slug is rejected by the confusables rule, not
+        DRF's generic ASCII-only slug regex message. This exercises the actual
+        REST surface: the ``slug`` field must not be a ``SlugField`` (whose
+        auto-attached RegexValidator would preempt ``validate_slug`` and raise
+        the generic DRF message before the confusable-specific one is reached).
+        """
+        organization = OrganizationTestFactory.create_organization(name="Confusable Org")
+        _user, client = self._make_admin_client(organization)
+
+        url = reverse("api:Organizations-detail", kwargs={"pk": organization.pk})
+        # Built from chr() rather than typed as a literal character so the
+        # ambiguous codepoint doesn't trip ruff's homoglyph lint (RUF001) on
+        # this file (see test_slug_validation.py's TestConfusableSlugs).
+        cyrillic_a = chr(0x0430)  # CYRILLIC SMALL LETTER A — visually "a"
+        lookalike_slug = cyrillic_a + "cme"
+        response = client.patch(url, {"slug": lookalike_slug}, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        message = response.json()["slug"][0]
+        assert "non-ASCII character" in message
+        assert "lookalike" in message
+        organization.refresh_from_db()
+        assert organization.slug is None
+
+    def test_super_route_slug_is_rejected_as_reserved(self):
+        """The real admin path segment ``super`` (see ``vinta_schedule_api/urls.py``)
+        is rejected as reserved, naming the reserved-word rule.
+        """
+        organization = OrganizationTestFactory.create_organization(name="Super Org")
+        _user, client = self._make_admin_client(organization)
+
+        url = reverse("api:Organizations-detail", kwargs={"pk": organization.pk})
+        response = client.patch(url, {"slug": "super"}, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "reserved" in response.json()["slug"][0]
+        organization.refresh_from_db()
+        assert organization.slug is None
+
 
 @pytest.mark.django_db
 class TestOrganizationPermissions:
