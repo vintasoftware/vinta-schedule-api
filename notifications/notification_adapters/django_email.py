@@ -39,10 +39,8 @@ class ReplyToDjangoEmailNotificationAdapter[
     per-organization.
 
     When the context has no ``reply_to`` key (or its value is falsy, e.g. an
-    unbranded/unentitled organization's blank support email), the reply-to falls
-    back to that same From address, so every outbound email always carries an
-    explicit Reply-To that lands back on us by default -- identical, in effect, to
-    the base adapter's un-set Reply-To.
+    unbranded/unentitled organization's blank support email), no Reply-To header is
+    set at all -- identical to the base adapter's behavior, which never sends one.
     """
 
     def send(
@@ -54,10 +52,20 @@ class ReplyToDjangoEmailNotificationAdapter[
         """
         Send the notification to the user through email, with reply-to support.
 
+        Reviewed against vintasend-django==1.2.1's
+        ``DjangoEmailNotificationAdapter.send()``. That base method has no seam to
+        hook into (no pre/post-build extension point for ``EmailMessage`` kwargs),
+        so this override duplicates it verbatim and adds a single conditional
+        ``reply_to`` line. ``pyproject.toml`` pins ``vintasend-django>=1.2.1,<2``,
+        so a minor bump could change the base ``send()`` without this override
+        picking up the change -- re-diff this method against the installed base
+        adapter's ``send()`` whenever that pin moves.
+
         :param notification: The notification to send (regular or one-off).
         :param context: The context to render the notification templates. An
             optional ``reply_to`` string key, when present and truthy, becomes the
-            outbound message's reply-to address.
+            outbound message's reply-to address; otherwise no Reply-To header is
+            set at all.
         :param headers: Extra raw email headers, forwarded unchanged to
             ``EmailMessage`` (matches the base adapter's signature).
         """
@@ -77,7 +85,7 @@ class ReplyToDjangoEmailNotificationAdapter[
         template = self.template_renderer.render(notification, context_with_base_url)
 
         from_email = notification_settings.NOTIFICATION_DEFAULT_FROM_EMAIL
-        reply_to_address = context.get("reply_to") or from_email
+        reply_to_address = context.get("reply_to")
 
         email = EmailMessage(
             subject=template.subject.strip(),
@@ -86,7 +94,7 @@ class ReplyToDjangoEmailNotificationAdapter[
             to=to,
             bcc=bcc,
             headers=headers,
-            reply_to=[reply_to_address],
+            reply_to=[reply_to_address] if reply_to_address else None,
         )
         email.content_subtype = "html"
 

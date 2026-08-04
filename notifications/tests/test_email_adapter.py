@@ -86,26 +86,26 @@ class TestReplyToDjangoEmailNotificationAdapter:
         assert sent.reply_to == ["support@brandco.example"]
         assert sent.from_email == NotificationSettings().NOTIFICATION_DEFAULT_FROM_EMAIL
 
-    def test_send_falls_back_to_from_address_when_context_has_no_reply_to(
+    def test_send_sets_no_reply_to_when_context_has_no_reply_to(
         self, adapter: ReplyToDjangoEmailNotificationAdapter
     ) -> None:
         """No ``reply_to`` key in the context -- e.g. an unbranded or unentitled
-        organization -- falls back to the From address, exactly as if there were no
-        reply-to concept at all."""
+        organization, or any non-invitation notification that never sets one --
+        sends with no Reply-To header at all, exactly like the base adapter."""
         notification = _one_off_notification()
         context = NotificationContextDict({"test_subject": "hello", "test_body": "world"})
 
         adapter.send(notification, context)
 
         sent = mail.outbox[0]
-        assert sent.reply_to == [sent.from_email]
+        assert sent.reply_to == []
         assert sent.from_email == NotificationSettings().NOTIFICATION_DEFAULT_FROM_EMAIL
 
-    def test_send_falls_back_when_reply_to_is_blank(
+    def test_send_sets_no_reply_to_when_reply_to_is_blank(
         self, adapter: ReplyToDjangoEmailNotificationAdapter
     ) -> None:
         """A present-but-blank ``reply_to`` (an entitled organization with no support
-        email set) is falsy -- also falls back to the From address."""
+        email set) is falsy -- also sends with no Reply-To header."""
         notification = _one_off_notification()
         context = NotificationContextDict(
             {"test_subject": "hello", "test_body": "world", "reply_to": ""}
@@ -114,4 +114,4 @@ class TestReplyToDjangoEmailNotificationAdapter:
         adapter.send(notification, context)
 
         sent = mail.outbox[0]
-        assert sent.reply_to == [sent.from_email]
+        assert sent.reply_to == []

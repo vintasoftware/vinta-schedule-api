@@ -978,8 +978,9 @@ class TestInvitationReplyToEmailSend:
         # must NOT be the organization's support address.
         assert sent.from_email != "support@brandco.example"
 
-    def test_unbranded_organization_reply_to_is_our_address_same_as_from(self):
-        """No branding row at all -- today's behavior, unchanged."""
+    def test_unbranded_organization_has_no_reply_to_header(self):
+        """No branding row at all -- today's behavior, unchanged: no Reply-To
+        header at all."""
         org = baker.make(Organization, parent=None)
         invitation = self._make_invitation(org)
 
@@ -988,9 +989,9 @@ class TestInvitationReplyToEmailSend:
         assert len(mail.outbox) == 1
         sent = mail.outbox[0]
         assert sent.from_email == NotificationSettings().NOTIFICATION_DEFAULT_FROM_EMAIL
-        assert sent.reply_to == [sent.from_email]
+        assert sent.reply_to == []
 
-    def test_unentitled_organization_with_a_branding_row_reply_to_is_our_address(self):
+    def test_unentitled_organization_with_a_branding_row_has_no_reply_to_header(self):
         """A downgraded organization keeps its saved branding row (support_email
         included), but the invitation must fully revert to vinta defaults -- reply-to
         included, not just app_name/logo/colors."""
@@ -1014,11 +1015,11 @@ class TestInvitationReplyToEmailSend:
         assert len(mail.outbox) == 1
         sent = mail.outbox[0]
         assert sent.from_email == NotificationSettings().NOTIFICATION_DEFAULT_FROM_EMAIL
-        assert sent.reply_to == [sent.from_email]
+        assert sent.reply_to == []
 
-    def test_branded_entitled_organization_with_no_support_email_falls_back(self):
+    def test_branded_entitled_organization_with_no_support_email_has_no_reply_to_header(self):
         """An entitled, branded organization that never set a support email gets
-        our address as reply-to too -- a blank support_email is falsy, not a
+        no Reply-To header at all -- a blank support_email is falsy, not a
         distinct "empty reply-to" state."""
         org = _org_with_entitlement(
             Entitlement.WHITE_LABEL_BRANDING,
@@ -1038,4 +1039,4 @@ class TestInvitationReplyToEmailSend:
         self._send_invitation_email(invitation)
 
         sent = mail.outbox[0]
-        assert sent.reply_to == [sent.from_email]
+        assert sent.reply_to == []
