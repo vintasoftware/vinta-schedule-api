@@ -25,6 +25,7 @@ from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess
 from public_api.mutations import (
+    _apply_input_slug,
     _get_org_and_init_calendar_service,
     get_calendar_mutation_dependencies,
 )
@@ -2309,6 +2310,26 @@ class TestUpdateBrandingSlugInOneCall:
         org.refresh_from_db()
         assert org.slug is None
         assert not OrganizationBranding.objects.filter(organization=org).exists()
+
+    def test_slug_collision_surfacing_as_integrity_error_is_a_friendly_graphql_error(self):
+        """Simulates the TOCTOU race the pre-check cannot fully close: the
+        ``exists()`` uniqueness check reports no collision (as it would for a
+        concurrent claim landing between the check and the write), but the
+        DB-level unique index still fires on ``save()``. The resulting
+        ``IntegrityError`` must surface as the same friendly "already exists"
+        ``GraphQLError`` -- not a raw 500 -- and must not poison the caller's
+        transaction (verified here by asserting the org's slug is unchanged
+        afterwards, i.e. the save's own savepoint rolled back cleanly)."""
+        baker.make(Organization, parent=None, slug="race-slug")
+        org = baker.make(Organization, parent=None)
+
+        with patch("public_api.mutations.Organization.objects.filter") as mock_filter:
+            mock_filter.return_value.exclude.return_value.exists.return_value = False
+            with pytest.raises(GraphQLError, match="already exists"):
+                _apply_input_slug(org, "race-slug")
+
+        org.refresh_from_db()
+        assert org.slug is None
 
     def test_valid_slug_rolls_back_when_a_later_validation_fails(self):
         """Transaction check: the slug write and the branding upsert are one

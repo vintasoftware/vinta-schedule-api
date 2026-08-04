@@ -985,21 +985,30 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
     """Admin-only REST endpoint for managing a parentless, entitled, slugged
     organization's branding.
 
-    Write gate (Organization Auth-Area Branding plan, Phase 3): the acting org
-    must be parentless, hold the ``white_label_branding`` entitlement, AND
-    have a slug set (``organizations.permissions.evaluate_branding_write_gate``),
-    AND the caller must be an org admin (``IsOrganizationAdmin`` permission).
+    Write gate (Organization Auth-Area Branding plan, Phase 3): PUT/PATCH
+    require the acting org to be parentless, hold the ``white_label_branding``
+    entitlement, AND have a slug set
+    (``organizations.permissions.evaluate_branding_write_gate``), AND the
+    caller must be an org admin (``IsOrganizationAdmin`` permission).
     Replaces the earlier reseller-only gate (``is_reseller()``) -- any paying,
     parentless, slugged organization can now manage its own branding, not just
-    resellers. The gate guards all three HTTP methods (GET/PUT/PATCH)
-    uniformly -- this endpoint has no read path that bypasses it. A missing
-    slug refuses with a distinct 403 body reading as "pick a slug first" (this
-    endpoint never sets a slug itself -- see the organization endpoint,
-    Phase 1). Each of the three failure conditions raises its own
+    resellers. Each of the three failure conditions raises its own
     ``PermissionDenied`` subclass (``organizations.exceptions``) so the
     response body -- not just the 403 status -- distinguishes the permanent
     refusal (has a parent) from the billing state (not entitled) from the
     one-step-away case (no slug).
+
+    GET uses the narrower two-condition **eligibility** gate
+    (``organizations.permissions.is_branding_eligible_organization`` --
+    parentless AND entitled, via ``_check_branding_read_gate``): a slug-less
+    but otherwise eligible org still gets to *see* the branding page (its
+    normal 404-no-row-yet / 200-with-a-row behavior), so the "pick a slug
+    first" refusal only ever surfaces on a write. This matches the plan's
+    Capability signal guiding decision and keeps this endpoint's read path
+    consistent with the ``can_manage_branding`` contract a slug-less eligible
+    org's SPA would otherwise render into a page that immediately 403s.
+    GET still refuses with the same parent/entitlement 403 bodies as the
+    write gate.
 
     Operations: retrieve (GET) + upsert (PUT/PATCH) the **acting org's own**
     branding. The endpoint operates on the request's organization only — it
@@ -1029,15 +1038,41 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
         BrandingWriteGateReason.NO_SLUG: OrganizationSlugRequiredForBrandingError,
     }
 
-    def _check_branding_write_gate(self):
+    def _check_branding_write_gate(self) -> None:
         """Verify the acting org passes the full write gate (parentless,
         entitled, slug-set). Raises the matching ``PermissionDenied`` subclass
         on the first failed condition; a no-op when the gate admits the org."""
-        membership = get_active_organization_membership(self.request.user)
+        user = self.request.user
+        # Narrows AbstractBaseUser | AnonymousUser -> AbstractBaseUser for mypy
+        # (matches the pattern in ServiceAccountViewSet.get_queryset above);
+        # IsOrganizationAdmin already blocks anonymous callers before this runs.
+        if not user.is_authenticated:
+            raise PermissionDenied("No active organization membership.")
+        membership = get_active_organization_membership(user)
         if membership is None:
             raise PermissionDenied("No active organization membership.")
         reason = evaluate_branding_write_gate(membership.organization)
         if reason is BrandingWriteGateReason.OK:
+            return
+        raise self._GATE_EXCEPTIONS[reason]()
+
+    def _check_branding_read_gate(self) -> None:
+        """Verify the acting org passes the two-condition branding
+        **eligibility** gate (parentless, entitled) used for GET.
+
+        Reuses ``evaluate_branding_write_gate`` to derive the failure reason
+        so the parent/entitlement 403 bodies stay byte-for-byte identical to
+        the write gate's, but treats ``NO_SLUG`` as admitted here -- a
+        slug-less eligible org must still be able to see the branding page
+        (see the class docstring). A no-op when the gate admits the org."""
+        user = self.request.user
+        if not user.is_authenticated:
+            raise PermissionDenied("No active organization membership.")
+        membership = get_active_organization_membership(user)
+        if membership is None:
+            raise PermissionDenied("No active organization membership.")
+        reason = evaluate_branding_write_gate(membership.organization)
+        if reason in (BrandingWriteGateReason.OK, BrandingWriteGateReason.NO_SLUG):
             return
         raise self._GATE_EXCEPTIONS[reason]()
 
@@ -1057,14 +1092,20 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
         responses={
             200: OrganizationBrandingSerializer,
             403: OpenApiResponse(
-                description="Organization has a parent, lacks the entitlement, or has no slug; or not an admin"
+                description="Organization has a parent or lacks the entitlement; or not an admin. "
+                "A slug-less-but-otherwise-eligible org is NOT refused here -- see 404."
             ),
             404: OpenApiResponse(description="Branding not yet configured"),
         },
     )
     def get(self, request, *args, **kwargs):
-        """GET /branding/ — retrieve the acting org's branding."""
-        self._check_branding_write_gate()
+        """GET /branding/ — retrieve the acting org's branding.
+
+        Uses the two-condition eligibility gate, not the full write gate: a
+        slug-less-but-otherwise-eligible org is admitted here (and falls
+        through to the normal 404-no-row-yet / 200-with-a-row branch below)
+        -- see ``_check_branding_read_gate``."""
+        self._check_branding_read_gate()
         instance = self._get_branding_or_404()
         serializer = OrganizationBrandingSerializer(instance, context={"request": request})
         return Response(serializer.data, status=status.HTTP_200_OK)

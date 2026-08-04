@@ -849,10 +849,15 @@ class TestBrandingLogoKeyPrefixIsEnforcedOnWrite:
 @pytest.mark.django_db
 class TestBrandingWriteGateAllMethods:
     """The shared write gate (``organizations.permissions.
-    evaluate_branding_write_gate``) guards GET, PUT, AND PATCH uniformly on
-    ``OrganizationBrandingView`` -- Phase 3 replaces the reseller-only
-    ``_check_reseller_status`` with this three-condition gate on all three
-    HTTP methods (see the class docstring on ``OrganizationBrandingView``)."""
+    evaluate_branding_write_gate``) guards PUT and PATCH on
+    ``OrganizationBrandingView`` with its full three-condition check -- Phase 3
+    replaces the reseller-only ``_check_reseller_status`` with it (see the
+    class docstring on ``OrganizationBrandingView``). GET uses the narrower
+    two-condition eligibility gate (``_check_branding_read_gate``): it still
+    refuses on parent-present and not-entitled, but -- unlike PUT/PATCH --
+    admits a slug-less-but-otherwise-eligible org (see
+    ``test_no_slug_eligible_org_get_is_allowed_but_put_and_patch_are_refused``
+    below)."""
 
     def test_eligible_non_reseller_admin_completes_get_put_and_patch(
         self, client, user, eligible_org, eligible_org_admin
@@ -935,6 +940,58 @@ class TestBrandingWriteGateAllMethods:
         assert "slug" in str(response.json()).lower()
         assert not OrganizationBranding.objects.filter(organization=no_slug_org).exists()
 
+    def test_no_slug_eligible_org_get_is_allowed_but_put_and_patch_are_refused(
+        self, client, user, no_slug_org, no_slug_org_admin
+    ):
+        """Capability signal guiding decision (Organization Auth-Area
+        Branding plan): a parentless + entitled + slug-less org must still
+        SEE the branding page -- GET is admitted by the narrower
+        two-condition eligibility gate -- even though writing is refused
+        ("pick a slug first") until it does. Matches the spec's "Eligible org
+        with no public identifier yet" edge case: settings still offered,
+        saving refused. Mirrors the slugged-reseller no-row case
+        (``TestResellerNowRequiresASlug.test_reseller_with_a_slug_still_passes_the_gate``):
+        404, not 403, when no branding row exists yet; 200 once one does."""
+        client.force_authenticate(user)
+        client.credentials(HTTP_X_ORGANIZATION_ID=str(no_slug_org.id))
+
+        # No branding row yet: GET admits the request (the eligibility gate
+        # passed) and falls through to the ordinary "no row" 404 -- not 403.
+        get_response = client.get(BRANDING_URL)
+        assert_response_status_code(get_response, status.HTTP_404_NOT_FOUND)
+
+        # PUT/PATCH still refuse with the "pick a slug first" reason.
+        payload = {
+            "app_name": "NoSlugApp",
+            "logo_url": "",
+            "primary_color": "",
+            "secondary_color": "",
+            "support_email": "",
+            "redirect_url": "",
+        }
+        put_response = client.put(BRANDING_URL, data=payload, format="json")
+        assert_response_status_code(put_response, status.HTTP_403_FORBIDDEN)
+        assert "slug" in str(put_response.json()).lower()
+
+        patch_response = client.patch(BRANDING_URL, data={"app_name": "x"}, format="json")
+        assert_response_status_code(patch_response, status.HTTP_403_FORBIDDEN)
+        assert "slug" in str(patch_response.json()).lower()
+
+        # Now with a branding row present, GET succeeds with 200.
+        baker.make(
+            OrganizationBranding,
+            organization=no_slug_org,
+            app_name="NoSlugAppExisting",
+            logo="",
+            primary_color="",
+            secondary_color="",
+            support_email="",
+            redirect_url="",
+        )
+        get_response_with_row = client.get(BRANDING_URL)
+        assert_response_status_code(get_response_with_row, status.HTTP_200_OK)
+        assert get_response_with_row.json()["app_name"] == "NoSlugAppExisting"
+
     def test_non_admin_member_of_an_eligible_org_still_gets_403(
         self, client, eligible_org, eligible_org_member
     ):
@@ -976,14 +1033,29 @@ class TestBrandingWriteGateAllMethods:
     ):
         """The has-a-parent and no-slug 403 bodies differ -- not a generic
         "forbidden" message both times -- so a caller (or a reviewer reading
-        the response) can tell which write-gate condition failed."""
+        the response) can tell which write-gate condition failed.
+
+        Probed via PUT: the no-slug condition is a write-gate-only refusal
+        (GET uses the narrower two-condition eligibility gate and admits a
+        slug-less-but-otherwise-eligible org -- see
+        ``test_no_slug_eligible_org_get_is_allowed_but_put_and_patch_are_refused``),
+        so GET would not reproduce the no-slug 403 body here."""
         client.force_authenticate(user)
 
+        payload = {
+            "app_name": "x",
+            "logo_url": "",
+            "primary_color": "",
+            "secondary_color": "",
+            "support_email": "",
+            "redirect_url": "",
+        }
+
         client.credentials(HTTP_X_ORGANIZATION_ID=str(parented_org.id))
-        parented_detail = client.get(BRANDING_URL).json()
+        parented_detail = client.put(BRANDING_URL, data=payload, format="json").json()
 
         client.credentials(HTTP_X_ORGANIZATION_ID=str(no_slug_org.id))
-        no_slug_detail = client.get(BRANDING_URL).json()
+        no_slug_detail = client.put(BRANDING_URL, data=payload, format="json").json()
 
         assert parented_detail != no_slug_detail
         assert "parent" in str(parented_detail).lower()
@@ -1004,6 +1076,10 @@ class TestResellerNowRequiresASlug:
     side effect of ``reseller_org`` now carrying a slug."""
 
     def test_reseller_without_a_slug_is_now_refused(self, client, user, reseller_org_without_slug):
+        """The no-slug refusal is a **write** gate condition (see
+        ``OrganizationBrandingView._check_branding_read_gate`` -- GET uses the
+        narrower two-condition eligibility gate and does not refuse for a
+        missing slug), so probe it via PUT."""
         baker.make(
             OrganizationMembership,
             user=user,
@@ -1014,7 +1090,15 @@ class TestResellerNowRequiresASlug:
         client.force_authenticate(user)
         client.credentials(HTTP_X_ORGANIZATION_ID=str(reseller_org_without_slug.id))
 
-        response = client.get(BRANDING_URL)
+        payload = {
+            "app_name": "NoSlugApp",
+            "logo_url": "",
+            "primary_color": "",
+            "secondary_color": "",
+            "support_email": "",
+            "redirect_url": "",
+        }
+        response = client.put(BRANDING_URL, data=payload, format="json")
         assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
         assert "slug" in str(response.json()).lower()
 

@@ -146,6 +146,15 @@ def _apply_input_slug(organization: Organization, slug: str) -> None:
     an invalid or colliding slug raises ``GraphQLError`` here, and because that
     propagates out of the atomic block, the slug write (and anything else the
     block did) is rolled back rather than partially applied.
+
+    The uniqueness pre-check above is a TOCTOU race: a concurrent caller could
+    claim the same slug between the ``exists()`` check and this function's own
+    ``save()``. The ``save()`` call is wrapped in its own nested
+    ``transaction.atomic()`` (a savepoint) so a resulting ``IntegrityError`` can
+    be caught and converted to the same friendly ``GraphQLError`` without
+    poisoning the caller's outer atomic block -- an uncaught ``IntegrityError``
+    marks the enclosing transaction/savepoint for rollback, so catching it
+    anywhere outside its own savepoint would leave the outer block unusable.
     """
     try:
         validate_organization_slug(slug)
@@ -156,7 +165,11 @@ def _apply_input_slug(organization: Organization, slug: str) -> None:
         raise GraphQLError(f"An organization with the slug '{slug}' already exists.")
 
     organization.slug = slug
-    organization.save(update_fields=["slug"])
+    try:
+        with transaction.atomic():
+            organization.save(update_fields=["slug"])
+    except IntegrityError as e:
+        raise GraphQLError(f"An organization with the slug '{slug}' already exists.") from e
 
 
 @dataclass
