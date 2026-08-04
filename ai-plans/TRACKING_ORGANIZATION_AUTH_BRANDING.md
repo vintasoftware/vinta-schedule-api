@@ -60,7 +60,7 @@ Command translation (container → host):
 | 4 | Audit + capability field | 2 | ✅ done — [PR #210](https://github.com/vintasoftware/vinta-schedule-api/pull/210) | plan/organization-auth-branding/phase-4 |
 | 5 | Resolve branding (parentless) | 3 | ✅ done — [PR #211](https://github.com/vintasoftware/vinta-schedule-api/pull/211) | plan/organization-auth-branding/phase-5 |
 | 6 | Invitation reply-to | 2 | ✅ done — [PR #212](https://github.com/vintasoftware/vinta-schedule-api/pull/212) | plan/organization-auth-branding/phase-6 |
-| 7 | Post-auth destination server-side | 3 | ⏳ pending | plan/organization-auth-branding/phase-7 |
+| 7 | Post-auth destination server-side | 3 | ✅ done — [PR #213](https://github.com/vintasoftware/vinta-schedule-api/pull/213) | plan/organization-auth-branding/phase-7 |
 | 8 | Branded login by slug | 2 | ⏳ pending | plan/organization-auth-branding/phase-8 |
 | 9 | Client handoff (SPA) | 1 | ⏳ pending | plan/organization-auth-branding/phase-9 |
 
@@ -131,9 +131,17 @@ Command translation (container → host):
 - **Review (no BLOCKER)**: fixed scope creep — first pass stamped `Reply-To: <from>` on EVERY email through the shared adapter (dunning/usage-warning/password-reset/calendar); narrowed to only-branded-invitations (`reply_to` set only when context supplies it; else `[]`, byte-identical to today). Drift-guard comment names reviewed base version `vintasend-django==1.2.1`.
 - Gates: ruff/format clean, `makemigrations --check` no changes, `manage.py check` clean, mypy no new errors, **full suite 4826 passed**. No schema change.
 
+### Phase 7 — Post-auth destination server-side ✅
+- **Branch**: `plan/organization-auth-branding/phase-7` (base: phase-6) · **PR**: [#213](https://github.com/vintasoftware/vinta-schedule-api/pull/213)
+- **Implementer**: sonnet (T3) · **Reviewer**: opus (T4) · **Fixer**: sonnet (T2)
+- `ProviderCallbackAPIView` (allauth headless) merges a `destination` into the JSON response: configured `redirect_url` when entitled+set, else dashboard (`FRONTEND_BASE_URL`). Resolved ONLY from `request.user` + DB branding (`resolve_branding_for_display`), never `state`/query/header. `state["next"]` still = OAuth `client.callback_url` (token exchange) but no longer decides landing. Structured log (`organization_id` + `destination_source`, URL not logged). In-place response body rewrite (preserves cookies/headers). No migration; no 302 route.
+- New setting `FRONTEND_BASE_URL` in `base.py` + `.env.example` + `.env.docker.example` (was staging/production only).
+- **Review (no BLOCKER)**: open-redirect verdict CLEAN by full trace (custom dispatch skips tenant-scoping so even `X-Organization-Id` can't steer org). Fixed: type hint, env-example docs, in-place response rewrite. Open-redirect guards (`state["next"]=https://evil.example` → destination unaffected on branded + fallback paths) pass.
+- Gates: ruff/format clean, `makemigrations --check` no changes, `manage.py check` clean, mypy no new errors, **full suite 4833 passed**.
+
 ## Current phase
 
-Phase 7 — Resolve the post-authentication destination server-side.
+Phase 8 — Branded login by organization slug.
 
 ## Deferred phases
 
