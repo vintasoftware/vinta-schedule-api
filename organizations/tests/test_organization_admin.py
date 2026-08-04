@@ -165,3 +165,104 @@ class TestOrganizationAdminParentCycleGuard:
         assert response.status_code == 302
         organization.refresh_from_db()
         assert organization.parent_id == other_root.pk
+
+
+@pytest.mark.django_db
+class TestOrganizationAdminSlugValidation:
+    """The admin form runs the same shared slug rules as the REST serializer.
+
+    Not the "does the rule reject correctly" job — that is
+    ``test_slug_validation.py``'s table-driven job — but that the admin
+    surface actually calls into the shared module rather than skipping it.
+    """
+
+    def test_setting_a_valid_slug_succeeds(self, admin_client):
+        organization = baker.make(Organization, name="Slug Admin Org", parent=None)
+
+        change_url = reverse("admin:organizations_organization_change", args=[organization.pk])
+        response = admin_client.post(
+            change_url,
+            data={
+                "name": organization.name,
+                "slug": "slug-admin-org",
+                "should_sync_rooms": "",
+                "external_event_update_policy": "change_request",
+            },
+        )
+
+        assert response.status_code == 302
+        organization.refresh_from_db()
+        assert organization.slug == "slug-admin-org"
+
+    def test_reserved_word_slug_is_rejected(self, admin_client):
+        organization = baker.make(Organization, name="Reserved Org", parent=None)
+
+        change_url = reverse("admin:organizations_organization_change", args=[organization.pk])
+        response = admin_client.post(
+            change_url,
+            data={
+                "name": organization.name,
+                "slug": "admin",
+                "should_sync_rooms": "",
+                "external_event_update_policy": "change_request",
+            },
+        )
+
+        assert response.status_code == 200
+        organization.refresh_from_db()
+        assert organization.slug is None
+
+    def test_malformed_slug_is_rejected(self, admin_client):
+        organization = baker.make(Organization, name="Malformed Org", parent=None)
+
+        change_url = reverse("admin:organizations_organization_change", args=[organization.pk])
+        response = admin_client.post(
+            change_url,
+            data={
+                "name": organization.name,
+                "slug": "Not_Valid",
+                "should_sync_rooms": "",
+                "external_event_update_policy": "change_request",
+            },
+        )
+
+        assert response.status_code == 200
+        organization.refresh_from_db()
+        assert organization.slug is None
+
+    def test_duplicate_slug_is_rejected(self, admin_client):
+        baker.make(Organization, name="Existing Org", parent=None, slug="taken-slug")
+        organization = baker.make(Organization, name="Second Org", parent=None)
+
+        change_url = reverse("admin:organizations_organization_change", args=[organization.pk])
+        response = admin_client.post(
+            change_url,
+            data={
+                "name": organization.name,
+                "slug": "taken-slug",
+                "should_sync_rooms": "",
+                "external_event_update_policy": "change_request",
+            },
+        )
+
+        assert response.status_code == 200
+        organization.refresh_from_db()
+        assert organization.slug is None
+
+    def test_blank_slug_is_accepted_and_stored_as_null(self, admin_client):
+        organization = baker.make(Organization, name="Blank Slug Org", parent=None, slug="was-set")
+
+        change_url = reverse("admin:organizations_organization_change", args=[organization.pk])
+        response = admin_client.post(
+            change_url,
+            data={
+                "name": organization.name,
+                "slug": "",
+                "should_sync_rooms": "",
+                "external_event_update_policy": "change_request",
+            },
+        )
+
+        assert response.status_code == 302
+        organization.refresh_from_db()
+        assert organization.slug is None

@@ -2,11 +2,13 @@ from typing import Annotated, Any
 
 from django import forms
 from django.contrib import admin
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.http import HttpRequest
 
 from dependency_injector.wiring import Provide, inject
 
 from organizations.models import Organization, OrganizationBranding
+from organizations.slug_validation import validate_organization_slug
 from payments.services.subscription_service import SubscriptionService
 
 
@@ -26,11 +28,36 @@ class OrganizationAdminForm(forms.ModelForm):
         model = Organization
         fields = (
             "name",
+            "slug",
             "parent",
             "should_sync_rooms",
             "external_event_update_policy",
             "can_invite_organizations",
         )
+
+    def clean_slug(self) -> str | None:
+        """Run the shared slug rules, then check uniqueness against the DB.
+
+        A blank submission normalizes to ``None`` (the model's NULL-when-unset
+        contract) before the uniqueness check — otherwise two organizations both
+        left blank would collide on the stored empty string, which is not the
+        "multiple NULLs coexist" behavior the field is nullable for.
+        """
+        value = self.cleaned_data.get("slug")
+        if not value:
+            return None
+
+        try:
+            validate_organization_slug(value)
+        except DjangoValidationError as exc:
+            raise forms.ValidationError(exc.messages) from exc
+
+        queryset = Organization.objects.filter(slug=value)
+        if self.instance.pk is not None:
+            queryset = queryset.exclude(pk=self.instance.pk)
+        if queryset.exists():
+            raise forms.ValidationError(f"An organization with the slug '{value}' already exists.")
+        return value
 
     def clean(self) -> dict[str, Any] | None:
         cleaned_data = super().clean()
@@ -83,6 +110,7 @@ class OrganizationAdmin(admin.ModelAdmin):
     list_display = (
         "id",
         "name",
+        "slug",
         "can_invite_organizations",
         "external_event_update_policy",
         "parent",
@@ -95,7 +123,7 @@ class OrganizationAdmin(admin.ModelAdmin):
         "created",
         "modified",
     )
-    search_fields = ("name", "id")
+    search_fields = ("name", "id", "slug")
     ordering = ("-created",)
     readonly_fields = ("created", "modified", "id")
 
@@ -106,6 +134,7 @@ class OrganizationAdmin(admin.ModelAdmin):
                 "fields": (
                     "id",
                     "name",
+                    "slug",
                     "parent",
                     "should_sync_rooms",
                     "external_event_update_policy",

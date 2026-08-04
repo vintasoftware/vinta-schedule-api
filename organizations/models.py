@@ -19,6 +19,7 @@ from organizations.managers import (
     OrganizationInvitationManager,
     OrganizationMembershipManager,
 )
+from organizations.slug_validation import SLUG_MAX_LENGTH
 from payments.billing_constants import Entitlement
 from payments.entitlement_cache import has_entitlement_cached
 
@@ -123,6 +124,25 @@ class Organization(BaseModel):
             "Whether this organization can invite/create other organizations. "
             "DB/Django-admin only — never exposed via any API. "
             "Enables the whole reseller capability bundle."
+        ),
+    )
+    slug = models.SlugField(
+        max_length=SLUG_MAX_LENGTH,
+        unique=True,
+        null=True,
+        blank=True,
+        default=None,
+        help_text=(
+            "Public, URL-safe identifier used by the organization's branded login page "
+            "and by brandingForTenant. Optional until the organization sets one "
+            "self-serve; stored as NULL (never empty string) when unset — default=None "
+            "keeps a field left blank in a form/serializer NULL rather than '', which "
+            "is what lets the unique index admit any number of organizations with no "
+            "slug. Mutable after set: changing it orphans previously-issued branded "
+            "login URLs, which then fall back to the default identity rather than "
+            "erroring. Format, reserved-word, and confusable-character rules live in "
+            "organizations.slug_validation and are enforced by each write surface "
+            "(REST serializer, admin form, GraphQL input), not here."
         ),
     )
 

@@ -17,6 +17,7 @@ from organizations.models import (
     OrganizationRole,
 )
 from organizations.services import OrganizationService
+from organizations.slug_validation import SLUG_MAX_LENGTH, validate_organization_slug
 from organizations.virtual_models import (
     OrganizationInvitationVirtualModel,
     OrganizationVirtualModel,
@@ -105,6 +106,21 @@ class OrganizationSerializer(VirtualModelSerializer):
 
     google_service_account = serializers.SerializerMethodField()
 
+    # Explicitly declared (rather than left to ModelSerializer auto-build) so we
+    # control allow_null/allow_blank/required ourselves and, more importantly, so
+    # DRF does NOT auto-attach a model-derived UniqueValidator: that validator runs
+    # before validate_slug() below and would compare a blank submission's raw ""
+    # against other organizations' "" — colliding two orgs that both left the slug
+    # unset. validate_slug() normalizes blank/None to None (matching the model's
+    # NULL-when-unset contract) and performs the uniqueness check itself, after
+    # normalization.
+    slug = serializers.SlugField(
+        required=False,
+        allow_null=True,
+        allow_blank=True,
+        max_length=SLUG_MAX_LENGTH,
+    )
+
     # ``get_google_service_account`` issues exactly one bounded, org-scoped query
     # through the tenant manager (the org-level GoogleCalendarServiceAccount,
     # ``calendar_fk__isnull=True``). It can't be prefetched: OrganizationModel's
@@ -128,6 +144,7 @@ class OrganizationSerializer(VirtualModelSerializer):
         fields = (
             "id",
             "name",
+            "slug",
             "should_sync_rooms",
             "external_event_update_policy",
             "google_service_account",
@@ -146,6 +163,33 @@ class OrganizationSerializer(VirtualModelSerializer):
         if account is None:
             return None
         return GoogleServiceAccountReadSerializer(account).data
+
+    def validate_slug(self, value: str | None) -> str | None:
+        """Validate format/reserved-word/confusable rules, then uniqueness.
+
+        A blank or missing slug normalizes to ``None`` — the model's NULL-when-unset
+        contract (a Postgres unique index admits any number of NULLs, but two
+        organizations both stored as ``""`` would collide). Uniqueness is checked
+        here, against the shared queryset, excluding the instance being updated, so
+        a collision returns 400 naming the conflicting value rather than a 500 from
+        the DB's unique-index integrity error.
+        """
+        if not value:
+            return None
+
+        try:
+            validate_organization_slug(value)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(exc.messages) from exc
+
+        queryset = Organization.objects.filter(slug=value)
+        if self.instance is not None:
+            queryset = queryset.exclude(pk=self.instance.pk)
+        if queryset.exists():
+            raise serializers.ValidationError(
+                f"An organization with the slug '{value}' already exists."
+            )
+        return value
 
     @inject
     def __init__(
@@ -259,15 +303,17 @@ class CurrentMembershipSerializer(serializers.ModelSerializer):
 class OrganizationBriefSerializer(serializers.ModelSerializer):
     """Lightweight read-only serializer for an Organization.
 
-    Exposes only the fields needed for the org-switcher list: ``id`` and ``name``.
-    Intentionally avoids the heavier ``OrganizationSerializer`` (which loads the
-    Google service account) to keep ``GET /organizations/mine/`` fast.
+    Exposes only the fields needed for the org-switcher list: ``id``, ``name``,
+    and the read-only ``slug`` (so the frontend can render/link the branded login
+    URL without a second request). Intentionally avoids the heavier
+    ``OrganizationSerializer`` (which loads the Google service account) to keep
+    ``GET /organizations/mine/`` fast.
     """
 
     class Meta:
         model = Organization
-        fields = ("id", "name")
-        read_only_fields = ("id", "name")
+        fields = ("id", "name", "slug")
+        read_only_fields = ("id", "name", "slug")
 
 
 class MyMembershipSerializer(serializers.ModelSerializer):
