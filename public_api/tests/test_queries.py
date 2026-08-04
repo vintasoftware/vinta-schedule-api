@@ -2517,6 +2517,61 @@ class TestBrandingForTenantQuery:
         assert branding["primaryColor"] == ""
         assert branding["secondaryColor"] == ""
 
+    def test_branding_for_tenant_by_slug_resolves_a_standalone_entitled_organizations_own_branding(
+        self, mock_rate_limiter, anonymous_client
+    ):
+        """Phase 8 -- Use-case 3 (a returning user opens the organization-scoped
+        login URL and it resolves that organization's own branding). Every slug
+        test above uses a reseller; this pins the shape that Phase 5 widened
+        ``get_branding_root`` to cover and that most branded organizations will
+        actually have going forward: a parentless, non-reseller, entitled
+        organization resolving to ITS OWN branding row via its own slug, not a
+        reseller ancestor's."""
+        mock_rate_limiter.return_value = iter([None])
+
+        org = baker.make(
+            Organization,
+            name="Standalone Co",
+            slug="standalone-brand",
+        )
+        assert org.parent_id is None
+        assert org.can_invite_organizations is False
+
+        baker.make(
+            "organizations.OrganizationBranding",
+            organization=org,
+            app_name="StandaloneBrand",
+            logo="uploads/branding_logos/logo.png",
+            primary_color="#123123",
+            secondary_color="#321321",
+        )
+
+        query = """
+            query GetBrandingForTenant($slug: String!) {
+                brandingForTenant(slug: $slug) {
+                    appName
+                    logoUrl
+                    primaryColor
+                    secondaryColor
+                }
+            }
+        """
+        variables = {"slug": "standalone-brand"}
+
+        response = anonymous_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        branding = data["brandingForTenant"]
+
+        assert branding["appName"] == "StandaloneBrand"
+        assert branding["logoUrl"].endswith("/branding/logo/standalone-brand/")
+        assert branding["primaryColor"] == "#123123"
+        assert branding["secondaryColor"] == "#321321"
+
 
 @pytest.mark.django_db
 class TestValidateReturnUrlRemoved:
