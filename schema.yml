@@ -3546,7 +3546,13 @@ paths:
   /branding/:
     get:
       operationId: branding_retrieve
-      description: GET /branding/ — retrieve the acting org's branding.
+      description: |-
+        GET /branding/ — retrieve the acting org's branding.
+
+        Uses the two-condition eligibility gate, not the full write gate: a
+        slug-less-but-otherwise-eligible org is admitted here (and falls
+        through to the normal 404-no-row-yet / 200-with-a-row branch below)
+        -- see ``_check_branding_read_gate``.
       summary: Retrieve the acting organization's branding
       parameters:
       - in: header
@@ -3572,13 +3578,22 @@ paths:
                 $ref: '#/components/schemas/OrganizationBranding'
           description: ''
         '403':
-          description: Organization has a parent, lacks the entitlement, or has no
-            slug; or not an admin
+          description: Organization has a parent or lacks the entitlement; or not
+            an admin. A slug-less-but-otherwise-eligible org is NOT refused here --
+            see 404.
         '404':
           description: Branding not yet configured
     put:
       operationId: branding_update
-      description: PUT /branding/ — create or replace the acting org's branding.
+      description: |-
+        PUT /branding/ — create or replace the acting org's branding.
+
+        Audited (Organization Auth-Area Branding plan, Phase 4): a refused write
+        (gate failure or serializer validation error) raises before this method
+        reaches the upsert, so nothing is ever recorded for a refused write. A
+        first-time upsert records a CREATE with no diff; an upsert that replaces
+        an existing row records an UPDATE with a diff naming only the fields that
+        actually changed, using the before-state captured BEFORE the write.
       summary: Create or replace the acting organization's branding
       parameters:
       - in: header
@@ -3628,7 +3643,15 @@ paths:
             slug; or not an admin
     patch:
       operationId: branding_partial_update
-      description: PATCH /branding/ — update the acting org's branding (partial).
+      description: |-
+        PATCH /branding/ — update the acting org's branding (partial).
+
+        Audited (Organization Auth-Area Branding plan, Phase 4): a refused write
+        (gate failure, 404-not-configured, or serializer validation error) raises
+        before this method reaches ``serializer.save()``, so nothing is ever
+        recorded for a refused write. Always an UPDATE (PATCH never creates —
+        see ``_get_branding_or_404``); the before-state is captured BEFORE
+        ``serializer.save()`` mutates ``instance`` in place.
       summary: Update the acting organization's branding (partial)
       parameters:
       - in: header
@@ -14555,7 +14578,23 @@ components:
           additionalProperties: {}
           description: Serialize the related organization using OrganizationSerializer.
           readOnly: true
+        can_manage_branding:
+          type: boolean
+          description: |-
+            Whether the membership's organization is branding-eligible.
+
+            Computed as parentless-and-entitled -- deliberately excludes the slug
+            condition (Organization Auth-Area Branding plan, Phase 4 Capability
+            signal guiding decision), so an organization missing only a slug still
+            sees the branding page instead of it being silently absent. Shares
+            ``organizations.permissions.is_branding_eligible_organization`` rather
+            than restating the two-condition check, so this tracks the same gate
+            that governs ``GET /branding/`` (see
+            ``OrganizationBrandingView._check_branding_read_gate``) rather than
+            the three-condition write gate.
+          readOnly: true
       required:
+      - can_manage_branding
       - organization
       - role
     DocumentTypeEnum:
@@ -14891,8 +14930,9 @@ components:
         Read-only serializer for the caller's active organization memberships.
 
         Used by ``GET /organizations/mine/`` to power the frontend org switcher.
-        Returns a list of ``{organization: {id, name}, role}`` entries — one per
-        active membership — without requiring the ``X-Organization-Id`` header.
+        Returns a list of ``{organization: {id, name}, role, can_manage_branding}``
+        entries — one per active membership — without requiring the
+        ``X-Organization-Id`` header.
       properties:
         organization:
           allOf:
@@ -14907,7 +14947,20 @@ components:
 
             * `member` - Member
             * `admin` - Admin
+        can_manage_branding:
+          type: boolean
+          description: |-
+            Whether this membership's organization is branding-eligible
+            (parentless-and-entitled, excluding the slug condition) -- see
+            ``CurrentMembershipSerializer.get_can_manage_branding`` for the full
+            rationale. Computed per-membership (not per-role): a non-admin
+            member's entry reports the same organization-level capability as an
+            admin's, matching the read gate's own admin-agnostic eligibility
+            check -- role-based write authorization is enforced separately by
+            ``IsOrganizationAdmin`` on the branding endpoints themselves.
+          readOnly: true
       required:
+      - can_manage_branding
       - organization
       - role
     Notification:

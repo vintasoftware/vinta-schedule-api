@@ -47,6 +47,7 @@ from calendar_integration.services.dataclasses import (
     ResourceAllocationInputData,
 )
 from organizations.branding_logo import (
+    branding_diff_state,
     build_logo_delivery_url,
     normalize_uploaded_logo_key,
     sign_branding_logo_upload,
@@ -100,6 +101,7 @@ if TYPE_CHECKING:
 
 
 if TYPE_CHECKING:
+    from audit.services import AuditService
     from calendar_integration.services.booking_policy_permission_service import (
         BookingPolicyPermissionService,
     )
@@ -262,6 +264,21 @@ def get_booking_policy_permission_service(
     if booking_policy_permission_service is None:
         raise GraphQLError("Missing required dependency: booking_policy_permission_service")
     return booking_policy_permission_service
+
+
+@inject
+def get_audit_service(
+    audit_service: Annotated["AuditService | None", Provide["audit_service"]] = None,
+) -> "AuditService":
+    """Resolve the AuditService from the DI container.
+
+    Used by mutations that write directly (no dedicated service layer holding
+    its own injected ``audit_service``) -- e.g. ``update_branding`` -- mirroring
+    ``get_booking_policy_mutation_dependencies``'s resolve-or-raise shape.
+    """
+    if audit_service is None:
+        raise GraphQLError("Missing required dependency: audit_service")
+    return audit_service
 
 
 def _get_org_and_init_calendar_service(
@@ -1334,11 +1351,31 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         than partially applying (see the plan's Slug is a precondition for
         branding guiding decision).
 
+        Audited (Organization Auth-Area Branding plan, Phase 4): every raise
+        above (slug rejection, gate failure, field validation) happens before
+        the upsert and rolls back the whole atomic block, so a refused write
+        never reaches the audit call below -- nothing is recorded for it. A
+        first-time upsert records a CREATE with no diff; an upsert that
+        replaces an existing row records an UPDATE with a diff naming only the
+        fields that changed, using the before-state captured BEFORE the
+        transaction starts. Actor is the token's system user
+        (``AuditService.actor_from_system_user``), matching the actor
+        derivation already used by the BookingPolicy partner-API mutations.
+
         The token's OrganizationResourceAccess must include the BRANDING resource.
         """
+        from audit.constants import AuditAction
+        from audit.diff import compute_diff
+        from audit.services import AuditService
+
         acting_org = info.context.request.public_api_organization
         if not acting_org:
             raise GraphQLError("Organization not found")
+
+        existing_branding = OrganizationBranding.objects.filter(organization=acting_org).first()
+        before_state = (
+            branding_diff_state(existing_branding) if existing_branding is not None else None
+        )
 
         with transaction.atomic():
             # Slug application happens BEFORE the gate is evaluated so a
@@ -1390,7 +1427,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
                 raise GraphQLError(str(e)) from e
 
             # Upsert branding on the acting org (always acts on acting org, never another org)
-            branding, _ = OrganizationBranding.objects.update_or_create(
+            branding, created = OrganizationBranding.objects.update_or_create(
                 organization=acting_org,
                 defaults={
                     "app_name": input.app_name,
@@ -1400,6 +1437,27 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
                     "support_email": input.support_email,
                     "redirect_url": input.redirect_url,
                 },
+            )
+
+        audit_service = get_audit_service()
+        actor = AuditService.actor_from_system_user(info.context.request.public_api_system_user)
+        subject = audit_service.subject_from_instance(branding, label=branding.app_name)
+        if created:
+            audit_service.record(
+                organization_id=acting_org.id,
+                action=AuditAction.CREATE,
+                actor=actor,
+                subject=subject,
+            )
+        else:
+            after_state = branding_diff_state(branding)
+            diff = compute_diff(before_state or {}, after_state)
+            audit_service.record(
+                organization_id=acting_org.id,
+                action=AuditAction.UPDATE,
+                actor=actor,
+                subject=subject,
+                diff=diff,
             )
 
         # Return the branding without internal fields (no support_email, no redirect_url).

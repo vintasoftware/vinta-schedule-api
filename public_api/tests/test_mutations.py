@@ -1424,6 +1424,18 @@ class TestCreateSystemUserTokenMutation:
         assert "subtree" in str(data["errors"]).lower()
 
 
+UPDATE_BRANDING_MUTATION = """
+mutation UpdateBranding($input: UpdateBrandingInput!) {
+    updateBranding(input: $input) {
+        branding {
+            id
+            appName
+        }
+    }
+}
+"""
+
+
 @pytest.mark.django_db
 class TestUpdateBranding:
     """Test updateBranding mutation."""
@@ -2148,6 +2160,155 @@ class TestUpdateBranding:
         assert OrganizationBranding.objects.filter(organization=reseller_a).count() == 1
         # Verify there is exactly one branding row for B
         assert OrganizationBranding.objects.filter(organization=reseller_b).count() == 1
+
+    def test_update_branding_create_records_one_create_entry(
+        self, django_capture_on_commit_callbacks
+    ):
+        """A first-time updateBranding call (no existing row) writes exactly
+        one CREATE audit entry, actor is the token's system user, no diff
+        (Organization Auth-Area Branding plan, Phase 4)."""
+        from di_core.containers import container
+
+        org = baker.make(
+            Organization, name="Audit Org", can_invite_organizations=False, slug="audit-gql-org"
+        )
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="branding_audit_integration", organization=org
+        )
+        baker.make(ResourceAccess, system_user=system_user, resource_name="branding")
+
+        with patch("audit.services.persist_audit_record") as mock_task:
+            with django_capture_on_commit_callbacks(execute=True):
+                with container.public_api_auth_service.override(auth_service):
+                    response = self.client.post(
+                        "/graphql/",
+                        data={
+                            "query": UPDATE_BRANDING_MUTATION,
+                            "variables": {"input": {"appName": "AuditApp"}},
+                        },
+                        format="json",
+                        headers={"authorization": f"Bearer {system_user.id}:{token}"},
+                    )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or not data["errors"], data
+
+        payloads = [call.args[0] for call in mock_task.delay.call_args_list]
+        assert len(payloads) == 1
+        record = payloads[0]
+        assert record["organization_id"] == org.id
+        assert record["action"] == "create"
+        assert record["subject"]["subject_type"] == "organizations.OrganizationBranding"
+        assert record["actor"]["actor_type"] == "system_user"
+        assert record["actor"]["actor_id"] == system_user.id
+        assert record["diff"] is None
+
+    def test_update_branding_update_records_diff_of_changed_fields_only(
+        self, django_capture_on_commit_callbacks
+    ):
+        """A subsequent updateBranding call over an existing row writes an
+        UPDATE audit entry whose diff names only the fields that actually
+        changed."""
+        from di_core.containers import container
+
+        org = baker.make(
+            Organization,
+            name="Audit Org 2",
+            can_invite_organizations=False,
+            slug="audit-gql-org-2",
+        )
+        baker.make(
+            OrganizationBranding,
+            organization=org,
+            app_name="Before",
+            primary_color="#111111",
+            secondary_color="#222222",
+            support_email="same@example.com",
+            redirect_url="https://example.com/before",
+        )
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="branding_audit_integration_2", organization=org
+        )
+        baker.make(ResourceAccess, system_user=system_user, resource_name="branding")
+
+        with patch("audit.services.persist_audit_record") as mock_task:
+            with django_capture_on_commit_callbacks(execute=True):
+                with container.public_api_auth_service.override(auth_service):
+                    response = self.client.post(
+                        "/graphql/",
+                        data={
+                            "query": UPDATE_BRANDING_MUTATION,
+                            "variables": {
+                                "input": {
+                                    "appName": "After",
+                                    "primaryColor": "#111111",
+                                    "secondaryColor": "#222222",
+                                    "supportEmail": "same@example.com",
+                                    "redirectUrl": "https://example.com/before",
+                                }
+                            },
+                        },
+                        format="json",
+                        headers={"authorization": f"Bearer {system_user.id}:{token}"},
+                    )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or not data["errors"], data
+
+        payloads = [call.args[0] for call in mock_task.delay.call_args_list]
+        assert len(payloads) == 1
+        record = payloads[0]
+        assert record["action"] == "update"
+        diff = record["diff"]
+        assert diff is not None
+        assert set(diff.keys()) == {"app_name"}
+        assert diff["app_name"] == {"old": "Before", "new": "After"}
+
+    def test_update_branding_refused_write_records_nothing(
+        self, django_capture_on_commit_callbacks
+    ):
+        """A write refused by the write gate (here: a parented organization)
+        records NO audit entry."""
+        from di_core.containers import container
+
+        parent_org = baker.make(
+            Organization, name="Audit Parent", can_invite_organizations=False, parent=None
+        )
+        child_org = baker.make(
+            Organization,
+            name="Audit Child",
+            can_invite_organizations=False,
+            parent=parent_org,
+            slug="audit-child-org",
+        )
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="branding_audit_refused", organization=child_org
+        )
+        baker.make(ResourceAccess, system_user=system_user, resource_name="branding")
+
+        with patch("audit.services.persist_audit_record") as mock_task:
+            with django_capture_on_commit_callbacks(execute=True):
+                with container.public_api_auth_service.override(auth_service):
+                    response = self.client.post(
+                        "/graphql/",
+                        data={
+                            "query": UPDATE_BRANDING_MUTATION,
+                            "variables": {"input": {"appName": "ShouldNotPersist"}},
+                        },
+                        format="json",
+                        headers={"authorization": f"Bearer {system_user.id}:{token}"},
+                    )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert not mock_task.delay.called
+        assert not OrganizationBranding.objects.filter(organization=child_org).exists()
 
 
 UPDATE_BRANDING_WITH_SLUG_MUTATION = """

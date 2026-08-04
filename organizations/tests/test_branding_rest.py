@@ -2,6 +2,7 @@ import datetime
 import json
 
 from django.contrib.auth import get_user_model
+from django.urls import reverse
 from django.utils import timezone
 
 import pytest
@@ -1113,3 +1114,109 @@ class TestResellerNowRequiresASlug:
         # passed, and the endpoint fell through to the "no row yet" branch.
         response = client.get(BRANDING_URL)
         assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+
+
+@pytest.mark.django_db
+class TestCanManageBrandingOnMembershipPayload:
+    """``can_manage_branding`` on the membership payloads the SPA already
+    fetches (``GET /organizations/current/`` and ``GET /organizations/mine/``)
+    -- Organization Auth-Area Branding plan, Phase 4 Capability signal.
+
+    Covers all four write-gate cases named in the phase spec, plus the
+    no-slug-but-eligible case that is the whole point of the field (it must
+    read ``True`` there, unlike the write gate itself)."""
+
+    def _current_url(self):
+        return reverse("api:Organizations-current")
+
+    def _mine_url(self):
+        return reverse("api:Organizations-mine")
+
+    def test_eligible_org_reports_true(self, client, user, eligible_org, eligible_org_admin):
+        client.force_authenticate(user)
+        client.credentials(HTTP_X_ORGANIZATION_ID=str(eligible_org.id))
+
+        current_response = client.get(self._current_url())
+        assert_response_status_code(current_response, status.HTTP_200_OK)
+        assert current_response.json()["can_manage_branding"] is True
+
+        mine_response = client.get(self._mine_url())
+        assert_response_status_code(mine_response, status.HTTP_200_OK)
+        [entry] = mine_response.json()
+        assert entry["can_manage_branding"] is True
+
+    def test_eligible_org_with_no_slug_still_reports_true(self, client, user, no_slug_org):
+        """The key case: an org one write-gate step away (missing only a slug)
+        must still report `can_manage_branding=True` -- see the plan's
+        Capability signal guiding decision. Distinguishes this field from the
+        write gate, which would refuse this exact organization."""
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=no_slug_org,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+        client.force_authenticate(user)
+        client.credentials(HTTP_X_ORGANIZATION_ID=str(no_slug_org.id))
+
+        current_response = client.get(self._current_url())
+        assert_response_status_code(current_response, status.HTTP_200_OK)
+        assert current_response.json()["can_manage_branding"] is True
+
+    def test_parented_org_reports_false(self, client, user, parented_org):
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=parented_org,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+        client.force_authenticate(user)
+        client.credentials(HTTP_X_ORGANIZATION_ID=str(parented_org.id))
+
+        current_response = client.get(self._current_url())
+        assert_response_status_code(current_response, status.HTTP_200_OK)
+        assert current_response.json()["can_manage_branding"] is False
+
+        mine_response = client.get(self._mine_url())
+        assert_response_status_code(mine_response, status.HTTP_200_OK)
+        [entry] = mine_response.json()
+        assert entry["can_manage_branding"] is False
+
+    @pytest.mark.no_auto_subscription
+    def test_free_plan_org_reports_false(self, client, user):
+        free_org = _make_unentitled_org(parent=None, slug="free-cap-org")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=free_org,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+        client.force_authenticate(user)
+        client.credentials(HTTP_X_ORGANIZATION_ID=str(free_org.id))
+
+        current_response = client.get(self._current_url())
+        assert_response_status_code(current_response, status.HTTP_200_OK)
+        assert current_response.json()["can_manage_branding"] is False
+
+        mine_response = client.get(self._mine_url())
+        assert_response_status_code(mine_response, status.HTTP_200_OK)
+        [entry] = mine_response.json()
+        assert entry["can_manage_branding"] is False
+
+    def test_non_admin_member_of_an_eligible_org_still_reports_true(
+        self, client, eligible_org, eligible_org_member
+    ):
+        """A non-admin member's payload reports the same organization-level
+        capability as an admin's -- `can_manage_branding` is not gated by the
+        caller's own role, only by the organization's eligibility. Write
+        authorization stays role-gated separately, on the branding endpoints
+        themselves (`IsOrganizationAdmin`)."""
+        client.force_authenticate(eligible_org_member)
+        client.credentials(HTTP_X_ORGANIZATION_ID=str(eligible_org.id))
+
+        current_response = client.get(self._current_url())
+        assert_response_status_code(current_response, status.HTTP_200_OK)
+        assert current_response.json()["can_manage_branding"] is True
