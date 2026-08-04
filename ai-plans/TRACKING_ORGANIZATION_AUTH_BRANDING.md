@@ -80,6 +80,10 @@ Command translation (container → host):
 
 Phase 2a — Swap the allowlist for a single redirect destination.
 
+- Note: `resolve_branding` (the ungated variant) is intentionally KEPT but
+  dead-until-Phase-5 — no caller wires it up yet; Phase 5 (parentless branding
+  resolution) is what consumes it. Not a leftover to clean up.
+
 ## Deferred phases
 
 _(none — no cross-repo or flag-removal phases in this plan)_

@@ -14,6 +14,7 @@ from calendar_integration.models import AvailableTime, Calendar, ChildrenCalenda
 from calendar_integration.services.calendar_service import CalendarService
 from organizations.models import (
     Organization,
+    OrganizationBranding,
     OrganizationInvitation,
     OrganizationMembership,
     OrganizationRole,
@@ -1696,6 +1697,60 @@ class TestUpdateBranding:
         data = response.json()
         assert "errors" in data
         assert "wildcard" in str(data["errors"])
+
+    @pytest.mark.parametrize(
+        ("redirect_url", "expected_message_fragment"),
+        [
+            ("https://", "well-formed"),
+            ("https:evil.com", "well-formed"),
+            ("https://example.com\r\nSet-Cookie:x", "control character"),
+        ],
+    )
+    def test_update_branding_malformed_redirect_url_rejected(
+        self, redirect_url, expected_message_fragment
+    ):
+        """Hostless, scheme-confused, and CRLF redirect_url are rejected and not persisted."""
+        from di_core.containers import container
+
+        reseller_org = baker.make(Organization, name="Reseller", can_invite_organizations=True)
+
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="branding_integration", organization=reseller_org
+        )
+        baker.make(ResourceAccess, system_user=system_user, resource_name="branding")
+
+        mutation = """
+        mutation UpdateBranding($input: UpdateBrandingInput!) {
+            updateBranding(input: $input) {
+                branding {
+                    id
+                }
+            }
+        }
+        """
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": mutation,
+                    "variables": {
+                        "input": {
+                            "appName": "MyApp",
+                            "redirectUrl": redirect_url,
+                        }
+                    },
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert expected_message_fragment in str(data["errors"])
+        assert not OrganizationBranding.objects.filter(organization=reseller_org).exists()
 
     def test_update_branding_upsert(self):
         """Test that multiple updates to the same org create only one branding row."""

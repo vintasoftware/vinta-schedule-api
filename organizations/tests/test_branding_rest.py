@@ -305,6 +305,44 @@ class TestOrganizationBrandingViewSet:
         response = client.put(BRANDING_URL, data=payload, format="json")
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
 
+    def test_wildcard_redirect_url_returns_400(
+        self, client, user, reseller_org, reseller_org_admin
+    ):
+        """A redirect_url containing a wildcard character is rejected."""
+        client.force_authenticate(user)
+        client.credentials(HTTP_X_ORGANIZATION_ID=str(reseller_org.id))
+
+        payload = {
+            "app_name": "MyScheduler",
+            "primary_color": "#FF0000",
+            "secondary_color": "#00FF00",
+            "logo_url": "",
+            "support_email": "",
+            "redirect_url": "https://*.example.com",
+        }
+
+        response = client.put(BRANDING_URL, data=payload, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_path_prefix_redirect_url_returns_400(
+        self, client, user, reseller_org, reseller_org_admin
+    ):
+        """A redirect_url with a trailing-slash path-prefix pattern is rejected."""
+        client.force_authenticate(user)
+        client.credentials(HTTP_X_ORGANIZATION_ID=str(reseller_org.id))
+
+        payload = {
+            "app_name": "MyScheduler",
+            "primary_color": "#FF0000",
+            "secondary_color": "#00FF00",
+            "logo_url": "",
+            "support_email": "",
+            "redirect_url": "https://example.com/callback/",
+        }
+
+        response = client.put(BRANDING_URL, data=payload, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
     def test_valid_redirect_url_accepted(self, client, user, reseller_org, reseller_org_admin):
         """A plain HTTPS redirect_url is accepted."""
         client.force_authenticate(user)
