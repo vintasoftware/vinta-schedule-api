@@ -63,6 +63,8 @@ def organization_invitation_context(
     # branding row (or no entitlement), `organization=None` resolves through the
     # route's reserved "default" sentinel slug to our bundled default logo -- the
     # same miss-path an unbranded organization's own logo request would take.
+    support_email = branding_row.support_email if branding_row else VINTA_DEFAULT_SUPPORT_EMAIL
+
     branding_context = {
         "app_name": (branding_row.app_name if branding_row else VINTA_DEFAULT_APP_NAME),
         "logo_url": build_logo_delivery_url(branding_row.organization if branding_row else None),
@@ -72,9 +74,7 @@ def organization_invitation_context(
         "secondary_color": (
             branding_row.secondary_color if branding_row else VINTA_DEFAULT_SECONDARY_COLOR
         ),
-        "support_email": (
-            branding_row.support_email if branding_row else VINTA_DEFAULT_SUPPORT_EMAIL
-        ),
+        "support_email": support_email,
     }
 
     return {
@@ -89,4 +89,11 @@ def organization_invitation_context(
         },
         "organization_join_url": invitation_url,
         "branding": branding_context,
+        # Read by ReplyToDjangoEmailNotificationAdapter (notifications/notification_adapters/
+        # django_email.py) to set the outbound message's reply-to. Empty string when there is
+        # no branding row or no entitlement -- the adapter treats a falsy reply_to as "no
+        # override" and falls back to our own From address, matching today's behavior exactly.
+        # The From address itself is never touched here: no custom sender, no
+        # sending-domain verification (Organization Auth-Area Branding plan, Non-goals).
+        "reply_to": support_email,
     }
