@@ -353,6 +353,13 @@ HEADLESS_FRONTEND_URLS = {
     "account_signup": "http://localhost:3000/account/signup",
     "socialaccount_login_error": "http://localhost:3000/account/provider/callback",
 }
+# The SPA's own base URL -- "our dashboard" for callers that need a stable, non
+# organization-specific fallback destination (e.g. accounts.views.ProviderCallbackAPIView,
+# which lands a just-authenticated user here when their organization has no configured
+# post-authentication redirect). staging.py/production.py override this with their real
+# frontend origin; this default matches the local dev frontend port used throughout
+# HEADLESS_FRONTEND_URLS above.
+FRONTEND_BASE_URL = config("FRONTEND_BASE_URL", default="http://localhost:3000").rstrip("/")
 MFA_SUPPORTED_TYPES = ["totp", "recovery_codes"]
 MFA_PASSKEY_LOGIN_ENABLED = False
 HEADLESS_SERVE_SPECIFICATION = True

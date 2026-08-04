@@ -1,5 +1,7 @@
 import json
+import logging
 
+from django.conf import settings
 from django.core.exceptions import PermissionDenied
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
@@ -23,6 +25,11 @@ from allauth.socialaccount.providers.oauth2.client import (
 from allauth.socialaccount.providers.oauth2.provider import OAuth2Provider
 from requests.exceptions import RequestException
 from rest_framework import status
+
+from organizations.models import get_active_organization_membership, resolve_branding_for_display
+
+
+logger = logging.getLogger(__name__)
 
 
 class ProviderRedirectAPIView(AllauthAPIView):
@@ -151,8 +158,10 @@ class ProviderCallbackAPIView(AllauthAPIView):
             login.state = state
             response = complete_social_login(request, login)
             if isinstance(response, JsonResponse):
-                return response
-            return AuthenticationResponse.from_response(request, response)
+                return self._with_post_auth_destination(request, response)
+            return self._with_post_auth_destination(
+                request, AuthenticationResponse.from_response(request, response)
+            )
         except (
             PermissionDenied,
             OAuth2Error,
@@ -166,6 +175,51 @@ class ProviderCallbackAPIView(AllauthAPIView):
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+    def _with_post_auth_destination(self, request, response: JsonResponse) -> JsonResponse:
+        """Merge the resolved post-authentication destination into a completed-login response.
+
+        No-ops (returns ``response`` unchanged) unless ``request.user`` is authenticated:
+        a completed login is the only case with an acting organization to resolve
+        branding for. An interim response (a pending stage, a cancelled/failed
+        attempt) leaves the request unauthenticated, so it passes through untouched.
+
+        The destination is resolved *only* from the acting organization's stored
+        branding (``organizations.models.resolve_branding_for_display``) -- never
+        from ``state["next"]``, a query parameter, or a header. ``state["next"]``
+        keeps serving as the OAuth ``callback_url`` for the token exchange above
+        (a protocol requirement); it plays no part in this method. That separation
+        is what removes the open-redirect surface the old caller-supplied-allowlist
+        design carried.
+        """
+        if not request.user.is_authenticated:
+            return response
+
+        membership = get_active_organization_membership(request.user)
+        organization = membership.organization if membership else None
+        branding = resolve_branding_for_display(organization)
+
+        if branding is not None and branding.redirect_url:
+            destination = branding.redirect_url
+            destination_source = "configured"
+        else:
+            destination = settings.FRONTEND_BASE_URL
+            destination_source = "dashboard_fallback"
+
+        logger.info(
+            "Post-authentication destination resolved",
+            extra={
+                "organization_id": organization.pk if organization else None,
+                "destination_source": destination_source,
+            },
+        )
+
+        payload = json.loads(response.content)
+        payload["destination"] = destination
+        augmented_response = JsonResponse(payload, status=response.status_code)
+        for header, value in response.items():
+            augmented_response[header] = value
+        return augmented_response
 
     def _get_state(self, request, state_id):
         if self.adapter.supports_state and state_id:
