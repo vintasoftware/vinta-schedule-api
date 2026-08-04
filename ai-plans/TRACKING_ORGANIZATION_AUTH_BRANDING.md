@@ -54,7 +54,7 @@ Command translation (container → host):
 | # | Title | Tier | Status | Branch |
 |---|---|---|---|---|
 | 1 | Self-serve organization slug | 3 | ✅ done — [PR #206](https://github.com/vintasoftware/vinta-schedule-api/pull/206) | plan/organization-auth-branding/phase-1 |
-| 2a | Swap allowlist → single redirect | 2 | ⏳ pending | plan/organization-auth-branding/phase-2a |
+| 2a | Swap allowlist → single redirect | 2 | ✅ done — [PR #207](https://github.com/vintasoftware/vinta-schedule-api/pull/207) | plan/organization-auth-branding/phase-2a |
 | 2b | Logo upload and delivery | 3 | ⏳ pending | plan/organization-auth-branding/phase-2b |
 | 3 | Widen write gate | 3 | ⏳ pending | plan/organization-auth-branding/phase-3 |
 | 4 | Audit + capability field | 2 | ⏳ pending | plan/organization-auth-branding/phase-4 |
@@ -76,13 +76,19 @@ Command translation (container → host):
 - Gates: ruff/format clean, `makemigrations --check` no changes, `manage.py check` clean, mypy no new errors, **full suite 4707 passed**. schema.yml regenerated.
 - Carry-forward for later phases: GraphQL `updateBranding` (Phase 3) sets slug in one call; REST org *creation* does not accept slug today (only PATCH) — a symmetric create path was left out of scope per acceptance criteria.
 
+### Phase 2a — Swap allowlist → single redirect_url ✅
+- **Branch**: `plan/organization-auth-branding/phase-2a` (base: phase-1) · **PR**: [#207](https://github.com/vintasoftware/vinta-schedule-api/pull/207)
+- **Implementer**: sonnet (T2→sonnet) · **Reviewer**: sonnet (T3) · **Fixer**: sonnet (T2)
+- `OrganizationBranding.redirect_url` (URLField, blank, default "") replaces `return_url_allowlist` (ArrayField). Migration `0019` (both ops, no backfill).
+- New shared `organizations/redirect_url_validation.py` → `validate_redirect_url()`: rejects control chars, non-HTTPS, wildcard, path-prefix, and hostless/malformed (URLValidator schemes=https). Empty "" = no-redirect state (no-op). Used by REST serializer + GraphQL mutation.
+- **Deleted `validateReturnUrl`** query + `ValidateReturnUrlResult` type + dead helpers — confirmed zero callers first (the plan's one irreversible step). REST/admin/GraphQL swapped to `redirect_url`.
+- **Review caught + fixed a SHOULD-FIX**: GraphQL path (plain `str`, no DRF URLField masking) accepted `https://`, `https:evil.com`, CRLF values → stored open-redirect risk for Phase 7. Fix folded well-formedness + control-char checks into the shared validator so both surfaces enforce identical rules; added GraphQL non-persistence tests + REST wildcard/path-prefix tests.
+- Gates: ruff/format clean, `makemigrations --check` no changes, `manage.py check` clean, mypy no new errors, **full suite 4703 passed**. schema.yml + GraphQL surface regenerated.
+- Carry-forward: `resolve_branding` (ungated variant) intentionally KEPT but dead-until-Phase-5; docstring fixed to not cite deleted code. `docs/building-blocks-integration-v3.md` still names `validateReturnUrl` in prose (out of scope).
+
 ## Current phase
 
-Phase 2a — Swap the allowlist for a single redirect destination.
-
-- Note: `resolve_branding` (the ungated variant) is intentionally KEPT but
-  dead-until-Phase-5 — no caller wires it up yet; Phase 5 (parentless branding
-  resolution) is what consumes it. Not a leftover to clean up.
+Phase 2b — Logo upload and delivery.
 
 ## Deferred phases
 
