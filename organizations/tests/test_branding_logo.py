@@ -106,6 +106,7 @@ class TestBrandedLogoDelivery:
         assert response["Content-Type"] == "image/png"
         assert response["Cache-Control"] == "public, max-age=300"
         assert response["ETag"] == compute_logo_etag("uploads/branding_logos/brandco-logo.png")
+        assert response["X-Content-Type-Options"] == "nosniff"
         assert b"".join(response.streaming_content) == b"\x89PNG-fake-bytes"
 
     def test_jpeg_extension_resolves_jpeg_content_type(self, client):
@@ -303,3 +304,166 @@ class TestDefaultSentinelSlug:
 
         with pytest.raises(ValidationError, match="reserved"):
             validate_organization_slug("default")
+
+
+@pytest.mark.django_db
+class TestForeignPrefixKeyNeverServed:
+    """BLOCKER 1 (Phase 2b security review), read-side defense in depth: even if a
+    key outside `uploads/branding_logos/` somehow ends up on a branding row
+    (bypassing the write-side rejection in `normalize_uploaded_logo_key` --
+    e.g. a row inserted directly), the delivery route must never stream it --
+    it must degrade to the default logo exactly like any other miss."""
+
+    def test_foreign_prefix_key_forced_into_db_serves_the_default_not_the_object(self, client):
+        org = _org_with_entitlement(
+            Entitlement.WHITE_LABEL_BRANDING,
+            is_enabled=True,
+            can_invite_organizations=True,
+            parent=None,
+            slug="hijackco",
+        )
+        # Bypass the write-side rejection entirely -- write the foreign-prefix key
+        # straight to the DB, simulating a row that predates the constraint or
+        # was written by some other path.
+        baker.make(
+            OrganizationBranding,
+            organization=org,
+            logo="providers_documents/victim-private-document.pdf",
+        )
+
+        with (
+            patch("common.media_storage_backend.MediaStorage.exists") as exists_mock,
+            patch("common.media_storage_backend.MediaStorage.open") as open_mock,
+        ):
+            response = client.get(_logo_url("hijackco"))
+
+        assert response.status_code == 200
+        assert response["ETag"] == compute_logo_etag(DEFAULT_LOGO_ETAG_IDENTITY)
+        # The storage layer must never even be asked about the foreign key --
+        # the prefix check happens before any S3 call.
+        exists_mock.assert_not_called()
+        open_mock.assert_not_called()
+
+
+@pytest.mark.django_db
+class TestDeliveredContentTypeIsInertAndAllowlisted:
+    """BLOCKER 2 (Phase 2b security review): the delivery route must never let a
+    stored key's extension drive a browser-renderable Content-Type (stored XSS
+    via `.svg`/`.html`), and must always mark the response inert with
+    `X-Content-Type-Options: nosniff`."""
+
+    def test_svg_extension_is_served_as_octet_stream_not_svg(self, client):
+        org = _org_with_entitlement(
+            Entitlement.WHITE_LABEL_BRANDING,
+            is_enabled=True,
+            can_invite_organizations=True,
+            parent=None,
+            slug="svgco",
+        )
+        baker.make(
+            OrganizationBranding,
+            organization=org,
+            logo="uploads/branding_logos/malicious.svg",
+        )
+
+        with (
+            patch("common.media_storage_backend.MediaStorage.exists", return_value=True),
+            patch(
+                "common.media_storage_backend.MediaStorage.open",
+                return_value=io.BytesIO(b"<svg onload=alert(1)></svg>"),
+            ),
+        ):
+            response = client.get(_logo_url("svgco"))
+
+        assert response.status_code == 200
+        assert response["Content-Type"] == "application/octet-stream"
+        assert response["X-Content-Type-Options"] == "nosniff"
+
+    def test_html_extension_is_served_as_octet_stream_not_html(self, client):
+        org = _org_with_entitlement(
+            Entitlement.WHITE_LABEL_BRANDING,
+            is_enabled=True,
+            can_invite_organizations=True,
+            parent=None,
+            slug="htmlco",
+        )
+        baker.make(
+            OrganizationBranding,
+            organization=org,
+            logo="uploads/branding_logos/malicious.html",
+        )
+
+        with (
+            patch("common.media_storage_backend.MediaStorage.exists", return_value=True),
+            patch(
+                "common.media_storage_backend.MediaStorage.open",
+                return_value=io.BytesIO(b"<script>alert(1)</script>"),
+            ),
+        ):
+            response = client.get(_logo_url("htmlco"))
+
+        assert response.status_code == 200
+        assert response["Content-Type"] == "application/octet-stream"
+        assert response["X-Content-Type-Options"] == "nosniff"
+
+    def test_png_still_serves_the_allowlisted_content_type_with_nosniff(self, client):
+        org = _org_with_entitlement(
+            Entitlement.WHITE_LABEL_BRANDING,
+            is_enabled=True,
+            can_invite_organizations=True,
+            parent=None,
+            slug="pngco",
+        )
+        baker.make(
+            OrganizationBranding,
+            organization=org,
+            logo="uploads/branding_logos/real-logo.png",
+        )
+
+        with (
+            patch("common.media_storage_backend.MediaStorage.exists", return_value=True),
+            patch(
+                "common.media_storage_backend.MediaStorage.open",
+                return_value=io.BytesIO(b"\x89PNG-fake-bytes"),
+            ),
+        ):
+            response = client.get(_logo_url("pngco"))
+
+        assert response.status_code == 200
+        assert response["Content-Type"] == "image/png"
+        assert response["X-Content-Type-Options"] == "nosniff"
+
+    def test_default_logo_response_also_carries_nosniff(self, client):
+        response = client.get(_logo_url("default"))
+
+        assert response.status_code == 200
+        assert response["X-Content-Type-Options"] == "nosniff"
+
+
+@pytest.mark.django_db
+class TestNoQueryCountOracleBetweenUnknownSlugAndExistingOrg:
+    """SHOULD-FIX 2 (Phase 2b security review): an unknown slug and a real,
+    unbranded organization's slug must cost the same number of DB queries --
+    otherwise the response time / query count itself becomes an enumeration
+    oracle, even though the two responses are byte-identical."""
+
+    def test_unknown_slug_and_existing_unbranded_org_cost_equal_queries(self, client):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        baker.make(Organization, parent=None, slug="normalized-no-branding-row")
+
+        with CaptureQueriesContext(connection) as unknown_ctx:
+            response = client.get(_logo_url("no-such-organization-at-all"))
+        assert response.status_code == 200
+
+        with CaptureQueriesContext(connection) as existing_ctx:
+            response = client.get(_logo_url("normalized-no-branding-row"))
+        assert response.status_code == 200
+
+        assert len(unknown_ctx.captured_queries) == len(existing_ctx.captured_queries), (
+            f"Query count diverges: unknown slug ran "
+            f"{len(unknown_ctx.captured_queries)} quer(ies), existing unbranded "
+            f"org ran {len(existing_ctx.captured_queries)} quer(ies) -- this "
+            f"asymmetry is itself an enumeration oracle."
+        )

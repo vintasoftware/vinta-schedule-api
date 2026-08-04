@@ -575,8 +575,17 @@ def resolve_branding(org: Organization) -> OrganizationBranding | None:
     return getattr(branding_root, "branding", None)
 
 
-def resolve_branding_for_display(org: Organization) -> OrganizationBranding | None:
+def resolve_branding_for_display(org: Organization | None) -> OrganizationBranding | None:
     """``resolve_branding``, gated on the ``white_label_branding`` entitlement.
+
+    ``org`` may be ``None`` -- returns ``None`` immediately, at zero extra query
+    cost, the same as a real, non-reseller organization with no branding-eligible
+    ancestor (``get_branding_root()`` returning ``None``). This lets a caller like
+    ``organizations.views.OrganizationLogoDeliveryView._resolve_logo_key`` call
+    this function unconditionally on every non-sentinel slug -- whether or not the
+    slug matched a row -- instead of branching around it, which would otherwise
+    make "was this function even called" an observable (query-count) difference
+    between an unknown slug and an existing, unbranded organization.
 
     Use this for every **presentation** caller — anything that renders the reseller's
     app name, logo, colors, or support address (``branding_for_tenant``,
@@ -611,6 +620,9 @@ def resolve_branding_for_display(org: Organization) -> OrganizationBranding | No
     condition: an unresolvable entitlement service denies. Here that costs a reseller
     its logo until DI is repaired, which is the cheap direction to be wrong in.
     """
+    if org is None:
+        return None
+
     branding_root = org.get_branding_root()
     if branding_root is None:
         return None

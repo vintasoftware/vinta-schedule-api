@@ -373,7 +373,7 @@ class TestOrganizationBrandingViewSet:
             "app_name": "MyScheduler",
             "primary_color": "#FF0000",
             "secondary_color": "#00FF00",
-            "logo_url": "https://example.com/logo.png",
+            "logo_url": "uploads/branding_logos/logo.png",
             "support_email": "support@example.com",
             "redirect_url": "https://example.com/return",
         }
@@ -670,3 +670,65 @@ class TestOrganizationBrandingViewSet:
 
         response = client.get(BRANDING_URL)
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+
+@pytest.mark.django_db
+class TestBrandingLogoKeyPrefixIsEnforcedOnWrite:
+    """BLOCKER 1 (Phase 2b security review): the media bucket is a single shared
+    bucket holding `profile_pictures`, `providers_documents`,
+    `healthcare_entities_documents` (PHI), and `branding_logos` at their own
+    top-level prefixes. A `logo_url` that normalizes to a key outside
+    `uploads/branding_logos/` must be rejected on write -- otherwise an eligible
+    reseller admin could point their own branding row at another tenant's
+    private object and have it served back through the unauthenticated
+    delivery route."""
+
+    @pytest.mark.parametrize(
+        "logo_url",
+        [
+            "providers_documents/some-victim-file.pdf",
+            "profile_pictures/some-victim-avatar.png",
+            "/providers_documents/some-victim-file.pdf",
+            "healthcare_entities_documents/some-victim-record.pdf",
+            "bare-filename.png",
+            "https://example.com/providers_documents/some-victim-file.pdf",
+        ],
+    )
+    def test_foreign_prefix_key_is_rejected(
+        self, client, user, reseller_org, reseller_org_admin, logo_url
+    ):
+        client.force_authenticate(user)
+        client.credentials(HTTP_X_ORGANIZATION_ID=str(reseller_org.id))
+
+        payload = {
+            "app_name": "MyScheduler",
+            "logo_url": logo_url,
+            "primary_color": "#FF0000",
+            "secondary_color": "#00FF00",
+            "support_email": "support@example.com",
+            "redirect_url": "https://example.com/return",
+        }
+
+        response = client.put(BRANDING_URL, data=payload, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "logo_url" in response.json()
+        # The rejected key must never have been persisted.
+        assert not OrganizationBranding.objects.filter(organization_id=reseller_org.id).exists()
+
+    def test_empty_logo_url_still_allowed(self, client, user, reseller_org, reseller_org_admin):
+        """Clearing the logo (empty string) must stay allowed -- only a non-empty,
+        foreign-prefix key is rejected."""
+        client.force_authenticate(user)
+        client.credentials(HTTP_X_ORGANIZATION_ID=str(reseller_org.id))
+
+        payload = {
+            "app_name": "MyScheduler",
+            "logo_url": "",
+            "primary_color": "#FF0000",
+            "secondary_color": "#00FF00",
+            "support_email": "support@example.com",
+            "redirect_url": "https://example.com/return",
+        }
+
+        response = client.put(BRANDING_URL, data=payload, format="json")
+        assert_response_status_code(response, status.HTTP_201_CREATED)

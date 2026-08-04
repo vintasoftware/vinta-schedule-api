@@ -9,6 +9,7 @@ from rest_framework import serializers
 from calendar_integration.models import GoogleCalendarServiceAccount
 from common.utils.serializer_utils import VirtualModelSerializer
 from organizations.branding_logo import build_logo_delivery_url, normalize_uploaded_logo_key
+from organizations.exceptions import BrandingLogoUploadRejectedError
 from organizations.models import (
     Organization,
     OrganizationBranding,
@@ -430,7 +431,10 @@ class BrandingLogoURLField(serializers.CharField):
 
     def to_internal_value(self, data: str) -> str:
         value = super().to_internal_value(data)
-        return normalize_uploaded_logo_key(value)
+        try:
+            return normalize_uploaded_logo_key(value)
+        except BrandingLogoUploadRejectedError as e:
+            raise serializers.ValidationError(str(e)) from e
 
     def get_attribute(self, instance):
         """Bypass DRF's default ``source``-based lookup (``instance.logo``).

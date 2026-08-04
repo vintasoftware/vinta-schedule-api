@@ -1501,6 +1501,61 @@ class TestUpdateBranding:
         branding = OrganizationBranding.objects.get(organization=reseller_org)
         assert branding.logo.name == "uploads/branding_logos/logo.png"
 
+    def test_update_branding_foreign_prefix_logo_key_is_rejected(self):
+        """BLOCKER 1 (Phase 2b security review): a `logoUrl` that normalizes to a
+        key outside `uploads/branding_logos/` -- e.g. another destination's
+        prefix in the shared media bucket -- must be rejected, not persisted.
+        Without this, an eligible reseller admin could point their own branding
+        row at another tenant's private object (`providers_documents/...`,
+        `healthcare_entities_documents/...`) and have it served back through the
+        unauthenticated logo delivery route."""
+        from di_core.containers import container
+
+        reseller_org = baker.make(
+            Organization,
+            name="Reseller",
+            can_invite_organizations=True,
+            slug="acme-reseller-2",
+        )
+
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="branding_integration", organization=reseller_org
+        )
+        baker.make(ResourceAccess, system_user=system_user, resource_name="branding")
+
+        mutation = """
+        mutation UpdateBranding($input: UpdateBrandingInput!) {
+            updateBranding(input: $input) {
+                branding {
+                    id
+                }
+            }
+        }
+        """
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": mutation,
+                    "variables": {
+                        "input": {
+                            "appName": "MyApp",
+                            "logoUrl": "providers_documents/some-victim-file.pdf",
+                        }
+                    },
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert "branding_logos" in str(data["errors"])
+        assert not OrganizationBranding.objects.filter(organization=reseller_org).exists()
+
     def test_update_branding_fails_flag_off(self):
         """Test that updateBranding fails when acting org has flag off."""
         from di_core.containers import container

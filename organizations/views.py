@@ -23,6 +23,7 @@ from rest_framework.viewsets import GenericViewSet
 
 from calendar_integration.models import GoogleCalendarServiceAccount
 from calendar_integration.serializers import CalendarSyncRequestSerializer
+from common.media_storage_backend import MediaStorage
 from common.utils.view_utils import (
     NoListVintaScheduleModelViewSet,
     NoUpdateVintaScheduleModelViewSet,
@@ -30,6 +31,7 @@ from common.utils.view_utils import (
     TenantScopedViewMixin,
 )
 from organizations.branding_logo import (
+    BRANDING_LOGO_KEY_PREFIX,
     DEFAULT_LOGO_ASSET_PATH,
     DEFAULT_LOGO_CONTENT_TYPE,
     DEFAULT_LOGO_ETAG_IDENTITY,
@@ -1141,20 +1143,41 @@ class OrganizationLogoDeliveryView(views.APIView):
         every miss condition so the caller's fallback to the default logo is a
         single, uniform branch — see the class docstring on why every miss must
         look identical.
+
+        ``resolve_branding_for_display`` is called unconditionally on every
+        non-sentinel slug, whether or not the slug matched an ``Organization``
+        row (it accepts ``None`` and returns ``None`` at zero extra query cost).
+        Branching around the call for an unknown slug would make "was
+        resolution attempted at all" an observable difference (query count) from
+        an existing, unbranded organization — the enumeration oracle a caller
+        could otherwise use to distinguish "no such org" from "real org, no
+        logo" without ever seeing a different response body.
         """
         if org_slug == DEFAULT_LOGO_SLUG_SENTINEL:
             return ""
 
         organization = Organization.objects.filter(slug=org_slug).first()
-        if organization is None:
-            return ""
-
         branding = resolve_branding_for_display(organization)
         if branding is None:
             return ""
 
         logo = branding.logo
-        return (logo.name or "") if logo else ""
+        key = (logo.name or "") if logo else ""
+
+        # Defense in depth against BLOCKER 1 (arbitrary-key cross-tenant
+        # disclosure): even if a key outside the branding_logos upload prefix
+        # somehow ended up on a branding row (bypassing the write-side rejection
+        # in `normalize_uploaded_logo_key`, e.g. a row inserted directly), never
+        # stream it -- treat it exactly like "no logo configured" instead.
+        if key and not key.startswith(BRANDING_LOGO_KEY_PREFIX):
+            logger.warning(
+                "Refusing to serve branding logo key outside the allowed prefix "
+                "for organization slug %s",
+                org_slug,
+            )
+            return ""
+
+        return key
 
     def _stream_key(self, key: str) -> FileResponse | None:
         """Stream the S3 object at ``key``, or ``None`` if it does not exist.
@@ -1164,8 +1187,6 @@ class OrganizationLogoDeliveryView(views.APIView):
         sent) so a branding row referencing a since-deleted object degrades
         cleanly to the default logo instead of a broken response.
         """
-        from common.media_storage_backend import MediaStorage
-
         storage = MediaStorage()
         try:
             if not storage.exists(key):
@@ -1190,3 +1211,8 @@ class OrganizationLogoDeliveryView(views.APIView):
     def _set_cache_headers(self, response: FileResponse, etag: str) -> None:
         response["Cache-Control"] = f"public, max-age={LOGO_CACHE_MAX_AGE_SECONDS}"
         response["ETag"] = etag
+        # BLOCKER 2 (Phase 2b security review): the delivery route must never let
+        # a browser sniff the body into a renderable type regardless of the
+        # (allowlisted, but still attacker-influenced) Content-Type header --
+        # applies to both the real-object stream and the default logo.
+        response["X-Content-Type-Options"] = "nosniff"

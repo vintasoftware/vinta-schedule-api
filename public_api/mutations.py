@@ -1296,7 +1296,13 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         # `logo_url` is write-only here despite the name: normalize a bare key or a
         # full signed/public URL down to the bare S3 key -- the persisted value,
         # never a URL. See organizations.branding_logo.normalize_uploaded_logo_key.
-        logo_key = normalize_uploaded_logo_key(input.logo_url)
+        # Raises BrandingLogoUploadRejectedError if the normalized key falls
+        # outside the branding_logos upload prefix (e.g. a key from another
+        # destination in the shared media bucket) -- see BRANDING_LOGO_KEY_PREFIX.
+        try:
+            logo_key = normalize_uploaded_logo_key(input.logo_url)
+        except BrandingLogoUploadRejectedError as e:
+            raise GraphQLError(str(e)) from e
 
         # Upsert branding on the acting org (always acts on acting org, never another org)
         branding, _ = OrganizationBranding.objects.update_or_create(
