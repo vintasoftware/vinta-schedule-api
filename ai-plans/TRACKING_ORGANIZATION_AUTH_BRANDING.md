@@ -53,7 +53,7 @@ Command translation (container → host):
 
 | # | Title | Tier | Status | Branch |
 |---|---|---|---|---|
-| 1 | Self-serve organization slug | 3 | ⏳ pending | plan/organization-auth-branding/phase-1 |
+| 1 | Self-serve organization slug | 3 | ✅ done — [PR #206](https://github.com/vintasoftware/vinta-schedule-api/pull/206) | plan/organization-auth-branding/phase-1 |
 | 2a | Swap allowlist → single redirect | 2 | ⏳ pending | plan/organization-auth-branding/phase-2a |
 | 2b | Logo upload and delivery | 3 | ⏳ pending | plan/organization-auth-branding/phase-2b |
 | 3 | Widen write gate | 3 | ⏳ pending | plan/organization-auth-branding/phase-3 |
@@ -66,11 +66,19 @@ Command translation (container → host):
 
 ## Completed phases
 
-_(none yet)_
+### Phase 1 — Self-serve organization slug ✅
+- **Branch**: `plan/organization-auth-branding/phase-1` (base: `main`) · **PR**: [#206](https://github.com/vintasoftware/vinta-schedule-api/pull/206)
+- **Implementer**: sonnet (T3) · **Reviewer**: sonnet (T3) · **Fixer**: sonnet (T2)
+- Added `Organization.slug` (unique, nullable, indexed; `default=None` so multiple unset orgs coexist as NULL). Migration `0018_organization_slug`.
+- New `organizations/slug_validation.py` — single shared `validate_organization_slug()`: reserved words (live routes `super`/`schema`/`s3direct`/`auth`/`api`/… + vendor variants), format/length (lowercase alnum + internal hyphen, 3–63, not purely numeric), confusables (stdlib `unicodedata`, no new dep — rejects non-ASCII/mixed-script lookalikes).
+- REST: `slug` writable on `OrganizationSerializer` as **CharField** (shared validator is sole authority; collision → 400 naming conflict), read-only on `OrganizationBriefSerializer`. Admin: `slug` as `forms.CharField` + searchable.
+- **Review caught + fixed a BLOCKER**: `SlugField`'s auto ASCII regex preempted the custom validator on both REST + admin, making confusables dead code. Fixed by switching to CharField/forms.CharField (model field unchanged, no extra migration); added Cyrillic-homoglyph tests through PATCH + admin form.
+- Gates: ruff/format clean, `makemigrations --check` no changes, `manage.py check` clean, mypy no new errors, **full suite 4707 passed**. schema.yml regenerated.
+- Carry-forward for later phases: GraphQL `updateBranding` (Phase 3) sets slug in one call; REST org *creation* does not accept slug today (only PATCH) — a symmetric create path was left out of scope per acceptance criteria.
 
 ## Current phase
 
-Phase 1 — Self-serve organization slug.
+Phase 2a — Swap the allowlist for a single redirect destination.
 
 ## Deferred phases
 
