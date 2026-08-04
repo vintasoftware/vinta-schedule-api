@@ -3,7 +3,7 @@ import logging
 
 from django.conf import settings
 from django.core.exceptions import PermissionDenied
-from django.http import JsonResponse
+from django.http import HttpRequest, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 
 from allauth.headless.base.response import (
@@ -176,7 +176,9 @@ class ProviderCallbackAPIView(AllauthAPIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-    def _with_post_auth_destination(self, request, response: JsonResponse) -> JsonResponse:
+    def _with_post_auth_destination(
+        self, request: HttpRequest, response: JsonResponse
+    ) -> JsonResponse:
         """Merge the resolved post-authentication destination into a completed-login response.
 
         No-ops (returns ``response`` unchanged) unless ``request.user`` is authenticated:
@@ -195,6 +197,10 @@ class ProviderCallbackAPIView(AllauthAPIView):
         if not request.user.is_authenticated:
             return response
 
+        # The OAuth callback has no selected-org concept: a user with multiple
+        # active memberships deterministically resolves to their oldest active
+        # membership's org via get_active_organization_membership. Intentional
+        # and safe -- all candidate orgs are the user's own.
         membership = get_active_organization_membership(request.user)
         organization = membership.organization if membership else None
         branding = resolve_branding_for_display(organization)
@@ -214,12 +220,13 @@ class ProviderCallbackAPIView(AllauthAPIView):
             },
         )
 
+        # Mutate the response body in place rather than building a fresh
+        # JsonResponse: this preserves cookies and any other header not covered
+        # by the header-copy loop it would otherwise take to replicate them.
         payload = json.loads(response.content)
         payload["destination"] = destination
-        augmented_response = JsonResponse(payload, status=response.status_code)
-        for header, value in response.items():
-            augmented_response[header] = value
-        return augmented_response
+        response.content = json.dumps(payload).encode("utf-8")
+        return response
 
     def _get_state(self, request, state_id):
         if self.adapter.supports_state and state_id:
