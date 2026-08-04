@@ -163,10 +163,21 @@ class Organization(BaseModel):
 
     def get_branding_root(self) -> Organization | None:
         """
-        Walk up the parent chain to the nearest ancestor with can_invite_organizations=True.
+        Resolve the organization whose branding row applies to this organization.
 
-        Returns the reseller ancestor (which has branding), or None if no such ancestor exists.
-        The None case means this org (or its entire lineage) has no reseller, so vinta defaults apply.
+        Checked in this order:
+        1. Walk up the parent chain for the nearest ancestor with
+           ``can_invite_organizations=True`` (a reseller). If one exists, it wins --
+           unchanged, and checked first, which is what preserves reseller precedence:
+           a child under a reseller always resolves to the reseller, never to itself.
+        2. Otherwise, if this organization itself has no parent (``parent_id is
+           None``), it is its own branding root -- a parentless organization can hold
+           and apply its own branding (see the write gate in
+           ``organizations.permissions``, which requires the same parentless
+           condition before admitting a branding write).
+        3. Otherwise (a child with no reseller ancestor), ``None`` -- it cannot brand
+           itself (enforced by the write gate) and has no reseller to inherit from, so
+           vinta defaults apply.
         """
         seen: set[int] = set()
         org: Organization | None = self
@@ -175,6 +186,8 @@ class Organization(BaseModel):
                 return org
             seen.add(org.pk)
             org = org.parent
+        if self.parent_id is None:
+            return self
         return None
 
 
