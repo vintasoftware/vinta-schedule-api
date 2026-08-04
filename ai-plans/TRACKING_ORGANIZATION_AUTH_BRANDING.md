@@ -59,7 +59,7 @@ Command translation (container → host):
 | 3 | Widen write gate | 3 | ✅ done — [PR #209](https://github.com/vintasoftware/vinta-schedule-api/pull/209) | plan/organization-auth-branding/phase-3 |
 | 4 | Audit + capability field | 2 | ✅ done — [PR #210](https://github.com/vintasoftware/vinta-schedule-api/pull/210) | plan/organization-auth-branding/phase-4 |
 | 5 | Resolve branding (parentless) | 3 | ✅ done — [PR #211](https://github.com/vintasoftware/vinta-schedule-api/pull/211) | plan/organization-auth-branding/phase-5 |
-| 6 | Invitation reply-to | 2 | ⏳ pending | plan/organization-auth-branding/phase-6 |
+| 6 | Invitation reply-to | 2 | ✅ done — [PR #212](https://github.com/vintasoftware/vinta-schedule-api/pull/212) | plan/organization-auth-branding/phase-6 |
 | 7 | Post-auth destination server-side | 3 | ⏳ pending | plan/organization-auth-branding/phase-7 |
 | 8 | Branded login by slug | 2 | ⏳ pending | plan/organization-auth-branding/phase-8 |
 | 9 | Client handoff (SPA) | 1 | ⏳ pending | plan/organization-auth-branding/phase-9 |
@@ -124,9 +124,16 @@ Command translation (container → host):
 - **⚠️ ACCEPTED TRADE-OFF (supersedes plan L57/L325 "same path / not an existence oracle" claim)**: widening the root reopens a **1-query timing divergence** on the unauthenticated logo route + brandingForTenant — a real parentless org runs one entitlement query an unknown slug doesn't. Response **body/status/headers stay byte-identical**; only server-side query-count/timing differs → timing-only, not reliably weaponizable over the network. Hard close (phantom query on every anon cache-miss) not worth it; a child already pays a parent-walk query, so found≠not-found in query count is unavoidable once branding widens past resellers. **Accepted; not fixed.** The Phase 2b oracle test now asserts "exactly one expected extra query" (still catches N+1 regressions).
 - Gates: ruff/format clean, `makemigrations --check` no changes, `manage.py check` clean, mypy no new errors, **full suite 4818 passed**. schema.yml regenerated (incl. a benign Phase-4 `can_manage_branding` docstring hunk that Phase 4 never regenerated).
 
+### Phase 6 — Invitation reply-to ✅
+- **Branch**: `plan/organization-auth-branding/phase-6` (base: phase-5) · **PR**: [#212](https://github.com/vintasoftware/vinta-schedule-api/pull/212)
+- **Implementer**: sonnet (T2) · **Reviewer**: sonnet (T3) · **Fixer**: sonnet (T2)
+- New `ReplyToDjangoEmailNotificationAdapter` (subclasses vintasend stock adapter; DI-wired in `di_core/containers.py`) — reply-to concept did NOT exist in the send path, this is the plumbing. `organization_invitation_context` exposes resolved `support_email` (widened root, entitlement-gated) as `reply_to`. From provably unchanged (`NOTIFICATION_DEFAULT_FROM_EMAIL`); no reply-to verification (Open Q1 out of scope). No migration.
+- **Review (no BLOCKER)**: fixed scope creep — first pass stamped `Reply-To: <from>` on EVERY email through the shared adapter (dunning/usage-warning/password-reset/calendar); narrowed to only-branded-invitations (`reply_to` set only when context supplies it; else `[]`, byte-identical to today). Drift-guard comment names reviewed base version `vintasend-django==1.2.1`.
+- Gates: ruff/format clean, `makemigrations --check` no changes, `manage.py check` clean, mypy no new errors, **full suite 4826 passed**. No schema change.
+
 ## Current phase
 
-Phase 6 — Route invitation replies to the organization.
+Phase 7 — Resolve the post-authentication destination server-side.
 
 ## Deferred phases
 
