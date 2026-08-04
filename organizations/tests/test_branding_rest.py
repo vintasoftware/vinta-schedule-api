@@ -2,6 +2,8 @@ import datetime
 import json
 
 from django.contrib.auth import get_user_model
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
 
@@ -1220,3 +1222,43 @@ class TestCanManageBrandingOnMembershipPayload:
         current_response = client.get(self._current_url())
         assert_response_status_code(current_response, status.HTTP_200_OK)
         assert current_response.json()["can_manage_branding"] is True
+
+    def test_mine_endpoint_entitlement_queries_do_not_scale_with_membership_count(self):
+        """Reviewer finding: the N+1-shaped entitlement lookup on
+        ``GET /organizations/mine/`` -- ``MyMembershipSerializer.get_can_manage_branding``
+        used to call ``is_branding_eligible_organization`` once per membership
+        row, so the number of subscription/entitlement queries scaled linearly
+        with the caller's distinct-org membership count. Batched via
+        ``is_branding_eligible_organizations`` /
+        ``EntitlementService.has_entitlement_for_organizations``: the number of
+        ``payments_subscription`` queries the endpoint issues must stay the
+        same regardless of how many organizations the caller belongs to."""
+
+        def _subscription_query_count(organization_count: int) -> int:
+            caller = baker.make(User)
+            for index in range(organization_count):
+                org = baker.make(
+                    Organization,
+                    can_invite_organizations=False,
+                    slug=f"batch-org-{organization_count}-{index}",
+                )
+                baker.make(
+                    OrganizationMembership,
+                    user=caller,
+                    organization=org,
+                    role=OrganizationRole.ADMIN,
+                    is_active=True,
+                )
+            local_client = APIClient()
+            local_client.force_authenticate(caller)
+            with CaptureQueriesContext(connection) as captured:
+                response = local_client.get(self._mine_url())
+            assert_response_status_code(response, status.HTTP_200_OK)
+            assert len(response.json()) == organization_count
+            return sum(
+                1 for query in captured.captured_queries if "payments_subscription" in query["sql"]
+            )
+
+        small_batch_query_count = _subscription_query_count(2)
+        large_batch_query_count = _subscription_query_count(5)
+        assert small_batch_query_count == large_batch_query_count

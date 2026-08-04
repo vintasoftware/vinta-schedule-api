@@ -14,6 +14,9 @@ import strawberry
 from dependency_injector.wiring import Provide, inject
 from graphql import GraphQLError
 
+from audit.constants import AuditAction
+from audit.diff import compute_diff
+from audit.services import AuditService
 from calendar_integration.constants import CalendarType
 from calendar_integration.exceptions import (
     BookingPolicyViolationError,
@@ -101,7 +104,6 @@ if TYPE_CHECKING:
 
 
 if TYPE_CHECKING:
-    from audit.services import AuditService
     from calendar_integration.services.booking_policy_permission_service import (
         BookingPolicyPermissionService,
     )
@@ -1364,10 +1366,6 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
 
         The token's OrganizationResourceAccess must include the BRANDING resource.
         """
-        from audit.constants import AuditAction
-        from audit.diff import compute_diff
-        from audit.services import AuditService
-
         acting_org = info.context.request.public_api_organization
         if not acting_org:
             raise GraphQLError("Organization not found")
