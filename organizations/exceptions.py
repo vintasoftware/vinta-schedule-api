@@ -26,3 +26,14 @@ class InvitationNotFoundError(ValidationError):
 class UserAlreadyHasMembershipError(ValidationError):
     default_detail = "User is already a member of this organization."
     default_code = "user_already_has_membership"
+
+
+class BrandingLogoUploadRejectedError(Exception):
+    """Raised when a requested branding-logo upload violates the ``branding_logos``
+    S3Direct destination's content-type allowlist or size limit.
+
+    Plain ``Exception`` (not a DRF ``ValidationError``) because its only caller
+    today is the GraphQL signing mutation (``public_api.mutations.Mutation.
+    create_branding_logo_upload``), which maps it to a ``GraphQLError`` itself.
+    The message names the specific rule broken.
+    """

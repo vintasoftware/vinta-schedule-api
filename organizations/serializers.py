@@ -8,6 +8,7 @@ from rest_framework import serializers
 
 from calendar_integration.models import GoogleCalendarServiceAccount
 from common.utils.serializer_utils import VirtualModelSerializer
+from organizations.branding_logo import build_logo_delivery_url, normalize_uploaded_logo_key
 from organizations.models import (
     Organization,
     OrganizationBranding,
@@ -406,6 +407,50 @@ def _validate_hex_color(value: str) -> str:
     return value
 
 
+class BrandingLogoURLField(serializers.CharField):
+    """Read: the logo delivery route's absolute URL for the branding row's
+    organization. Write: the uploaded S3 key (accepts a bare key or a full
+    signed/public URL, normalized to a key).
+
+    ``source="logo"`` binds this field to the model's ``logo``
+    (``S3DirectImageField``) column while keeping the serializer's field name
+    ``logo_url`` stable — the SPA's read path is unchanged, only what it points
+    at differs (the delivery route, never a raw or signed S3 URL).
+
+    The read side ignores the raw field ``value`` entirely: the delivery URL is
+    a pure function of the branding row's *organization* (its slug), not of
+    whether a logo happens to be set — a missing logo resolves through the same
+    route to our default logo, so there is nothing to distinguish here.
+    """
+
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("required", False)
+        kwargs.setdefault("allow_blank", True)
+        super().__init__(*args, **kwargs)
+
+    def to_internal_value(self, data: str) -> str:
+        value = super().to_internal_value(data)
+        return normalize_uploaded_logo_key(value)
+
+    def get_attribute(self, instance):
+        """Bypass DRF's default ``source``-based lookup (``instance.logo``).
+
+        ``Serializer.to_representation`` short-circuits to ``None`` (never
+        calling ``to_representation`` at all) whenever ``get_attribute``
+        returns ``None`` — which is exactly the common case here, since
+        ``logo`` is nullable. This field's representation is a pure function
+        of the branding row's *organization*, not of whether a logo happens
+        to be set, so return the branding row itself (never ``None`` for a
+        real row) and do the real work in ``to_representation``.
+        """
+        return instance
+
+    def to_representation(self, value) -> str:
+        organization = getattr(value, "organization", None)
+        request = self.context.get("request")
+        return build_logo_delivery_url(organization, request=request)
+
+
 class OrganizationBrandingSerializer(serializers.ModelSerializer):
     """Serializer for OrganizationBranding (reseller-admin REST endpoints).
 
@@ -417,7 +462,13 @@ class OrganizationBrandingSerializer(serializers.ModelSerializer):
     - Color format: #RRGGBB or #RRGGBBAA (regex).
     - redirect_url: HTTPS scheme, no wildcard character, no path-prefix pattern
       (organizations.redirect_url_validation).
+
+    ``logo_url`` round-trips through ``organizations.branding_logo``: reads
+    return the logo delivery route's URL (never a raw or signed S3 URL), writes
+    accept the uploaded S3 key from the ``branding_logos`` S3Direct destination.
     """
+
+    logo_url = BrandingLogoURLField(source="logo")
 
     class Meta:
         model = OrganizationBranding

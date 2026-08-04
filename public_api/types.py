@@ -120,6 +120,12 @@ class UpdateBrandingInput:
 
     Updates branding on the acting org (must be a reseller). Always upserts
     (creates if missing, updates if exists). Cannot target another org's tree.
+
+    ``logo_url`` is write-only despite the name (kept for symmetry with the REST
+    serializer's field): it accepts the S3 key returned by
+    ``createBrandingLogoUpload`` (a bare key or a full signed/public URL, either
+    way normalized to a key before it is stored). Reads never echo this value
+    back — ``BrandingResult.logo_url`` is always the logo delivery route's URL.
     """
 
     app_name: str
@@ -164,6 +170,27 @@ class PublicBrandingResult:
     logo_url: str
     primary_color: str
     secondary_color: str
+
+
+@strawberry.type
+class BrandingLogoUploadResult:
+    """Signed upload payload for the ``branding_logos`` S3Direct destination.
+
+    Same shape the shipped s3direct signing view (``POST /s3direct/get_upload_params/``)
+    returns, for partner-API callers that cannot reach that Django-session-scoped
+    endpoint directly. Authorized by the branding eligibility helper (acting
+    organization is parentless and holds ``white_label_branding``), not by the
+    destination's own ``auth`` callable — see the plan's Logo upload path guiding
+    decision.
+    """
+
+    object_key: str
+    access_key_id: str | None
+    session_token: str | None
+    region: str | None
+    bucket: str | None
+    endpoint: str | None
+    acl: str
 
 
 @strawberry.input

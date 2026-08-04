@@ -212,7 +212,7 @@ class OrganizationBrandingAdmin(admin.ModelAdmin):
                     "id",
                     "organization",
                     "app_name",
-                    "logo_url",
+                    "logo",
                     "primary_color",
                     "secondary_color",
                     "support_email",

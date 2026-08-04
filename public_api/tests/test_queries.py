@@ -69,6 +69,16 @@ def assert_graphql_success(response):
     return response_data["data"]
 
 
+def assert_logo_delivery_url(url: str) -> None:
+    """``logoUrl`` is always the logo delivery route's absolute URL -- see
+    ``organizations.branding_logo.build_logo_delivery_url``. It is never empty
+    (even the vinta-default case resolves to a real URL, keyed by the route's
+    reserved "default" sentinel slug) and never the raw/signed S3 value a
+    branding row happened to be created with."""
+    assert url.startswith("http"), url
+    assert "/branding/logo/" in url, url
+
+
 @pytest.fixture
 def organization():
     """Create a test organization."""
@@ -1954,7 +1964,8 @@ class TestBrandingForTenantQuery:
         branding = data["brandingForTenant"]
 
         assert branding["appName"] == "Vinta Schedule"
-        assert branding["logoUrl"] == ""
+        assert_logo_delivery_url(branding["logoUrl"])
+        assert branding["logoUrl"].endswith("/branding/logo/default/")
         assert branding["primaryColor"] == ""
         assert branding["secondaryColor"] == ""
 
@@ -1988,7 +1999,7 @@ class TestBrandingForTenantQuery:
 
         # Same response as unbranded org (no enumeration oracle)
         assert branding["appName"] == "Vinta Schedule"
-        assert branding["logoUrl"] == ""
+        assert branding["logoUrl"].endswith("/branding/logo/default/")
         assert branding["primaryColor"] == ""
         assert branding["secondaryColor"] == ""
 
@@ -1999,12 +2010,14 @@ class TestBrandingForTenantQuery:
         mock_rate_limiter.return_value = iter([None])
 
         # Create a reseller org with branding
-        reseller = baker.make(Organization, name="Reseller", can_invite_organizations=True)
+        reseller = baker.make(
+            Organization, name="Reseller", can_invite_organizations=True, slug="my-reseller"
+        )
         baker.make(
             "organizations.OrganizationBranding",
             organization=reseller,
             app_name="MyScheduler",
-            logo_url="https://example.com/logo.png",
+            logo="uploads/branding_logos/logo.png",
             primary_color="#FF0000",
             secondary_color="#00FF00",
         )
@@ -2031,7 +2044,7 @@ class TestBrandingForTenantQuery:
         returned_branding = data["brandingForTenant"]
 
         assert returned_branding["appName"] == "MyScheduler"
-        assert returned_branding["logoUrl"] == "https://example.com/logo.png"
+        assert returned_branding["logoUrl"].endswith("/branding/logo/my-reseller/")
         assert returned_branding["primaryColor"] == "#FF0000"
         assert returned_branding["secondaryColor"] == "#00FF00"
 
@@ -2040,12 +2053,14 @@ class TestBrandingForTenantQuery:
         mock_rate_limiter.return_value = iter([None])
 
         # Create a reseller with branding
-        reseller = baker.make(Organization, name="Reseller", can_invite_organizations=True)
+        reseller = baker.make(
+            Organization, name="Reseller", can_invite_organizations=True, slug="parent-reseller"
+        )
         baker.make(
             "organizations.OrganizationBranding",
             organization=reseller,
             app_name="ChildBranding",
-            logo_url="https://example.com/child-logo.png",
+            logo="uploads/branding_logos/child-logo.png",
             primary_color="#0000FF",
             secondary_color="#FFFF00",
         )
@@ -2074,9 +2089,12 @@ class TestBrandingForTenantQuery:
         data = assert_graphql_success(response)
         returned_branding = data["brandingForTenant"]
 
-        # Child returns parent's branding
+        # Child returns parent's branding. logoUrl is keyed by the RESELLER's slug
+        # (the branding root), not the child's (which has none) -- proving the
+        # delivery route resolves to the reseller's real logo rather than silently
+        # falling back to the default.
         assert returned_branding["appName"] == "ChildBranding"
-        assert returned_branding["logoUrl"] == "https://example.com/child-logo.png"
+        assert returned_branding["logoUrl"].endswith("/branding/logo/parent-reseller/")
         assert returned_branding["primaryColor"] == "#0000FF"
         assert returned_branding["secondaryColor"] == "#FFFF00"
 
@@ -2090,7 +2108,7 @@ class TestBrandingForTenantQuery:
             "organizations.OrganizationBranding",
             organization=reseller,
             app_name="MyApp",
-            logo_url="https://example.com/logo.png",
+            logo="uploads/branding_logos/logo.png",
             primary_color="#FF0000",
             secondary_color="#00FF00",
             support_email="support@example.com",

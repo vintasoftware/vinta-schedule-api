@@ -433,12 +433,48 @@ def generate_s3direct_file_name(original_file_name, dest):
     return f"{dest}/{unique_file_name}"
 
 
+# Logos are small brand assets (a wordmark / mark, not a photo). 5 MB is well above
+# any legitimate PNG/JPEG/WebP logo and well below a size that could meaningfully
+# strain storage or the unauthenticated delivery route's bandwidth.
+BRANDING_LOGO_MAX_SIZE_BYTES = 5 * 1024 * 1024
+# SVG is deliberately excluded: it can carry script and would render on our own
+# login page, making it a stored-XSS surface -- see the plan's "Logo limits"
+# guiding decision.
+BRANDING_LOGO_CONTENT_TYPES = ("image/png", "image/jpeg", "image/webp")
+
+
+def _user_administers_branding_eligible_organization(user):
+    """``auth`` callable for the ``branding_logos`` destination.
+
+    Settings modules must not import app code at module scope -- the app
+    registry isn't ready during settings load. This deferred import is only
+    ever invoked by s3direct's signing view at request time, well after
+    startup, mirroring the pattern ``organizations.models.
+    resolve_branding_for_display`` uses for ``di_core.containers.container``.
+    """
+    from organizations.permissions import user_administers_branding_eligible_organization
+
+    return user_administers_branding_eligible_organization(user)
+
+
 S3DIRECT_DESTINATIONS = {
     "profile_pictures": {
         "key": generate_s3direct_file_name,
         "key_args": "uploads/profile_pictures",
         "auth": lambda u: u.is_authenticated,
         "acl": "private",
+    },
+    "branding_logos": {
+        "key": generate_s3direct_file_name,
+        "key_args": "uploads/branding_logos",
+        # Tightened from bare `is_authenticated`: the signing surface is not open
+        # to every logged-in user on the platform, only to an admin of some
+        # branding-eligible organization -- see the plan's "Logo upload path"
+        # guiding decision.
+        "auth": _user_administers_branding_eligible_organization,
+        "acl": "private",
+        "allowed": list(BRANDING_LOGO_CONTENT_TYPES),
+        "content_length_range": [1, BRANDING_LOGO_MAX_SIZE_BYTES],
     },
 }
 

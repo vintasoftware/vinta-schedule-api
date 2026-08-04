@@ -5,6 +5,7 @@ from common.types import RouteDict
 from .views import (
     OrganizationBrandingView,
     OrganizationInvitationViewSet,
+    OrganizationLogoDeliveryView,
     OrganizationMembershipViewSet,
     OrganizationViewSet,
     ServiceAccountViewSet,
@@ -37,4 +38,11 @@ routes: list[RouteDict] = [
 # Non-viewset routes (APIViews) — URL patterns to register with Django URL conf
 extra_patterns = [
     path("branding/", OrganizationBrandingView.as_view(), name="branding"),
+    # Unauthenticated -- keyed on the organization's public slug, never an object
+    # key. See OrganizationLogoDeliveryView's docstring.
+    path(
+        "branding/logo/<slug:org_slug>/",
+        OrganizationLogoDeliveryView.as_view(),
+        name="organization-branding-logo",
+    ),
 ]

@@ -46,8 +46,18 @@ from calendar_integration.services.dataclasses import (
     ExternalAttendeeInputData,
     ResourceAllocationInputData,
 )
-from organizations.exceptions import NoServiceAccountConfiguredError, UserAlreadyHasMembershipError
+from organizations.branding_logo import (
+    build_logo_delivery_url,
+    normalize_uploaded_logo_key,
+    sign_branding_logo_upload,
+)
+from organizations.exceptions import (
+    BrandingLogoUploadRejectedError,
+    NoServiceAccountConfiguredError,
+    UserAlreadyHasMembershipError,
+)
 from organizations.models import Organization, OrganizationBranding, OrganizationMembership
+from organizations.permissions import is_branding_eligible_organization
 from organizations.redirect_url_validation import validate_redirect_url
 from organizations.services import OrganizationService
 from payments.exceptions import OverLimitError
@@ -60,6 +70,7 @@ from public_api.permissions import IsAuthenticated, OrganizationResourceAccess
 from public_api.scoping import assert_calendar_in_owner_scope
 from public_api.services import PublicAPIAuthService
 from public_api.types import (
+    BrandingLogoUploadResult,
     BrandingResult,
     CreateInvitationInput,
     CreateInvitationResult,
@@ -1282,12 +1293,17 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         except DjangoValidationError as e:
             raise GraphQLError("; ".join(e.messages)) from e
 
+        # `logo_url` is write-only here despite the name: normalize a bare key or a
+        # full signed/public URL down to the bare S3 key -- the persisted value,
+        # never a URL. See organizations.branding_logo.normalize_uploaded_logo_key.
+        logo_key = normalize_uploaded_logo_key(input.logo_url)
+
         # Upsert branding on the acting org (always acts on acting org, never another org)
         branding, _ = OrganizationBranding.objects.update_or_create(
             organization=acting_org,
             defaults={
                 "app_name": input.app_name,
-                "logo_url": input.logo_url,
+                "logo": logo_key,
                 "primary_color": input.primary_color,
                 "secondary_color": input.secondary_color,
                 "support_email": input.support_email,
@@ -1295,16 +1311,64 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             },
         )
 
-        # Return the branding without internal fields (no support_email, no redirect_url)
+        # Return the branding without internal fields (no support_email, no redirect_url).
+        # logo_url is always the logo delivery route's URL, keyed by the acting org's
+        # slug -- never a raw or signed S3 URL, regardless of whether a logo is set.
         branding_result = BrandingResult(
             id=branding.id,
             app_name=branding.app_name,
-            logo_url=branding.logo_url,
+            logo_url=build_logo_delivery_url(branding.organization, request=info.context.request),
             primary_color=branding.primary_color,
             secondary_color=branding.secondary_color,
         )
 
         return UpdateBrandingResult(branding=branding_result)
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def create_branding_logo_upload(
+        self,
+        info: strawberry.Info,
+        file_name: str,
+        file_type: str,
+        file_size: int,
+    ) -> BrandingLogoUploadResult:
+        """
+        Mint a signed upload payload for the acting organization's branding logo.
+
+        Same shape s3direct's own signing view returns, for partner-API callers
+        that cannot POST to that Django-session-scoped `/s3direct/` endpoint
+        directly. Gated on the branding eligibility helper -- the acting
+        organization must have no parent and hold the `white_label_branding`
+        entitlement -- evaluated against the acting organization directly
+        (`is_branding_eligible_organization`), NOT the destination's own `auth`
+        callable: that callable only ever receives a bare user (see
+        `organizations.permissions.user_administers_branding_eligible_organization`),
+        so this mutation gets the tighter, org-specific check its caller's token
+        already carries via `OrganizationResourceAccess`.
+
+        Content-type and size are re-validated against the `branding_logos`
+        destination's own allowlist/size cap (PNG/JPEG/WebP only, size-capped) --
+        rejected before any S3 credential is minted, naming the specific rule
+        broken.
+
+        The token's OrganizationResourceAccess must include the BRANDING resource.
+        """
+        acting_org = info.context.request.public_api_organization
+        if not acting_org:
+            raise GraphQLError("Organization not found")
+
+        if not is_branding_eligible_organization(acting_org):
+            raise GraphQLError(
+                "This organization is not eligible to manage branding: it must have "
+                "no parent organization and hold the white-label branding entitlement."
+            )
+
+        try:
+            payload = sign_branding_logo_upload(file_name, file_type, file_size)
+        except BrandingLogoUploadRejectedError as e:
+            raise GraphQLError(str(e)) from e
+
+        return BrandingLogoUploadResult(**payload)
 
     @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def create_webhook_configuration(

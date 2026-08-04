@@ -21,6 +21,7 @@ from organizations.managers import (
 from organizations.slug_validation import SLUG_MAX_LENGTH
 from payments.billing_constants import Entitlement
 from payments.entitlement_cache import has_entitlement_cached
+from s3direct_overrides.model_fields import S3DirectImageField
 
 
 if TYPE_CHECKING:
@@ -487,10 +488,17 @@ class OrganizationBranding(models.Model):
         max_length=120,
         help_text="The display name of the white-labeled app (e.g., 'MyScheduler').",
     )
-    logo_url = models.URLField(
+    logo = S3DirectImageField(
+        dest="branding_logos",
         blank=True,
-        default="",
-        help_text="URL to the reseller's logo image.",
+        null=True,
+        help_text=(
+            "S3 key of the reseller's uploaded logo image (PNG/JPEG/WebP; SVG rejected -- "
+            "see vinta_schedule_api.settings.base.S3DIRECT_DESTINATIONS['branding_logos']). "
+            "Replaces the old logo_url: the upload goes straight from the browser to our "
+            "storage, and nothing renders it as a raw or signed URL -- every read goes "
+            "through organizations.branding_logo.build_logo_delivery_url instead."
+        ),
     )
     primary_color = models.CharField(
         max_length=9,

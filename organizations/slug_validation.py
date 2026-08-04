@@ -89,6 +89,12 @@ _RESERVED_ROUTE_SLUGS: frozenset[str] = frozenset(
         "docs",
         "status",
         "www",
+        # Reserved by the logo delivery route (organizations.branding_logo.
+        # DEFAULT_LOGO_SLUG_SENTINEL): "default" keys the route's own
+        # unknown-slug/no-branding branch, so no real organization may claim it --
+        # otherwise that organization's branded logo would become unreachable
+        # (the sentinel would shadow it) the moment it picked this slug.
+        "default",
     }
 )
 

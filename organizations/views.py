@@ -3,10 +3,12 @@ import logging
 from typing import Annotated
 
 from django.db import transaction
+from django.http import FileResponse
 
 from dependency_injector.wiring import Provide, inject
 from drf_spectacular.utils import (
     OpenApiResponse,
+    OpenApiTypes,
     extend_schema,
     extend_schema_view,
     inline_serializer,
@@ -15,7 +17,7 @@ from rest_framework import generics, serializers, status, views
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.mixins import ListModelMixin, RetrieveModelMixin
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.viewsets import GenericViewSet
 
@@ -26,6 +28,15 @@ from common.utils.view_utils import (
     NoUpdateVintaScheduleModelViewSet,
     ReadOnlyVintaScheduleModelViewSet,
     TenantScopedViewMixin,
+)
+from organizations.branding_logo import (
+    DEFAULT_LOGO_ASSET_PATH,
+    DEFAULT_LOGO_CONTENT_TYPE,
+    DEFAULT_LOGO_ETAG_IDENTITY,
+    DEFAULT_LOGO_SLUG_SENTINEL,
+    LOGO_CACHE_MAX_AGE_SECONDS,
+    compute_logo_etag,
+    guess_logo_content_type,
 )
 from organizations.exceptions import (
     DuplicateInvitationError,
@@ -45,6 +56,7 @@ from organizations.models import (
     OrganizationMembership,
     OrganizationRole,
     get_active_organization_membership,
+    resolve_branding_for_display,
 )
 from organizations.permissions import (
     IsOrganizationAdmin,
@@ -1020,7 +1032,7 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
         """GET /branding/ — retrieve the acting org's branding."""
         self._check_reseller_status()
         instance = self._get_branding_or_404()
-        serializer = OrganizationBrandingSerializer(instance)
+        serializer = OrganizationBrandingSerializer(instance, context={"request": request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     @extend_schema(
@@ -1040,7 +1052,7 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
         if membership is None:
             raise PermissionDenied("No active organization membership.")
 
-        serializer = OrganizationBrandingSerializer(data=request.data)
+        serializer = OrganizationBrandingSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
 
         # Create or update (upsert) the branding row for the acting org
@@ -1051,7 +1063,7 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
 
         status_code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
         return Response(
-            OrganizationBrandingSerializer(instance).data,
+            OrganizationBrandingSerializer(instance, context={"request": request}).data,
             status=status_code,
         )
 
@@ -1070,8 +1082,111 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
         self._check_reseller_status()
         instance = self._get_branding_or_404()
 
-        serializer = OrganizationBrandingSerializer(instance, data=request.data, partial=True)
+        serializer = OrganizationBrandingSerializer(
+            instance, data=request.data, partial=True, context={"request": request}
+        )
         serializer.is_valid(raise_exception=True)
         serializer.save()
 
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+@extend_schema(tags=["Branding"])
+class OrganizationLogoDeliveryView(views.APIView):
+    """Unauthenticated route streaming an organization's branding logo image.
+
+    Keyed on the organization's public ``slug`` (a path segment), never on an S3
+    object key: resolves slug -> ``Organization`` -> ``resolve_branding_for_display``
+    -> the branding row's stored ``logo`` key, then streams that S3 object. Because
+    resolution only ever reaches an object through a branding row, this route
+    cannot be pointed at an arbitrary key.
+
+    Every miss -- an unknown slug, an ``Organization`` with no branding row, a
+    branding row with no logo, or an organization that lost the
+    ``white_label_branding`` entitlement -- streams the same bundled default logo
+    along the identical path, with an identical response shape (status, headers,
+    caching), so this route answers no question about which organizations exist
+    or are branded (matches ``brandingForTenant``'s no-enumeration-oracle contract).
+
+    Resolution always goes through ``resolve_branding_for_display``, so this route
+    automatically inherits the widened branding root once Phase 5 of the
+    Organization Auth-Area Branding plan lands ``get_branding_root``'s parentless
+    case -- no second change here.
+
+    ``Cache-Control`` carries a short max-age and the ``ETag`` is derived from the
+    stored key (or a fixed sentinel for the default logo): the route's URL is
+    stable across re-uploads, so a long max-age would pin a replaced logo in
+    caches and in already-delivered emails.
+    """
+
+    authentication_classes = ()
+    permission_classes = (AllowAny,)
+
+    @extend_schema(
+        summary="Deliver an organization's branding logo (or our default)",
+        responses={(200, "image/*"): OpenApiTypes.BINARY},
+    )
+    def get(self, request, org_slug, *args, **kwargs):
+        """GET /branding/logo/<org_slug>/ — stream the resolved logo or the default."""
+        key = self._resolve_logo_key(org_slug)
+        response = self._stream_key(key) if key else None
+        if response is None:
+            response = self._stream_default()
+        return response
+
+    def _resolve_logo_key(self, org_slug: str) -> str:
+        """Resolve ``org_slug`` to a stored S3 key, or ``""`` on any miss.
+
+        Deliberately returns an empty string (never raises, never 404s) for
+        every miss condition so the caller's fallback to the default logo is a
+        single, uniform branch — see the class docstring on why every miss must
+        look identical.
+        """
+        if org_slug == DEFAULT_LOGO_SLUG_SENTINEL:
+            return ""
+
+        organization = Organization.objects.filter(slug=org_slug).first()
+        if organization is None:
+            return ""
+
+        branding = resolve_branding_for_display(organization)
+        if branding is None:
+            return ""
+
+        logo = branding.logo
+        return (logo.name or "") if logo else ""
+
+    def _stream_key(self, key: str) -> FileResponse | None:
+        """Stream the S3 object at ``key``, or ``None`` if it does not exist.
+
+        Checks existence up front (rather than opening blindly and letting a
+        missing-object error surface mid-stream, after headers are already
+        sent) so a branding row referencing a since-deleted object degrades
+        cleanly to the default logo instead of a broken response.
+        """
+        from common.media_storage_backend import MediaStorage
+
+        storage = MediaStorage()
+        try:
+            if not storage.exists(key):
+                return None
+            file_obj = storage.open(key, "rb")
+        except Exception:  # noqa: BLE001 -- any storage failure degrades to the
+            # default logo, never a 500: this route must never distinguish a
+            # transient/backend storage error from "no logo configured".
+            logger.warning("Failed to resolve branding logo for key %s", key, exc_info=True)
+            return None
+
+        response = FileResponse(file_obj, content_type=guess_logo_content_type(key))
+        self._set_cache_headers(response, compute_logo_etag(key))
+        return response
+
+    def _stream_default(self) -> FileResponse:
+        file_obj = DEFAULT_LOGO_ASSET_PATH.open("rb")
+        response = FileResponse(file_obj, content_type=DEFAULT_LOGO_CONTENT_TYPE)
+        self._set_cache_headers(response, compute_logo_etag(DEFAULT_LOGO_ETAG_IDENTITY))
+        return response
+
+    def _set_cache_headers(self, response: FileResponse, etag: str) -> None:
+        response["Cache-Control"] = f"public, max-age={LOGO_CACHE_MAX_AGE_SECONDS}"
+        response["ETag"] = etag

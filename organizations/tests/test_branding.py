@@ -3,21 +3,33 @@ validation."""
 
 import datetime
 
+from django.contrib.auth import get_user_model
+from django.contrib.auth.models import AnonymousUser
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils import timezone
 
 import pytest
 from model_bakery import baker
 
+from organizations.branding_logo import sign_branding_logo_upload
+from organizations.exceptions import BrandingLogoUploadRejectedError
 from organizations.models import (
     Organization,
     OrganizationBranding,
+    OrganizationInvitation,
+    OrganizationMembership,
+    OrganizationRole,
     resolve_branding,
     resolve_branding_for_display,
 )
+from organizations.notification_contexts import organization_invitation_context
 from organizations.redirect_url_validation import validate_redirect_url
 from payments.billing_constants import BillingState, Entitlement
 from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
+from users.factories import UserFactory
+
+
+User = get_user_model()
 
 
 # This module builds its own Subscription rows (OneToOne with Organization), so it
@@ -89,7 +101,7 @@ class TestResolveBranding:
             organization=reseller,
             defaults={
                 "app_name": "First",
-                "logo_url": "https://example.com/logo1.png",
+                "logo": "uploads/branding_logos/logo1.png",
                 "primary_color": "#FF0000",
                 "secondary_color": "#00FF00",
                 "support_email": "first@example.com",
@@ -102,7 +114,7 @@ class TestResolveBranding:
             organization=reseller,
             defaults={
                 "app_name": "Second",
-                "logo_url": "https://example.com/logo2.png",
+                "logo": "uploads/branding_logos/logo2.png",
                 "primary_color": "#0000FF",
                 "secondary_color": "#FFFF00",
                 "support_email": "second@example.com",
@@ -116,7 +128,7 @@ class TestResolveBranding:
         # Should have updated values
         refreshed = OrganizationBranding.objects.get(id=branding1.id)
         assert refreshed.app_name == "Second"
-        assert refreshed.logo_url == "https://example.com/logo2.png"
+        assert refreshed.logo.name == "uploads/branding_logos/logo2.png"
         assert refreshed.primary_color == "#0000FF"
         assert refreshed.secondary_color == "#FFFF00"
         assert refreshed.support_email == "second@example.com"
@@ -298,3 +310,196 @@ class TestValidateRedirectUrl:
     def test_root_path_with_trailing_slash_is_accepted(self):
         """The bare root is not a path-prefix pattern -- there is no segment to prefix."""
         validate_redirect_url("https://example.com/")
+
+
+def _org_with_entitlement(entitlement_key: str, is_enabled: bool, **org_kwargs) -> Organization:
+    """A (by default parentless) organization whose subscription carries an explicit
+    ``SubscriptionEntitlement`` row for ``entitlement_key``. Generalizes
+    ``_reseller_with_entitlement`` above to an arbitrary org (this module opts out of
+    the autouse ``provision_default_subscription`` fixture, so every entitlement-gated
+    test must build its own subscription explicitly)."""
+    org = baker.make(Organization, **org_kwargs)
+    now = timezone.now()
+    subscription = baker.make(
+        Subscription,
+        organization=org,
+        plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
+        billing_state=BillingState.FREE,
+        current_period_start=now,
+        current_period_end=now + datetime.timedelta(days=30),
+    )
+    baker.make(
+        SubscriptionEntitlement,
+        subscription=subscription,
+        entitlement_key=entitlement_key,
+        is_enabled=is_enabled,
+    )
+    return org
+
+
+@pytest.mark.django_db
+class TestBrandingLogoDestinationAuth:
+    """The ``branding_logos`` S3Direct destination's ``auth`` callable
+    (``organizations.permissions.user_administers_branding_eligible_organization``,
+    wired in via ``vinta_schedule_api.settings.base._user_administers_branding_eligible_organization``).
+
+    Admits a user holding an active ADMIN membership in at least one parentless,
+    ``white_label_branding``-entitled organization. Refuses a free-plan user, a
+    non-admin member, and an admin of an organization that has a parent -- the same
+    four cases the GraphQL logo-signing mutation's gate is tested against.
+    """
+
+    def _auth_callable(self):
+        from django.conf import settings
+
+        return settings.S3DIRECT_DESTINATIONS["branding_logos"]["auth"]
+
+    def _make_admin(self, organization: Organization):
+        user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+        return user
+
+    def test_admits_admin_of_an_eligible_organization(self):
+        org = _org_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None)
+        user = self._make_admin(org)
+
+        assert self._auth_callable()(user) is True
+
+    def test_refuses_a_free_plan_user(self):
+        """Admin of a parentless organization that lacks the entitlement."""
+        org = _org_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=False, parent=None)
+        user = self._make_admin(org)
+
+        assert self._auth_callable()(user) is False
+
+    def test_refuses_a_non_admin_member(self):
+        org = _org_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None)
+        user = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=org,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+
+        assert self._auth_callable()(user) is False
+
+    def test_refuses_an_admin_of_an_organization_with_a_parent(self):
+        parent_org = _org_with_entitlement(
+            Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None
+        )
+        # No subscription needed on the child: `is_branding_eligible_organization`
+        # short-circuits on `parent_id is not None` before ever checking entitlement.
+        child_org = baker.make(Organization, parent=parent_org)
+        user = self._make_admin(child_org)
+
+        assert self._auth_callable()(user) is False
+
+    def test_refuses_an_unauthenticated_user(self):
+        assert self._auth_callable()(AnonymousUser()) is False
+
+    def test_refuses_none_user(self):
+        assert self._auth_callable()(None) is False
+
+
+class TestSignBrandingLogoUpload:
+    """``organizations.branding_logo.sign_branding_logo_upload`` -- the ``branding_logos``
+    destination's content-type allowlist and size cap, re-checked independently of the
+    shipped s3direct signing view (this is what the GraphQL signing mutation calls)."""
+
+    @pytest.mark.parametrize("content_type", ["image/png", "image/jpeg", "image/webp"])
+    def test_accepts_allowed_content_types(self, content_type):
+        payload = sign_branding_logo_upload("logo.png", content_type, 1024)
+        assert payload["object_key"]
+
+    def test_rejects_svg_explicitly(self):
+        """SVG is the one format a reviewer will assume works -- it does not."""
+        with pytest.raises(BrandingLogoUploadRejectedError, match="image/svg"):
+            sign_branding_logo_upload("logo.svg", "image/svg+xml", 1024)
+
+    def test_rejects_an_unlisted_content_type(self):
+        with pytest.raises(BrandingLogoUploadRejectedError):
+            sign_branding_logo_upload("logo.gif", "image/gif", 1024)
+
+    def test_rejects_an_oversized_file(self):
+        from django.conf import settings
+
+        oversized = settings.BRANDING_LOGO_MAX_SIZE_BYTES + 1
+        with pytest.raises(BrandingLogoUploadRejectedError, match="size"):
+            sign_branding_logo_upload("logo.png", "image/png", oversized)
+
+    def test_accepts_a_file_at_exactly_the_size_cap(self):
+        from django.conf import settings
+
+        payload = sign_branding_logo_upload(
+            "logo.png", "image/png", settings.BRANDING_LOGO_MAX_SIZE_BYTES
+        )
+        assert payload["object_key"]
+
+
+@pytest.mark.django_db
+class TestInvitationContextLogoUrl:
+    """The invitation email context's ``logo_url`` is the logo delivery route's
+    ABSOLUTE URL -- never a signed S3 URL (would carry query-string auth params) and
+    never a bare key (would have no scheme/host). See
+    ``organizations.branding_logo.build_logo_delivery_url``."""
+
+    def _make_invitation(self, organization: Organization) -> OrganizationInvitation:
+        inviter = UserFactory().create_user(email="inviter@example.com")
+        return baker.make(
+            OrganizationInvitation,
+            email="invitee@example.com",
+            organization=organization,
+            invited_by=inviter,
+            expires_at=timezone.now() + datetime.timedelta(days=7),
+            accepted_at=None,
+            membership_user_id=None,
+        )
+
+    def test_branded_organization_logo_is_an_absolute_delivery_url(self):
+        reseller = _org_with_entitlement(
+            Entitlement.WHITE_LABEL_BRANDING,
+            is_enabled=True,
+            can_invite_organizations=True,
+            parent=None,
+        )
+        reseller.slug = "brandco"
+        reseller.save(update_fields=["slug"])
+        baker.make(
+            OrganizationBranding,
+            organization=reseller,
+            app_name="BrandCo",
+            logo="uploads/branding_logos/brandco-logo.png",
+        )
+        invitation = self._make_invitation(reseller)
+
+        ctx = organization_invitation_context(
+            organization_invitation_id=invitation.id,
+            invitation_url="https://example.com/accept?token=fake",
+        )
+
+        logo_url = ctx["branding"]["logo_url"]
+        assert logo_url.startswith("http://") or logo_url.startswith("https://"), logo_url
+        assert logo_url.endswith("/branding/logo/brandco/"), logo_url
+        assert "?" not in logo_url, f"must not carry signed-URL query params: {logo_url}"
+        assert "uploads/branding_logos" not in logo_url, f"must not be the bare key: {logo_url}"
+
+    def test_unbranded_organization_logo_resolves_to_the_default_sentinel(self):
+        org = baker.make(Organization, parent=None)
+        invitation = self._make_invitation(org)
+
+        ctx = organization_invitation_context(
+            organization_invitation_id=invitation.id,
+            invitation_url="https://example.com/accept?token=fake",
+        )
+
+        logo_url = ctx["branding"]["logo_url"]
+        assert logo_url.startswith("http://") or logo_url.startswith("https://"), logo_url
+        assert logo_url.endswith("/branding/logo/default/"), logo_url
