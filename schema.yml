@@ -15015,12 +15015,13 @@ components:
         Serializer for OrganizationBranding (reseller-admin REST endpoints).
 
         Exposes app_name, logo_url, primary_color, secondary_color, support_email,
-        and return_url_allowlist. NEVER exposes can_invite_organizations or makes
+        and redirect_url. NEVER exposes can_invite_organizations or makes
         organization writable (the org is set from the acting org in the view).
 
         Validates:
         - Color format: #RRGGBB or #RRGGBBAA (regex).
-        - Each return_url_allowlist entry is a valid URL (URLValidator).
+        - redirect_url: HTTPS scheme, no wildcard character, no path-prefix pattern
+          (organizations.redirect_url_validation).
       properties:
         app_name:
           type: string
@@ -15045,14 +15046,15 @@ components:
           description: Email address for the From/reply-to on branded transactional
             emails.
           maxLength: 254
-        return_url_allowlist:
-          type: array
-          items:
-            type: string
-            format: uri
-            maxLength: 200
-          description: List of URLs that are allowed as return addresses after OAuth
-            flows.
+        redirect_url:
+          type: string
+          format: uri
+          description: 'Single post-authentication redirect destination for this organization.
+            Replaces the old return_url_allowlist: no caller-supplied redirect target
+            is ever honored, so there is nothing to validate at request time and no
+            open-redirect surface. Must be HTTPS with no wildcard character and no
+            path-prefix pattern (organizations.redirect_url_validation).'
+          maxLength: 200
       required:
       - app_name
     OrganizationBrief:
@@ -16103,12 +16105,13 @@ components:
         Serializer for OrganizationBranding (reseller-admin REST endpoints).
 
         Exposes app_name, logo_url, primary_color, secondary_color, support_email,
-        and return_url_allowlist. NEVER exposes can_invite_organizations or makes
+        and redirect_url. NEVER exposes can_invite_organizations or makes
         organization writable (the org is set from the acting org in the view).
 
         Validates:
         - Color format: #RRGGBB or #RRGGBBAA (regex).
-        - Each return_url_allowlist entry is a valid URL (URLValidator).
+        - redirect_url: HTTPS scheme, no wildcard character, no path-prefix pattern
+          (organizations.redirect_url_validation).
       properties:
         app_name:
           type: string
@@ -16133,14 +16136,15 @@ components:
           description: Email address for the From/reply-to on branded transactional
             emails.
           maxLength: 254
-        return_url_allowlist:
-          type: array
-          items:
-            type: string
-            format: uri
-            maxLength: 200
-          description: List of URLs that are allowed as return addresses after OAuth
-            flows.
+        redirect_url:
+          type: string
+          format: uri
+          description: 'Single post-authentication redirect destination for this organization.
+            Replaces the old return_url_allowlist: no caller-supplied redirect target
+            is ever honored, so there is nothing to validate at request time and no
+            open-redirect surface. Must be HTTPS with no wildcard character and no
+            path-prefix pattern (organizations.redirect_url_validation).'
+          maxLength: 200
     PatchedProfile:
       type: object
       properties:

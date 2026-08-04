@@ -216,7 +216,7 @@ class OrganizationBrandingAdmin(admin.ModelAdmin):
                     "primary_color",
                     "secondary_color",
                     "support_email",
-                    "return_url_allowlist",
+                    "redirect_url",
                     "created_at",
                     "updated_at",
                 )

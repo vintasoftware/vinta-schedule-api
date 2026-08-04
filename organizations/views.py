@@ -974,7 +974,7 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
     cannot brand another org's tree. A GET with no row returns 404.
 
     Round-trips: app_name, logo_url, primary_color, secondary_color,
-    support_email, return_url_allowlist. NEVER exposes can_invite_organizations
+    support_email, redirect_url. NEVER exposes can_invite_organizations
     or makes organization writable.
 
     Tenant-scoping: ``TenantScopedViewMixin`` resolves ``X-Organization-Id``

@@ -2081,7 +2081,7 @@ class TestBrandingForTenantQuery:
         assert returned_branding["secondaryColor"] == "#FFFF00"
 
     def test_branding_does_not_expose_secrets(self, mock_rate_limiter, anonymous_client):
-        """Test that support_email and return_url_allowlist are not exposed."""
+        """Test that support_email and redirect_url are not exposed."""
         mock_rate_limiter.return_value = iter([None])
 
         # Create a reseller with branding including secrets
@@ -2094,7 +2094,7 @@ class TestBrandingForTenantQuery:
             primary_color="#FF0000",
             secondary_color="#00FF00",
             support_email="support@example.com",
-            return_url_allowlist=["https://example.com", "https://app.example.com"],
+            redirect_url="https://internal.example.com/return",
         )
 
         query = """
@@ -2120,13 +2120,13 @@ class TestBrandingForTenantQuery:
 
         # Verify secrets are not in the response
         assert "supportEmail" not in returned_branding
-        assert "returnUrlAllowlist" not in returned_branding
+        assert "redirectUrl" not in returned_branding
         assert "support_email" not in returned_branding
-        assert "return_url_allowlist" not in returned_branding
+        assert "redirect_url" not in returned_branding
         # Verify the actual secret values are not present (support_email)
         assert "support@example.com" not in str(returned_branding)
-        # return_url_allowlist should not be present in response at all
-        assert "app.example.com" not in str(returned_branding)
+        # redirect_url should not be present in response at all
+        assert "internal.example.com" not in str(returned_branding)
 
     def test_branding_callable_without_token(self, mock_rate_limiter, anonymous_client):
         """Test that brandingForTenant is callable without authentication."""
@@ -2192,249 +2192,53 @@ class TestBrandingForTenantQuery:
         )
 
 
-_VALIDATE_RETURN_URL_QUERY = """
-    query ValidateReturnUrl($tenantId: ID!, $url: String!) {
-        validateReturnUrl(tenantId: $tenantId, url: $url) {
-            allowed
-            sanitizedUrl
-        }
-    }
-"""
-
-
 @pytest.mark.django_db
-@patch("public_api.extensions.OrganizationRateLimiter.on_execute")
-class TestValidateReturnUrlQuery:
-    """Test the unauthenticated validateReturnUrl public query.
+class TestValidateReturnUrlRemoved:
+    """``validateReturnUrl`` was deleted along with ``return_url_allowlist`` (Phase 2a
+    of the Organization Auth-Area Branding plan) -- there is no longer a caller-supplied
+    redirect target to validate. Pin its absence from the published schema so it cannot
+    silently reappear."""
 
-    This query lets the OAuth interstitial callback (no session yet) ask whether
-    a candidate `next` URL is allowed WITHOUT the reseller-internal
-    return_url_allowlist ever being exposed (§4.6).
-    """
-
-    @pytest.fixture
-    def anonymous_client(self):
-        """Create an unauthenticated GraphQL client (no Authorization header)."""
-        return APIClient()
-
-    def _post(self, client, tenant_id, url):
-        return client.post(
-            "/graphql/",
-            data=json.dumps(
-                {
-                    "query": _VALIDATE_RETURN_URL_QUERY,
-                    "variables": {"tenantId": str(tenant_id), "url": url},
+    def test_validate_return_url_errors_as_an_unknown_field(self):
+        """Querying the removed field returns a GraphQL validation error, not data."""
+        query = """
+            query {
+                validateReturnUrl(tenantId: "1", url: "https://example.com") {
+                    allowed
                 }
-            ),
+            }
+        """
+        client = APIClient()
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": query}),
             content_type="application/json",
         )
 
-    def _make_reseller_with_allowlist(self, allowlist):
-        reseller = baker.make(Organization, name="Reseller", can_invite_organizations=True)
-        baker.make(
-            "organizations.OrganizationBranding",
-            organization=reseller,
-            app_name="MyApp",
-            return_url_allowlist=allowlist,
-        )
-        return reseller
-
-    def test_allowed_url_for_child_org(self, mock_rate_limiter, anonymous_client):
-        """A child org under a reseller whose allowlist contains the candidate's
-        origin returns allowed=True and echoes the url."""
-        mock_rate_limiter.return_value = iter([None])
-
-        reseller = self._make_reseller_with_allowlist(["https://app.example.com"])
-        child = baker.make(Organization, name="Child", parent=reseller)
-
-        candidate = "https://app.example.com/auth/callback?code=abc"
-        response = self._post(anonymous_client, child.id, candidate)
-
-        data = assert_graphql_success(response)
-        result = data["validateReturnUrl"]
-        assert result["allowed"] is True
-        assert result["sanitizedUrl"] == candidate
-
-    def test_allowed_url_for_reseller_itself(self, mock_rate_limiter, anonymous_client):
-        """A reseller validating against its own allowlist works."""
-        mock_rate_limiter.return_value = iter([None])
-
-        reseller = self._make_reseller_with_allowlist(["https://app.example.com"])
-
-        candidate = "https://app.example.com/return"
-        response = self._post(anonymous_client, reseller.id, candidate)
-
-        data = assert_graphql_success(response)
-        assert data["validateReturnUrl"] == {
-            "allowed": True,
-            "sanitizedUrl": candidate,
-        }
-
-    def test_origin_confusion_rejected(self, mock_rate_limiter, anonymous_client):
-        """A look-alike host suffix must NOT be admitted (no substring matching)."""
-        mock_rate_limiter.return_value = iter([None])
-
-        reseller = self._make_reseller_with_allowlist(["https://app.example.com"])
-
-        response = self._post(
-            anonymous_client, reseller.id, "https://app.example.com.evil.com/steal"
-        )
-
-        data = assert_graphql_success(response)
-        assert data["validateReturnUrl"] == {"allowed": False, "sanitizedUrl": None}
-
-    def test_scheme_mismatch_rejected(self, mock_rate_limiter, anonymous_client):
-        """http candidate against an https allowlist entry is a different origin."""
-        mock_rate_limiter.return_value = iter([None])
-
-        reseller = self._make_reseller_with_allowlist(["https://app.example.com"])
-
-        response = self._post(anonymous_client, reseller.id, "http://app.example.com/cb")
-
-        data = assert_graphql_success(response)
-        assert data["validateReturnUrl"] == {"allowed": False, "sanitizedUrl": None}
-
-    def test_default_port_normalization(self, mock_rate_limiter, anonymous_client):
-        """An explicit default port (:443 on https) equals the implicit origin."""
-        mock_rate_limiter.return_value = iter([None])
-
-        reseller = self._make_reseller_with_allowlist(["https://app.example.com"])
-
-        candidate = "https://app.example.com:443/cb"
-        response = self._post(anonymous_client, reseller.id, candidate)
-
-        data = assert_graphql_success(response)
-        assert data["validateReturnUrl"]["allowed"] is True
-        assert data["validateReturnUrl"]["sanitizedUrl"] == candidate
-
-    @pytest.mark.parametrize(
-        "bad_url",
-        [
-            "javascript:alert(1)",
-            "data:text/html,x",
-            "//evil.com",
-            "not a url",
-            "",
-        ],
-    )
-    def test_scheme_guard_rejects_dangerous_schemes(
-        self, mock_rate_limiter, anonymous_client, bad_url
-    ):
-        """javascript:, data:, protocol-relative, and unparseable input are rejected
-        even when the host portion would otherwise match the allowlist."""
-        mock_rate_limiter.return_value = iter([None])
-
-        reseller = self._make_reseller_with_allowlist(
-            ["https://app.example.com", "https://evil.com"]
-        )
-
-        response = self._post(anonymous_client, reseller.id, bad_url)
-
-        data = assert_graphql_success(response)
-        assert data["validateReturnUrl"] == {"allowed": False, "sanitizedUrl": None}
-
-    def test_unknown_tenant_returns_not_allowed(self, mock_rate_limiter, anonymous_client):
-        """Unknown tenant ID returns the same not-allowed shape (no enumeration oracle)."""
-        mock_rate_limiter.return_value = iter([None])
-
-        response = self._post(anonymous_client, "999999", "https://app.example.com/cb")
-
-        data = assert_graphql_success(response)
-        assert data["validateReturnUrl"] == {"allowed": False, "sanitizedUrl": None}
-
-    def test_non_numeric_tenant_returns_not_allowed(self, mock_rate_limiter, anonymous_client):
-        """A non-numeric tenant ID never raises — returns not-allowed."""
-        mock_rate_limiter.return_value = iter([None])
-
-        response = self._post(anonymous_client, "not-an-int", "https://app.example.com/cb")
-
-        data = assert_graphql_success(response)
-        assert data["validateReturnUrl"] == {"allowed": False, "sanitizedUrl": None}
-
-    def test_org_without_branding_returns_not_allowed(self, mock_rate_limiter, anonymous_client):
-        """An org with no reseller branding returns the same not-allowed shape."""
-        mock_rate_limiter.return_value = iter([None])
-
-        org = baker.make(Organization, name="Unbranded")
-
-        response = self._post(anonymous_client, org.id, "https://app.example.com/cb")
-
-        data = assert_graphql_success(response)
-        assert data["validateReturnUrl"] == {"allowed": False, "sanitizedUrl": None}
-
-    def test_empty_allowlist_returns_not_allowed(self, mock_rate_limiter, anonymous_client):
-        """A reseller with an empty allowlist admits nothing (same shape)."""
-        mock_rate_limiter.return_value = iter([None])
-
-        reseller = self._make_reseller_with_allowlist([])
-
-        response = self._post(anonymous_client, reseller.id, "https://app.example.com/cb")
-
-        data = assert_graphql_success(response)
-        assert data["validateReturnUrl"] == {"allowed": False, "sanitizedUrl": None}
-
-    def test_no_oracle_identical_shape_across_negative_cases(
-        self, mock_rate_limiter, anonymous_client
-    ):
-        """Unknown tenant, no-branding org, and empty allowlist are indistinguishable."""
-        mock_rate_limiter.return_value = iter([None])
-
-        unbranded = baker.make(Organization, name="NoBranding")
-        empty_reseller = self._make_reseller_with_allowlist([])
-
-        candidate = "https://app.example.com/cb"
-        unknown = self._post(anonymous_client, "999999", candidate).json()["data"][
-            "validateReturnUrl"
-        ]
-        no_branding = self._post(anonymous_client, unbranded.id, candidate).json()["data"][
-            "validateReturnUrl"
-        ]
-        empty = self._post(anonymous_client, empty_reseller.id, candidate).json()["data"][
-            "validateReturnUrl"
-        ]
-
-        expected = {"allowed": False, "sanitizedUrl": None}
-        assert unknown == expected
-        assert no_branding == expected
-        assert empty == expected
-
-    def test_allowlist_never_serialized(self, mock_rate_limiter, anonymous_client):
-        """The allowlist values must never leak into the response (§4.6)."""
-        mock_rate_limiter.return_value = iter([None])
-
-        reseller = self._make_reseller_with_allowlist(
-            ["https://app.example.com", "https://secret-internal.example.com"]
-        )
-
-        response = self._post(anonymous_client, reseller.id, "https://app.example.com/cb")
-
-        body = response.content.decode()
-        assert "secret-internal.example.com" not in body
-        assert "returnUrlAllowlist" not in body
-        assert "return_url_allowlist" not in body
-
-    def test_callable_without_token(self, mock_rate_limiter, anonymous_client):
-        """validateReturnUrl is callable without authentication."""
-        mock_rate_limiter.return_value = iter([None])
-
-        response = self._post(anonymous_client, "1", "https://app.example.com/cb")
-
-        assert_response_status_code(response, 200)
         body = response.json()
-        assert "data" in body and body["data"] is not None
-        assert "validateReturnUrl" in body["data"]
+        assert body.get("errors"), "validateReturnUrl must not resolve — it was removed in Phase 2a"
+        assert "validateReturnUrl" in str(body["errors"])
 
-    def test_rate_limited_like_branding(self, mock_rate_limiter, anonymous_client):
-        """validateReturnUrl runs through the same OrganizationRateLimiter extension."""
-        mock_rate_limiter.return_value = iter([None])
-
-        org = baker.make(Organization, name="TestOrg")
-        response = self._post(anonymous_client, org.id, "https://app.example.com/cb")
-
-        assert_response_status_code(response, 200)
-        assert mock_rate_limiter.called, (
-            "Rate limiter should be invoked for the unauthenticated validateReturnUrl query"
+    def test_validate_return_url_absent_from_schema_introspection(self):
+        """The root Query type's field list does not include validateReturnUrl."""
+        introspection_query = """
+            query {
+                __type(name: "Query") {
+                    fields { name }
+                }
+            }
+        """
+        client = APIClient()
+        response = client.post(
+            "/graphql/",
+            data=json.dumps({"query": introspection_query}),
+            content_type="application/json",
         )
+
+        data = assert_graphql_success(response)
+        field_names = {f["name"] for f in data["__type"]["fields"]}
+        assert field_names, "introspection returned no fields — guard would be vacuous"
+        assert "validateReturnUrl" not in field_names
 
 
 # ---------------------------------------------------------------------------
@@ -6497,19 +6301,16 @@ class TestEventIcsQuery:
 @pytest.mark.no_auto_subscription
 @pytest.mark.django_db
 @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
-class TestReturnUrlSurvivesBrandingDowngrade:
-    """The ``white_label_branding`` entitlement must not control the OAuth
-    return flow.
+class TestBrandingForTenantEntitlementDowngrade:
+    """A reseller whose plan does not grant ``white_label_branding`` renders the
+    vinta default through ``brandingForTenant``, identical to an unbranded org.
 
-    ``resolve_branding`` backs two very different callers: ``brandingForTenant``
-    (cosmetic) and ``validateReturnUrl`` (an auth-flow decision). Gating both would mean
-    a reseller downgrading off a *cosmetic* entitlement returns
-    ``{allowed: False, sanitized_url: None}`` for every tenant in its subtree, breaking
-    the OAuth interstitial for all of them. That is a lockout caused by a change to a
-    logo, so the two callers use different resolvers -- ``resolve_branding_for_display``
-    for presentation, plain ``resolve_branding`` for the allowlist.
-
-    Confirmed to fail when ``validate_return_url`` is pointed at the gated resolver.
+    This class used to also cover ``validateReturnUrl``, which read the *ungated*
+    ``resolve_branding`` so a reseller downgrading off the cosmetic
+    ``white_label_branding`` entitlement would not lock every tenant in its subtree
+    out of the OAuth return flow. That query is gone (Phase 2a of the Organization
+    Auth-Area Branding plan removed it along with ``return_url_allowlist``); only the
+    cosmetic half of the split remains to test here.
     """
 
     def _post(self, client, query, variables):
@@ -6519,7 +6320,7 @@ class TestReturnUrlSurvivesBrandingDowngrade:
             content_type="application/json",
         )
 
-    def _reseller_without_branding_entitlement(self, allowlist):
+    def _reseller_without_branding_entitlement(self):
         import datetime as _datetime
 
         from django.utils import timezone as _timezone
@@ -6547,37 +6348,15 @@ class TestReturnUrlSurvivesBrandingDowngrade:
             "organizations.OrganizationBranding",
             organization=reseller,
             app_name="Downgraded App",
-            return_url_allowlist=allowlist,
         )
         return reseller
-
-    def test_return_url_still_validates_after_the_downgrade(
-        self, mock_rate_limiter, anonymous_client
-    ):
-        mock_rate_limiter.return_value = iter([None])
-
-        reseller = self._reseller_without_branding_entitlement(["https://app.example.com"])
-        child = baker.make(Organization, name="Downgraded Child", parent=reseller)
-
-        candidate = "https://app.example.com/auth/callback?code=abc"
-        response = self._post(
-            anonymous_client,
-            _VALIDATE_RETURN_URL_QUERY,
-            {"tenantId": str(child.id), "url": candidate},
-        )
-
-        data = assert_graphql_success(response)
-        assert data["validateReturnUrl"] == {"allowed": True, "sanitizedUrl": candidate}
 
     def test_branding_itself_does_fall_back_to_the_vinta_default(
         self, mock_rate_limiter, anonymous_client
     ):
-        """The other half of the split: the cosmetic surface *is* gated, so the
-        downgrade is really in effect and the test above is not just measuring an
-        ungated system."""
         mock_rate_limiter.return_value = iter([None])
 
-        reseller = self._reseller_without_branding_entitlement(["https://app.example.com"])
+        reseller = self._reseller_without_branding_entitlement()
 
         query = """
             query BrandingForTenant($tenantId: ID!) {

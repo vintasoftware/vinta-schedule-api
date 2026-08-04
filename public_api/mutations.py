@@ -7,7 +7,6 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.core.validators import URLValidator
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
@@ -49,6 +48,7 @@ from calendar_integration.services.dataclasses import (
 )
 from organizations.exceptions import NoServiceAccountConfiguredError, UserAlreadyHasMembershipError
 from organizations.models import Organization, OrganizationBranding, OrganizationMembership
+from organizations.redirect_url_validation import validate_redirect_url
 from organizations.services import OrganizationService
 from payments.exceptions import OverLimitError
 from payments.services.subscription_service import SubscriptionService
@@ -94,7 +94,6 @@ if TYPE_CHECKING:
 
 # Module-scope constants for validation
 HEX_COLOR_PATTERN = re.compile(r"^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$")
-_url_validator = URLValidator(schemes=["http", "https"])
 # Mirrors CalendarEvent.title's max_length so an over-long title is rejected with a clean
 # GraphQL error rather than surfacing as a DB-level error after work has begun.
 EVENT_TITLE_MAX_LENGTH = 255
@@ -1014,7 +1013,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             # inadvertently retained beyond this scope.
             raw_token = invitation._raw_token  # type: ignore[attr-defined]
             # Build the invite URL using the same template the branded email uses.
-            # A later change may refine this URL from the reseller's return_url_allowlist
+            # A later change may refine this URL from the reseller's redirect_url
             # once OrganizationBranding is available; for now we use the same base as the
             # email.
             url_template: str = getattr(settings, "HEADLESS_FRONTEND_URLS", {}).get(
@@ -1241,9 +1240,11 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         1. Checks that the acting org has can_invite_organizations (via assert_org_can_invite).
         2. Validates app_name: non-empty and max 120 characters.
         3. Validates primary_color and secondary_color format (#RRGGBB or #RRGGBBAA).
-        4. Validates each entry in return_url_allowlist is a valid URL using Django's URLValidator.
+        4. Validates redirect_url: HTTPS scheme, no wildcard, no path-prefix pattern
+           (organizations.redirect_url_validation, shared with the REST serializer).
         5. Upserts OrganizationBranding on the acting org only (always keyed to acting_org).
-        6. Returns the upserted branding row (without internal fields like support_email/allowlist).
+        6. Returns the upserted branding row (without internal fields like support_email/
+           redirect_url).
 
         The token's OrganizationResourceAccess must include the BRANDING resource.
         """
@@ -1274,15 +1275,12 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
                 "Expected #RRGGBB or #RRGGBBAA."
             )
 
-        # Validate return_url_allowlist entries are valid URLs using Django's URLValidator
-        allowlist = input.return_url_allowlist or []
-        for url in allowlist:
-            try:
-                _url_validator(url)
-            except DjangoValidationError as e:
-                raise GraphQLError(
-                    f"Invalid URL in return_url_allowlist: '{url}'. Must be a valid http(s) URL."
-                ) from e
+        # Validate redirect_url: HTTPS scheme, no wildcard, no path-prefix pattern.
+        # Shared with the REST serializer's validate_redirect_url.
+        try:
+            validate_redirect_url(input.redirect_url)
+        except DjangoValidationError as e:
+            raise GraphQLError("; ".join(e.messages)) from e
 
         # Upsert branding on the acting org (always acts on acting org, never another org)
         branding, _ = OrganizationBranding.objects.update_or_create(
@@ -1293,11 +1291,11 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
                 "primary_color": input.primary_color,
                 "secondary_color": input.secondary_color,
                 "support_email": input.support_email,
-                "return_url_allowlist": allowlist,
+                "redirect_url": input.redirect_url,
             },
         )
 
-        # Return the branding without internal fields (no support_email, no allowlist)
+        # Return the branding without internal fields (no support_email, no redirect_url)
         branding_result = BrandingResult(
             id=branding.id,
             app_name=branding.app_name,

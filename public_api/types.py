@@ -127,15 +127,15 @@ class UpdateBrandingInput:
     primary_color: str = ""
     secondary_color: str = ""
     support_email: str = ""
-    return_url_allowlist: list[str] | None = None
+    redirect_url: str = ""
 
 
 @strawberry.type
 class BrandingResult:
     """Represents resolved branding in the API response.
 
-    Never includes secrets like support_email or allowlist; those are for internal
-    use only (email rendering, OAuth return-URL validation).
+    Never includes secrets like support_email or redirect_url; those are for internal
+    use only (email rendering, post-authentication redirect resolution).
     """
 
     id: int
@@ -157,7 +157,7 @@ class PublicBrandingResult:
     """Represents public, secret-free branding for unauthenticated access.
 
     Used by brandingForTenant query for frontend interstitials.
-    Excludes the branding row id, support_email, and return_url_allowlist.
+    Excludes the branding row id, support_email, and redirect_url.
     """
 
     app_name: str
@@ -196,23 +196,6 @@ class CreateScopedSystemUserResult:
     available_resources: list[str]
     scoped_to_user_id: int
     token: str
-
-
-@strawberry.type
-class ValidateReturnUrlResult:
-    """Result of validating an OAuth return ("next") URL against a tenant's allowlist.
-
-    Used by the unauthenticated validateReturnUrl query so the OAuth interstitial
-    callback (which has no session yet) can ask a yes/no question WITHOUT the
-    reseller-internal return_url_allowlist ever being serialized into a response.
-
-    Identical shape for every not-allowed case (unknown tenant, no branding,
-    empty allowlist, bad scheme, origin mismatch) so the query is not an
-    enumeration oracle: allowed=False, sanitized_url=None.
-    """
-
-    allowed: bool
-    sanitized_url: str | None = None
 
 
 @strawberry.type
