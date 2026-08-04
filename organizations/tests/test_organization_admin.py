@@ -14,7 +14,7 @@ from django.urls import reverse
 import pytest
 from model_bakery import baker
 
-from organizations.models import Organization
+from organizations.models import Organization, OrganizationBranding
 from payments.models import Subscription
 from payments.services.subscription_service import SubscriptionService
 
@@ -322,3 +322,98 @@ class TestOrganizationAdminSlugValidation:
         assert response.status_code == 302
         organization.refresh_from_db()
         assert organization.slug is None
+
+
+@pytest.mark.django_db
+class TestOrganizationBrandingAdminParentGuard:
+    """``OrganizationBrandingAdmin`` refuses to save branding for an
+    organization that has a parent -- admin is not an escape hatch for the
+    write gate's permanent refusal (Organization Auth-Area Branding plan,
+    Phase 3). Only the parent condition is enforced in admin; entitlement and
+    slug are self-serve/billing states an operator may legitimately need to
+    seed branding ahead of."""
+
+    def test_saving_branding_for_a_parented_organization_fails_validation(self, admin_client):
+        parent = baker.make(Organization, name="Branding Parent", parent=None)
+        child = baker.make(Organization, name="Branding Child", parent=parent)
+
+        add_url = reverse("admin:organizations_organizationbranding_add")
+        response = admin_client.post(
+            add_url,
+            data={
+                "organization": child.pk,
+                "app_name": "ShouldNotSave",
+                # Left empty deliberately: the S3Direct widget's re-render on a
+                # validation-error response cannot handle a bound non-empty
+                # string value (a pre-existing quirk of
+                # s3direct_overrides.form_widgets.S3DirectWidget.render,
+                # unrelated to this phase) -- an empty value renders fine.
+                "logo": "",
+                "primary_color": "",
+                "secondary_color": "",
+                "support_email": "",
+                "redirect_url": "",
+            },
+        )
+
+        # A validation error re-renders the form (200), it does not redirect.
+        assert response.status_code == 200
+        form = response.context["adminform"].form
+        assert "organization" in form.errors
+        assert "parent" in form.errors["organization"][0].lower()
+        assert not OrganizationBranding.objects.filter(organization=child).exists()
+
+    def test_saving_branding_for_a_parentless_organization_succeeds(self, admin_client):
+        organization = baker.make(Organization, name="Branding Root", parent=None)
+
+        add_url = reverse("admin:organizations_organizationbranding_add")
+        response = admin_client.post(
+            add_url,
+            data={
+                "organization": organization.pk,
+                "app_name": "AllowedApp",
+                "logo": "uploads/branding_logos/admin-test-logo.png",
+                "primary_color": "",
+                "secondary_color": "",
+                "support_email": "",
+                "redirect_url": "",
+            },
+        )
+
+        assert response.status_code == 302
+        branding = OrganizationBranding.objects.get(organization=organization)
+        assert branding.app_name == "AllowedApp"
+
+    def test_editing_existing_branding_for_a_parented_organization_still_fails(self, admin_client):
+        """A branding row that predates a reparenting (spec: "A standalone
+        organization later gains a parent") cannot be re-saved through admin
+        either -- the guard runs on every save, not only on create."""
+        parent = baker.make(Organization, name="Later Parent", parent=None)
+        organization = baker.make(Organization, name="Later Child", parent=None)
+        branding = baker.make(
+            OrganizationBranding,
+            organization=organization,
+            app_name="Original",
+        )
+        organization.parent = parent
+        organization.save(update_fields=["parent"])
+
+        change_url = reverse("admin:organizations_organizationbranding_change", args=[branding.pk])
+        response = admin_client.post(
+            change_url,
+            data={
+                "organization": organization.pk,
+                "app_name": "Renamed",
+                # See the comment on the create-path test above: empty avoids
+                # the S3Direct widget's re-render crash on a bound value.
+                "logo": "",
+                "primary_color": "",
+                "secondary_color": "",
+                "support_email": "",
+                "redirect_url": "",
+            },
+        )
+
+        assert response.status_code == 200
+        branding.refresh_from_db()
+        assert branding.app_name == "Original"

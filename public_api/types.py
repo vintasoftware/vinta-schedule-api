@@ -116,16 +116,32 @@ class CreateSystemUserTokenResult:
 
 @strawberry.input
 class UpdateBrandingInput:
-    """Input for updating reseller branding.
+    """Input for updating an organization's branding.
 
-    Updates branding on the acting org (must be a reseller). Always upserts
-    (creates if missing, updates if exists). Cannot target another org's tree.
+    Updates branding on the acting org. Always upserts (creates if missing,
+    updates if exists). Cannot target another org's tree. The acting org must
+    pass the shared branding write gate (parentless, entitled, slug-set --
+    ``organizations.permissions.evaluate_branding_write_gate``); a reseller is
+    not exempt from any of those three conditions.
 
     ``logo_url`` is write-only despite the name (kept for symmetry with the REST
     serializer's field): it accepts the S3 key returned by
     ``createBrandingLogoUpload`` (a bare key or a full signed/public URL, either
     way normalized to a key before it is stored). Reads never echo this value
     back — ``BrandingResult.logo_url`` is always the logo delivery route's URL.
+
+    ``slug``: optional. When supplied, it is validated with the same shared
+    rules the organization REST endpoint uses (``organizations.slug_validation
+    .validate_organization_slug``, plus a uniqueness check excluding the acting
+    org itself) and applied to the acting organization BEFORE the write gate's
+    slug condition is evaluated -- so a partner-API caller can satisfy the
+    slug precondition and set branding in a single call, rather than needing a
+    separate organization-update mutation that does not exist on this surface.
+    When omitted (``None``), the acting organization's already-stored slug
+    must satisfy the gate on its own. The slug write and the branding upsert
+    land in one transaction: an invalid or colliding slug, or a
+    field-validation failure anywhere else in this input, rejects the whole
+    call and leaves the organization's slug unchanged.
     """
 
     app_name: str
@@ -134,6 +150,7 @@ class UpdateBrandingInput:
     secondary_color: str = ""
     support_email: str = ""
     redirect_url: str = ""
+    slug: str | None = None
 
 
 @strawberry.type

@@ -1556,14 +1556,20 @@ class TestUpdateBranding:
         assert "branding_logos" in str(data["errors"])
         assert not OrganizationBranding.objects.filter(organization=reseller_org).exists()
 
-    def test_update_branding_fails_flag_off(self):
-        """Test that updateBranding fails when acting org has flag off."""
+    def test_update_branding_succeeds_for_a_non_reseller_organization(self):
+        """The headline behavior change of this phase: a plain (non-reseller),
+        parentless, entitled, slugged organization can now save branding
+        through `updateBranding` -- it is no longer refused for lacking
+        `can_invite_organizations`."""
         from di_core.containers import container
 
-        # Create a non-reseller org
-        non_reseller_org = baker.make(Organization, name="Non-Reseller")
+        non_reseller_org = baker.make(
+            Organization,
+            name="Non-Reseller",
+            can_invite_organizations=False,
+            slug="plain-org-succeeds",
+        )
 
-        # Create a system user with BRANDING resource access
         auth_service = PublicAPIAuthService()
         system_user, token = auth_service.create_system_user(
             integration_name="branding_integration", organization=non_reseller_org
@@ -1594,16 +1600,113 @@ class TestUpdateBranding:
 
         assert response.status_code == 200
         data = response.json()
+        assert "errors" not in data or not data["errors"], data
+        assert data["data"]["updateBranding"]["branding"]["appName"] == "MyApp"
+
+    def test_update_branding_fails_for_an_organization_with_a_parent(self):
+        """Use-case 5: refused by the backend regardless of the org's own
+        entitlement/slug state, because it has a parent."""
+        from di_core.containers import container
+
+        parent_org = baker.make(
+            Organization, name="Parent", can_invite_organizations=False, parent=None
+        )
+        child_org = baker.make(
+            Organization,
+            name="Child",
+            can_invite_organizations=False,
+            parent=parent_org,
+            slug="child-org-branding",
+        )
+
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="branding_integration", organization=child_org
+        )
+        baker.make(ResourceAccess, system_user=system_user, resource_name="branding")
+
+        mutation = """
+        mutation UpdateBranding($input: UpdateBrandingInput!) {
+            updateBranding(input: $input) {
+                branding {
+                    id
+                    appName
+                }
+            }
+        }
+        """
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": mutation,
+                    "variables": {"input": {"appName": "MyApp"}},
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
         assert "errors" in data
         assert len(data["errors"]) > 0
-        assert "does not have permission" in str(data["errors"]).lower()
+        assert "parent" in str(data["errors"]).lower()
+        assert not OrganizationBranding.objects.filter(organization=child_org).exists()
+
+    @pytest.mark.no_auto_subscription
+    def test_update_branding_fails_for_an_unentitled_organization(self):
+        """Parentless and (once given one) slugged, but not entitled -- the
+        billing-state refusal, distinct in wording from the parent refusal."""
+        from di_core.containers import container
+
+        org = _make_unentitled_organization(
+            name="Free Plan Org", parent=None, slug="free-plan-branding-org"
+        )
+
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="branding_integration", organization=org
+        )
+        baker.make(ResourceAccess, system_user=system_user, resource_name="branding")
+
+        mutation = """
+        mutation UpdateBranding($input: UpdateBrandingInput!) {
+            updateBranding(input: $input) {
+                branding {
+                    id
+                    appName
+                }
+            }
+        }
+        """
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": mutation,
+                    "variables": {"input": {"appName": "MyApp"}},
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        errors = str(data["errors"]).lower()
+        assert "plan" in errors or "entitle" in errors
+        assert "parent" not in errors
 
     def test_update_branding_fails_no_scope(self):
         """Test that updateBranding fails without BRANDING scope."""
         from di_core.containers import container
 
         # Create a reseller org
-        reseller_org = baker.make(Organization, name="Reseller", can_invite_organizations=True)
+        reseller_org = baker.make(
+            Organization, name="Reseller", can_invite_organizations=True, slug="branding-no-scope"
+        )
 
         # Create a system user without BRANDING resource access
         auth_service = PublicAPIAuthService()
@@ -1644,7 +1747,12 @@ class TestUpdateBranding:
         """Test that invalid color format is rejected."""
         from di_core.containers import container
 
-        reseller_org = baker.make(Organization, name="Reseller", can_invite_organizations=True)
+        reseller_org = baker.make(
+            Organization,
+            name="Reseller",
+            can_invite_organizations=True,
+            slug="branding-invalid-color",
+        )
 
         auth_service = PublicAPIAuthService()
         system_user, token = auth_service.create_system_user(
@@ -1687,7 +1795,12 @@ class TestUpdateBranding:
         """Test that a non-HTTPS redirect_url is rejected."""
         from di_core.containers import container
 
-        reseller_org = baker.make(Organization, name="Reseller", can_invite_organizations=True)
+        reseller_org = baker.make(
+            Organization,
+            name="Reseller",
+            can_invite_organizations=True,
+            slug="branding-non-https-redirect",
+        )
 
         auth_service = PublicAPIAuthService()
         system_user, token = auth_service.create_system_user(
@@ -1730,7 +1843,12 @@ class TestUpdateBranding:
         """Test that a redirect_url containing a wildcard character is rejected."""
         from di_core.containers import container
 
-        reseller_org = baker.make(Organization, name="Reseller", can_invite_organizations=True)
+        reseller_org = baker.make(
+            Organization,
+            name="Reseller",
+            can_invite_organizations=True,
+            slug="branding-wildcard-redirect",
+        )
 
         auth_service = PublicAPIAuthService()
         system_user, token = auth_service.create_system_user(
@@ -1783,7 +1901,12 @@ class TestUpdateBranding:
         """Hostless, scheme-confused, and CRLF redirect_url are rejected and not persisted."""
         from di_core.containers import container
 
-        reseller_org = baker.make(Organization, name="Reseller", can_invite_organizations=True)
+        reseller_org = baker.make(
+            Organization,
+            name="Reseller",
+            can_invite_organizations=True,
+            slug="branding-malformed-redirect",
+        )
 
         auth_service = PublicAPIAuthService()
         system_user, token = auth_service.create_system_user(
@@ -1827,7 +1950,9 @@ class TestUpdateBranding:
         """Test that multiple updates to the same org create only one branding row."""
         from di_core.containers import container
 
-        reseller_org = baker.make(Organization, name="Reseller", can_invite_organizations=True)
+        reseller_org = baker.make(
+            Organization, name="Reseller", can_invite_organizations=True, slug="branding-upsert"
+        )
 
         auth_service = PublicAPIAuthService()
         system_user, token = auth_service.create_system_user(
@@ -1911,8 +2036,12 @@ class TestUpdateBranding:
         from organizations.models import OrganizationBranding
 
         # Create two independent reseller organizations
-        reseller_a = baker.make(Organization, name="Reseller A", can_invite_organizations=True)
-        reseller_b = baker.make(Organization, name="Reseller B", can_invite_organizations=True)
+        reseller_a = baker.make(
+            Organization, name="Reseller A", can_invite_organizations=True, slug="reseller-a-iso"
+        )
+        reseller_b = baker.make(
+            Organization, name="Reseller B", can_invite_organizations=True, slug="reseller-b-iso"
+        )
 
         # System user + token for Reseller A
         auth_service_a = PublicAPIAuthService()
@@ -2018,6 +2147,209 @@ class TestUpdateBranding:
         assert OrganizationBranding.objects.filter(organization=reseller_a).count() == 1
         # Verify there is exactly one branding row for B
         assert OrganizationBranding.objects.filter(organization=reseller_b).count() == 1
+
+
+UPDATE_BRANDING_WITH_SLUG_MUTATION = """
+mutation UpdateBranding($input: UpdateBrandingInput!) {
+    updateBranding(input: $input) {
+        branding {
+            id
+            appName
+        }
+    }
+}
+"""
+
+
+@pytest.mark.django_db
+class TestUpdateBrandingSlugInOneCall:
+    """``UpdateBrandingInput.slug`` -- a partner-API caller can satisfy the
+    write gate's slug precondition and set branding in a single
+    ``updateBranding`` call (Organization Auth-Area Branding plan, Phase 3).
+    Both the slug write and the branding upsert land in one
+    ``transaction.atomic()`` block: a rejected slug, or a later
+    field-validation failure, must not leave a partial write behind."""
+
+    def setup_method(self):
+        self.client = APIClient()
+
+    def _org_with_branding_scope(self, **org_kwargs):
+        org = baker.make(Organization, can_invite_organizations=False, parent=None, **org_kwargs)
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="branding_integration", organization=org
+        )
+        baker.make(ResourceAccess, system_user=system_user, resource_name="branding")
+        return org, auth_service, system_user, token
+
+    def test_supplying_a_valid_slug_alongside_branding_sets_both(self):
+        """A no-slug org can satisfy the gate's slug precondition and save
+        branding in the same call."""
+        from di_core.containers import container
+
+        org, auth_service, system_user, token = self._org_with_branding_scope()
+        assert org.slug is None
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": UPDATE_BRANDING_WITH_SLUG_MUTATION,
+                    "variables": {
+                        "input": {
+                            "appName": "OneCallApp",
+                            "slug": "one-call-org",
+                        }
+                    },
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or not data["errors"], data
+        assert data["data"]["updateBranding"]["branding"]["appName"] == "OneCallApp"
+
+        org.refresh_from_db()
+        assert org.slug == "one-call-org"
+        assert OrganizationBranding.objects.get(organization=org).app_name == "OneCallApp"
+
+    def test_omitting_slug_relies_on_the_organizations_stored_slug(self):
+        """When `slug` is omitted (`None`), the organization's already-stored
+        slug must satisfy the gate on its own -- unaffected by this input."""
+        from di_core.containers import container
+
+        org, auth_service, system_user, token = self._org_with_branding_scope(
+            slug="already-slugged-org"
+        )
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": UPDATE_BRANDING_WITH_SLUG_MUTATION,
+                    "variables": {"input": {"appName": "StillWorksApp"}},
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or not data["errors"], data
+        org.refresh_from_db()
+        assert org.slug == "already-slugged-org"
+
+    def test_invalid_slug_rejects_the_whole_call_and_leaves_the_org_without_one(self):
+        """An invalid slug (fails the shared format rule) rejects the entire
+        call before the gate or the branding upsert ever runs -- the
+        organization's slug stays unset and no branding row is created."""
+        from di_core.containers import container
+
+        org, auth_service, system_user, token = self._org_with_branding_scope()
+        assert org.slug is None
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": UPDATE_BRANDING_WITH_SLUG_MUTATION,
+                    "variables": {
+                        "input": {
+                            "appName": "ShouldNotPersist",
+                            "slug": "Not_Valid_Slug!",
+                        }
+                    },
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert data["errors"]
+
+        org.refresh_from_db()
+        assert org.slug is None
+        assert not OrganizationBranding.objects.filter(organization=org).exists()
+
+    def test_colliding_slug_rejects_without_partially_applying(self):
+        """A slug already claimed by another organization rejects the whole
+        call -- the acting org's slug is unchanged and no branding is written,
+        rather than a 500 from the unique index or a partial write."""
+        from di_core.containers import container
+
+        baker.make(Organization, parent=None, slug="already-taken-slug")
+        org, auth_service, system_user, token = self._org_with_branding_scope()
+        assert org.slug is None
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": UPDATE_BRANDING_WITH_SLUG_MUTATION,
+                    "variables": {
+                        "input": {
+                            "appName": "ShouldNotPersist",
+                            "slug": "already-taken-slug",
+                        }
+                    },
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert "already exists" in str(data["errors"]).lower()
+
+        org.refresh_from_db()
+        assert org.slug is None
+        assert not OrganizationBranding.objects.filter(organization=org).exists()
+
+    def test_valid_slug_rolls_back_when_a_later_validation_fails(self):
+        """Transaction check: the slug write and the branding upsert are one
+        atomic unit. A syntactically valid, non-colliding slug is applied
+        first, but a later field-validation failure (invalid primary_color)
+        must roll back the slug write too -- nothing from this call is
+        left behind, not even the slug that validated cleanly on its own."""
+        from di_core.containers import container
+
+        org, auth_service, system_user, token = self._org_with_branding_scope()
+        assert org.slug is None
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": UPDATE_BRANDING_WITH_SLUG_MUTATION,
+                    "variables": {
+                        "input": {
+                            "appName": "ShouldNotPersist",
+                            "slug": "would-have-been-valid",
+                            "primaryColor": "not-a-color",
+                        }
+                    },
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert "invalid primary_color" in str(data["errors"]).lower()
+
+        org.refresh_from_db()
+        assert org.slug is None, (
+            "The slug write must roll back with the rest of the transaction, "
+            "even though the slug itself was valid and would-have-been unique."
+        )
+        assert not OrganizationBranding.objects.filter(organization=org).exists()
+        assert not Organization.objects.filter(slug="would-have-been-valid").exists()
 
 
 CREATE_BRANDING_LOGO_UPLOAD_MUTATION = """

@@ -1,6 +1,6 @@
 import datetime
 import logging
-from typing import Annotated
+from typing import Annotated, ClassVar
 
 from django.db import transaction
 from django.http import FileResponse
@@ -41,10 +41,13 @@ from organizations.branding_logo import (
     guess_logo_content_type,
 )
 from organizations.exceptions import (
+    BrandingEntitlementRequiredError,
     DuplicateInvitationError,
     InvalidInvitationTokenError,
     InvitationNotFoundError,
     NoServiceAccountConfiguredError,
+    OrganizationHasParentBrandingError,
+    OrganizationSlugRequiredForBrandingError,
     UserAlreadyHasMembershipError,
 )
 from organizations.filtersets import (
@@ -61,9 +64,11 @@ from organizations.models import (
     resolve_branding_for_display,
 )
 from organizations.permissions import (
+    BrandingWriteGateReason,
     IsOrganizationAdmin,
     OrganizationInvitationPermission,
     OrganizationManagementPermission,
+    evaluate_branding_write_gate,
 )
 from organizations.serializers import (
     AcceptInvitationSerializer,
@@ -977,11 +982,24 @@ class AcceptInvitationView(generics.CreateAPIView):
 
 @extend_schema(tags=["Branding"])
 class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
-    """Admin-only REST endpoint for managing a reseller organization's branding.
+    """Admin-only REST endpoint for managing a parentless, entitled, slugged
+    organization's branding.
 
-    Reseller-admin gate: the acting org must itself be a reseller
-    (can_invite_organizations=True; a non-reseller returns 403) AND the caller
-    must be an org admin (IsOrganizationAdmin permission).
+    Write gate (Organization Auth-Area Branding plan, Phase 3): the acting org
+    must be parentless, hold the ``white_label_branding`` entitlement, AND
+    have a slug set (``organizations.permissions.evaluate_branding_write_gate``),
+    AND the caller must be an org admin (``IsOrganizationAdmin`` permission).
+    Replaces the earlier reseller-only gate (``is_reseller()``) -- any paying,
+    parentless, slugged organization can now manage its own branding, not just
+    resellers. The gate guards all three HTTP methods (GET/PUT/PATCH)
+    uniformly -- this endpoint has no read path that bypasses it. A missing
+    slug refuses with a distinct 403 body reading as "pick a slug first" (this
+    endpoint never sets a slug itself -- see the organization endpoint,
+    Phase 1). Each of the three failure conditions raises its own
+    ``PermissionDenied`` subclass (``organizations.exceptions``) so the
+    response body -- not just the 403 status -- distinguishes the permanent
+    refusal (has a parent) from the billing state (not entitled) from the
+    one-step-away case (no slug).
 
     Operations: retrieve (GET) + upsert (PUT/PATCH) the **acting org's own**
     branding. The endpoint operates on the request's organization only — it
@@ -1005,11 +1023,23 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
     permission_classes = (IsOrganizationAdmin,)
     serializer_class = OrganizationBrandingSerializer
 
-    def _check_reseller_status(self):
-        """Verify the acting org is a reseller. Raise 403 if not."""
+    _GATE_EXCEPTIONS: ClassVar[dict[BrandingWriteGateReason, type[PermissionDenied]]] = {
+        BrandingWriteGateReason.HAS_PARENT: OrganizationHasParentBrandingError,
+        BrandingWriteGateReason.NOT_ENTITLED: BrandingEntitlementRequiredError,
+        BrandingWriteGateReason.NO_SLUG: OrganizationSlugRequiredForBrandingError,
+    }
+
+    def _check_branding_write_gate(self):
+        """Verify the acting org passes the full write gate (parentless,
+        entitled, slug-set). Raises the matching ``PermissionDenied`` subclass
+        on the first failed condition; a no-op when the gate admits the org."""
         membership = get_active_organization_membership(self.request.user)
-        if membership is None or not membership.organization.is_reseller():
-            raise PermissionDenied("Only reseller organizations may manage branding.")
+        if membership is None:
+            raise PermissionDenied("No active organization membership.")
+        reason = evaluate_branding_write_gate(membership.organization)
+        if reason is BrandingWriteGateReason.OK:
+            return
+        raise self._GATE_EXCEPTIONS[reason]()
 
     def _get_branding_or_404(self):
         """Get the acting org's branding, or raise 404 if not set."""
@@ -1026,13 +1056,15 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
         summary="Retrieve the acting organization's branding",
         responses={
             200: OrganizationBrandingSerializer,
-            403: OpenApiResponse(description="Not a reseller or not an admin"),
+            403: OpenApiResponse(
+                description="Organization has a parent, lacks the entitlement, or has no slug; or not an admin"
+            ),
             404: OpenApiResponse(description="Branding not yet configured"),
         },
     )
     def get(self, request, *args, **kwargs):
         """GET /branding/ — retrieve the acting org's branding."""
-        self._check_reseller_status()
+        self._check_branding_write_gate()
         instance = self._get_branding_or_404()
         serializer = OrganizationBrandingSerializer(instance, context={"request": request})
         return Response(serializer.data, status=status.HTTP_200_OK)
@@ -1044,12 +1076,14 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
             201: OrganizationBrandingSerializer,
             200: OrganizationBrandingSerializer,
             400: OpenApiResponse(description="Invalid input (color format, URL validation)"),
-            403: OpenApiResponse(description="Not a reseller or not an admin"),
+            403: OpenApiResponse(
+                description="Organization has a parent, lacks the entitlement, or has no slug; or not an admin"
+            ),
         },
     )
     def put(self, request, *args, **kwargs):
         """PUT /branding/ — create or replace the acting org's branding."""
-        self._check_reseller_status()
+        self._check_branding_write_gate()
         membership = get_active_organization_membership(request.user)
         if membership is None:
             raise PermissionDenied("No active organization membership.")
@@ -1075,13 +1109,15 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
         responses={
             200: OrganizationBrandingSerializer,
             400: OpenApiResponse(description="Invalid input (color format, URL validation)"),
-            403: OpenApiResponse(description="Not a reseller or not an admin"),
+            403: OpenApiResponse(
+                description="Organization has a parent, lacks the entitlement, or has no slug; or not an admin"
+            ),
             404: OpenApiResponse(description="Branding not yet configured"),
         },
     )
     def patch(self, request, *args, **kwargs):
         """PATCH /branding/ — update the acting org's branding (partial)."""
-        self._check_reseller_status()
+        self._check_branding_write_gate()
         instance = self._get_branding_or_404()
 
         serializer = OrganizationBrandingSerializer(

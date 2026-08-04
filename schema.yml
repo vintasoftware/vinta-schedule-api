@@ -3572,7 +3572,8 @@ paths:
                 $ref: '#/components/schemas/OrganizationBranding'
           description: ''
         '403':
-          description: Not a reseller or not an admin
+          description: Organization has a parent, lacks the entitlement, or has no
+            slug; or not an admin
         '404':
           description: Branding not yet configured
     put:
@@ -3623,7 +3624,8 @@ paths:
         '400':
           description: Invalid input (color format, URL validation)
         '403':
-          description: Not a reseller or not an admin
+          description: Organization has a parent, lacks the entitlement, or has no
+            slug; or not an admin
     patch:
       operationId: branding_partial_update
       description: PATCH /branding/ — update the acting org's branding (partial).
@@ -3665,7 +3667,8 @@ paths:
         '400':
           description: Invalid input (color format, URL validation)
         '403':
-          description: Not a reseller or not an admin
+          description: Organization has a parent, lacks the entitlement, or has no
+            slug; or not an admin
         '404':
           description: Branding not yet configured
   /branding/logo/{org_slug}/:

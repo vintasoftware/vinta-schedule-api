@@ -1,3 +1,4 @@
+import enum
 from typing import TYPE_CHECKING, Annotated
 
 from dependency_injector.wiring import Provide, inject
@@ -22,20 +23,14 @@ if TYPE_CHECKING:
 
 
 @inject
-def is_branding_eligible_organization(
-    organization: Organization | None,
+def _organization_holds_white_label_branding(
+    organization: Organization,
     entitlement_service: Annotated[EntitlementService, Provide["entitlement_service"]] = None,  # type: ignore[assignment]
 ) -> bool:
-    """Shared branding-eligibility gate: ``organization`` has no parent AND holds
-    the ``white_label_branding`` entitlement.
-
-    Two conditions today (Organization Auth-Area Branding plan, Phase 2b) --
-    this is the gate's first caller (the ``branding_logos`` S3Direct destination's
-    ``auth`` callable, via ``user_administers_branding_eligible_organization``
-    below, and the GraphQL logo-signing mutation). Phase 3 extends this into the
-    full write gate by adding a third condition (the organization ends the write
-    with a ``slug`` set). Written as an early-return chain rather than a single
-    boolean expression so that extension is a one-line addition, not a rewrite.
+    """The entitlement half of the branding gate, factored out so both
+    ``is_branding_eligible_organization`` (two-condition, below) and
+    ``evaluate_branding_write_gate`` (three-condition, further below) share one
+    entitlement check rather than each re-deriving it.
 
     ``entitlement_service`` is DI-injected via ``@inject``/``Provide`` (the
     established pattern -- see ``audit/services.py``,
@@ -47,14 +42,84 @@ def is_branding_eligible_organization(
     before app startup completes): an unresolvable entitlement service denies
     rather than admits.
     """
-    if organization is None or organization.parent_id is not None:
-        return False
-
     if entitlement_service is None:
         return False
     return has_entitlement_cached(
         entitlement_service, organization, Entitlement.WHITE_LABEL_BRANDING
     )
+
+
+def is_branding_eligible_organization(organization: Organization | None) -> bool:
+    """Shared branding-eligibility gate: ``organization`` has no parent AND holds
+    the ``white_label_branding`` entitlement.
+
+    Two conditions -- this is the ``branding_logos`` S3Direct destination's
+    ``auth`` callable (via ``user_administers_branding_eligible_organization``
+    below) and the GraphQL logo-signing mutation's gate (Organization
+    Auth-Area Branding plan, Phase 2b). Phase 3 introduces a THIRD condition
+    (the organization ends the write with a ``slug`` set) but does **not** fold
+    it in here -- see ``evaluate_branding_write_gate`` below, which composes on
+    top of this function rather than replacing it. Requiring a slug before an
+    admin can upload a logo would order the branding form around an
+    implementation detail (the Write gate guiding decision), so the
+    logo-signing surface deliberately keeps using this two-condition helper.
+    """
+    if organization is None or organization.parent_id is not None:
+        return False
+    return _organization_holds_white_label_branding(organization)
+
+
+class BrandingWriteGateReason(enum.Enum):
+    """Distinguishable outcome of ``evaluate_branding_write_gate``.
+
+    ``OK`` means the write is admitted; every other member names exactly the
+    one condition that failed, so each of the three write surfaces
+    (``OrganizationBrandingView``, ``update_branding``,
+    ``OrganizationBrandingAdmin``) can render its own error idiom without
+    re-deriving *why* the gate refused:
+
+    - ``HAS_PARENT`` -- permanent. Branding within a hierarchy belongs to the
+      reseller alone (spec Use-case 5); no message for this reason should read
+      as fixable by the organization itself.
+    - ``NOT_ENTITLED`` -- a billing state. The organization's plan does not
+      include white-label branding; fixable by upgrading.
+    - ``NO_SLUG`` -- one step away. The organization is otherwise eligible but
+      has not picked a public slug yet (spec: "Eligible org with no public
+      identifier yet" -- branding settings stay offered, refused with a
+      message that reads as "pick a slug first", not hidden outright).
+    """
+
+    OK = "ok"
+    HAS_PARENT = "has_parent"
+    NOT_ENTITLED = "not_entitled"
+    NO_SLUG = "no_slug"
+
+
+def evaluate_branding_write_gate(organization: Organization | None) -> BrandingWriteGateReason:
+    """Full three-condition branding **write** gate (Organization Auth-Area
+    Branding plan, Phase 3): the acting organization must be parentless, hold
+    the ``white_label_branding`` entitlement, AND end the write with a
+    ``slug`` set. Replaces ``is_reseller()`` on every write surface.
+
+    Composes on top of, rather than duplicating, the two-condition
+    ``is_branding_eligible_organization`` above by sharing
+    ``_organization_holds_white_label_branding`` -- see that function's
+    docstring for why the logo-signing surface stays on the two-condition
+    helper instead of this one.
+
+    Checked in this order -- parent, then entitlement, then slug -- so the
+    permanent case is never masked by a fixable one, and the billing case is
+    never masked by the one-step-away case (an organization that lost the
+    entitlement and never picked a slug is told about the entitlement first;
+    picking a slug would not admit it either way).
+    """
+    if organization is None or organization.parent_id is not None:
+        return BrandingWriteGateReason.HAS_PARENT
+    if not _organization_holds_white_label_branding(organization):
+        return BrandingWriteGateReason.NOT_ENTITLED
+    if not organization.slug:
+        return BrandingWriteGateReason.NO_SLUG
+    return BrandingWriteGateReason.OK
 
 
 def user_administers_branding_eligible_organization(user: "User | None") -> bool:
