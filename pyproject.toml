@@ -188,6 +188,9 @@ lines-after-imports = 2
 "**/migrations/*" = ["RUF", "I"]
 # Skill template resources are standalone files copied into projects, not importable packages.
 "ai-tools/skills/**/resources/*.py" = ["INP001"]
+# One-off script folders are named `<YYYY-MM-DD>-<kebab>`, which is not a valid Python
+# identifier, so they cannot be packages. Tests load `script.py` by path.
+"scripts/one_off/*/*.py" = ["INP001"]
 
 [tool.coverage.run]
 branch = true
@@ -215,6 +218,13 @@ plugins = [
 [[tool.mypy.overrides]]
 module = ["allauth.*", "googleapiclient.*", "storages.*", "twilio.*", "django_filters.*", "mercadopago.*", "s3direct.*", "encrypted_fields.*", "dateutil.*"]
 ignore_missing_imports = true
+
+# Vendored verbatim from the add-one-off-script skill and refreshed by
+# `vinta-sync-ai-tools`. Local edits would be overwritten on the next sync, so it is
+# checked as-is rather than patched.
+[[tool.mypy.overrides]]
+module = ["scripts.one_off._base"]
+ignore_errors = true
 
 [tool.django-stubs]
 django_settings_module = "vinta_schedule_api.settings.local"
