@@ -108,13 +108,23 @@ Phase 0 branches off `plan-calendar-group-scoped-availability`; each later phase
 - **Reviewer model**: sonnet — CLEAN (no BLOCKER / SHOULD-FIX / NIT)
 - **Summary**: `_count_availability_windows` now sums user-authored availability windows + blocked time (base + group-scoped, both `unscoped()`). Added `BlockedTimeQuerySet.only_user_authored` (faithful translation — `BlockedTime` shares `RecurringMixin` and the same generic recurrence machinery, so `exception_for`/`bulk_modification_parent`/`is_recurring_exception` have identical semantics; exceptions/splits don't inflate). Over-limit uses the existing `OverLimitError` path; the limit-warning notification picks up blocked-time usage automatically via `get_current_usage`. Open Question 2 resolved (no field gap). No migration.
 
+### Phase 3a — Quota model and period-counting function ✅
+
+- **Branch**: `plan/calendar-group-scoped-availability/phase-3a` (base: phase-2c) — **PR [#227](https://github.com/vintasoftware/vinta-schedule-api/pull/227)**
+- **Implementer model**: sonnet (plan Tier 3) — agent type `migration-author`
+- **Reviewer model**: sonnet — 1 BLOCKER (quota cap-bypass via per-event timezone bucketing) fixed (sonnet fixer)
+- **Summary**: `CalendarGroupSlotQuotaRule` model (slot, calendar, period `QuotaPeriod` day/week/month, cap; unique per (calendar,slot,period); cascade on slot deletion; membership-removal cleanup wired into `_reconcile_slot`). Versioned Postgres `calculate_calendar_group_quota_period_counts` + JSON wrapper counting live bookings made through the group (via `CalendarEventGroupSelection`; cancelled = deleted event; reschedule re-buckets on read). Migrations `0043`/`0044` reverse cleanly. `GetCalendarGroupQuotaPeriodCountsJSON` wrapper (`Value()`-wraps string args).
+- **BLOCKER fixed (quota bypass)**: bucketing now uses a single consistent UTC frame (was per-event booker-supplied `ce.timezone`, which let a per-period cap be exceeded by varying the booking timezone). Matches the plan's timezone-less function signature. Local-timezone quota alignment deferred (no canonical calendar tz field in schema). Regression test added.
+
+**CARRY-FORWARD for Phase 3b**: quota periods are measured in **UTC** (documented v1 simplification). Phase 3b's discovery/booking lookup MUST bucket the candidate booking's time in the SAME UTC frame the counting function uses, so the candidate's period matches the counted period. Do NOT reintroduce per-event/local timezone bucketing on the candidate side.
+
 ## Current phase
 
-Phase 3a — Quota model and period-counting function
+Phase 3b — Quota in discovery and booking validation
 
 ## Remaining phases
 
-3a, 3b, 3c, 4
+3b, 3c, 4
 
 ## Deferred phases
 
