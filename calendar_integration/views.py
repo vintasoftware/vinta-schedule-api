@@ -59,6 +59,7 @@ from calendar_integration.permissions import (
     CalendarGroupPermission,
     ExternalEventChangeRequestPermission,
     GroupScopedAvailabilityWindowPermission,
+    GroupScopedBlockedTimePermission,
 )
 from calendar_integration.serializers import (
     AvailableTimeBatchSerializer,
@@ -90,6 +91,10 @@ from calendar_integration.serializers import (
     GroupScopedAvailabilityWindowSerializer,
     GroupScopedAvailabilityWindowUpdateSerializer,
     GroupScopedAvailabilityWriteResultSerializer,
+    GroupScopedBlockedTimeCreateSerializer,
+    GroupScopedBlockedTimeSerializer,
+    GroupScopedBlockedTimeUpdateSerializer,
+    GroupScopedBlockWriteResultSerializer,
     ResourceCalendarCreateSerializer,
     UnavailableTimeWindowSerializer,
 )
@@ -1925,6 +1930,189 @@ class GroupScopedAvailabilityWindowViewSet(VintaScheduleModelViewSet):
             )
         except CalendarGroupSlotConfigNotFoundError as e:
             # Same not-found shape as a genuinely missing window -- no message
+            # leaked that would distinguish "forbidden" from "does not exist".
+            raise Http404 from e
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+@extend_schema(tags=["Calendar Group Scoped Blocked Times"])
+class GroupScopedBlockedTimeViewSet(VintaScheduleModelViewSet):
+    """Nested under a group's slot: manage group-scoped blocked times for
+    calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
+    Phase 2b).
+
+    Direct mirror of ``GroupScopedAvailabilityWindowViewSet`` -- reads go
+    through ``BlockedTime.objects.for_group_slot(...)``, every write
+    delegates to the Phase 2a ``CalendarGroupService`` block-write methods,
+    and route visibility is gated by ``GroupScopedBlockedTimePermission``.
+    See that viewset's docstring for the full rationale; only the resource
+    it manages differs (blocks instead of windows).
+    """
+
+    permission_classes = (GroupScopedBlockedTimePermission,)
+    queryset = BlockedTime.objects.unscoped()
+    serializer_class = GroupScopedBlockedTimeSerializer
+    # PUT is intentionally unsupported: the underlying service is a partial
+    # update by design (only provided fields change), so only PATCH applies.
+    http_method_names = ("get", "post", "patch", "delete", "head", "options")
+
+    def get_queryset(self):
+        user = self.request.user
+        if not user.is_authenticated:
+            return BlockedTime.original_manager.none()
+        membership = get_active_organization_membership(user)
+        if not membership:
+            return BlockedTime.original_manager.none()
+        slot_id = self.kwargs.get("slot_id")
+        return (
+            super()
+            .get_queryset()
+            .filter_by_organization(membership.organization_id)
+            .for_group_slot(slot_id)
+            # `GroupScopedBlockedTimeVirtualModel` doesn't know about `recurrence_rule`
+            # under the "rrule_string" name our serializer exposes it as -- select it
+            # explicitly so `GroupScopedBlockedTimeSerializer.get_rrule_string` doesn't
+            # N+1 on the way to `recurrence_rule.to_rrule_string()`.
+            .select_related("recurrence_rule")
+        )
+
+    @extend_schema(
+        summary="Create a group-scoped blocked time",
+        description=(
+            "Creates a group-scoped blocked time for a calendar within a group slot's "
+            "roster. Confirmed future bookings in that group for that calendar that "
+            "now fall INSIDE the block are returned in `orphaned_bookings`; nothing "
+            "about them is modified."
+        ),
+        request=GroupScopedBlockedTimeCreateSerializer,
+        responses={201: GroupScopedBlockWriteResultSerializer},
+    )
+    @inject
+    def create(
+        self,
+        request,
+        *args,
+        calendar_group_service: Annotated[CalendarGroupService, Provide["calendar_group_service"]],
+        **kwargs,
+    ):
+        serializer = GroupScopedBlockedTimeCreateSerializer(
+            data=request.data, context=self.get_serializer_context()
+        )
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        membership = get_active_organization_membership(request.user)
+        if membership is None:
+            # Unreachable in practice -- `GroupScopedBlockedTimePermission`
+            # already requires an active membership -- but narrows the type for
+            # mypy and fails closed rather than crashing on `None.organization`.
+            raise Http404
+        calendar_group_service.initialize(organization=membership.organization)
+        try:
+            result = calendar_group_service.create_group_scoped_blocked_time(
+                acting_user=request.user,
+                group_slot_id=self.kwargs["slot_id"],
+                calendar_id=data["calendar"].id,
+                start_time=data["start_time"],
+                end_time=data["end_time"],
+                tz=data["timezone"],
+                reason=data.get("reason", ""),
+                rrule_string=data.get("rrule_string"),
+            )
+        except CalendarGroupSlotConfigNotFoundError as e:
+            # Same not-found shape as a genuinely missing block -- no message
+            # leaked that would distinguish "forbidden" from "does not exist".
+            raise Http404 from e
+
+        response_serializer = GroupScopedBlockWriteResultSerializer(
+            result, context=self.get_serializer_context()
+        )
+        return Response(response_serializer.data, status=status.HTTP_201_CREATED)
+
+    @extend_schema(
+        summary="Update a group-scoped blocked time",
+        description=(
+            "Partial update -- only provided fields change. Confirmed future bookings "
+            "that now fall inside the block are returned in `orphaned_bookings`; "
+            "nothing about them is modified."
+        ),
+        request=GroupScopedBlockedTimeUpdateSerializer,
+        responses={200: GroupScopedBlockWriteResultSerializer},
+    )
+    @inject
+    def partial_update(
+        self,
+        request,
+        *args,
+        calendar_group_service: Annotated[CalendarGroupService, Provide["calendar_group_service"]],
+        **kwargs,
+    ):
+        instance = self.get_object()
+        serializer = GroupScopedBlockedTimeUpdateSerializer(
+            data=request.data, partial=True, context=self.get_serializer_context()
+        )
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        membership = get_active_organization_membership(request.user)
+        if membership is None:
+            raise Http404
+        calendar_group_service.initialize(organization=membership.organization)
+        # `rrule_string` is tri-state: absent from `validated_data` (DRF drops
+        # optional fields not present in the request via SkipField) means
+        # "leave the recurrence alone"; present and `None` means "clear it";
+        # present and a string means "set/replace it". `.get()` would collapse
+        # the first two cases -- checking membership is required to tell them
+        # apart.
+        # mypy: _UNCHANGED is object() but the service accepts it as the sentinel
+        # for "str | None"; suppress the mismatch, matching the service's own annotation.
+        rrule_string: str | None = (  # type: ignore[assignment]
+            data["rrule_string"] if "rrule_string" in data else _UNCHANGED  # type: ignore[assignment]
+        )
+        try:
+            result = calendar_group_service.update_group_scoped_blocked_time(
+                acting_user=request.user,
+                block_id=instance.id,
+                start_time=data.get("start_time"),
+                end_time=data.get("end_time"),
+                tz=data.get("timezone"),
+                reason=data.get("reason"),
+                rrule_string=rrule_string,
+            )
+        except CalendarGroupSlotConfigNotFoundError as e:
+            # Same not-found shape as a genuinely missing block -- no message
+            # leaked that would distinguish "forbidden" from "does not exist".
+            raise Http404 from e
+
+        response_serializer = GroupScopedBlockWriteResultSerializer(
+            result, context=self.get_serializer_context()
+        )
+        return Response(response_serializer.data, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        summary="Delete a group-scoped blocked time",
+        description="Deletes the block (a recurring block is one row -- deletes the whole series).",
+        responses={204: None},
+    )
+    @inject
+    def destroy(
+        self,
+        request,
+        *args,
+        calendar_group_service: Annotated[CalendarGroupService, Provide["calendar_group_service"]],
+        **kwargs,
+    ):
+        instance = self.get_object()
+        membership = get_active_organization_membership(request.user)
+        if membership is None:
+            raise Http404
+        calendar_group_service.initialize(organization=membership.organization)
+        try:
+            calendar_group_service.delete_group_scoped_blocked_time(
+                acting_user=request.user, block_id=instance.id
+            )
+        except CalendarGroupSlotConfigNotFoundError as e:
+            # Same not-found shape as a genuinely missing block -- no message
             # leaked that would distinguish "forbidden" from "does not exist".
             raise Http404 from e
         return Response(status=status.HTTP_204_NO_CONTENT)

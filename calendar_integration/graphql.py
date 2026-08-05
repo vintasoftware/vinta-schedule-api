@@ -635,6 +635,53 @@ def group_scoped_availability_window_from_model(
     )
 
 
+@strawberry.type
+class GroupScopedBlockedTimeGraphQLType:
+    """Public API representation of one group-scoped blocked time
+    (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 2b).
+
+    A raw block row -- one entry per recurring master or one-off block, not
+    an expanded occurrence -- mirroring the internal REST surface's
+    ``GroupScopedBlockedTimeSerializer`` field shape.
+    """
+
+    id: int  # noqa: A003
+    calendar_id: int
+    group_slot_id: int
+    start_time: datetime.datetime
+    end_time: datetime.datetime
+    timezone: str
+    reason: str
+    rrule_string: str | None
+    is_recurring: bool
+    created: datetime.datetime
+    modified: datetime.datetime
+
+
+def group_scoped_blocked_time_from_model(
+    block: BlockedTime,
+) -> GroupScopedBlockedTimeGraphQLType:
+    """Build a :class:`GroupScopedBlockedTimeGraphQLType` from a
+    ``BlockedTime`` row.
+
+    Callers should ``select_related("recurrence_rule")`` on the source
+    queryset to avoid N+1 when building a list.
+    """
+    return GroupScopedBlockedTimeGraphQLType(
+        id=block.id,  # type: ignore[arg-type]
+        calendar_id=block.calendar_fk_id,  # type: ignore[arg-type]
+        group_slot_id=block.group_slot_fk_id,  # type: ignore[arg-type]
+        start_time=block.start_time,
+        end_time=block.end_time,
+        timezone=block.timezone,
+        reason=block.reason,
+        rrule_string=(block.recurrence_rule.to_rrule_string() if block.recurrence_rule else None),
+        is_recurring=block.is_recurring,
+        created=block.created,
+        modified=block.modified,
+    )
+
+
 @strawberry_django.type(CalendarWebhookSubscription)
 class CalendarWebhookSubscriptionGraphQLType:
     """GraphQL type for calendar webhook subscriptions."""

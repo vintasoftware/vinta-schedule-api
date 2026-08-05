@@ -1463,6 +1463,260 @@ class CalendarGroupService:
         self._audit_group_scoped_block_write(AuditAction.DELETE, acting_user, block)
         block.delete()
 
+    def _find_matching_group_scoped_block(
+        self,
+        group_slot_id: int,
+        calendar_id: int,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        tz: str,
+        reason: str,
+        rrule_string: str | None,
+    ) -> BlockedTime | None:
+        """Find an existing group-scoped block with identical content, if any.
+
+        Backs the batch-upsert write path's idempotent ``create`` (mirrors
+        ``_find_matching_group_scoped_window``): an upstream system that
+        resends the same batch after a network timeout (spec UC-5) must land
+        on the identical final state, not accumulate duplicate rows. Matched
+        on (calendar, group slot, start_time, end_time, timezone, reason,
+        rrule). ``start_time``/``end_time`` are compared as the aware
+        instants they are -- paired with an exact ``timezone`` match this is
+        a safe point lookup, not the cross-timezone comparison
+        ``start_time_tz_unaware`` is unsafe for (see AGENTS.md).
+        """
+        organization = cast(Organization, self.organization)
+        candidates = (
+            BlockedTime.objects.for_group_slot(group_slot_id)
+            .filter_by_organization(organization.id)
+            .filter(
+                calendar_fk_id=calendar_id,
+                start_time_tz_unaware=start_time,
+                end_time_tz_unaware=end_time,
+                timezone=tz,
+                reason=reason,
+            )
+            .select_related("recurrence_rule")
+        )
+        for candidate in candidates:
+            candidate_rrule = (
+                candidate.recurrence_rule.to_rrule_string() if candidate.recurrence_rule else None
+            )
+            if candidate_rrule == rrule_string:
+                return candidate
+        return None
+
+    @transaction.atomic()
+    def batch_upsert_group_scoped_blocked_times(
+        self,
+        group_slot_id: int,
+        operations: Iterable[dict],
+        acting_principal: "User | SystemUser",
+    ) -> list[BlockedTime]:
+        """Apply an atomic bulk-upsert batch of group-scoped blocked-time
+        create/update/delete operations within one group slot's roster
+        (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 2b -- public API).
+
+        Mirrors ``batch_upsert_group_scoped_availability_windows``'s
+        transaction / idempotent-create / IDOR-cross-check structure exactly,
+        with ONE deliberate difference: blocked time is not metered yet (that
+        is Phase 2c), so this method never calls ``check_limit`` and never
+        locks the billing root -- there is no entitlement delta to protect a
+        lock against. It still calls ``check_not_restricted`` up front, like
+        every other guarded write, so a ``RESTRICTED`` organization cannot
+        write group-scoped blocks either.
+
+        * **All-or-nothing.** The whole batch runs inside one transaction
+          (this method's own ``@transaction.atomic()``, nested inside the
+          request's ``ATOMIC_REQUESTS`` transaction); every operation is
+          validated and every touched row is resolved *before* any write, so
+          a bad ``block_id`` rolls back cleanly with nothing partially
+          applied.
+        * **Idempotent create.** A ``create`` operation is an upsert, not a
+          blind insert: :meth:`_find_matching_group_scoped_block` looks for
+          an existing group-scoped block with identical content first. A
+          match is returned unchanged (no write, no audit record) rather
+          than duplicated, so replaying an identical batch (spec UC-5) lands
+          on the exact same final state.
+        * **update / delete** require ``block_id`` and act on exactly the
+          row it names, like the window batch write's ``id``-keyed
+          operations.
+
+        Authorization is split between the CALLER and this method, exactly
+        like the window batch: the caller proves each op's ``calendar_id``
+        is within the token's owner scope; this method cross-checks that an
+        update/delete op's resolved block actually belongs to that op's own
+        ``calendar_id`` and rejects the whole batch (not-found-shaped) if
+        they don't match. ``acting_principal`` is used for audit attribution
+        only.
+
+        :param operations: dicts with ``action`` (create/update/delete) and
+            ``calendar_id``; create/update also take ``start_time``,
+            ``end_time``, ``timezone``, ``reason`` (optional), ``rrule_string``
+            (optional); update/delete also take ``block_id``.
+        :param acting_principal: the ``User`` or public-API ``SystemUser``
+            this write is attributed to in the audit trail.
+        :raises CalendarGroupSlotConfigNotFoundError: a create op's
+            ``calendar_id`` is not a member of ``group_slot_id``'s roster, or
+            an update/delete op's ``block_id`` does not resolve to a
+            group-scoped block in this slot, or that block does not belong
+            to the op's own ``calendar_id``.
+        :raises ValueError: an operation's shape is invalid (unknown action,
+            missing required field).
+        :return: every group-scoped block in ``group_slot_id``'s roster (all
+            calendars) after the batch is applied.
+        """
+        self._assert_initialized()
+        organization = cast(Organization, self.organization)
+        operations = list(operations)
+
+        valid_actions = {"create", "update", "delete"}
+        for op in operations:
+            action = op.get("action")
+            if action not in valid_actions:
+                raise ValueError(f"Invalid operation action: {action}")
+            if action == "create" and (
+                "calendar_id" not in op
+                or "start_time" not in op
+                or "end_time" not in op
+                or "timezone" not in op
+            ):
+                raise ValueError(
+                    "create operation requires calendar_id, start_time, end_time, timezone"
+                )
+            if action in ("update", "delete") and "block_id" not in op:
+                raise ValueError(f"{action} operation requires block_id")
+
+        # RESTRICTED must block the batch outright, including an update-only
+        # or delete-only batch -- mirrors the window batch, minus the
+        # limit/lock machinery that exists only to protect entitlement
+        # counting, which blocks don't have yet (Phase 2c).
+        if self.entitlement_service is not None and operations:
+            self.entitlement_service.check_not_restricted(organization)
+
+        # Resolve every touched row up front (read-only): a missing/foreign
+        # block_id or a calendar not on this slot's roster fails the whole
+        # batch before anything is written.
+        blocks_by_op_id: dict[int, BlockedTime] = {}
+        for op in operations:
+            if op["action"] in ("update", "delete"):
+                block = self._get_group_scoped_block(op["block_id"])
+                if block.group_slot_fk_id != group_slot_id:
+                    raise CalendarGroupSlotConfigNotFoundError()
+                # Cross-check the resolved block against the op's OWN calendar_id --
+                # public_api's assert_calendar_in_owner_scope only proves the token owns
+                # op["calendar_id"], not that block_id actually belongs to it. Without
+                # this, a calendar-owner-scoped token could target another calendar's
+                # block in the same slot by pairing a calendar_id it owns with a
+                # block_id it doesn't. Raises the same non-disclosure exception as an
+                # unresolvable block_id so the two cases are indistinguishable.
+                if block.calendar_fk_id != op["calendar_id"]:
+                    raise CalendarGroupSlotConfigNotFoundError()
+                blocks_by_op_id[op["block_id"]] = block
+
+        memberships_by_calendar: dict[int, CalendarGroupSlotMembership] = {}
+        for op in operations:
+            if op["action"] == "create" and op["calendar_id"] not in memberships_by_calendar:
+                memberships_by_calendar[op["calendar_id"]] = self._resolve_group_scoped_membership(
+                    group_slot_id, op["calendar_id"]
+                )
+
+        # Idempotent-create resolution: match each create op against an
+        # existing group-scoped block before writing anything.
+        matched_existing: dict[int, BlockedTime] = {}
+        for i, op in enumerate(operations):
+            if op["action"] != "create":
+                continue
+            existing = self._find_matching_group_scoped_block(
+                group_slot_id=group_slot_id,
+                calendar_id=op["calendar_id"],
+                start_time=op["start_time"],
+                end_time=op["end_time"],
+                tz=op["timezone"],
+                reason=op.get("reason", ""),
+                rrule_string=op.get("rrule_string"),
+            )
+            if existing is not None:
+                matched_existing[i] = existing
+
+        for i, op in enumerate(operations):
+            action = op["action"]
+            if action == "create":
+                if i in matched_existing:
+                    continue
+                membership = memberships_by_calendar[op["calendar_id"]]
+                recurrence_rule = self._create_recurrence_rule_if_needed(op.get("rrule_string"))
+                block = BlockedTime.objects.unscoped().create(
+                    organization=organization,
+                    calendar=membership.calendar,
+                    group_slot=membership.slot,
+                    start_time_tz_unaware=op["start_time"],
+                    end_time_tz_unaware=op["end_time"],
+                    timezone=op["timezone"],
+                    reason=op.get("reason", ""),
+                    # BlockedTime enforces uniqueness on (calendar, external_id); this
+                    # write path has no natural external id, so a uuid4 guarantees no
+                    # collision with any other block -- base or group-scoped -- on the
+                    # same calendar (mirrors create_group_scoped_blocked_time).
+                    external_id=f"group-scoped-block-{uuid.uuid4()}",
+                    recurrence_rule=recurrence_rule,
+                )
+                self._audit_group_scoped_block_write(AuditAction.CREATE, acting_principal, block)
+            elif action == "update":
+                block = blocks_by_op_id[op["block_id"]]
+                before = {
+                    "start_time_tz_unaware": block.start_time_tz_unaware.isoformat(),
+                    "end_time_tz_unaware": block.end_time_tz_unaware.isoformat(),
+                    "timezone": block.timezone,
+                    "reason": block.reason,
+                    "rrule": (
+                        block.recurrence_rule.to_rrule_string() if block.recurrence_rule else None
+                    ),
+                }
+                update_fields: list[str] = []
+                if "start_time" in op:
+                    block.start_time_tz_unaware = op["start_time"]
+                    update_fields.append("start_time_tz_unaware")
+                if "end_time" in op:
+                    block.end_time_tz_unaware = op["end_time"]
+                    update_fields.append("end_time_tz_unaware")
+                if "timezone" in op:
+                    block.timezone = op["timezone"]
+                    update_fields.append("timezone")
+                if "reason" in op:
+                    block.reason = op["reason"]
+                    update_fields.append("reason")
+                if "rrule_string" in op:
+                    block.recurrence_rule = self._create_recurrence_rule_if_needed(
+                        op["rrule_string"]
+                    )
+                    update_fields.append("recurrence_rule_fk")
+                if update_fields:
+                    block.save(update_fields=[*update_fields, "modified"])
+                after = {
+                    "start_time_tz_unaware": block.start_time_tz_unaware.isoformat(),
+                    "end_time_tz_unaware": block.end_time_tz_unaware.isoformat(),
+                    "timezone": block.timezone,
+                    "reason": block.reason,
+                    "rrule": (
+                        block.recurrence_rule.to_rrule_string() if block.recurrence_rule else None
+                    ),
+                }
+                self._audit_group_scoped_block_write(
+                    AuditAction.UPDATE, acting_principal, block, diff=compute_diff(before, after)
+                )
+            elif action == "delete":
+                block = blocks_by_op_id[op["block_id"]]
+                self._audit_group_scoped_block_write(AuditAction.DELETE, acting_principal, block)
+                block.delete()
+
+        return list(
+            BlockedTime.objects.for_group_slot(group_slot_id)
+            .filter_by_organization(organization.id)
+            .select_related("recurrence_rule")
+            .order_by("pk")
+        )
+
     # ------------------------------------------------------------------
     # Queries
     # ------------------------------------------------------------------

@@ -172,6 +172,27 @@ class GroupScopedAvailabilityWindowVirtualModel(v.VirtualModel):
         model = AvailableTime
 
 
+class GroupScopedBlockedTimeVirtualModel(v.VirtualModel):
+    """Virtual model for ``GroupScopedBlockedTimeSerializer``
+    (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 2b).
+
+    Mirrors ``GroupScopedAvailabilityWindowVirtualModel`` exactly, for the
+    same reason: the serializer sources ``calendar_id``/``group_slot_id``
+    from the raw FK columns and never nests a ``calendar`` field, so no
+    sub-field is declared here for it -- avoids pulling in
+    ``CalendarVirtualModel``'s eager memberships/calendar_ownerships graph,
+    which this serializer never reads. ``rrule_string``/``is_recurring`` are
+    ``no_deferred_fields()``-hinted ``SerializerMethodField``s that read
+    ``recurrence_rule`` directly; the view selects that relation explicitly
+    (``.select_related("recurrence_rule")`` in
+    ``GroupScopedBlockedTimeViewSet.get_queryset``) since it isn't exposed
+    under a matching field name here for the optimizer to infer.
+    """
+
+    class Meta:
+        model = BlockedTime
+
+
 class ExternalEventChangeRequestVirtualModel(v.VirtualModel):
     """Virtual model for ``ExternalEventChangeRequest`` serialization.
 

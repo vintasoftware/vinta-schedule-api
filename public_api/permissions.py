@@ -72,6 +72,10 @@ class OrganizationResourceAccess(BasePermission):
         "batchUpsertGroupScopedAvailabilityWindows": (
             PublicAPIResources.BATCH_UPSERT_GROUP_SCOPED_AVAILABILITY_WINDOWS
         ),
+        "groupScopedBlockedTimes": PublicAPIResources.GROUP_SCOPED_BLOCKED_TIMES,
+        "batchUpsertGroupScopedBlockedTimes": (
+            PublicAPIResources.BATCH_UPSERT_GROUP_SCOPED_BLOCKED_TIMES
+        ),
         "createBlockedTime": PublicAPIResources.CREATE_BLOCKED_TIME,
         "updateBlockedTime": PublicAPIResources.UPDATE_BLOCKED_TIME,
         "deleteBlockedTime": PublicAPIResources.DELETE_BLOCKED_TIME,

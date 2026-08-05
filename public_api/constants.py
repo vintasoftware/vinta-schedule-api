@@ -70,6 +70,14 @@ class PublicAPIResources(TextChoices):
         "batch_upsert_group_scoped_availability_windows",
         "Batch Upsert Group-Scoped Availability Windows",
     )
+    GROUP_SCOPED_BLOCKED_TIMES = (
+        "group_scoped_blocked_times",
+        "Group-Scoped Blocked Times",
+    )
+    BATCH_UPSERT_GROUP_SCOPED_BLOCKED_TIMES = (
+        "batch_upsert_group_scoped_blocked_times",
+        "Batch Upsert Group-Scoped Blocked Times",
+    )
 
 
 PROVIDER_SCOPED_RESOURCES: frozenset[str] = frozenset(
@@ -89,5 +97,7 @@ PROVIDER_SCOPED_RESOURCES: frozenset[str] = frozenset(
         PublicAPIResources.BATCH_UPDATE_AVAILABILITY_WINDOWS,
         PublicAPIResources.GROUP_SCOPED_AVAILABILITY_WINDOWS,
         PublicAPIResources.BATCH_UPSERT_GROUP_SCOPED_AVAILABILITY_WINDOWS,
+        PublicAPIResources.GROUP_SCOPED_BLOCKED_TIMES,
+        PublicAPIResources.BATCH_UPSERT_GROUP_SCOPED_BLOCKED_TIMES,
     ]
 )
