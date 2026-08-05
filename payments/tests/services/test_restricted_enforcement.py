@@ -35,17 +35,31 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from calendar_integration.constants import CalendarProvider, CalendarType
-from calendar_integration.models import AvailableTime, Calendar, CalendarEvent, CalendarGroup
+from calendar_integration.models import (
+    AvailableTime,
+    BlockedTime,
+    Calendar,
+    CalendarEvent,
+    CalendarGroup,
+    CalendarGroupSlot,
+    CalendarGroupSlotMembership,
+)
 from calendar_integration.services.calendar_group_service import CalendarGroupService
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.dataclasses import CalendarEventInputData, CalendarGroupInputData
-from organizations.models import Organization, OrganizationInvitation, OrganizationMembership
+from organizations.models import (
+    Organization,
+    OrganizationInvitation,
+    OrganizationMembership,
+    OrganizationRole,
+)
 from payments.billing_constants import BillingInterval, BillingState, LimitedResource, LimitKind
 from payments.exceptions import OverLimitError
 from payments.models import BillingPlan, PlanLimit, Subscription, SubscriptionPlanLimit
 from payments.services.entitlement_service import EntitlementService
 from payments.services.subscription_service import SubscriptionService
 from public_api.models import SystemUser
+from users.models import User
 from webhooks.constants import WebhookEventType
 from webhooks.models import WebhookConfiguration
 from webhooks.services.webhook_service import WebhookService
@@ -204,6 +218,142 @@ def _delete_calendar_group(organization: Organization) -> None:
     service = CalendarGroupService()
     service.initialize(organization=organization)
     service.delete_group(group.id)
+
+
+def _group_scoped_membership(
+    organization: Organization,
+) -> tuple[CalendarGroupSlot, Calendar, User]:
+    """A minimal (calendar, group slot) roster entry plus an org admin
+    authorized to write its group-scoped config -- mirrors the fixture shape
+    in ``test_calendar_group_service_blocked_time.py`` /
+    ``test_calendar_group_service_availability_windows.py``. An org admin
+    (rather than a calendar owner) is used so the probe needs no
+    ``CalendarOwnership`` row -- ``can_manage_group_scoped_calendar_config``
+    grants org admins unconditionally.
+    """
+    from users.factories import UserFactory
+
+    admin_user = UserFactory().create_user()
+    baker.make(
+        OrganizationMembership,
+        user=admin_user,
+        organization=organization,
+        role=OrganizationRole.ADMIN,
+        is_active=True,
+    )
+    calendar = baker.make(
+        Calendar,
+        organization=organization,
+        calendar_type=CalendarType.PERSONAL,
+        provider=CalendarProvider.GOOGLE,
+        manage_available_windows=True,
+    )
+    group = baker.make(CalendarGroup, organization=organization)
+    # ``CalendarGroupSlot.group`` / ``CalendarGroupSlotMembership.slot`` /
+    # ``.calendar`` are ``OrganizationForeignKey`` (a composite ``ForeignObject``,
+    # not a plain ``ForeignKey``) -- model-bakery cannot auto-generate that field
+    # type, so these two rows are created directly through the manager, exactly
+    # as ``test_calendar_group_service_blocked_time.py``'s fixtures do.
+    group_slot = CalendarGroupSlot.objects.create(
+        organization=organization, group=group, name="Restricted-guard slot"
+    )
+    CalendarGroupSlotMembership.objects.create(
+        organization=organization, slot=group_slot, calendar=calendar
+    )
+    return group_slot, calendar, admin_user
+
+
+def _group_scoped_service(organization: Organization) -> CalendarGroupService:
+    service = CalendarGroupService()
+    service.initialize(organization=organization)
+    return service
+
+
+def _create_group_scoped_availability_window(organization: Organization) -> None:
+    group_slot, calendar, admin_user = _group_scoped_membership(organization)
+    _group_scoped_service(organization).create_group_scoped_availability_window(
+        acting_user=admin_user,
+        group_slot_id=group_slot.id,
+        calendar_id=calendar.id,
+        start_time=datetime.datetime(2030, 1, 1, 9, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2030, 1, 1, 17, 0, tzinfo=datetime.UTC),
+        tz="UTC",
+    )
+
+
+def _update_group_scoped_availability_window(organization: Organization) -> None:
+    group_slot, calendar, admin_user = _group_scoped_membership(organization)
+    window = baker.make(
+        AvailableTime,
+        organization=organization,
+        calendar=calendar,
+        group_slot=group_slot,
+        timezone="UTC",
+    )
+    _group_scoped_service(organization).update_group_scoped_availability_window(
+        acting_user=admin_user,
+        window_id=window.id,
+        tz="America/Sao_Paulo",
+    )
+
+
+def _delete_group_scoped_availability_window(organization: Organization) -> None:
+    group_slot, calendar, admin_user = _group_scoped_membership(organization)
+    window = baker.make(
+        AvailableTime,
+        organization=organization,
+        calendar=calendar,
+        group_slot=group_slot,
+        timezone="UTC",
+    )
+    _group_scoped_service(organization).delete_group_scoped_availability_window(
+        acting_user=admin_user,
+        window_id=window.id,
+    )
+
+
+def _create_group_scoped_blocked_time(organization: Organization) -> None:
+    group_slot, calendar, admin_user = _group_scoped_membership(organization)
+    _group_scoped_service(organization).create_group_scoped_blocked_time(
+        acting_user=admin_user,
+        group_slot_id=group_slot.id,
+        calendar_id=calendar.id,
+        start_time=datetime.datetime(2030, 1, 1, 9, 0, tzinfo=datetime.UTC),
+        end_time=datetime.datetime(2030, 1, 1, 17, 0, tzinfo=datetime.UTC),
+        tz="UTC",
+        reason="Restricted-guard block",
+    )
+
+
+def _update_group_scoped_blocked_time(organization: Organization) -> None:
+    group_slot, calendar, admin_user = _group_scoped_membership(organization)
+    block = baker.make(
+        BlockedTime,
+        organization=organization,
+        calendar=calendar,
+        group_slot=group_slot,
+        timezone="UTC",
+    )
+    _group_scoped_service(organization).update_group_scoped_blocked_time(
+        acting_user=admin_user,
+        block_id=block.id,
+        reason="Renamed (restricted-guard)",
+    )
+
+
+def _delete_group_scoped_blocked_time(organization: Organization) -> None:
+    group_slot, calendar, admin_user = _group_scoped_membership(organization)
+    block = baker.make(
+        BlockedTime,
+        organization=organization,
+        calendar=calendar,
+        group_slot=group_slot,
+        timezone="UTC",
+    )
+    _group_scoped_service(organization).delete_group_scoped_blocked_time(
+        acting_user=admin_user,
+        block_id=block.id,
+    )
 
 
 def _create_webhook_configuration(organization: Organization) -> None:
@@ -451,6 +601,27 @@ RESTRICTED_WRITE_PROBES: dict[str, WriteProbe] = {
 }
 
 
+#: Group-scoped single-write probes (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 2b).
+#: These six ``CalendarGroupService`` methods are NOT tied to a ``LimitedResource``
+#: ceiling -- they call ``_check_not_restricted()`` directly, never ``check_limit``
+#: -- so they cannot live in ``RESTRICTED_WRITE_PROBES`` (keyed exhaustively against
+#: ``LimitedResource.values`` by ``test_every_limited_resource_has_a_create_probe``).
+#: Kept in a sibling registry, driven by ``TestRestrictedOrganizationBlocksGroupScopedWrites``
+#: below, so the same real-guarded-method proof applies to them.
+GROUP_SCOPED_WRITE_PROBES: dict[str, WriteProbe] = {
+    "group_scoped_availability_windows": WriteProbe(
+        create=_create_group_scoped_availability_window,
+        update=_update_group_scoped_availability_window,
+        delete=_delete_group_scoped_availability_window,
+    ),
+    "group_scoped_blocked_times": WriteProbe(
+        create=_create_group_scoped_blocked_time,
+        update=_update_group_scoped_blocked_time,
+        delete=_delete_group_scoped_blocked_time,
+    ),
+}
+
+
 #: The guarded update/delete **service-level** methods behind the restricted write
 #: guard, enumerated explicitly and checked against the code by
 #: ``TestRestrictedWriteProbeCoverage`` so a rename or removal fails CI instead of
@@ -469,6 +640,15 @@ GUARDED_MUTATING_SERVICE_METHODS: list[tuple[type, str]] = [
     (CalendarGroupService, "delete_group"),
     (WebhookService, "update_configuration"),
     (WebhookService, "delete_configuration"),
+    # Group-scoped single-write methods (Phase 2b): none call check_limit, so
+    # (unlike the base creates above) their create half is guarded the same
+    # way as update/delete -- all six belong here, not just update/delete.
+    (CalendarGroupService, "create_group_scoped_availability_window"),
+    (CalendarGroupService, "update_group_scoped_availability_window"),
+    (CalendarGroupService, "delete_group_scoped_availability_window"),
+    (CalendarGroupService, "create_group_scoped_blocked_time"),
+    (CalendarGroupService, "update_group_scoped_blocked_time"),
+    (CalendarGroupService, "delete_group_scoped_blocked_time"),
 ]
 
 
@@ -486,6 +666,28 @@ def _probe_ids() -> list[str]:
 def _probe_params() -> list[tuple[str, Callable[[Organization], None]]]:
     params = []
     for resource_key, probe in RESTRICTED_WRITE_PROBES.items():
+        params.append((resource_key, probe.create))
+        if probe.update is not None:
+            params.append((resource_key, probe.update))
+        if probe.delete is not None:
+            params.append((resource_key, probe.delete))
+    return params
+
+
+def _group_scoped_probe_ids() -> list[str]:
+    ids = []
+    for resource_key, probe in GROUP_SCOPED_WRITE_PROBES.items():
+        ids.append(f"{resource_key}-create")
+        if probe.update is not None:
+            ids.append(f"{resource_key}-update")
+        if probe.delete is not None:
+            ids.append(f"{resource_key}-delete")
+    return ids
+
+
+def _group_scoped_probe_params() -> list[tuple[str, Callable[[Organization], None]]]:
+    params = []
+    for resource_key, probe in GROUP_SCOPED_WRITE_PROBES.items():
         params.append((resource_key, probe.create))
         if probe.update is not None:
             params.append((resource_key, probe.update))
@@ -572,6 +774,43 @@ class TestRestrictedOrganizationBlocksEveryWrite:
         """``GRACE`` is never write-blocked, only ``RESTRICTED`` is. A ``GRACE``
         organization with an unlimited plan keeps writing normally. Escalation
         is the dunning ladder, not a write block."""
+        organization = _organization_with_billing_state(BillingState.GRACE)
+
+        action(organization)  # must not raise
+
+
+@pytest.mark.django_db
+class TestRestrictedOrganizationBlocksGroupScopedWrites:
+    """Sibling of ``TestRestrictedOrganizationBlocksEveryWrite`` for the six
+    group-scoped single-write ``CalendarGroupService`` methods (Phase 2b) --
+    kept separate because they are not ``LimitedResource``-keyed (see
+    ``GROUP_SCOPED_WRITE_PROBES``), but proven with the exact same shape:
+    drive the real guarded method against a RESTRICTED org and assert it is
+    blocked."""
+
+    @pytest.mark.parametrize(
+        "resource_key,action", _group_scoped_probe_params(), ids=_group_scoped_probe_ids()
+    )
+    def test_restricted_blocks(self, resource_key, action):
+        organization = _organization_with_billing_state(BillingState.RESTRICTED)
+
+        with pytest.raises(OverLimitError) as exc_info:
+            action(organization)
+
+        assert exc_info.value.remedy == "resolve_billing"
+
+    @pytest.mark.parametrize(
+        "resource_key,action", _group_scoped_probe_params(), ids=_group_scoped_probe_ids()
+    )
+    def test_active_is_unaffected(self, resource_key, action):
+        organization = _organization_with_billing_state(BillingState.ACTIVE)
+
+        action(organization)  # must not raise
+
+    @pytest.mark.parametrize(
+        "resource_key,action", _group_scoped_probe_params(), ids=_group_scoped_probe_ids()
+    )
+    def test_grace_is_unaffected(self, resource_key, action):
         organization = _organization_with_billing_state(BillingState.GRACE)
 
         action(organization)  # must not raise

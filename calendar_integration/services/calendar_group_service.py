@@ -738,6 +738,7 @@ class CalendarGroupService:
         detection runs only on the first create. Nothing is cancelled.
         """
         self._assert_initialized()
+        self._check_not_restricted()
         if now is None:
             now = timezone.now()
 
@@ -805,6 +806,7 @@ class CalendarGroupService:
         the caller decides what to do with each one.
         """
         self._assert_initialized()
+        self._check_not_restricted()
         if now is None:
             now = timezone.now()
 
@@ -870,6 +872,7 @@ class CalendarGroupService:
         constraint) is a distinct action, exercised through ``update_group``.
         """
         self._assert_initialized()
+        self._check_not_restricted()
         window = self._get_group_scoped_window(window_id)
         self._authorize_group_scoped_write(acting_user, window.calendar, window.group_slot)
 
@@ -1328,6 +1331,7 @@ class CalendarGroupService:
         applied to blocks). Nothing is cancelled.
         """
         self._assert_initialized()
+        self._check_not_restricted()
         if now is None:
             now = timezone.now()
 
@@ -1387,6 +1391,7 @@ class CalendarGroupService:
         applied to blocks) -- the caller decides what to do with each one.
         """
         self._assert_initialized()
+        self._check_not_restricted()
         if now is None:
             now = timezone.now()
 
@@ -1457,6 +1462,7 @@ class CalendarGroupService:
         ``update_group``.
         """
         self._assert_initialized()
+        self._check_not_restricted()
         block = self._get_group_scoped_block(block_id)
         self._authorize_group_scoped_write(acting_user, block.calendar, block.group_slot)
 
