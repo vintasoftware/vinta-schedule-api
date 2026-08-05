@@ -36,6 +36,7 @@ from calendar_integration.services.calendar_group_service import CalendarGroupSe
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from calendar_integration.services.dataclasses import (
     CalendarGroupInputData,
+    CalendarGroupSlotInputData,
 )
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
 from users.models import Profile, User
@@ -678,3 +679,225 @@ def test_deleting_slot_through_update_group_cascades_group_scoped_windows(
         .exists()
     )
     assert not AvailableTime.objects.unscoped().filter(id=window_id).exists()
+
+
+# ---------------------------------------------------------------------------
+# FIX 1: Removing a calendar from a slot removes its group-scoped windows
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_removing_calendar_from_slot_removes_group_scoped_windows(
+    service: CalendarGroupService,
+    admin_user: User,
+    calendar: Calendar,
+    other_calendar: Calendar,
+    group: CalendarGroup,
+    django_capture_on_commit_callbacks,
+) -> None:
+    """FIX 1 (BLOCKER): When removing a calendar from a slot's membership,
+    its group-scoped availability windows must be deleted (not orphaned).
+    A second calendar's windows in the same slot survive.
+    """
+    # Create a slot with TWO calendars.
+    slot = CalendarGroupSlot.objects.create(
+        organization=service.organization, group=group, name="Test Slot"
+    )
+    CalendarGroupSlotMembership.objects.create(
+        organization=service.organization, slot=slot, calendar=calendar
+    )
+    CalendarGroupSlotMembership.objects.create(
+        organization=service.organization, slot=slot, calendar=other_calendar
+    )
+
+    # Create group-scoped windows for BOTH calendars.
+    window1_result = service.create_group_scoped_availability_window(
+        acting_user=admin_user,
+        group_slot_id=slot.id,
+        calendar_id=calendar.id,
+        start_time=_utc(2025, 9, 2, 9),
+        end_time=_utc(2025, 9, 2, 17),
+        tz="UTC",
+    )
+    window1_id = window1_result.window.id  # type: ignore[union-attr]
+
+    window2_result = service.create_group_scoped_availability_window(
+        acting_user=admin_user,
+        group_slot_id=slot.id,
+        calendar_id=other_calendar.id,
+        start_time=_utc(2025, 9, 2, 9),
+        end_time=_utc(2025, 9, 2, 17),
+        tz="UTC",
+    )
+    window2_id = window2_result.window.id  # type: ignore[union-attr]
+
+    # Verify both windows exist.
+    assert AvailableTime.objects.unscoped().filter(id=window1_id).exists()
+    assert AvailableTime.objects.unscoped().filter(id=window2_id).exists()
+
+    # Remove ONLY the first calendar from the slot (via update_group → _reconcile_slot).
+    with django_capture_on_commit_callbacks(execute=True):
+        service.update_group(
+            group.id,
+            CalendarGroupInputData(
+                name=group.name,
+                slots=[
+                    CalendarGroupSlotInputData(
+                        name=slot.name,
+                        calendar_ids=[other_calendar.id],
+                        required_count=1,
+                    )
+                ],
+            ),
+        )
+
+    # The first calendar's window must be deleted.
+    assert not AvailableTime.objects.unscoped().filter(id=window1_id).exists()
+    # The second calendar's window must survive.
+    assert AvailableTime.objects.unscoped().filter(id=window2_id).exists()
+    # The first calendar's membership is gone.
+    assert (
+        not CalendarGroupSlotMembership.objects.filter_by_organization(service.organization.id)
+        .filter(slot_fk=slot, calendar_fk_id=calendar.id)
+        .exists()
+    )
+    # The second calendar's membership remains.
+    assert (
+        CalendarGroupSlotMembership.objects.filter_by_organization(service.organization.id)
+        .filter(slot_fk=slot, calendar_fk_id=other_calendar.id)
+        .exists()
+    )
+
+
+# ---------------------------------------------------------------------------
+# FIX 2: Creating first window detects orphaned bookings
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_create_group_scoped_availability_window_first_detects_orphaned_bookings(
+    service: CalendarGroupService,
+    admin_user: User,
+    calendar: Calendar,
+    group: CalendarGroup,
+    group_slot: CalendarGroupSlot,
+) -> None:
+    """FIX 2 (SHOULD-FIX): Creating the FIRST group-scoped window for a
+    (calendar, slot) flips from fall-through (base availability) to narrowed
+    evaluation, which can orphan pre-existing bookings. Return them in
+    orphaned_bookings; do NOT modify/cancel them.
+    """
+    now = django_timezone.now()
+    # Pick a date in the future that will be a Thursday.
+    thursday = _next_weekday(now, weekday=3)
+
+    # Create a booking for Thursday outside the window we'll create.
+    booking = CalendarEvent.objects.create(
+        organization=service.organization,
+        calendar=calendar,
+        title="Operation",
+        description="",
+        external_id="ev_thursday",
+        start_time_tz_unaware=datetime.datetime.combine(
+            thursday,
+            datetime.time(18),
+            tzinfo=datetime.UTC,  # 6pm = outside window
+        ),
+        end_time_tz_unaware=datetime.datetime.combine(
+            thursday, datetime.time(19), tzinfo=datetime.UTC
+        ),
+        timezone="UTC",
+        calendar_group=group,
+    )
+    CalendarEventGroupSelection.objects.create(
+        organization=service.organization,
+        event=booking,
+        slot=group_slot,
+        calendar=calendar,
+    )
+
+    # Create the FIRST group-scoped window for this (calendar, slot):
+    # 9am-5pm on Thursdays. The 6pm booking is now orphaned.
+    result = service.create_group_scoped_availability_window(
+        acting_user=admin_user,
+        group_slot_id=group_slot.id,
+        calendar_id=calendar.id,
+        start_time=datetime.datetime.combine(thursday, datetime.time(9), tzinfo=datetime.UTC),
+        end_time=datetime.datetime.combine(thursday, datetime.time(17), tzinfo=datetime.UTC),
+        tz="UTC",
+        now=now,
+    )
+
+    # The booking must be returned as orphaned.
+    orphaned_ids = {e.id for e in result.orphaned_bookings}
+    assert orphaned_ids == {booking.id}
+
+    # The booking itself must be untouched (not cancelled).
+    booking.refresh_from_db()
+    assert booking.title == "Operation"
+    assert CalendarEvent.objects.filter_by_organization(service.organization.id).count() == 1
+
+
+@pytest.mark.django_db
+def test_create_group_scoped_availability_window_second_plus_no_orphans(
+    service: CalendarGroupService,
+    admin_user: User,
+    calendar: Calendar,
+    group: CalendarGroup,
+    group_slot: CalendarGroupSlot,
+) -> None:
+    """When creating a SECOND (or later) group-scoped window, it only widens
+    the union and cannot orphan bookings. Verify orphaned_bookings=[] even
+    if a booking sits outside this specific window (but within an existing one).
+    """
+    now = django_timezone.now()
+    thursday = _next_weekday(now, weekday=3)
+    tuesday = thursday - datetime.timedelta(days=2)
+
+    # Create the FIRST window: Tuesday 9am-5pm.
+    service.create_group_scoped_availability_window(
+        acting_user=admin_user,
+        group_slot_id=group_slot.id,
+        calendar_id=calendar.id,
+        start_time=datetime.datetime.combine(tuesday, datetime.time(9), tzinfo=datetime.UTC),
+        end_time=datetime.datetime.combine(tuesday, datetime.time(17), tzinfo=datetime.UTC),
+        tz="UTC",
+        now=now,
+    )
+
+    # Create a booking on Thursday (outside the first window).
+    booking = CalendarEvent.objects.create(
+        organization=service.organization,
+        calendar=calendar,
+        title="Operation",
+        description="",
+        external_id="ev_thursday",
+        start_time_tz_unaware=datetime.datetime.combine(
+            thursday, datetime.time(10), tzinfo=datetime.UTC
+        ),
+        end_time_tz_unaware=datetime.datetime.combine(
+            thursday, datetime.time(11), tzinfo=datetime.UTC
+        ),
+        timezone="UTC",
+        calendar_group=group,
+    )
+    CalendarEventGroupSelection.objects.create(
+        organization=service.organization,
+        event=booking,
+        slot=group_slot,
+        calendar=calendar,
+    )
+
+    # Create the SECOND window: Thursday 9am-5pm. Union now covers both days.
+    result = service.create_group_scoped_availability_window(
+        acting_user=admin_user,
+        group_slot_id=group_slot.id,
+        calendar_id=calendar.id,
+        start_time=datetime.datetime.combine(thursday, datetime.time(9), tzinfo=datetime.UTC),
+        end_time=datetime.datetime.combine(thursday, datetime.time(17), tzinfo=datetime.UTC),
+        tz="UTC",
+        now=now,
+    )
+
+    # No booking is orphaned (widening the union cannot orphan).
+    assert result.orphaned_bookings == []

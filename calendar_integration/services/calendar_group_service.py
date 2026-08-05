@@ -436,6 +436,21 @@ class CalendarGroupService:
 
         if to_remove:
             self._ensure_no_future_selections(slot=slot, calendar_ids=to_remove)
+
+            # Delete group-scoped windows for the removed calendars.
+            # The FK on AvailableTime.group_slot → CalendarGroupSlot cascades on
+            # SLOT deletion only, not on membership removal, so we must explicitly
+            # clean up the orphaned rows here. These deletions are cascading from
+            # membership removal (already audited as part of the group update), so
+            # we do not audit them individually.
+            # TODO(Phase 2a, 3a): BlockedTime.for_group_slot() and quota rules
+            # must extend this cleanup when those phases add their group-scoped rows,
+            # using the same pattern: delete rows for removed calendars in to_remove.
+            org_id = cast(Organization, self.organization).id
+            AvailableTime.objects.unscoped().filter_by_organization(org_id).filter(
+                group_slot_fk=slot, calendar_fk_id__in=to_remove
+            ).delete()
+
             CalendarGroupSlotMembership.objects.filter_by_organization(self.organization.id).filter(
                 slot_fk=slot, calendar_fk_id__in=to_remove
             ).delete()
@@ -624,6 +639,11 @@ class CalendarGroupService:
         calendar's configured availability, as it stands after the write, no
         longer covers it. Nothing here is cancelled or modified; this is
         purely a read (spec UC-6).
+
+        Performance: expands all group-scoped windows ONCE over the union range
+        covering all candidate bookings (min start → max end), then checks each
+        booking against that single cached expansion, rather than expanding
+        once per booking (O(N) → O(1) expansions).
         """
         org_id = cast(Organization, self.organization).id
         selections = (
@@ -636,14 +656,27 @@ class CalendarGroupService:
             .select_related("event")
         )
 
+        selections_list = list(selections)
+        if not selections_list:
+            return []
+
+        # Find the union range covering all candidate bookings: min start → max end.
+        min_start = min(sel.event.start_time for sel in selections_list)
+        max_end = max(sel.event.end_time for sel in selections_list)
+
+        # Expand ALL group-scoped windows once over the union range.
+        all_windows = self._group_scoped_available_times_expanded(
+            calendar_id, group_slot.id, min_start, max_end
+        )
+
+        # Check each booking against the single cached expansion.
         orphaned: list[CalendarEvent] = []
-        for selection in selections:
+        for selection in selections_list:
             event = selection.event
-            windows = self._group_scoped_available_times_expanded(
-                calendar_id, group_slot.id, event.start_time, event.end_time
-            )
             covered = _time_range_fully_covered(
-                ((w.start_time, w.end_time) for w in windows), event.start_time, event.end_time
+                ((w.start_time, w.end_time) for w in all_windows),
+                event.start_time,
+                event.end_time,
             )
             if not covered:
                 orphaned.append(event)
@@ -659,6 +692,7 @@ class CalendarGroupService:
         end_time: datetime.datetime,
         tz: str,
         rrule_string: str | None = None,
+        now: datetime.datetime | None = None,
     ) -> GroupScopedAvailabilityWriteResult:
         """Create a group-scoped availability window for ``(calendar, group_slot)``.
 
@@ -669,11 +703,30 @@ class CalendarGroupService:
         window. Permission-gated: ``acting_user`` must own the calendar or be
         an org admin (see
         ``CalendarPermissionService.can_manage_group_scoped_calendar_config``).
+
+        On creating the FIRST group-scoped window for a (calendar, group_slot),
+        collects confirmed future bookings that fall outside the new window and
+        returns them as orphaned_bookings (spec UC-6). Creating subsequent
+        windows only widens the union (can never orphan), so orphaned-booking
+        detection runs only on the first create. Nothing is cancelled.
         """
         self._assert_initialized()
+        if now is None:
+            now = timezone.now()
+
         organization = cast(Organization, self.organization)
         membership = self._resolve_group_scoped_membership(group_slot_id, calendar_id)
         self._authorize_group_scoped_write(acting_user, membership.calendar, membership.slot)
+
+        # Check if this will be the calendar's FIRST window in this slot.
+        # If so, narrowing is happening and we must detect orphaned bookings.
+        existing_window_count = (
+            AvailableTime.objects.for_group_slot(group_slot_id)
+            .filter_by_organization(organization.id)
+            .filter(calendar_fk_id=calendar_id)
+            .count()
+        )
+        is_first_window = existing_window_count == 0
 
         recurrence_rule = self._create_recurrence_rule_if_needed(rrule_string)
         window = AvailableTime.objects.unscoped().create(
@@ -686,7 +739,19 @@ class CalendarGroupService:
             recurrence_rule=recurrence_rule,
         )
         self._audit_group_scoped_availability_write(AuditAction.CREATE, acting_user, window)
-        return GroupScopedAvailabilityWriteResult(window=window, orphaned_bookings=[])
+
+        # Detect orphaned bookings only on the first window create.
+        orphaned_bookings: list[CalendarEvent] = []
+        if is_first_window:
+            orphaned_bookings = self._find_orphaned_bookings(
+                calendar_id=calendar_id,
+                group_slot=membership.slot,
+                now=now,
+            )
+
+        return GroupScopedAvailabilityWriteResult(
+            window=window, orphaned_bookings=orphaned_bookings
+        )
 
     @transaction.atomic()
     def update_group_scoped_availability_window(
