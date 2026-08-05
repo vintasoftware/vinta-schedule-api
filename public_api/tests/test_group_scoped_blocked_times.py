@@ -423,6 +423,93 @@ class TestGroupScopedBlockedTimesPublicAPI:
             "Replaying an identical batch must not create a duplicate block."
         )
 
+    def test_reason_participates_in_the_idempotent_create_match_key(self):
+        """``reason`` is part of ``_find_matching_group_scoped_block``'s match
+        key (calendar, group slot, start, end, timezone, reason, rrule). A
+        ``create`` op with the SAME reason as an already-persisted block
+        matches it (no-op); a ``create`` op with the SAME (calendar, slot,
+        start, end, timezone) but a DIFFERENT reason must NOT match -- it is
+        a genuinely distinct block and must persist as its own row. If
+        ``reason`` were dropped from that filter, both ops below would match
+        the same pre-existing row and only one row would remain."""
+        org = self._setup_org()
+        calendar = self._make_calendar(org)
+        slot = self._make_group_slot(org, calendar)
+        system_user, token, auth_service = self._make_org_wide_system_user(
+            org, [PublicAPIResources.BATCH_UPSERT_GROUP_SCOPED_BLOCKED_TIMES]
+        )
+
+        start = datetime.datetime(2026, 9, 1, 9, 0, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 9, 1, 17, 0, 0, tzinfo=datetime.UTC)
+        existing = BlockedTime.objects.unscoped().create(
+            organization=org,
+            calendar=calendar,
+            group_slot=slot,
+            start_time_tz_unaware=start,
+            end_time_tz_unaware=end,
+            timezone="UTC",
+            reason="Conference",
+            external_id=f"block-{uuid.uuid4()}",
+        )
+
+        response = self._post(
+            BATCH_UPSERT_GROUP_SCOPED_BLOCKED_TIMES_MUTATION,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "groupSlotId": slot.id,
+                    "operations": [
+                        {
+                            # Identical to `existing`, including reason -- matches,
+                            # no new row.
+                            "action": "create",
+                            "calendarId": calendar.id,
+                            "startTime": start.isoformat(),
+                            "endTime": end.isoformat(),
+                            "timezone": "UTC",
+                            "reason": "Conference",
+                        },
+                        {
+                            # Same (calendar, slot, start, end, timezone) as
+                            # `existing`, but a DIFFERENT reason -- must NOT match;
+                            # persists as its own distinct row.
+                            "action": "create",
+                            "calendarId": calendar.id,
+                            "startTime": start.isoformat(),
+                            "endTime": end.isoformat(),
+                            "timezone": "UTC",
+                            "reason": "On call elsewhere",
+                        },
+                    ],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data.get("errors", []) == []
+        result = data["data"]["batchUpsertGroupScopedBlockedTimes"]
+        assert result["success"] is True
+
+        # Two distinct rows: `existing` (matched, unchanged) + the new
+        # different-reason block. Not one -- which is what would happen if
+        # `reason` were dropped from the idempotent-create match key and the
+        # second op collapsed into `existing` too.
+        assert len(result["blockedTimes"]) == 2
+        reasons = {block["reason"] for block in result["blockedTimes"]}
+        assert reasons == {"Conference", "On call elsewhere"}
+
+        rows = (
+            BlockedTime.objects.unscoped()
+            .filter_by_organization(org.id)
+            .filter(calendar_fk_id=calendar.id)
+        )
+        assert rows.count() == 2
+        assert rows.filter(id=existing.id).exists()
+
     # ------------------------------------------------------------------
     # batchUpsertGroupScopedBlockedTimes -- RESTRICTED billing root still blocks
     # ------------------------------------------------------------------
