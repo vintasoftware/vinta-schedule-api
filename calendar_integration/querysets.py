@@ -1057,6 +1057,18 @@ class CalendarEventGroupSelectionQuerySet(BaseOrganizationModelQuerySet):
     """
 
 
+class CalendarGroupSlotQuotaRuleQuerySet(BaseOrganizationModelQuerySet):
+    """Custom QuerySet for CalendarGroupSlotQuotaRule model to handle specific queries."""
+
+    def for_group_slot(self, group_slot_id: int) -> "CalendarGroupSlotQuotaRuleQuerySet":
+        """Every quota rule attached to one ``CalendarGroupSlot``."""
+        return self.filter(group_slot_fk_id=group_slot_id)
+
+    def for_calendar(self, calendar_id: int) -> "CalendarGroupSlotQuotaRuleQuerySet":
+        """Every quota rule attached to one ``Calendar``, across every slot it's in."""
+        return self.filter(calendar_fk_id=calendar_id)
+
+
 class AvailableTimeQuerySet(
     BaseOrganizationModelQuerySet, RecurringQuerySetMixin, GroupSlotScopedQuerySetMixin
 ):

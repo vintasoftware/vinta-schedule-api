@@ -1,9 +1,10 @@
 import datetime
 
-from .constants import CalendarProvider, ExternalEventChangeKind, RecurrenceFrequency
+from .constants import CalendarProvider, ExternalEventChangeKind, QuotaPeriod, RecurrenceFrequency
 from .models import (
     BookingPolicy,
     CalendarEvent,
+    CalendarGroupSlotQuotaRule,
     CalendarOwnership,
     EventAttendance,
     ExternalEventChangeRequest,
@@ -331,6 +332,31 @@ def create_external_event_change_request(
         proposed_values=proposed_values if proposed_values is not None else {},
         proposed_payload=proposed_payload if proposed_payload is not None else {},
         retained_values=retained_values if retained_values is not None else {},
+        **kwargs,
+    )
+
+
+def create_group_slot_quota_rule(
+    *,
+    organization,
+    group_slot,
+    calendar,
+    period: str = QuotaPeriod.WEEK,
+    cap: int = 3,
+    **kwargs,
+) -> CalendarGroupSlotQuotaRule:
+    """Create a ``CalendarGroupSlotQuotaRule`` capping *calendar*'s live bookings
+    made through *group_slot* within one *period* (default: 3 a week).
+
+    ``organization`` is required explicitly (no default) so tests that forget
+    to pass it fail loudly rather than silently cross-tenant.
+    """
+    return CalendarGroupSlotQuotaRule.objects.create(
+        organization=organization,
+        group_slot=group_slot,
+        calendar=calendar,
+        period=period,
+        cap=cap,
         **kwargs,
     )
 

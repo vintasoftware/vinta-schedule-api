@@ -18,6 +18,7 @@ from calendar_integration.querysets import (
     CalendarGroupQuerySet,
     CalendarGroupSlotMembershipQuerySet,
     CalendarGroupSlotQuerySet,
+    CalendarGroupSlotQuotaRuleQuerySet,
     CalendarManagementTokenQuerySet,
     CalendarQuerySet,
     CalendarSyncQuerySet,
@@ -310,6 +311,17 @@ class CalendarEventGroupSelectionManager(BaseOrganizationModelManager):
 
     def get_queryset(self) -> CalendarEventGroupSelectionQuerySet:
         return CalendarEventGroupSelectionQuerySet(self.model, using=self._db)
+
+
+class CalendarGroupSlotQuotaRuleManager(BaseOrganizationModelManager):
+    """Custom manager for CalendarGroupSlotQuotaRule model to handle specific queries."""
+
+    def get_queryset(self) -> CalendarGroupSlotQuotaRuleQuerySet:
+        return CalendarGroupSlotQuotaRuleQuerySet(self.model, using=self._db)
+
+    def for_group_slot(self, group_slot_id: int) -> CalendarGroupSlotQuotaRuleQuerySet:
+        """Wraps :meth:`CalendarGroupSlotQuotaRuleQuerySet.for_group_slot`."""
+        return self.get_queryset().for_group_slot(group_slot_id)
 
 
 class CalendarManagementTokenManager(BaseOrganizationModelManager):

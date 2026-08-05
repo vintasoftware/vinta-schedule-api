@@ -17,6 +17,7 @@ from calendar_integration.models import (
     CalendarGroup,
     CalendarGroupSlot,
     CalendarGroupSlotMembership,
+    CalendarGroupSlotQuotaRule,
     CalendarWebhookEvent,
     CalendarWebhookSubscription,
     ExternalEventChangeRequest,
@@ -399,6 +400,32 @@ class CalendarEventGroupSelectionAdmin(admin.ModelAdmin):
             super()
             .get_queryset(request)
             .select_related("organization", "event_fk", "slot_fk", "calendar_fk")
+        )
+
+
+@admin.register(CalendarGroupSlotQuotaRule)
+class CalendarGroupSlotQuotaRuleAdmin(admin.ModelAdmin):
+    """Admin interface for CalendarGroupSlotQuotaRule."""
+
+    list_display = ("id", "calendar", "group_slot", "period", "cap")
+    list_filter = ("organization", "group_slot_fk", "period")
+    search_fields = ("calendar_fk__name", "group_slot_fk__name")
+    readonly_fields = ("created", "modified")
+    fields = (
+        "organization",
+        "group_slot_fk",
+        "calendar_fk",
+        "period",
+        "cap",
+        "created",
+        "modified",
+    )
+
+    def get_queryset(self, request: HttpRequest):
+        return (
+            super()
+            .get_queryset(request)
+            .select_related("organization", "calendar_fk", "group_slot_fk")
         )
 
 

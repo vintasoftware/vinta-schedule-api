@@ -118,3 +118,17 @@ class GroupScopedRuleType(TextChoices):
 
     OUTSIDE_WINDOW = "outside_window", "Outside window"
     INSIDE_BLOCK = "inside_block", "Inside block"
+
+
+class QuotaPeriod(TextChoices):
+    """Fixed calendar period a ``CalendarGroupSlotQuotaRule`` cap applies to
+    (CALENDAR_GROUP_SCOPED_AVAILABILITY spec, "Time-bounded rules").
+
+    Values match exactly what the ``calculate_calendar_group_quota_period_counts``
+    Postgres function accepts for its ``p_period_type`` argument -- keep them in
+    sync if either side changes.
+    """
+
+    DAY = "day", "Day"
+    WEEK = "week", "Week"
+    MONTH = "month", "Month"

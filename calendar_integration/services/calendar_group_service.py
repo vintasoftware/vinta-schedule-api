@@ -31,6 +31,7 @@ from calendar_integration.models import (
     CalendarGroup,
     CalendarGroupSlot,
     CalendarGroupSlotMembership,
+    CalendarGroupSlotQuotaRule,
     CalendarOwnership,
     RecurrenceRule,
 )
@@ -430,15 +431,16 @@ class CalendarGroupService:
 
     def _delete_group_scoped_rows_for_removed_calendars(
         self,
-        queryset: "QuerySet[AvailableTime] | QuerySet[BlockedTime]",
+        queryset: "QuerySet[AvailableTime] | QuerySet[BlockedTime] | QuerySet[CalendarGroupSlotQuotaRule]",
     ) -> None:
         """Audit-then-delete every row in ``queryset`` (already filtered to one
         slot and a set of removed calendar ids).
 
-        Shared by ``_reconcile_slot`` for both group-scoped windows
-        (``AvailableTime``) and group-scoped blocked time (``BlockedTime``,
-        Phase 2a) -- same cleanup shape, different model. No-op (still issues
-        the delete) when no ``audit_service`` is bound.
+        Shared by ``_reconcile_slot`` for group-scoped windows
+        (``AvailableTime``), group-scoped blocked time (``BlockedTime``,
+        Phase 2a), and quota rules (``CalendarGroupSlotQuotaRule``, Phase 3a)
+        -- same cleanup shape, different model. No-op (still issues the
+        delete) when no ``audit_service`` is bound.
         """
         rows = list(queryset)
         for row in rows:
@@ -479,17 +481,15 @@ class CalendarGroupService:
         if to_remove:
             self._ensure_no_future_selections(slot=slot, calendar_ids=to_remove)
 
-            # Delete group-scoped windows and blocked time for the removed
-            # calendars. The FK on AvailableTime.group_slot /
-            # BlockedTime.group_slot → CalendarGroupSlot cascades on SLOT
-            # deletion only, not on membership removal, so we must explicitly
-            # clean up the orphaned rows here. Each row deletion is audited
-            # individually because the group-update diff only captures
-            # name/description/accepts_public_scheduling, not membership or
-            # window/block changes.
-            # TODO(Phase 3a): quota rules must extend this cleanup when that
-            # phase adds its group-scoped rows, using the same pattern: delete
-            # rows for removed calendars in to_remove.
+            # Delete group-scoped windows, blocked time, and quota rules for the
+            # removed calendars. The FK on AvailableTime.group_slot /
+            # BlockedTime.group_slot / CalendarGroupSlotQuotaRule.group_slot →
+            # CalendarGroupSlot cascades on SLOT deletion only, not on
+            # membership removal, so we must explicitly clean up the orphaned
+            # rows here. Each row deletion is audited individually because the
+            # group-update diff only captures name/description/
+            # accepts_public_scheduling, not membership or window/block/quota
+            # changes.
             org_id = cast(Organization, self.organization).id
             self._delete_group_scoped_rows_for_removed_calendars(
                 AvailableTime.objects.unscoped()
@@ -500,6 +500,11 @@ class CalendarGroupService:
                 BlockedTime.objects.unscoped()
                 .filter_by_organization(org_id)
                 .filter(group_slot_fk=slot, calendar_fk_id__in=to_remove)
+            )
+            self._delete_group_scoped_rows_for_removed_calendars(
+                CalendarGroupSlotQuotaRule.objects.filter_by_organization(org_id).filter(
+                    group_slot_fk=slot, calendar_fk_id__in=to_remove
+                )
             )
 
             CalendarGroupSlotMembership.objects.filter_by_organization(self.organization.id).filter(
