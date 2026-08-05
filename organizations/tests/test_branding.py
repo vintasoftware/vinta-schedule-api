@@ -23,6 +23,11 @@ from organizations.models import (
     resolve_branding_for_display,
 )
 from organizations.notification_contexts import organization_invitation_context
+from organizations.permissions import (
+    BrandingWriteGateReason,
+    evaluate_branding_write_gate,
+    is_branding_eligible_organization,
+)
 from organizations.redirect_url_validation import validate_redirect_url
 from payments.billing_constants import BillingState, Entitlement
 from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
@@ -335,6 +340,87 @@ def _org_with_entitlement(entitlement_key: str, is_enabled: bool, **org_kwargs) 
         is_enabled=is_enabled,
     )
     return org
+
+
+@pytest.mark.django_db
+class TestEvaluateBrandingWriteGate:
+    """``organizations.permissions.evaluate_branding_write_gate`` -- the full
+    three-condition write gate (Organization Auth-Area Branding plan, Phase 3):
+    parentless AND entitled AND slug-set. Composes on top of the two-condition
+    ``is_branding_eligible_organization`` (Phase 2b), which stays the
+    logo-signing surface's gate -- see ``test_two_condition_helper_stays_free_
+    of_the_slug_condition`` below for that split pinned as a regression test.
+    """
+
+    def test_admits_a_parentless_entitled_slugged_organization(self):
+        org = _org_with_entitlement(
+            Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="eligible-org"
+        )
+
+        assert evaluate_branding_write_gate(org) is BrandingWriteGateReason.OK
+
+    def test_refuses_an_organization_with_a_parent(self):
+        parent_org = _org_with_entitlement(
+            Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="parent-org"
+        )
+        # No subscription needed on the child: the gate short-circuits on
+        # `parent_id is not None` before ever checking entitlement or slug.
+        child_org = baker.make(Organization, parent=parent_org, slug="child-org")
+
+        assert evaluate_branding_write_gate(child_org) is BrandingWriteGateReason.HAS_PARENT
+
+    def test_refuses_an_unentitled_organization(self):
+        org = _org_with_entitlement(
+            Entitlement.WHITE_LABEL_BRANDING, is_enabled=False, parent=None, slug="free-plan-org"
+        )
+
+        assert evaluate_branding_write_gate(org) is BrandingWriteGateReason.NOT_ENTITLED
+
+    def test_refuses_an_organization_with_no_slug(self):
+        org = _org_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None)
+        assert org.slug is None
+
+        assert evaluate_branding_write_gate(org) is BrandingWriteGateReason.NO_SLUG
+
+    def test_the_three_refusals_are_distinguishable(self):
+        """Each failure mode produces its own reason, not a bare False -- this is
+        the whole point of the enum-returning gate over a boolean helper."""
+        parent_org = _org_with_entitlement(
+            Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="parent-org-2"
+        )
+        child_org = baker.make(Organization, parent=parent_org)
+        unentitled_org = _org_with_entitlement(
+            Entitlement.WHITE_LABEL_BRANDING, is_enabled=False, parent=None, slug="unentitled-org"
+        )
+        no_slug_org = _org_with_entitlement(
+            Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None
+        )
+
+        reasons = {
+            evaluate_branding_write_gate(child_org),
+            evaluate_branding_write_gate(unentitled_org),
+            evaluate_branding_write_gate(no_slug_org),
+        }
+
+        assert reasons == {
+            BrandingWriteGateReason.HAS_PARENT,
+            BrandingWriteGateReason.NOT_ENTITLED,
+            BrandingWriteGateReason.NO_SLUG,
+        }
+
+    def test_two_condition_helper_stays_free_of_the_slug_condition(self):
+        """The logo-signing surface's gate (`is_branding_eligible_organization`)
+        must still admit a slug-less eligible organization -- requiring a slug
+        before an admin can upload a logo would order the branding form around
+        an implementation detail (Write gate guiding decision). Pins the split
+        between the two-condition and three-condition gates as a regression
+        test: a future change that folds the slug condition into
+        `is_branding_eligible_organization` would flip this assertion."""
+        org = _org_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None)
+        assert org.slug is None
+
+        assert is_branding_eligible_organization(org) is True
+        assert evaluate_branding_write_gate(org) is BrandingWriteGateReason.NO_SLUG
 
 
 @pytest.mark.django_db

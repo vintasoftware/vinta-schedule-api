@@ -56,7 +56,7 @@ Command translation (container → host):
 | 1 | Self-serve organization slug | 3 | ✅ done — [PR #206](https://github.com/vintasoftware/vinta-schedule-api/pull/206) | plan/organization-auth-branding/phase-1 |
 | 2a | Swap allowlist → single redirect | 2 | ✅ done — [PR #207](https://github.com/vintasoftware/vinta-schedule-api/pull/207) | plan/organization-auth-branding/phase-2a |
 | 2b | Logo upload and delivery | 3 | ✅ done — [PR #208](https://github.com/vintasoftware/vinta-schedule-api/pull/208) | plan/organization-auth-branding/phase-2b |
-| 3 | Widen write gate | 3 | ⏳ pending | plan/organization-auth-branding/phase-3 |
+| 3 | Widen write gate | 3 | ✅ done — [PR #209](https://github.com/vintasoftware/vinta-schedule-api/pull/209) | plan/organization-auth-branding/phase-3 |
 | 4 | Audit + capability field | 2 | ⏳ pending | plan/organization-auth-branding/phase-4 |
 | 5 | Resolve branding (parentless) | 3 | ⏳ pending | plan/organization-auth-branding/phase-5 |
 | 6 | Invitation reply-to | 2 | ⏳ pending | plan/organization-auth-branding/phase-6 |
@@ -97,9 +97,19 @@ Command translation (container → host):
 - Gates: ruff/format clean, `makemigrations --check` no changes, `manage.py check` clean, mypy no new errors, **full suite 4754 passed**. schema.yml regenerated (schema-auth.yml unchanged).
 - Carry-forward: `resolve_branding_for_display` now accepts `Organization | None`. `build_logo_delivery_url` keyed by branding ROOT (reseller) org. `BrandingLogoURLField.get_attribute` DRF override (single-instance only; would N+1 in a list). Slug-less root resolves logo_url to `/branding/logo/default/`.
 
+### Phase 3 — Widen write gate ✅
+- **Branch**: `plan/organization-auth-branding/phase-3` (base: phase-2b) · **PR**: [#209](https://github.com/vintasoftware/vinta-schedule-api/pull/209)
+- **Implementer**: sonnet (T3) · **Reviewer**: opus (T4) · **Fixer**: sonnet (T2)
+- `evaluate_branding_write_gate(org)` → `BrandingWriteGateReason` (OK/HAS_PARENT/NOT_ENTITLED/NO_SLUG). Distinguishable refusals per surface. REST: 3 PermissionDenied subclasses (`organizations/exceptions.py`); PUT/PATCH full gate; **GET uses two-condition read gate** (NO_SLUG admitted) so slug-less eligible orgs load the page. GraphQL `updateBranding` swaps `assert_org_can_invite` for the gate; `UpdateBrandingInput.slug` optional → sets slug+branding in ONE `transaction.atomic()` call (atomic rollback verified vs graphql-core's HTTP-200 swallow). Admin form `clean` refuses parented org.
+- Two-condition logo-signing helper (Phase 2b) kept separate — logo upload does NOT require a slug.
+- No migration (no model change). Reseller fixtures now need a slug (asserted).
+- **Tier-4 review lead finding (fixed)**: GET was over-gated on slug → would 403 slug-less eligible orgs and pre-break Phase 4's `can_manage_branding` contract; fixed to two-condition read gate. Also fixed: friendly error (not IntegrityError 500) on GraphQL slug-collision race via nested savepoint. Verified holding: no gate bypass on any write surface, atomicity, no reason leak.
+- Gates: ruff/format clean, `makemigrations --check` no changes, `manage.py check` clean, mypy no new errors (+ fixed a latent User|None narrowing at 2 touched sites), **full suite 4778 passed**. schema.yml regenerated (only 403 descriptions changed).
+- Carry-forward: `can_manage_branding` (Phase 4) = parentless+entitled (NO slug) — must equal GET-reachability. Out-of-scope flagged: pre-existing `S3DirectWidget`/admin-form required-when-blank + re-render crash (worked around in tests).
+
 ## Current phase
 
-Phase 3 — Widen the write gate to parentless entitled organizations.
+Phase 4 — Audit branding writes and expose the capability field.
 
 ## Deferred phases
 

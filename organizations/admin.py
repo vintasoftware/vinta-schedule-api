@@ -196,10 +196,58 @@ class OrganizationAdmin(admin.ModelAdmin):
         subscription_service.create_subscription_for_organization(obj)
 
 
+class OrganizationBrandingAdminForm(forms.ModelForm):
+    """Refuses to save branding for an organization that has a parent.
+
+    Admin is not an escape hatch: "no branding for organizations inside a
+    hierarchy" (see the plan's Non-goals) holds for staff too, mirroring here
+    what the other two write surfaces (``OrganizationBrandingView``,
+    ``update_branding``) enforce via ``organizations.permissions.
+    evaluate_branding_write_gate``. Deliberately checks ONLY the parent
+    condition, not entitlement or slug: those are self-serve/billing states an
+    operator may legitimately need to seed branding ahead of (e.g. before the
+    organization's own admin has picked a slug), whereas the parent rule is a
+    hard structural boundary with no legitimate admin override.
+    """
+
+    class Meta:
+        model = OrganizationBranding
+        fields = (
+            "organization",
+            "app_name",
+            "logo",
+            "primary_color",
+            "secondary_color",
+            "support_email",
+            "redirect_url",
+        )
+
+    def clean(self) -> dict[str, Any] | None:
+        cleaned_data = super().clean()
+        organization = None if cleaned_data is None else cleaned_data.get("organization")
+        if organization is not None and organization.parent_id is not None:
+            raise forms.ValidationError(
+                {
+                    "organization": (
+                        "This organization has a parent organization and cannot have "
+                        "its own branding. Branding for organizations inside a "
+                        "hierarchy is controlled by the reseller organization above them."
+                    )
+                }
+            )
+        return cleaned_data
+
+
 @admin.register(OrganizationBranding)
 class OrganizationBrandingAdmin(admin.ModelAdmin):
-    """Admin interface for OrganizationBranding."""
+    """Admin interface for OrganizationBranding.
 
+    ``form`` refuses to save branding for an organization that has a parent
+    (``OrganizationBrandingAdminForm.clean``) -- the parent-present rule holds
+    for staff too, not just the REST/GraphQL write surfaces.
+    """
+
+    form = OrganizationBrandingAdminForm
     list_display = ("id", "organization", "app_name", "support_email", "created_at", "updated_at")
     list_filter = ("created_at", "updated_at")
     search_fields = ("organization__name", "app_name", "support_email")
