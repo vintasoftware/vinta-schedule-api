@@ -1,5 +1,6 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated
 
+from dependency_injector.wiring import Provide, inject
 from rest_framework.permissions import BasePermission
 
 from organizations.models import (
@@ -12,6 +13,7 @@ from organizations.models import (
 )
 from payments.billing_constants import Entitlement
 from payments.entitlement_cache import has_entitlement_cached
+from payments.services.entitlement_service import EntitlementService
 from public_api.capabilities import is_target_in_subtree
 
 
@@ -19,7 +21,11 @@ if TYPE_CHECKING:
     from users.models import User
 
 
-def is_branding_eligible_organization(organization: Organization | None) -> bool:
+@inject
+def is_branding_eligible_organization(
+    organization: Organization | None,
+    entitlement_service: Annotated[EntitlementService, Provide["entitlement_service"]] = None,  # type: ignore[assignment]
+) -> bool:
     """Shared branding-eligibility gate: ``organization`` has no parent AND holds
     the ``white_label_branding`` entitlement.
 
@@ -31,20 +37,23 @@ def is_branding_eligible_organization(organization: Organization | None) -> bool
     with a ``slug`` set). Written as an early-return chain rather than a single
     boolean expression so that extension is a one-line addition, not a rewrite.
 
-    The entitlement check goes through the same deferred-DI-container / fail-closed
-    pattern as ``organizations.models.resolve_branding_for_display`` (see that
-    function's docstring for why the import is function-body-local): an
-    unresolvable entitlement service denies rather than admits.
+    ``entitlement_service`` is DI-injected via ``@inject``/``Provide`` (the
+    established pattern -- see ``audit/services.py``,
+    ``accounts/account_adapters.py``); the ``organizations`` package is already
+    wired via ``container.wire(packages=INTERNAL_INSTALLED_APPS)`` (see
+    ``di_core/apps.py``), so callers never pass it explicitly. It carries a
+    ``= None`` default rather than being required so the gate stays fail-closed
+    when wiring hasn't run (e.g. an import path that reaches this function
+    before app startup completes): an unresolvable entitlement service denies
+    rather than admits.
     """
     if organization is None or organization.parent_id is not None:
         return False
 
-    from di_core.containers import container
-
-    if container is None:
+    if entitlement_service is None:
         return False
     return has_entitlement_cached(
-        container.entitlement_service(), organization, Entitlement.WHITE_LABEL_BRANDING
+        entitlement_service, organization, Entitlement.WHITE_LABEL_BRANDING
     )
 
 
