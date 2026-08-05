@@ -74,13 +74,21 @@ Phase 0 branches off `plan-calendar-group-scoped-availability`; each later phase
 - **Summary**: Nested REST viewset `.../calendar-groups/{group_id}/slots/{slot_id}/availability-windows/`, thin, delegating to Phase 1a `CalendarGroupService`. `GroupScopedAvailabilityWindowPermission` for route-level group-visibility gating; **non-disclosure byte-identical** across stranger / cross-org / other-calendar-owner / missing-or-mismatched slot (all `Http404 {"detail":"Not found."}`, asserted via `data ==`). Create/update responses wrap `{window, orphaned_bookings}`; list/retrieve return the window. Tri-state recurrence editing (`PATCH null` clears, omit leaves, string sets) via `_UNCHANGED` sentinel. Narrow virtual model + bounded-query test. Schema purely additive. No migration.
 - **Process note**: reinforced hard rules on the retry (no amend, no commit with red tests, gating is required not optional).
 
+### Phase 1d — Windows on the public API ✅
+
+- **Branch**: `plan/calendar-group-scoped-availability/phase-1d` (base: phase-1c) — **PR [#223](https://github.com/vintasoftware/vinta-schedule-api/pull/223)**
+- **Implementer model**: sonnet (plan Tier 3) — agent type `implementer`
+- **Reviewer model**: sonnet — 1 security BLOCKER (IDOR) + 2 SHOULD-FIX + NITs, all fixed (sonnet fixer)
+- **Summary**: Public GraphQL `group_scoped_availability_windows` query + `batch_upsert_group_scoped_availability_windows` mutation. Batch semantics mirror the existing availability batch write exactly (all-or-nothing via own `@transaction.atomic()` + `SELECT FOR UPDATE`, NOT relying on prod-only `ATOMIC_REQUESTS`; over-limit rejects whole with byte-identical body; content-match idempotent replay for create, explicit `windowId` for update/delete). Fixed the entitlement counter `_count_availability_windows` to `unscoped().only_user_authored()` so group-scoped windows meter (composes correctly — still excludes non-user-authored rows). Public-API token auth (`OrganizationResourceAccess` + `assert_calendar_in_owner_scope`). Existing availability ops frozen (asserted). No migration.
+- **Security BLOCKER fixed (IDOR)**: update/delete now cross-check the resolved window's `calendar_fk_id == op.calendar_id` (was authorizing only by the op's own calendar, letting an owner-scoped token modify another calendar's window in the same slot via a foreign `windowId`). **Concurrency fix**: billing-root lock now taken before the idempotency content-match (concurrent UC-5 retries no longer double-create).
+
 ## Current phase
 
-Phase 1d — Windows on the public API
+Phase 2a — Group-scoped blocked time: writes and enforcement
 
 ## Remaining phases
 
-1d, 2a, 2b, 2c, 3a, 3b, 3c, 4
+2a, 2b, 2c, 3a, 3b, 3c, 4
 
 ## Deferred phases
 
