@@ -2,7 +2,6 @@ import re
 from typing import Annotated
 
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.core.validators import URLValidator
 
 from dependency_injector.wiring import Provide, inject
 from rest_framework import serializers
@@ -15,6 +14,9 @@ from organizations.models import (
     OrganizationInvitation,
     OrganizationMembership,
     OrganizationRole,
+)
+from organizations.redirect_url_validation import (
+    validate_redirect_url as validate_redirect_url_rule,
 )
 from organizations.services import OrganizationService
 from organizations.slug_validation import SLUG_MAX_LENGTH, validate_organization_slug
@@ -408,12 +410,13 @@ class OrganizationBrandingSerializer(serializers.ModelSerializer):
     """Serializer for OrganizationBranding (reseller-admin REST endpoints).
 
     Exposes app_name, logo_url, primary_color, secondary_color, support_email,
-    and return_url_allowlist. NEVER exposes can_invite_organizations or makes
+    and redirect_url. NEVER exposes can_invite_organizations or makes
     organization writable (the org is set from the acting org in the view).
 
     Validates:
     - Color format: #RRGGBB or #RRGGBBAA (regex).
-    - Each return_url_allowlist entry is a valid URL (URLValidator).
+    - redirect_url: HTTPS scheme, no wildcard character, no path-prefix pattern
+      (organizations.redirect_url_validation).
     """
 
     class Meta:
@@ -424,7 +427,7 @@ class OrganizationBrandingSerializer(serializers.ModelSerializer):
             "primary_color",
             "secondary_color",
             "support_email",
-            "return_url_allowlist",
+            "redirect_url",
         )
 
     def validate_primary_color(self, value: str) -> str:
@@ -435,14 +438,10 @@ class OrganizationBrandingSerializer(serializers.ModelSerializer):
         """Validate secondary_color hex format: #RRGGBB or #RRGGBBAA."""
         return _validate_hex_color(value)
 
-    def validate_return_url_allowlist(self, value: list) -> list:
-        """Validate that each return_url_allowlist entry is a valid URL."""
-        validator = URLValidator()
-        for url in value:
-            try:
-                validator(url)
-            except DjangoValidationError as e:
-                raise serializers.ValidationError(
-                    f"Invalid URL in return_url_allowlist: {url}"
-                ) from e
+    def validate_redirect_url(self, value: str) -> str:
+        """Validate redirect_url: HTTPS scheme, no wildcard, no path-prefix pattern."""
+        try:
+            validate_redirect_url_rule(value)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(exc.messages) from exc
         return value

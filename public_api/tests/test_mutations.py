@@ -14,6 +14,7 @@ from calendar_integration.models import AvailableTime, Calendar, ChildrenCalenda
 from calendar_integration.services.calendar_service import CalendarService
 from organizations.models import (
     Organization,
+    OrganizationBranding,
     OrganizationInvitation,
     OrganizationMembership,
     OrganizationRole,
@@ -1466,7 +1467,7 @@ class TestUpdateBranding:
                             "primaryColor": "#FF0000",
                             "secondaryColor": "#00FF00",
                             "supportEmail": "support@example.com",
-                            "returnUrlAllowlist": ["https://example.com"],
+                            "redirectUrl": "https://example.com/return",
                         }
                     },
                 },
@@ -1611,8 +1612,8 @@ class TestUpdateBranding:
         assert "errors" in data
         assert "Invalid primary_color format" in str(data["errors"])
 
-    def test_update_branding_invalid_allowlist_url(self):
-        """Test that invalid URLs in allowlist are rejected."""
+    def test_update_branding_non_https_redirect_url_rejected(self):
+        """Test that a non-HTTPS redirect_url is rejected."""
         from di_core.containers import container
 
         reseller_org = baker.make(Organization, name="Reseller", can_invite_organizations=True)
@@ -1641,7 +1642,7 @@ class TestUpdateBranding:
                     "variables": {
                         "input": {
                             "appName": "MyApp",
-                            "returnUrlAllowlist": ["not-a-url"],  # Invalid
+                            "redirectUrl": "http://example.com/return",  # Invalid: not https
                         }
                     },
                 },
@@ -1652,7 +1653,104 @@ class TestUpdateBranding:
         assert response.status_code == 200
         data = response.json()
         assert "errors" in data
-        assert "Invalid URL" in str(data["errors"])
+        assert "https scheme" in str(data["errors"])
+
+    def test_update_branding_wildcard_redirect_url_rejected(self):
+        """Test that a redirect_url containing a wildcard character is rejected."""
+        from di_core.containers import container
+
+        reseller_org = baker.make(Organization, name="Reseller", can_invite_organizations=True)
+
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="branding_integration", organization=reseller_org
+        )
+        baker.make(ResourceAccess, system_user=system_user, resource_name="branding")
+
+        mutation = """
+        mutation UpdateBranding($input: UpdateBrandingInput!) {
+            updateBranding(input: $input) {
+                branding {
+                    id
+                }
+            }
+        }
+        """
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": mutation,
+                    "variables": {
+                        "input": {
+                            "appName": "MyApp",
+                            "redirectUrl": "https://*.example.com/return",  # Invalid: wildcard
+                        }
+                    },
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert "wildcard" in str(data["errors"])
+
+    @pytest.mark.parametrize(
+        ("redirect_url", "expected_message_fragment"),
+        [
+            ("https://", "well-formed"),
+            ("https:evil.com", "well-formed"),
+            ("https://example.com\r\nSet-Cookie:x", "control character"),
+        ],
+    )
+    def test_update_branding_malformed_redirect_url_rejected(
+        self, redirect_url, expected_message_fragment
+    ):
+        """Hostless, scheme-confused, and CRLF redirect_url are rejected and not persisted."""
+        from di_core.containers import container
+
+        reseller_org = baker.make(Organization, name="Reseller", can_invite_organizations=True)
+
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="branding_integration", organization=reseller_org
+        )
+        baker.make(ResourceAccess, system_user=system_user, resource_name="branding")
+
+        mutation = """
+        mutation UpdateBranding($input: UpdateBrandingInput!) {
+            updateBranding(input: $input) {
+                branding {
+                    id
+                }
+            }
+        }
+        """
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": mutation,
+                    "variables": {
+                        "input": {
+                            "appName": "MyApp",
+                            "redirectUrl": redirect_url,
+                        }
+                    },
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert expected_message_fragment in str(data["errors"])
+        assert not OrganizationBranding.objects.filter(organization=reseller_org).exists()
 
     def test_update_branding_upsert(self):
         """Test that multiple updates to the same org create only one branding row."""
@@ -1782,7 +1880,7 @@ class TestUpdateBranding:
                             "appName": "App A",
                             "primaryColor": "#FF0000",
                             "supportEmail": "support_a@example.com",
-                            "returnUrlAllowlist": ["https://a.example.com"],
+                            "redirectUrl": "https://a.example.com/return",
                         }
                     },
                 },
@@ -1801,7 +1899,7 @@ class TestUpdateBranding:
         assert branding_row_a.app_name == "App A"
         assert branding_row_a.primary_color == "#FF0000"
         assert branding_row_a.support_email == "support_a@example.com"
-        assert "https://a.example.com" in branding_row_a.return_url_allowlist
+        assert branding_row_a.redirect_url == "https://a.example.com/return"
 
         # Reseller B creates branding
         with container.public_api_auth_service.override(auth_service_b):
@@ -1814,7 +1912,7 @@ class TestUpdateBranding:
                             "appName": "App B",
                             "primaryColor": "#0000FF",
                             "supportEmail": "support_b@example.com",
-                            "returnUrlAllowlist": ["https://b.example.com"],
+                            "redirectUrl": "https://b.example.com/return",
                         }
                     },
                 },
@@ -1841,8 +1939,8 @@ class TestUpdateBranding:
         assert branding_row_a.support_email == "support_a@example.com", (
             "A's support_email must not change"
         )
-        assert "https://a.example.com" in branding_row_a.return_url_allowlist, (
-            "A's allowlist must not change"
+        assert branding_row_a.redirect_url == "https://a.example.com/return", (
+            "A's redirect_url must not change"
         )
 
         # Verify there is exactly one branding row for A

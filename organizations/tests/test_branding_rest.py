@@ -114,7 +114,7 @@ class TestOrganizationBrandingViewSet:
             primary_color="#FF0000",
             secondary_color="#00FF00",
             support_email="support@example.com",
-            return_url_allowlist=["https://example.com", "https://app.example.com"],
+            redirect_url="https://example.com/return",
         )
 
         client.force_authenticate(user)
@@ -129,10 +129,7 @@ class TestOrganizationBrandingViewSet:
         assert data["primary_color"] == "#FF0000"
         assert data["secondary_color"] == "#00FF00"
         assert data["support_email"] == "support@example.com"
-        assert data["return_url_allowlist"] == [
-            "https://example.com",
-            "https://app.example.com",
-        ]
+        assert data["redirect_url"] == "https://example.com/return"
 
     def test_create_branding_via_put(self, client, user, reseller_org, reseller_org_admin):
         """PUT /branding/ creates branding (upsert)."""
@@ -145,7 +142,7 @@ class TestOrganizationBrandingViewSet:
             "primary_color": "#FF0000",
             "secondary_color": "#00FF00",
             "support_email": "support@example.com",
-            "return_url_allowlist": ["https://example.com"],
+            "redirect_url": "https://example.com/return",
         }
 
         response = client.put(BRANDING_URL, data=payload, format="json")
@@ -171,7 +168,7 @@ class TestOrganizationBrandingViewSet:
             primary_color="#0000FF",
             secondary_color="#FFFF00",
             support_email="old@example.com",
-            return_url_allowlist=["https://old.example.com"],
+            redirect_url="https://old.example.com/return",
         )
 
         client.force_authenticate(user)
@@ -183,7 +180,7 @@ class TestOrganizationBrandingViewSet:
             "primary_color": "#FF0000",
             "secondary_color": "#00FF00",
             "support_email": "new@example.com",
-            "return_url_allowlist": ["https://new.example.com"],
+            "redirect_url": "https://new.example.com/return",
         }
 
         response = client.put(BRANDING_URL, data=payload, format="json")
@@ -205,7 +202,7 @@ class TestOrganizationBrandingViewSet:
             primary_color="#FF0000",
             secondary_color="#00FF00",
             support_email="original@example.com",
-            return_url_allowlist=["https://original.example.com"],
+            redirect_url="https://original.example.com/return",
         )
 
         client.force_authenticate(user)
@@ -249,7 +246,7 @@ class TestOrganizationBrandingViewSet:
             "secondary_color": "#00FF00",
             "logo_url": "",
             "support_email": "",
-            "return_url_allowlist": [],
+            "redirect_url": "",
         }
 
         response = client.put(BRANDING_URL, data=payload, format="json")
@@ -266,16 +263,14 @@ class TestOrganizationBrandingViewSet:
             "secondary_color": "#00FF00",
             "logo_url": "",
             "support_email": "",
-            "return_url_allowlist": [],
+            "redirect_url": "",
         }
 
         response = client.put(BRANDING_URL, data=payload, format="json")
         assert_response_status_code(response, status.HTTP_201_CREATED)
 
-    def test_invalid_url_in_allowlist_returns_400(
-        self, client, user, reseller_org, reseller_org_admin
-    ):
-        """Invalid URL in return_url_allowlist returns 400."""
+    def test_invalid_redirect_url_returns_400(self, client, user, reseller_org, reseller_org_admin):
+        """A malformed redirect_url value returns 400."""
         client.force_authenticate(user)
         client.credentials(HTTP_X_ORGANIZATION_ID=str(reseller_org.id))
 
@@ -285,14 +280,71 @@ class TestOrganizationBrandingViewSet:
             "secondary_color": "#00FF00",
             "logo_url": "",
             "support_email": "",
-            "return_url_allowlist": ["not-a-valid-url"],  # Invalid URL
+            "redirect_url": "not-a-valid-url",  # Invalid URL
         }
 
         response = client.put(BRANDING_URL, data=payload, format="json")
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
 
-    def test_valid_urls_in_allowlist_accepted(self, client, user, reseller_org, reseller_org_admin):
-        """Valid URLs in return_url_allowlist are accepted."""
+    def test_non_https_redirect_url_returns_400(
+        self, client, user, reseller_org, reseller_org_admin
+    ):
+        """An http:// redirect_url is rejected -- HTTPS only."""
+        client.force_authenticate(user)
+        client.credentials(HTTP_X_ORGANIZATION_ID=str(reseller_org.id))
+
+        payload = {
+            "app_name": "MyScheduler",
+            "primary_color": "#FF0000",
+            "secondary_color": "#00FF00",
+            "logo_url": "",
+            "support_email": "",
+            "redirect_url": "http://example.com/return",
+        }
+
+        response = client.put(BRANDING_URL, data=payload, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_wildcard_redirect_url_returns_400(
+        self, client, user, reseller_org, reseller_org_admin
+    ):
+        """A redirect_url containing a wildcard character is rejected."""
+        client.force_authenticate(user)
+        client.credentials(HTTP_X_ORGANIZATION_ID=str(reseller_org.id))
+
+        payload = {
+            "app_name": "MyScheduler",
+            "primary_color": "#FF0000",
+            "secondary_color": "#00FF00",
+            "logo_url": "",
+            "support_email": "",
+            "redirect_url": "https://*.example.com",
+        }
+
+        response = client.put(BRANDING_URL, data=payload, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_path_prefix_redirect_url_returns_400(
+        self, client, user, reseller_org, reseller_org_admin
+    ):
+        """A redirect_url with a trailing-slash path-prefix pattern is rejected."""
+        client.force_authenticate(user)
+        client.credentials(HTTP_X_ORGANIZATION_ID=str(reseller_org.id))
+
+        payload = {
+            "app_name": "MyScheduler",
+            "primary_color": "#FF0000",
+            "secondary_color": "#00FF00",
+            "logo_url": "",
+            "support_email": "",
+            "redirect_url": "https://example.com/callback/",
+        }
+
+        response = client.put(BRANDING_URL, data=payload, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_valid_redirect_url_accepted(self, client, user, reseller_org, reseller_org_admin):
+        """A plain HTTPS redirect_url is accepted."""
         client.force_authenticate(user)
         client.credentials(HTTP_X_ORGANIZATION_ID=str(reseller_org.id))
 
@@ -302,7 +354,7 @@ class TestOrganizationBrandingViewSet:
             "secondary_color": "#00FF00",
             "logo_url": "https://example.com/logo.png",
             "support_email": "support@example.com",
-            "return_url_allowlist": ["https://example.com", "http://localhost:3000"],
+            "redirect_url": "https://example.com/return",
         }
 
         response = client.put(BRANDING_URL, data=payload, format="json")
@@ -319,7 +371,7 @@ class TestOrganizationBrandingViewSet:
             "secondary_color": "#00FF00",
             "logo_url": "",
             "support_email": "",
-            "return_url_allowlist": [],
+            "redirect_url": "",
         }
 
         response = client.put(BRANDING_URL, data=payload, format="json")
@@ -336,7 +388,7 @@ class TestOrganizationBrandingViewSet:
             "secondary_color": "#00FF00",
             "logo_url": "",
             "support_email": "",
-            "return_url_allowlist": [],
+            "redirect_url": "",
         }
 
         response = client.put(BRANDING_URL, data=payload, format="json")
@@ -352,7 +404,7 @@ class TestOrganizationBrandingViewSet:
             "secondary_color": "#00FF00",
             "logo_url": "",
             "support_email": "",
-            "return_url_allowlist": [],
+            "redirect_url": "",
         }
 
         response = client.put(BRANDING_URL, data=payload, format="json")
@@ -370,7 +422,7 @@ class TestOrganizationBrandingViewSet:
             primary_color="",
             secondary_color="",
             support_email="",
-            return_url_allowlist=[],
+            redirect_url="",
         )
 
         client.force_authenticate(user)
@@ -396,7 +448,7 @@ class TestOrganizationBrandingViewSet:
             primary_color="",
             secondary_color="",
             support_email="",
-            return_url_allowlist=[],
+            redirect_url="",
         )
 
         baker.make(
@@ -407,7 +459,7 @@ class TestOrganizationBrandingViewSet:
             primary_color="",
             secondary_color="",
             support_email="",
-            return_url_allowlist=[],
+            redirect_url="",
         )
 
         client.force_authenticate(user)
@@ -431,10 +483,7 @@ class TestOrganizationBrandingViewSet:
             "primary_color": "#0066CC",
             "secondary_color": "#FF6633",
             "support_email": "help@clinic.example.com",
-            "return_url_allowlist": [
-                "https://clinic.example.com",
-                "https://app.clinic.example.com",
-            ],
+            "redirect_url": "https://clinic.example.com/return",
         }
 
         # Create branding
@@ -451,7 +500,7 @@ class TestOrganizationBrandingViewSet:
         assert data["primary_color"] == original_payload["primary_color"]
         assert data["secondary_color"] == original_payload["secondary_color"]
         assert data["support_email"] == original_payload["support_email"]
-        assert data["return_url_allowlist"] == original_payload["return_url_allowlist"]
+        assert data["redirect_url"] == original_payload["redirect_url"]
 
     def test_delete_not_allowed(self, client, user, reseller_org, reseller_org_admin):
         """DELETE /branding/ returns 405 Method Not Allowed."""
@@ -463,7 +512,7 @@ class TestOrganizationBrandingViewSet:
             primary_color="",
             secondary_color="",
             support_email="",
-            return_url_allowlist=[],
+            redirect_url="",
         )
 
         client.force_authenticate(user)
@@ -511,7 +560,7 @@ class TestOrganizationBrandingViewSet:
             primary_color="",
             secondary_color="",
             support_email="",
-            return_url_allowlist=[],
+            redirect_url="",
         )
         baker.make(
             OrganizationBranding,
@@ -521,7 +570,7 @@ class TestOrganizationBrandingViewSet:
             primary_color="",
             secondary_color="",
             support_email="",
-            return_url_allowlist=[],
+            redirect_url="",
         )
 
         client.force_authenticate(user)
@@ -549,7 +598,7 @@ class TestOrganizationBrandingViewSet:
             "primary_color": "",
             "secondary_color": "",
             "support_email": "",
-            "return_url_allowlist": [],
+            "redirect_url": "",
         }
         response = client.put(BRANDING_URL, data=payload, format="json")
         assert_response_status_code(response, status.HTTP_200_OK)

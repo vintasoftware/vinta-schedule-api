@@ -1,7 +1,9 @@
-"""Tests for OrganizationBranding model and resolve_branding function."""
+"""Tests for OrganizationBranding model, resolve_branding function, and redirect_url
+validation."""
 
 import datetime
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils import timezone
 
 import pytest
@@ -13,6 +15,7 @@ from organizations.models import (
     resolve_branding,
     resolve_branding_for_display,
 )
+from organizations.redirect_url_validation import validate_redirect_url
 from payments.billing_constants import BillingState, Entitlement
 from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
 
@@ -90,7 +93,7 @@ class TestResolveBranding:
                 "primary_color": "#FF0000",
                 "secondary_color": "#00FF00",
                 "support_email": "first@example.com",
-                "return_url_allowlist": ["https://example.com"],
+                "redirect_url": "https://example.com/first",
             },
         )
 
@@ -103,7 +106,7 @@ class TestResolveBranding:
                 "primary_color": "#0000FF",
                 "secondary_color": "#FFFF00",
                 "support_email": "second@example.com",
-                "return_url_allowlist": ["https://example.com", "https://other.com"],
+                "redirect_url": "https://example.com/second",
             },
         )
 
@@ -117,10 +120,7 @@ class TestResolveBranding:
         assert refreshed.primary_color == "#0000FF"
         assert refreshed.secondary_color == "#FFFF00"
         assert refreshed.support_email == "second@example.com"
-        assert refreshed.return_url_allowlist == [
-            "https://example.com",
-            "https://other.com",
-        ]
+        assert refreshed.redirect_url == "https://example.com/second"
 
         # Should only have one OrganizationBranding row for this org
         assert OrganizationBranding.objects.filter(organization=reseller).count() == 1
@@ -157,8 +157,8 @@ class TestResolveBrandingForDisplayEntitlementGate:
     vinta default in that case, so this degrades gracefully rather than erroring.
 
     The gate lives on ``resolve_branding_for_display``, not on ``resolve_branding``:
-    ``validate_return_url`` reads the same row to make an auth-flow decision and must
-    not be gated. ``TestResolveBrandingIsUngated`` below pins that split.
+    the latter is deliberately kept entitlement-free for a non-cosmetic, auth-flow
+    caller. ``TestResolveBrandingIsUngated`` below pins that split.
     """
 
     def test_branding_is_hidden_when_the_entitlement_is_disabled(self):
@@ -187,7 +187,8 @@ class TestResolveBrandingForDisplayEntitlementGate:
     def test_branding_is_hidden_when_the_reseller_has_no_subscription(self):
         """``has_entitlement`` fails closed on a plan-less organization, and this
         caller inherits that. Cosmetic degradation, not a lockout -- which is exactly
-        why the *ungated* ``resolve_branding`` exists for the allowlist reader."""
+        why the *ungated* ``resolve_branding`` stays a separate, entitlement-free
+        function for non-cosmetic callers."""
         reseller = baker.make(Organization, can_invite_organizations=True)
         baker.make(OrganizationBranding, organization=reseller)
 
@@ -220,13 +221,16 @@ class TestResolveBrandingForDisplayEntitlementGate:
 class TestResolveBrandingIsUngated:
     """``resolve_branding`` must stay entitlement-free.
 
-    ``public_api.queries.validate_return_url`` reads ``return_url_allowlist`` off this
-    row to decide whether an OAuth return URL may be honoured. If the cosmetic
-    ``white_label_branding`` entitlement gated it, a reseller downgrading off that
-    entitlement would return ``{allowed: False, sanitized_url: None}`` for every tenant
-    underneath it -- breaking the OAuth return flow across the whole subtree. An
-    auth-flow lockout caused by a billing change to a logo is not an acceptable
-    degradation, so these two resolvers are deliberately separate functions.
+    Its former caller, ``public_api.queries.validate_return_url``, read
+    ``return_url_allowlist`` off this row to decide whether an OAuth return URL may be
+    honoured -- a non-cosmetic, auth-flow decision. That query and the allowlist it
+    read are gone as of Phase 2a of the Organization Auth-Area Branding plan (see
+    ``resolve_branding``'s docstring), which leaves this function with no caller today.
+    It stays deliberately separate from ``resolve_branding_for_display`` (and
+    deliberately ungated) so a future non-cosmetic caller -- e.g. an auth-flow
+    decision -- is not silently broken by a reseller downgrading off the cosmetic
+    ``white_label_branding`` entitlement, which is exactly the failure mode this split
+    used to prevent for the OAuth return flow.
     """
 
     def test_returns_the_row_even_without_the_entitlement(self):
@@ -246,3 +250,51 @@ class TestResolveBrandingIsUngated:
         result = resolve_branding(reseller)
         assert result is not None
         assert result.id == branding.id
+
+
+class TestValidateRedirectUrl:
+    """Unit tests for ``organizations.redirect_url_validation.validate_redirect_url``.
+
+    ``redirect_url`` replaces ``return_url_allowlist``: a single stored destination,
+    never a caller-supplied value, so the rules guard against the destination itself
+    becoming a pattern rather than a concrete URL.
+    """
+
+    def test_empty_value_is_valid(self):
+        """redirect_url is optional; '' means 'no configured destination'."""
+        validate_redirect_url("")
+
+    def test_plain_https_url_is_accepted(self):
+        validate_redirect_url("https://example.com/dashboard")
+
+    def test_https_root_is_accepted(self):
+        validate_redirect_url("https://example.com")
+
+    def test_http_scheme_is_rejected(self):
+        with pytest.raises(DjangoValidationError) as exc_info:
+            validate_redirect_url("http://example.com/dashboard")
+        assert "https scheme" in str(exc_info.value)
+
+    def test_non_http_scheme_is_rejected(self):
+        with pytest.raises(DjangoValidationError) as exc_info:
+            validate_redirect_url("ftp://example.com/dashboard")
+        assert "https scheme" in str(exc_info.value)
+
+    def test_wildcard_character_is_rejected(self):
+        with pytest.raises(DjangoValidationError) as exc_info:
+            validate_redirect_url("https://*.example.com/dashboard")
+        assert "wildcard" in str(exc_info.value)
+
+    def test_wildcard_in_path_is_rejected(self):
+        with pytest.raises(DjangoValidationError) as exc_info:
+            validate_redirect_url("https://example.com/dashboard/*")
+        assert "wildcard" in str(exc_info.value)
+
+    def test_path_prefix_pattern_is_rejected(self):
+        with pytest.raises(DjangoValidationError) as exc_info:
+            validate_redirect_url("https://example.com/callback/")
+        assert "path-prefix" in str(exc_info.value)
+
+    def test_root_path_with_trailing_slash_is_accepted(self):
+        """The bare root is not a path-prefix pattern -- there is no segment to prefix."""
+        validate_redirect_url("https://example.com/")

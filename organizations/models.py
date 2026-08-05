@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, ClassVar
 
 from django.conf import settings
-from django.contrib.postgres.fields import ArrayField
 from django.core.exceptions import FieldDoesNotExist, ObjectDoesNotExist
 from django.db import models
 
@@ -510,11 +509,16 @@ class OrganizationBranding(models.Model):
         default="",
         help_text="Email address for the From/reply-to on branded transactional emails.",
     )
-    return_url_allowlist = ArrayField(
-        models.URLField(),
-        default=list,
+    redirect_url = models.URLField(
         blank=True,
-        help_text="List of URLs that are allowed as return addresses after OAuth flows.",
+        default="",
+        help_text=(
+            "Single post-authentication redirect destination for this organization. "
+            "Replaces the old return_url_allowlist: no caller-supplied redirect target "
+            "is ever honored, so there is nothing to validate at request time and no "
+            "open-redirect surface. Must be HTTPS with no wildcard character and no "
+            "path-prefix pattern (organizations.redirect_url_validation)."
+        ),
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -537,13 +541,19 @@ def resolve_branding(org: Organization) -> OrganizationBranding | None:
 
     If no reseller ancestor exists, returns None (vinta default branding applies).
 
-    **Deliberately ungated.** The ``white_label_branding`` entitlement is applied by
-    ``resolve_branding_for_display`` instead, because not every caller of this function
-    is presenting branding. ``public_api.queries.validate_return_url`` reads
-    ``return_url_allowlist`` off the row to answer whether an OAuth return URL is
-    permitted — an **auth-flow** decision, not a cosmetic one. Gating that would mean a
-    reseller downgrading off a cosmetic entitlement silently breaks the OAuth return
-    flow for every tenant underneath it, which is a lockout, not a downgrade.
+    **Deliberately ungated and, as of this phase, uncalled in production code.**
+    The ``white_label_branding`` entitlement is applied by ``resolve_branding_for_display``
+    instead, because not every caller of this function is presenting branding. Its only
+    caller was ``public_api.queries.validate_return_url``, which read
+    ``return_url_allowlist`` off the row to answer whether an OAuth return URL was
+    permitted — an **auth-flow** decision, not a cosmetic one, which is why it was never
+    gated: a reseller downgrading off a cosmetic entitlement must not silently break the
+    OAuth return flow for every tenant underneath it. ``validate_return_url`` and the
+    allowlist it read are gone (see the Organization Auth-Area Branding plan, Phase 2a),
+    which leaves this function with no caller. It is kept rather than deleted here because
+    Phase 5 of that plan (branding resolution) is expected to need the same ungated
+    parent-walk semantics for a non-cosmetic decision; re-examine whether it still earns
+    its keep once that phase lands.
 
     Args:
         org: The Organization instance to resolve branding for.
@@ -563,8 +573,8 @@ def resolve_branding_for_display(org: Organization) -> OrganizationBranding | No
     Use this for every **presentation** caller — anything that renders the reseller's
     app name, logo, colors, or support address (``branding_for_tenant``,
     ``organizations.notification_contexts``). Use plain ``resolve_branding`` when the
-    row is being read for a non-cosmetic decision, i.e. ``validate_return_url``'s
-    allowlist check.
+    row is being read for a non-cosmetic, auth-flow decision instead — see that
+    function's docstring for why it currently has no caller.
 
     The entitlement is resolved at the reseller's own billing root, which may differ
     from the branding root when the reseller itself pools against a grandparent — see
