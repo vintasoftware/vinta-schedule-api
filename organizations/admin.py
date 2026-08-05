@@ -85,6 +85,7 @@ class OrganizationAdmin(admin.ModelAdmin):
         "name",
         "can_invite_organizations",
         "external_event_update_policy",
+        "week_start",
         "parent",
         "created",
         "modified",
@@ -97,7 +98,7 @@ class OrganizationAdmin(admin.ModelAdmin):
     )
     search_fields = ("name", "id")
     ordering = ("-created",)
-    readonly_fields = ("created", "modified", "id")
+    readonly_fields = ("created", "modified", "id", "week_start")
 
     fieldsets = (
         (
@@ -109,6 +110,7 @@ class OrganizationAdmin(admin.ModelAdmin):
                     "parent",
                     "should_sync_rooms",
                     "external_event_update_policy",
+                    "week_start",
                     "created",
                     "modified",
                 )

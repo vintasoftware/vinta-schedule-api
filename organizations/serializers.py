@@ -130,6 +130,7 @@ class OrganizationSerializer(VirtualModelSerializer):
             "name",
             "should_sync_rooms",
             "external_event_update_policy",
+            "week_start",
             "google_service_account",
             "can_invite_organizations",
             "created",

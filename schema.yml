@@ -14977,6 +14977,14 @@ components:
             * `allow` - Allow direct updates
             * `change_request` - Updates create change requests
             * `forbidden` - Updates are forbidden
+        week_start:
+          allOf:
+          - $ref: '#/components/schemas/OrganizationWeekStartEnum'
+          description: |-
+            Day of the week that starts the week for quota period boundaries. Used for calculating quota periods in group-scoped availability rules.
+
+            * `monday` - Monday
+            * `sunday` - Sunday
         google_service_account:
           type: object
           additionalProperties: {}
@@ -15168,6 +15176,14 @@ components:
       - user_first_name
       - user_id
       - user_last_name
+    OrganizationWeekStartEnum:
+      enum:
+      - monday
+      - sunday
+      type: string
+      description: |-
+        * `monday` - Monday
+        * `sunday` - Sunday
     OwnershipMembership:
       type: object
       description: |-
@@ -16050,6 +16066,14 @@ components:
             * `allow` - Allow direct updates
             * `change_request` - Updates create change requests
             * `forbidden` - Updates are forbidden
+        week_start:
+          allOf:
+          - $ref: '#/components/schemas/OrganizationWeekStartEnum'
+          description: |-
+            Day of the week that starts the week for quota period boundaries. Used for calculating quota periods in group-scoped availability rules.
+
+            * `monday` - Monday
+            * `sunday` - Sunday
         google_service_account:
           type: object
           additionalProperties: {}
@@ -16438,7 +16462,7 @@ components:
           maxLength: 200
         week_start:
           allOf:
-          - $ref: '#/components/schemas/WeekStartEnum'
+          - $ref: '#/components/schemas/RecurrenceRuleWeekStartEnum'
           description: |-
             First day of the week
 
@@ -16466,6 +16490,24 @@ components:
       - id
       - modified
       - rrule_string
+    RecurrenceRuleWeekStartEnum:
+      enum:
+      - MO
+      - TU
+      - WE
+      - TH
+      - FR
+      - SA
+      - SU
+      type: string
+      description: |-
+        * `MO` - Monday
+        * `TU` - Tuesday
+        * `WE` - Wednesday
+        * `TH` - Thursday
+        * `FR` - Friday
+        * `SA` - Saturday
+        * `SU` - Sunday
     ResourceAllocation:
       type: object
       properties:
@@ -17088,24 +17130,6 @@ components:
         * `pending` - Pending
         * `success` - Success
         * `failed` - Failed
-    WeekStartEnum:
-      enum:
-      - MO
-      - TU
-      - WE
-      - TH
-      - FR
-      - SA
-      - SU
-      type: string
-      description: |-
-        * `MO` - Monday
-        * `TU` - Tuesday
-        * `WE` - Wednesday
-        * `TH` - Thursday
-        * `FR` - Friday
-        * `SA` - Saturday
-        * `SU` - Sunday
     _CalendarGroupSlotSelectionInput:
       type: object
       properties:
