@@ -2394,18 +2394,17 @@ class CalendarGroupService:
         Group-scoped blocks (Phase 2a) and quota rules (Phase 3b) are checked
         the same way.
 
-        Known v1 limitation on quota specifically: the count used to validate
-        the NEW period is the live count as of THIS event's still-unmoved
-        ``CalendarEvent`` row (the reschedule write happens after this
-        check), which still includes this event's own booking if it already
-        falls in the SAME target period (e.g. moving a booking from 9am to
-        2pm on the same day, under a daily cap already at its limit) -- such
-        a same-period, no-net-change reschedule can be rejected even though
-        it does not actually consume additional quota. This mirrors the
-        counting function's derive-on-read design (Phase 3a) rather than
-        excluding the event under reschedule from its own count, and is
-        accepted for v1 the same way the non-primary base-availability gap
-        above is.
+        Quota self-exclusion: the count used to validate the NEW period is
+        the live count as of THIS event's still-unmoved ``CalendarEvent`` row
+        (the reschedule write happens after this check), which would
+        otherwise still include this event's own booking if it already falls
+        in the SAME target period (e.g. moving a booking from 9am to 2pm on
+        the same day, under a daily cap already at its limit). To avoid
+        rejecting such a same-period, no-net-change reschedule,
+        ``_assert_calendars_within_group_scoped_windows`` is passed this
+        event's CURRENT (pre-move) start time and subtracts 1 from a rule's
+        looked-up count whenever that old period matches the candidate's
+        period -- see that method's docstring for the full rationale.
         """
         self._assert_initialized()
         # Checked explicitly and first, for the same reason as
@@ -2457,7 +2456,12 @@ class CalendarGroupService:
             .filter(event_fk=event)
             .values_list("slot_fk_id", "calendar_fk_id")
         )
-        self._assert_calendars_within_group_scoped_windows(selection_pairs, start_time, end_time)
+        self._assert_calendars_within_group_scoped_windows(
+            selection_pairs,
+            start_time,
+            end_time,
+            rescheduling_event_old_start=event.start_time,
+        )
 
         # Build the update input preserving all non-time details so that only
         # RESCHEDULE permission is required (same approach as the single-calendar path).
@@ -2644,6 +2648,7 @@ class CalendarGroupService:
         slot_calendar_pairs: Iterable[tuple[int, int]],
         start: datetime.datetime,
         end: datetime.datetime,
+        rescheduling_event_old_start: datetime.datetime | None = None,
     ) -> None:
         """Reject any ``(slot_id, calendar_id)`` pair whose calendar violates a
         group-scoped rule configured for that slot at ``[start, end)`` (spec
@@ -2675,6 +2680,18 @@ class CalendarGroupService:
         Called from both ``create_grouped_event`` (after the
         base-availability check) and ``reschedule_grouped_event`` (spec:
         every enforcement surface agrees).
+
+        ``rescheduling_event_old_start``: only passed by
+        ``reschedule_grouped_event``, as the event-being-moved's CURRENT
+        (pre-move) start time. The live count fetched for quota purposes
+        still includes that event's own still-unmoved booking row. When its
+        old period matches the candidate's period, this method subtracts 1
+        from the looked-up count before comparing to the cap so a same-period
+        (no net quota change) reschedule is not rejected purely because it
+        sees its own row. A fresh ``create_grouped_event`` call never passes
+        this (there is no prior row to exclude), and discovery
+        (``calendar_free_for_window`` / ``check_group_availability``) never
+        calls this method at all -- both are therefore unaffected.
         """
         pairs = list(slot_calendar_pairs)
         if not pairs:
@@ -2759,6 +2776,21 @@ class CalendarGroupService:
             for rule in rules:
                 period_start = slot_engine.quota_period_start_utc(start, rule.period, week_start)
                 count = counts_for_slot.get((calendar_id, rule.period), {}).get(period_start, 0)
+                # Self-exclusion for reschedules: the fetched count above
+                # already includes the event-being-moved's OWN still-present
+                # row. If its old (pre-move) period is the SAME period the
+                # candidate falls into, subtract 1 so we're comparing "does
+                # this booking exceed the cap for OTHERS" rather than
+                # double-counting the event against itself. If the old period
+                # differs (a reschedule across a period boundary), the event
+                # is NOT part of this period's count, so no adjustment is
+                # made and a full period still correctly rejects.
+                if rescheduling_event_old_start is not None:
+                    old_period_start = slot_engine.quota_period_start_utc(
+                        rescheduling_event_old_start, rule.period, week_start
+                    )
+                    if old_period_start == period_start:
+                        count -= 1
                 if count >= rule.cap:
                     raise CalendarGroupScopedRuleViolationError(
                         calendar_id=calendar_id, rule_type=GroupScopedRuleType.QUOTA_CONSUMED

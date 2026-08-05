@@ -895,6 +895,10 @@ def fetch_group_scoped_quota_period_counts(
             bucket_counts: QuotaPeriodBucketCounts = {}
             for bucket in buckets or ():
                 period_start = datetime.datetime.fromisoformat(bucket["period_start"])
+                # ``bucket["period_end"]`` is intentionally unused here -- only
+                # ``period_start`` (the lookup key) and ``booking_count`` are
+                # needed on the Python side; callers derive any end boundary
+                # they need via `quota_period_end_utc`.
                 bucket_counts[period_start] = bucket["booking_count"]
             counts_by_slot.setdefault(slot_id, {})[(calendar_id, period)] = bucket_counts
     return counts_by_slot
