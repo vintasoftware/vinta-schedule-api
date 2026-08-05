@@ -472,3 +472,30 @@ class TestWeekStart:
         org = baker.make(Organization, week_start=WeekStart.MONDAY)
         org.refresh_from_db()
         assert org.week_start == WeekStart.MONDAY
+
+    def test_db_default_applies_to_existing_organizations(self):
+        """An Organization row inserted without specifying week_start reads Monday.
+
+        This test verifies the DB-level default backfills for existing rows,
+        ensuring that rows created before the migration (via raw SQL or the
+        old schema) read the correct Monday default after migration 0018.
+        """
+        from django.db import connection
+
+        # Insert an Organization row without specifying week_start, so the
+        # Postgres db_default applies. This simulates a row created before
+        # the migration. Include all required columns to satisfy NOT NULL constraints.
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO organizations_organization
+                (name, should_sync_rooms, external_event_update_policy, meta, created, modified, can_invite_organizations)
+                VALUES (%s, %s, %s, %s, NOW(), NOW(), %s)
+                """,
+                ["Pre-migration Org", False, "change_request", "{}", False],
+            )
+
+        # Read the row back via the ORM and verify week_start is Monday.
+        org = Organization.objects.get(name="Pre-migration Org")
+        assert org.week_start == WeekStart.MONDAY
+        assert org.week_start == "monday"

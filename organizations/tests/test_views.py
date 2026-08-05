@@ -172,6 +172,7 @@ class TestOrganizationViewSet:
             name="New Organization",
             should_sync_rooms=False,
             external_event_update_policy=None,
+            week_start=None,
         )
 
     def test_create_organization_via_jwt_bearer_creates_membership(self, user):
@@ -228,6 +229,7 @@ class TestOrganizationViewSet:
             name="Sync Organization",
             should_sync_rooms=True,
             external_event_update_policy=None,
+            week_start=None,
         )
 
     def test_create_organization_authenticated_with_existing_membership(
