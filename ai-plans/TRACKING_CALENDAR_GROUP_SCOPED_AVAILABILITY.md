@@ -91,13 +91,23 @@ Phase 0 branches off `plan-calendar-group-scoped-availability`; each later phase
 
 **REFACTOR NOTE for Phase 3a**: the get / audit / create / update / delete quintet is duplicated ~1:1 between windows (Phase 1a) and blocks (Phase 2a). Phase 3a adds quota — before tripling the pattern, consider a generic model-parameterized helper (`_get_group_scoped_row(model, id)` / `_audit_group_scoped_write(model_label, ...)`). Only if it doesn't over-couple; the plan phases by concept deliberately.
 
+### Phase 2b — Blocks on the REST and public surfaces ✅
+
+- **Branch**: `plan/calendar-group-scoped-availability/phase-2b` (base: phase-2a) — **PR [#225](https://github.com/vintasoftware/vinta-schedule-api/pull/225)**
+- **Implementer model**: sonnet (plan Tier 2, stepped up given the 1c haiku failure) — agent type `implementer`
+- **Reviewer model**: sonnet — 2 BLOCKERs (restriction bypass + test-registry gap) + 1 SHOULD-FIX, all fixed (sonnet fixer)
+- **Summary**: Full REST + public API parity for blocks, mirroring windows (Phase 1c/1d). Route `.../slots/{slot_id}/blocked-times/`; non-disclosure identical `Http404`; IDOR calendar-match on batch update/delete; tri-state rrule; bounded queries; content-match idempotency (key includes `reason`). Blocks unmetered (2c does that) but `check_not_restricted`-guarded. Schema additive; no migration.
+- **Security BLOCKER fixed (restriction bypass)**: all six single-write group-scoped methods (window + block create/update/delete) now call `_check_not_restricted()` — previously a RESTRICTED org could write via the REST viewsets. New `GROUP_SCOPED_WRITE_PROBES` registry + test class in `test_restricted_enforcement.py` so CI catches it.
+
+**FOLLOW-UP NOTE (metering enforcement on single-write creates)**: single-write REST creates don't call `check_limit`, so the AVAILABILITY_WINDOWS limit is enforced only on the batch (public API) path. Appears consistent with existing base-availability behavior. Phase 2c owns the metering *counter* (what counts); whether single-write REST create should also *enforce* the limit is a separate consistency question — flag if Phase 2c's work makes it trivial to close.
+
 ## Current phase
 
-Phase 2b — Blocks on the REST and public surfaces
+Phase 2c — Meter all blocked time
 
 ## Remaining phases
 
-2b, 2c, 3a, 3b, 3c, 4
+2c, 3a, 3b, 3c, 4
 
 ## Deferred phases
 
