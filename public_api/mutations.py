@@ -2039,11 +2039,16 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         2. Asserts every operation's ``calendarId`` is within the token
            owner's scope (no-op for org-wide tokens) — one guard per
            operation, since (unlike the base availability batch) this batch
-           may span several calendars in the slot's roster.
+           may span several calendars in the slot's roster. This only proves
+           the token owns each op's ``calendarId``; it does not prove that an
+           update/delete op's ``windowId`` belongs to that calendar.
         3. Delegates to ``CalendarGroupService.batch_upsert_group_scoped_availability_windows``,
-           which resolves every touched row, checks the ``availability_windows``
-           plan limit against the batch's net genuine-create growth, and applies
-           the whole batch inside its own transaction.
+           which resolves every touched row, cross-checks that an
+           update/delete op's resolved window actually belongs to that op's
+           own ``calendarId`` (closing the gap step 2 leaves open), checks the
+           ``availability_windows`` plan limit against the batch's net
+           genuine-create growth, and applies the whole batch inside its own
+           transaction.
         4. Returns every group-scoped window in the slot's roster after the
            batch is applied.
 
@@ -2094,7 +2099,13 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         # Owner-scope guard per operation's calendarId -- reveals nothing about
         # existence for a calendar outside a scoped token's owner set. Checked
         # for EVERY operation up front, so a cross-owner op anywhere in the
-        # batch rejects the whole thing before any service call.
+        # batch rejects the whole thing before any service call. This only
+        # proves the token owns op.calendarId; it does NOT prove that an
+        # update/delete op's windowId actually resolves to that calendar --
+        # CalendarGroupService.batch_upsert_group_scoped_availability_windows
+        # cross-checks that itself (window.calendar_fk_id == op.calendar_id)
+        # before applying anything, so a token can't pair a calendarId it owns
+        # with a windowId belonging to a different calendar.
         request: PublicApiHttpRequest = info.context.request
         system_user = request.public_api_system_user
         try:

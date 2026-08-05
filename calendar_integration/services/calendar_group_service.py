@@ -935,15 +935,24 @@ class CalendarGroupService:
           row it names, like the base availability batch write's ``id``-keyed
           operations.
 
-        Authorization is the CALLER's responsibility. Unlike the single-window
-        Phase 1a writes above, this method does not call
+        Authorization is split between the CALLER and this method. Unlike the
+        single-window Phase 1a writes above, this method does not call
         ``CalendarPermissionService`` -- every public-API availability write
         authorizes via ``OrganizationResourceAccess`` (token resource grant)
         plus owner-scope (``public_api.scoping.assert_calendar_in_owner_scope``),
         never the human-facing per-membership permission check, because a
         public-API ``SystemUser`` token has no ``CalendarOwnership``-linked
-        ``User`` to check it against for an org-wide token. ``acting_principal``
-        is used for audit attribution only.
+        ``User`` to check it against for an org-wide token. The caller's
+        owner-scope guard only proves the token owns each op's
+        ``calendar_id`` -- it says nothing about which calendar an
+        update/delete op's ``window_id`` actually belongs to. This method
+        closes that gap itself: for every update/delete op it cross-checks
+        the resolved window's ``calendar_fk_id`` against that op's own
+        ``calendar_id`` and rejects the whole batch (not-found-shaped, see
+        ``:raises CalendarGroupSlotConfigNotFoundError:`` below) if they
+        don't match, so a token cannot use a calendar it owns to reach a
+        window that belongs to a different calendar. ``acting_principal`` is
+        used for audit attribution only.
 
         :param operations: dicts with ``action`` (create/update/delete) and
             ``calendar_id``; create/update also take ``start_time``,
@@ -957,7 +966,8 @@ class CalendarGroupService:
         :raises CalendarGroupSlotConfigNotFoundError: a create op's
             ``calendar_id`` is not a member of ``group_slot_id``'s roster, or
             an update/delete op's ``window_id`` does not resolve to a
-            group-scoped window in this slot.
+            group-scoped window in this slot, or that window does not belong
+            to the op's own ``calendar_id``.
         :raises ValueError: an operation's shape is invalid (unknown action,
             missing required field).
         :return: every group-scoped window in ``group_slot_id``'s roster
@@ -989,6 +999,19 @@ class CalendarGroupService:
         if self.entitlement_service is not None and operations:
             self.entitlement_service.check_not_restricted(organization)
 
+        # Lock the billing root BEFORE _find_matching_group_scoped_window's
+        # idempotent-create content-match reads (and before the delete-credit
+        # read further below) -- not just before check_limit, like
+        # batch_modify_available_times's later lock does. The content-match is
+        # itself a read whose "no identical window exists yet" answer a
+        # concurrent replay of the same batch (spec UC-5) can invalidate: two
+        # genuinely concurrent identical batches would otherwise both see no
+        # match, both create, and double-charge the entitlement. Taking the
+        # lock this early serializes them so the second sees the first's
+        # committed windows and correctly no-ops.
+        if self.entitlement_service is not None and operations:
+            self.entitlement_service.lock_billing_root(organization)
+
         # Resolve every touched row up front (read-only): a missing/foreign
         # window_id or a calendar not on this slot's roster fails the whole
         # batch before anything is written.
@@ -997,6 +1020,15 @@ class CalendarGroupService:
             if op["action"] in ("update", "delete"):
                 window = self._get_group_scoped_window(op["window_id"])
                 if window.group_slot_fk_id != group_slot_id:
+                    raise CalendarGroupSlotConfigNotFoundError()
+                # Cross-check the resolved window against the op's OWN calendar_id --
+                # public_api's assert_calendar_in_owner_scope only proves the token owns
+                # op["calendar_id"], not that window_id actually belongs to it. Without
+                # this, a calendar-owner-scoped token could target another calendar's
+                # window in the same slot by pairing a calendar_id it owns with a
+                # window_id it doesn't. Raises the same non-disclosure exception as an
+                # unresolvable window_id so the two cases are indistinguishable.
+                if window.calendar_fk_id != op["calendar_id"]:
                     raise CalendarGroupSlotConfigNotFoundError()
                 windows_by_op_id[op["window_id"]] = window
 
@@ -1031,10 +1063,9 @@ class CalendarGroupService:
         )
         delete_ids = [op["window_id"] for op in operations if op["action"] == "delete"]
 
-        # Lock *before* the delete-credit read for the same reason
-        # batch_modify_available_times does -- see its docstring.
-        if genuine_create_count and delete_ids and self.entitlement_service is not None:
-            self.entitlement_service.lock_billing_root(organization)
+        # The billing root is already locked above (before the idempotent-create
+        # content-match), so the delete-credit read below is already covered --
+        # no separate lock call needed here, unlike batch_modify_available_times.
 
         # Only deletions of rows the usage counter counts offset the creates.
         # Reads through ``unscoped()`` because group-scoped rows are invisible

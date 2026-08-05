@@ -674,6 +674,322 @@ class TestGroupScopedAvailabilityWindowsPublicAPI:
         )
 
     # ------------------------------------------------------------------
+    # batchUpsertGroupScopedAvailabilityWindows -- IDOR (window/calendar
+    # cross-check on update/delete)
+    # ------------------------------------------------------------------
+
+    def test_update_with_window_from_another_calendar_rejected_wholesale(self):
+        """A calendar-owner-scoped token pairs a calendarId it owns with a
+        windowId belonging to a DIFFERENT calendar in the same slot's roster.
+        assert_calendar_in_owner_scope alone would let this through (it only
+        checks ownership of calendarId) -- the service must ALSO reject
+        because the resolved window does not belong to that calendar. Whole
+        batch fails, not-found shape, nothing changes."""
+        org = self._setup_org()
+        _owner_a, membership_a, calendar_a = self._make_owner_with_calendar(org)
+        _owner_b, _membership_b, calendar_b = self._make_owner_with_calendar(org)
+        slot = self._make_group_slot(org, calendar_a, calendar_b)
+
+        foreign_window = AvailableTime.objects.unscoped().create(
+            organization=org,
+            calendar=calendar_b,
+            group_slot=slot,
+            start_time_tz_unaware=datetime.datetime(2026, 9, 1, 9, 0, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2026, 9, 1, 17, 0, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+
+        system_user_a, token_a, auth_service_a = self._make_scoped_system_user(
+            org, membership_a, [PublicAPIResources.BATCH_UPSERT_GROUP_SCOPED_AVAILABILITY_WINDOWS]
+        )
+
+        new_start = datetime.datetime(2026, 11, 1, 8, 0, 0, tzinfo=datetime.UTC)
+        new_end = datetime.datetime(2026, 11, 1, 16, 0, 0, tzinfo=datetime.UTC)
+        response = self._post(
+            BATCH_UPSERT_GROUP_SCOPED_AVAILABILITY_WINDOWS_MUTATION,
+            system_user_a,
+            token_a,
+            auth_service_a,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "groupSlotId": slot.id,
+                    "operations": [
+                        {
+                            "action": "update",
+                            # calendarId the token owns...
+                            "calendarId": calendar_a.id,
+                            # ...but windowId belongs to calendar_b.
+                            "windowId": foreign_window.id,
+                            "startTime": new_start.isoformat(),
+                            "endTime": new_end.isoformat(),
+                        }
+                    ],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data.get("errors", []) == []
+        result = data["data"]["batchUpsertGroupScopedAvailabilityWindows"]
+        assert result["success"] is False
+        assert result["errorMessage"] == "Group slot not found."
+        assert result["windows"] == []
+
+        foreign_window.refresh_from_db()
+        assert foreign_window.start_time_tz_unaware != new_start
+        assert foreign_window.end_time_tz_unaware != new_end
+        assert foreign_window.calendar_fk_id == calendar_b.id
+
+    def test_delete_with_window_from_another_calendar_rejected_wholesale(self):
+        """Same IDOR as the update case above, but for a delete op: the
+        foreign window must still exist, unmodified, afterward."""
+        org = self._setup_org()
+        _owner_a, membership_a, calendar_a = self._make_owner_with_calendar(org)
+        _owner_b, _membership_b, calendar_b = self._make_owner_with_calendar(org)
+        slot = self._make_group_slot(org, calendar_a, calendar_b)
+
+        foreign_window = AvailableTime.objects.unscoped().create(
+            organization=org,
+            calendar=calendar_b,
+            group_slot=slot,
+            start_time_tz_unaware=datetime.datetime(2026, 9, 1, 9, 0, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2026, 9, 1, 17, 0, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+        )
+
+        system_user_a, token_a, auth_service_a = self._make_scoped_system_user(
+            org, membership_a, [PublicAPIResources.BATCH_UPSERT_GROUP_SCOPED_AVAILABILITY_WINDOWS]
+        )
+
+        response = self._post(
+            BATCH_UPSERT_GROUP_SCOPED_AVAILABILITY_WINDOWS_MUTATION,
+            system_user_a,
+            token_a,
+            auth_service_a,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "groupSlotId": slot.id,
+                    "operations": [
+                        {
+                            "action": "delete",
+                            # calendarId the token owns, windowId belongs to calendar_b.
+                            "calendarId": calendar_a.id,
+                            "windowId": foreign_window.id,
+                        }
+                    ],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data.get("errors", []) == []
+        result = data["data"]["batchUpsertGroupScopedAvailabilityWindows"]
+        assert result["success"] is False
+        assert result["errorMessage"] == "Group slot not found."
+        assert result["windows"] == []
+
+        assert (
+            AvailableTime.objects.unscoped()
+            .filter_by_organization(org.id)
+            .filter(id=foreign_window.id)
+            .exists()
+        ), "The foreign window must NOT be deleted by a batch it was never authorized for."
+
+    # ------------------------------------------------------------------
+    # batchUpsertGroupScopedAvailabilityWindows -- create outside the slot's roster
+    # ------------------------------------------------------------------
+
+    def test_create_with_calendar_outside_slot_roster_rejected_wholesale(self):
+        """A create op's calendarId is a calendar the token owns/can access, but
+        it is not a member of the target groupSlotId's roster -- rejected with
+        the not-found shape, nothing created."""
+        org = self._setup_org()
+        roster_calendar = self._make_calendar(org)
+        outside_calendar = self._make_calendar(org)
+        slot = self._make_group_slot(org, roster_calendar)
+
+        system_user, token, auth_service = self._make_org_wide_system_user(
+            org, [PublicAPIResources.BATCH_UPSERT_GROUP_SCOPED_AVAILABILITY_WINDOWS]
+        )
+
+        response = self._post(
+            BATCH_UPSERT_GROUP_SCOPED_AVAILABILITY_WINDOWS_MUTATION,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "groupSlotId": slot.id,
+                    "operations": [
+                        {
+                            "action": "create",
+                            "calendarId": outside_calendar.id,
+                            "startTime": datetime.datetime(
+                                2026, 9, 1, 9, 0, 0, tzinfo=datetime.UTC
+                            ).isoformat(),
+                            "endTime": datetime.datetime(
+                                2026, 9, 1, 17, 0, 0, tzinfo=datetime.UTC
+                            ).isoformat(),
+                            "timezone": "UTC",
+                        }
+                    ],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data.get("errors", []) == []
+        result = data["data"]["batchUpsertGroupScopedAvailabilityWindows"]
+        assert result["success"] is False
+        assert result["errorMessage"] == "Group slot not found."
+        assert result["windows"] == []
+        assert (
+            AvailableTime.objects.for_group_slot(slot.id)
+            .filter_by_organization(org.id)
+            .filter(calendar_fk_id=outside_calendar.id)
+            .count()
+            == 0
+        )
+
+    # ------------------------------------------------------------------
+    # Anonymous / unauthorized access -- query and mutation
+    # ------------------------------------------------------------------
+
+    def test_query_anonymous_request_denied(self):
+        """No Authorization header -- the standard auth error, no data leaked."""
+        org = self._setup_org()
+        calendar = self._make_calendar(org)
+        slot = self._make_group_slot(org, calendar)
+
+        response = self.client.post(
+            "/graphql/",
+            data={
+                "query": GROUP_SCOPED_AVAILABILITY_WINDOWS_QUERY,
+                "variables": {"groupSlotId": slot.id, "calendarId": None},
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+
+    def test_mutation_anonymous_request_denied(self):
+        """No Authorization header on the mutation -- the standard auth error,
+        no write applied."""
+        org = self._setup_org()
+        calendar = self._make_calendar(org)
+        slot = self._make_group_slot(org, calendar)
+
+        response = self.client.post(
+            "/graphql/",
+            data={
+                "query": BATCH_UPSERT_GROUP_SCOPED_AVAILABILITY_WINDOWS_MUTATION,
+                "variables": {
+                    "input": {
+                        "organizationId": org.id,
+                        "groupSlotId": slot.id,
+                        "operations": [
+                            {
+                                "action": "create",
+                                "calendarId": calendar.id,
+                                "startTime": "2026-09-01T09:00:00Z",
+                                "endTime": "2026-09-01T17:00:00Z",
+                                "timezone": "UTC",
+                            }
+                        ],
+                    }
+                },
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert (
+            AvailableTime.objects.for_group_slot(slot.id).filter_by_organization(org.id).count()
+            == 0
+        )
+
+    def test_query_token_without_resource_grant_denied(self):
+        """An authenticated token that lacks the GROUP_SCOPED_AVAILABILITY_WINDOWS
+        resource grant is denied."""
+        org = self._setup_org()
+        calendar = self._make_calendar(org)
+        slot = self._make_group_slot(org, calendar)
+        # Grant an unrelated resource only.
+        system_user, token, auth_service = self._make_org_wide_system_user(
+            org, [PublicAPIResources.BATCH_UPSERT_GROUP_SCOPED_AVAILABILITY_WINDOWS]
+        )
+
+        response = self._post(
+            GROUP_SCOPED_AVAILABILITY_WINDOWS_QUERY,
+            system_user,
+            token,
+            auth_service,
+            {"groupSlotId": slot.id, "calendarId": None},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "don't have access" in str(data["errors"]).lower()
+
+    def test_mutation_token_without_resource_grant_denied(self):
+        """An authenticated token that lacks the
+        BATCH_UPSERT_GROUP_SCOPED_AVAILABILITY_WINDOWS resource grant is denied,
+        and nothing is written."""
+        org = self._setup_org()
+        calendar = self._make_calendar(org)
+        slot = self._make_group_slot(org, calendar)
+        # Grant an unrelated resource only.
+        system_user, token, auth_service = self._make_org_wide_system_user(
+            org, [PublicAPIResources.GROUP_SCOPED_AVAILABILITY_WINDOWS]
+        )
+
+        response = self._post(
+            BATCH_UPSERT_GROUP_SCOPED_AVAILABILITY_WINDOWS_MUTATION,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "groupSlotId": slot.id,
+                    "operations": [
+                        {
+                            "action": "create",
+                            "calendarId": calendar.id,
+                            "startTime": "2026-09-01T09:00:00Z",
+                            "endTime": "2026-09-01T17:00:00Z",
+                            "timezone": "UTC",
+                        }
+                    ],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert len(data["errors"]) > 0
+        assert "don't have access" in str(data["errors"]).lower()
+        assert (
+            AvailableTime.objects.for_group_slot(slot.id).filter_by_organization(org.id).count()
+            == 0
+        )
+
+    # ------------------------------------------------------------------
     # Existing availability operations are unchanged (no-regression)
     # ------------------------------------------------------------------
 
