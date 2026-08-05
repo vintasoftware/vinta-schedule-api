@@ -40,13 +40,21 @@ Phase 0 branches off `plan-calendar-group-scoped-availability`; each later phase
 - **SQL-function verification (Open Question 1 — RESOLVED)**: The occurrence functions (`calculate_recurring_available_times`, `calculate_recurring_blocked_times`, their `_with_bulk_modifications` and `get_*_occurrences_json` variants) all take a row id as input and select no rows themselves (e.g. `WHERE id = p_available_time_id`). Scoping is applied caller-side. **No SQL function version bumps were needed** — the phase did not grow.
 - **Carry-forward note for Phases 1b / 2a / 3b**: `RecurringMixin._get_occurrences_in_range` re-fetches `self` via the *default* (base-rows-only) manager, so calling `get_occurrences_in_range()` on a group-scoped instance would silently return nothing once such rows exist. Unreachable today (nothing writes `group_slot` yet). Group-scoped occurrence expansion must route through `for_group_slot`/`unscoped`, not that instance method as written.
 
+### Phase 0b — Organization week-start setting ✅
+
+- **Branch**: `plan/calendar-group-scoped-availability/phase-0b` (base: phase-0) — **PR [#219](https://github.com/vintasoftware/vinta-schedule-api/pull/219)**
+- **Implementer model**: haiku (plan Tier 1) — agent type `migration-author`
+- **Reviewer model**: sonnet — no BLOCKERs; 3 SHOULD-FIX + 1 NIT, all fixed by a haiku fixer
+- **Summary**: Added `Organization.week_start` (`TextChoices` Monday/Sunday, `default` + `db_default` Monday) mirroring `external_event_update_policy`. Migration `0018` adds the column with a `db_default` (existing rows backfill to Monday, no data migration). Exposed in Django admin (editable via `OrganizationAdminForm`, in `list_filter`), and on the organization serializer; gated admin-only via `IsOrganizationAdmin` on update/partial_update. Wired `week_start` through `create_organization` service so it's settable at creation, matching the sibling policy field. Nothing reads the field yet.
+- **Fixes applied**: made `week_start` admin-editable (was erroneously read-only); wired it through the create path (was silently dropped at create); added a raw-SQL `db_default` test proving pre-migration rows read Monday.
+
 ## Current phase
 
-Phase 0b — Organization week-start setting
+Phase 1a — Group-scoped availability windows: writes
 
 ## Remaining phases
 
-0b, 1a, 1b, 1c, 1d, 2a, 2b, 2c, 3a, 3b, 3c, 4
+1a, 1b, 1c, 1d, 2a, 2b, 2c, 3a, 3b, 3c, 4
 
 ## Deferred phases
 
