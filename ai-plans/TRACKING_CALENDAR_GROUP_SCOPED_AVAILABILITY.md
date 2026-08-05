@@ -126,13 +126,21 @@ Phase 0 branches off `plan-calendar-group-scoped-availability`; each later phase
 - **Summary**: Quota wired into discovery + booking/reschedule. **One counting query per discovery, independent of candidate count** (batched by `(slot,period)`; asserted 1 for few vs ~50× candidates, 0 unconfigured; `check_group_availability` 1 across 200 ranges). Third `Exists()` folded into the membership query (self-gating; 6/5 counts hold). `quota_period_start_utc` mirrors the SQL bucketing (pin test prevents drift). `quota_covering_range` prevents same-period undercount. Quota checked LAST; all rules must pass. `QUOTA_CONSUMED` error (cap not leaked). Cancel releases quota on read. No migration.
 - **SHOULD-FIX fixed (reschedule)**: the event being rescheduled is self-excluded from its own period's quota count, so a `cap=1` calendar can reschedule same-day (was universally rejected). Reschedule across a boundary into a full period still correctly rejected.
 
+### Phase 3c — Quota rules on the REST and public surfaces ✅
+
+- **Branch**: `plan/calendar-group-scoped-availability/phase-3c` (base: phase-3b) — **PR [#229](https://github.com/vintasoftware/vinta-schedule-api/pull/229)**
+- **Implementer model**: sonnet (plan Tier 2, run on sonnet) — agent type `implementer`
+- **Reviewer model**: sonnet — no BLOCKERs; 3 SHOULD-FIX + NIT fixed (haiku fixer)
+- **Summary**: Quota-rule REST viewset + public API query + batch-upsert mutation, mirroring blocks minus recurrence. Added quota write service methods (all `check_not_restricted`-guarded, NO `check_limit` — unmetered). Uniqueness `(calendar,slot,period)` surfaced as a validation error via a nested-atomic **savepoint** (re-raised as `CalendarGroupValidationError`; catch scoped to the constraint name, other IntegrityErrors re-raise); batch is all-or-nothing (mid-collision rolls back earlier ops). Non-disclosure, IDOR calendar-match, bounded queries all mirror blocks. Schema additive; no migration.
+- **Follow-up chipped**: extract a shared model-parameterized helper for the windows/blocks/quota service sextet (~1700 duplicated lines) — post-merge refactor.
+
 ## Current phase
 
-Phase 3c — Quota rules on the REST and public surfaces
+Phase 4 — Client handoff document
 
 ## Remaining phases
 
-3c, 4
+4
 
 ## Deferred phases
 
