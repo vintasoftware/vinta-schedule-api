@@ -29,6 +29,7 @@ from calendar_integration.constants import (
 )
 from calendar_integration.exceptions import (
     CalendarGroupError,
+    CalendarGroupSlotConfigNotFoundError,
     CalendarIntegrationError,
     ChangeRequestIneligibleError,
     ChangeRequestNotPendingError,
@@ -57,6 +58,7 @@ from calendar_integration.permissions import (
     CalendarEventPermission,
     CalendarGroupPermission,
     ExternalEventChangeRequestPermission,
+    GroupScopedAvailabilityWindowPermission,
 )
 from calendar_integration.serializers import (
     AvailableTimeBatchSerializer,
@@ -84,6 +86,10 @@ from calendar_integration.serializers import (
     EventBulkModificationSerializer,
     EventRecurringExceptionSerializer,
     ExternalEventChangeRequestSerializer,
+    GroupScopedAvailabilityWindowCreateSerializer,
+    GroupScopedAvailabilityWindowSerializer,
+    GroupScopedAvailabilityWindowUpdateSerializer,
+    GroupScopedAvailabilityWriteResultSerializer,
     ResourceCalendarCreateSerializer,
     UnavailableTimeWindowSerializer,
 )
@@ -1739,6 +1745,178 @@ class AvailableTimeViewSet(VintaScheduleModelViewSet):
             )
         except ValueError as e:
             raise ValidationError({"non_field_errors": [str(e)]}) from e
+
+
+@extend_schema(tags=["Calendar Group Scoped Availability Windows"])
+class GroupScopedAvailabilityWindowViewSet(VintaScheduleModelViewSet):
+    """Nested under a group's slot: manage group-scoped availability windows
+    for calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
+    Phase 1c).
+
+    Reads go through ``AvailableTime.objects.for_group_slot(...)``. Every
+    write delegates to ``CalendarGroupService`` (Phase 1a) -- this view holds
+    no business logic of its own, only request/response translation. Route
+    visibility is gated by ``GroupScopedAvailabilityWindowPermission``; the
+    per-calendar write authorization is re-checked by the service and its
+    ``CalendarGroupSlotConfigNotFoundError`` is translated to a 404 here so a
+    denied write and a genuinely missing window are indistinguishable.
+    """
+
+    permission_classes = (GroupScopedAvailabilityWindowPermission,)
+    queryset = AvailableTime.objects.unscoped()
+    serializer_class = GroupScopedAvailabilityWindowSerializer
+    # PUT is intentionally unsupported: the underlying service is a partial
+    # update by design (only provided fields change), so only PATCH applies.
+    http_method_names = ("get", "post", "patch", "delete", "head", "options")
+
+    def get_queryset(self):
+        user = self.request.user
+        if not user.is_authenticated:
+            return AvailableTime.original_manager.none()
+        membership = get_active_organization_membership(user)
+        if not membership:
+            return AvailableTime.original_manager.none()
+        slot_id = self.kwargs.get("slot_id")
+        return (
+            super()
+            .get_queryset()
+            .filter_by_organization(membership.organization_id)
+            .for_group_slot(slot_id)
+            # `AvailableTimeVirtualModel` doesn't know about `recurrence_rule` under
+            # the "rrule_string" name our serializer exposes it as -- select it
+            # explicitly so `GroupScopedAvailabilityWindowSerializer.get_rrule_string`
+            # doesn't N+1 on the way to `recurrence_rule.to_rrule_string()`.
+            .select_related("recurrence_rule")
+        )
+
+    @extend_schema(
+        summary="Create a group-scoped availability window",
+        description=(
+            "Creates a group-scoped availability window for a calendar within a group "
+            "slot's roster. If this is the calendar's FIRST group-scoped window (i.e. "
+            "the write narrows it from base availability), confirmed future bookings "
+            "that now fall outside it are returned in `orphaned_bookings`; nothing "
+            "about them is modified."
+        ),
+        request=GroupScopedAvailabilityWindowCreateSerializer,
+        responses={201: GroupScopedAvailabilityWriteResultSerializer},
+    )
+    @inject
+    def create(
+        self,
+        request,
+        *args,
+        calendar_group_service: Annotated[CalendarGroupService, Provide["calendar_group_service"]],
+        **kwargs,
+    ):
+        serializer = GroupScopedAvailabilityWindowCreateSerializer(
+            data=request.data, context=self.get_serializer_context()
+        )
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        membership = get_active_organization_membership(request.user)
+        if membership is None:
+            # Unreachable in practice -- `GroupScopedAvailabilityWindowPermission`
+            # already requires an active membership -- but narrows the type for
+            # mypy and fails closed rather than crashing on `None.organization`.
+            raise Http404
+        calendar_group_service.initialize(organization=membership.organization)
+        try:
+            result = calendar_group_service.create_group_scoped_availability_window(
+                acting_user=request.user,
+                group_slot_id=self.kwargs["slot_id"],
+                calendar_id=data["calendar"].id,
+                start_time=data["start_time"],
+                end_time=data["end_time"],
+                tz=data["timezone"],
+                rrule_string=data.get("rrule_string"),
+            )
+        except CalendarGroupSlotConfigNotFoundError as e:
+            # Same not-found shape as a genuinely missing window -- no message
+            # leaked that would distinguish "forbidden" from "does not exist".
+            raise Http404 from e
+
+        response_serializer = GroupScopedAvailabilityWriteResultSerializer(
+            result, context=self.get_serializer_context()
+        )
+        return Response(response_serializer.data, status=status.HTTP_201_CREATED)
+
+    @extend_schema(
+        summary="Update a group-scoped availability window",
+        description=(
+            "Partial update -- only provided fields change. If the change narrows the "
+            "window, confirmed future bookings that now fall outside it are returned "
+            "in `orphaned_bookings`; nothing about them is modified."
+        ),
+        request=GroupScopedAvailabilityWindowUpdateSerializer,
+        responses={200: GroupScopedAvailabilityWriteResultSerializer},
+    )
+    @inject
+    def partial_update(
+        self,
+        request,
+        *args,
+        calendar_group_service: Annotated[CalendarGroupService, Provide["calendar_group_service"]],
+        **kwargs,
+    ):
+        instance = self.get_object()
+        serializer = GroupScopedAvailabilityWindowUpdateSerializer(
+            data=request.data, partial=True, context=self.get_serializer_context()
+        )
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        membership = get_active_organization_membership(request.user)
+        if membership is None:
+            raise Http404
+        calendar_group_service.initialize(organization=membership.organization)
+        try:
+            result = calendar_group_service.update_group_scoped_availability_window(
+                acting_user=request.user,
+                window_id=instance.id,
+                start_time=data.get("start_time"),
+                end_time=data.get("end_time"),
+                tz=data.get("timezone"),
+                rrule_string=data.get("rrule_string"),
+            )
+        except CalendarGroupSlotConfigNotFoundError as e:
+            # Same not-found shape as a genuinely missing window -- no message
+            # leaked that would distinguish "forbidden" from "does not exist".
+            raise Http404 from e
+
+        response_serializer = GroupScopedAvailabilityWriteResultSerializer(
+            result, context=self.get_serializer_context()
+        )
+        return Response(response_serializer.data, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        summary="Delete a group-scoped availability window",
+        description="Deletes the window (a recurring window is one row -- deletes the whole series).",
+        responses={204: None},
+    )
+    @inject
+    def destroy(
+        self,
+        request,
+        *args,
+        calendar_group_service: Annotated[CalendarGroupService, Provide["calendar_group_service"]],
+        **kwargs,
+    ):
+        instance = self.get_object()
+        membership = get_active_organization_membership(request.user)
+        if membership is None:
+            raise Http404
+        calendar_group_service.initialize(organization=membership.organization)
+        try:
+            calendar_group_service.delete_group_scoped_availability_window(
+                acting_user=request.user, window_id=instance.id
+            )
+        except CalendarGroupSlotConfigNotFoundError as e:
+            # Same not-found shape as a genuinely missing window -- no message
+            # leaked that would distinguish "forbidden" from "does not exist".
+            raise Http404 from e
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class CalendarGroupViewSet(VintaScheduleModelViewSet):

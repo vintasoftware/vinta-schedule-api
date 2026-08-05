@@ -2512,6 +2512,156 @@ class CalendarGroupSlotMembershipSerializer(VirtualModelSerializer):
         fields = ("id", "calendar")
 
 
+class GroupScopedAvailabilityWindowSerializer(VirtualModelSerializer):
+    """Read representation of a group-scoped availability window
+    (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 1c).
+
+    Deliberately narrower than ``AvailableTimeSerializer``: there is no nested
+    ``recurrence_rule`` write path here, only ``rrule_string`` -- matching
+    exactly what ``CalendarGroupService``'s window-write methods accept, so the
+    REST shape and the service signature cannot drift apart.
+    """
+
+    calendar_id = serializers.IntegerField(source="calendar_fk_id", read_only=True)
+    group_slot_id = serializers.IntegerField(source="group_slot_fk_id", read_only=True)
+    rrule_string = serializers.SerializerMethodField(read_only=True)
+    is_recurring = serializers.SerializerMethodField(read_only=True)
+    start_time = serializers.DateTimeField(read_only=True)
+    end_time = serializers.DateTimeField(read_only=True)
+
+    class Meta:
+        model = AvailableTime
+        virtual_model = AvailableTimeVirtualModel
+        fields = (
+            "id",
+            "calendar_id",
+            "group_slot_id",
+            "start_time",
+            "end_time",
+            "timezone",
+            "rrule_string",
+            "is_recurring",
+            "created",
+            "modified",
+        )
+        read_only_fields = fields
+
+    @v.hints.no_deferred_fields()
+    def get_rrule_string(self, obj: AvailableTime) -> str | None:
+        """RRULE string for the window's recurrence, or ``None`` when it doesn't recur."""
+        return obj.recurrence_rule.to_rrule_string() if obj.recurrence_rule else None
+
+    @v.hints.no_deferred_fields()
+    def get_is_recurring(self, obj: AvailableTime) -> bool:
+        return obj.is_recurring
+
+    def to_representation(self, instance):
+        """Render start_time/end_time in the window's own IANA timezone, not UTC."""
+        data = super().to_representation(instance)
+        return _localize_times_in_representation(
+            data, instance, getattr(instance, "timezone", None)
+        )
+
+
+class GroupScopedAvailabilityWindowCreateSerializer(serializers.Serializer):
+    """Input for creating a group-scoped availability window.
+
+    Field names map 1:1 onto
+    ``CalendarGroupService.create_group_scoped_availability_window``'s keyword
+    arguments (``calendar_id``, ``start_time``, ``end_time``, ``tz``,
+    ``rrule_string``) so the REST shape can never silently drift from the
+    service signature it delegates to.
+    """
+
+    calendar = serializers.PrimaryKeyRelatedField(
+        queryset=Calendar.original_manager.none(),
+        help_text="Calendar this window applies to. Must be a member of the target slot.",
+    )
+    start_time = serializers.DateTimeField(required=True)
+    end_time = serializers.DateTimeField(required=True)
+    timezone = serializers.CharField(required=True)
+    rrule_string = serializers.CharField(
+        required=False,
+        allow_null=True,
+        help_text="RRULE string for a recurring window. Omit for a one-off window.",
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        user = (
+            self.context["request"].user if self.context and self.context.get("request") else None
+        )
+        membership = (
+            get_active_organization_membership(user) if user and user.is_authenticated else None
+        )
+        self.fields["calendar"].queryset = (
+            Calendar.objects.filter_by_organization(membership.organization_id)
+            if membership
+            else Calendar.original_manager.none()
+        )
+
+    def validate(self, attrs):
+        if attrs["start_time"] >= attrs["end_time"]:
+            raise serializers.ValidationError("start_time must be before end_time.")
+        return attrs
+
+
+class GroupScopedAvailabilityWindowUpdateSerializer(serializers.Serializer):
+    """Input for partially updating a group-scoped availability window.
+
+    Every field is optional -- only provided fields change, mirroring
+    ``CalendarGroupService.update_group_scoped_availability_window``.
+    """
+
+    start_time = serializers.DateTimeField(required=False)
+    end_time = serializers.DateTimeField(required=False)
+    timezone = serializers.CharField(required=False)
+    rrule_string = serializers.CharField(
+        required=False,
+        allow_null=True,
+        help_text="RRULE string for a recurring window. Set to null to make it non-recurring.",
+    )
+
+    def validate(self, attrs):
+        start_time = attrs.get("start_time")
+        end_time = attrs.get("end_time")
+        if start_time is not None and end_time is not None and start_time >= end_time:
+            raise serializers.ValidationError("start_time must be before end_time.")
+        return attrs
+
+
+class GroupScopedAvailabilityOrphanedBookingSerializer(serializers.Serializer):
+    """Minimal identification of a booking a narrowing write orphaned (spec UC-6)
+    -- enough for an admin to act on. Nothing about the booking itself is
+    modified by the write that produced this entry.
+    """
+
+    id = serializers.IntegerField(read_only=True)
+    calendar_id = serializers.IntegerField(source="calendar_fk_id", read_only=True)
+    title = serializers.CharField(read_only=True)
+    start_time = serializers.DateTimeField(read_only=True)
+    end_time = serializers.DateTimeField(read_only=True)
+
+
+class GroupScopedAvailabilityWriteResultSerializer(serializers.Serializer):
+    """Wraps a ``GroupScopedAvailabilityWriteResult``: the saved window plus any
+    confirmed future bookings the write orphaned. Returned by the create and
+    update actions of ``GroupScopedAvailabilityWindowViewSet``.
+    """
+
+    window = GroupScopedAvailabilityWindowSerializer(read_only=True)
+    orphaned_bookings = GroupScopedAvailabilityOrphanedBookingSerializer(
+        many=True,
+        read_only=True,
+        help_text=(
+            "Confirmed future bookings in this slot for this window's calendar that no "
+            "longer fall inside the calendar's group-scoped availability after this "
+            "write. Nothing about them is modified or cancelled -- act on them manually "
+            "if needed."
+        ),
+    )
+
+
 class CalendarGroupSlotSerializer(VirtualModelSerializer):
     """Nested slot representation used inside CalendarGroupSerializer.
 

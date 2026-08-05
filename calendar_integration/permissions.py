@@ -1,7 +1,9 @@
+from django.http import Http404
+
 from dependency_injector.wiring import Provide, inject
 from rest_framework.permissions import SAFE_METHODS, BasePermission
 
-from calendar_integration.models import CalendarOwnership
+from calendar_integration.models import CalendarGroupSlot, CalendarOwnership
 from calendar_integration.services.booking_policy_permission_service import (
     BookingPolicyPermissionService,
 )
@@ -175,3 +177,80 @@ class CalendarGroupPermission(BasePermission):
         return self.calendar_permission_service.can_manage_calendar_group(
             user=request.user, group=obj
         )
+
+
+class GroupScopedAvailabilityWindowPermission(BasePermission):
+    """Route-level group-visibility gate for the group-scoped availability
+    window routes nested under a group's slot
+    (``calendar-groups/<group_id>/slots/<slot_id>/availability-windows/...``,
+    CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 1c).
+
+    ``has_permission`` resolves the ``(group_id, slot_id)`` pair from the URL
+    once, org-scoped, and stashes it on the view as ``view.group_slot`` so the
+    viewset doesn't repeat the query. Visibility uses the same "can this user
+    see the group at all" rule as ``CalendarGroupPermission``
+    (``CalendarPermissionService.can_manage_calendar_group`` — admin, or owns
+    ANY calendar in ANY slot of the group; matches the Phase 1a service tests,
+    where owning a calendar in a *different* slot of the same group is enough
+    to see the group but not enough to manage a calendar the caller doesn't
+    own). A caller who cannot see the ``(group, slot)`` — because it genuinely
+    doesn't exist, belongs to another organization, or they own no calendar
+    anywhere in the group and are not an org admin — gets the exact same
+    ``Http404`` as a caller hitting a URL for a slot that never existed; there
+    is no separate 403 branch to compare it against (spec: "a member cannot
+    learn about groups they are not part of through error messages or
+    listings").
+
+    This is a coarse, route-level gate only. The fine-grained decision — may
+    *this* user write *this specific* calendar's config within the slot —
+    stays where Phase 1a put it: ``CalendarGroupService`` re-checks
+    ``can_manage_group_scoped_calendar_config`` on every write and raises the
+    identically-shaped ``CalendarGroupSlotConfigNotFoundError`` (mapped to the
+    same 404 by the view) when a visible member targets a calendar they don't
+    own. Both gates matter: this one stops a stranger from even proving the
+    slot exists; the service one stops a legitimate group member from writing
+    a calendar that isn't theirs.
+    """
+
+    @inject
+    def __init__(
+        self,
+        calendar_permission_service: "CalendarPermissionService | None" = Provide[
+            "calendar_permission_service"
+        ],
+    ):
+        self.calendar_permission_service = calendar_permission_service
+
+    def has_permission(self, request, view) -> bool:
+        user = request.user
+        if not user.is_authenticated:
+            return False
+        membership = get_active_organization_membership(user)
+        if membership is None:
+            return False
+
+        group_id = view.kwargs.get("group_id")
+        slot_id = view.kwargs.get("slot_id")
+        if group_id is None or slot_id is None:
+            return False
+
+        try:
+            group_slot = (
+                CalendarGroupSlot.objects.filter_by_organization(membership.organization_id)
+                .select_related("group")
+                .get(id=slot_id, group_fk_id=group_id)
+            )
+        except CalendarGroupSlot.DoesNotExist:
+            raise Http404() from None
+
+        if self.calendar_permission_service is None or not (
+            self.calendar_permission_service.can_manage_calendar_group(
+                user=user, group=group_slot.group
+            )
+        ):
+            # Same not-found shape as a genuinely missing slot -- a member must
+            # not learn this group/slot exists through a distinguishable 403.
+            raise Http404()
+
+        view.group_slot = group_slot
+        return True

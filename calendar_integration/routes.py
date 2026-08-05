@@ -8,6 +8,7 @@ from .views import (
     CalendarGroupViewSet,
     CalendarViewSet,
     ExternalEventChangeRequestViewSet,
+    GroupScopedAvailabilityWindowViewSet,
 )
 
 
@@ -21,6 +22,11 @@ routes: list[RouteDict] = [
         "regex": r"calendar-groups",
         "viewset": CalendarGroupViewSet,
         "basename": "CalendarGroups",
+    },
+    {
+        "regex": r"calendar-groups/<int:group_id>/slots/<int:slot_id>/availability-windows",
+        "viewset": GroupScopedAvailabilityWindowViewSet,
+        "basename": "GroupScopedAvailabilityWindows",
     },
     {
         "regex": r"calendar",
