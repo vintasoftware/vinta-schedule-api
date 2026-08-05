@@ -29,6 +29,7 @@ import pytest
 from calendar_integration.constants import (
     CalendarProvider,
     CalendarType,
+    EventManagementPermissions,
     GroupScopedRuleType,
     QuotaPeriod,
 )
@@ -42,6 +43,7 @@ from calendar_integration.models import (
     CalendarGroup,
     CalendarGroupSlot,
     CalendarGroupSlotMembership,
+    CalendarManagementToken,
 )
 from calendar_integration.services.calendar_group_service import CalendarGroupService
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
@@ -50,7 +52,7 @@ from calendar_integration.services.dataclasses import (
     CalendarGroupEventInputData,
     CalendarGroupSlotSelectionInputData,
 )
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership, OrganizationRole, WeekStart
 from users.models import Profile, User
 
 
@@ -192,6 +194,74 @@ def service(
     )
     svc.initialize(organization=organization)
     return svc
+
+
+@pytest.fixture
+def reschedule_admin_user(organization: Organization) -> User:
+    """A real ``User`` identity (not the anonymous/public path the other
+    fixtures use) -- needed only by the reschedule self-exclusion tests below,
+    which must exercise the FULL ``reschedule_grouped_event`` write path
+    (through ``CalendarService.update_event``'s permission check), not just
+    the quota gate."""
+    u = User.objects.create_user(email="quota-reschedule-admin@example.com", password="pass")
+    Profile.objects.create(user=u)
+    OrganizationMembership.objects.create(
+        user=u, organization=organization, role=OrganizationRole.ADMIN
+    )
+    return u
+
+
+@pytest.fixture
+def reschedule_calendar_service(
+    organization: Organization, reschedule_admin_user: User, calendar: Calendar
+) -> CalendarService:
+    """A ``CalendarService`` authenticated as ``reschedule_admin_user``, with a
+    calendar-level ``CalendarManagementToken`` pre-minted so
+    ``CalendarEventService.create_event``'s ``initialize_with_user`` call
+    succeeds for the grouped booking's primary create (no permissions need to
+    be attached to this token -- ``create_grouped_event`` sets
+    ``group_authorized=True`` on the underlying create, which bypasses the
+    per-calendar scheduling permission check)."""
+    CalendarManagementToken.objects.create(
+        organization=organization,
+        calendar_fk=calendar,
+        membership_user_id=reschedule_admin_user.id,
+        token_hash=f"quota-reschedule-cal-{uuid.uuid4()}",
+    )
+    cs = CalendarService()
+    cs.initialize_without_provider(user_or_token=reschedule_admin_user, organization=organization)
+    return cs
+
+
+@pytest.fixture
+def reschedule_service(
+    organization: Organization, reschedule_calendar_service: CalendarService, audit_service
+) -> CalendarGroupService:
+    svc = CalendarGroupService(
+        calendar_service=reschedule_calendar_service,
+        calendar_permission_service=CalendarPermissionService(),
+        audit_service=audit_service,
+    )
+    svc.initialize(organization=organization)
+    return svc
+
+
+def _grant_reschedule_permission(
+    organization: Organization, user: User, event: CalendarEvent
+) -> CalendarManagementToken:
+    """Mint an event-scoped token with RESCHEDULE so
+    ``CalendarEventService.update_event``'s ``can_perform_update`` check
+    passes for a subsequent ``reschedule_grouped_event`` call on ``event``."""
+    token = CalendarManagementToken.objects.create(
+        organization=organization,
+        event_fk=event,
+        membership_user_id=user.id,
+        token_hash=f"quota-reschedule-evt-{uuid.uuid4()}",
+    )
+    token.permissions.create(
+        organization=organization, permission=EventManagementPermissions.RESCHEDULE
+    )
+    return token
 
 
 def _seed_booking(
@@ -467,6 +537,12 @@ def test_create_grouped_event_rejects_calendar_over_quota(
     error_msg = str(exc_info.value)
     assert str(calendar.id) in error_msg
     assert "quota_consumed" in error_msg
+    # The configured cap (1) must NOT leak into the message either -- strip
+    # out the calendar id occurrence first so a coincidental digit overlap
+    # between the cap and the (DB-assigned) calendar id can't mask a
+    # regression that actually embeds the cap.
+    message_without_calendar_id = error_msg.replace(str(calendar.id), "")
+    assert "1" not in message_without_calendar_id
 
 
 @pytest.mark.django_db
@@ -487,6 +563,325 @@ def test_create_grouped_event_allows_calendar_under_quota(
     _seed_booking(organization, surgery_group, surgery_slot, calendar, _utc(2025, 9, 1, 9))
     event = _book_via_service(service, surgery_slot, calendar, _utc(2025, 9, 1, 14))
     assert event.calendar_fk_id == calendar.id
+
+
+# ---------------------------------------------------------------------------
+# Reschedule self-exclusion: the event-being-moved's own still-present
+# booking row must not count against itself when validating the reschedule.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_reschedule_same_day_at_daily_cap_succeeds(
+    reschedule_service: CalendarGroupService,
+    reschedule_admin_user: User,
+    organization: Organization,
+    calendar: Calendar,
+    surgery_slot: CalendarGroupSlot,
+) -> None:
+    """Daily cap=1, one booking at 09:00. Rescheduling THAT SAME booking to
+    14:00 the same day must succeed: the candidate period (Sep 1) is the
+    booking's own old period, so its own row must be excluded from the count
+    used to validate the new time -- it isn't consuming any additional quota,
+    just moving within the same period."""
+    create_group_slot_quota_rule(
+        organization=organization,
+        group_slot=surgery_slot,
+        calendar=calendar,
+        period=QuotaPeriod.DAY,
+        cap=1,
+    )
+    event = _book_via_service(reschedule_service, surgery_slot, calendar, _utc(2025, 9, 1, 9))
+    _grant_reschedule_permission(organization, reschedule_admin_user, event)
+
+    rescheduled = reschedule_service.reschedule_grouped_event(
+        event_id=event.id,
+        start_time=_utc(2025, 9, 1, 14),
+        end_time=_utc(2025, 9, 1, 14, 30),
+        tz="UTC",
+    )
+    assert rescheduled.start_time == _utc(2025, 9, 1, 14)
+
+
+@pytest.mark.django_db
+def test_reschedule_across_boundary_into_full_period_rejected(
+    reschedule_service: CalendarGroupService,
+    reschedule_admin_user: User,
+    organization: Organization,
+    calendar: Calendar,
+    surgery_group: CalendarGroup,
+    surgery_slot: CalendarGroupSlot,
+) -> None:
+    """Daily cap=1. The event under reschedule lives on Sep 1; Sep 2 already
+    has its OWN (different) booking at the cap. Moving the Sep 1 event INTO
+    Sep 2 must be rejected -- the old period (Sep 1) differs from the
+    candidate period (Sep 2), so no self-exclusion applies and Sep 2's count
+    (from the other booking) is evaluated as-is."""
+    create_group_slot_quota_rule(
+        organization=organization,
+        group_slot=surgery_slot,
+        calendar=calendar,
+        period=QuotaPeriod.DAY,
+        cap=1,
+    )
+    event = _book_via_service(reschedule_service, surgery_slot, calendar, _utc(2025, 9, 1, 9))
+    _grant_reschedule_permission(organization, reschedule_admin_user, event)
+    _seed_booking(organization, surgery_group, surgery_slot, calendar, _utc(2025, 9, 2, 9))
+
+    with pytest.raises(CalendarGroupScopedRuleViolationError) as exc_info:
+        reschedule_service.reschedule_grouped_event(
+            event_id=event.id,
+            start_time=_utc(2025, 9, 2, 14),
+            end_time=_utc(2025, 9, 2, 14, 30),
+            tz="UTC",
+        )
+    assert exc_info.value.calendar_id == calendar.id
+    assert exc_info.value.rule_type == GroupScopedRuleType.QUOTA_CONSUMED
+
+
+@pytest.mark.django_db
+def test_reschedule_across_boundary_into_period_with_headroom_succeeds(
+    reschedule_service: CalendarGroupService,
+    reschedule_admin_user: User,
+    organization: Organization,
+    calendar: Calendar,
+    surgery_slot: CalendarGroupSlot,
+) -> None:
+    """Daily cap=1. The event under reschedule lives on Sep 1; Sep 2 has no
+    other bookings. Moving the Sep 1 event into Sep 2 must succeed -- the old
+    period differs from the candidate period (no self-exclusion needed), and
+    Sep 2's count (0) is under the cap."""
+    create_group_slot_quota_rule(
+        organization=organization,
+        group_slot=surgery_slot,
+        calendar=calendar,
+        period=QuotaPeriod.DAY,
+        cap=1,
+    )
+    event = _book_via_service(reschedule_service, surgery_slot, calendar, _utc(2025, 9, 1, 9))
+    _grant_reschedule_permission(organization, reschedule_admin_user, event)
+
+    rescheduled = reschedule_service.reschedule_grouped_event(
+        event_id=event.id,
+        start_time=_utc(2025, 9, 2, 9),
+        end_time=_utc(2025, 9, 2, 9, 30),
+        tz="UTC",
+    )
+    assert rescheduled.start_time == _utc(2025, 9, 2, 9)
+
+
+# ---------------------------------------------------------------------------
+# Sunday week start -- exercises the shift-truncate-shift bucketing branch a
+# default-Monday fixture never hits.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_weekly_quota_with_sunday_week_start_hides_calendar_across_boundary(
+    service: CalendarGroupService,
+    calendar: Calendar,
+    surgery_group: CalendarGroup,
+    surgery_slot: CalendarGroupSlot,
+) -> None:
+    """Sunday week start: the week containing Sunday 2025-09-07 runs
+    [Sep 7 - Sep 13]. Two bookings inside that Sunday-started week (one on
+    the Sunday itself, one on the following Monday) at cap=2 must hide the
+    calendar for the REST of that week, while the calendar remains offered on
+    Sep 6 (the last day of the PRECEDING Sunday-started week, [Aug 31 - Sep
+    6]) -- a boundary a Monday-week-start fixture never straddles the same
+    way."""
+    organization = calendar.organization
+    organization.week_start = WeekStart.SUNDAY
+    organization.save(update_fields=["week_start"])
+
+    create_group_slot_quota_rule(
+        organization=organization,
+        group_slot=surgery_slot,
+        calendar=calendar,
+        period=QuotaPeriod.WEEK,
+        cap=2,
+    )
+    # Sunday 2025-09-07 and Monday 2025-09-08 are in the SAME Sunday-started
+    # week [Sep 7 - Sep 13].
+    _seed_booking(organization, surgery_group, surgery_slot, calendar, _utc(2025, 9, 7, 9))
+    _seed_booking(organization, surgery_group, surgery_slot, calendar, _utc(2025, 9, 8, 9))
+
+    # Sep 9 (Tuesday) is still inside the now-capped [Sep 7 - Sep 13] week.
+    still_in_capped_week = service.check_group_availability(
+        surgery_slot.group_fk_id,  # type: ignore[arg-type]
+        [(_utc(2025, 9, 9, 10), _utc(2025, 9, 9, 10, 30))],
+    )
+    assert still_in_capped_week[0].slots[0].available_calendar_ids == []
+
+    # Sep 6 (Saturday) is the last day of the PRECEDING Sunday-started week
+    # [Aug 31 - Sep 6] -- untouched by the cap.
+    preceding_week = service.check_group_availability(
+        surgery_slot.group_fk_id,  # type: ignore[arg-type]
+        [(_utc(2025, 9, 6, 10), _utc(2025, 9, 6, 10, 30))],
+    )
+    assert preceding_week[0].slots[0].available_calendar_ids == [calendar.id]
+
+
+# ---------------------------------------------------------------------------
+# Monthly quota rule, bookings across a month boundary.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_monthly_quota_hides_calendar_across_month_boundary(
+    service: CalendarGroupService,
+    organization: Organization,
+    calendar: Calendar,
+    surgery_group: CalendarGroup,
+    surgery_slot: CalendarGroupSlot,
+) -> None:
+    # The `calendar` fixture's base AvailableTime block only runs through
+    # 2025-09-29 -- extend it into October so base availability isn't the
+    # bottleneck for the October assertion below (mirrors the fixture's own
+    # single-wide-block approach).
+    AvailableTime.objects.create(
+        organization=organization,
+        calendar=calendar,
+        start_time_tz_unaware=_utc(2025, 9, 29),
+        end_time_tz_unaware=_utc(2025, 10, 3),
+        timezone="UTC",
+    )
+    create_group_slot_quota_rule(
+        organization=organization,
+        group_slot=surgery_slot,
+        calendar=calendar,
+        period=QuotaPeriod.MONTH,
+        cap=2,
+    )
+    _seed_booking(organization, surgery_group, surgery_slot, calendar, _utc(2025, 9, 5, 9))
+    _seed_booking(organization, surgery_group, surgery_slot, calendar, _utc(2025, 9, 20, 9))
+
+    # Still September -- at cap, hidden.
+    september_result = service.check_group_availability(
+        surgery_slot.group_fk_id,  # type: ignore[arg-type]
+        [(_utc(2025, 9, 25, 10), _utc(2025, 9, 25, 10, 30))],
+    )
+    assert september_result[0].slots[0].available_calendar_ids == []
+
+    # October -- a fresh month bucket, no bookings yet, offered again.
+    october_result = service.check_group_availability(
+        surgery_slot.group_fk_id,  # type: ignore[arg-type]
+        [(_utc(2025, 10, 1, 10), _utc(2025, 10, 1, 10, 30))],
+    )
+    assert october_result[0].slots[0].available_calendar_ids == [calendar.id]
+
+
+# ---------------------------------------------------------------------------
+# Python/SQL bucketing pin test -- the Python-side `quota_period_start_utc`
+# and the SQL `get_calendar_group_quota_period_counts_json` function must
+# always bucket the SAME instant into the SAME period, or the count fetched
+# via SQL will silently disagree with the period the Python side looks it up
+# under.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_python_and_sql_bucketing_agree_on_period_start(
+    organization: Organization,
+    calendar: Calendar,
+    surgery_group: CalendarGroup,
+    surgery_slot: CalendarGroupSlot,
+) -> None:
+    from calendar_integration.database_functions import GetCalendarGroupQuotaPeriodCountsJSON
+    from calendar_integration.services import slot_engine
+
+    seed_instants = [
+        _utc(2025, 9, 3, 9),  # mid-week Wednesday
+        _utc(2025, 9, 7, 23, 30),  # Sunday, near midnight
+        _utc(2025, 9, 30, 9),  # end of month
+    ]
+    for instant in seed_instants:
+        _seed_booking(organization, surgery_group, surgery_slot, calendar, instant)
+
+    range_start = _utc(2025, 8, 25)
+    range_end = _utc(2025, 10, 5)
+
+    for period, week_start in (
+        (QuotaPeriod.DAY, WeekStart.MONDAY),
+        (QuotaPeriod.WEEK, WeekStart.MONDAY),
+        (QuotaPeriod.WEEK, WeekStart.SUNDAY),
+        (QuotaPeriod.MONTH, WeekStart.MONDAY),
+    ):
+        row = (
+            Calendar.objects.filter_by_organization(organization.id)
+            .filter(id=calendar.id)
+            .annotate(
+                quota_counts=GetCalendarGroupQuotaPeriodCountsJSON(
+                    "id",
+                    surgery_slot.id,
+                    organization.id,
+                    period,
+                    week_start,
+                    range_start,
+                    range_end,
+                )
+            )
+            .values_list("quota_counts", flat=True)
+            .first()
+        )
+        sql_period_starts = {
+            datetime.datetime.fromisoformat(bucket["period_start"]) for bucket in (row or ())
+        }
+
+        expected_period_starts = {
+            slot_engine.quota_period_start_utc(instant, period, week_start)
+            for instant in seed_instants
+        }
+
+        assert sql_period_starts == expected_period_starts, (period, week_start)
+
+
+# ---------------------------------------------------------------------------
+# `check_group_availability` quota-counting query count is fixed per
+# configured (slot, period) combination, not per range.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_check_group_availability_quota_query_count_independent_of_range_count(
+    service: CalendarGroupService,
+    organization: Organization,
+    calendar: Calendar,
+    surgery_slot: CalendarGroupSlot,
+) -> None:
+    create_group_slot_quota_rule(
+        organization=organization,
+        group_slot=surgery_slot,
+        calendar=calendar,
+        period=QuotaPeriod.WEEK,
+        cap=3,
+    )
+
+    few_ranges = [(_utc(2025, 9, 1, 9), _utc(2025, 9, 1, 9, 30))]
+    many_ranges = [
+        (
+            WEEK1_MONDAY + datetime.timedelta(minutes=5 * i),
+            WEEK1_MONDAY + datetime.timedelta(minutes=5 * i + 30),
+        )
+        for i in range(200)
+    ]
+
+    with CaptureQueriesContext(connection) as few:
+        service.check_group_availability(
+            surgery_slot.group_fk_id,  # type: ignore[arg-type]
+            few_ranges,
+        )
+    with CaptureQueriesContext(connection) as many:
+        service.check_group_availability(
+            surgery_slot.group_fk_id,  # type: ignore[arg-type]
+            many_ranges,
+        )
+
+    few_quota_queries = _quota_query_count(few)
+    many_quota_queries = _quota_query_count(many)
+    assert few_quota_queries == 1
+    assert many_quota_queries == 1
+    assert few_quota_queries == many_quota_queries
 
 
 # ---------------------------------------------------------------------------
