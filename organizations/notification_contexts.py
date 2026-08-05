@@ -5,12 +5,12 @@ from django.core.exceptions import ObjectDoesNotExist
 from vintasend.exceptions import NotificationContextGenerationError
 from vintasend.services.notification_service import register_context
 
+from organizations.branding_logo import build_logo_delivery_url
 from organizations.models import OrganizationInvitation, resolve_branding_for_display
 
 
 # Vinta Schedule default branding values (used when no reseller branding is configured)
 VINTA_DEFAULT_APP_NAME = "Vinta Schedule"
-VINTA_DEFAULT_LOGO_URL = ""
 VINTA_DEFAULT_PRIMARY_COLOR = ""
 VINTA_DEFAULT_SECONDARY_COLOR = ""
 VINTA_DEFAULT_SUPPORT_EMAIL = ""
@@ -56,9 +56,16 @@ def organization_invitation_context(
     branding_row = resolve_branding_for_display(invitation.organization)
 
     # Build the branding context dict with resolved values or vinta defaults.
+    # `logo_url` is always the logo delivery route's absolute URL, never a signed S3
+    # URL and never a bare key -- so an email opened days later still renders it. No
+    # `request` is available in a notification-context generator, so
+    # `build_logo_delivery_url` falls back to `settings.API_DOMAIN`. When there is no
+    # branding row (or no entitlement), `organization=None` resolves through the
+    # route's reserved "default" sentinel slug to our bundled default logo -- the
+    # same miss-path an unbranded organization's own logo request would take.
     branding_context = {
         "app_name": (branding_row.app_name if branding_row else VINTA_DEFAULT_APP_NAME),
-        "logo_url": (branding_row.logo_url if branding_row else VINTA_DEFAULT_LOGO_URL),
+        "logo_url": build_logo_delivery_url(branding_row.organization if branding_row else None),
         "primary_color": (
             branding_row.primary_color if branding_row else VINTA_DEFAULT_PRIMARY_COLOR
         ),

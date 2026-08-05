@@ -20,6 +20,16 @@ User = get_user_model()
 BRANDING_URL = "/branding/"
 
 
+def assert_logo_delivery_url(url: str) -> None:
+    """``logo_url`` is always the logo delivery route's absolute URL -- see
+    ``organizations.branding_logo.build_logo_delivery_url``. It is never the
+    raw/signed S3 value that was written (round-trip identity is not the
+    contract here -- ``organizations/tests/test_branding_logo.py`` covers
+    slug-keyed resolution specifically)."""
+    assert url.startswith("http"), url
+    assert "/branding/logo/" in url, url
+
+
 def assert_response_status_code(response, expected_status_code):
     """Assert response status code with helpful error message."""
     assert response.status_code == expected_status_code, (
@@ -110,7 +120,7 @@ class TestOrganizationBrandingViewSet:
             OrganizationBranding,
             organization=reseller_org,
             app_name="MyScheduler",
-            logo_url="https://example.com/logo.png",
+            logo="uploads/branding_logos/logo.png",
             primary_color="#FF0000",
             secondary_color="#00FF00",
             support_email="support@example.com",
@@ -125,7 +135,7 @@ class TestOrganizationBrandingViewSet:
 
         data = response.json()
         assert data["app_name"] == "MyScheduler"
-        assert data["logo_url"] == "https://example.com/logo.png"
+        assert_logo_delivery_url(data["logo_url"])
         assert data["primary_color"] == "#FF0000"
         assert data["secondary_color"] == "#00FF00"
         assert data["support_email"] == "support@example.com"
@@ -138,7 +148,7 @@ class TestOrganizationBrandingViewSet:
 
         payload = {
             "app_name": "MyScheduler",
-            "logo_url": "https://example.com/logo.png",
+            "logo_url": "uploads/branding_logos/logo.png",
             "primary_color": "#FF0000",
             "secondary_color": "#00FF00",
             "support_email": "support@example.com",
@@ -151,10 +161,12 @@ class TestOrganizationBrandingViewSet:
         data = response.json()
         assert data["app_name"] == "MyScheduler"
         assert data["support_email"] == "support@example.com"
+        assert_logo_delivery_url(data["logo_url"])
 
-        # Verify branding was created in DB
+        # Verify branding was created in DB, storing the bare key (never a URL).
         branding = OrganizationBranding.objects.get(organization_id=reseller_org.id)
         assert branding.app_name == "MyScheduler"
+        assert branding.logo.name == "uploads/branding_logos/logo.png"
 
     def test_update_branding_via_put_replaces_all_fields(
         self, client, user, reseller_org, reseller_org_admin
@@ -164,7 +176,7 @@ class TestOrganizationBrandingViewSet:
             OrganizationBranding,
             organization=reseller_org,
             app_name="OldName",
-            logo_url="https://old.example.com/logo.png",
+            logo="uploads/branding_logos/old-logo.png",
             primary_color="#0000FF",
             secondary_color="#FFFF00",
             support_email="old@example.com",
@@ -176,7 +188,7 @@ class TestOrganizationBrandingViewSet:
 
         payload = {
             "app_name": "NewName",
-            "logo_url": "https://new.example.com/logo.png",
+            "logo_url": "uploads/branding_logos/new-logo.png",
             "primary_color": "#FF0000",
             "secondary_color": "#00FF00",
             "support_email": "new@example.com",
@@ -189,6 +201,11 @@ class TestOrganizationBrandingViewSet:
         data = response.json()
         assert data["app_name"] == "NewName"
         assert data["support_email"] == "new@example.com"
+        assert_logo_delivery_url(data["logo_url"])
+
+        # PUT is a full replace: the new key is stored, not the old one.
+        branding = OrganizationBranding.objects.get(organization_id=reseller_org.id)
+        assert branding.logo.name == "uploads/branding_logos/new-logo.png"
 
     def test_update_branding_via_patch_partial(
         self, client, user, reseller_org, reseller_org_admin
@@ -198,7 +215,7 @@ class TestOrganizationBrandingViewSet:
             OrganizationBranding,
             organization=reseller_org,
             app_name="OriginalName",
-            logo_url="https://original.example.com/logo.png",
+            logo="uploads/branding_logos/original-logo.png",
             primary_color="#FF0000",
             secondary_color="#00FF00",
             support_email="original@example.com",
@@ -220,8 +237,12 @@ class TestOrganizationBrandingViewSet:
         assert data["app_name"] == "UpdatedName"
         assert data["support_email"] == "updated@example.com"
         # Unchanged fields should remain
-        assert data["logo_url"] == "https://original.example.com/logo.png"
+        assert_logo_delivery_url(data["logo_url"])
         assert data["primary_color"] == "#FF0000"
+
+        # PATCH omitted logo_url entirely: the stored key is untouched.
+        branding = OrganizationBranding.objects.get(organization_id=reseller_org.id)
+        assert branding.logo.name == "uploads/branding_logos/original-logo.png"
 
     def test_patch_branding_when_not_configured_returns_404(
         self, client, user, reseller_org, reseller_org_admin
@@ -352,7 +373,7 @@ class TestOrganizationBrandingViewSet:
             "app_name": "MyScheduler",
             "primary_color": "#FF0000",
             "secondary_color": "#00FF00",
-            "logo_url": "https://example.com/logo.png",
+            "logo_url": "uploads/branding_logos/logo.png",
             "support_email": "support@example.com",
             "redirect_url": "https://example.com/return",
         }
@@ -418,7 +439,7 @@ class TestOrganizationBrandingViewSet:
             OrganizationBranding,
             organization=reseller_org,
             app_name="MyScheduler",
-            logo_url="",
+            logo="",
             primary_color="",
             secondary_color="",
             support_email="",
@@ -444,7 +465,7 @@ class TestOrganizationBrandingViewSet:
             OrganizationBranding,
             organization=other_reseller,
             app_name="OtherApp",
-            logo_url="",
+            logo="",
             primary_color="",
             secondary_color="",
             support_email="",
@@ -455,7 +476,7 @@ class TestOrganizationBrandingViewSet:
             OrganizationBranding,
             organization=reseller_org,
             app_name="MyApp",
-            logo_url="",
+            logo="",
             primary_color="",
             secondary_color="",
             support_email="",
@@ -473,13 +494,22 @@ class TestOrganizationBrandingViewSet:
         assert data["app_name"] == "MyApp"
 
     def test_roundtrip_all_fields(self, client, user, reseller_org, reseller_org_admin):
-        """Create and retrieve branding; all fields round-trip."""
+        """Create and retrieve branding; all fields round-trip.
+
+        ``logo_url`` is the one field that deliberately does NOT round-trip to
+        the written value -- it always reads back as the logo delivery route's
+        URL (see ``organizations.branding_logo.build_logo_delivery_url``), keyed
+        by the acting org's slug, not the S3 key that was written.
+        """
+        reseller_org.slug = "clinic-scheduler"
+        reseller_org.save(update_fields=["slug"])
+
         client.force_authenticate(user)
         client.credentials(HTTP_X_ORGANIZATION_ID=str(reseller_org.id))
 
         original_payload = {
             "app_name": "ClinicScheduler",
-            "logo_url": "https://clinic.example.com/logo.png",
+            "logo_url": "uploads/branding_logos/clinic-logo.png",
             "primary_color": "#0066CC",
             "secondary_color": "#FF6633",
             "support_email": "help@clinic.example.com",
@@ -496,11 +526,15 @@ class TestOrganizationBrandingViewSet:
 
         data = response.json()
         assert data["app_name"] == original_payload["app_name"]
-        assert data["logo_url"] == original_payload["logo_url"]
+        assert data["logo_url"].endswith("/branding/logo/clinic-scheduler/")
         assert data["primary_color"] == original_payload["primary_color"]
         assert data["secondary_color"] == original_payload["secondary_color"]
         assert data["support_email"] == original_payload["support_email"]
         assert data["redirect_url"] == original_payload["redirect_url"]
+
+        # The written S3 key is what is actually stored -- never a URL.
+        branding = OrganizationBranding.objects.get(organization_id=reseller_org.id)
+        assert branding.logo.name == "uploads/branding_logos/clinic-logo.png"
 
     def test_delete_not_allowed(self, client, user, reseller_org, reseller_org_admin):
         """DELETE /branding/ returns 405 Method Not Allowed."""
@@ -508,7 +542,7 @@ class TestOrganizationBrandingViewSet:
             OrganizationBranding,
             organization=reseller_org,
             app_name="MyScheduler",
-            logo_url="",
+            logo="",
             primary_color="",
             secondary_color="",
             support_email="",
@@ -556,7 +590,7 @@ class TestOrganizationBrandingViewSet:
             OrganizationBranding,
             organization=reseller_a,
             app_name="BrandA",
-            logo_url="",
+            logo="",
             primary_color="",
             secondary_color="",
             support_email="",
@@ -566,7 +600,7 @@ class TestOrganizationBrandingViewSet:
             OrganizationBranding,
             organization=reseller_b,
             app_name="BrandB",
-            logo_url="",
+            logo="",
             primary_color="",
             secondary_color="",
             support_email="",
@@ -636,3 +670,65 @@ class TestOrganizationBrandingViewSet:
 
         response = client.get(BRANDING_URL)
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+
+@pytest.mark.django_db
+class TestBrandingLogoKeyPrefixIsEnforcedOnWrite:
+    """BLOCKER 1 (Phase 2b security review): the media bucket is a single shared
+    bucket holding `profile_pictures`, `providers_documents`,
+    `healthcare_entities_documents` (PHI), and `branding_logos` at their own
+    top-level prefixes. A `logo_url` that normalizes to a key outside
+    `uploads/branding_logos/` must be rejected on write -- otherwise an eligible
+    reseller admin could point their own branding row at another tenant's
+    private object and have it served back through the unauthenticated
+    delivery route."""
+
+    @pytest.mark.parametrize(
+        "logo_url",
+        [
+            "providers_documents/some-victim-file.pdf",
+            "profile_pictures/some-victim-avatar.png",
+            "/providers_documents/some-victim-file.pdf",
+            "healthcare_entities_documents/some-victim-record.pdf",
+            "bare-filename.png",
+            "https://example.com/providers_documents/some-victim-file.pdf",
+        ],
+    )
+    def test_foreign_prefix_key_is_rejected(
+        self, client, user, reseller_org, reseller_org_admin, logo_url
+    ):
+        client.force_authenticate(user)
+        client.credentials(HTTP_X_ORGANIZATION_ID=str(reseller_org.id))
+
+        payload = {
+            "app_name": "MyScheduler",
+            "logo_url": logo_url,
+            "primary_color": "#FF0000",
+            "secondary_color": "#00FF00",
+            "support_email": "support@example.com",
+            "redirect_url": "https://example.com/return",
+        }
+
+        response = client.put(BRANDING_URL, data=payload, format="json")
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "logo_url" in response.json()
+        # The rejected key must never have been persisted.
+        assert not OrganizationBranding.objects.filter(organization_id=reseller_org.id).exists()
+
+    def test_empty_logo_url_still_allowed(self, client, user, reseller_org, reseller_org_admin):
+        """Clearing the logo (empty string) must stay allowed -- only a non-empty,
+        foreign-prefix key is rejected."""
+        client.force_authenticate(user)
+        client.credentials(HTTP_X_ORGANIZATION_ID=str(reseller_org.id))
+
+        payload = {
+            "app_name": "MyScheduler",
+            "logo_url": "",
+            "primary_color": "#FF0000",
+            "secondary_color": "#00FF00",
+            "support_email": "support@example.com",
+            "redirect_url": "https://example.com/return",
+        }
+
+        response = client.put(BRANDING_URL, data=payload, format="json")
+        assert_response_status_code(response, status.HTTP_201_CREATED)

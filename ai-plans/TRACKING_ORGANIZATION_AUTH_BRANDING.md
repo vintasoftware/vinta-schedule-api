@@ -55,7 +55,7 @@ Command translation (container → host):
 |---|---|---|---|---|
 | 1 | Self-serve organization slug | 3 | ✅ done — [PR #206](https://github.com/vintasoftware/vinta-schedule-api/pull/206) | plan/organization-auth-branding/phase-1 |
 | 2a | Swap allowlist → single redirect | 2 | ✅ done — [PR #207](https://github.com/vintasoftware/vinta-schedule-api/pull/207) | plan/organization-auth-branding/phase-2a |
-| 2b | Logo upload and delivery | 3 | ⏳ pending | plan/organization-auth-branding/phase-2b |
+| 2b | Logo upload and delivery | 3 | ✅ done — [PR #208](https://github.com/vintasoftware/vinta-schedule-api/pull/208) | plan/organization-auth-branding/phase-2b |
 | 3 | Widen write gate | 3 | ⏳ pending | plan/organization-auth-branding/phase-3 |
 | 4 | Audit + capability field | 2 | ⏳ pending | plan/organization-auth-branding/phase-4 |
 | 5 | Resolve branding (parentless) | 3 | ⏳ pending | plan/organization-auth-branding/phase-5 |
@@ -86,9 +86,20 @@ Command translation (container → host):
 - Gates: ruff/format clean, `makemigrations --check` no changes, `manage.py check` clean, mypy no new errors, **full suite 4703 passed**. schema.yml + GraphQL surface regenerated.
 - Carry-forward: `resolve_branding` (ungated variant) intentionally KEPT but dead-until-Phase-5; docstring fixed to not cite deleted code. `docs/building-blocks-integration-v3.md` still names `validateReturnUrl` in prose (out of scope).
 
+### Phase 2b — Logo upload and delivery ✅
+- **Branch**: `plan/organization-auth-branding/phase-2b` (base: phase-2a) · **PR**: [#208](https://github.com/vintasoftware/vinta-schedule-api/pull/208)
+- **Implementer**: sonnet (T3) · **Reviewer**: opus (T4) · **Fixer**: sonnet (T2)
+- Shared eligibility helper (`organizations/permissions.py`): parentless + `white_label_branding` (+ user-granularity variant for the s3direct `auth` callable). Phase 3 extends this into the full write gate.
+- `branding_logos` S3DIRECT destination (private, prefix `uploads/branding_logos/`, PNG/JPEG/WebP, 5 MB, `auth`=eligibility). `OrganizationBranding.logo` (S3DirectImageField) replaces `logo_url`. Migration `0020`.
+- Unauthenticated delivery route `GET /branding/logo/<slug>/` via `resolve_branding_for_display`; ETag + short Cache-Control; every miss → default logo identically (no oracle). Default asset `organizations/assets/default_logo.png` (streamed from disk, not S3). GraphQL `createBrandingLogoUpload` signing mutation (org-granularity auth). Reads (serializer/BrandingResult/PublicBrandingResult/email context) return the delivery URL; email uses absolute URL.
+- **Tier-4 review caught + fixed TWO BLOCKERs**: (1) cross-tenant object disclosure — unconstrained stored key on a single shared bucket (holds PHI `providers_documents`/`healthcare_entities_documents`); fixed by constraining key to `uploads/branding_logos/` prefix on both writes + defensively on read. (2) stored XSS — extension-driven Content-Type + no nosniff; fixed to allowlisted image types (else `application/octet-stream`) + always `nosniff`. Also normalized a query-count timing oracle.
+- **Known residual (documented)**: S3-side size/type enforcement is advisory — s3direct issues bare AWS creds for a client PUT (not a presigned POST), so binding conditions would require rearchitecting a shared surface. Mitigation = prefix constraint + inert delivery.
+- Gates: ruff/format clean, `makemigrations --check` no changes, `manage.py check` clean, mypy no new errors, **full suite 4754 passed**. schema.yml regenerated (schema-auth.yml unchanged).
+- Carry-forward: `resolve_branding_for_display` now accepts `Organization | None`. `build_logo_delivery_url` keyed by branding ROOT (reseller) org. `BrandingLogoURLField.get_attribute` DRF override (single-instance only; would N+1 in a list). Slug-less root resolves logo_url to `/branding/logo/default/`.
+
 ## Current phase
 
-Phase 2b — Logo upload and delivery.
+Phase 3 — Widen the write gate to parentless entitled organizations.
 
 ## Deferred phases
 

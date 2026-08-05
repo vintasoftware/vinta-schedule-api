@@ -3668,6 +3668,30 @@ paths:
           description: Not a reseller or not an admin
         '404':
           description: Branding not yet configured
+  /branding/logo/{org_slug}/:
+    get:
+      operationId: branding_logo_retrieve
+      description: GET /branding/logo/<org_slug>/ — stream the resolved logo or the
+        default.
+      summary: Deliver an organization's branding logo (or our default)
+      parameters:
+      - in: path
+        name: org_slug
+        schema:
+          type: string
+        required: true
+      tags:
+      - Branding
+      security:
+      - {}
+      responses:
+        '200':
+          content:
+            image/*:
+              schema:
+                type: string
+                format: binary
+          description: ''
   /calendar/:
     get:
       operationId: calendar_list
@@ -15022,6 +15046,10 @@ components:
         - Color format: #RRGGBB or #RRGGBBAA (regex).
         - redirect_url: HTTPS scheme, no wildcard character, no path-prefix pattern
           (organizations.redirect_url_validation).
+
+        ``logo_url`` round-trips through ``organizations.branding_logo``: reads
+        return the logo delivery route's URL (never a raw or signed S3 URL), writes
+        accept the uploaded S3 key from the ``branding_logos`` S3Direct destination.
       properties:
         app_name:
           type: string
@@ -15029,9 +15057,6 @@ components:
           maxLength: 120
         logo_url:
           type: string
-          format: uri
-          description: URL to the reseller's logo image.
-          maxLength: 200
         primary_color:
           type: string
           description: 'Primary color as hex code: #RRGGBB or #RRGGBBAA.'
@@ -16112,6 +16137,10 @@ components:
         - Color format: #RRGGBB or #RRGGBBAA (regex).
         - redirect_url: HTTPS scheme, no wildcard character, no path-prefix pattern
           (organizations.redirect_url_validation).
+
+        ``logo_url`` round-trips through ``organizations.branding_logo``: reads
+        return the logo delivery route's URL (never a raw or signed S3 URL), writes
+        accept the uploaded S3 key from the ``branding_logos`` S3Direct destination.
       properties:
         app_name:
           type: string
@@ -16119,9 +16148,6 @@ components:
           maxLength: 120
         logo_url:
           type: string
-          format: uri
-          description: URL to the reseller's logo image.
-          maxLength: 200
         primary_color:
           type: string
           description: 'Primary color as hex code: #RRGGBB or #RRGGBBAA.'

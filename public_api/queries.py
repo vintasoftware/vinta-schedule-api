@@ -47,6 +47,7 @@ from calendar_integration.models import (
     ExternalEventChangeRequest,
 )
 from calendar_integration.services.ics_service import CalendarEventICSService
+from organizations.branding_logo import build_logo_delivery_url
 from organizations.models import (
     Organization,
     OrganizationMembership,
@@ -162,16 +163,19 @@ def _get_org(info: strawberry.Info):
     return org
 
 
-def _vinta_default_branding() -> PublicBrandingResult:
+def _vinta_default_branding(request=None) -> PublicBrandingResult:
     """Return the Vinta Schedule default branding sentinel.
 
     Used for both missing tenants (no enumeration oracle) and unbranded
     organizations, ensuring the response is identical for unknown vs unbranded
-    to prevent enumeration attacks.
+    to prevent enumeration attacks. ``logo_url`` is the logo delivery route's
+    URL keyed by its reserved "default" sentinel slug (see
+    ``organizations.branding_logo.build_logo_delivery_url``), never empty --
+    the route always streams something, even our own default logo.
     """
     return PublicBrandingResult(
         app_name="Vinta Schedule",
-        logo_url="",
+        logo_url=build_logo_delivery_url(None, request=request),
         primary_color="",
         secondary_color="",
     )
@@ -1411,7 +1415,9 @@ class Query:
         ]
 
     @strawberry.field()
-    def branding_for_tenant(self, tenant_id: strawberry.ID) -> PublicBrandingResult:
+    def branding_for_tenant(
+        self, info: strawberry.Info, tenant_id: strawberry.ID
+    ) -> PublicBrandingResult:
         """Get resolved branding for a tenant, or vinta default if unbranded.
 
         This is an unauthenticated, rate-limited public query for frontend interstitials.
@@ -1425,6 +1431,7 @@ class Query:
         Returns:
             PublicBrandingResult with app name, logo, and colors (no secrets).
         """
+        request = info.context.request
         try:
             tenant_id_int = int(tenant_id)
             org = Organization.objects.filter(id=tenant_id_int).first()
@@ -1433,7 +1440,7 @@ class Query:
 
         if org is None:
             # Unknown tenant ID returns the vinta default (no enumeration oracle)
-            return _vinta_default_branding()
+            return _vinta_default_branding(request=request)
 
         # Resolve branding by walking up the parent chain to the nearest reseller.
         # Presentation caller -> gated on `white_label_branding`; a reseller without it
@@ -1441,12 +1448,16 @@ class Query:
         branding = resolve_branding_for_display(org)
         if branding is None:
             # Unbranded subtree returns the vinta default
-            return _vinta_default_branding()
+            return _vinta_default_branding(request=request)
 
-        # Return the resolved branding (no secrets exposed)
+        # Return the resolved branding (no secrets exposed). logo_url is keyed by the
+        # resolved branding ROOT's slug (branding.organization -- the reseller ancestor
+        # for a child `org`, or `org` itself), never by `org`'s own slug: a child usually
+        # has none, and the delivery route must resolve to the reseller's real logo, not
+        # silently fall back to the default.
         return PublicBrandingResult(
             app_name=branding.app_name,
-            logo_url=branding.logo_url,
+            logo_url=build_logo_delivery_url(branding.organization, request=request),
             primary_color=branding.primary_color,
             secondary_color=branding.secondary_color,
         )

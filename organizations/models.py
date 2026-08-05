@@ -21,6 +21,7 @@ from organizations.managers import (
 from organizations.slug_validation import SLUG_MAX_LENGTH
 from payments.billing_constants import Entitlement
 from payments.entitlement_cache import has_entitlement_cached
+from s3direct_overrides.model_fields import S3DirectImageField
 
 
 if TYPE_CHECKING:
@@ -487,10 +488,17 @@ class OrganizationBranding(models.Model):
         max_length=120,
         help_text="The display name of the white-labeled app (e.g., 'MyScheduler').",
     )
-    logo_url = models.URLField(
+    logo = S3DirectImageField(
+        dest="branding_logos",
         blank=True,
-        default="",
-        help_text="URL to the reseller's logo image.",
+        null=True,
+        help_text=(
+            "S3 key of the reseller's uploaded logo image (PNG/JPEG/WebP; SVG rejected -- "
+            "see vinta_schedule_api.settings.base.S3DIRECT_DESTINATIONS['branding_logos']). "
+            "Replaces the old logo_url: the upload goes straight from the browser to our "
+            "storage, and nothing renders it as a raw or signed URL -- every read goes "
+            "through organizations.branding_logo.build_logo_delivery_url instead."
+        ),
     )
     primary_color = models.CharField(
         max_length=9,
@@ -567,8 +575,17 @@ def resolve_branding(org: Organization) -> OrganizationBranding | None:
     return getattr(branding_root, "branding", None)
 
 
-def resolve_branding_for_display(org: Organization) -> OrganizationBranding | None:
+def resolve_branding_for_display(org: Organization | None) -> OrganizationBranding | None:
     """``resolve_branding``, gated on the ``white_label_branding`` entitlement.
+
+    ``org`` may be ``None`` -- returns ``None`` immediately, at zero extra query
+    cost, the same as a real, non-reseller organization with no branding-eligible
+    ancestor (``get_branding_root()`` returning ``None``). This lets a caller like
+    ``organizations.views.OrganizationLogoDeliveryView._resolve_logo_key`` call
+    this function unconditionally on every non-sentinel slug -- whether or not the
+    slug matched a row -- instead of branching around it, which would otherwise
+    make "was this function even called" an observable (query-count) difference
+    between an unknown slug and an existing, unbranded organization.
 
     Use this for every **presentation** caller — anything that renders the reseller's
     app name, logo, colors, or support address (``branding_for_tenant``,
@@ -603,6 +620,9 @@ def resolve_branding_for_display(org: Organization) -> OrganizationBranding | No
     condition: an unresolvable entitlement service denies. Here that costs a reseller
     its logo until DI is repaired, which is the cheap direction to be wrong in.
     """
+    if org is None:
+        return None
+
     branding_root = org.get_branding_root()
     if branding_root is None:
         return None

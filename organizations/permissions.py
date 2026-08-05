@@ -1,5 +1,6 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated
 
+from dependency_injector.wiring import Provide, inject
 from rest_framework.permissions import BasePermission
 
 from organizations.models import (
@@ -7,13 +8,86 @@ from organizations.models import (
     OrganizationInvitation,
     OrganizationMembership,
     OrganizationModel,
+    OrganizationRole,
     get_active_organization_membership,
 )
+from payments.billing_constants import Entitlement
+from payments.entitlement_cache import has_entitlement_cached
+from payments.services.entitlement_service import EntitlementService
 from public_api.capabilities import is_target_in_subtree
 
 
 if TYPE_CHECKING:
     from users.models import User
+
+
+@inject
+def is_branding_eligible_organization(
+    organization: Organization | None,
+    entitlement_service: Annotated[EntitlementService, Provide["entitlement_service"]] = None,  # type: ignore[assignment]
+) -> bool:
+    """Shared branding-eligibility gate: ``organization`` has no parent AND holds
+    the ``white_label_branding`` entitlement.
+
+    Two conditions today (Organization Auth-Area Branding plan, Phase 2b) --
+    this is the gate's first caller (the ``branding_logos`` S3Direct destination's
+    ``auth`` callable, via ``user_administers_branding_eligible_organization``
+    below, and the GraphQL logo-signing mutation). Phase 3 extends this into the
+    full write gate by adding a third condition (the organization ends the write
+    with a ``slug`` set). Written as an early-return chain rather than a single
+    boolean expression so that extension is a one-line addition, not a rewrite.
+
+    ``entitlement_service`` is DI-injected via ``@inject``/``Provide`` (the
+    established pattern -- see ``audit/services.py``,
+    ``accounts/account_adapters.py``); the ``organizations`` package is already
+    wired via ``container.wire(packages=INTERNAL_INSTALLED_APPS)`` (see
+    ``di_core/apps.py``), so callers never pass it explicitly. It carries a
+    ``= None`` default rather than being required so the gate stays fail-closed
+    when wiring hasn't run (e.g. an import path that reaches this function
+    before app startup completes): an unresolvable entitlement service denies
+    rather than admits.
+    """
+    if organization is None or organization.parent_id is not None:
+        return False
+
+    if entitlement_service is None:
+        return False
+    return has_entitlement_cached(
+        entitlement_service, organization, Entitlement.WHITE_LABEL_BRANDING
+    )
+
+
+def user_administers_branding_eligible_organization(user: "User | None") -> bool:
+    """True iff ``user`` holds an active ADMIN membership in at least one
+    branding-eligible organization (see ``is_branding_eligible_organization``).
+
+    User-granularity rather than organization-granularity, deliberately: this is
+    the ``auth`` callable for the ``branding_logos`` S3Direct destination
+    (``vinta_schedule_api.settings.base.S3DIRECT_DESTINATIONS``), and s3direct's
+    signing view only ever calls a destination's ``auth`` callable with the
+    request user -- it has no notion of "the acting organization" the way our
+    own views/resolvers do. So this can only authorize "this user administers
+    SOME eligible organization", not "acting for this specific organization".
+    Accepted per the plan's Logo upload path guiding decision: the generated
+    object key is unique per upload (``generate_s3direct_file_name``) and the
+    object only becomes visible once a branding row references it -- an admin of
+    one eligible org obtaining a key another admin could theoretically also
+    obtain is not a meaningful information disclosure.
+
+    The GraphQL logo-signing mutation does NOT use this function -- it checks
+    ``is_branding_eligible_organization`` directly against the acting
+    organization, which it always knows, so it gets the tighter, org-specific
+    check instead of this coarser one.
+    """
+    if user is None or not getattr(user, "is_authenticated", False):
+        return False
+    admin_memberships = OrganizationMembership.objects.active_for_user(user).filter(
+        role=OrganizationRole.ADMIN
+    )
+    return any(
+        is_branding_eligible_organization(membership.organization)
+        for membership in admin_memberships
+    )
 
 
 class OrganizationManagementPermission(BasePermission):
