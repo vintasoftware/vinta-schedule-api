@@ -331,18 +331,12 @@ def _iter_group_scoped_available_time_occurrences(
     configured.
 
     Reads through ``AvailableTime.objects.unscoped()`` -- group-scoped rows are
-    invisible to the default manager. Mirrors
-    ``CalendarGroupService._group_scoped_available_times_expanded``'s
-    annotate-first strategy (that method now delegates here): masters are
-    fetched WITH ``annotate_recurring_occurrences_on_date_range`` already
-    attached, so ``get_occurrences_in_range()`` finds ``recurring_occurrences``
-    cached on the instance and never falls through to ``RecurringMixin``'s
-    internal exception-instance re-fetch, which goes through the DEFAULT
-    (base-rows-only) manager and would otherwise silently drop a group-scoped
-    master's exceptions (see the Phase 0 carry-forward note). No group-scoped
-    window can carry an exception yet as of Phase 1b -- there is no write path
-    that creates one -- so that re-fetch is never actually exercised, but the
-    annotate-first shape is what keeps this safe if/when one becomes reachable.
+    invisible to the default manager. Occurrence expansion for group-scoped
+    masters is safe because (a) no write path creates a group-scoped recurrence
+    exception yet, and (b) ``RecurringMixin._get_occurrences_in_range`` now
+    routes the exception-instance lookup through ``_base_manager`` when the
+    master is group-scoped, ensuring group-scoped exception rows are found if
+    one ever becomes reachable.
 
     ``occurrence`` may be a persisted master/exception row or a synthetic
     in-memory instance (``AvailableTime.create_instance_from_occurrence``,

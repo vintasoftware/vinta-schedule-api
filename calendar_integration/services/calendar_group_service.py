@@ -614,13 +614,13 @@ class CalendarGroupService:
         through the group-scoped accessor instead of the default (base-rows-only)
         manager. Delegates to ``slot_engine.expand_group_scoped_available_times``
         (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 1b), the single-pair case of the
-        same batched implementation the discovery-side fetch uses, so both paths
-        share the annotate-first strategy that keeps
-        ``get_occurrences_in_range()`` from falling through to
-        ``RecurringMixin``'s internal exception-instance re-fetch -- which goes
-        through the *default*, base-rows-only manager and would otherwise
-        silently return nothing for a group-scoped master's exceptions (see the
-        Phase 0 carry-forward note).
+        same batched implementation the discovery-side fetch uses. Occurrence
+        expansion for group-scoped masters is safe because (a) no write path
+        creates a group-scoped recurrence exception yet, and (b)
+        ``RecurringMixin._get_occurrences_in_range`` now routes the
+        exception-instance lookup through ``_base_manager`` when the master is
+        group-scoped, ensuring group-scoped exception rows are found if one ever
+        becomes reachable.
         """
         org_id = cast(Organization, self.organization).id
         return slot_engine.expand_group_scoped_available_times(

@@ -832,9 +832,18 @@ class RecurringMixin(OrganizationModel):
                 .first()
             )
 
+        # For group-scoped recurring models, the exception-instance lookup must
+        # use _base_manager to find group-scoped exception rows. Otherwise, it
+        # goes through the default manager (which excludes group-scoped rows for
+        # AvailableTime/BlockedTime) and would silently miss exceptions.
+        if getattr(self, "group_slot_fk_id", None) is not None:
+            exception_manager = self.__class__._base_manager
+        else:
+            exception_manager = self.__class__.objects
+
         all_exception_blocked_times_by_id: dict[int, Self] = {
             e.pk: e
-            for e in self.__class__.objects.filter(
+            for e in exception_manager.filter(
                 organization_id=self.organization_id,
                 id__in=[
                     o[modified_instance_id_field_name]
