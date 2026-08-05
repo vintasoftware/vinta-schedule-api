@@ -82,13 +82,22 @@ Phase 0 branches off `plan-calendar-group-scoped-availability`; each later phase
 - **Summary**: Public GraphQL `group_scoped_availability_windows` query + `batch_upsert_group_scoped_availability_windows` mutation. Batch semantics mirror the existing availability batch write exactly (all-or-nothing via own `@transaction.atomic()` + `SELECT FOR UPDATE`, NOT relying on prod-only `ATOMIC_REQUESTS`; over-limit rejects whole with byte-identical body; content-match idempotent replay for create, explicit `windowId` for update/delete). Fixed the entitlement counter `_count_availability_windows` to `unscoped().only_user_authored()` so group-scoped windows meter (composes correctly — still excludes non-user-authored rows). Public-API token auth (`OrganizationResourceAccess` + `assert_calendar_in_owner_scope`). Existing availability ops frozen (asserted). No migration.
 - **Security BLOCKER fixed (IDOR)**: update/delete now cross-check the resolved window's `calendar_fk_id == op.calendar_id` (was authorizing only by the op's own calendar, letting an owner-scoped token modify another calendar's window in the same slot via a foreign `windowId`). **Concurrency fix**: billing-root lock now taken before the idempotency content-match (concurrent UC-5 retries no longer double-create).
 
+### Phase 2a — Group-scoped blocked time: writes and enforcement ✅
+
+- **Branch**: `plan/calendar-group-scoped-availability/phase-2a` (base: phase-1d) — **PR [#224](https://github.com/vintasoftware/vinta-schedule-api/pull/224)**
+- **Implementer model**: sonnet (plan Tier 2, stepped up per plan's "invasive resolution-order change" clause) — agent type `implementer`
+- **Reviewer model**: sonnet — no BLOCKERs; 2 test-coverage SHOULD-FIX + NITs fixed (haiku fixer)
+- **Summary**: Group-scoped blocked-time writes (create/update/delete on `CalendarGroupService`, `BlockedTime` rows with `group_slot`), mirroring Phase 1a (audit / permissions / non-disclosure / orphan detection). Slot-engine enforcement: **block beats window** on all three paths (block excludes before window-coverage runs); rejection `GroupScopedRuleType.INSIDE_BLOCK`. Every block create/update runs orphan detection (each block independently subtracts time). Zero-change early-out (second `Exists()` folded in; 6/5 query counts unchanged). `_reconcile_slot` extended via shared `_delete_group_scoped_rows_for_removed_calendars` (deletes+audits windows AND blocks on membership removal). No migration.
+
+**REFACTOR NOTE for Phase 3a**: the get / audit / create / update / delete quintet is duplicated ~1:1 between windows (Phase 1a) and blocks (Phase 2a). Phase 3a adds quota — before tripling the pattern, consider a generic model-parameterized helper (`_get_group_scoped_row(model, id)` / `_audit_group_scoped_write(model_label, ...)`). Only if it doesn't over-couple; the plan phases by concept deliberately.
+
 ## Current phase
 
-Phase 2a — Group-scoped blocked time: writes and enforcement
+Phase 2b — Blocks on the REST and public surfaces
 
 ## Remaining phases
 
-2a, 2b, 2c, 3a, 3b, 3c, 4
+2b, 2c, 3a, 3b, 3c, 4
 
 ## Deferred phases
 
