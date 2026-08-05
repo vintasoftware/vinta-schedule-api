@@ -118,13 +118,21 @@ Phase 0 branches off `plan-calendar-group-scoped-availability`; each later phase
 
 **CARRY-FORWARD for Phase 3b**: quota periods are measured in **UTC** (documented v1 simplification). Phase 3b's discovery/booking lookup MUST bucket the candidate booking's time in the SAME UTC frame the counting function uses, so the candidate's period matches the counted period. Do NOT reintroduce per-event/local timezone bucketing on the candidate side.
 
+### Phase 3b — Quota in discovery and booking validation ✅
+
+- **Branch**: `plan/calendar-group-scoped-availability/phase-3b` (base: phase-3a) — **PR [#228](https://github.com/vintasoftware/vinta-schedule-api/pull/228)**
+- **Implementer model**: sonnet (plan Tier 3) — agent type `implementer`
+- **Reviewer model**: opus (plan Tier-4 override) — no BLOCKERs; 1 SHOULD-FIX (reschedule self-exclusion) + coverage gaps + NITs fixed (sonnet fixer)
+- **Summary**: Quota wired into discovery + booking/reschedule. **One counting query per discovery, independent of candidate count** (batched by `(slot,period)`; asserted 1 for few vs ~50× candidates, 0 unconfigured; `check_group_availability` 1 across 200 ranges). Third `Exists()` folded into the membership query (self-gating; 6/5 counts hold). `quota_period_start_utc` mirrors the SQL bucketing (pin test prevents drift). `quota_covering_range` prevents same-period undercount. Quota checked LAST; all rules must pass. `QUOTA_CONSUMED` error (cap not leaked). Cancel releases quota on read. No migration.
+- **SHOULD-FIX fixed (reschedule)**: the event being rescheduled is self-excluded from its own period's quota count, so a `cap=1` calendar can reschedule same-day (was universally rejected). Reschedule across a boundary into a full period still correctly rejected.
+
 ## Current phase
 
-Phase 3b — Quota in discovery and booking validation
+Phase 3c — Quota rules on the REST and public surfaces
 
 ## Remaining phases
 
-3b, 3c, 4
+3c, 4
 
 ## Deferred phases
 
