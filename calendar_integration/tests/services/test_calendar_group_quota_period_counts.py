@@ -428,32 +428,38 @@ def test_search_window_excludes_bookings_outside_it(
 
 
 # ---------------------------------------------------------------------------
-# Bucketing is aligned to the booking's own LOCAL timezone, not UTC
+# Bucketing is done in ONE consistent frame (UTC), regardless of each
+# booking's own CalendarEvent.timezone -- varying the per-event timezone must
+# never split (or bypass) a quota bucket.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.django_db
-def test_day_bucketing_uses_event_local_timezone_not_utc(
+def test_bookings_with_different_event_timezones_on_same_real_day_are_summed_into_one_bucket(
     organization: Organization, calendar: Calendar, group_slot: CalendarGroupSlot
 ) -> None:
-    """Two Asia/Tokyo (UTC+9) bookings both wall-clock Jan-5 locally, but on
-    OPPOSITE sides of the UTC day boundary (Jan-5 00:30 Tokyo -> Jan-4 15:30
-    UTC; Jan-5 20:00 Tokyo -> Jan-5 11:00 UTC). If bucketing used UTC instead
-    of the event's own timezone, these would land in two different day
-    buckets; correctly, they land in one."""
+    """Two bookings at the exact same real UTC instant (2026-01-05T09:00:00Z),
+    but with DIFFERENT CalendarEvent.timezone values (UTC and
+    America/New_York -- achieved by choosing each event's wall-clock
+    start_time_tz_unaware so it converts to the same real UTC instant). If
+    bucketing keyed on the event's own timezone (the bug this guards
+    against), these would land in two separate buckets purely because of the
+    booker-supplied timezone value, silently letting a "1 per day" cap be
+    bypassed. Bucketing in one consistent frame (UTC) must sum them into a
+    single bucket."""
     _create_group_booking(
         organization,
         calendar,
         group_slot,
-        datetime.datetime(2026, 1, 5, 0, 30, tzinfo=datetime.UTC),  # local wall clock
-        tz="Asia/Tokyo",
+        _utc(2026, 1, 5, 9),  # wall clock in UTC -> real instant 2026-01-05T09:00:00Z
+        tz="UTC",
     )
     _create_group_booking(
         organization,
         calendar,
         group_slot,
-        datetime.datetime(2026, 1, 5, 20, 0, tzinfo=datetime.UTC),  # local wall clock
-        tz="Asia/Tokyo",
+        _utc(2026, 1, 5, 4),  # wall clock in America/New_York (EST, UTC-5) -> same real instant
+        tz="America/New_York",
     )
 
     counts = _quota_counts(
@@ -467,6 +473,7 @@ def test_day_bucketing_uses_event_local_timezone_not_utc(
     )
 
     assert len(counts) == 1
+    assert counts[0]["period_start"][:10] == "2026-01-05"
     assert counts[0]["booking_count"] == 2
 
 

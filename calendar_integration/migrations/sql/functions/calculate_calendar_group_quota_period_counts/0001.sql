@@ -14,11 +14,21 @@
 -- CURRENT start_time now falls into. No stored quota state; everything is
 -- derived on read.
 --
--- Period bucketing is aligned to calendar boundaries in the booking's own
--- local timezone (CalendarEvent.timezone), not UTC: start_time (a true UTC
--- instant, DST-correct) is converted to that local wall-clock time via
--- `AT TIME ZONE`, bucketed there, then converted back to a UTC instant for
--- the returned period_start/period_end.
+-- Period bucketing is done in UTC, not each booking's own local timezone.
+-- Neither Calendar, CalendarGroupSlot, nor CalendarGroup carries a canonical
+-- IANA timezone in this schema -- only per-row models (CalendarEvent,
+-- BlockedTime, AvailableTime) have a `timezone` column, and it is
+-- booker-supplied per event. Bucketing on that per-event value would let two
+-- live bookings for the same (calendar, slot) in the same real week/day land
+-- in different buckets merely by varying the booking's timezone, letting a
+-- quota cap be bypassed. So all bookings for a (calendar, slot) are bucketed
+-- in ONE consistent frame -- UTC -- regardless of their own `timezone`
+-- column: start_time (already a true UTC instant, DST-correct) is truncated
+-- via `date_trunc` explicitly `AT TIME ZONE 'UTC'` so the bucketing is
+-- deterministic regardless of session timezone, then converted back to a
+-- UTC instant for the returned period_start/period_end. Local-timezone
+-- alignment (e.g. buckets starting at local midnight) is a deferred
+-- enhancement that needs a canonical calendar-level timezone field.
 --
 -- Week buckets honor p_week_start ('monday' | 'sunday'): Postgres'
 -- `date_trunc('week', ...)` always aligns to Monday (ISO 8601), so a
@@ -52,8 +62,7 @@ BEGIN
     RETURN QUERY
     WITH live_bookings AS (
         SELECT
-            ce.timezone AS event_timezone,
-            ce.start_time AT TIME ZONE ce.timezone AS local_start
+            ce.start_time AT TIME ZONE 'UTC' AS utc_start
         FROM calendar_integration_calendareventgroupselection cegs
         INNER JOIN calendar_integration_calendarevent ce
             ON ce.id = cegs.event_fk_id
@@ -66,31 +75,30 @@ BEGIN
     ),
     bucketed AS (
         SELECT
-            event_timezone,
             CASE p_period_type
-                WHEN 'day' THEN date_trunc('day', local_start)
-                WHEN 'month' THEN date_trunc('month', local_start)
+                WHEN 'day' THEN date_trunc('day', utc_start)
+                WHEN 'month' THEN date_trunc('month', utc_start)
                 ELSE (
                     CASE WHEN p_week_start = 'sunday'
-                        THEN date_trunc('week', local_start + INTERVAL '1 day') - INTERVAL '1 day'
-                        ELSE date_trunc('week', local_start)
+                        THEN date_trunc('week', utc_start + INTERVAL '1 day') - INTERVAL '1 day'
+                        ELSE date_trunc('week', utc_start)
                     END
                 )
             END AS local_period_start
         FROM live_bookings
     )
     SELECT
-        (b.local_period_start AT TIME ZONE b.event_timezone) AS period_start,
+        (b.local_period_start AT TIME ZONE 'UTC') AS period_start,
         (
             CASE p_period_type
                 WHEN 'day' THEN b.local_period_start + INTERVAL '1 day'
                 WHEN 'month' THEN b.local_period_start + INTERVAL '1 month'
                 ELSE b.local_period_start + INTERVAL '1 week'
             END
-        ) AT TIME ZONE b.event_timezone AS period_end,
+        ) AT TIME ZONE 'UTC' AS period_end,
         COUNT(*)::INTEGER AS booking_count
     FROM bucketed b
-    GROUP BY b.event_timezone, b.local_period_start
+    GROUP BY b.local_period_start
     ORDER BY period_start;
 END;
 $$ LANGUAGE plpgsql;
