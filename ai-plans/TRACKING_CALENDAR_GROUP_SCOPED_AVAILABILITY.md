@@ -66,13 +66,21 @@ Phase 0 branches off `plan-calendar-group-scoped-availability`; each later phase
 - **Reviewer model**: opus (plan Tier-4 override) — no BLOCKERs; 2 SHOULD-FIX + 2 NIT fixed (haiku fixer)
 - **Summary**: Group-scoped windows intersected into slot-engine discovery + booking/reschedule validation. **Zero-change early-out** via an `Exists()` annotation folded into the existing membership query (no new round trip; `find_bookable_slots` 6→6, `check_group_availability` 5→5 queries; byte-identical output — asserted). Intersect-only via `base_free` short-circuit. New `slot_engine` batched span fetch (`fetch_group_scoped_available_spans`, recurrence-aware), consumed by discovery and by `_assert_calendars_within_group_scoped_windows` (wired into create + reschedule; reschedule extended to all selected calendars). New `GroupScopedRuleType` + `CalendarGroupScopedRuleViolationError` (names calendar + rule type, no configured-value leak). `bookable_slots_service.py` untouched. Resolved the recurrence-exception trap (see above). No migration.
 
+### Phase 1c — Windows on the internal REST surface ✅
+
+- **Branch**: `plan/calendar-group-scoped-availability/phase-1c` (base: phase-1b) — **PR [#222](https://github.com/vintasoftware/vinta-schedule-api/pull/222)**
+- **Implementer model**: sonnet (escalated — initial haiku attempt DISCARDED for committing failing tests, skipping required tests, and removing the required route-level gating; it also wrongly amended the tracking commit) — agent type `implementer`
+- **Reviewer model**: sonnet — no BLOCKERs; 2 SHOULD-FIX + 1 NIT fixed (sonnet fixer)
+- **Summary**: Nested REST viewset `.../calendar-groups/{group_id}/slots/{slot_id}/availability-windows/`, thin, delegating to Phase 1a `CalendarGroupService`. `GroupScopedAvailabilityWindowPermission` for route-level group-visibility gating; **non-disclosure byte-identical** across stranger / cross-org / other-calendar-owner / missing-or-mismatched slot (all `Http404 {"detail":"Not found."}`, asserted via `data ==`). Create/update responses wrap `{window, orphaned_bookings}`; list/retrieve return the window. Tri-state recurrence editing (`PATCH null` clears, omit leaves, string sets) via `_UNCHANGED` sentinel. Narrow virtual model + bounded-query test. Schema purely additive. No migration.
+- **Process note**: reinforced hard rules on the retry (no amend, no commit with red tests, gating is required not optional).
+
 ## Current phase
 
-Phase 1c — Windows on the internal REST surface (haiku attempt discarded — escalated to sonnet)
+Phase 1d — Windows on the public API
 
 ## Remaining phases
 
-1c, 1d, 2a, 2b, 2c, 3a, 3b, 3c, 4
+1d, 2a, 2b, 2c, 3a, 3b, 3c, 4
 
 ## Deferred phases
 
