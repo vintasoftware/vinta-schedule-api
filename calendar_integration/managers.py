@@ -29,6 +29,7 @@ from organizations.managers import BaseOrganizationModelManager
 
 if TYPE_CHECKING:
     from calendar_integration.models import BookingPolicy, CalendarManagementToken
+    from calendar_integration.querysets import AvailableTimeQuerySet, BlockedTimeQuerySet
     from organizations.models import OrganizationMembership as OrganizationMembershipType
 
 
@@ -196,21 +197,57 @@ class CalendarSyncManager(BaseOrganizationModelManager):
 
 
 class BlockedTimeManager(BaseOrganizationModelManager, RecurringManagerMixin):
-    """Custom manager for BlockedTime model to handle specific queries."""
+    """Custom manager for BlockedTime model to handle specific queries.
 
-    def get_queryset(self):
+    ``group_slot`` scoping (``CALENDAR_GROUP_SCOPED_AVAILABILITY`` Phase 0):
+    :meth:`get_queryset` — and therefore every plain ``.objects`` call — returns
+    only base rows (``group_slot IS NULL``), which is today's behavior and every
+    existing call site's implicit expectation. Group-scoped rows are reachable
+    only through :meth:`for_group_slot` or :meth:`unscoped`, both explicit
+    opt-in accessors.
+    """
+
+    def get_queryset(self) -> "BlockedTimeQuerySet":
+        from calendar_integration.querysets import BlockedTimeQuerySet
+
+        return BlockedTimeQuerySet(self.model, using=self._db).base_rows_only()
+
+    def unscoped(self) -> "BlockedTimeQuerySet":
+        """Escape hatch: every row regardless of ``group_slot`` — admin and migrations only."""
         from calendar_integration.querysets import BlockedTimeQuerySet
 
         return BlockedTimeQuerySet(self.model, using=self._db)
 
+    def for_group_slot(self, group_slot_id: int) -> "BlockedTimeQuerySet":
+        """Explicit opt-in: only the blocked-time rows scoped to one ``CalendarGroupSlot``."""
+        return self.unscoped().for_group_slot(group_slot_id)
+
 
 class AvailableTimeManager(BaseOrganizationModelManager, RecurringManagerMixin):
-    """Custom manager for AvailableTime model to handle specific queries."""
+    """Custom manager for AvailableTime model to handle specific queries.
 
-    def get_queryset(self):
+    ``group_slot`` scoping (``CALENDAR_GROUP_SCOPED_AVAILABILITY`` Phase 0):
+    :meth:`get_queryset` — and therefore every plain ``.objects`` call — returns
+    only base rows (``group_slot IS NULL``), which is today's behavior and every
+    existing call site's implicit expectation. Group-scoped rows are reachable
+    only through :meth:`for_group_slot` or :meth:`unscoped`, both explicit
+    opt-in accessors.
+    """
+
+    def get_queryset(self) -> "AvailableTimeQuerySet":
+        from calendar_integration.querysets import AvailableTimeQuerySet
+
+        return AvailableTimeQuerySet(self.model, using=self._db).base_rows_only()
+
+    def unscoped(self) -> "AvailableTimeQuerySet":
+        """Escape hatch: every row regardless of ``group_slot`` — admin and migrations only."""
         from calendar_integration.querysets import AvailableTimeQuerySet
 
         return AvailableTimeQuerySet(self.model, using=self._db)
+
+    def for_group_slot(self, group_slot_id: int) -> "AvailableTimeQuerySet":
+        """Explicit opt-in: only the availability rows scoped to one ``CalendarGroupSlot``."""
+        return self.unscoped().for_group_slot(group_slot_id)
 
     def only_user_authored(self):
         """Wraps :meth:`AvailableTimeQuerySet.only_user_authored`."""

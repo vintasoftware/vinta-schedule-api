@@ -2,6 +2,7 @@ import datetime
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
+from django.db import models
 from django.db.models import (
     Case,
     Count,
@@ -59,6 +60,47 @@ class CalendarManagementTokenQuerySet(BaseOrganizationModelQuerySet):
             used_at__isnull=True,
             revoked_at__isnull=True,
         ).filter(Q(expires_at__isnull=True) | Q(expires_at__gt=now))
+
+
+if TYPE_CHECKING:
+    # Type-checking-only base so mypy resolves `self.filter(...)` below — at
+    # runtime this mixin is only ever combined with `BaseOrganizationModelQuerySet`
+    # subclasses (which already provide `filter`), never instantiated alone.
+    _GroupSlotScopedQuerySetBase = models.QuerySet
+else:
+    _GroupSlotScopedQuerySetBase = object
+
+
+class GroupSlotScopedQuerySetMixin(_GroupSlotScopedQuerySetBase):
+    """Chainable group-slot scoping shared by ``AvailableTimeQuerySet`` and ``BlockedTimeQuerySet``.
+
+    Both models carry a nullable ``group_slot`` reference (see
+    ``CALENDAR_GROUP_SCOPED_AVAILABILITY`` Phase 0): null means a base row —
+    today's behavior, visible on every existing read path. A non-null value
+    scopes the row to exactly one ``CalendarGroupSlot`` and must stay invisible
+    unless a caller explicitly opts in.
+
+    These methods are the composable building blocks; the corresponding
+    managers (``AvailableTimeManager`` / ``BlockedTimeManager``) wire
+    :meth:`base_rows_only` into ``get_queryset`` so it is the *default* — every
+    existing call site that goes through ``.objects`` keeps seeing only base
+    rows with zero edits. ``for_group_slot`` and an unfiltered queryset (the
+    "unscoped" view) are reached through the manager's explicit accessors,
+    never through ``get_queryset``.
+    """
+
+    def base_rows_only(self):
+        """Exclude group-scoped rows — the default, tenant-unaware-of-groups view."""
+        return self.filter(group_slot_fk__isnull=True)
+
+    def for_group_slot(self, group_slot_id: int):
+        """Return only the rows scoped to exactly one ``CalendarGroupSlot``.
+
+        Explicit opt-in accessor. Never chain this onto a queryset that has
+        already had :meth:`base_rows_only` applied — the two filters are
+        mutually exclusive and would always return nothing.
+        """
+        return self.filter(group_slot_fk_id=group_slot_id)
 
 
 class RecurringQuerySetMixin:
@@ -729,7 +771,9 @@ class CalendarSyncQuerySet(BaseOrganizationModelQuerySet):
         return self.filter(id=calendar_sync_id, status=CalendarSyncStatus.NOT_STARTED).first()
 
 
-class BlockedTimeQuerySet(BaseOrganizationModelQuerySet, RecurringQuerySetMixin):
+class BlockedTimeQuerySet(
+    BaseOrganizationModelQuerySet, RecurringQuerySetMixin, GroupSlotScopedQuerySetMixin
+):
     """
     Custom QuerySet for BlockedTime model to handle specific queries.
     """
@@ -975,7 +1019,9 @@ class CalendarEventGroupSelectionQuerySet(BaseOrganizationModelQuerySet):
     """
 
 
-class AvailableTimeQuerySet(BaseOrganizationModelQuerySet, RecurringQuerySetMixin):
+class AvailableTimeQuerySet(
+    BaseOrganizationModelQuerySet, RecurringQuerySetMixin, GroupSlotScopedQuerySetMixin
+):
     """
     Custom QuerySet for AvailableTime model to handle specific queries.
     """

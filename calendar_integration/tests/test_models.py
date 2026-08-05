@@ -12,6 +12,8 @@ from calendar_integration.models import (
     BlockedTime,
     BlockedTimeBulkModification,
     CalendarEvent,
+    CalendarGroup,
+    CalendarGroupSlot,
     EventBulkModification,
     EventRecurrenceException,
     RecurrenceRule,
@@ -1347,3 +1349,237 @@ def test_blockedtime_and_availabletime_bulk_modification_records():
     )
 
     assert bulk_av.parent_available_time_fk_id == parent_av.id
+
+
+# --- Group-slot scoping (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 0) --------
+#
+# `AvailableTime` and `BlockedTime` gained a nullable `group_slot` reference.
+# The default manager (`objects`) must exclude group-scoped rows (group_slot
+# IS NOT NULL) so every existing call site keeps its current behavior with no
+# edits; `for_group_slot` and `unscoped` are the explicit opt-in accessors.
+
+
+def _make_group_slot(org) -> CalendarGroupSlot:
+    group = baker.make(CalendarGroup, organization=org, name=baker.seq("Group"))
+    return CalendarGroupSlot.objects.create(organization=org, group=group, name="Slot")
+
+
+@pytest.mark.django_db
+def test_available_time_default_manager_excludes_group_scoped_rows():
+    org = baker.make("organizations.Organization")
+    cal = baker.make(
+        "calendar_integration.Calendar", organization=org, external_id=baker.seq("cal")
+    )
+    slot = _make_group_slot(org)
+
+    base_row = baker.make(
+        AvailableTime,
+        calendar_fk=cal,
+        organization=org,
+        start_time_tz_unaware=_dt(2025, 1, 1),
+        end_time_tz_unaware=_dt(2025, 1, 1, 1),
+        timezone="UTC",
+    )
+    group_scoped_row = baker.make(
+        AvailableTime,
+        calendar_fk=cal,
+        organization=org,
+        group_slot=slot,
+        start_time_tz_unaware=_dt(2025, 1, 2),
+        end_time_tz_unaware=_dt(2025, 1, 2, 1),
+        timezone="UTC",
+    )
+
+    default_scope_ids = set(
+        AvailableTime.objects.filter(organization_id=org.id).values_list("id", flat=True)
+    )
+    assert base_row.id in default_scope_ids
+    assert group_scoped_row.id not in default_scope_ids
+
+    # Explicit opt-in: for_group_slot returns only that slot's rows.
+    group_scope_ids = set(
+        AvailableTime.objects.for_group_slot(slot.id)
+        .filter(organization_id=org.id)
+        .values_list("id", flat=True)
+    )
+    assert group_scope_ids == {group_scoped_row.id}
+
+    # Explicit opt-in: unscoped returns every row regardless of group_slot.
+    unscoped_ids = set(
+        AvailableTime.objects.unscoped().filter(organization_id=org.id).values_list("id", flat=True)
+    )
+    assert unscoped_ids == {base_row.id, group_scoped_row.id}
+
+
+@pytest.mark.django_db
+def test_blocked_time_default_manager_excludes_group_scoped_rows():
+    org = baker.make("organizations.Organization")
+    cal = baker.make(
+        "calendar_integration.Calendar", organization=org, external_id=baker.seq("cal")
+    )
+    slot = _make_group_slot(org)
+
+    base_row = baker.make(
+        BlockedTime,
+        calendar_fk=cal,
+        organization=org,
+        external_id="bt-base-1",
+        start_time_tz_unaware=_dt(2025, 1, 1),
+        end_time_tz_unaware=_dt(2025, 1, 1, 1),
+        timezone="UTC",
+    )
+    group_scoped_row = baker.make(
+        BlockedTime,
+        calendar_fk=cal,
+        organization=org,
+        group_slot=slot,
+        external_id="bt-group-1",
+        start_time_tz_unaware=_dt(2025, 1, 2),
+        end_time_tz_unaware=_dt(2025, 1, 2, 1),
+        timezone="UTC",
+    )
+
+    default_scope_ids = set(
+        BlockedTime.objects.filter(organization_id=org.id).values_list("id", flat=True)
+    )
+    assert base_row.id in default_scope_ids
+    assert group_scoped_row.id not in default_scope_ids
+
+    group_scope_ids = set(
+        BlockedTime.objects.for_group_slot(slot.id)
+        .filter(organization_id=org.id)
+        .values_list("id", flat=True)
+    )
+    assert group_scope_ids == {group_scoped_row.id}
+
+    unscoped_ids = set(
+        BlockedTime.objects.unscoped().filter(organization_id=org.id).values_list("id", flat=True)
+    )
+    assert unscoped_ids == {base_row.id, group_scoped_row.id}
+
+
+@pytest.mark.django_db
+def test_available_time_cascade_deletes_on_group_slot_deletion():
+    org = baker.make("organizations.Organization")
+    cal = baker.make(
+        "calendar_integration.Calendar", organization=org, external_id=baker.seq("cal")
+    )
+    slot = _make_group_slot(org)
+
+    base_row = baker.make(
+        AvailableTime,
+        calendar_fk=cal,
+        organization=org,
+        start_time_tz_unaware=_dt(2025, 1, 1),
+        end_time_tz_unaware=_dt(2025, 1, 1, 1),
+        timezone="UTC",
+    )
+    group_scoped_row = baker.make(
+        AvailableTime,
+        calendar_fk=cal,
+        organization=org,
+        group_slot=slot,
+        start_time_tz_unaware=_dt(2025, 1, 2),
+        end_time_tz_unaware=_dt(2025, 1, 2, 1),
+        timezone="UTC",
+    )
+
+    slot.delete()
+
+    remaining_ids = set(
+        AvailableTime.objects.unscoped().filter(organization_id=org.id).values_list("id", flat=True)
+    )
+    assert remaining_ids == {base_row.id}
+    assert group_scoped_row.id not in remaining_ids
+
+
+@pytest.mark.django_db
+def test_blocked_time_cascade_deletes_on_group_slot_deletion():
+    org = baker.make("organizations.Organization")
+    cal = baker.make(
+        "calendar_integration.Calendar", organization=org, external_id=baker.seq("cal")
+    )
+    slot = _make_group_slot(org)
+
+    base_row = baker.make(
+        BlockedTime,
+        calendar_fk=cal,
+        organization=org,
+        external_id="bt-base-2",
+        start_time_tz_unaware=_dt(2025, 1, 1),
+        end_time_tz_unaware=_dt(2025, 1, 1, 1),
+        timezone="UTC",
+    )
+    group_scoped_row = baker.make(
+        BlockedTime,
+        calendar_fk=cal,
+        organization=org,
+        group_slot=slot,
+        external_id="bt-group-2",
+        start_time_tz_unaware=_dt(2025, 1, 2),
+        end_time_tz_unaware=_dt(2025, 1, 2, 1),
+        timezone="UTC",
+    )
+
+    slot.delete()
+
+    remaining_ids = set(
+        BlockedTime.objects.unscoped().filter(organization_id=org.id).values_list("id", flat=True)
+    )
+    assert remaining_ids == {base_row.id}
+    assert group_scoped_row.id not in remaining_ids
+
+
+@pytest.mark.django_db
+def test_available_time_only_user_authored_composes_with_group_scoping():
+    """`only_user_authored` (the billing counter's filter) must keep working
+    whether it runs against the default (base-rows-only) manager or the
+    unscoped/for_group_slot accessors, since group-scoped windows are metered
+    too (see AvailableTimeQuerySet.only_user_authored and Guiding Decisions).
+    """
+    org = baker.make("organizations.Organization")
+    cal = baker.make(
+        "calendar_integration.Calendar", organization=org, external_id=baker.seq("cal")
+    )
+    slot = _make_group_slot(org)
+
+    base_row = baker.make(
+        AvailableTime,
+        calendar_fk=cal,
+        organization=org,
+        start_time_tz_unaware=_dt(2025, 1, 1),
+        end_time_tz_unaware=_dt(2025, 1, 1, 1),
+        timezone="UTC",
+    )
+    group_scoped_row = baker.make(
+        AvailableTime,
+        calendar_fk=cal,
+        organization=org,
+        group_slot=slot,
+        start_time_tz_unaware=_dt(2025, 1, 2),
+        end_time_tz_unaware=_dt(2025, 1, 2, 1),
+        timezone="UTC",
+    )
+
+    # Default manager: only the base row.
+    assert set(
+        AvailableTime.objects.only_user_authored()
+        .filter(organization_id=org.id)
+        .values_list("id", flat=True)
+    ) == {base_row.id}
+
+    # Unscoped: both rows, since group-scoped windows are metered too.
+    assert set(
+        AvailableTime.objects.unscoped()
+        .only_user_authored()
+        .filter(organization_id=org.id)
+        .values_list("id", flat=True)
+    ) == {base_row.id, group_scoped_row.id}
+
+    # for_group_slot: only that slot's row.
+    assert set(
+        AvailableTime.objects.for_group_slot(slot.id)
+        .filter(organization_id=org.id)
+        .only_user_authored()
+        .values_list("id", flat=True)
+    ) == {group_scoped_row.id}

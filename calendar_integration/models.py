@@ -1348,8 +1348,36 @@ class BlockedTime(RecurringMixin):
         help_text="If this is a continuation of a split series",
     )
 
+    # Group-scoped availability (Phase 0 of CALENDAR_GROUP_SCOPED_AVAILABILITY):
+    # NULL means a base row — today's behavior, visible on every read path. A
+    # non-null value scopes the row to that one CalendarGroupSlot; it is invisible
+    # to the default manager (`objects`) and only reachable through the explicit
+    # `for_group_slot` / `unscoped` accessors. `on_delete=CASCADE` so removing a
+    # calendar from a slot (or deleting the slot/group) deletes its group-scoped
+    # blocked time with it, matching the spec's cascade rule.
+    group_slot = OrganizationForeignKey(
+        CalendarGroupSlot,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="group_scoped_blocked_times",
+        help_text=(
+            "If set, this blocked time applies only when the calendar is "
+            "evaluated inside this group slot, and nowhere else. Null (the "
+            "default) means a base row that blocks time everywhere the "
+            "calendar is evaluated."
+        ),
+    )
+
     class Meta:
         unique_together = (("calendar_fk_id", "external_id"),)
+        indexes = (
+            models.Index(
+                fields=["organization", "group_slot_fk"],
+                condition=models.Q(group_slot_fk__isnull=False),
+                name="blockedtime_group_slot_idx",
+            ),
+        )
 
     def __str__(self):
         return f"Blocked from {self.start_time} to {self.end_time} ({self.reason})"
@@ -1421,6 +1449,36 @@ class AvailableTime(RecurringMixin):
         related_name="bulk_modifications",
         help_text="If this is a continuation of a split series",
     )
+
+    # Group-scoped availability (Phase 0 of CALENDAR_GROUP_SCOPED_AVAILABILITY):
+    # NULL means a base row — today's behavior, visible on every read path. A
+    # non-null value scopes the row to that one CalendarGroupSlot; it is invisible
+    # to the default manager (`objects`) and only reachable through the explicit
+    # `for_group_slot` / `unscoped` accessors. `on_delete=CASCADE` so removing a
+    # calendar from a slot (or deleting the slot/group) deletes its group-scoped
+    # availability windows with it, matching the spec's cascade rule.
+    group_slot = OrganizationForeignKey(
+        CalendarGroupSlot,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="group_scoped_available_times",
+        help_text=(
+            "If set, this available time applies only when the calendar is "
+            "evaluated inside this group slot, narrowing (never widening) base "
+            "availability there. Null (the default) means a base row that "
+            "applies everywhere the calendar is evaluated."
+        ),
+    )
+
+    class Meta:
+        indexes = (
+            models.Index(
+                fields=["organization", "group_slot_fk"],
+                condition=models.Q(group_slot_fk__isnull=False),
+                name="availabletime_group_slot_idx",
+            ),
+        )
 
     def __str__(self):
         return f"Available from {self.start_time} to {self.end_time}"

@@ -10,6 +10,8 @@ from django.utils.html import format_html
 
 from calendar_integration.constants import IncomingWebhookProcessingStatus
 from calendar_integration.models import (
+    AvailableTime,
+    BlockedTime,
     BookingPolicy,
     CalendarEventGroupSelection,
     CalendarGroup,
@@ -397,6 +399,71 @@ class CalendarEventGroupSelectionAdmin(admin.ModelAdmin):
             super()
             .get_queryset(request)
             .select_related("organization", "event_fk", "slot_fk", "calendar_fk")
+        )
+
+
+@admin.register(BlockedTime)
+class BlockedTimeAdmin(admin.ModelAdmin):
+    """Admin interface for BlockedTime.
+
+    Uses the manager's ``unscoped()`` accessor rather than the default
+    ``get_queryset(request)`` chain: ``BlockedTimeManager.get_queryset`` (the
+    default manager, ``objects``) excludes group-scoped rows by design (see
+    ``CALENDAR_GROUP_SCOPED_AVAILABILITY`` Phase 0), and ``ModelAdmin`` builds
+    its own queryset from the model's default manager. Without this override,
+    admin would silently stop showing group-scoped blocks the moment any exist.
+    """
+
+    list_display = ("id", "calendar", "group_slot", "start_time", "end_time", "reason")
+    list_filter = ("organization", "group_slot_fk")
+    search_fields = ("reason", "external_id", "calendar_fk__name")
+    readonly_fields = ("created", "modified")
+    fields = (
+        "organization",
+        "calendar_fk",
+        "group_slot_fk",
+        "reason",
+        "external_id",
+        "start_time_tz_unaware",
+        "end_time_tz_unaware",
+        "timezone",
+        "created",
+        "modified",
+    )
+
+    def get_queryset(self, request: HttpRequest):
+        return self.model.objects.unscoped().select_related(
+            "organization", "calendar_fk", "group_slot_fk"
+        )
+
+
+@admin.register(AvailableTime)
+class AvailableTimeAdmin(admin.ModelAdmin):
+    """Admin interface for AvailableTime.
+
+    Uses the manager's ``unscoped()`` accessor for the same reason documented
+    on :class:`BlockedTimeAdmin` — the default manager excludes group-scoped
+    rows, and admin must keep showing every row.
+    """
+
+    list_display = ("id", "calendar", "group_slot", "start_time", "end_time")
+    list_filter = ("organization", "group_slot_fk")
+    search_fields = ("calendar_fk__name",)
+    readonly_fields = ("created", "modified")
+    fields = (
+        "organization",
+        "calendar_fk",
+        "group_slot_fk",
+        "start_time_tz_unaware",
+        "end_time_tz_unaware",
+        "timezone",
+        "created",
+        "modified",
+    )
+
+    def get_queryset(self, request: HttpRequest):
+        return self.model.objects.unscoped().select_related(
+            "organization", "calendar_fk", "group_slot_fk"
         )
 
 
