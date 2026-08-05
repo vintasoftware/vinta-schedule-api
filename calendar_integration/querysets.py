@@ -778,6 +778,44 @@ class BlockedTimeQuerySet(
     Custom QuerySet for BlockedTime model to handle specific queries.
     """
 
+    def only_user_authored(self) -> "BlockedTimeQuerySet":
+        """Exclude rows the recurrence machinery derived from another row.
+
+        Direct translation of ``AvailableTimeQuerySet.only_user_authored`` --
+        ``BlockedTime`` shares ``RecurringMixin`` with ``AvailableTime``, so
+        every field this filters on (``exception_for``,
+        ``bulk_modification_parent``, ``is_recurring_exception``) exists on
+        ``BlockedTime`` with the identical name and the identical meaning:
+
+        * ``AvailabilityService.create_recurring_blocked_time_exception`` inserts a
+          standalone row for a modified occurrence and links it back through
+          ``BlockedTimeRecurrenceException.modified_blocked_time`` (reverse accessor
+          ``exception_for``), also flagging it ``is_recurring_exception``.
+        * ``create_recurring_blocked_time_bulk_modification`` inserts a continuation
+          row for the remainder of a split series, linked by
+          ``bulk_modification_parent``.
+
+        Counting those as separate blocks over-reports usage for the same reason
+        ``AvailableTimeQuerySet.only_user_authored`` documents: one blocked time the
+        user created can end up as several ``BlockedTime`` rows. Every caller that
+        wants "how many blocked times did this organization author" (the billing
+        usage counter above all, once blocked time is metered -- see
+        ``payments.services.entitlement_service._count_availability_windows``) wants
+        this queryset, not a bare ``filter(...)``.
+
+        Known gap: identical to ``AvailableTimeQuerySet.only_user_authored``'s --
+        editing or cancelling the first occurrence of a series truncates the master
+        row and creates a fresh series row with no link back to it, which is still
+        counted and compounds on every subsequent first-occurrence edit or cancel.
+        See that method's docstring for the full explanation; it applies here
+        unchanged since both models share the same recurrence machinery.
+        """
+        return self.filter(
+            exception_for__isnull=True,
+            bulk_modification_parent__isnull=True,
+            is_recurring_exception=False,
+        )
+
     def annotate_recurring_occurrences_on_date_range(
         self, start: datetime.datetime, end: datetime.datetime, max_occurrences=10000, overlap=False
     ):

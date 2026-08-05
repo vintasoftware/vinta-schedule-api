@@ -20,10 +20,17 @@ from typing import Any
 from django.utils import timezone
 
 import pytest
+from model_bakery import baker
 
 from audit.services import AuditService
 from calendar_integration.constants import CalendarProvider
-from calendar_integration.models import AvailableTime, Calendar
+from calendar_integration.models import (
+    AvailableTime,
+    BlockedTime,
+    Calendar,
+    CalendarGroup,
+    CalendarGroupSlot,
+)
 from calendar_integration.services.availability_service import AvailabilityService
 from calendar_integration.services.calendar_service_context import CalendarServiceContext
 from calendar_integration.services.recurrence_manager import RecurrenceManager
@@ -244,6 +251,218 @@ class TestAvailabilityWindowCounter:
                 end_time=_utc(2025, 7, 1, hour + 1),
                 timezone="UTC",
             )
+
+        assert (
+            entitlement_service.get_current_usage(
+                organization, LimitedResource.AVAILABILITY_WINDOWS
+            )
+            == 2
+        )
+
+
+@pytest.mark.django_db
+class TestBlockedTimeCounter:
+    """Phase 2c: blocked time is metered on the same ``availability_windows``
+    counter as availability windows, base and group-scoped rows alike.
+
+    Mirrors ``TestAvailabilityWindowCounter`` exactly -- the two models share
+    ``RecurringMixin``, so the same recurrence-derived-row defect and the same
+    ``only_user_authored`` fix apply to both.
+    """
+
+    def test_a_plain_block_counts_once(
+        self, entitlement_service, availability_service, managed_calendar, organization
+    ):
+        availability_service.create_blocked_time(
+            calendar=managed_calendar,
+            start_time=_utc(2025, 7, 1, 10),
+            end_time=_utc(2025, 7, 1, 12),
+            timezone="UTC",
+        )
+
+        assert (
+            entitlement_service.get_current_usage(
+                organization, LimitedResource.AVAILABILITY_WINDOWS
+            )
+            == 1
+        )
+
+    def test_a_recurring_block_counts_once_regardless_of_its_occurrences(
+        self, entitlement_service, availability_service, managed_calendar, organization
+    ):
+        availability_service.create_blocked_time(
+            calendar=managed_calendar,
+            start_time=_utc(2025, 7, 1, 10),
+            end_time=_utc(2025, 7, 1, 12),
+            timezone="UTC",
+            rrule_string="RRULE:FREQ=DAILY;COUNT=10",
+        )
+
+        assert (
+            entitlement_service.get_current_usage(
+                organization, LimitedResource.AVAILABILITY_WINDOWS
+            )
+            == 1
+        )
+
+    def test_editing_one_occurrence_does_not_inflate_the_block_count(
+        self, entitlement_service, availability_service, managed_calendar, organization
+    ):
+        """``create_recurring_blocked_time_exception`` implements "edit this one
+        occurrence" by *inserting a second row*, exactly like its availability-window
+        counterpart. Counting every ``BlockedTime`` row would over-report."""
+        parent = availability_service.create_blocked_time(
+            calendar=managed_calendar,
+            start_time=_utc(2025, 7, 1, 10),
+            end_time=_utc(2025, 7, 1, 12),
+            timezone="UTC",
+            rrule_string="RRULE:FREQ=DAILY;COUNT=10",
+        )
+
+        availability_service.create_recurring_blocked_time_exception(
+            parent_blocked_time=parent,
+            exception_date=datetime.date(2025, 7, 3),
+            modified_start_time=_utc(2025, 7, 3, 14),
+            modified_end_time=_utc(2025, 7, 3, 16),
+            is_cancelled=False,
+        )
+
+        # The extra row genuinely exists -- this is not a test that passes because
+        # the edit did nothing.
+        assert BlockedTime.objects.filter(organization_id=organization.pk).count() > 1, (
+            "Expected the modified occurrence to have inserted a derived row."
+        )
+
+        assert (
+            entitlement_service.get_current_usage(
+                organization, LimitedResource.AVAILABILITY_WINDOWS
+            )
+            == 1
+        ), (
+            "A block whose occurrence was edited must still count as one block. "
+            "The counter is counting recurrence-derived rows."
+        )
+
+    def test_cancelling_one_occurrence_does_not_inflate_the_block_count(
+        self, entitlement_service, availability_service, managed_calendar, organization
+    ):
+        parent = availability_service.create_blocked_time(
+            calendar=managed_calendar,
+            start_time=_utc(2025, 7, 1, 10),
+            end_time=_utc(2025, 7, 1, 12),
+            timezone="UTC",
+            rrule_string="RRULE:FREQ=DAILY;COUNT=10",
+        )
+
+        availability_service.create_recurring_blocked_time_exception(
+            parent_blocked_time=parent,
+            exception_date=datetime.date(2025, 7, 3),
+            is_cancelled=True,
+        )
+
+        assert (
+            entitlement_service.get_current_usage(
+                organization, LimitedResource.AVAILABILITY_WINDOWS
+            )
+            == 1
+        )
+
+    def test_splitting_a_series_does_not_inflate_the_block_count(
+        self, entitlement_service, availability_service, managed_calendar, organization
+    ):
+        """A bulk modification splits the series and inserts a continuation row,
+        linked by ``bulk_modification_parent``. Still one block to the user."""
+        parent = availability_service.create_blocked_time(
+            calendar=managed_calendar,
+            start_time=_utc(2025, 7, 1, 10),
+            end_time=_utc(2025, 7, 1, 12),
+            timezone="UTC",
+            rrule_string="RRULE:FREQ=DAILY;COUNT=10",
+        )
+
+        availability_service.create_recurring_blocked_time_bulk_modification(
+            parent_blocked_time=parent,
+            modification_start_date=_utc(2025, 7, 5, 10),
+            modified_start_time_offset=datetime.timedelta(hours=4),
+            modified_end_time_offset=datetime.timedelta(hours=4),
+        )
+
+        assert BlockedTime.objects.filter(organization_id=organization.pk).count() > 1, (
+            "Expected the bulk modification to have inserted a continuation row."
+        )
+        assert (
+            entitlement_service.get_current_usage(
+                organization, LimitedResource.AVAILABILITY_WINDOWS
+            )
+            == 1
+        )
+
+    def test_two_independent_blocks_count_twice(
+        self, entitlement_service, availability_service, managed_calendar, organization
+    ):
+        for hour in (10, 14):
+            availability_service.create_blocked_time(
+                calendar=managed_calendar,
+                start_time=_utc(2025, 7, 1, hour),
+                end_time=_utc(2025, 7, 1, hour + 1),
+                timezone="UTC",
+            )
+
+        assert (
+            entitlement_service.get_current_usage(
+                organization, LimitedResource.AVAILABILITY_WINDOWS
+            )
+            == 2
+        )
+
+    def test_group_scoped_blocks_count_alongside_base_blocks(
+        self, entitlement_service, availability_service, managed_calendar, organization
+    ):
+        """``BlockedTime.objects`` (the default manager) excludes group-scoped rows
+        by design (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 0). The counter must
+        read through ``unscoped()`` or a group-scoped block would bypass metering
+        entirely -- the spec's rule is "every time window is metered" regardless of
+        scope."""
+        availability_service.create_blocked_time(
+            calendar=managed_calendar,
+            start_time=_utc(2025, 7, 1, 10),
+            end_time=_utc(2025, 7, 1, 12),
+            timezone="UTC",
+        )
+        group = baker.make(CalendarGroup, organization=organization)
+        slot = baker.make(CalendarGroupSlot, organization=organization, group=group)
+        baker.make(
+            BlockedTime,
+            organization=organization,
+            calendar=managed_calendar,
+            timezone="UTC",
+            group_slot=slot,
+        )
+
+        assert (
+            entitlement_service.get_current_usage(
+                organization, LimitedResource.AVAILABILITY_WINDOWS
+            )
+            == 2
+        )
+
+    def test_availability_windows_and_blocked_time_count_together(
+        self, entitlement_service, availability_service, managed_calendar, organization
+    ):
+        """The one shared ``availability_windows`` ceiling covers both models -- one
+        rule for every authored time window, positive or negative (Phase 2c)."""
+        availability_service.create_available_time(
+            calendar=managed_calendar,
+            start_time=_utc(2025, 7, 1, 10),
+            end_time=_utc(2025, 7, 1, 12),
+            timezone="UTC",
+        )
+        availability_service.create_blocked_time(
+            calendar=managed_calendar,
+            start_time=_utc(2025, 7, 2, 10),
+            end_time=_utc(2025, 7, 2, 12),
+            timezone="UTC",
+        )
 
         assert (
             entitlement_service.get_current_usage(

@@ -204,6 +204,49 @@ class TestApproachingThreshold:
         warning = LimitWarningNotification.objects.get(subscription=subscription)
         assert warning.level == LimitWarningLevel.REACHED
 
+    def test_blocked_time_pushes_the_availability_window_warning_to_fire(
+        self, service, organization, subscription
+    ):
+        """Phase 2c: blocked time is now folded into the ``availability_windows``
+        counter this warning reads (``EntitlementService.get_current_usage`` ->
+        ``_count_availability_windows``), so an organization that has only ever
+        authored blocked time -- never an availability window -- can already be at
+        or past the threshold. Proves the push side picks up the rule change with
+        no changes of its own: it reads the same counter enforcement does."""
+        from calendar_integration.constants import CalendarType
+        from calendar_integration.models import BlockedTime, Calendar
+
+        _make_limit(subscription, LimitedResource.AVAILABILITY_WINDOWS, 10)
+        calendar = baker.make(
+            Calendar,
+            organization=organization,
+            calendar_type=CalendarType.RESOURCE,
+            manage_available_windows=True,
+        )
+        # 8 of 10 (80%) -- exactly the approaching threshold, and every unit of
+        # usage here is blocked time, not a single availability window.
+        for i in range(8):
+            baker.make(
+                BlockedTime,
+                organization=organization,
+                calendar=calendar,
+                timezone="UTC",
+                external_id=f"blocked-{i}",
+            )
+
+        with freeze_time(FREEZE_START):
+            service.check_subscription(subscription)
+
+        service.notification_service.create_notification.assert_called_once()
+        call = service.notification_service.create_notification.call_args
+        assert call.kwargs["context_name"] == "approaching_limit_context"
+        assert call.kwargs["context_kwargs"]["resource_key"] == LimitedResource.AVAILABILITY_WINDOWS
+        assert call.kwargs["context_kwargs"]["current_usage"] == 8
+
+        warning = LimitWarningNotification.objects.get(subscription=subscription)
+        assert warning.level == LimitWarningLevel.APPROACHING
+        assert warning.resource_key == LimitedResource.AVAILABILITY_WINDOWS
+
 
 @pytest.mark.django_db
 class TestDebounce:
