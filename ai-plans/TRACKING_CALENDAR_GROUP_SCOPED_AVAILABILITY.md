@@ -101,13 +101,20 @@ Phase 0 branches off `plan-calendar-group-scoped-availability`; each later phase
 
 **FOLLOW-UP NOTE (metering enforcement on single-write creates)**: single-write REST creates don't call `check_limit`, so the AVAILABILITY_WINDOWS limit is enforced only on the batch (public API) path. Appears consistent with existing base-availability behavior. Phase 2c owns the metering *counter* (what counts); whether single-write REST create should also *enforce* the limit is a separate consistency question — flag if Phase 2c's work makes it trivial to close.
 
+### Phase 2c — Meter all blocked time ✅
+
+- **Branch**: `plan/calendar-group-scoped-availability/phase-2c` (base: phase-2b) — **PR [#226](https://github.com/vintasoftware/vinta-schedule-api/pull/226)**
+- **Implementer model**: sonnet (plan Tier 2, run on sonnet for billing sensitivity) — agent type `implementer`
+- **Reviewer model**: sonnet — CLEAN (no BLOCKER / SHOULD-FIX / NIT)
+- **Summary**: `_count_availability_windows` now sums user-authored availability windows + blocked time (base + group-scoped, both `unscoped()`). Added `BlockedTimeQuerySet.only_user_authored` (faithful translation — `BlockedTime` shares `RecurringMixin` and the same generic recurrence machinery, so `exception_for`/`bulk_modification_parent`/`is_recurring_exception` have identical semantics; exceptions/splits don't inflate). Over-limit uses the existing `OverLimitError` path; the limit-warning notification picks up blocked-time usage automatically via `get_current_usage`. Open Question 2 resolved (no field gap). No migration.
+
 ## Current phase
 
-Phase 2c — Meter all blocked time
+Phase 3a — Quota model and period-counting function
 
 ## Remaining phases
 
-2c, 3a, 3b, 3c, 4
+3a, 3b, 3c, 4
 
 ## Deferred phases
 
