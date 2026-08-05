@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Annotated, cast
 
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Exists, OuterRef
 from django.utils import timezone
 
 from dependency_injector.wiring import Provide, inject
@@ -15,6 +15,7 @@ from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.exceptions import (
     BookingPolicyViolationError,
     CalendarGroupHasFutureEventsError,
+    CalendarGroupScopedRuleViolationError,
     CalendarGroupSlotConfigNotFoundError,
     CalendarGroupSlotInUseError,
     CalendarGroupValidationError,
@@ -610,49 +611,21 @@ class CalendarGroupService:
         that overlaps ``[start_date, end_date)``, recurrence included.
 
         Mirrors ``AvailabilityService.get_available_times_expanded``, but reads
-        through ``AvailableTime.objects.for_group_slot(...)`` instead of the
-        default (base-rows-only) manager. Masters are fetched WITH the
-        ``annotate_recurring_occurrences_on_date_range`` annotation attached, so
-        ``get_occurrences_in_range()`` below finds ``recurring_occurrences``
-        already cached on the instance and skips its own internal re-fetch
-        through ``self.__class__.objects`` -- the *default*, base-rows-only
-        manager, which would otherwise silently return nothing for a
-        group-scoped master (see the Phase 0 carry-forward note about that
-        re-fetch being unsafe for group-scoped rows).
+        through the group-scoped accessor instead of the default (base-rows-only)
+        manager. Delegates to ``slot_engine.expand_group_scoped_available_times``
+        (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 1b), the single-pair case of the
+        same batched implementation the discovery-side fetch uses, so both paths
+        share the annotate-first strategy that keeps
+        ``get_occurrences_in_range()`` from falling through to
+        ``RecurringMixin``'s internal exception-instance re-fetch -- which goes
+        through the *default*, base-rows-only manager and would otherwise
+        silently return nothing for a group-scoped master's exceptions (see the
+        Phase 0 carry-forward note).
         """
         org_id = cast(Organization, self.organization).id
-        base_qs = (
-            AvailableTime.objects.for_group_slot(group_slot_id)
-            .annotate_recurring_occurrences_on_date_range(start_date, end_date, overlap=True)
-            .select_related("recurrence_rule")
-            .filter(
-                organization_id=org_id,
-                calendar_fk_id=calendar_id,
-                parent_recurring_object__isnull=True,
-            )
+        return slot_engine.expand_group_scoped_available_times(
+            org_id, [group_slot_id], [calendar_id], start_date, end_date
         )
-
-        non_recurring_times = base_qs.filter(
-            start_time__lt=end_date,
-            end_time__gt=start_date,
-            recurrence_rule__isnull=True,
-            is_recurring_exception=False,
-        )
-
-        recurring_times = base_qs.filter(recurrence_rule__isnull=False).filter(
-            Q(recurrence_rule__until__isnull=True) | Q(recurrence_rule__until__gte=start_date),
-            start_time__lte=end_date,
-        )
-
-        times: list[AvailableTime] = list(non_recurring_times)
-        for master_time in recurring_times:
-            instances = master_time.get_occurrences_in_range(
-                start_date, end_date, include_self=False, include_exceptions=True, overlap=True
-            )
-            times.extend(instances)
-
-        times.sort(key=lambda t: t.start_time)
-        return times
 
     def _find_orphaned_bookings(
         self, calendar_id: int, group_slot: CalendarGroupSlot, now: datetime.datetime
@@ -900,6 +873,56 @@ class CalendarGroupService:
             )
         )
 
+    def _slot_pools_with_group_scoped_flags(
+        self, slots: Iterable[CalendarGroupSlot]
+    ) -> tuple[dict[int, set[int]], dict[int, set[int]]]:
+        """Build the (slot_id -> calendar_id pool) map, folding in a per-row
+        ``EXISTS`` subquery flagging which pool calendars have ANY group-scoped
+        availability window configured for that slot (regardless of whether it
+        overlaps a caller's search window).
+
+        This is the Phase 1b self-gating early-out mechanism
+        (``CALENDAR_GROUP_SCOPED_AVAILABILITY``): the ``EXISTS`` clause is
+        folded into the SAME per-slot membership query every caller of this
+        method already issued before this phase, so an unconfigured group
+        costs exactly as many round trips as it did before -- zero added
+        queries. Only when the returned "configured" map is non-empty for a
+        slot does the caller go on to fetch the actual group-scoped spans (a
+        fixed, non-per-candidate number of additional queries -- see
+        ``slot_engine.fetch_group_scoped_available_spans``).
+
+        Returns ``(slot_pool_by_id, group_scoped_calendar_ids_by_slot)``. The
+        second mapping omits a slot entirely when nothing in its pool is
+        configured, so ``bool(group_scoped_calendar_ids_by_slot)`` alone tells
+        a caller whether ANY group-scoped window exists anywhere in the group.
+        """
+        org_id = cast(Organization, self.organization).id
+        slot_pool_by_id: dict[int, set[int]] = {}
+        group_scoped_calendar_ids_by_slot: dict[int, set[int]] = {}
+        for s in slots:
+            rows = (
+                CalendarGroupSlotMembership.objects.filter_by_organization(org_id)
+                .filter(slot_fk=s)
+                .annotate(
+                    has_group_scoped_window=Exists(
+                        AvailableTime.objects.unscoped()
+                        .filter_by_organization(org_id)
+                        .filter(calendar_fk_id=OuterRef("calendar_fk_id"), group_slot_fk_id=s.id)
+                    )
+                )
+                .values_list("calendar_fk_id", "has_group_scoped_window")
+            )
+            pool: set[int] = set()
+            configured: set[int] = set()
+            for cid, has_window in rows:
+                pool.add(cid)
+                if has_window:
+                    configured.add(cid)
+            slot_pool_by_id[s.id] = pool
+            if configured:
+                group_scoped_calendar_ids_by_slot[s.id] = configured
+        return slot_pool_by_id, group_scoped_calendar_ids_by_slot
+
     def check_group_availability(
         self,
         group_id: int,
@@ -911,20 +934,41 @@ class CalendarGroupService:
         A slot with an empty `available_calendar_ids` is unbookable for that range.
         Set `with_bulk_modifications=True` to expand recurring events through
         their bulk-modification continuation series.
+
+        Group-scoped availability windows (``CALENDAR_GROUP_SCOPED_AVAILABILITY``
+        Phase 1b) are intersected in AFTER base availability: a calendar with no
+        group-scoped window configured for a slot is unaffected (fall-through
+        default, zero added queries -- see
+        ``_slot_pools_with_group_scoped_flags``); a calendar WITH one is listed
+        as available for a range only when that range is fully covered by at
+        least one of its group-scoped windows -- narrowing only, never widening.
         """
         self._assert_initialized()
         group = self._get_group_by_id(group_id)
         ranges = list(ranges)
 
         slots = list(group.slots.all())
-        slot_pool_by_id: dict[int, set[int]] = {
-            s.id: set(
-                CalendarGroupSlotMembership.objects.filter_by_organization(self.organization.id)
-                .filter(slot_fk=s)
-                .values_list("calendar_fk_id", flat=True)
+        slot_pool_by_id, group_scoped_calendar_ids_by_slot = (
+            self._slot_pools_with_group_scoped_flags(slots)
+        )
+
+        # Self-gating early-out: only fetch expanded group-scoped spans when at
+        # least one calendar anywhere in the group actually has one configured.
+        group_scoped_spans_by_slot: slot_engine.GroupScopedSpansBySlot = {}
+        if group_scoped_calendar_ids_by_slot and ranges:
+            configured_slot_ids = list(group_scoped_calendar_ids_by_slot.keys())
+            configured_calendar_ids: set[int] = set()
+            for ids in group_scoped_calendar_ids_by_slot.values():
+                configured_calendar_ids.update(ids)
+            union_start = min(start for start, _ in ranges)
+            union_end = max(end for _, end in ranges)
+            group_scoped_spans_by_slot = slot_engine.fetch_group_scoped_available_spans(
+                self.organization.id,
+                configured_slot_ids,
+                configured_calendar_ids,
+                union_start,
+                union_end,
             )
-            for s in slots
-        }
 
         calendar_qs_method = (
             "only_calendars_available_in_ranges_with_bulk_modifications"
@@ -940,14 +984,29 @@ class CalendarGroupService:
                     calendar_qs_method,
                 )([(start, end)]).values_list("id", flat=True)
             )
-            slot_results = [
-                CalendarGroupSlotAvailability(
-                    slot_id=s.id,
-                    available_calendar_ids=sorted(slot_pool_by_id[s.id] & available_ids),
-                    required_count=s.required_count,
+            slot_results = []
+            for s in slots:
+                base_available = slot_pool_by_id[s.id] & available_ids
+                configured_ids = group_scoped_calendar_ids_by_slot.get(s.id)
+                if not configured_ids:
+                    final_available = base_available
+                else:
+                    spans_for_slot = group_scoped_spans_by_slot.get(s.id, {})
+                    final_available = {
+                        cid
+                        for cid in base_available
+                        if cid not in configured_ids
+                        or slot_engine.window_fully_covered_by_spans(
+                            spans_for_slot.get(cid, ()), start, end
+                        )
+                    }
+                slot_results.append(
+                    CalendarGroupSlotAvailability(
+                        slot_id=s.id,
+                        available_calendar_ids=sorted(final_available),
+                        required_count=s.required_count,
+                    )
                 )
-                for s in slots
-            ]
             results.append(
                 CalendarGroupRangeAvailability(
                     start_time=start,
@@ -1113,6 +1172,14 @@ class CalendarGroupService:
         selections_by_slot_id = self._validate_selections(group, slots, data.slot_selections)
         all_selected_ids = {cid for sel in data.slot_selections for cid in sel.calendar_ids}
         self._assert_calendars_available(all_selected_ids, data.start_time, data.end_time)
+        # Group-scoped availability windows (CALENDAR_GROUP_SCOPED_AVAILABILITY
+        # Phase 1b): reject a directly-named calendar outside its configured
+        # window, AFTER base availability -- narrowing only ever narrows.
+        self._assert_calendars_within_group_scoped_windows(
+            ((sel.slot_id, cid) for sel in data.slot_selections for cid in sel.calendar_ids),
+            data.start_time,
+            data.end_time,
+        )
 
         # --- Booking policy enforcement ---
         # Runs inside the @transaction.atomic() so any violation rolls back the
@@ -1278,10 +1345,18 @@ class CalendarGroupService:
         the Building Blocks integration) store it and rely on it remaining stable
         across reschedules.
 
-        v1 limitation: non-primary calendar availability is NOT re-checked on
-        reschedule. Only the primary calendar is gated (in the mutation's
-        availability check). Non-primary double-booking is therefore possible and
-        intentionally unenforced for this time-only reschedule path.
+        v1 limitation: non-primary calendar BASE availability is NOT re-checked
+        on reschedule. Only the primary calendar's base availability is gated
+        (in the mutation's availability check). Non-primary double-booking
+        against base availability is therefore possible and intentionally
+        unenforced for this time-only reschedule path.
+
+        Group-scoped availability windows (``CALENDAR_GROUP_SCOPED_AVAILABILITY``
+        Phase 1b) ARE re-checked here for every calendar currently selected for
+        this event (primary and non-primary alike, via
+        ``CalendarEventGroupSelection``) -- every enforcement surface must
+        agree, so a narrowed calendar cannot dodge the window it would have
+        been rejected for at booking time simply by rescheduling instead.
         """
         self._assert_initialized()
         # Checked explicitly and first, for the same reason as
@@ -1322,6 +1397,18 @@ class CalendarGroupService:
             raise CalendarGroupValidationError(
                 f"Event {event_id} is not a grouped event (calendar_group_fk is not set)."
             )
+
+        # Group-scoped availability windows (CALENDAR_GROUP_SCOPED_AVAILABILITY
+        # Phase 1b): reject the reschedule if ANY calendar currently selected
+        # for this event is outside its group-scoped window for the NEW time.
+        selection_pairs = list(
+            CalendarEventGroupSelection.objects.filter_by_organization(
+                cast(Organization, self.organization).id
+            )
+            .filter(event_fk=event)
+            .values_list("slot_fk_id", "calendar_fk_id")
+        )
+        self._assert_calendars_within_group_scoped_windows(selection_pairs, start_time, end_time)
 
         # Build the update input preserving all non-time details so that only
         # RESCHEDULE permission is required (same approach as the single-calendar path).
@@ -1503,6 +1590,59 @@ class CalendarGroupService:
                 f"the requested time window."
             )
 
+    def _assert_calendars_within_group_scoped_windows(
+        self,
+        slot_calendar_pairs: Iterable[tuple[int, int]],
+        start: datetime.datetime,
+        end: datetime.datetime,
+    ) -> None:
+        """Reject any ``(slot_id, calendar_id)`` pair whose calendar has
+        group-scoped availability windows configured for that slot but
+        ``[start, end)`` is not fully covered by any of them (spec Acceptance 4,
+        UC-4: a caller cannot book, by naming the calendar directly, a time
+        discovery would never have offered).
+
+        Mirrors ``slot_engine.calendar_free_for_window``'s intersection exactly:
+        a calendar with NO group-scoped window for a given ``(calendar, slot)``
+        pair falls through untouched -- narrowing only ever narrows what was
+        actually configured. Self-gating -- the existence check below is the
+        only extra query when nothing is configured for any of the named
+        pairs; the (fixed-cost) expanded fetch only runs when at least one pair
+        IS configured. Called from both ``create_grouped_event`` (after the
+        base-availability check) and ``reschedule_grouped_event`` (spec: every
+        enforcement surface agrees).
+        """
+        pairs = list(slot_calendar_pairs)
+        if not pairs:
+            return
+
+        org_id = cast(Organization, self.organization).id
+        slot_ids = {slot_id for slot_id, _ in pairs}
+        calendar_ids = {cid for _, cid in pairs}
+
+        configured_pairs = set(
+            AvailableTime.objects.unscoped()
+            .filter_by_organization(org_id)
+            .filter(group_slot_fk_id__in=slot_ids, calendar_fk_id__in=calendar_ids)
+            .values_list("group_slot_fk_id", "calendar_fk_id")
+            .distinct()
+        )
+        if not configured_pairs:
+            return
+
+        configured_slot_ids = {slot_id for slot_id, _ in configured_pairs}
+        configured_calendar_ids = {cid for _, cid in configured_pairs}
+        spans_by_slot = slot_engine.fetch_group_scoped_available_spans(
+            org_id, configured_slot_ids, configured_calendar_ids, start, end
+        )
+
+        for slot_id, calendar_id in pairs:
+            if (slot_id, calendar_id) not in configured_pairs:
+                continue
+            spans = spans_by_slot.get(slot_id, {}).get(calendar_id, ())
+            if not slot_engine.window_fully_covered_by_spans(spans, start, end):
+                raise CalendarGroupScopedRuleViolationError(calendar_id=calendar_id)
+
     def _create_non_primary_blocked_times(
         self,
         event: CalendarEvent,
@@ -1607,6 +1747,15 @@ class CalendarGroupService:
         calendar that is not counted toward a slot's ``required_count`` can block
         the candidate.  The intent is to never offer a slot that a participant
         would individually reject.
+
+        Group-scoped availability windows (``CALENDAR_GROUP_SCOPED_AVAILABILITY``
+        Phase 1b) are intersected in AFTER base availability, before the policy
+        filter: a calendar with no group-scoped window configured for its slot
+        is unaffected (fall-through default, zero added queries -- see
+        ``_slot_pools_with_group_scoped_flags``); a calendar WITH one is only
+        counted toward its slot's ``required_count`` when the candidate window
+        is fully covered by at least one of its group-scoped windows --
+        narrowing only, never widening base availability.
         """
         self._assert_initialized()
         if slot_step <= datetime.timedelta(0):
@@ -1622,14 +1771,9 @@ class CalendarGroupService:
         if not slots:
             return []
 
-        slot_pool_by_id: dict[int, set[int]] = {
-            s.id: set(
-                CalendarGroupSlotMembership.objects.filter_by_organization(self.organization.id)
-                .filter(slot_fk=s)
-                .values_list("calendar_fk_id", flat=True)
-            )
-            for s in slots
-        }
+        slot_pool_by_id, group_scoped_calendar_ids_by_slot = (
+            self._slot_pools_with_group_scoped_flags(slots)
+        )
         required_count_by_slot_id = {s.id: s.required_count for s in slots}
 
         all_calendar_ids: set[int] = set()
@@ -1652,6 +1796,30 @@ class CalendarGroupService:
             with_bulk_modifications=with_bulk_modifications,
         )
 
+        # ------------------------------------------------------------------
+        # Group-scoped availability windows (CALENDAR_GROUP_SCOPED_AVAILABILITY
+        # Phase 1b) -- self-gating early-out.
+        # ------------------------------------------------------------------
+        # `group_scoped_calendar_ids_by_slot` was already computed above by
+        # folding an EXISTS() subquery into the per-slot membership query that
+        # already ran -- zero added round trips. Only when at least one
+        # calendar anywhere in the group actually has a group-scoped window
+        # configured do we pay for the (fixed, non-per-candidate) expanded
+        # fetch below.
+        group_scoped_spans_by_slot: slot_engine.GroupScopedSpansBySlot = {}
+        if group_scoped_calendar_ids_by_slot:
+            configured_slot_ids = list(group_scoped_calendar_ids_by_slot.keys())
+            configured_calendar_ids: set[int] = set()
+            for ids in group_scoped_calendar_ids_by_slot.values():
+                configured_calendar_ids.update(ids)
+            group_scoped_spans_by_slot = slot_engine.fetch_group_scoped_available_spans(
+                self.organization.id,
+                configured_slot_ids,
+                configured_calendar_ids,
+                search_window_start,
+                search_window_end,
+            )
+
         proposals: list[BookableSlotProposal] = []
         cursor = search_window_start
         while cursor + duration <= search_window_end:
@@ -1669,6 +1837,8 @@ class CalendarGroupService:
                         managed_ids,
                         available_spans,
                         blocking_spans,
+                        group_scoped_calendar_ids_by_slot.get(slot_id),
+                        group_scoped_spans_by_slot.get(slot_id),
                     ):
                         available_count += 1
                 if available_count < required_count_by_slot_id[slot_id]:

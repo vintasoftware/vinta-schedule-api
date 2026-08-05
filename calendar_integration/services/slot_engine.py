@@ -43,6 +43,7 @@ Boundary semantics (decided once, applied consistently):
 """
 
 import datetime
+from collections.abc import Iterable, Iterator
 
 from django.db.models import Q
 
@@ -60,6 +61,10 @@ from calendar_integration.services.dataclasses import (
 
 Span = tuple[datetime.datetime, datetime.datetime]
 SpansByCalendarId = dict[int, list[Span]]
+# Group-scoped AvailableTime spans, keyed first by CalendarGroupSlot id, then by
+# calendar id -- a window applies only within the one slot it was configured
+# for (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 1b).
+GroupScopedSpansBySlot = dict[int, SpansByCalendarId]
 
 
 def intervals_overlap(a: Span, b: Span) -> bool:
@@ -179,6 +184,20 @@ def fetch_blocking_spans(
     return spans
 
 
+def window_fully_covered_by_spans(
+    spans: Iterable[Span],
+    window_start: datetime.datetime,
+    window_end: datetime.datetime,
+) -> bool:
+    """Return True if ``[window_start, window_end)`` is fully inside AT LEAST
+    ONE of ``spans`` -- not their union. This is the "one span must cover it
+    whole" rule both base ``AvailableTime`` coverage and group-scoped
+    availability windows use (``CALENDAR_GROUP_SCOPED_AVAILABILITY`` spec
+    resolution order: "T fully inside one of them?").
+    """
+    return any(sp_start <= window_start and sp_end >= window_end for sp_start, sp_end in spans)
+
+
 def calendar_free_for_window(
     calendar_id: int,
     window_start: datetime.datetime,
@@ -186,21 +205,49 @@ def calendar_free_for_window(
     managed_ids: set[int],
     available_spans: SpansByCalendarId,
     blocking_spans: SpansByCalendarId,
+    group_scoped_calendar_ids: set[int] | None = None,
+    group_scoped_spans: SpansByCalendarId | None = None,
 ) -> bool:
     """Return True if ``calendar_id`` is free for ``[window_start, window_end)``.
 
     - Managed calendars need an ``AvailableTime`` span that fully covers the
       window.
     - Unmanaged calendars must not overlap any blocking span.
+
+    ``group_scoped_calendar_ids`` / ``group_scoped_spans`` add the Phase 1b
+    intersection (``CALENDAR_GROUP_SCOPED_AVAILABILITY``): both default to
+    ``None``, which reproduces the exact pre-Phase-1b behavior byte-for-byte --
+    this is the single-calendar / bundle walker's call shape
+    (``BookableSlotsService._walk_candidates``), which passes neither and must
+    stay untouched (spec non-goal: single-calendar booking).
+
+    When ``calendar_id`` is NOT in ``group_scoped_calendar_ids`` (or that set
+    is falsy), this calendar has no group-scoped configuration for the slot
+    being evaluated and the result is exactly the base-availability check
+    above (fall-through default). When it IS in that set, the window must
+    additionally be fully covered by at least one of ``group_scoped_spans``'
+    entries for this calendar -- narrowing only, never widening base
+    availability (spec: "Intersect, never widen"; a calendar configured with a
+    window that does not overlap ``[window_start, window_end)`` at all
+    contributes an empty span list here, which correctly yields ``False``).
     """
     if calendar_id in managed_ids:
-        return any(
-            av_start <= window_start and av_end >= window_end
-            for av_start, av_end in available_spans.get(calendar_id, ())
+        base_free = window_fully_covered_by_spans(
+            available_spans.get(calendar_id, ()), window_start, window_end
         )
-    return not any(
-        intervals_overlap((bs, be), (window_start, window_end))
-        for bs, be in blocking_spans.get(calendar_id, ())
+    else:
+        base_free = not any(
+            intervals_overlap((bs, be), (window_start, window_end))
+            for bs, be in blocking_spans.get(calendar_id, ())
+        )
+    if not base_free:
+        return False
+
+    if not group_scoped_calendar_ids or calendar_id not in group_scoped_calendar_ids:
+        return True
+
+    return window_fully_covered_by_spans(
+        (group_scoped_spans or {}).get(calendar_id, ()), window_start, window_end
     )
 
 
@@ -262,3 +309,138 @@ def apply_policy_filter(
                 continue
         filtered.append(proposal)
     return filtered
+
+
+# ---------------------------------------------------------------------------
+# Group-scoped availability windows (CALENDAR_GROUP_SCOPED_AVAILABILITY
+# Phase 1b -- discovery + booking-validation intersection).
+# ---------------------------------------------------------------------------
+
+
+def _iter_group_scoped_available_time_occurrences(
+    organization_id: int,
+    slot_ids: Iterable[int],
+    calendar_ids: Iterable[int],
+    start_date: datetime.datetime,
+    end_date: datetime.datetime,
+) -> Iterator[tuple[int, int, AvailableTime]]:
+    """Yield ``(group_slot_id, calendar_id, occurrence)`` for every group-scoped
+    ``AvailableTime`` occurrence overlapping ``[start_date, end_date)`` across
+    the given (slot, calendar) universe -- one query for non-recurring rows and
+    one for recurring masters, fixed regardless of how many pairs are
+    configured.
+
+    Reads through ``AvailableTime.objects.unscoped()`` -- group-scoped rows are
+    invisible to the default manager. Mirrors
+    ``CalendarGroupService._group_scoped_available_times_expanded``'s
+    annotate-first strategy (that method now delegates here): masters are
+    fetched WITH ``annotate_recurring_occurrences_on_date_range`` already
+    attached, so ``get_occurrences_in_range()`` finds ``recurring_occurrences``
+    cached on the instance and never falls through to ``RecurringMixin``'s
+    internal exception-instance re-fetch, which goes through the DEFAULT
+    (base-rows-only) manager and would otherwise silently drop a group-scoped
+    master's exceptions (see the Phase 0 carry-forward note). No group-scoped
+    window can carry an exception yet as of Phase 1b -- there is no write path
+    that creates one -- so that re-fetch is never actually exercised, but the
+    annotate-first shape is what keeps this safe if/when one becomes reachable.
+
+    ``occurrence`` may be a persisted master/exception row or a synthetic
+    in-memory instance (``AvailableTime.create_instance_from_occurrence``,
+    used for recurring occurrences) -- the latter does not carry its own
+    ``group_slot`` or ``organization``. Callers must attribute spans using the
+    yielded ``group_slot_id`` / ``calendar_id``, not the occurrence's own
+    fields.
+    """
+    slot_ids = list(slot_ids)
+    calendar_ids = list(calendar_ids)
+    if not slot_ids or not calendar_ids:
+        return
+
+    base_qs = (
+        AvailableTime.objects.unscoped()
+        .filter_by_organization(organization_id)
+        .filter(
+            group_slot_fk_id__in=slot_ids,
+            calendar_fk_id__in=calendar_ids,
+            parent_recurring_object__isnull=True,
+        )
+        .annotate_recurring_occurrences_on_date_range(start_date, end_date, overlap=True)
+        .select_related("recurrence_rule")
+    )
+
+    non_recurring_times = base_qs.filter(
+        start_time__lt=end_date,
+        end_time__gt=start_date,
+        recurrence_rule__isnull=True,
+        is_recurring_exception=False,
+    )
+    for at in non_recurring_times:
+        yield at.group_slot_fk_id, at.calendar_fk_id, at  # type: ignore[misc]
+
+    recurring_times = base_qs.filter(recurrence_rule__isnull=False).filter(
+        Q(recurrence_rule__until__isnull=True) | Q(recurrence_rule__until__gte=start_date),
+        start_time__lte=end_date,
+    )
+    for master_time in recurring_times:
+        instances = master_time.get_occurrences_in_range(
+            start_date, end_date, include_self=False, include_exceptions=True, overlap=True
+        )
+        for instance in instances:
+            yield master_time.group_slot_fk_id, master_time.calendar_fk_id, instance  # type: ignore[misc]
+
+
+def expand_group_scoped_available_times(
+    organization_id: int,
+    slot_ids: Iterable[int],
+    calendar_ids: Iterable[int],
+    start_date: datetime.datetime,
+    end_date: datetime.datetime,
+) -> list[AvailableTime]:
+    """Expand every group-scoped ``AvailableTime`` for the given (slot,
+    calendar) universe that overlaps ``[start_date, end_date)``, recurrence
+    included, sorted by start time.
+
+    Shared by ``CalendarGroupService._group_scoped_available_times_expanded``
+    (single-pair write-path use: orphaned-booking detection, Phase 1a) and the
+    batched discovery-side fetch below -- one implementation, so the two paths
+    cannot drift apart on the annotate-first exception-trap avoidance the
+    write path already relies on.
+    """
+    times = [
+        occurrence
+        for _, _, occurrence in _iter_group_scoped_available_time_occurrences(
+            organization_id, slot_ids, calendar_ids, start_date, end_date
+        )
+    ]
+    times.sort(key=lambda t: t.start_time)
+    return times
+
+
+def fetch_group_scoped_available_spans(
+    organization_id: int,
+    slot_ids: Iterable[int],
+    calendar_ids: Iterable[int],
+    search_window_start: datetime.datetime,
+    search_window_end: datetime.datetime,
+) -> GroupScopedSpansBySlot:
+    """Batched group-scoped ``AvailableTime`` spans for the given (slot,
+    calendar) universe -- one query for non-recurring rows and one for
+    recurring masters, fixed regardless of how many pairs are configured or
+    how many candidate windows the caller will check the result against
+    (mirrors :func:`fetch_available_spans`'s one-query-per-type batching).
+
+    Returns spans keyed first by ``CalendarGroupSlot`` id, then by calendar id
+    -- a window applies only within the one slot it was configured for.
+    Callers should only invoke this once at least one (slot, calendar) pair is
+    known to have a group-scoped window configured; see
+    ``CalendarGroupService._slot_pools_with_group_scoped_flags`` for the
+    zero-extra-query existence check that gates this fetch.
+    """
+    spans_by_slot: GroupScopedSpansBySlot = {}
+    for slot_id, calendar_id, occurrence in _iter_group_scoped_available_time_occurrences(
+        organization_id, slot_ids, calendar_ids, search_window_start, search_window_end
+    ):
+        spans_by_slot.setdefault(slot_id, {}).setdefault(calendar_id, []).append(
+            (occurrence.start_time, occurrence.end_time)
+        )
+    return spans_by_slot

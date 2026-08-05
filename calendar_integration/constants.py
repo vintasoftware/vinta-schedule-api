@@ -103,3 +103,16 @@ class ExternalEventChangeRequestStatus(TextChoices):
     REJECTED = "rejected", "Rejected"
     STALE = "stale", "Stale"
     AUTO_UNDONE = "auto_undone", "Auto-undone"
+
+
+class GroupScopedRuleType(TextChoices):
+    """Which group-scoped rule a booking or reschedule violated
+    (CALENDAR_GROUP_SCOPED_AVAILABILITY spec, Decisions -> Errors).
+
+    Named exactly as the spec requires them surfaced to a caller: outside
+    window, inside block, quota consumed -- never the configured values
+    themselves. Only ``OUTSIDE_WINDOW`` is enforced as of Phase 1b; the other
+    two are reserved for Phase 2a (blocks) and Phase 3b (quota).
+    """
+
+    OUTSIDE_WINDOW = "outside_window", "Outside window"

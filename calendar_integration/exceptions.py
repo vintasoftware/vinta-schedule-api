@@ -1,5 +1,7 @@
 from django.core.exceptions import ImproperlyConfigured, PermissionDenied
 
+from calendar_integration.constants import GroupScopedRuleType
+
 
 # API Validation Errors
 class CalendarServiceNotInjectedError(ImproperlyConfigured):
@@ -348,6 +350,34 @@ class CalendarGroupSlotConfigNotFoundError(CalendarGroupError):
     """
 
     default_message = "No group-scoped availability configuration found for this calendar and slot."
+
+
+class CalendarGroupScopedRuleViolationError(CalendarGroupError):
+    """Raised when a directly-named calendar violates a group-scoped
+    configuration rule for the requested booking/reschedule time.
+
+    Carries ``calendar_id`` and ``rule_type`` (see ``GroupScopedRuleType``) so
+    callers can build a structured error response -- never the configured
+    rule values themselves (spec Decisions -> Errors: enough for an admin to
+    act on, without leaking roster detail to external bookers on public
+    links). As of Phase 1b only ``OUTSIDE_WINDOW`` is raised; ``INSIDE_BLOCK``
+    and ``QUOTA_CONSUMED`` are reserved for Phase 2a and Phase 3b.
+    """
+
+    def __init__(
+        self,
+        calendar_id: int,
+        rule_type: str = GroupScopedRuleType.OUTSIDE_WINDOW,
+        message: str | None = None,
+    ) -> None:
+        self.calendar_id = calendar_id
+        self.rule_type = rule_type
+        if message is None:
+            message = (
+                f"Calendar {calendar_id} is not bookable for the requested time in "
+                f"this group ({rule_type})."
+            )
+        super().__init__(message)
 
 
 # Bookable Slots errors
