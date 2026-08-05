@@ -1,17 +1,18 @@
 import datetime
+import uuid
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Annotated, cast
 
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
-from django.db.models import Exists, OuterRef
+from django.db.models import Exists, OuterRef, QuerySet
 from django.utils import timezone
 
 from dependency_injector.wiring import Provide, inject
 
 from audit.constants import AuditAction
 from audit.diff import compute_diff
-from calendar_integration.constants import CalendarProvider, CalendarType
+from calendar_integration.constants import CalendarProvider, CalendarType, GroupScopedRuleType
 from calendar_integration.exceptions import (
     BookingPolicyViolationError,
     CalendarGroupHasFutureEventsError,
@@ -55,6 +56,7 @@ from calendar_integration.services.dataclasses import (
     EventExternalAttendanceInputData,
     ExternalAttendeeInputData,
     GroupScopedAvailabilityWriteResult,
+    GroupScopedBlockWriteResult,
     ResourceAllocationInputData,
 )
 from organizations.models import Organization
@@ -426,6 +428,38 @@ class CalendarGroupService:
                 ]
             )
 
+    def _delete_group_scoped_rows_for_removed_calendars(
+        self,
+        queryset: "QuerySet[AvailableTime] | QuerySet[BlockedTime]",
+    ) -> None:
+        """Audit-then-delete every row in ``queryset`` (already filtered to one
+        slot and a set of removed calendar ids).
+
+        Shared by ``_reconcile_slot`` for both group-scoped windows
+        (``AvailableTime``) and group-scoped blocked time (``BlockedTime``,
+        Phase 2a) -- same cleanup shape, different model. No-op (still issues
+        the delete) when no ``audit_service`` is bound.
+        """
+        rows = list(queryset)
+        for row in rows:
+            if self.audit_service is None or self.organization is None:
+                break
+            user_or_token = getattr(self.calendar_service, "user_or_token", None)
+            permission_service = getattr(self.calendar_service, "calendar_permission_service", None)
+            self.audit_service.record(
+                organization_id=self.organization.id,
+                action=AuditAction.DELETE,
+                actor=self.audit_service.actor_from_user_or_token(
+                    user_or_token,
+                    self.organization.id,
+                    single_use_token=resolve_acting_single_use_token(
+                        user_or_token, permission_service
+                    ),
+                ),
+                subject=self.audit_service.subject_from_instance(row),
+            )
+        queryset.delete()
+
     def _reconcile_slot(
         self,
         slot: CalendarGroupSlot,
@@ -445,47 +479,28 @@ class CalendarGroupService:
         if to_remove:
             self._ensure_no_future_selections(slot=slot, calendar_ids=to_remove)
 
-            # Delete group-scoped windows for the removed calendars.
-            # The FK on AvailableTime.group_slot → CalendarGroupSlot cascades on
-            # SLOT deletion only, not on membership removal, so we must explicitly
-            # clean up the orphaned rows here. Each window deletion is audited
-            # individually because the group-update diff only captures name/description
-            # /accepts_public_scheduling, not membership or window changes.
-            # TODO(Phase 2a, 3a): BlockedTime.for_group_slot() and quota rules
-            # must extend this cleanup when those phases add their group-scoped rows,
-            # using the same pattern: delete rows for removed calendars in to_remove.
+            # Delete group-scoped windows and blocked time for the removed
+            # calendars. The FK on AvailableTime.group_slot /
+            # BlockedTime.group_slot → CalendarGroupSlot cascades on SLOT
+            # deletion only, not on membership removal, so we must explicitly
+            # clean up the orphaned rows here. Each row deletion is audited
+            # individually because the group-update diff only captures
+            # name/description/accepts_public_scheduling, not membership or
+            # window/block changes.
+            # TODO(Phase 3a): quota rules must extend this cleanup when that
+            # phase adds its group-scoped rows, using the same pattern: delete
+            # rows for removed calendars in to_remove.
             org_id = cast(Organization, self.organization).id
-            windows_to_delete = list(
+            self._delete_group_scoped_rows_for_removed_calendars(
                 AvailableTime.objects.unscoped()
                 .filter_by_organization(org_id)
                 .filter(group_slot_fk=slot, calendar_fk_id__in=to_remove)
             )
-
-            # Audit each window deletion before removing it.
-            for window in windows_to_delete:
-                if self.audit_service is None or self.organization is None:
-                    break
-                user_or_token = getattr(self.calendar_service, "user_or_token", None)
-                permission_service = getattr(
-                    self.calendar_service, "calendar_permission_service", None
-                )
-                self.audit_service.record(
-                    organization_id=self.organization.id,
-                    action=AuditAction.DELETE,
-                    actor=self.audit_service.actor_from_user_or_token(
-                        user_or_token,
-                        self.organization.id,
-                        single_use_token=resolve_acting_single_use_token(
-                            user_or_token, permission_service
-                        ),
-                    ),
-                    subject=self.audit_service.subject_from_instance(window),
-                )
-
-            # Delete the windows after auditing them.
-            AvailableTime.objects.unscoped().filter_by_organization(org_id).filter(
-                group_slot_fk=slot, calendar_fk_id__in=to_remove
-            ).delete()
+            self._delete_group_scoped_rows_for_removed_calendars(
+                BlockedTime.objects.unscoped()
+                .filter_by_organization(org_id)
+                .filter(group_slot_fk=slot, calendar_fk_id__in=to_remove)
+            )
 
             CalendarGroupSlotMembership.objects.filter_by_organization(self.organization.id).filter(
                 slot_fk=slot, calendar_fk_id__in=to_remove
@@ -1160,6 +1175,295 @@ class CalendarGroupService:
         )
 
     # ------------------------------------------------------------------
+    # Group-scoped blocked time (Phase 2a of
+    # CALENDAR_GROUP_SCOPED_AVAILABILITY -- writes)
+    # ------------------------------------------------------------------
+
+    def _get_group_scoped_block(self, block_id: int) -> BlockedTime:
+        """Fetch a group-scoped ``BlockedTime`` row by id, scoped to this org.
+
+        Reads through the ``unscoped`` accessor (never the default manager,
+        which excludes group-scoped rows) and requires ``group_slot`` to be
+        set, so an id belonging to a base row raises the same not-found error
+        as a genuinely missing id. Mirrors ``_get_group_scoped_window``.
+        """
+        org_id = cast(Organization, self.organization).id
+        try:
+            return (
+                BlockedTime.objects.unscoped()
+                .filter_by_organization(org_id)
+                .select_related("group_slot", "calendar", "recurrence_rule")
+                .get(id=block_id, group_slot_fk__isnull=False)
+            )
+        except BlockedTime.DoesNotExist:
+            raise CalendarGroupSlotConfigNotFoundError() from None
+
+    def _audit_group_scoped_block_write(
+        self,
+        action: str,
+        acting_user: "User | SystemUser",
+        subject_instance: BlockedTime,
+        diff: dict | None = None,
+    ) -> None:
+        """Emit an audit record for a group-scoped blocked-time write.
+
+        Mirrors ``_audit_group_scoped_availability_write``: the acting
+        principal is taken explicitly (this write path is reachable without a
+        bound ``calendar_service``), and this is a no-op when no
+        ``audit_service`` / ``organization`` is bound.
+        """
+        if self.audit_service is None or self.organization is None:
+            return
+        self.audit_service.record(
+            organization_id=self.organization.id,
+            action=action,
+            actor=self.audit_service.actor_from_user_or_token(acting_user, self.organization.id),
+            subject=self.audit_service.subject_from_instance(subject_instance),
+            diff=diff,
+        )
+
+    def _group_scoped_blocked_times_expanded(
+        self,
+        calendar_id: int,
+        group_slot_id: int,
+        start_date: datetime.datetime,
+        end_date: datetime.datetime,
+    ) -> list[BlockedTime]:
+        """Expand every group-scoped ``BlockedTime`` for ``(calendar, group_slot)``
+        that overlaps ``[start_date, end_date)``, recurrence included.
+
+        Mirrors ``_group_scoped_available_times_expanded``, delegating to
+        ``slot_engine.expand_group_scoped_blocked_times`` -- the single-pair
+        case of the same batched implementation the discovery-side fetch
+        uses.
+        """
+        org_id = cast(Organization, self.organization).id
+        return slot_engine.expand_group_scoped_blocked_times(
+            org_id, [group_slot_id], [calendar_id], start_date, end_date
+        )
+
+    def _find_bookings_orphaned_by_group_scoped_block(
+        self, calendar_id: int, group_slot: CalendarGroupSlot, now: datetime.datetime
+    ) -> list[CalendarEvent]:
+        """Confirmed future bookings in ``group_slot`` for ``calendar_id`` that
+        fall INSIDE the calendar's current group-scoped blocked time, after a
+        block write.
+
+        The block analog of ``_find_orphaned_bookings``, with the coverage
+        test inverted: a window write orphans a booking that falls OUTSIDE the
+        configured union of windows (the window no longer grants that time); a
+        block write orphans a booking that falls INSIDE any configured block
+        (the block now removes that time). Runs against every group-scoped
+        block currently configured for this ``(calendar, slot)`` pair, not
+        just the one a caller just wrote, for the same reason windows do.
+        Nothing here is cancelled or modified; this is purely a read (spec
+        UC-6's rule applied to blocks).
+        """
+        org_id = cast(Organization, self.organization).id
+        selections = (
+            CalendarEventGroupSelection.objects.filter_by_organization(org_id)
+            .filter(
+                slot_fk=group_slot,
+                calendar_fk_id=calendar_id,
+                event_fk__start_time__gt=now,
+            )
+            .select_related("event")
+        )
+
+        selections_list = list(selections)
+        if not selections_list:
+            return []
+
+        # Find the union range covering all candidate bookings: min start → max end.
+        min_start = min(sel.event.start_time for sel in selections_list)
+        max_end = max(sel.event.end_time for sel in selections_list)
+
+        # Expand ALL group-scoped blocks once over the union range.
+        all_blocks = self._group_scoped_blocked_times_expanded(
+            calendar_id, group_slot.id, min_start, max_end
+        )
+
+        # Check each booking against the single cached expansion.
+        orphaned: list[CalendarEvent] = []
+        for selection in selections_list:
+            event = selection.event
+            overlaps_block = any(
+                slot_engine.intervals_overlap(
+                    (block.start_time, block.end_time), (event.start_time, event.end_time)
+                )
+                for block in all_blocks
+            )
+            if overlaps_block:
+                orphaned.append(event)
+        return orphaned
+
+    @transaction.atomic()
+    def create_group_scoped_blocked_time(
+        self,
+        acting_user: User,
+        group_slot_id: int,
+        calendar_id: int,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        tz: str,
+        reason: str = "",
+        rrule_string: str | None = None,
+        now: datetime.datetime | None = None,
+    ) -> GroupScopedBlockWriteResult:
+        """Create a group-scoped blocked time for ``(calendar, group_slot)``.
+
+        Writes through the explicit group-scoped accessor
+        (``BlockedTime.objects.unscoped().create(..., group_slot=...)``),
+        never the default manager. Carries the same recurrence expressiveness
+        as a base ``BlockedTime`` -- pass ``rrule_string`` for a recurring
+        block. Permission-gated identically to windows: ``acting_user`` must
+        own the calendar or be an org admin (see
+        ``CalendarPermissionService.can_manage_group_scoped_calendar_config``).
+
+        Unlike a group-scoped WINDOW -- where windows OR together, so only the
+        FIRST one flips a calendar from fall-through to narrowed and can
+        orphan a booking -- every group-scoped BLOCK independently subtracts
+        time from whatever was previously offered. So orphaned-booking
+        detection runs on EVERY create, not just the first (spec UC-6's rule
+        applied to blocks). Nothing is cancelled.
+        """
+        self._assert_initialized()
+        if now is None:
+            now = timezone.now()
+
+        organization = cast(Organization, self.organization)
+        membership = self._resolve_group_scoped_membership(group_slot_id, calendar_id)
+        self._authorize_group_scoped_write(acting_user, membership.calendar, membership.slot)
+
+        recurrence_rule = self._create_recurrence_rule_if_needed(rrule_string)
+        block = BlockedTime.objects.unscoped().create(
+            organization=organization,
+            calendar=membership.calendar,
+            group_slot=membership.slot,
+            start_time_tz_unaware=start_time,
+            end_time_tz_unaware=end_time,
+            timezone=tz,
+            reason=reason,
+            # BlockedTime enforces uniqueness on (calendar, external_id); this
+            # write path has no natural external id (unlike provider-synced
+            # blocks), so a uuid4 guarantees no collision with any other block
+            # -- base or group-scoped -- on the same calendar.
+            external_id=f"group-scoped-block-{uuid.uuid4()}",
+            recurrence_rule=recurrence_rule,
+        )
+        self._audit_group_scoped_block_write(AuditAction.CREATE, acting_user, block)
+
+        orphaned_bookings = self._find_bookings_orphaned_by_group_scoped_block(
+            calendar_id=calendar_id,
+            group_slot=membership.slot,
+            now=now,
+        )
+
+        return GroupScopedBlockWriteResult(block=block, orphaned_bookings=orphaned_bookings)
+
+    @transaction.atomic()
+    def update_group_scoped_blocked_time(
+        self,
+        acting_user: User,
+        block_id: int,
+        start_time: datetime.datetime | None = None,
+        end_time: datetime.datetime | None = None,
+        tz: str | None = None,
+        reason: str | None = None,
+        rrule_string: str | None = _UNCHANGED,  # type: ignore[assignment]
+        now: datetime.datetime | None = None,
+    ) -> GroupScopedBlockWriteResult:
+        """Partially update a group-scoped blocked time (only provided fields
+        change -- mirrors ``update_group_scoped_availability_window``).
+
+        ``rrule_string`` is tri-state: the sentinel ``_UNCHANGED`` (the
+        default) leaves the recurrence untouched, explicit ``None`` clears it
+        (the block becomes non-recurring), and a string sets/replaces it.
+
+        After the update is applied, every confirmed future booking in the
+        block's group slot for its calendar that now falls INSIDE the
+        calendar's group-scoped blocked time is collected and returned.
+        Changing a block never cancels or edits a booking (spec UC-6's rule
+        applied to blocks) -- the caller decides what to do with each one.
+        """
+        self._assert_initialized()
+        if now is None:
+            now = timezone.now()
+
+        block = self._get_group_scoped_block(block_id)
+        self._authorize_group_scoped_write(acting_user, block.calendar, block.group_slot)
+
+        before = {
+            "start_time_tz_unaware": block.start_time_tz_unaware.isoformat(),
+            "end_time_tz_unaware": block.end_time_tz_unaware.isoformat(),
+            "timezone": block.timezone,
+            "reason": block.reason,
+            "rrule": block.recurrence_rule.to_rrule_string() if block.recurrence_rule else None,
+        }
+
+        update_fields: list[str] = []
+        if start_time is not None:
+            block.start_time_tz_unaware = start_time
+            update_fields.append("start_time_tz_unaware")
+        if end_time is not None:
+            block.end_time_tz_unaware = end_time
+            update_fields.append("end_time_tz_unaware")
+        if tz is not None:
+            block.timezone = tz
+            update_fields.append("timezone")
+        if reason is not None:
+            block.reason = reason
+            update_fields.append("reason")
+        if rrule_string is not _UNCHANGED:
+            # ``None`` clears the recurrence (non-recurring); a string sets/replaces it.
+            block.recurrence_rule = self._create_recurrence_rule_if_needed(rrule_string)
+            # Assigning through the ForeignObject property name ("recurrence_rule")
+            # sets the underlying concrete column ("recurrence_rule_fk"); `save`'s
+            # `update_fields` must name the concrete field.
+            update_fields.append("recurrence_rule_fk")
+
+        if update_fields:
+            block.save(update_fields=[*update_fields, "modified"])
+
+        after = {
+            "start_time_tz_unaware": block.start_time_tz_unaware.isoformat(),
+            "end_time_tz_unaware": block.end_time_tz_unaware.isoformat(),
+            "timezone": block.timezone,
+            "reason": block.reason,
+            "rrule": block.recurrence_rule.to_rrule_string() if block.recurrence_rule else None,
+        }
+        self._audit_group_scoped_block_write(
+            AuditAction.UPDATE, acting_user, block, diff=compute_diff(before, after)
+        )
+
+        orphaned_bookings = self._find_bookings_orphaned_by_group_scoped_block(
+            calendar_id=block.calendar_fk_id,  # type: ignore[arg-type]
+            group_slot=block.group_slot,
+            now=now,
+        )
+        return GroupScopedBlockWriteResult(block=block, orphaned_bookings=orphaned_bookings)
+
+    @transaction.atomic()
+    def delete_group_scoped_blocked_time(self, acting_user: User, block_id: int) -> None:
+        """Delete a group-scoped blocked time (a single ``BlockedTime`` row).
+
+        A recurring block is stored as one row; deleting it removes the whole
+        series (mirrors ``delete_group_scoped_availability_window``). No
+        orphaned-booking report is computed here -- deleting a block only
+        WIDENS available time (the inverse of a window delete narrowing it),
+        so it can never orphan a booking. Removing a calendar from a slot's
+        roster entirely (which cascades away its blocks per the Phase 0
+        schema constraint) is a distinct action, exercised through
+        ``update_group``.
+        """
+        self._assert_initialized()
+        block = self._get_group_scoped_block(block_id)
+        self._authorize_group_scoped_write(acting_user, block.calendar, block.group_slot)
+
+        self._audit_group_scoped_block_write(AuditAction.DELETE, acting_user, block)
+        block.delete()
+
+    # ------------------------------------------------------------------
     # Queries
     # ------------------------------------------------------------------
     def get_group_events(
@@ -1189,30 +1493,35 @@ class CalendarGroupService:
 
     def _slot_pools_with_group_scoped_flags(
         self, slots: Iterable[CalendarGroupSlot]
-    ) -> tuple[dict[int, set[int]], dict[int, set[int]]]:
-        """Build the (slot_id -> calendar_id pool) map, folding in a per-row
-        ``EXISTS`` subquery flagging which pool calendars have ANY group-scoped
-        availability window configured for that slot (regardless of whether it
-        overlaps a caller's search window).
+    ) -> tuple[dict[int, set[int]], dict[int, set[int]], dict[int, set[int]]]:
+        """Build the (slot_id -> calendar_id pool) map, folding in two per-row
+        ``EXISTS`` subqueries flagging which pool calendars have ANY
+        group-scoped availability window, and ANY group-scoped blocked time,
+        configured for that slot (regardless of whether either overlaps a
+        caller's search window).
 
-        This is the Phase 1b self-gating early-out mechanism
-        (``CALENDAR_GROUP_SCOPED_AVAILABILITY``): the ``EXISTS`` clause is
-        folded into the SAME per-slot membership query every caller of this
-        method already issued before this phase, so an unconfigured group
-        costs exactly as many round trips as it did before -- zero added
-        queries. Only when the returned "configured" map is non-empty for a
-        slot does the caller go on to fetch the actual group-scoped spans (a
-        fixed, non-per-candidate number of additional queries -- see
-        ``slot_engine.fetch_group_scoped_available_spans``).
+        This is the Phase 1b (windows) / Phase 2a (blocks) self-gating
+        early-out mechanism (``CALENDAR_GROUP_SCOPED_AVAILABILITY``): both
+        ``EXISTS`` clauses are folded into the SAME per-slot membership query
+        every caller of this method already issued before Phase 1b, so an
+        unconfigured group costs exactly as many round trips as it did before
+        either phase -- zero added queries. Only when the returned "window
+        configured" or "block configured" map is non-empty for a slot does the
+        caller go on to fetch the actual group-scoped spans (a fixed,
+        non-per-candidate number of additional queries -- see
+        ``slot_engine.fetch_group_scoped_available_spans`` /
+        ``slot_engine.fetch_group_scoped_blocking_spans``).
 
-        Returns ``(slot_pool_by_id, group_scoped_calendar_ids_by_slot)``. The
-        second mapping omits a slot entirely when nothing in its pool is
-        configured, so ``bool(group_scoped_calendar_ids_by_slot)`` alone tells
-        a caller whether ANY group-scoped window exists anywhere in the group.
+        Returns ``(slot_pool_by_id, group_scoped_window_calendar_ids_by_slot,
+        group_scoped_block_calendar_ids_by_slot)``. The second and third
+        mappings each omit a slot entirely when nothing in its pool is
+        configured, so ``bool(...)`` on either alone tells a caller whether
+        ANY group-scoped window / block exists anywhere in the group.
         """
         org_id = cast(Organization, self.organization).id
         slot_pool_by_id: dict[int, set[int]] = {}
-        group_scoped_calendar_ids_by_slot: dict[int, set[int]] = {}
+        group_scoped_window_calendar_ids_by_slot: dict[int, set[int]] = {}
+        group_scoped_block_calendar_ids_by_slot: dict[int, set[int]] = {}
         for s in slots:
             rows = (
                 CalendarGroupSlotMembership.objects.filter_by_organization(org_id)
@@ -1222,20 +1531,34 @@ class CalendarGroupService:
                         AvailableTime.objects.unscoped()
                         .filter_by_organization(org_id)
                         .filter(calendar_fk_id=OuterRef("calendar_fk_id"), group_slot_fk_id=s.id)
-                    )
+                    ),
+                    has_group_scoped_block=Exists(
+                        BlockedTime.objects.unscoped()
+                        .filter_by_organization(org_id)
+                        .filter(calendar_fk_id=OuterRef("calendar_fk_id"), group_slot_fk_id=s.id)
+                    ),
                 )
-                .values_list("calendar_fk_id", "has_group_scoped_window")
+                .values_list("calendar_fk_id", "has_group_scoped_window", "has_group_scoped_block")
             )
             pool: set[int] = set()
-            configured: set[int] = set()
-            for cid, has_window in rows:
+            window_configured: set[int] = set()
+            block_configured: set[int] = set()
+            for cid, has_window, has_block in rows:
                 pool.add(cid)
                 if has_window:
-                    configured.add(cid)
+                    window_configured.add(cid)
+                if has_block:
+                    block_configured.add(cid)
             slot_pool_by_id[s.id] = pool
-            if configured:
-                group_scoped_calendar_ids_by_slot[s.id] = configured
-        return slot_pool_by_id, group_scoped_calendar_ids_by_slot
+            if window_configured:
+                group_scoped_window_calendar_ids_by_slot[s.id] = window_configured
+            if block_configured:
+                group_scoped_block_calendar_ids_by_slot[s.id] = block_configured
+        return (
+            slot_pool_by_id,
+            group_scoped_window_calendar_ids_by_slot,
+            group_scoped_block_calendar_ids_by_slot,
+        )
 
     def check_group_availability(
         self,
@@ -1256,23 +1579,31 @@ class CalendarGroupService:
         ``_slot_pools_with_group_scoped_flags``); a calendar WITH one is listed
         as available for a range only when that range is fully covered by at
         least one of its group-scoped windows -- narrowing only, never widening.
+
+        Group-scoped blocked time (Phase 2a) is applied AFTER base availability
+        and BEFORE the window check, per the spec resolution order: a calendar
+        with a configured block that OVERLAPS the range is excluded regardless
+        of what any window says ("blocks beat everything"). Also zero added
+        queries when unconfigured.
         """
         self._assert_initialized()
         group = self._get_group_by_id(group_id)
         ranges = list(ranges)
 
         slots = list(group.slots.all())
-        slot_pool_by_id, group_scoped_calendar_ids_by_slot = (
-            self._slot_pools_with_group_scoped_flags(slots)
-        )
+        (
+            slot_pool_by_id,
+            group_scoped_window_calendar_ids_by_slot,
+            group_scoped_block_calendar_ids_by_slot,
+        ) = self._slot_pools_with_group_scoped_flags(slots)
 
         # Self-gating early-out: only fetch expanded group-scoped spans when at
         # least one calendar anywhere in the group actually has one configured.
         group_scoped_spans_by_slot: slot_engine.GroupScopedSpansBySlot = {}
-        if group_scoped_calendar_ids_by_slot and ranges:
-            configured_slot_ids = list(group_scoped_calendar_ids_by_slot.keys())
+        if group_scoped_window_calendar_ids_by_slot and ranges:
+            configured_slot_ids = list(group_scoped_window_calendar_ids_by_slot.keys())
             configured_calendar_ids: set[int] = set()
-            for ids in group_scoped_calendar_ids_by_slot.values():
+            for ids in group_scoped_window_calendar_ids_by_slot.values():
                 configured_calendar_ids.update(ids)
             union_start = min(start for start, _ in ranges)
             union_end = max(end for _, end in ranges)
@@ -1280,6 +1611,22 @@ class CalendarGroupService:
                 self.organization.id,
                 configured_slot_ids,
                 configured_calendar_ids,
+                union_start,
+                union_end,
+            )
+
+        group_scoped_block_spans_by_slot: slot_engine.GroupScopedSpansBySlot = {}
+        if group_scoped_block_calendar_ids_by_slot and ranges:
+            configured_block_slot_ids = list(group_scoped_block_calendar_ids_by_slot.keys())
+            configured_block_calendar_ids: set[int] = set()
+            for ids in group_scoped_block_calendar_ids_by_slot.values():
+                configured_block_calendar_ids.update(ids)
+            union_start = min(start for start, _ in ranges)
+            union_end = max(end for _, end in ranges)
+            group_scoped_block_spans_by_slot = slot_engine.fetch_group_scoped_blocking_spans(
+                self.organization.id,
+                configured_block_slot_ids,
+                configured_block_calendar_ids,
                 union_start,
                 union_end,
             )
@@ -1301,19 +1648,29 @@ class CalendarGroupService:
             slot_results = []
             for s in slots:
                 base_available = slot_pool_by_id[s.id] & available_ids
-                configured_ids = group_scoped_calendar_ids_by_slot.get(s.id)
-                if not configured_ids:
+                window_configured_ids = group_scoped_window_calendar_ids_by_slot.get(s.id)
+                block_configured_ids = group_scoped_block_calendar_ids_by_slot.get(s.id)
+                if not window_configured_ids and not block_configured_ids:
                     final_available = base_available
                 else:
-                    spans_for_slot = group_scoped_spans_by_slot.get(s.id, {})
-                    final_available = {
-                        cid
-                        for cid in base_available
-                        if cid not in configured_ids
-                        or slot_engine.window_fully_covered_by_spans(
-                            spans_for_slot.get(cid, ()), start, end
-                        )
-                    }
+                    window_spans_for_slot = group_scoped_spans_by_slot.get(s.id, {})
+                    block_spans_for_slot = group_scoped_block_spans_by_slot.get(s.id, {})
+                    final_available = set()
+                    for cid in base_available:
+                        # Blocks beat everything -- checked first, before windows.
+                        if block_configured_ids and cid in block_configured_ids:
+                            blocked = any(
+                                slot_engine.intervals_overlap(span, (start, end))
+                                for span in block_spans_for_slot.get(cid, ())
+                            )
+                            if blocked:
+                                continue
+                        if window_configured_ids and cid in window_configured_ids:
+                            if not slot_engine.window_fully_covered_by_spans(
+                                window_spans_for_slot.get(cid, ()), start, end
+                            ):
+                                continue
+                        final_available.add(cid)
                 slot_results.append(
                     CalendarGroupSlotAvailability(
                         slot_id=s.id,
@@ -1910,21 +2267,30 @@ class CalendarGroupService:
         start: datetime.datetime,
         end: datetime.datetime,
     ) -> None:
-        """Reject any ``(slot_id, calendar_id)`` pair whose calendar has
-        group-scoped availability windows configured for that slot but
-        ``[start, end)`` is not fully covered by any of them (spec Acceptance 4,
-        UC-4: a caller cannot book, by naming the calendar directly, a time
-        discovery would never have offered).
+        """Reject any ``(slot_id, calendar_id)`` pair whose calendar violates a
+        group-scoped rule configured for that slot at ``[start, end)`` (spec
+        Acceptance 4, UC-4: a caller cannot book, by naming the calendar
+        directly, a time discovery would never have offered).
 
-        Mirrors ``slot_engine.calendar_free_for_window``'s intersection exactly:
-        a calendar with NO group-scoped window for a given ``(calendar, slot)``
-        pair falls through untouched -- narrowing only ever narrows what was
-        actually configured. Self-gating -- the existence check below is the
-        only extra query when nothing is configured for any of the named
-        pairs; the (fixed-cost) expanded fetch only runs when at least one pair
-        IS configured. Called from both ``create_grouped_event`` (after the
-        base-availability check) and ``reschedule_grouped_event`` (spec: every
-        enforcement surface agrees).
+        Checks BLOCKS first, then WINDOWS -- the same resolution order
+        ``slot_engine.calendar_free_for_window`` applies in discovery ("blocks
+        beat everything"): a pair with a configured group-scoped block that
+        OVERLAPS ``[start, end)`` is rejected with
+        ``GroupScopedRuleType.INSIDE_BLOCK`` before the window check even
+        runs, regardless of what any window says. A pair with no block hit is
+        then rejected with ``GroupScopedRuleType.OUTSIDE_WINDOW`` if it has a
+        configured window but ``[start, end)`` is not fully covered by any of
+        them.
+
+        A calendar with NEITHER a group-scoped block NOR window for a given
+        ``(calendar, slot)`` pair falls through untouched -- narrowing/
+        exclusion only ever applies to what was actually configured.
+        Self-gating -- the block and window existence checks are each the
+        only extra query when nothing of that kind is configured for any of
+        the named pairs; each (fixed-cost) expanded fetch only runs when at
+        least one pair IS configured for that kind. Called from both
+        ``create_grouped_event`` (after the base-availability check) and
+        ``reschedule_grouped_event`` (spec: every enforcement surface agrees).
         """
         pairs = list(slot_calendar_pairs)
         if not pairs:
@@ -1933,6 +2299,29 @@ class CalendarGroupService:
         org_id = cast(Organization, self.organization).id
         slot_ids = {slot_id for slot_id, _ in pairs}
         calendar_ids = {cid for _, cid in pairs}
+
+        # Blocks beat everything -- checked first, before windows.
+        configured_block_pairs = set(
+            BlockedTime.objects.unscoped()
+            .filter_by_organization(org_id)
+            .filter(group_slot_fk_id__in=slot_ids, calendar_fk_id__in=calendar_ids)
+            .values_list("group_slot_fk_id", "calendar_fk_id")
+            .distinct()
+        )
+        if configured_block_pairs:
+            configured_block_slot_ids = {slot_id for slot_id, _ in configured_block_pairs}
+            configured_block_calendar_ids = {cid for _, cid in configured_block_pairs}
+            block_spans_by_slot = slot_engine.fetch_group_scoped_blocking_spans(
+                org_id, configured_block_slot_ids, configured_block_calendar_ids, start, end
+            )
+            for slot_id, calendar_id in pairs:
+                if (slot_id, calendar_id) not in configured_block_pairs:
+                    continue
+                spans = block_spans_by_slot.get(slot_id, {}).get(calendar_id, ())
+                if any(slot_engine.intervals_overlap(span, (start, end)) for span in spans):
+                    raise CalendarGroupScopedRuleViolationError(
+                        calendar_id=calendar_id, rule_type=GroupScopedRuleType.INSIDE_BLOCK
+                    )
 
         configured_pairs = set(
             AvailableTime.objects.unscoped()
@@ -2070,6 +2459,13 @@ class CalendarGroupService:
         counted toward its slot's ``required_count`` when the candidate window
         is fully covered by at least one of its group-scoped windows --
         narrowing only, never widening base availability.
+
+        Group-scoped blocked time (Phase 2a) is applied AFTER base
+        availability and BEFORE the window check (spec resolution order,
+        "blocks beat everything"): a calendar with a configured block that
+        OVERLAPS the candidate window is excluded from its slot's count
+        regardless of what any window says. Also zero added queries when
+        unconfigured.
         """
         self._assert_initialized()
         if slot_step <= datetime.timedelta(0):
@@ -2085,9 +2481,11 @@ class CalendarGroupService:
         if not slots:
             return []
 
-        slot_pool_by_id, group_scoped_calendar_ids_by_slot = (
-            self._slot_pools_with_group_scoped_flags(slots)
-        )
+        (
+            slot_pool_by_id,
+            group_scoped_calendar_ids_by_slot,
+            group_scoped_block_calendar_ids_by_slot,
+        ) = self._slot_pools_with_group_scoped_flags(slots)
         required_count_by_slot_id = {s.id: s.required_count for s in slots}
 
         all_calendar_ids: set[int] = set()
@@ -2134,6 +2532,24 @@ class CalendarGroupService:
                 search_window_end,
             )
 
+        # ------------------------------------------------------------------
+        # Group-scoped blocked time (CALENDAR_GROUP_SCOPED_AVAILABILITY
+        # Phase 2a) -- self-gating early-out, same shape as windows above.
+        # ------------------------------------------------------------------
+        group_scoped_block_spans_by_slot: slot_engine.GroupScopedSpansBySlot = {}
+        if group_scoped_block_calendar_ids_by_slot:
+            configured_block_slot_ids = list(group_scoped_block_calendar_ids_by_slot.keys())
+            configured_block_calendar_ids: set[int] = set()
+            for ids in group_scoped_block_calendar_ids_by_slot.values():
+                configured_block_calendar_ids.update(ids)
+            group_scoped_block_spans_by_slot = slot_engine.fetch_group_scoped_blocking_spans(
+                self.organization.id,
+                configured_block_slot_ids,
+                configured_block_calendar_ids,
+                search_window_start,
+                search_window_end,
+            )
+
         proposals: list[BookableSlotProposal] = []
         cursor = search_window_start
         while cursor + duration <= search_window_end:
@@ -2153,6 +2569,8 @@ class CalendarGroupService:
                         blocking_spans,
                         group_scoped_calendar_ids_by_slot.get(slot_id),
                         group_scoped_spans_by_slot.get(slot_id),
+                        group_scoped_block_calendar_ids_by_slot.get(slot_id),
+                        group_scoped_block_spans_by_slot.get(slot_id),
                     ):
                         available_count += 1
                 if available_count < required_count_by_slot_id[slot_id]:
