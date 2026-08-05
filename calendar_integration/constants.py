@@ -111,13 +111,14 @@ class GroupScopedRuleType(TextChoices):
 
     Named exactly as the spec requires them surfaced to a caller: outside
     window, inside block, quota consumed -- never the configured values
-    themselves. ``OUTSIDE_WINDOW`` is enforced as of Phase 1b and
-    ``INSIDE_BLOCK`` as of Phase 2a; ``QUOTA_CONSUMED`` is reserved for
-    Phase 3b.
+    themselves (e.g. the cap or current count). ``OUTSIDE_WINDOW`` is
+    enforced as of Phase 1b, ``INSIDE_BLOCK`` as of Phase 2a, and
+    ``QUOTA_CONSUMED`` as of Phase 3b.
     """
 
     OUTSIDE_WINDOW = "outside_window", "Outside window"
     INSIDE_BLOCK = "inside_block", "Inside block"
+    QUOTA_CONSUMED = "quota_consumed", "Quota consumed"
 
 
 class QuotaPeriod(TextChoices):

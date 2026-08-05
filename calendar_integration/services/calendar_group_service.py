@@ -1758,35 +1758,39 @@ class CalendarGroupService:
 
     def _slot_pools_with_group_scoped_flags(
         self, slots: Iterable[CalendarGroupSlot]
-    ) -> tuple[dict[int, set[int]], dict[int, set[int]], dict[int, set[int]]]:
-        """Build the (slot_id -> calendar_id pool) map, folding in two per-row
-        ``EXISTS`` subqueries flagging which pool calendars have ANY
-        group-scoped availability window, and ANY group-scoped blocked time,
-        configured for that slot (regardless of whether either overlaps a
-        caller's search window).
+    ) -> tuple[dict[int, set[int]], dict[int, set[int]], dict[int, set[int]], dict[int, set[int]]]:
+        """Build the (slot_id -> calendar_id pool) map, folding in three
+        per-row ``EXISTS`` subqueries flagging which pool calendars have ANY
+        group-scoped availability window, ANY group-scoped blocked time, and
+        ANY group-scoped quota rule configured for that slot (regardless of
+        whether any of them overlaps a caller's search window).
 
-        This is the Phase 1b (windows) / Phase 2a (blocks) self-gating
-        early-out mechanism (``CALENDAR_GROUP_SCOPED_AVAILABILITY``): both
-        ``EXISTS`` clauses are folded into the SAME per-slot membership query
-        every caller of this method already issued before Phase 1b, so an
-        unconfigured group costs exactly as many round trips as it did before
-        either phase -- zero added queries. Only when the returned "window
-        configured" or "block configured" map is non-empty for a slot does the
-        caller go on to fetch the actual group-scoped spans (a fixed,
-        non-per-candidate number of additional queries -- see
+        This is the Phase 1b (windows) / Phase 2a (blocks) / Phase 3b (quota)
+        self-gating early-out mechanism (``CALENDAR_GROUP_SCOPED_AVAILABILITY``):
+        all three ``EXISTS`` clauses are folded into the SAME per-slot
+        membership query every caller of this method already issued before
+        Phase 1b, so an unconfigured group costs exactly as many round trips
+        as it did before any of the three phases -- zero added queries. Only
+        when the returned "window configured", "block configured", or "quota
+        configured" map is non-empty for a slot does the caller go on to
+        fetch the actual group-scoped spans / rules (a fixed, non-per-candidate
+        number of additional queries -- see
         ``slot_engine.fetch_group_scoped_available_spans`` /
-        ``slot_engine.fetch_group_scoped_blocking_spans``).
+        ``slot_engine.fetch_group_scoped_blocking_spans`` /
+        ``slot_engine.fetch_group_scoped_quota_rules``).
 
         Returns ``(slot_pool_by_id, group_scoped_window_calendar_ids_by_slot,
-        group_scoped_block_calendar_ids_by_slot)``. The second and third
-        mappings each omit a slot entirely when nothing in its pool is
-        configured, so ``bool(...)`` on either alone tells a caller whether
-        ANY group-scoped window / block exists anywhere in the group.
+        group_scoped_block_calendar_ids_by_slot,
+        group_scoped_quota_calendar_ids_by_slot)``. The second, third, and
+        fourth mappings each omit a slot entirely when nothing in its pool is
+        configured, so ``bool(...)`` on any alone tells a caller whether ANY
+        group-scoped window / block / quota rule exists anywhere in the group.
         """
         org_id = cast(Organization, self.organization).id
         slot_pool_by_id: dict[int, set[int]] = {}
         group_scoped_window_calendar_ids_by_slot: dict[int, set[int]] = {}
         group_scoped_block_calendar_ids_by_slot: dict[int, set[int]] = {}
+        group_scoped_quota_calendar_ids_by_slot: dict[int, set[int]] = {}
         for s in slots:
             rows = (
                 CalendarGroupSlotMembership.objects.filter_by_organization(org_id)
@@ -1802,27 +1806,43 @@ class CalendarGroupService:
                         .filter_by_organization(org_id)
                         .filter(calendar_fk_id=OuterRef("calendar_fk_id"), group_slot_fk_id=s.id)
                     ),
+                    has_group_scoped_quota=Exists(
+                        CalendarGroupSlotQuotaRule.objects.filter_by_organization(org_id).filter(
+                            calendar_fk_id=OuterRef("calendar_fk_id"), group_slot_fk_id=s.id
+                        )
+                    ),
                 )
-                .values_list("calendar_fk_id", "has_group_scoped_window", "has_group_scoped_block")
+                .values_list(
+                    "calendar_fk_id",
+                    "has_group_scoped_window",
+                    "has_group_scoped_block",
+                    "has_group_scoped_quota",
+                )
             )
             pool: set[int] = set()
             window_configured: set[int] = set()
             block_configured: set[int] = set()
-            for cid, has_window, has_block in rows:
+            quota_configured: set[int] = set()
+            for cid, has_window, has_block, has_quota in rows:
                 pool.add(cid)
                 if has_window:
                     window_configured.add(cid)
                 if has_block:
                     block_configured.add(cid)
+                if has_quota:
+                    quota_configured.add(cid)
             slot_pool_by_id[s.id] = pool
             if window_configured:
                 group_scoped_window_calendar_ids_by_slot[s.id] = window_configured
             if block_configured:
                 group_scoped_block_calendar_ids_by_slot[s.id] = block_configured
+            if quota_configured:
+                group_scoped_quota_calendar_ids_by_slot[s.id] = quota_configured
         return (
             slot_pool_by_id,
             group_scoped_window_calendar_ids_by_slot,
             group_scoped_block_calendar_ids_by_slot,
+            group_scoped_quota_calendar_ids_by_slot,
         )
 
     def check_group_availability(
@@ -1850,6 +1870,16 @@ class CalendarGroupService:
         with a configured block that OVERLAPS the range is excluded regardless
         of what any window says ("blocks beat everything"). Also zero added
         queries when unconfigured.
+
+        Group-scoped quota rules (Phase 3b) are checked LAST, after base
+        availability, block, and window all pass: a calendar with a
+        configured quota rule whose cap is already met for the period the
+        range's start falls into is excluded, regardless of what any window
+        says. Also zero added queries when unconfigured -- see
+        ``slot_engine.fetch_group_scoped_quota_period_counts`` for the
+        query-count discipline (one counting query per ``(slot, period)``
+        combination actually configured, covering every range passed to this
+        call, never one per range).
         """
         self._assert_initialized()
         group = self._get_group_by_id(group_id)
@@ -1860,11 +1890,12 @@ class CalendarGroupService:
             slot_pool_by_id,
             group_scoped_window_calendar_ids_by_slot,
             group_scoped_block_calendar_ids_by_slot,
+            group_scoped_quota_calendar_ids_by_slot,
         ) = self._slot_pools_with_group_scoped_flags(slots)
 
         # Self-gating early-out: only fetch expanded group-scoped spans when at
         # least one calendar anywhere in the group actually has one configured.
-        # Compute union range once for both window and block fetches.
+        # Compute union range once for the window, block, and quota fetches.
         union_start = union_end = None
         if ranges:
             union_start = min(start for start, _ in ranges)
@@ -1906,6 +1937,41 @@ class CalendarGroupService:
                 union_end,
             )
 
+        group_scoped_quota_rules_by_slot: slot_engine.GroupScopedQuotaRulesBySlot = {}
+        group_scoped_quota_counts_by_slot: slot_engine.GroupScopedQuotaCountsBySlot = {}
+        org = cast(Organization, self.organization)
+        week_start = org.week_start
+        if (
+            group_scoped_quota_calendar_ids_by_slot
+            and union_start is not None
+            and union_end is not None
+        ):
+            configured_quota_slot_ids = list(group_scoped_quota_calendar_ids_by_slot.keys())
+            configured_quota_calendar_ids: set[int] = set()
+            for ids in group_scoped_quota_calendar_ids_by_slot.values():
+                configured_quota_calendar_ids.update(ids)
+            quota_rules = slot_engine.fetch_group_scoped_quota_rules(
+                org.id, configured_quota_slot_ids, configured_quota_calendar_ids
+            )
+            group_scoped_quota_rules_by_slot = slot_engine.group_quota_rules_by_slot(quota_rules)
+            # Widen to the full period boundaries touched by any range's
+            # start -- the literal `[union_start, union_end)` union of the
+            # requested ranges can start AFTER a period's own start (e.g. a
+            # Wednesday range inside a Monday-start week), which would
+            # silently undercount earlier live bookings in that same period.
+            # See `slot_engine.quota_covering_range`'s docstring.
+            covering_range = slot_engine.quota_covering_range(
+                (start for start, _ in ranges),
+                {rule.period for rule in quota_rules},
+                week_start,
+            )
+            if covering_range is not None:
+                group_scoped_quota_counts_by_slot = (
+                    slot_engine.fetch_group_scoped_quota_period_counts(
+                        org.id, quota_rules, week_start, *covering_range
+                    )
+                )
+
         calendar_qs_method = (
             "only_calendars_available_in_ranges_with_bulk_modifications"
             if with_bulk_modifications
@@ -1925,11 +1991,18 @@ class CalendarGroupService:
                 base_available = slot_pool_by_id[s.id] & available_ids
                 window_configured_ids = group_scoped_window_calendar_ids_by_slot.get(s.id)
                 block_configured_ids = group_scoped_block_calendar_ids_by_slot.get(s.id)
-                if not window_configured_ids and not block_configured_ids:
+                quota_configured_ids = group_scoped_quota_calendar_ids_by_slot.get(s.id)
+                if (
+                    not window_configured_ids
+                    and not block_configured_ids
+                    and not quota_configured_ids
+                ):
                     final_available = base_available
                 else:
                     window_spans_for_slot = group_scoped_spans_by_slot.get(s.id, {})
                     block_spans_for_slot = group_scoped_block_spans_by_slot.get(s.id, {})
+                    quota_rules_for_slot = group_scoped_quota_rules_by_slot.get(s.id, {})
+                    quota_counts_for_slot = group_scoped_quota_counts_by_slot.get(s.id, {})
                     final_available = set()
                     for cid in base_available:
                         # Blocks beat everything -- checked first, before windows.
@@ -1944,6 +2017,21 @@ class CalendarGroupService:
                             if not slot_engine.window_fully_covered_by_spans(
                                 window_spans_for_slot.get(cid, ()), start, end
                             ):
+                                continue
+                        # Quota is checked LAST, after block and window both pass.
+                        if quota_configured_ids and cid in quota_configured_ids:
+                            over_quota = False
+                            for rule in quota_rules_for_slot.get(cid, ()):
+                                period_start = slot_engine.quota_period_start_utc(
+                                    start, rule.period, week_start
+                                )
+                                count = quota_counts_for_slot.get((cid, rule.period), {}).get(
+                                    period_start, 0
+                                )
+                                if count >= rule.cap:
+                                    over_quota = True
+                                    break
+                            if over_quota:
                                 continue
                         final_available.add(cid)
                 slot_results.append(
@@ -2303,6 +2391,21 @@ class CalendarGroupService:
         ``CalendarEventGroupSelection``) -- every enforcement surface must
         agree, so a narrowed calendar cannot dodge the window it would have
         been rejected for at booking time simply by rescheduling instead.
+        Group-scoped blocks (Phase 2a) and quota rules (Phase 3b) are checked
+        the same way.
+
+        Known v1 limitation on quota specifically: the count used to validate
+        the NEW period is the live count as of THIS event's still-unmoved
+        ``CalendarEvent`` row (the reschedule write happens after this
+        check), which still includes this event's own booking if it already
+        falls in the SAME target period (e.g. moving a booking from 9am to
+        2pm on the same day, under a daily cap already at its limit) -- such
+        a same-period, no-net-change reschedule can be rejected even though
+        it does not actually consume additional quota. This mirrors the
+        counting function's derive-on-read design (Phase 3a) rather than
+        excluding the event under reschedule from its own count, and is
+        accepted for v1 the same way the non-primary base-availability gap
+        above is.
         """
         self._assert_initialized()
         # Checked explicitly and first, for the same reason as
@@ -2547,25 +2650,31 @@ class CalendarGroupService:
         Acceptance 4, UC-4: a caller cannot book, by naming the calendar
         directly, a time discovery would never have offered).
 
-        Checks BLOCKS first, then WINDOWS -- the same resolution order
+        Checks BLOCKS, then WINDOWS, then QUOTA -- the same resolution order
         ``slot_engine.calendar_free_for_window`` applies in discovery ("blocks
-        beat everything"): a pair with a configured group-scoped block that
-        OVERLAPS ``[start, end)`` is rejected with
+        beat everything", quota last): a pair with a configured group-scoped
+        block that OVERLAPS ``[start, end)`` is rejected with
         ``GroupScopedRuleType.INSIDE_BLOCK`` before the window check even
-        runs, regardless of what any window says. A pair with no block hit is
-        then rejected with ``GroupScopedRuleType.OUTSIDE_WINDOW`` if it has a
-        configured window but ``[start, end)`` is not fully covered by any of
-        them.
+        runs, regardless of what any window or quota rule says. A pair with
+        no block hit is then rejected with ``GroupScopedRuleType.OUTSIDE_WINDOW``
+        if it has a configured window but ``[start, end)`` is not fully
+        covered by any of them. Only once BOTH pass does a pair with a
+        configured quota rule get rejected with
+        ``GroupScopedRuleType.QUOTA_CONSUMED`` when ANY of its rules (e.g. a
+        daily AND a weekly cap) has no headroom left for the period
+        ``start`` falls into -- ALL of a calendar's quota rules must have
+        headroom, mirroring discovery's "every rule must pass".
 
-        A calendar with NEITHER a group-scoped block NOR window for a given
-        ``(calendar, slot)`` pair falls through untouched -- narrowing/
-        exclusion only ever applies to what was actually configured.
-        Self-gating -- the block and window existence checks are each the
-        only extra query when nothing of that kind is configured for any of
-        the named pairs; each (fixed-cost) expanded fetch only runs when at
-        least one pair IS configured for that kind. Called from both
-        ``create_grouped_event`` (after the base-availability check) and
-        ``reschedule_grouped_event`` (spec: every enforcement surface agrees).
+        A calendar with NEITHER a group-scoped block, window, NOR quota rule
+        for a given ``(calendar, slot)`` pair falls through untouched --
+        narrowing/exclusion only ever applies to what was actually
+        configured. Self-gating -- the block, window, and quota existence
+        checks are each the only extra query when nothing of that kind is
+        configured for any of the named pairs; each (fixed-cost) expanded
+        fetch only runs when at least one pair IS configured for that kind.
+        Called from both ``create_grouped_event`` (after the
+        base-availability check) and ``reschedule_grouped_event`` (spec:
+        every enforcement surface agrees).
         """
         pairs = list(slot_calendar_pairs)
         if not pairs:
@@ -2575,7 +2684,7 @@ class CalendarGroupService:
         slot_ids = {slot_id for slot_id, _ in pairs}
         calendar_ids = {cid for _, cid in pairs}
 
-        # Blocks beat everything -- checked first, before windows.
+        # Blocks beat everything -- checked first, before windows and quota.
         configured_block_pairs = set(
             BlockedTime.objects.unscoped()
             .filter_by_organization(org_id)
@@ -2605,21 +2714,55 @@ class CalendarGroupService:
             .values_list("group_slot_fk_id", "calendar_fk_id")
             .distinct()
         )
-        if not configured_pairs:
+        if configured_pairs:
+            configured_slot_ids = {slot_id for slot_id, _ in configured_pairs}
+            configured_calendar_ids = {cid for _, cid in configured_pairs}
+            spans_by_slot = slot_engine.fetch_group_scoped_available_spans(
+                org_id, configured_slot_ids, configured_calendar_ids, start, end
+            )
+
+            for slot_id, calendar_id in pairs:
+                if (slot_id, calendar_id) not in configured_pairs:
+                    continue
+                spans = spans_by_slot.get(slot_id, {}).get(calendar_id, ())
+                if not slot_engine.window_fully_covered_by_spans(spans, start, end):
+                    raise CalendarGroupScopedRuleViolationError(calendar_id=calendar_id)
+
+        # Quota is checked LAST, after block and window both pass.
+        configured_quota_rules = slot_engine.fetch_group_scoped_quota_rules(
+            org_id, slot_ids, calendar_ids
+        )
+        if not configured_quota_rules:
             return
 
-        configured_slot_ids = {slot_id for slot_id, _ in configured_pairs}
-        configured_calendar_ids = {cid for _, cid in configured_pairs}
-        spans_by_slot = slot_engine.fetch_group_scoped_available_spans(
-            org_id, configured_slot_ids, configured_calendar_ids, start, end
+        quota_rules_by_slot = slot_engine.group_quota_rules_by_slot(configured_quota_rules)
+        week_start = cast(Organization, self.organization).week_start
+        # Widen to the full period boundaries the candidate's own start falls
+        # into -- `[start, end)` is typically much narrower than a day/week/
+        # month bucket, which would otherwise silently undercount an earlier
+        # live booking in that same period. See
+        # `slot_engine.quota_covering_range`'s docstring.
+        covering_range = slot_engine.quota_covering_range(
+            (start,), {rule.period for rule in configured_quota_rules}, week_start
         )
+        quota_counts_by_slot: slot_engine.GroupScopedQuotaCountsBySlot = {}
+        if covering_range is not None:
+            quota_counts_by_slot = slot_engine.fetch_group_scoped_quota_period_counts(
+                org_id, configured_quota_rules, week_start, *covering_range
+            )
 
         for slot_id, calendar_id in pairs:
-            if (slot_id, calendar_id) not in configured_pairs:
+            rules = quota_rules_by_slot.get(slot_id, {}).get(calendar_id, ())
+            if not rules:
                 continue
-            spans = spans_by_slot.get(slot_id, {}).get(calendar_id, ())
-            if not slot_engine.window_fully_covered_by_spans(spans, start, end):
-                raise CalendarGroupScopedRuleViolationError(calendar_id=calendar_id)
+            counts_for_slot = quota_counts_by_slot.get(slot_id, {})
+            for rule in rules:
+                period_start = slot_engine.quota_period_start_utc(start, rule.period, week_start)
+                count = counts_for_slot.get((calendar_id, rule.period), {}).get(period_start, 0)
+                if count >= rule.cap:
+                    raise CalendarGroupScopedRuleViolationError(
+                        calendar_id=calendar_id, rule_type=GroupScopedRuleType.QUOTA_CONSUMED
+                    )
 
     def _create_non_primary_blocked_times(
         self,
@@ -2741,6 +2884,16 @@ class CalendarGroupService:
         OVERLAPS the candidate window is excluded from its slot's count
         regardless of what any window says. Also zero added queries when
         unconfigured.
+
+        Group-scoped quota rules (``CALENDAR_GROUP_SCOPED_AVAILABILITY``
+        Phase 3b) are checked LAST, after base availability, block, and
+        window all pass: a calendar with a configured quota rule at or over
+        its cap for the period a candidate window's start falls into is
+        excluded from its slot's count, regardless of what any window says.
+        The counting call (see ``slot_engine.fetch_group_scoped_quota_period_counts``)
+        is issued ONCE per ``(slot, period)`` combination actually
+        configured, covering the WHOLE search window -- never once per
+        candidate. Also zero added queries when unconfigured.
         """
         self._assert_initialized()
         if slot_step <= datetime.timedelta(0):
@@ -2760,6 +2913,7 @@ class CalendarGroupService:
             slot_pool_by_id,
             group_scoped_calendar_ids_by_slot,
             group_scoped_block_calendar_ids_by_slot,
+            group_scoped_quota_calendar_ids_by_slot,
         ) = self._slot_pools_with_group_scoped_flags(slots)
         required_count_by_slot_id = {s.id: s.required_count for s in slots}
 
@@ -2825,6 +2979,52 @@ class CalendarGroupService:
                 search_window_end,
             )
 
+        # ------------------------------------------------------------------
+        # Group-scoped quota rules (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase
+        # 3b) -- self-gating early-out, same shape as windows/blocks above.
+        # ------------------------------------------------------------------
+        # `group_scoped_quota_calendar_ids_by_slot` was already computed above
+        # by folding a THIRD EXISTS() subquery into the SAME per-slot
+        # membership query -- zero added round trips. Only when at least one
+        # calendar anywhere in the group actually has a quota rule configured
+        # do we pay for the fixed, non-per-candidate counting fetch below --
+        # ONE query per (slot, period) combination actually configured,
+        # covering the WHOLE search window in one shot (see
+        # `slot_engine.fetch_group_scoped_quota_period_counts`). The number of
+        # counting queries is a function of the roster/config, never of how
+        # many candidate windows the loop below will check the result
+        # against.
+        org = cast(Organization, self.organization)
+        week_start = org.week_start
+        group_scoped_quota_rules_by_slot: slot_engine.GroupScopedQuotaRulesBySlot = {}
+        group_scoped_quota_counts_by_slot: slot_engine.GroupScopedQuotaCountsBySlot = {}
+        if group_scoped_quota_calendar_ids_by_slot:
+            configured_quota_slot_ids = list(group_scoped_quota_calendar_ids_by_slot.keys())
+            configured_quota_calendar_ids: set[int] = set()
+            for ids in group_scoped_quota_calendar_ids_by_slot.values():
+                configured_quota_calendar_ids.update(ids)
+            quota_rules = slot_engine.fetch_group_scoped_quota_rules(
+                org.id, configured_quota_slot_ids, configured_quota_calendar_ids
+            )
+            group_scoped_quota_rules_by_slot = slot_engine.group_quota_rules_by_slot(quota_rules)
+            # Widen to the full period boundaries touched by the search
+            # window's own edges -- `search_window_start` need not itself sit
+            # on a period boundary (e.g. a Wednesday-to-Friday search window
+            # under a Monday-start weekly rule), which would otherwise
+            # silently undercount live bookings made earlier in that same
+            # period. See `slot_engine.quota_covering_range`'s docstring.
+            covering_range = slot_engine.quota_covering_range(
+                (search_window_start, search_window_end),
+                {rule.period for rule in quota_rules},
+                week_start,
+            )
+            if covering_range is not None:
+                group_scoped_quota_counts_by_slot = (
+                    slot_engine.fetch_group_scoped_quota_period_counts(
+                        org.id, quota_rules, week_start, *covering_range
+                    )
+                )
+
         proposals: list[BookableSlotProposal] = []
         cursor = search_window_start
         while cursor + duration <= search_window_end:
@@ -2846,6 +3046,10 @@ class CalendarGroupService:
                         group_scoped_spans_by_slot.get(slot_id),
                         group_scoped_block_calendar_ids_by_slot.get(slot_id),
                         group_scoped_block_spans_by_slot.get(slot_id),
+                        group_scoped_quota_calendar_ids_by_slot.get(slot_id),
+                        group_scoped_quota_rules_by_slot.get(slot_id),
+                        group_scoped_quota_counts_by_slot.get(slot_id),
+                        week_start,
                     ):
                         available_count += 1
                 if available_count < required_count_by_slot_id[slot_id]:

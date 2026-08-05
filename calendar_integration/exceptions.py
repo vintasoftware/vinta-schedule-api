@@ -360,8 +360,10 @@ class CalendarGroupScopedRuleViolationError(CalendarGroupError):
     callers can build a structured error response -- never the configured
     rule values themselves (spec Decisions -> Errors: enough for an admin to
     act on, without leaking roster detail to external bookers on public
-    links). ``OUTSIDE_WINDOW`` is raised as of Phase 1b and ``INSIDE_BLOCK``
-    as of Phase 2a; ``QUOTA_CONSUMED`` is reserved for Phase 3b.
+    links). ``OUTSIDE_WINDOW`` is raised as of Phase 1b, ``INSIDE_BLOCK`` as
+    of Phase 2a, and ``QUOTA_CONSUMED`` as of Phase 3b -- naming only the
+    quota rule that was violated, never its configured cap or the calendar's
+    current count.
     """
 
     def __init__(
