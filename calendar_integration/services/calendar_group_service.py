@@ -440,13 +440,41 @@ class CalendarGroupService:
             # Delete group-scoped windows for the removed calendars.
             # The FK on AvailableTime.group_slot → CalendarGroupSlot cascades on
             # SLOT deletion only, not on membership removal, so we must explicitly
-            # clean up the orphaned rows here. These deletions are cascading from
-            # membership removal (already audited as part of the group update), so
-            # we do not audit them individually.
+            # clean up the orphaned rows here. Each window deletion is audited
+            # individually because the group-update diff only captures name/description
+            # /accepts_public_scheduling, not membership or window changes.
             # TODO(Phase 2a, 3a): BlockedTime.for_group_slot() and quota rules
             # must extend this cleanup when those phases add their group-scoped rows,
             # using the same pattern: delete rows for removed calendars in to_remove.
             org_id = cast(Organization, self.organization).id
+            windows_to_delete = list(
+                AvailableTime.objects.unscoped()
+                .filter_by_organization(org_id)
+                .filter(group_slot_fk=slot, calendar_fk_id__in=to_remove)
+            )
+
+            # Audit each window deletion before removing it.
+            for window in windows_to_delete:
+                if self.audit_service is None or self.organization is None:
+                    break
+                user_or_token = getattr(self.calendar_service, "user_or_token", None)
+                permission_service = getattr(
+                    self.calendar_service, "calendar_permission_service", None
+                )
+                self.audit_service.record(
+                    organization_id=self.organization.id,
+                    action=AuditAction.DELETE,
+                    actor=self.audit_service.actor_from_user_or_token(
+                        user_or_token,
+                        self.organization.id,
+                        single_use_token=resolve_acting_single_use_token(
+                            user_or_token, permission_service
+                        ),
+                    ),
+                    subject=self.audit_service.subject_from_instance(window),
+                )
+
+            # Delete the windows after auditing them.
             AvailableTime.objects.unscoped().filter_by_organization(org_id).filter(
                 group_slot_fk=slot, calendar_fk_id__in=to_remove
             ).delete()

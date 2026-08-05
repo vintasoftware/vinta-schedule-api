@@ -698,6 +698,7 @@ def test_removing_calendar_from_slot_removes_group_scoped_windows(
     """FIX 1 (BLOCKER): When removing a calendar from a slot's membership,
     its group-scoped availability windows must be deleted (not orphaned).
     A second calendar's windows in the same slot survive.
+    Each deleted window is audited with a DELETE action naming the actor.
     """
     # Create a slot with TWO calendars.
     slot = CalendarGroupSlot.objects.create(
@@ -736,20 +737,21 @@ def test_removing_calendar_from_slot_removes_group_scoped_windows(
     assert AvailableTime.objects.unscoped().filter(id=window2_id).exists()
 
     # Remove ONLY the first calendar from the slot (via update_group → _reconcile_slot).
-    with django_capture_on_commit_callbacks(execute=True):
-        service.update_group(
-            group.id,
-            CalendarGroupInputData(
-                name=group.name,
-                slots=[
-                    CalendarGroupSlotInputData(
-                        name=slot.name,
-                        calendar_ids=[other_calendar.id],
-                        required_count=1,
-                    )
-                ],
-            ),
-        )
+    with patch("audit.services.persist_audit_record") as mock_task:
+        with django_capture_on_commit_callbacks(execute=True):
+            service.update_group(
+                group.id,
+                CalendarGroupInputData(
+                    name=group.name,
+                    slots=[
+                        CalendarGroupSlotInputData(
+                            name=slot.name,
+                            calendar_ids=[other_calendar.id],
+                            required_count=1,
+                        )
+                    ],
+                ),
+            )
 
     # The first calendar's window must be deleted.
     assert not AvailableTime.objects.unscoped().filter(id=window1_id).exists()
@@ -767,6 +769,18 @@ def test_removing_calendar_from_slot_removes_group_scoped_windows(
         .filter(slot_fk=slot, calendar_fk_id=other_calendar.id)
         .exists()
     )
+
+    # Verify that a DELETE audit record was emitted for the deleted window.
+    payloads = _payloads(mock_task)
+    delete_payloads = [p for p in payloads if p["action"] == AuditAction.DELETE]
+    # Should have at least one DELETE for window1 (may also have UPDATE for group).
+    window_delete_payloads = [
+        p
+        for p in delete_payloads
+        if p["subject"]["subject_type"] == "calendar_integration.AvailableTime"
+    ]
+    assert len(window_delete_payloads) == 1
+    assert window_delete_payloads[0]["subject"]["subject_id"] == str(window1_id)
 
 
 # ---------------------------------------------------------------------------
