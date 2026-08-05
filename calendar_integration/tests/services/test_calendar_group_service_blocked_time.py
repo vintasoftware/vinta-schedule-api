@@ -907,3 +907,144 @@ def test_removing_calendar_from_slot_removes_group_scoped_blocks(
     ]
     assert len(block_delete_payloads) == 1
     assert block_delete_payloads[0]["subject"]["subject_id"] == str(block1_id)
+
+
+# ---------------------------------------------------------------------------
+# Recurring block orphan detection + partial-overlap orphan detection
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_create_group_scoped_recurring_blocked_time_detects_orphaned_bookings_on_future_occurrence(
+    service: CalendarGroupService,
+    admin_user: User,
+    calendar: Calendar,
+    group: CalendarGroup,
+    group_slot: CalendarGroupSlot,
+) -> None:
+    """A recurring block whose LATER occurrence (not the first) overlaps a
+    confirmed future booking must report that booking as orphaned on creation,
+    before the booking existed. Tests that recurrence-aware expansion catches
+    all occurrences."""
+    # Use a fixed date to avoid timezone issues: 2025-09-02 is a Tuesday.
+    base_date = datetime.date(2025, 9, 2)
+    block_start = datetime.datetime.combine(base_date, datetime.time(9), tzinfo=datetime.UTC)
+    block_end = datetime.datetime.combine(base_date, datetime.time(17), tzinfo=datetime.UTC)
+    now = block_start - datetime.timedelta(days=7)  # Ensure "now" is before the block
+
+    # Create a recurring block: every Tuesday and Thursday, 9-17.
+    recurring_block = service.create_group_scoped_blocked_time(
+        acting_user=admin_user,
+        group_slot_id=group_slot.id,
+        calendar_id=calendar.id,
+        start_time=block_start,
+        end_time=block_end,
+        tz="UTC",
+        rrule_string="RRULE:FREQ=WEEKLY;BYDAY=TU,TH",
+        now=now,
+    )
+    assert recurring_block.block is not None
+    assert recurring_block.orphaned_bookings == []
+
+    # Create a booking on the SECOND Thursday (9 days after 2025-09-02).
+    # 2025-09-02 = Tuesday
+    # 2025-09-04 = Thursday (first Thursday)
+    # 2025-09-11 = Thursday (second Thursday)
+    second_thursday = base_date + datetime.timedelta(days=9)
+    booking = CalendarEvent.objects.create(
+        organization=service.organization,
+        calendar=calendar,
+        title="Future Consult",
+        description="",
+        external_id="ev_second_thursday",
+        start_time_tz_unaware=datetime.datetime.combine(
+            second_thursday, datetime.time(10), tzinfo=datetime.UTC
+        ),
+        end_time_tz_unaware=datetime.datetime.combine(
+            second_thursday, datetime.time(11), tzinfo=datetime.UTC
+        ),
+        timezone="UTC",
+        calendar_group=group,
+    )
+    CalendarEventGroupSelection.objects.create(
+        organization=service.organization,
+        event=booking,
+        slot=group_slot,
+        calendar=calendar,
+    )
+
+    # The EXISTING recurring block (created before the booking) should be reported
+    # as orphaning the booking (the second Thursday occurrence overlaps it).
+    # We do this by creating a NEW block that overlaps the booking.
+    overlapping_block = service.create_group_scoped_blocked_time(
+        acting_user=admin_user,
+        group_slot_id=group_slot.id,
+        calendar_id=calendar.id,
+        start_time=block_start,
+        end_time=block_end,
+        tz="UTC",
+        rrule_string="RRULE:FREQ=WEEKLY;BYDAY=TU,TH",
+        now=now,
+    )
+    # Now the new block creation should detect the booking as orphaned
+    # (because the recurring occurrences overlap it).
+    orphaned_ids = {e.id for e in overlapping_block.orphaned_bookings}
+    assert orphaned_ids == {booking.id}
+
+
+@pytest.mark.django_db
+def test_create_group_scoped_blocked_time_detects_partially_overlapping_booking_as_orphaned(
+    service: CalendarGroupService,
+    admin_user: User,
+    calendar: Calendar,
+    group: CalendarGroup,
+    group_slot: CalendarGroupSlot,
+) -> None:
+    """A block that PARTIALLY overlaps a booking (not fully contained) must
+    still report the booking as orphaned. The orphan check uses
+    `intervals_overlap`, which returns true for any overlap."""
+    now = django_timezone.now()
+    tuesday = _next_weekday(now, weekday=1)
+
+    # Create a booking: 11:00-13:00
+    booking = CalendarEvent.objects.create(
+        organization=service.organization,
+        calendar=calendar,
+        title="Consult",
+        description="",
+        external_id="ev_partial",
+        start_time_tz_unaware=datetime.datetime.combine(
+            tuesday, datetime.time(11), tzinfo=datetime.UTC
+        ),
+        end_time_tz_unaware=datetime.datetime.combine(
+            tuesday, datetime.time(13), tzinfo=datetime.UTC
+        ),
+        timezone="UTC",
+        calendar_group=group,
+    )
+    CalendarEventGroupSelection.objects.create(
+        organization=service.organization,
+        event=booking,
+        slot=group_slot,
+        calendar=calendar,
+    )
+
+    # Create a block that PARTIALLY overlaps: 12:00-14:00 (overlaps 12:00-13:00).
+    result = service.create_group_scoped_blocked_time(
+        acting_user=admin_user,
+        group_slot_id=group_slot.id,
+        calendar_id=calendar.id,
+        start_time=datetime.datetime.combine(tuesday, datetime.time(12), tzinfo=datetime.UTC),
+        end_time=datetime.datetime.combine(tuesday, datetime.time(14), tzinfo=datetime.UTC),
+        tz="UTC",
+        now=now,
+    )
+
+    # The booking should be reported as orphaned despite only partial overlap.
+    orphaned_ids = {e.id for e in result.orphaned_bookings}
+    assert orphaned_ids == {booking.id}
+
+    # The booking itself must be untouched (not cancelled).
+    booking.refresh_from_db()
+    assert booking.title == "Consult"
+    assert CalendarEvent.objects.filter_by_organization(service.organization.id).count() == 1

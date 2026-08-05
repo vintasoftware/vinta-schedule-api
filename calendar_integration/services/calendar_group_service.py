@@ -850,8 +850,8 @@ class CalendarGroupService:
         )
 
         orphaned_bookings = self._find_orphaned_bookings(
-            calendar_id=window.calendar_fk_id,  # type: ignore[arg-type]
-            group_slot=window.group_slot,
+            calendar_id=cast(int, window.calendar_fk_id),
+            group_slot=cast(CalendarGroupSlot, window.group_slot),
             now=now,
         )
         return GroupScopedAvailabilityWriteResult(
@@ -1437,8 +1437,8 @@ class CalendarGroupService:
         )
 
         orphaned_bookings = self._find_bookings_orphaned_by_group_scoped_block(
-            calendar_id=block.calendar_fk_id,  # type: ignore[arg-type]
-            group_slot=block.group_slot,
+            calendar_id=cast(int, block.calendar_fk_id),
+            group_slot=cast(CalendarGroupSlot, block.group_slot),
             now=now,
         )
         return GroupScopedBlockWriteResult(block=block, orphaned_bookings=orphaned_bookings)
@@ -1599,14 +1599,22 @@ class CalendarGroupService:
 
         # Self-gating early-out: only fetch expanded group-scoped spans when at
         # least one calendar anywhere in the group actually has one configured.
+        # Compute union range once for both window and block fetches.
+        union_start = union_end = None
+        if ranges:
+            union_start = min(start for start, _ in ranges)
+            union_end = max(end for _, end in ranges)
+
         group_scoped_spans_by_slot: slot_engine.GroupScopedSpansBySlot = {}
-        if group_scoped_window_calendar_ids_by_slot and ranges:
+        if (
+            group_scoped_window_calendar_ids_by_slot
+            and union_start is not None
+            and union_end is not None
+        ):
             configured_slot_ids = list(group_scoped_window_calendar_ids_by_slot.keys())
             configured_calendar_ids: set[int] = set()
             for ids in group_scoped_window_calendar_ids_by_slot.values():
                 configured_calendar_ids.update(ids)
-            union_start = min(start for start, _ in ranges)
-            union_end = max(end for _, end in ranges)
             group_scoped_spans_by_slot = slot_engine.fetch_group_scoped_available_spans(
                 self.organization.id,
                 configured_slot_ids,
@@ -1616,13 +1624,15 @@ class CalendarGroupService:
             )
 
         group_scoped_block_spans_by_slot: slot_engine.GroupScopedSpansBySlot = {}
-        if group_scoped_block_calendar_ids_by_slot and ranges:
+        if (
+            group_scoped_block_calendar_ids_by_slot
+            and union_start is not None
+            and union_end is not None
+        ):
             configured_block_slot_ids = list(group_scoped_block_calendar_ids_by_slot.keys())
             configured_block_calendar_ids: set[int] = set()
             for ids in group_scoped_block_calendar_ids_by_slot.values():
                 configured_block_calendar_ids.update(ids)
-            union_start = min(start for start, _ in ranges)
-            union_end = max(end for _, end in ranges)
             group_scoped_block_spans_by_slot = slot_engine.fetch_group_scoped_blocking_spans(
                 self.organization.id,
                 configured_block_slot_ids,
