@@ -56,16 +56,23 @@ Phase 0 branches off `plan-calendar-group-scoped-availability`; each later phase
 - **Summary**: Service-layer create/update/delete for group-scoped availability windows on `CalendarGroupService`. Writes/reads via `AvailableTime.objects.for_group_slot(...)`/`.unscoped()`. New `_group_scoped_available_times_expanded` (annotates occurrences before `get_occurrences_in_range` to dodge the Phase-0 base-manager re-fetch). Non-disclosure permissions via identical `CalendarGroupSlotConfigNotFoundError` (stranger / other-calendar-owner / missing-membership all indistinguishable). Audit on all ops with before/after diff. Orphaned-booking detection on narrowing update AND first-window create (returns them in `GroupScopedAvailabilityWriteResult`, mutates nothing). New `CalendarPermissionService.can_manage_group_scoped_calendar_config`. No migration.
 - **BLOCKER fixed**: `_reconcile_slot` now deletes (and audits) group-scoped windows when a calendar is removed from a slot — the slot-FK cascade fires only on slot deletion, not membership removal (spec edge case + plan's required test).
 
-**CARRY-FORWARD for Phases 1b / 2a / 3b (occurrence-expansion trap, still open):**
-`RecurringMixin._get_occurrences_in_range` (calendar_integration/models.py ~L823-845) has TWO default-manager re-fetches. Phase 1a neutralized the OUTER one (via annotation). The INNER exception-instance lookup (`self.__class__.objects.filter(id__in=[...])` ~L837) STILL uses the DEFAULT (base-rows-only) manager, so a recurrence EXCEPTION on a group-scoped master is silently missed (falls through to an un-excepted occurrence). Not triggered in 1a (no group-scoped exception-write path). Any phase that expands group-scoped occurrences where exceptions may exist (1b enforcement, 2a blocks, 3b quota) MUST either route this lookup through a group-aware accessor, or expand exclusively via `_group_scoped_available_times_expanded` and never call `get_occurrences_in_range()` directly on a group-scoped instance. Fix it (scope the inner lookup) in the phase that first makes group-scoped exceptions reachable.
+**CARRY-FORWARD (occurrence-expansion trap) — RESOLVED in Phase 1b:**
+`RecurringMixin._get_occurrences_in_range` (calendar_integration/models.py ~L835-854) now guards the inner exception-instance lookup: when `getattr(self, "group_slot_fk_id", None) is not None` it uses `self.__class__._base_manager` (unfiltered), else the default manager. So a recurrence exception on a group-scoped master is found, not silently missed. All other recurring models are unchanged (guarded on the group-scoped case only). Covered by `test_group_scoped_recurring_exception_is_honored_when_master_is_group_scoped`. No longer an open risk for Phases 2a/3b.
+
+### Phase 1b — Windows in discovery and booking validation ✅
+
+- **Branch**: `plan/calendar-group-scoped-availability/phase-1b` (base: phase-1a) — **PR [#221](https://github.com/vintasoftware/vinta-schedule-api/pull/221)**
+- **Implementer model**: sonnet (plan Tier 3) — agent type `implementer`
+- **Reviewer model**: opus (plan Tier-4 override) — no BLOCKERs; 2 SHOULD-FIX + 2 NIT fixed (haiku fixer)
+- **Summary**: Group-scoped windows intersected into slot-engine discovery + booking/reschedule validation. **Zero-change early-out** via an `Exists()` annotation folded into the existing membership query (no new round trip; `find_bookable_slots` 6→6, `check_group_availability` 5→5 queries; byte-identical output — asserted). Intersect-only via `base_free` short-circuit. New `slot_engine` batched span fetch (`fetch_group_scoped_available_spans`, recurrence-aware), consumed by discovery and by `_assert_calendars_within_group_scoped_windows` (wired into create + reschedule; reschedule extended to all selected calendars). New `GroupScopedRuleType` + `CalendarGroupScopedRuleViolationError` (names calendar + rule type, no configured-value leak). `bookable_slots_service.py` untouched. Resolved the recurrence-exception trap (see above). No migration.
 
 ## Current phase
 
-Phase 1b — Windows in discovery and booking validation
+Phase 1c — Windows on the internal REST surface (haiku attempt discarded — escalated to sonnet)
 
 ## Remaining phases
 
-1b, 1c, 1d, 2a, 2b, 2c, 3a, 3b, 3c, 4
+1c, 1d, 2a, 2b, 2c, 3a, 3b, 3c, 4
 
 ## Deferred phases
 
