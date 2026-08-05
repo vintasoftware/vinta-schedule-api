@@ -63,6 +63,7 @@ from calendar_integration.models import (
     RecurrenceRule,
     RecurringMixin,
 )
+from calendar_integration.recurrence_utils import persist_truncated_rule
 from calendar_integration.services.calendar_service_utils import (
     resolve_acting_single_use_token,
 )
@@ -1150,8 +1151,7 @@ class AvailabilityService:
             new_recurrence_rule: RecurrenceRule | None,
         ):
             parent = cast(BlockedTime, parent_obj)
-            parent.recurrence_rule_fk = new_recurrence_rule  # type: ignore
-            parent.save()
+            persist_truncated_rule(parent, new_recurrence_rule)
             return parent
 
         def create_continuation(
@@ -1235,8 +1235,7 @@ class AvailabilityService:
             new_recurrence_rule: RecurrenceRule | None,
         ):
             parent = cast(AvailableTime, parent_obj)
-            parent.recurrence_rule_fk = new_recurrence_rule  # type: ignore
-            parent.save()
+            persist_truncated_rule(parent, new_recurrence_rule)
             return parent
 
         def create_continuation(

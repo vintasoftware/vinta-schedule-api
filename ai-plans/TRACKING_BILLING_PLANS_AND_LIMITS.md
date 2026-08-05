@@ -312,6 +312,14 @@ Two things make this worse than the bound previously accepted:
 
 **Where this gates, precisely.** An earlier draft of this note said "Phase 8 must not enforce the post-paid ceiling until it lands." That is stricter than necessary and would stall the plan. Phase 8's guard is **inert on every current organization**: `unlimited` carries a NULL `event_occurrences` limit, and `check_postpaid_allowance` returns headroom for a NULL ceiling, so no code path can block on an over-counted number today. The real gate is the first moment a non-NULL `event_occurrences` limit reaches a live organization — **Phase 14**, already deferred, and **Phase 13**'s overage charge, which converts the same over-count into money. Both must wait for the recurrence fix. Phase 8 ships.
 
+##### Resolved 2026-08-05 — truncation now persists
+
+`RecurrenceRuleSplitter` returns detached copies (pk cleared) instead of `copy.deepcopy` aliases, the unused `continuation_rule.save()` in `RecurrenceManager` is gone, and the availability service's `truncate_parent` writes the truncated rule to the parent's own row. The measured table above now reads 5/5 `is_clean` for the fresh-sweep row, and 5 real / 9 billed / `drift == 4` with all four superseded rows `orphaned` for the sweep-modify-sweep row.
+
+**A second defect was found during the fix and is not described above.** The note traces the `CalendarEvent` path only. On the **availability** path (`AvailableTime` / `BlockedTime`) the truncation never reached the database at all, by a different mechanism: `truncate_parent` assigned the same-pk clone to the one-to-one and saved the *parent*, but `OrganizationModel.save` only reassigns FK ids and never saves the related object. A fix confined to `recurrence_utils` would have repaired events and left availability broken — which matters because group-scoped windows and blocks reuse that path.
+
+**Gate status.** The over-count this section gates on is fixed, so Phase 13's overage charge and Phase 14's rollout are no longer blocked by *it*. The identity-churn hazard in the first paragraph is unchanged and still bounded by an already-metered window. Series already duplicated in production are **not** repaired by this change — see the backfill question below.
+
 ### Phase 8 — Enforce the post-paid allowance ✅
 
 - **Status**: reviewed clean (1 round, 3 BLOCKERs fixed), gates green, ready to integrate

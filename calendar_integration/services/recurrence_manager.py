@@ -279,8 +279,10 @@ class RecurrenceManager:
                         modification_rrule_string, parent_object.organization
                     )
                 if continuation_rule:
+                    # Deliberately not saved: every ``create_continuation_callback``
+                    # consumes this rule as an rrule *string* and creates its own
+                    # row, so persisting it here would only orphan a row.
                     continuation_rule.organization = parent_object.organization
-                    continuation_rule.save()
 
                 if create_continuation_callback is None:
                     raise ValueError("create_continuation_callback is required when not cancelling")

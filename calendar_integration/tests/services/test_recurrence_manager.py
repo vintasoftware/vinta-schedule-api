@@ -22,6 +22,7 @@ from calendar_integration.models import (
     RecurrenceRule,
     RecurringMixin,
 )
+from calendar_integration.recurrence_utils import persist_truncated_rule
 from calendar_integration.services.calendar_service_context import CalendarServiceContext
 from calendar_integration.services.recurrence_manager import RecurrenceManager
 from organizations.models import Organization
@@ -305,8 +306,7 @@ def test_bulk_modification_engine_invokes_callbacks_and_returns_continuation(
     ) -> RecurringMixin:
         invoked["truncate_rule"] = new_recurrence_rule
         parent = parent_obj
-        parent.recurrence_rule_fk = new_recurrence_rule  # type: ignore[assignment]
-        parent.save()
+        persist_truncated_rule(parent, new_recurrence_rule)
         return parent
 
     def create_continuation_callback(
@@ -317,8 +317,8 @@ def test_bulk_modification_engine_invokes_callbacks_and_returns_continuation(
     ) -> RecurringMixin:
         invoked["continuation_start"] = start_dt
         invoked["continuation_rule"] = recurrence_rule
-        # The engine has already persisted ``recurrence_rule`` for us; assert it
-        # was handed over but do not re-bind it on a second event (the model's
+        # ``recurrence_rule`` arrives unsaved: real callbacks consume it as an
+        # rrule string and create their own row. Do not bind it here (the model's
         # recurrence_rule FK is one-to-one).
         continuation = CalendarEvent.objects.create(
             calendar_fk=calendar,
@@ -378,8 +378,7 @@ def test_bulk_modification_engine_cancelled_skips_continuation(authenticated_con
         parent_obj: RecurringMixin,
         new_recurrence_rule: RecurrenceRule | None,
     ) -> RecurringMixin:
-        parent_obj.recurrence_rule_fk = new_recurrence_rule  # type: ignore[assignment]
-        parent_obj.save()
+        persist_truncated_rule(parent_obj, new_recurrence_rule)
         return parent_obj
 
     def create_continuation_callback(

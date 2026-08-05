@@ -659,6 +659,58 @@ def test_create_recurring_blocked_time_bulk_modification_cancels_series(
     ).exists()
 
 
+@pytest.mark.django_db
+def test_bulk_modifying_an_open_ended_blocked_time_stops_the_parent_series(
+    context: CalendarServiceContext,
+    recurrence_manager: RecurrenceManager,
+    calendar: Calendar,
+    organization: Organization,
+) -> None:
+    """The parent of an open-ended series must stop at the split date.
+
+    An open-ended rule has ``count=None, until=None``, so the continuation the
+    splitter derives is identical to the original. If the truncation does not
+    reach the parent's rule row, the parent keeps generating forever alongside
+    the continuation and the series is duplicated indefinitely.
+    """
+    service = make_service(context, recurrence_manager, organization=organization)
+
+    rule = RecurrenceRule.from_rrule_string("FREQ=DAILY", organization)
+    rule.save()
+
+    parent_start = datetime.datetime(2025, 10, 1, 9, 0, tzinfo=datetime.UTC)
+    parent_blocked = BlockedTime.objects.create(
+        calendar=calendar,
+        start_time_tz_unaware=parent_start,
+        end_time_tz_unaware=parent_start + datetime.timedelta(hours=1),
+        timezone="UTC",
+        reason="Open ended block",
+        external_id="bulk_bt_open_ended",
+        organization=organization,
+        recurrence_rule=rule,
+    )
+
+    modification_start = parent_start + datetime.timedelta(days=3)
+
+    continuation = service.create_recurring_blocked_time_bulk_modification(
+        parent_blocked_time=parent_blocked,
+        modification_start_date=modification_start,
+        modified_reason="Modified reason",
+        is_bulk_cancelled=False,
+    )
+
+    parent_blocked.refresh_from_db()
+    parent_rule = parent_blocked.recurrence_rule
+    assert parent_rule is not None
+    # The parent must end at the last occurrence before the split, not run on.
+    assert parent_rule.until == modification_start - datetime.timedelta(days=1)
+
+    # The continuation must own a rule row of its own.
+    assert continuation is not None
+    assert continuation.recurrence_rule is not None
+    assert continuation.recurrence_rule.pk != parent_rule.pk
+
+
 # ---------------------------------------------------------------------------
 # Tests: create_recurring_available_time_bulk_modification
 # ---------------------------------------------------------------------------
@@ -706,6 +758,47 @@ def test_create_recurring_available_time_bulk_modification_creates_continuation(
         parent_available_time=parent_available,
         is_bulk_cancelled=False,
     ).exists()
+
+
+@pytest.mark.django_db
+def test_bulk_modifying_an_open_ended_available_time_stops_the_parent_series(
+    context: CalendarServiceContext,
+    recurrence_manager: RecurrenceManager,
+    managed_calendar: Calendar,
+    organization: Organization,
+) -> None:
+    """Same open-ended truncation contract as blocked times, for available times."""
+    service = make_service(context, recurrence_manager, organization=organization)
+
+    rule = RecurrenceRule.from_rrule_string("FREQ=DAILY", organization)
+    rule.save()
+
+    parent_start = datetime.datetime(2025, 11, 1, 10, 0, tzinfo=datetime.UTC)
+    parent_available = AvailableTime.objects.create(
+        calendar=managed_calendar,
+        start_time_tz_unaware=parent_start,
+        end_time_tz_unaware=parent_start + datetime.timedelta(hours=2),
+        timezone="UTC",
+        organization=organization,
+        recurrence_rule=rule,
+    )
+
+    modification_start = parent_start + datetime.timedelta(days=3)
+
+    continuation = service.create_recurring_available_time_bulk_modification(
+        parent_available_time=parent_available,
+        modification_start_date=modification_start,
+        is_bulk_cancelled=False,
+    )
+
+    parent_available.refresh_from_db()
+    parent_rule = parent_available.recurrence_rule
+    assert parent_rule is not None
+    assert parent_rule.until == modification_start - datetime.timedelta(days=1)
+
+    assert continuation is not None
+    assert continuation.recurrence_rule is not None
+    assert continuation.recurrence_rule.pk != parent_rule.pk
 
 
 @pytest.mark.django_db
