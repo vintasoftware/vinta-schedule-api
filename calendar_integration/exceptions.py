@@ -335,6 +335,21 @@ class CalendarGroupHasFutureEventsError(CalendarGroupError):
     default_message = "Cannot delete CalendarGroup because it has future bookings."
 
 
+class CalendarGroupSlotConfigNotFoundError(CalendarGroupError):
+    """Raised when a (calendar, group slot) target for group-scoped availability
+    configuration cannot be resolved.
+
+    Deliberately the SAME exception -- same type, same message -- whether the
+    membership genuinely does not exist or the acting user is simply not
+    authorized to manage it. A member must not be able to learn that a group
+    or roster entry exists by comparing error shapes (see the spec's
+    permission decision under CALENDAR_GROUP_SCOPED_AVAILABILITY): a plain
+    404-shaped error here is indistinguishable from a 403 in disguise.
+    """
+
+    default_message = "No group-scoped availability configuration found for this calendar and slot."
+
+
 # Bookable Slots errors
 class BookableSlotsValidationError(CalendarIntegrationError):
     """Raised when single-calendar / bundle bookable-slot input data is invalid."""

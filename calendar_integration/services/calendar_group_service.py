@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Annotated, cast
 
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from dependency_injector.wiring import Provide, inject
@@ -14,11 +15,13 @@ from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.exceptions import (
     BookingPolicyViolationError,
     CalendarGroupHasFutureEventsError,
+    CalendarGroupSlotConfigNotFoundError,
     CalendarGroupSlotInUseError,
     CalendarGroupValidationError,
     CalendarServiceOrganizationNotSetError,
 )
 from calendar_integration.models import (
+    AvailableTime,
     BlockedTime,
     Calendar,
     CalendarEvent,
@@ -27,6 +30,7 @@ from calendar_integration.models import (
     CalendarGroupSlot,
     CalendarGroupSlotMembership,
     CalendarOwnership,
+    RecurrenceRule,
 )
 from calendar_integration.querysets import CalendarEventQuerySet
 from calendar_integration.services import slot_engine
@@ -49,6 +53,7 @@ from calendar_integration.services.dataclasses import (
     EventAttendanceInputData,
     EventExternalAttendanceInputData,
     ExternalAttendeeInputData,
+    GroupScopedAvailabilityWriteResult,
     ResourceAllocationInputData,
 )
 from organizations.models import Organization
@@ -62,6 +67,36 @@ if TYPE_CHECKING:
     from calendar_integration.services.booking_policy_service import BookingPolicyService
     from calendar_integration.services.calendar_service import CalendarService
     from payments.services.entitlement_service import EntitlementService
+
+
+def _time_range_fully_covered(
+    windows: Iterable[tuple[datetime.datetime, datetime.datetime]],
+    start: datetime.datetime,
+    end: datetime.datetime,
+) -> bool:
+    """Whether ``[start, end)`` is fully covered by the union of ``windows``.
+
+    Used to decide whether a confirmed future booking still falls inside a
+    calendar's group-scoped availability configuration after a write.
+    ``windows`` may be unsorted or overlapping; each is clipped against the
+    shrinking set of remaining uncovered gaps.
+    """
+    remaining = [(start, end)]
+    for window_start, window_end in windows:
+        next_remaining: list[tuple[datetime.datetime, datetime.datetime]] = []
+        for gap_start, gap_end in remaining:
+            if window_end <= gap_start or window_start >= gap_end:
+                # No overlap with this gap -- carry it forward untouched.
+                next_remaining.append((gap_start, gap_end))
+                continue
+            if window_start > gap_start:
+                next_remaining.append((gap_start, window_start))
+            if window_end < gap_end:
+                next_remaining.append((window_end, gap_end))
+        remaining = next_remaining
+        if not remaining:
+            break
+    return not remaining
 
 
 class CalendarGroupService:
@@ -416,6 +451,333 @@ class CalendarGroupService:
                     for cid in to_add
                 ]
             )
+
+    # ------------------------------------------------------------------
+    # Group-scoped availability windows (Phase 1a of
+    # CALENDAR_GROUP_SCOPED_AVAILABILITY -- writes)
+    # ------------------------------------------------------------------
+
+    def _resolve_group_scoped_membership(
+        self, group_slot_id: int, calendar_id: int
+    ) -> CalendarGroupSlotMembership:
+        """Resolve the roster entry (calendar, group slot) a group-scoped
+        availability write targets.
+
+        Raises the same not-found-shaped ``CalendarGroupSlotConfigNotFoundError``
+        whether the slot doesn't exist, the calendar doesn't exist, or the
+        calendar simply isn't a member of that slot -- callers must not be able
+        to tell which case applies from the error alone.
+        """
+        org_id = cast(Organization, self.organization).id
+        try:
+            return (
+                CalendarGroupSlotMembership.objects.filter_by_organization(org_id)
+                .select_related("slot", "calendar")
+                .get(slot_fk_id=group_slot_id, calendar_fk_id=calendar_id)
+            )
+        except CalendarGroupSlotMembership.DoesNotExist:
+            raise CalendarGroupSlotConfigNotFoundError() from None
+
+    def _get_group_scoped_window(self, window_id: int) -> AvailableTime:
+        """Fetch a group-scoped ``AvailableTime`` row by id, scoped to this org.
+
+        Reads through the ``unscoped`` accessor (never the default manager,
+        which excludes group-scoped rows) and requires ``group_slot`` to be
+        set, so an id belonging to a base row raises the same not-found error
+        as a genuinely missing id.
+        """
+        org_id = cast(Organization, self.organization).id
+        try:
+            return (
+                AvailableTime.objects.unscoped()
+                .filter_by_organization(org_id)
+                .select_related("group_slot", "calendar", "recurrence_rule")
+                .get(id=window_id, group_slot_fk__isnull=False)
+            )
+        except AvailableTime.DoesNotExist:
+            raise CalendarGroupSlotConfigNotFoundError() from None
+
+    def _authorize_group_scoped_write(
+        self, acting_user: User, calendar: Calendar, group_slot: CalendarGroupSlot
+    ) -> None:
+        """Gate a group-scoped availability write to the calendar's owner (within
+        a group they can see) or an org admin.
+
+        Fails closed -- raises when no ``calendar_permission_service`` is bound,
+        rather than silently allowing the write, since this path exists
+        specifically to be permission-gated (spec goal 4). Denial and
+        "the roster entry doesn't exist" share the exact same exception, so a
+        member cannot learn a group exists through the error shape.
+        """
+        if self.calendar_permission_service is None or not (
+            self.calendar_permission_service.can_manage_group_scoped_calendar_config(
+                user=acting_user, calendar=calendar, group_slot=group_slot
+            )
+        ):
+            raise CalendarGroupSlotConfigNotFoundError()
+
+    def _create_recurrence_rule_if_needed(self, rrule_string: str | None) -> RecurrenceRule | None:
+        """Create (and persist) a ``RecurrenceRule`` from an RRULE string, or None.
+
+        Self-contained variant of the identically-named helper
+        ``CalendarService``/``AvailabilityService`` expose through their host
+        protocol -- this write path does not require a bound
+        ``calendar_service``, so it builds the ``RecurrenceRule`` directly.
+        """
+        if not rrule_string:
+            return None
+        organization = cast(Organization, self.organization)
+        recurrence_rule = RecurrenceRule.from_rrule_string(rrule_string, organization)
+        recurrence_rule.save()
+        return recurrence_rule
+
+    def _audit_group_scoped_availability_write(
+        self,
+        action: str,
+        acting_user: User,
+        subject_instance: AvailableTime,
+        diff: dict | None = None,
+    ) -> None:
+        """Emit an audit record for a group-scoped availability window write.
+
+        Unlike ``_audit_group_write`` (which resolves the actor from a bound
+        ``calendar_service``'s auth context), these write methods take the
+        acting principal explicitly -- they are reachable without a bound
+        ``calendar_service``. No-op when no ``audit_service`` / ``organization``
+        is bound, so instrumentation never breaks a write path.
+        """
+        if self.audit_service is None or self.organization is None:
+            return
+        self.audit_service.record(
+            organization_id=self.organization.id,
+            action=action,
+            actor=self.audit_service.actor_from_user_or_token(acting_user, self.organization.id),
+            subject=self.audit_service.subject_from_instance(subject_instance),
+            diff=diff,
+        )
+
+    def _group_scoped_available_times_expanded(
+        self,
+        calendar_id: int,
+        group_slot_id: int,
+        start_date: datetime.datetime,
+        end_date: datetime.datetime,
+    ) -> list[AvailableTime]:
+        """Expand every group-scoped ``AvailableTime`` for ``(calendar, group_slot)``
+        that overlaps ``[start_date, end_date)``, recurrence included.
+
+        Mirrors ``AvailabilityService.get_available_times_expanded``, but reads
+        through ``AvailableTime.objects.for_group_slot(...)`` instead of the
+        default (base-rows-only) manager. Masters are fetched WITH the
+        ``annotate_recurring_occurrences_on_date_range`` annotation attached, so
+        ``get_occurrences_in_range()`` below finds ``recurring_occurrences``
+        already cached on the instance and skips its own internal re-fetch
+        through ``self.__class__.objects`` -- the *default*, base-rows-only
+        manager, which would otherwise silently return nothing for a
+        group-scoped master (see the Phase 0 carry-forward note about that
+        re-fetch being unsafe for group-scoped rows).
+        """
+        org_id = cast(Organization, self.organization).id
+        base_qs = (
+            AvailableTime.objects.for_group_slot(group_slot_id)
+            .annotate_recurring_occurrences_on_date_range(start_date, end_date, overlap=True)
+            .select_related("recurrence_rule")
+            .filter(
+                organization_id=org_id,
+                calendar_fk_id=calendar_id,
+                parent_recurring_object__isnull=True,
+            )
+        )
+
+        non_recurring_times = base_qs.filter(
+            start_time__lt=end_date,
+            end_time__gt=start_date,
+            recurrence_rule__isnull=True,
+            is_recurring_exception=False,
+        )
+
+        recurring_times = base_qs.filter(recurrence_rule__isnull=False).filter(
+            Q(recurrence_rule__until__isnull=True) | Q(recurrence_rule__until__gte=start_date),
+            start_time__lte=end_date,
+        )
+
+        times: list[AvailableTime] = list(non_recurring_times)
+        for master_time in recurring_times:
+            instances = master_time.get_occurrences_in_range(
+                start_date, end_date, include_self=False, include_exceptions=True, overlap=True
+            )
+            times.extend(instances)
+
+        times.sort(key=lambda t: t.start_time)
+        return times
+
+    def _find_orphaned_bookings(
+        self, calendar_id: int, group_slot: CalendarGroupSlot, now: datetime.datetime
+    ) -> list[CalendarEvent]:
+        """Confirmed future bookings in ``group_slot`` for ``calendar_id`` that
+        fall outside the calendar's current group-scoped availability
+        configuration.
+
+        Runs against every group-scoped window that currently exists for this
+        ``(calendar, slot)`` pair -- the whole union, not just the one row a
+        caller just wrote -- so a booking is reported exactly when the
+        calendar's configured availability, as it stands after the write, no
+        longer covers it. Nothing here is cancelled or modified; this is
+        purely a read (spec UC-6).
+        """
+        org_id = cast(Organization, self.organization).id
+        selections = (
+            CalendarEventGroupSelection.objects.filter_by_organization(org_id)
+            .filter(
+                slot_fk=group_slot,
+                calendar_fk_id=calendar_id,
+                event_fk__start_time__gt=now,
+            )
+            .select_related("event")
+        )
+
+        orphaned: list[CalendarEvent] = []
+        for selection in selections:
+            event = selection.event
+            windows = self._group_scoped_available_times_expanded(
+                calendar_id, group_slot.id, event.start_time, event.end_time
+            )
+            covered = _time_range_fully_covered(
+                ((w.start_time, w.end_time) for w in windows), event.start_time, event.end_time
+            )
+            if not covered:
+                orphaned.append(event)
+        return orphaned
+
+    @transaction.atomic()
+    def create_group_scoped_availability_window(
+        self,
+        acting_user: User,
+        group_slot_id: int,
+        calendar_id: int,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        tz: str,
+        rrule_string: str | None = None,
+    ) -> GroupScopedAvailabilityWriteResult:
+        """Create a group-scoped availability window for ``(calendar, group_slot)``.
+
+        Writes through the explicit group-scoped accessor
+        (``AvailableTime.objects.unscoped().create(..., group_slot=...)``),
+        never the default manager. Carries the same recurrence expressiveness
+        as a base ``AvailableTime`` -- pass ``rrule_string`` for a recurring
+        window. Permission-gated: ``acting_user`` must own the calendar or be
+        an org admin (see
+        ``CalendarPermissionService.can_manage_group_scoped_calendar_config``).
+        """
+        self._assert_initialized()
+        organization = cast(Organization, self.organization)
+        membership = self._resolve_group_scoped_membership(group_slot_id, calendar_id)
+        self._authorize_group_scoped_write(acting_user, membership.calendar, membership.slot)
+
+        recurrence_rule = self._create_recurrence_rule_if_needed(rrule_string)
+        window = AvailableTime.objects.unscoped().create(
+            organization=organization,
+            calendar=membership.calendar,
+            group_slot=membership.slot,
+            start_time_tz_unaware=start_time,
+            end_time_tz_unaware=end_time,
+            timezone=tz,
+            recurrence_rule=recurrence_rule,
+        )
+        self._audit_group_scoped_availability_write(AuditAction.CREATE, acting_user, window)
+        return GroupScopedAvailabilityWriteResult(window=window, orphaned_bookings=[])
+
+    @transaction.atomic()
+    def update_group_scoped_availability_window(
+        self,
+        acting_user: User,
+        window_id: int,
+        start_time: datetime.datetime | None = None,
+        end_time: datetime.datetime | None = None,
+        tz: str | None = None,
+        rrule_string: str | None = None,
+        now: datetime.datetime | None = None,
+    ) -> GroupScopedAvailabilityWriteResult:
+        """Partially update a group-scoped availability window (only provided
+        fields change -- mirrors ``AvailabilityService.update_blocked_time``).
+
+        After the update is applied, every confirmed future booking in the
+        window's group slot for its calendar that no longer falls inside the
+        calendar's group-scoped configuration is collected and returned.
+        Narrowing a window never cancels or edits a booking (spec UC-6) --
+        the caller decides what to do with each one.
+        """
+        self._assert_initialized()
+        if now is None:
+            now = timezone.now()
+
+        window = self._get_group_scoped_window(window_id)
+        self._authorize_group_scoped_write(acting_user, window.calendar, window.group_slot)
+
+        before = {
+            "start_time_tz_unaware": window.start_time_tz_unaware.isoformat(),
+            "end_time_tz_unaware": window.end_time_tz_unaware.isoformat(),
+            "timezone": window.timezone,
+            "rrule": window.recurrence_rule.to_rrule_string() if window.recurrence_rule else None,
+        }
+
+        update_fields: list[str] = []
+        if start_time is not None:
+            window.start_time_tz_unaware = start_time
+            update_fields.append("start_time_tz_unaware")
+        if end_time is not None:
+            window.end_time_tz_unaware = end_time
+            update_fields.append("end_time_tz_unaware")
+        if tz is not None:
+            window.timezone = tz
+            update_fields.append("timezone")
+        if rrule_string is not None:
+            window.recurrence_rule = self._create_recurrence_rule_if_needed(rrule_string)
+            # Assigning through the ForeignObject property name ("recurrence_rule")
+            # sets the underlying concrete column ("recurrence_rule_fk"); `save`'s
+            # `update_fields` must name the concrete field.
+            update_fields.append("recurrence_rule_fk")
+
+        if update_fields:
+            window.save(update_fields=[*update_fields, "modified"])
+
+        after = {
+            "start_time_tz_unaware": window.start_time_tz_unaware.isoformat(),
+            "end_time_tz_unaware": window.end_time_tz_unaware.isoformat(),
+            "timezone": window.timezone,
+            "rrule": window.recurrence_rule.to_rrule_string() if window.recurrence_rule else None,
+        }
+        self._audit_group_scoped_availability_write(
+            AuditAction.UPDATE, acting_user, window, diff=compute_diff(before, after)
+        )
+
+        orphaned_bookings = self._find_orphaned_bookings(
+            calendar_id=window.calendar_fk_id,  # type: ignore[arg-type]
+            group_slot=window.group_slot,
+            now=now,
+        )
+        return GroupScopedAvailabilityWriteResult(
+            window=window, orphaned_bookings=orphaned_bookings
+        )
+
+    @transaction.atomic()
+    def delete_group_scoped_availability_window(self, acting_user: User, window_id: int) -> None:
+        """Delete a group-scoped availability window (a single ``AvailableTime`` row).
+
+        A recurring window is stored as one row; deleting it removes the whole
+        series (mirrors ``AvailabilityService.delete_blocked_time``). No
+        orphaned-booking report is computed here -- the spec scopes that to
+        narrowing UPDATEs (UC-6). Removing a calendar from a slot's roster
+        entirely (which cascades away its windows per the Phase 0 schema
+        constraint) is a distinct action, exercised through ``update_group``.
+        """
+        self._assert_initialized()
+        window = self._get_group_scoped_window(window_id)
+        self._authorize_group_scoped_write(acting_user, window.calendar, window.group_slot)
+
+        self._audit_group_scoped_availability_write(AuditAction.DELETE, acting_user, window)
+        window.delete()
 
     # ------------------------------------------------------------------
     # Queries

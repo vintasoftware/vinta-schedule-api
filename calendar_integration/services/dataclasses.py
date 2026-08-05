@@ -8,6 +8,7 @@ from calendar_integration.constants import (
     CalendarProvider,
 )
 from calendar_integration.models import (
+    AvailableTime,
     BlockedTime,
     CalendarEvent,
     EventAttendance,
@@ -364,6 +365,23 @@ class BookableSlotProposal:
 
     start_time: datetime.datetime
     end_time: datetime.datetime
+
+
+@dataclass
+class GroupScopedAvailabilityWriteResult:
+    """Result of a group-scoped availability window write (create/update/delete).
+
+    ``window`` is the saved ``AvailableTime`` row, or ``None`` after a delete.
+    ``orphaned_bookings`` lists confirmed future ``CalendarEvent`` bookings in
+    the window's group slot, for the window's calendar, that fall outside the
+    calendar's group-scoped configuration *after* the write is applied --
+    populated only by the update path (spec UC-6: "admin tightens a window
+    that orphans bookings"). Nothing about the orphaned bookings is modified;
+    this is a read-only report for the caller to act on.
+    """
+
+    window: AvailableTime | None
+    orphaned_bookings: list[CalendarEvent] = dataclass_field(default_factory=list)
 
 
 @dataclass(frozen=True)
