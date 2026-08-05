@@ -455,6 +455,68 @@ class TestGroupScopedQuotaRulesPublicAPI:
         )
 
     # ------------------------------------------------------------------
+    # batchUpsertGroupScopedQuotaRules -- atomicity on mid-batch failure
+    # ------------------------------------------------------------------
+
+    def test_batch_atomicity_rolls_back_all_ops_on_later_collision(self):
+        """When a later operation in a batch collides on the uniqueness
+        constraint, the entire batch is rolled back (all-or-nothing semantics).
+        Specifically, op1 creates a rule for period=DAY, then op2 tries to create
+        another with the same period (collision), which should fail; both op1
+        (created) and op2 (attempted) must be rolled back.
+        """
+        org = self._setup_org()
+        calendar = self._make_calendar(org)
+        slot = self._make_group_slot(org, calendar)
+        system_user, token, auth_service = self._make_org_wide_system_user(
+            org, [PublicAPIResources.BATCH_UPSERT_GROUP_SCOPED_QUOTA_RULES]
+        )
+
+        response = self._post(
+            BATCH_UPSERT_GROUP_SCOPED_QUOTA_RULES_MUTATION,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "groupSlotId": slot.id,
+                    "operations": [
+                        {
+                            "action": "create",
+                            "calendarId": calendar.id,
+                            "period": QuotaPeriod.DAY,
+                            "cap": 1,
+                        },
+                        {
+                            "action": "create",
+                            "calendarId": calendar.id,
+                            "period": QuotaPeriod.DAY,
+                            "cap": 2,
+                        },
+                    ],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data.get("errors", []) == []
+        result = data["data"]["batchUpsertGroupScopedQuotaRules"]
+        # The batch must fail cleanly (not a 500).
+        assert result["success"] is False
+        assert result["errorMessage"]
+        assert result["quotaRules"] == []
+        # CRITICAL: zero rules exist for this (calendar, slot) -- op1 was ALSO
+        # rolled back, proving the outer transaction rolled back everything.
+        assert (
+            CalendarGroupSlotQuotaRule.objects.filter_by_organization(org.id)
+            .filter(calendar_fk_id=calendar.id, group_slot_fk_id=slot.id)
+            .count()
+            == 0
+        ), "Batch atomicity: all operations must be rolled back on mid-batch collision."
+
+    # ------------------------------------------------------------------
     # batchUpsertGroupScopedQuotaRules -- uniqueness -> validation error
     # ------------------------------------------------------------------
 
@@ -564,6 +626,57 @@ class TestGroupScopedQuotaRulesPublicAPI:
 
         day_rule.refresh_from_db()
         assert day_rule.period == QuotaPeriod.DAY
+
+    # ------------------------------------------------------------------
+    # batchUpsertGroupScopedQuotaRules -- invalid period value
+    # ------------------------------------------------------------------
+
+    def test_batch_create_with_invalid_period_is_validation_error(self):
+        """A batch create operation with an invalid period value (not in
+        QuotaPeriod.values) must be rejected as a clean validation failure
+        (success=False), not a 500."""
+        org = self._setup_org()
+        calendar = self._make_calendar(org)
+        slot = self._make_group_slot(org, calendar)
+        system_user, token, auth_service = self._make_org_wide_system_user(
+            org, [PublicAPIResources.BATCH_UPSERT_GROUP_SCOPED_QUOTA_RULES]
+        )
+
+        response = self._post(
+            BATCH_UPSERT_GROUP_SCOPED_QUOTA_RULES_MUTATION,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": {
+                    "organizationId": org.id,
+                    "groupSlotId": slot.id,
+                    "operations": [
+                        {
+                            "action": "create",
+                            "calendarId": calendar.id,
+                            "period": "invalid",
+                            "cap": 3,
+                        },
+                    ],
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data.get("errors", []) == []
+        result = data["data"]["batchUpsertGroupScopedQuotaRules"]
+        assert result["success"] is False
+        assert result["errorMessage"]
+        assert result["quotaRules"] == []
+        # Nothing created.
+        assert (
+            CalendarGroupSlotQuotaRule.objects.filter_by_organization(org.id)
+            .filter(calendar_fk_id=calendar.id, group_slot_fk_id=slot.id)
+            .count()
+            == 0
+        )
 
     # ------------------------------------------------------------------
     # batchUpsertGroupScopedQuotaRules -- RESTRICTED billing root still blocks

@@ -212,6 +212,18 @@ class CalendarGroupService:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+    @staticmethod
+    def _is_quota_uniqueness_constraint_violation(e: IntegrityError) -> bool:
+        """Check if an IntegrityError is the (group_slot, calendar, period) unique
+        constraint violation on CalendarGroupSlotQuotaRule.
+
+        Returns True if the error message contains the unique constraint name,
+        False otherwise. Non-uniqueness constraint violations should be re-raised,
+        not converted to a validation error.
+        """
+        constraint_name = "calendargroupslotquotarule_unique_slot_calendar_period"
+        return constraint_name in str(e)
+
     def _get_group_by_id(self, group_id: int) -> CalendarGroup:
         self._assert_initialized()
         return CalendarGroup.objects.filter_by_organization(self.organization.id).get(id=group_id)
@@ -1863,9 +1875,11 @@ class CalendarGroupService:
                     cap=cap,
                 )
         except IntegrityError as e:
-            raise CalendarGroupValidationError(
-                f"A quota rule for period {period!r} already exists for this calendar and slot."
-            ) from e
+            if self._is_quota_uniqueness_constraint_violation(e):
+                raise CalendarGroupValidationError(
+                    f"A quota rule for period {period!r} already exists for this calendar and slot."
+                ) from e
+            raise
 
         self._audit_group_scoped_quota_rule_write(AuditAction.CREATE, acting_user, rule)
         return rule
@@ -1912,10 +1926,12 @@ class CalendarGroupService:
                 with transaction.atomic():
                     rule.save(update_fields=[*update_fields, "modified"])
             except IntegrityError as e:
-                raise CalendarGroupValidationError(
-                    f"A quota rule for period {rule.period!r} already exists for this "
-                    "calendar and slot."
-                ) from e
+                if self._is_quota_uniqueness_constraint_violation(e):
+                    raise CalendarGroupValidationError(
+                        f"A quota rule for period {rule.period!r} already exists for this "
+                        "calendar and slot."
+                    ) from e
+                raise
 
         after = {"period": rule.period, "cap": rule.cap}
         self._audit_group_scoped_quota_rule_write(
@@ -2081,10 +2097,12 @@ class CalendarGroupService:
                             cap=op["cap"],
                         )
                 except IntegrityError as e:
-                    raise CalendarGroupValidationError(
-                        f"A quota rule for period {op['period']!r} already exists for "
-                        f"calendar {op['calendar_id']} in this slot."
-                    ) from e
+                    if self._is_quota_uniqueness_constraint_violation(e):
+                        raise CalendarGroupValidationError(
+                            f"A quota rule for period {op['period']!r} already exists for "
+                            f"calendar {op['calendar_id']} in this slot."
+                        ) from e
+                    raise
                 self._audit_group_scoped_quota_rule_write(
                     AuditAction.CREATE, acting_principal, rule
                 )
@@ -2103,10 +2121,12 @@ class CalendarGroupService:
                         with transaction.atomic():
                             rule.save(update_fields=[*update_fields, "modified"])
                     except IntegrityError as e:
-                        raise CalendarGroupValidationError(
-                            f"A quota rule for period {rule.period!r} already exists for "
-                            "this calendar and slot."
-                        ) from e
+                        if self._is_quota_uniqueness_constraint_violation(e):
+                            raise CalendarGroupValidationError(
+                                f"A quota rule for period {rule.period!r} already exists for "
+                                "this calendar and slot."
+                            ) from e
+                        raise
                 after = {"period": rule.period, "cap": rule.cap}
                 self._audit_group_scoped_quota_rule_write(
                     AuditAction.UPDATE, acting_principal, rule, diff=compute_diff(before, after)

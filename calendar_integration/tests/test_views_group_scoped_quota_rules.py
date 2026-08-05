@@ -296,6 +296,65 @@ class TestGroupScopedQuotaRuleLifecycle:
         )
         assert response.status_code == status.HTTP_400_BAD_REQUEST
 
+    def test_create_with_invalid_period(
+        self,
+        owner_membership: OrganizationMembership,
+        calendar: Calendar,
+        group: CalendarGroup,
+        group_slot: CalendarGroupSlot,
+    ) -> None:
+        """A create with an invalid period value (not in QuotaPeriod.values)
+        must be rejected as a 400 validation error, nothing created."""
+        client = _auth_client(owner_membership)
+        response = client.post(
+            _list_url(group.id, group_slot.id),
+            _create_payload(calendar.id, period="invalid"),
+            format="json",
+        )
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+        # Nothing was created.
+        assert (
+            CalendarGroupSlotQuotaRule.objects.filter_by_organization(
+                calendar.organization_id
+            ).count()
+            == 0
+        )
+
+    def test_patch_requires_positive_cap(
+        self,
+        owner_membership: OrganizationMembership,
+        calendar: Calendar,
+        group: CalendarGroup,
+        group_slot: CalendarGroupSlot,
+    ) -> None:
+        """Mirrors test_create_requires_positive_cap: a PATCH setting cap=0
+        or cap < 1 must be rejected as a 400 validation error."""
+        client = _auth_client(owner_membership)
+
+        # Create a rule first.
+        create_response = client.post(
+            _list_url(group.id, group_slot.id),
+            _create_payload(calendar.id, cap=3),
+            format="json",
+        )
+        assert create_response.status_code == status.HTTP_201_CREATED
+        rule_id = create_response.data["id"]
+
+        # Try to PATCH it with cap=0.
+        patch_response = client.patch(
+            _detail_url(group.id, group_slot.id, rule_id),
+            {"cap": 0},
+            format="json",
+        )
+        assert patch_response.status_code == status.HTTP_400_BAD_REQUEST
+
+        # The rule's cap should remain unchanged.
+        rule = CalendarGroupSlotQuotaRule.objects.filter_by_organization(
+            calendar.organization_id
+        ).get(id=rule_id)
+        assert rule.cap == 3
+
     def test_put_not_allowed(
         self,
         owner_membership: OrganizationMembership,
