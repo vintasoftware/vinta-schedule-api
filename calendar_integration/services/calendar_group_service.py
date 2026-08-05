@@ -68,6 +68,7 @@ if TYPE_CHECKING:
     from calendar_integration.services.booking_policy_service import BookingPolicyService
     from calendar_integration.services.calendar_service import CalendarService
     from payments.services.entitlement_service import EntitlementService
+    from public_api.models import SystemUser
 
 
 # Sentinel for partial updates: distinguishes "omit rrule_string" (leave the
@@ -584,7 +585,7 @@ class CalendarGroupService:
     def _audit_group_scoped_availability_write(
         self,
         action: str,
-        acting_user: User,
+        acting_user: "User | SystemUser",
         subject_instance: AvailableTime,
         diff: dict | None = None,
     ) -> None:
@@ -595,6 +596,10 @@ class CalendarGroupService:
         acting principal explicitly -- they are reachable without a bound
         ``calendar_service``. No-op when no ``audit_service`` / ``organization``
         is bound, so instrumentation never breaks a write path.
+
+        ``acting_user`` accepts a ``SystemUser`` too (public-API batch write,
+        CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 1d) --
+        ``AuditService.actor_from_user_or_token`` already resolves either.
         """
         if self.audit_service is None or self.organization is None:
             return
@@ -855,6 +860,273 @@ class CalendarGroupService:
 
         self._audit_group_scoped_availability_write(AuditAction.DELETE, acting_user, window)
         window.delete()
+
+    def _find_matching_group_scoped_window(
+        self,
+        group_slot_id: int,
+        calendar_id: int,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+        tz: str,
+        rrule_string: str | None,
+    ) -> AvailableTime | None:
+        """Find an existing group-scoped window with identical content, if any.
+
+        Backs the batch-upsert write path's idempotent ``create``
+        (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 1d): an upstream system
+        that resends the same batch after a network timeout (spec UC-5) must
+        land on the identical final state, not accumulate duplicate rows.
+        Matched on (calendar, group slot, start_time, end_time, timezone,
+        rrule). ``start_time``/``end_time`` are compared as the aware
+        instants they are -- paired with an exact ``timezone`` match this is
+        a safe point lookup, not the cross-timezone comparison
+        ``start_time_tz_unaware`` is unsafe for (see AGENTS.md).
+        """
+        organization = cast(Organization, self.organization)
+        candidates = (
+            AvailableTime.objects.for_group_slot(group_slot_id)
+            .filter_by_organization(organization.id)
+            .filter(
+                calendar_fk_id=calendar_id,
+                start_time_tz_unaware=start_time,
+                end_time_tz_unaware=end_time,
+                timezone=tz,
+            )
+            .select_related("recurrence_rule")
+        )
+        for candidate in candidates:
+            candidate_rrule = (
+                candidate.recurrence_rule.to_rrule_string() if candidate.recurrence_rule else None
+            )
+            if candidate_rrule == rrule_string:
+                return candidate
+        return None
+
+    @transaction.atomic()
+    def batch_upsert_group_scoped_availability_windows(
+        self,
+        group_slot_id: int,
+        operations: Iterable[dict],
+        acting_principal: "User | SystemUser",
+    ) -> list[AvailableTime]:
+        """Apply an atomic bulk-upsert batch of group-scoped availability
+        window create/update/delete operations within one group slot's
+        roster (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 1d -- public API).
+
+        Mirrors ``AvailabilityService.batch_modify_available_times``'s
+        transaction / entitlement / net-growth structure so the two batch
+        contracts read the same way to an integration:
+
+        * **All-or-nothing.** The whole batch runs inside one transaction
+          (this method's own ``@transaction.atomic()``, nested inside the
+          request's ``ATOMIC_REQUESTS`` transaction); every operation is
+          validated and every touched row is resolved *before* any write, so
+          a bad ``window_id`` or a batch that would exceed the plan's
+          ``availability_windows`` ceiling rolls back cleanly with nothing
+          partially applied.
+        * **Idempotent create.** A ``create`` operation is an upsert, not a
+          blind insert: :meth:`_find_matching_group_scoped_window` looks for
+          an existing group-scoped window with identical content first. A
+          match is returned unchanged (no write, no entitlement charge, no
+          audit record) rather than duplicated, so replaying an identical
+          batch (spec UC-5: "the system replays the same batch after a
+          network timeout") lands on the exact same final state.
+        * **update / delete** require ``window_id`` and act on exactly the
+          row it names, like the base availability batch write's ``id``-keyed
+          operations.
+
+        Authorization is the CALLER's responsibility. Unlike the single-window
+        Phase 1a writes above, this method does not call
+        ``CalendarPermissionService`` -- every public-API availability write
+        authorizes via ``OrganizationResourceAccess`` (token resource grant)
+        plus owner-scope (``public_api.scoping.assert_calendar_in_owner_scope``),
+        never the human-facing per-membership permission check, because a
+        public-API ``SystemUser`` token has no ``CalendarOwnership``-linked
+        ``User`` to check it against for an org-wide token. ``acting_principal``
+        is used for audit attribution only.
+
+        :param operations: dicts with ``action`` (create/update/delete) and
+            ``calendar_id``; create/update also take ``start_time``,
+            ``end_time``, ``timezone``, ``rrule_string`` (optional); update/
+            delete also take ``window_id``.
+        :param acting_principal: the ``User`` or public-API ``SystemUser``
+            this write is attributed to in the audit trail.
+        :raises OverLimitError: when the batch's net growth (genuine creates
+            minus credited deletes) would take the organization past its
+            effective ``availability_windows`` ceiling. Nothing is applied.
+        :raises CalendarGroupSlotConfigNotFoundError: a create op's
+            ``calendar_id`` is not a member of ``group_slot_id``'s roster, or
+            an update/delete op's ``window_id`` does not resolve to a
+            group-scoped window in this slot.
+        :raises ValueError: an operation's shape is invalid (unknown action,
+            missing required field).
+        :return: every group-scoped window in ``group_slot_id``'s roster
+            (all calendars) after the batch is applied.
+        """
+        self._assert_initialized()
+        organization = cast(Organization, self.organization)
+        operations = list(operations)
+
+        valid_actions = {"create", "update", "delete"}
+        for op in operations:
+            action = op.get("action")
+            if action not in valid_actions:
+                raise ValueError(f"Invalid operation action: {action}")
+            if action == "create" and (
+                "calendar_id" not in op
+                or "start_time" not in op
+                or "end_time" not in op
+                or "timezone" not in op
+            ):
+                raise ValueError(
+                    "create operation requires calendar_id, start_time, end_time, timezone"
+                )
+            if action in ("update", "delete") and "window_id" not in op:
+                raise ValueError(f"{action} operation requires window_id")
+
+        # RESTRICTED must block the batch outright, including an update-only
+        # or delete-only batch -- mirrors batch_modify_available_times.
+        if self.entitlement_service is not None and operations:
+            self.entitlement_service.check_not_restricted(organization)
+
+        # Resolve every touched row up front (read-only): a missing/foreign
+        # window_id or a calendar not on this slot's roster fails the whole
+        # batch before anything is written.
+        windows_by_op_id: dict[int, AvailableTime] = {}
+        for op in operations:
+            if op["action"] in ("update", "delete"):
+                window = self._get_group_scoped_window(op["window_id"])
+                if window.group_slot_fk_id != group_slot_id:
+                    raise CalendarGroupSlotConfigNotFoundError()
+                windows_by_op_id[op["window_id"]] = window
+
+        memberships_by_calendar: dict[int, CalendarGroupSlotMembership] = {}
+        for op in operations:
+            if op["action"] == "create" and op["calendar_id"] not in memberships_by_calendar:
+                memberships_by_calendar[op["calendar_id"]] = self._resolve_group_scoped_membership(
+                    group_slot_id, op["calendar_id"]
+                )
+
+        # Idempotent-create resolution: match each create op against an
+        # existing group-scoped window before it counts toward net growth.
+        matched_existing: dict[int, AvailableTime] = {}
+        for i, op in enumerate(operations):
+            if op["action"] != "create":
+                continue
+            existing = self._find_matching_group_scoped_window(
+                group_slot_id=group_slot_id,
+                calendar_id=op["calendar_id"],
+                start_time=op["start_time"],
+                end_time=op["end_time"],
+                tz=op["timezone"],
+                rrule_string=op.get("rrule_string"),
+            )
+            if existing is not None:
+                matched_existing[i] = existing
+
+        genuine_create_count = sum(
+            1
+            for i, op in enumerate(operations)
+            if op["action"] == "create" and i not in matched_existing
+        )
+        delete_ids = [op["window_id"] for op in operations if op["action"] == "delete"]
+
+        # Lock *before* the delete-credit read for the same reason
+        # batch_modify_available_times does -- see its docstring.
+        if genuine_create_count and delete_ids and self.entitlement_service is not None:
+            self.entitlement_service.lock_billing_root(organization)
+
+        # Only deletions of rows the usage counter counts offset the creates.
+        # Reads through ``unscoped()`` because group-scoped rows are invisible
+        # to the default manager ``only_user_authored`` wraps.
+        credited_delete_count = (
+            AvailableTime.objects.unscoped()
+            .filter_by_organization(organization.id)
+            .only_user_authored()
+            .filter(id__in=delete_ids)
+            .count()
+            if genuine_create_count and delete_ids
+            else 0
+        )
+        delta = max(genuine_create_count - credited_delete_count, 0)
+
+        if delta and self.entitlement_service is not None:
+            result = self.entitlement_service.check_limit(
+                organization, LimitedResource.AVAILABILITY_WINDOWS, delta=delta, lock=True
+            )
+            if not result.allowed:
+                raise OverLimitError.from_check_result(result)
+
+        for i, op in enumerate(operations):
+            action = op["action"]
+            if action == "create":
+                if i in matched_existing:
+                    continue
+                membership = memberships_by_calendar[op["calendar_id"]]
+                recurrence_rule = self._create_recurrence_rule_if_needed(op.get("rrule_string"))
+                window = AvailableTime.objects.unscoped().create(
+                    organization=organization,
+                    calendar=membership.calendar,
+                    group_slot=membership.slot,
+                    start_time_tz_unaware=op["start_time"],
+                    end_time_tz_unaware=op["end_time"],
+                    timezone=op["timezone"],
+                    recurrence_rule=recurrence_rule,
+                )
+                self._audit_group_scoped_availability_write(
+                    AuditAction.CREATE, acting_principal, window
+                )
+            elif action == "update":
+                window = windows_by_op_id[op["window_id"]]
+                before = {
+                    "start_time_tz_unaware": window.start_time_tz_unaware.isoformat(),
+                    "end_time_tz_unaware": window.end_time_tz_unaware.isoformat(),
+                    "timezone": window.timezone,
+                    "rrule": (
+                        window.recurrence_rule.to_rrule_string() if window.recurrence_rule else None
+                    ),
+                }
+                update_fields: list[str] = []
+                if "start_time" in op:
+                    window.start_time_tz_unaware = op["start_time"]
+                    update_fields.append("start_time_tz_unaware")
+                if "end_time" in op:
+                    window.end_time_tz_unaware = op["end_time"]
+                    update_fields.append("end_time_tz_unaware")
+                if "timezone" in op:
+                    window.timezone = op["timezone"]
+                    update_fields.append("timezone")
+                if "rrule_string" in op:
+                    window.recurrence_rule = self._create_recurrence_rule_if_needed(
+                        op["rrule_string"]
+                    )
+                    update_fields.append("recurrence_rule_fk")
+                if update_fields:
+                    window.save(update_fields=[*update_fields, "modified"])
+                after = {
+                    "start_time_tz_unaware": window.start_time_tz_unaware.isoformat(),
+                    "end_time_tz_unaware": window.end_time_tz_unaware.isoformat(),
+                    "timezone": window.timezone,
+                    "rrule": (
+                        window.recurrence_rule.to_rrule_string() if window.recurrence_rule else None
+                    ),
+                }
+                self._audit_group_scoped_availability_write(
+                    AuditAction.UPDATE, acting_principal, window, diff=compute_diff(before, after)
+                )
+            elif action == "delete":
+                window = windows_by_op_id[op["window_id"]]
+                self._audit_group_scoped_availability_write(
+                    AuditAction.DELETE, acting_principal, window
+                )
+                window.delete()
+
+        return list(
+            AvailableTime.objects.for_group_slot(group_slot_id)
+            .filter_by_organization(organization.id)
+            .select_related("recurrence_rule")
+            .order_by("pk")
+        )
 
     # ------------------------------------------------------------------
     # Queries

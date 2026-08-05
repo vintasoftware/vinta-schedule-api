@@ -68,6 +68,10 @@ class OrganizationResourceAccess(BasePermission):
         "updateAvailabilityWindow": PublicAPIResources.UPDATE_AVAILABILITY_WINDOW,
         "deleteAvailabilityWindow": PublicAPIResources.DELETE_AVAILABILITY_WINDOW,
         "batchUpdateAvailabilityWindows": PublicAPIResources.BATCH_UPDATE_AVAILABILITY_WINDOWS,
+        "groupScopedAvailabilityWindows": PublicAPIResources.GROUP_SCOPED_AVAILABILITY_WINDOWS,
+        "batchUpsertGroupScopedAvailabilityWindows": (
+            PublicAPIResources.BATCH_UPSERT_GROUP_SCOPED_AVAILABILITY_WINDOWS
+        ),
         "createBlockedTime": PublicAPIResources.CREATE_BLOCKED_TIME,
         "updateBlockedTime": PublicAPIResources.UPDATE_BLOCKED_TIME,
         "deleteBlockedTime": PublicAPIResources.DELETE_BLOCKED_TIME,

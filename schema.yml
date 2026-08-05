@@ -13918,6 +13918,8 @@ components:
       - external_event_change_request
       - booking_policy
       - bookable_slots
+      - group_scoped_availability_windows
+      - batch_upsert_group_scoped_availability_windows
       type: string
       description: |-
         * `calendar_event` - Calendar Event
@@ -13964,6 +13966,8 @@ components:
         * `external_event_change_request` - External Event Change Request
         * `booking_policy` - Booking Policy
         * `bookable_slots` - Bookable Slots
+        * `group_scoped_availability_windows` - Group-Scoped Availability Windows
+        * `batch_upsert_group_scoped_availability_windows` - Batch Upsert Group-Scoped Availability Windows
     AvailableTime:
       type: object
       description: Serializer for AvailableTime model with recurring support.

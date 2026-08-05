@@ -62,6 +62,14 @@ class PublicAPIResources(TextChoices):
     )
     BOOKING_POLICY = "booking_policy", "Booking Policy"
     BOOKABLE_SLOTS = "bookable_slots", "Bookable Slots"
+    GROUP_SCOPED_AVAILABILITY_WINDOWS = (
+        "group_scoped_availability_windows",
+        "Group-Scoped Availability Windows",
+    )
+    BATCH_UPSERT_GROUP_SCOPED_AVAILABILITY_WINDOWS = (
+        "batch_upsert_group_scoped_availability_windows",
+        "Batch Upsert Group-Scoped Availability Windows",
+    )
 
 
 PROVIDER_SCOPED_RESOURCES: frozenset[str] = frozenset(
@@ -79,5 +87,7 @@ PROVIDER_SCOPED_RESOURCES: frozenset[str] = frozenset(
         PublicAPIResources.UPDATE_AVAILABILITY_WINDOW,
         PublicAPIResources.DELETE_AVAILABILITY_WINDOW,
         PublicAPIResources.BATCH_UPDATE_AVAILABILITY_WINDOWS,
+        PublicAPIResources.GROUP_SCOPED_AVAILABILITY_WINDOWS,
+        PublicAPIResources.BATCH_UPSERT_GROUP_SCOPED_AVAILABILITY_WINDOWS,
     ]
 )

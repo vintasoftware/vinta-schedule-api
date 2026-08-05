@@ -127,9 +127,17 @@ def _count_availability_windows(context: UsageContext) -> int:
     of 5 that created 3 recurring windows and edited 3 occurrences would read as 6
     and be blocked below its real usage, which the rollout's "nobody is blocked as
     a consequence of the rollout itself" rule forbids.
+
+    Reads through ``unscoped()`` (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 0/1d):
+    ``AvailableTime.objects`` — the default manager — excludes group-scoped rows
+    (``group_slot`` set) by design, so counting through it would under-report and
+    let group-scoped windows bypass the plan limit entirely. The spec's metering
+    rule is "every time window an organization authors is metered" regardless of
+    scope, so base and group-scoped rows are counted together here.
     """
     return (
-        AvailableTime.objects.only_user_authored()
+        AvailableTime.objects.unscoped()
+        .only_user_authored()
         .filter(organization_id__in=context.organization_ids)
         .count()
     )

@@ -35,8 +35,10 @@ from calendar_integration.graphql import (
     CalendarWebhookEventGraphQLType,
     CalendarWebhookSubscriptionGraphQLType,
     ExternalEventChangeRequestGraphQLType,
+    GroupScopedAvailabilityWindowGraphQLType,
     UnavailableTimeWindowGraphQLType,
     WebhookSubscriptionStatusGraphQLType,
+    group_scoped_availability_window_from_model,
 )
 from calendar_integration.models import (
     AvailableTime,
@@ -965,6 +967,45 @@ class Query:
             group_id=group_id, start=start_datetime, end=end_datetime
         )
         return cast(list[CalendarEventGraphQLType], list(events))
+
+    @strawberry.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def group_scoped_availability_windows(
+        self,
+        info: strawberry.Info,
+        group_slot_id: int,
+        calendar_id: int | None = None,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> list[GroupScopedAvailabilityWindowGraphQLType]:
+        """List group-scoped availability windows for a group slot's roster.
+
+        Returns raw window rows (one per recurring master or one-off window,
+        not expanded occurrences) -- mirrors the internal REST surface's list
+        shape (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 1c). Optionally
+        filtered to a single calendar in the slot's roster.
+        """
+        org = _get_org(info)
+
+        qs = (
+            AvailableTime.objects.for_group_slot(group_slot_id)
+            .filter_by_organization(org.id)
+            .select_related("recurrence_rule")
+        )
+
+        # Owner-scope: for scoped tokens, only return windows on calendars in
+        # the token owner's set.
+        request: PublicApiHttpRequest = info.context.request
+        system_user = request.public_api_system_user
+        if system_user is not None:
+            allowed_ids = scoped_calendar_ids(system_user, org)
+            if allowed_ids is not None:
+                qs = qs.filter(calendar_fk__in=allowed_ids)
+
+        if calendar_id is not None:
+            qs = qs.filter(calendar_fk_id=calendar_id)
+
+        windows = _slice_qs(qs.order_by("pk"), offset, limit)
+        return [group_scoped_availability_window_from_model(w) for w in windows]
 
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def child_organizations(

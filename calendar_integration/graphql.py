@@ -590,6 +590,51 @@ class UnavailableTimeWindowGraphQLType:
     reason: str
 
 
+@strawberry.type
+class GroupScopedAvailabilityWindowGraphQLType:
+    """Public API representation of one group-scoped availability window
+    (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 1d).
+
+    A raw window row -- one entry per recurring master or one-off window, not
+    an expanded occurrence -- mirroring the internal REST surface's
+    ``GroupScopedAvailabilityWindowSerializer`` (Phase 1c) field shape.
+    """
+
+    id: int  # noqa: A003
+    calendar_id: int
+    group_slot_id: int
+    start_time: datetime.datetime
+    end_time: datetime.datetime
+    timezone: str
+    rrule_string: str | None
+    is_recurring: bool
+    created: datetime.datetime
+    modified: datetime.datetime
+
+
+def group_scoped_availability_window_from_model(
+    window: AvailableTime,
+) -> GroupScopedAvailabilityWindowGraphQLType:
+    """Build a :class:`GroupScopedAvailabilityWindowGraphQLType` from an
+    ``AvailableTime`` row.
+
+    Callers should ``select_related("recurrence_rule")`` on the source
+    queryset to avoid N+1 when building a list.
+    """
+    return GroupScopedAvailabilityWindowGraphQLType(
+        id=window.id,  # type: ignore[arg-type]
+        calendar_id=window.calendar_fk_id,  # type: ignore[arg-type]
+        group_slot_id=window.group_slot_fk_id,  # type: ignore[arg-type]
+        start_time=window.start_time,
+        end_time=window.end_time,
+        timezone=window.timezone,
+        rrule_string=(window.recurrence_rule.to_rrule_string() if window.recurrence_rule else None),
+        is_recurring=window.is_recurring,
+        created=window.created,
+        modified=window.modified,
+    )
+
+
 @strawberry_django.type(CalendarWebhookSubscription)
 class CalendarWebhookSubscriptionGraphQLType:
     """GraphQL type for calendar webhook subscriptions."""
