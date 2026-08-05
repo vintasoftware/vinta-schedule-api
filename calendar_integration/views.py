@@ -94,7 +94,7 @@ from calendar_integration.serializers import (
     UnavailableTimeWindowSerializer,
 )
 from calendar_integration.services.booking_policy_service import BookingPolicyService
-from calendar_integration.services.calendar_group_service import CalendarGroupService
+from calendar_integration.services.calendar_group_service import _UNCHANGED, CalendarGroupService
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.external_event_change_request_service import (
     ExternalEventChangeRequestService,
@@ -1871,6 +1871,17 @@ class GroupScopedAvailabilityWindowViewSet(VintaScheduleModelViewSet):
         if membership is None:
             raise Http404
         calendar_group_service.initialize(organization=membership.organization)
+        # `rrule_string` is tri-state: absent from `validated_data` (DRF drops
+        # optional fields not present in the request via SkipField) means
+        # "leave the recurrence alone"; present and `None` means "clear it";
+        # present and a string means "set/replace it". `.get()` would collapse
+        # the first two cases -- checking membership is required to tell them
+        # apart.
+        # mypy: _UNCHANGED is object() but the service accepts it as the sentinel
+        # for "str | None"; suppress the mismatch, matching the service's own annotation.
+        rrule_string: str | None = (  # type: ignore[assignment]
+            data["rrule_string"] if "rrule_string" in data else _UNCHANGED  # type: ignore[assignment]
+        )
         try:
             result = calendar_group_service.update_group_scoped_availability_window(
                 acting_user=request.user,
@@ -1878,7 +1889,7 @@ class GroupScopedAvailabilityWindowViewSet(VintaScheduleModelViewSet):
                 start_time=data.get("start_time"),
                 end_time=data.get("end_time"),
                 tz=data.get("timezone"),
-                rrule_string=data.get("rrule_string"),
+                rrule_string=rrule_string,
             )
         except CalendarGroupSlotConfigNotFoundError as e:
             # Same not-found shape as a genuinely missing window -- no message

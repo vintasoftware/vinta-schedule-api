@@ -68,6 +68,7 @@ from calendar_integration.virtual_models import (
     EventRecurrenceExceptionVirtualModel,
     ExternalAttendeeVirtualModel,
     ExternalEventChangeRequestVirtualModel,
+    GroupScopedAvailabilityWindowVirtualModel,
     RecurrenceRuleVirtualModel,
     ResourceAllocationVirtualModel,
 )
@@ -2531,7 +2532,7 @@ class GroupScopedAvailabilityWindowSerializer(VirtualModelSerializer):
 
     class Meta:
         model = AvailableTime
-        virtual_model = AvailableTimeVirtualModel
+        virtual_model = GroupScopedAvailabilityWindowVirtualModel
         fields = (
             "id",
             "calendar_id",

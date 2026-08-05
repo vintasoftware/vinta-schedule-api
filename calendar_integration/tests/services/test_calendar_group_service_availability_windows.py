@@ -455,6 +455,74 @@ def test_update_group_scoped_availability_window_timezone_round_trip(
 
 
 @pytest.mark.django_db
+def test_update_group_scoped_availability_window_explicit_none_clears_recurrence(
+    service: CalendarGroupService,
+    admin_user: User,
+    calendar: Calendar,
+    group_slot: CalendarGroupSlot,
+) -> None:
+    """Explicit ``rrule_string=None`` is the tri-state "clear" case -- distinct
+    from the default sentinel (omitted), which leaves recurrence untouched."""
+    created = service.create_group_scoped_availability_window(
+        acting_user=admin_user,
+        group_slot_id=group_slot.id,
+        calendar_id=calendar.id,
+        start_time=_utc(2025, 9, 2, 9),
+        end_time=_utc(2025, 9, 2, 17),
+        tz="UTC",
+        rrule_string="RRULE:FREQ=WEEKLY;BYDAY=TU,TH",
+    )
+    window_id = created.window.id  # type: ignore[union-attr]
+
+    result = service.update_group_scoped_availability_window(
+        acting_user=admin_user,
+        window_id=window_id,
+        rrule_string=None,
+    )
+    assert result.window is not None
+    assert result.window.recurrence_rule is None
+    assert result.window.is_recurring is False
+
+    reloaded = (
+        AvailableTime.objects.unscoped()
+        .filter_by_organization(service.organization.id)
+        .get(id=window_id)
+    )
+    assert reloaded.recurrence_rule is None
+    assert reloaded.is_recurring is False
+
+
+@pytest.mark.django_db
+def test_update_group_scoped_availability_window_omitted_rrule_string_leaves_it_unchanged(
+    service: CalendarGroupService,
+    admin_user: User,
+    calendar: Calendar,
+    group_slot: CalendarGroupSlot,
+) -> None:
+    """Omitting ``rrule_string`` (the ``_UNCHANGED`` sentinel default) must
+    leave an existing recurrence untouched."""
+    created = service.create_group_scoped_availability_window(
+        acting_user=admin_user,
+        group_slot_id=group_slot.id,
+        calendar_id=calendar.id,
+        start_time=_utc(2025, 9, 2, 9),
+        end_time=_utc(2025, 9, 2, 17),
+        tz="UTC",
+        rrule_string="RRULE:FREQ=WEEKLY;BYDAY=TU,TH",
+    )
+    window_id = created.window.id  # type: ignore[union-attr]
+
+    result = service.update_group_scoped_availability_window(
+        acting_user=admin_user,
+        window_id=window_id,
+        tz="America/Sao_Paulo",
+    )
+    assert result.window is not None
+    assert result.window.recurrence_rule is not None
+    assert result.window.recurrence_rule.to_rrule_string() == "FREQ=WEEKLY;BYDAY=TU,TH"
+
+
+@pytest.mark.django_db
 def test_update_group_scoped_availability_window_denies_non_owner(
     service: CalendarGroupService,
     admin_user: User,

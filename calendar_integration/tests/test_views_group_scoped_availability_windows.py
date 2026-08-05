@@ -337,6 +337,78 @@ class TestGroupScopedAvailabilityWindowLifecycle:
         )
         assert response.status_code == status.HTTP_405_METHOD_NOT_ALLOWED
 
+    def test_patch_null_rrule_string_clears_recurrence(
+        self,
+        owner_membership: OrganizationMembership,
+        calendar: Calendar,
+        group: CalendarGroup,
+        group_slot: CalendarGroupSlot,
+    ) -> None:
+        """PATCH `{"rrule_string": null}` is the tri-state "clear" case -- it
+        must actually detach the recurrence rule, not be a silent no-op."""
+        client = _auth_client(owner_membership)
+        create_response = client.post(
+            _list_url(group.id, group_slot.id),
+            _create_payload(calendar.id, rrule_string="RRULE:FREQ=WEEKLY;BYDAY=TU,TH"),
+            format="json",
+        )
+        assert create_response.status_code == status.HTTP_201_CREATED, create_response.data
+        window_id = create_response.data["window"]["id"]
+
+        update_response = client.patch(
+            _detail_url(group.id, group_slot.id, window_id),
+            {"rrule_string": None},
+            format="json",
+        )
+        assert update_response.status_code == status.HTTP_200_OK, update_response.data
+        window_data = update_response.data["window"]
+        assert window_data["rrule_string"] is None
+        assert window_data["is_recurring"] is False
+
+        reloaded = (
+            AvailableTime.objects.unscoped()
+            .filter_by_organization(calendar.organization_id)
+            .get(id=window_id)
+        )
+        assert reloaded.recurrence_rule is None
+        assert reloaded.is_recurring is False
+
+    def test_patch_omitting_rrule_string_leaves_recurrence_unchanged(
+        self,
+        owner_membership: OrganizationMembership,
+        calendar: Calendar,
+        group: CalendarGroup,
+        group_slot: CalendarGroupSlot,
+    ) -> None:
+        """PATCH that never mentions `rrule_string` must leave the existing
+        recurrence untouched -- the "absent" tri-state case."""
+        client = _auth_client(owner_membership)
+        create_response = client.post(
+            _list_url(group.id, group_slot.id),
+            _create_payload(calendar.id, rrule_string="RRULE:FREQ=WEEKLY;BYDAY=TU,TH"),
+            format="json",
+        )
+        assert create_response.status_code == status.HTTP_201_CREATED, create_response.data
+        window_id = create_response.data["window"]["id"]
+
+        update_response = client.patch(
+            _detail_url(group.id, group_slot.id, window_id),
+            {"timezone": "America/Sao_Paulo"},
+            format="json",
+        )
+        assert update_response.status_code == status.HTTP_200_OK, update_response.data
+        window_data = update_response.data["window"]
+        assert window_data["is_recurring"] is True
+        assert window_data["rrule_string"] == "FREQ=WEEKLY;BYDAY=TU,TH"
+
+        reloaded = (
+            AvailableTime.objects.unscoped()
+            .filter_by_organization(calendar.organization_id)
+            .get(id=window_id)
+        )
+        assert reloaded.recurrence_rule is not None
+        assert reloaded.is_recurring is True
+
 
 # ---------------------------------------------------------------------------
 # Non-disclosure / visibility
@@ -435,12 +507,16 @@ class TestGroupScopedAvailabilityWindowNonDisclosure:
     def test_slot_not_belonging_to_group_in_url_is_not_found(
         self,
         owner_membership: OrganizationMembership,
-        other_owner_membership: OrganizationMembership,
         organization: Organization,
+        calendar: Calendar,
         other_calendar: Calendar,
     ) -> None:
         """A slot that exists, but under a DIFFERENT group than the one named in
-        the URL, must not resolve -- same not-found shape."""
+        the URL, must not resolve -- same not-found shape. The caller here
+        genuinely has visibility into `group_b` (owns a calendar in ANOTHER of
+        its slots), so the 404 must come from the group/slot mismatch branch
+        in `GroupScopedAvailabilityWindowPermission.has_permission` -- not
+        merely from the caller having no relationship to `group_b` at all."""
         group_a = CalendarGroup.objects.create(organization=organization, name="A")
         group_b = CalendarGroup.objects.create(organization=organization, name="B")
         slot_on_b = CalendarGroupSlot.objects.create(
@@ -449,7 +525,22 @@ class TestGroupScopedAvailabilityWindowNonDisclosure:
         CalendarGroupSlotMembership.objects.create(
             organization=organization, slot=slot_on_b, calendar=other_calendar
         )
+        # A second slot in `group_b`, owned by the caller -- gives them genuine
+        # visibility into `group_b` without owning `slot_on_b`'s calendar.
+        callers_slot_on_b = CalendarGroupSlot.objects.create(
+            organization=organization, group=group_b, name="Caller's Slot"
+        )
+        CalendarGroupSlotMembership.objects.create(
+            organization=organization, slot=callers_slot_on_b, calendar=calendar
+        )
+
         client = _auth_client(owner_membership)
+        # Sanity check: the caller genuinely sees `group_b` through their own slot.
+        sanity_response = client.get(_list_url(group_b.id, callers_slot_on_b.id))
+        assert sanity_response.status_code == status.HTTP_200_OK, sanity_response.data
+
+        # `slot_on_b` belongs to `group_b`, not `group_a` -- naming `group_a` in
+        # the URL must 404 even though the caller can see `group_b`.
         response = client.get(_list_url(group_a.id, slot_on_b.id))
         assert response.status_code == status.HTTP_404_NOT_FOUND
 
@@ -614,3 +705,57 @@ class TestGroupScopedAvailabilityWindowOrphanedBookings:
             ).count()
             == 2
         )
+
+
+# ---------------------------------------------------------------------------
+# Query budget (bounded, must not scale with row count)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestGroupScopedAvailabilityWindowQueryBudget:
+    def test_list_query_count_is_bounded_and_does_not_scale_with_window_count(
+        self,
+        owner_membership: OrganizationMembership,
+        calendar: Calendar,
+        group: CalendarGroup,
+        group_slot: CalendarGroupSlot,
+        django_assert_max_num_queries,
+    ) -> None:
+        """`GroupScopedAvailabilityWindowSerializer` never nests `calendar` (it
+        sources `calendar_id` straight from `calendar_fk_id`), so listing
+        several windows must not eagerly pull in the general-purpose
+        `CalendarVirtualModel` sub-graph (memberships/calendar_ownerships) --
+        the query count must stay flat as the number of windows grows."""
+        for i in range(4):
+            AvailableTime.objects.unscoped().create(
+                organization=calendar.organization,
+                calendar=calendar,
+                group_slot=group_slot,
+                start_time_tz_unaware=_utc(2025, 9, 2 + i, 9),
+                end_time_tz_unaware=_utc(2025, 9, 2 + i, 17),
+                timezone="UTC",
+            )
+
+        client = _auth_client(owner_membership)
+        # Generous margin over the observed ~6-7 queries -- what matters is
+        # that this bound does NOT scale with the number of windows below.
+        with django_assert_max_num_queries(12):
+            response = client.get(_list_url(group.id, group_slot.id))
+        assert response.status_code == status.HTTP_200_OK
+        assert len(response.data["results"]) == 4
+
+        for i in range(4, 8):
+            AvailableTime.objects.unscoped().create(
+                organization=calendar.organization,
+                calendar=calendar,
+                group_slot=group_slot,
+                start_time_tz_unaware=_utc(2025, 9, 2 + i, 9),
+                end_time_tz_unaware=_utc(2025, 9, 2 + i, 17),
+                timezone="UTC",
+            )
+
+        with django_assert_max_num_queries(12):
+            response = client.get(_list_url(group.id, group_slot.id))
+        assert response.status_code == status.HTTP_200_OK
+        assert len(response.data["results"]) == 8

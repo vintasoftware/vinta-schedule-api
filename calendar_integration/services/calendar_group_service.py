@@ -70,6 +70,12 @@ if TYPE_CHECKING:
     from payments.services.entitlement_service import EntitlementService
 
 
+# Sentinel for partial updates: distinguishes "omit rrule_string" (leave the
+# recurrence alone) from an explicit ``None`` (clear it, making the window
+# non-recurring). Mirrors ``calendar_service._UNCHANGED``.
+_UNCHANGED = object()
+
+
 def _time_range_fully_covered(
     windows: Iterable[tuple[datetime.datetime, datetime.datetime]],
     start: datetime.datetime,
@@ -762,11 +768,15 @@ class CalendarGroupService:
         start_time: datetime.datetime | None = None,
         end_time: datetime.datetime | None = None,
         tz: str | None = None,
-        rrule_string: str | None = None,
+        rrule_string: str | None = _UNCHANGED,  # type: ignore[assignment]
         now: datetime.datetime | None = None,
     ) -> GroupScopedAvailabilityWriteResult:
         """Partially update a group-scoped availability window (only provided
         fields change -- mirrors ``AvailabilityService.update_blocked_time``).
+
+        ``rrule_string`` is tri-state: the sentinel ``_UNCHANGED`` (the default)
+        leaves the recurrence untouched, explicit ``None`` clears it (the window
+        becomes non-recurring), and a string sets/replaces it.
 
         After the update is applied, every confirmed future booking in the
         window's group slot for its calendar that no longer falls inside the
@@ -798,7 +808,8 @@ class CalendarGroupService:
         if tz is not None:
             window.timezone = tz
             update_fields.append("timezone")
-        if rrule_string is not None:
+        if rrule_string is not _UNCHANGED:
+            # ``None`` clears the recurrence (non-recurring); a string sets/replaces it.
             window.recurrence_rule = self._create_recurrence_rule_if_needed(rrule_string)
             # Assigning through the ForeignObject property name ("recurrence_rule")
             # sets the underlying concrete column ("recurrence_rule_fk"); `save`'s
