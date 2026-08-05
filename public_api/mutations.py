@@ -35,9 +35,11 @@ from calendar_integration.graphql import (
     DeleteBookingPolicyResult,
     GroupScopedAvailabilityWindowGraphQLType,
     GroupScopedBlockedTimeGraphQLType,
+    GroupScopedQuotaRuleGraphQLType,
     UpdateBookingPolicyInput,
     group_scoped_availability_window_from_model,
     group_scoped_blocked_time_from_model,
+    group_scoped_quota_rule_from_model,
 )
 from calendar_integration.models import BookingPolicy, Calendar, CalendarEvent, CalendarGroup
 from calendar_integration.mutations import (
@@ -594,6 +596,60 @@ class BatchUpsertGroupScopedBlockedTimesResult:
     success: bool
     error_message: str | None = None
     blocked_times: list[GroupScopedBlockedTimeGraphQLType]
+
+
+@strawberry.input
+class GroupScopedQuotaRuleOperationInput:
+    """A single create/update/delete operation in a batch group-scoped
+    quota-rule upsert (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 3c).
+
+    Simpler than ``GroupScopedBlockedTimeOperationInput``: quota rules are
+    non-recurring and have no time range, so there is no ``startTime``/
+    ``endTime``/``timezone``/``rruleString`` -- just ``period`` and ``cap``.
+    ``calendarId`` is required on every operation (not only ``create``) so
+    the owner-scope guard can be applied per-operation before any service
+    call.
+
+    For action='create': calendarId, period, and cap are required. An
+    identical create (same calendar, group slot, period, and cap as an
+    existing rule) is a no-op — replaying the same batch never duplicates a
+    rule (spec UC-5). A create naming an ALREADY-USED period with a
+    DIFFERENT cap is rejected as a validation error (the model's unique
+    constraint on (calendar, slot, period)), never an unhandled server error.
+    For action='update': ruleId is required; period and/or cap are optional
+    (only provided fields change).
+    For action='delete': ruleId is required; no other fields are needed.
+    """
+
+    action: str
+    calendar_id: int
+    rule_id: int | None = None
+    period: str | None = None
+    cap: int | None = None
+
+
+@strawberry.input
+class BatchGroupScopedQuotaRulesInput:
+    """Input for applying an atomic batch of group-scoped quota-rule
+    operations within one group slot's roster."""
+
+    organization_id: int
+    group_slot_id: int
+    operations: list[GroupScopedQuotaRuleOperationInput]
+
+
+@strawberry.type
+class BatchUpsertGroupScopedQuotaRulesResult:
+    """Result of the batchUpsertGroupScopedQuotaRules mutation.
+
+    On success, ``quotaRules`` contains every group-scoped quota rule in the
+    group slot's roster (all calendars) after the batch is applied. On
+    failure, ``quotaRules`` is an empty list and nothing was written.
+    """
+
+    success: bool
+    error_message: str | None = None
+    quota_rules: list[GroupScopedQuotaRuleGraphQLType]
 
 
 @strawberry.input
@@ -2348,6 +2404,138 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         return BatchUpsertGroupScopedBlockedTimesResult(
             success=True,
             blocked_times=[group_scoped_blocked_time_from_model(b) for b in blocks],
+        )
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def batch_upsert_group_scoped_quota_rules(
+        self,
+        info: strawberry.Info,
+        input: BatchGroupScopedQuotaRulesInput,  # noqa: A002
+    ) -> BatchUpsertGroupScopedQuotaRulesResult:
+        """Apply an atomic create/update/delete batch of group-scoped quota
+        rules within one group slot's roster
+        (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 3c).
+
+        Direct mirror of ``batchUpsertGroupScopedBlockedTimes`` -- same
+        validation, owner-scope, and IDOR cross-check structure -- with two
+        deliberate differences: quota rules are non-recurring (no
+        startTime/endTime/timezone/rruleString, just period and cap) and are
+        NOT metered (spec: "Windows and blocks both consume the limit; quota
+        rules do not") -- this mutation never surfaces an ``OverLimitError``,
+        and ``CalendarGroupService.batch_upsert_group_scoped_quota_rules``
+        still enforces ``check_not_restricted`` (a ``RESTRICTED`` billing
+        root still blocks the write) but there is no delta/limit check.
+
+        The (calendar, slot, period) uniqueness constraint is surfaced as a
+        clean ``success=False`` result (``CalendarGroupValidationError`` ->
+        the ``CalendarIntegrationError`` branch below), never an unhandled
+        server error.
+
+        The token's OrganizationResourceAccess must include the
+        BATCH_UPSERT_GROUP_SCOPED_QUOTA_RULES resource.
+        """
+        _valid_actions = {"create", "update", "delete"}
+
+        org = info.context.request.public_api_organization
+        if not org:
+            return BatchUpsertGroupScopedQuotaRulesResult(
+                success=False,
+                error_message="Organization not found in request context.",
+                quota_rules=[],
+            )
+        if input.organization_id != org.id:
+            return BatchUpsertGroupScopedQuotaRulesResult(
+                success=False,
+                error_message="Organization not found in request context.",
+                quota_rules=[],
+            )
+
+        # Validate all operations before touching anything -- fail fast, no writes.
+        for op_input in input.operations:
+            if op_input.action not in _valid_actions:
+                return BatchUpsertGroupScopedQuotaRulesResult(
+                    success=False,
+                    error_message=f"Invalid operation action: {op_input.action}",
+                    quota_rules=[],
+                )
+            if op_input.action == "create" and (op_input.period is None or op_input.cap is None):
+                return BatchUpsertGroupScopedQuotaRulesResult(
+                    success=False,
+                    error_message="create operation requires period and cap",
+                    quota_rules=[],
+                )
+            if op_input.action in ("update", "delete") and op_input.rule_id is None:
+                return BatchUpsertGroupScopedQuotaRulesResult(
+                    success=False,
+                    error_message=f"{op_input.action} operation requires ruleId",
+                    quota_rules=[],
+                )
+
+        # Owner-scope guard per operation's calendarId -- reveals nothing about
+        # existence for a calendar outside a scoped token's owner set. Checked
+        # for EVERY operation up front, so a cross-owner op anywhere in the
+        # batch rejects the whole thing before any service call. This only
+        # proves the token owns op.calendarId; it does NOT prove that an
+        # update/delete op's ruleId actually resolves to that calendar --
+        # CalendarGroupService.batch_upsert_group_scoped_quota_rules
+        # cross-checks that itself (rule.calendar_fk_id == op.calendar_id)
+        # before applying anything, so a token can't pair a calendarId it owns
+        # with a ruleId belonging to a different calendar.
+        request: PublicApiHttpRequest = info.context.request
+        system_user = request.public_api_system_user
+        try:
+            for op_input in input.operations:
+                assert_calendar_in_owner_scope(system_user, org, op_input.calendar_id)
+        except Calendar.DoesNotExist:
+            return BatchUpsertGroupScopedQuotaRulesResult(
+                success=False, error_message="Calendar not found.", quota_rules=[]
+            )
+
+        ops: list[dict[str, object]] = []
+        for op_input in input.operations:
+            op: dict[str, object] = {"action": op_input.action, "calendar_id": op_input.calendar_id}
+            if op_input.rule_id is not None:
+                op["rule_id"] = op_input.rule_id
+            if op_input.period is not None:
+                op["period"] = op_input.period
+            if op_input.cap is not None:
+                op["cap"] = op_input.cap
+            ops.append(op)
+
+        deps = get_calendar_mutation_dependencies()
+        deps.calendar_group_service.initialize(organization=org)
+
+        if system_user is None:
+            return BatchUpsertGroupScopedQuotaRulesResult(
+                success=False,
+                error_message="Organization not found in request context.",
+                quota_rules=[],
+            )
+
+        try:
+            rules = deps.calendar_group_service.batch_upsert_group_scoped_quota_rules(
+                group_slot_id=input.group_slot_id,
+                operations=ops,
+                acting_principal=system_user,
+            )
+        except OverLimitError as exc:
+            # Not a plan-limit ceiling (quota rules are unmetered) -- this is
+            # `check_not_restricted`'s RESTRICTED-billing-root guard, which
+            # raises the same `OverLimitError` subclass and renders through
+            # the same GraphQL error shape every other guarded write uses.
+            raise_over_limit_graphql_error(exc)
+        except CalendarGroupSlotConfigNotFoundError:
+            return BatchUpsertGroupScopedQuotaRulesResult(
+                success=False, error_message="Group slot not found.", quota_rules=[]
+            )
+        except (CalendarIntegrationError, ValueError, DjangoValidationError) as e:
+            return BatchUpsertGroupScopedQuotaRulesResult(
+                success=False, error_message=str(e), quota_rules=[]
+            )
+
+        return BatchUpsertGroupScopedQuotaRulesResult(
+            success=True,
+            quota_rules=[group_scoped_quota_rule_from_model(r) for r in rules],
         )
 
     @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])

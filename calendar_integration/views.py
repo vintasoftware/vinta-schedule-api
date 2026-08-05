@@ -30,6 +30,7 @@ from calendar_integration.constants import (
 from calendar_integration.exceptions import (
     CalendarGroupError,
     CalendarGroupSlotConfigNotFoundError,
+    CalendarGroupValidationError,
     CalendarIntegrationError,
     ChangeRequestIneligibleError,
     ChangeRequestNotPendingError,
@@ -49,6 +50,7 @@ from calendar_integration.models import (
     Calendar,
     CalendarEvent,
     CalendarGroup,
+    CalendarGroupSlotQuotaRule,
     CalendarOwnership,
     ExternalEventChangeRequest,
 )
@@ -60,6 +62,7 @@ from calendar_integration.permissions import (
     ExternalEventChangeRequestPermission,
     GroupScopedAvailabilityWindowPermission,
     GroupScopedBlockedTimePermission,
+    GroupScopedQuotaRulePermission,
 )
 from calendar_integration.serializers import (
     AvailableTimeBatchSerializer,
@@ -95,6 +98,9 @@ from calendar_integration.serializers import (
     GroupScopedBlockedTimeSerializer,
     GroupScopedBlockedTimeUpdateSerializer,
     GroupScopedBlockWriteResultSerializer,
+    GroupScopedQuotaRuleCreateSerializer,
+    GroupScopedQuotaRuleSerializer,
+    GroupScopedQuotaRuleUpdateSerializer,
     ResourceCalendarCreateSerializer,
     UnavailableTimeWindowSerializer,
 )
@@ -2113,6 +2119,179 @@ class GroupScopedBlockedTimeViewSet(VintaScheduleModelViewSet):
             )
         except CalendarGroupSlotConfigNotFoundError as e:
             # Same not-found shape as a genuinely missing block -- no message
+            # leaked that would distinguish "forbidden" from "does not exist".
+            raise Http404 from e
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+@extend_schema(tags=["Calendar Group Scoped Quota Rules"])
+class GroupScopedQuotaRuleViewSet(VintaScheduleModelViewSet):
+    """Nested under a group's slot: manage group-scoped quota rules for
+    calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
+    Phase 3c).
+
+    Mirrors ``GroupScopedAvailabilityWindowViewSet``/``GroupScopedBlockedTimeViewSet``
+    exactly -- reads go through
+    ``CalendarGroupSlotQuotaRule.objects.for_group_slot(...)``, every write
+    delegates to the Phase 3c ``CalendarGroupService`` quota-write methods,
+    and route visibility is gated by ``GroupScopedQuotaRulePermission``. The
+    resource is simpler than windows/blocks: quota rules are non-recurring
+    (no ``rrule_string``/``timezone``/time range) and unmetered (no
+    entitlement ``check_limit`` gates their creation -- only
+    ``check_not_restricted``, like blocks). There is also no
+    orphaned-booking report: a quota rule caps FUTURE bookings and never
+    narrows already-confirmed ones, so the create/update responses return the
+    saved rule directly rather than a write-result wrapper.
+
+    The uniqueness constraint on (calendar, slot, period) is surfaced here as
+    a 400 validation error (``CalendarGroupValidationError`` -> DRF
+    ``ValidationError``), never an unhandled ``IntegrityError``/500.
+    """
+
+    permission_classes = (GroupScopedQuotaRulePermission,)
+    queryset = CalendarGroupSlotQuotaRule.objects.all()
+    serializer_class = GroupScopedQuotaRuleSerializer
+    # PUT is intentionally unsupported: the underlying service is a partial
+    # update by design (only provided fields change), so only PATCH applies.
+    http_method_names = ("get", "post", "patch", "delete", "head", "options")
+
+    def get_queryset(self):
+        user = self.request.user
+        if not user.is_authenticated:
+            return CalendarGroupSlotQuotaRule.objects.none()
+        membership = get_active_organization_membership(user)
+        if not membership:
+            return CalendarGroupSlotQuotaRule.objects.none()
+        slot_id = self.kwargs.get("slot_id")
+        return (
+            super()
+            .get_queryset()
+            .filter_by_organization(membership.organization_id)
+            .for_group_slot(slot_id)
+        )
+
+    @extend_schema(
+        summary="Create a group-scoped quota rule",
+        description=(
+            "Creates a group-scoped quota rule capping a calendar's live bookings "
+            "made through a group slot within a fixed period. Not metered -- no "
+            "entitlement limit gates this write."
+        ),
+        request=GroupScopedQuotaRuleCreateSerializer,
+        responses={201: GroupScopedQuotaRuleSerializer},
+    )
+    @inject
+    def create(
+        self,
+        request,
+        *args,
+        calendar_group_service: Annotated[CalendarGroupService, Provide["calendar_group_service"]],
+        **kwargs,
+    ):
+        serializer = GroupScopedQuotaRuleCreateSerializer(
+            data=request.data, context=self.get_serializer_context()
+        )
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        membership = get_active_organization_membership(request.user)
+        if membership is None:
+            # Unreachable in practice -- `GroupScopedQuotaRulePermission`
+            # already requires an active membership -- but narrows the type for
+            # mypy and fails closed rather than crashing on `None.organization`.
+            raise Http404
+        calendar_group_service.initialize(organization=membership.organization)
+        try:
+            rule = calendar_group_service.create_group_scoped_quota_rule(
+                acting_user=request.user,
+                group_slot_id=self.kwargs["slot_id"],
+                calendar_id=data["calendar"].id,
+                period=data["period"],
+                cap=data["cap"],
+            )
+        except CalendarGroupSlotConfigNotFoundError as e:
+            # Same not-found shape as a genuinely missing rule -- no message
+            # leaked that would distinguish "forbidden" from "does not exist".
+            raise Http404 from e
+        except CalendarGroupValidationError as e:
+            # The (calendar, slot, period) unique constraint -- surfaced as a
+            # validation error, never an unhandled IntegrityError/500.
+            raise ValidationError({"non_field_errors": [str(e)]}) from e
+
+        response_serializer = GroupScopedQuotaRuleSerializer(
+            rule, context=self.get_serializer_context()
+        )
+        return Response(response_serializer.data, status=status.HTTP_201_CREATED)
+
+    @extend_schema(
+        summary="Update a group-scoped quota rule",
+        description="Partial update -- only provided fields change.",
+        request=GroupScopedQuotaRuleUpdateSerializer,
+        responses={200: GroupScopedQuotaRuleSerializer},
+    )
+    @inject
+    def partial_update(
+        self,
+        request,
+        *args,
+        calendar_group_service: Annotated[CalendarGroupService, Provide["calendar_group_service"]],
+        **kwargs,
+    ):
+        instance = self.get_object()
+        serializer = GroupScopedQuotaRuleUpdateSerializer(
+            data=request.data, partial=True, context=self.get_serializer_context()
+        )
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        membership = get_active_organization_membership(request.user)
+        if membership is None:
+            raise Http404
+        calendar_group_service.initialize(organization=membership.organization)
+        try:
+            rule = calendar_group_service.update_group_scoped_quota_rule(
+                acting_user=request.user,
+                rule_id=instance.id,
+                period=data.get("period"),
+                cap=data.get("cap"),
+            )
+        except CalendarGroupSlotConfigNotFoundError as e:
+            # Same not-found shape as a genuinely missing rule -- no message
+            # leaked that would distinguish "forbidden" from "does not exist".
+            raise Http404 from e
+        except CalendarGroupValidationError as e:
+            # The (calendar, slot, period) unique constraint -- surfaced as a
+            # validation error, never an unhandled IntegrityError/500.
+            raise ValidationError({"non_field_errors": [str(e)]}) from e
+
+        response_serializer = GroupScopedQuotaRuleSerializer(
+            rule, context=self.get_serializer_context()
+        )
+        return Response(response_serializer.data, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        summary="Delete a group-scoped quota rule",
+        responses={204: None},
+    )
+    @inject
+    def destroy(
+        self,
+        request,
+        *args,
+        calendar_group_service: Annotated[CalendarGroupService, Provide["calendar_group_service"]],
+        **kwargs,
+    ):
+        instance = self.get_object()
+        membership = get_active_organization_membership(request.user)
+        if membership is None:
+            raise Http404
+        calendar_group_service.initialize(organization=membership.organization)
+        try:
+            calendar_group_service.delete_group_scoped_quota_rule(
+                acting_user=request.user, rule_id=instance.id
+            )
+        except CalendarGroupSlotConfigNotFoundError as e:
+            # Same not-found shape as a genuinely missing rule -- no message
             # leaked that would distinguish "forbidden" from "does not exist".
             raise Http404 from e
         return Response(status=status.HTTP_204_NO_CONTENT)

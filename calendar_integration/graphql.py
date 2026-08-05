@@ -15,6 +15,7 @@ from calendar_integration.models import (
     CalendarEventGroupSelection,
     CalendarGroup,
     CalendarGroupSlot,
+    CalendarGroupSlotQuotaRule,
     CalendarOwnership,
     CalendarWebhookEvent,
     CalendarWebhookSubscription,
@@ -679,6 +680,43 @@ def group_scoped_blocked_time_from_model(
         is_recurring=block.is_recurring,
         created=block.created,
         modified=block.modified,
+    )
+
+
+@strawberry.type
+class GroupScopedQuotaRuleGraphQLType:
+    """Public API representation of one group-scoped quota rule
+    (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 3c).
+
+    Simpler than ``GroupScopedAvailabilityWindowGraphQLType``/
+    ``GroupScopedBlockedTimeGraphQLType``: quota rules are non-recurring (no
+    ``rruleString``, no ``timezone``, no time range) -- just the period and
+    the cap, mirroring the internal REST surface's
+    ``GroupScopedQuotaRuleSerializer`` field shape.
+    """
+
+    id: int  # noqa: A003
+    calendar_id: int
+    group_slot_id: int
+    period: str
+    cap: int
+    created: datetime.datetime
+    modified: datetime.datetime
+
+
+def group_scoped_quota_rule_from_model(
+    rule: CalendarGroupSlotQuotaRule,
+) -> GroupScopedQuotaRuleGraphQLType:
+    """Build a :class:`GroupScopedQuotaRuleGraphQLType` from a
+    ``CalendarGroupSlotQuotaRule`` row."""
+    return GroupScopedQuotaRuleGraphQLType(
+        id=rule.id,  # type: ignore[arg-type]
+        calendar_id=rule.calendar_fk_id,  # type: ignore[arg-type]
+        group_slot_id=rule.group_slot_fk_id,  # type: ignore[arg-type]
+        period=rule.period,
+        cap=rule.cap,
+        created=rule.created,
+        modified=rule.modified,
     )
 
 

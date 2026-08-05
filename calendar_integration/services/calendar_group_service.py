@@ -4,7 +4,7 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING, Annotated, cast
 
 from django.core.exceptions import PermissionDenied
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Exists, OuterRef, QuerySet
 from django.utils import timezone
 
@@ -12,7 +12,12 @@ from dependency_injector.wiring import Provide, inject
 
 from audit.constants import AuditAction
 from audit.diff import compute_diff
-from calendar_integration.constants import CalendarProvider, CalendarType, GroupScopedRuleType
+from calendar_integration.constants import (
+    CalendarProvider,
+    CalendarType,
+    GroupScopedRuleType,
+    QuotaPeriod,
+)
 from calendar_integration.exceptions import (
     BookingPolicyViolationError,
     CalendarGroupHasFutureEventsError,
@@ -1725,6 +1730,397 @@ class CalendarGroupService:
             BlockedTime.objects.for_group_slot(group_slot_id)
             .filter_by_organization(organization.id)
             .select_related("recurrence_rule")
+            .order_by("pk")
+        )
+
+    # ------------------------------------------------------------------
+    # Group-scoped quota rules (Phase 3a model / Phase 3c writes of
+    # CALENDAR_GROUP_SCOPED_AVAILABILITY)
+    # ------------------------------------------------------------------
+
+    def _get_group_scoped_quota_rule(self, rule_id: int) -> CalendarGroupSlotQuotaRule:
+        """Fetch a group-scoped ``CalendarGroupSlotQuotaRule`` by id, scoped to
+        this org.
+
+        Unlike ``_get_group_scoped_window``/``_get_group_scoped_block``, there
+        is no ``unscoped()``/default-exclude split to navigate here -- every
+        ``CalendarGroupSlotQuotaRule`` row is group-scoped by construction
+        (there is no "base" quota rule), so the default manager already
+        returns the right rows.
+        """
+        org_id = cast(Organization, self.organization).id
+        try:
+            return (
+                CalendarGroupSlotQuotaRule.objects.filter_by_organization(org_id)
+                .select_related("group_slot", "calendar")
+                .get(id=rule_id)
+            )
+        except CalendarGroupSlotQuotaRule.DoesNotExist:
+            raise CalendarGroupSlotConfigNotFoundError() from None
+
+    def _audit_group_scoped_quota_rule_write(
+        self,
+        action: str,
+        acting_user: "User | SystemUser",
+        subject_instance: CalendarGroupSlotQuotaRule,
+        diff: dict | None = None,
+    ) -> None:
+        """Emit an audit record for a group-scoped quota-rule write.
+
+        Mirrors ``_audit_group_scoped_block_write``/``_audit_group_scoped_availability_write``:
+        the acting principal is taken explicitly (this write path is reachable
+        without a bound ``calendar_service``), and this is a no-op when no
+        ``audit_service`` / ``organization`` is bound.
+        """
+        if self.audit_service is None or self.organization is None:
+            return
+        self.audit_service.record(
+            organization_id=self.organization.id,
+            action=action,
+            actor=self.audit_service.actor_from_user_or_token(acting_user, self.organization.id),
+            subject=self.audit_service.subject_from_instance(subject_instance),
+            diff=diff,
+        )
+
+    def _find_matching_group_scoped_quota_rule(
+        self,
+        group_slot_id: int,
+        calendar_id: int,
+        period: str,
+        cap: int,
+    ) -> CalendarGroupSlotQuotaRule | None:
+        """Find an existing group-scoped quota rule with identical content, if any.
+
+        Backs the batch-upsert write path's idempotent ``create`` (mirrors
+        ``_find_matching_group_scoped_block``): replaying the same batch
+        (spec UC-5) must land on the identical final state, not attempt to
+        insert a duplicate and trip the (calendar, slot, period) unique
+        constraint. Matched on (calendar, group slot, period, cap) -- a
+        ``create`` naming the SAME period but a DIFFERENT cap is deliberately
+        NOT a match, so it falls through to the real insert and surfaces the
+        unique-constraint violation as a validation error rather than
+        silently keeping the old cap.
+        """
+        organization = cast(Organization, self.organization)
+        return (
+            CalendarGroupSlotQuotaRule.objects.for_group_slot(group_slot_id)
+            .filter_by_organization(organization.id)
+            .filter(calendar_fk_id=calendar_id, period=period, cap=cap)
+            .first()
+        )
+
+    @transaction.atomic()
+    def create_group_scoped_quota_rule(
+        self,
+        acting_user: User,
+        group_slot_id: int,
+        calendar_id: int,
+        period: str,
+        cap: int,
+    ) -> CalendarGroupSlotQuotaRule:
+        """Create a group-scoped quota rule capping ``calendar_id``'s live
+        bookings made through ``group_slot_id`` within one ``period``.
+
+        Permission-gated identically to windows and blocks: ``acting_user``
+        must own the calendar or be an org admin (see
+        ``CalendarPermissionService.can_manage_group_scoped_calendar_config``).
+
+        Unlike windows and blocks, quota rules are NOT metered (spec: "Windows
+        and blocks both consume the limit; quota rules do not") -- only
+        ``_check_not_restricted()`` guards this write, never ``check_limit``.
+        There is also no orphaned-booking report: a quota rule caps FUTURE
+        bookings, it does not narrow or remove time from already-confirmed
+        ones, so nothing here can retroactively orphan a booking the way a
+        window or block write can.
+
+        :raises CalendarGroupValidationError: ``cap`` is not a positive
+            integer, or a rule for ``(calendar_id, group_slot_id, period)``
+            already exists (the model's unique constraint) -- surfaced as a
+            validation error, never an unhandled ``IntegrityError``.
+        """
+        self._assert_initialized()
+        self._check_not_restricted()
+        if cap < 1:
+            raise CalendarGroupValidationError("cap must be at least 1.")
+        if period not in QuotaPeriod.values:
+            raise CalendarGroupValidationError(f"Invalid period: {period!r}.")
+
+        organization = cast(Organization, self.organization)
+        membership = self._resolve_group_scoped_membership(group_slot_id, calendar_id)
+        self._authorize_group_scoped_write(acting_user, membership.calendar, membership.slot)
+
+        try:
+            # Nested atomic() opens a savepoint scoped to just this insert, so
+            # catching the IntegrityError below rolls back only the failed
+            # insert -- not the whole request transaction (ATOMIC_REQUESTS)
+            # nor this method's own outer @transaction.atomic().
+            with transaction.atomic():
+                rule = CalendarGroupSlotQuotaRule.objects.create(
+                    organization=organization,
+                    group_slot=membership.slot,
+                    calendar=membership.calendar,
+                    period=period,
+                    cap=cap,
+                )
+        except IntegrityError as e:
+            raise CalendarGroupValidationError(
+                f"A quota rule for period {period!r} already exists for this calendar and slot."
+            ) from e
+
+        self._audit_group_scoped_quota_rule_write(AuditAction.CREATE, acting_user, rule)
+        return rule
+
+    @transaction.atomic()
+    def update_group_scoped_quota_rule(
+        self,
+        acting_user: User,
+        rule_id: int,
+        period: str | None = None,
+        cap: int | None = None,
+    ) -> CalendarGroupSlotQuotaRule:
+        """Partially update a group-scoped quota rule (only provided fields
+        change -- mirrors ``update_group_scoped_blocked_time``).
+
+        :raises CalendarGroupValidationError: ``cap`` is not a positive
+            integer, or the update would collide with another rule already
+            covering ``(calendar, slot, period)``.
+        """
+        self._assert_initialized()
+        self._check_not_restricted()
+        if cap is not None and cap < 1:
+            raise CalendarGroupValidationError("cap must be at least 1.")
+        if period is not None and period not in QuotaPeriod.values:
+            raise CalendarGroupValidationError(f"Invalid period: {period!r}.")
+
+        rule = self._get_group_scoped_quota_rule(rule_id)
+        self._authorize_group_scoped_write(acting_user, rule.calendar, rule.group_slot)
+
+        before = {"period": rule.period, "cap": rule.cap}
+
+        update_fields: list[str] = []
+        if period is not None:
+            rule.period = period
+            update_fields.append("period")
+        if cap is not None:
+            rule.cap = cap
+            update_fields.append("cap")
+
+        if update_fields:
+            try:
+                # See create_group_scoped_quota_rule -- nested atomic() scopes
+                # the savepoint to just this save.
+                with transaction.atomic():
+                    rule.save(update_fields=[*update_fields, "modified"])
+            except IntegrityError as e:
+                raise CalendarGroupValidationError(
+                    f"A quota rule for period {rule.period!r} already exists for this "
+                    "calendar and slot."
+                ) from e
+
+        after = {"period": rule.period, "cap": rule.cap}
+        self._audit_group_scoped_quota_rule_write(
+            AuditAction.UPDATE, acting_user, rule, diff=compute_diff(before, after)
+        )
+        return rule
+
+    @transaction.atomic()
+    def delete_group_scoped_quota_rule(self, acting_user: User, rule_id: int) -> None:
+        """Delete a group-scoped quota rule.
+
+        Mirrors ``delete_group_scoped_blocked_time``/``delete_group_scoped_availability_window``:
+        no orphaned-booking report is computed (deleting a quota rule only
+        WIDENS future bookability, and quota never narrows already-confirmed
+        bookings in the first place).
+        """
+        self._assert_initialized()
+        self._check_not_restricted()
+        rule = self._get_group_scoped_quota_rule(rule_id)
+        self._authorize_group_scoped_write(acting_user, rule.calendar, rule.group_slot)
+
+        self._audit_group_scoped_quota_rule_write(AuditAction.DELETE, acting_user, rule)
+        rule.delete()
+
+    @transaction.atomic()
+    def batch_upsert_group_scoped_quota_rules(
+        self,
+        group_slot_id: int,
+        operations: Iterable[dict],
+        acting_principal: "User | SystemUser",
+    ) -> list[CalendarGroupSlotQuotaRule]:
+        """Apply an atomic bulk-upsert batch of group-scoped quota-rule
+        create/update/delete operations within one group slot's roster
+        (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 3c -- public API).
+
+        Direct mirror of ``batch_upsert_group_scoped_blocked_times``'s
+        transaction / idempotent-create / IDOR-cross-check structure -- same
+        two deliberate differences from the window batch: quota rules are not
+        metered (never ``check_limit``, never locks the billing root), but it
+        still calls ``check_not_restricted`` up front so a ``RESTRICTED``
+        organization cannot write group-scoped quota rules either.
+
+        * **All-or-nothing.** The whole batch runs inside one transaction.
+        * **Idempotent create.** A ``create`` op is an upsert:
+          :meth:`_find_matching_group_scoped_quota_rule` looks for an existing
+          rule with identical content (calendar, slot, period, cap) first. A
+          match is returned unchanged; a genuine content difference on an
+          already-used period falls through to the real insert and surfaces
+          the unique-constraint violation as :class:`CalendarGroupValidationError`,
+          never an unhandled ``IntegrityError``.
+        * **update / delete** require ``rule_id`` and act on exactly the row
+          it names.
+
+        Authorization is split between the CALLER and this method, exactly
+        like the block batch: the caller proves each op's ``calendar_id`` is
+        within the token's owner scope; this method cross-checks that an
+        update/delete op's resolved rule actually belongs to that op's own
+        ``calendar_id`` and rejects the whole batch (not-found-shaped) if
+        they don't match.
+
+        :param operations: dicts with ``action`` (create/update/delete) and
+            ``calendar_id``; create also takes ``period`` and ``cap``;
+            update takes ``rule_id`` plus optional ``period``/``cap``;
+            delete takes ``rule_id``.
+        :param acting_principal: the ``User`` or public-API ``SystemUser``
+            this write is attributed to in the audit trail.
+        :raises CalendarGroupSlotConfigNotFoundError: a create op's
+            ``calendar_id`` is not a member of ``group_slot_id``'s roster, or
+            an update/delete op's ``rule_id`` does not resolve to a
+            group-scoped quota rule in this slot, or that rule does not
+            belong to the op's own ``calendar_id``.
+        :raises CalendarGroupValidationError: a ``cap`` is not a positive
+            integer, or a create/update collides with the unique
+            (calendar, slot, period) constraint.
+        :raises ValueError: an operation's shape is invalid (unknown action,
+            missing required field).
+        :return: every group-scoped quota rule in ``group_slot_id``'s roster
+            (all calendars) after the batch is applied.
+        """
+        self._assert_initialized()
+        organization = cast(Organization, self.organization)
+        operations = list(operations)
+
+        valid_actions = {"create", "update", "delete"}
+        for op in operations:
+            action = op.get("action")
+            if action not in valid_actions:
+                raise ValueError(f"Invalid operation action: {action}")
+            if action == "create" and (
+                "calendar_id" not in op or "period" not in op or "cap" not in op
+            ):
+                raise ValueError("create operation requires calendar_id, period, cap")
+            if action in ("update", "delete") and "rule_id" not in op:
+                raise ValueError(f"{action} operation requires rule_id")
+            if "cap" in op and op["cap"] is not None and op["cap"] < 1:
+                raise CalendarGroupValidationError("cap must be at least 1.")
+            if (
+                "period" in op
+                and op["period"] is not None
+                and op["period"] not in QuotaPeriod.values
+            ):
+                raise CalendarGroupValidationError(f"Invalid period: {op['period']!r}.")
+
+        # RESTRICTED must block the batch outright, mirrors the block batch,
+        # minus the limit/lock machinery that exists only to protect
+        # entitlement counting, which quota rules don't have (spec: unmetered).
+        if self.entitlement_service is not None and operations:
+            self.entitlement_service.check_not_restricted(organization)
+
+        # Resolve every touched row up front (read-only): a missing/foreign
+        # rule_id or a calendar not on this slot's roster fails the whole
+        # batch before anything is written.
+        rules_by_op_id: dict[int, CalendarGroupSlotQuotaRule] = {}
+        for op in operations:
+            if op["action"] in ("update", "delete"):
+                rule = self._get_group_scoped_quota_rule(op["rule_id"])
+                if rule.group_slot_fk_id != group_slot_id:
+                    raise CalendarGroupSlotConfigNotFoundError()
+                # Cross-check the resolved rule against the op's OWN calendar_id --
+                # mirrors the block batch's IDOR guard: a calendar-owner-scoped
+                # token could otherwise pair a calendar_id it owns with a
+                # rule_id it doesn't, targeting another calendar's quota rule
+                # in the same slot.
+                if rule.calendar_fk_id != op["calendar_id"]:
+                    raise CalendarGroupSlotConfigNotFoundError()
+                rules_by_op_id[op["rule_id"]] = rule
+
+        memberships_by_calendar: dict[int, CalendarGroupSlotMembership] = {}
+        for op in operations:
+            if op["action"] == "create" and op["calendar_id"] not in memberships_by_calendar:
+                memberships_by_calendar[op["calendar_id"]] = self._resolve_group_scoped_membership(
+                    group_slot_id, op["calendar_id"]
+                )
+
+        # Idempotent-create resolution: match each create op against an
+        # existing group-scoped quota rule before writing anything.
+        matched_existing: dict[int, CalendarGroupSlotQuotaRule] = {}
+        for i, op in enumerate(operations):
+            if op["action"] != "create":
+                continue
+            existing = self._find_matching_group_scoped_quota_rule(
+                group_slot_id=group_slot_id,
+                calendar_id=op["calendar_id"],
+                period=op["period"],
+                cap=op["cap"],
+            )
+            if existing is not None:
+                matched_existing[i] = existing
+
+        for i, op in enumerate(operations):
+            action = op["action"]
+            if action == "create":
+                if i in matched_existing:
+                    continue
+                membership = memberships_by_calendar[op["calendar_id"]]
+                try:
+                    with transaction.atomic():
+                        rule = CalendarGroupSlotQuotaRule.objects.create(
+                            organization=organization,
+                            group_slot=membership.slot,
+                            calendar=membership.calendar,
+                            period=op["period"],
+                            cap=op["cap"],
+                        )
+                except IntegrityError as e:
+                    raise CalendarGroupValidationError(
+                        f"A quota rule for period {op['period']!r} already exists for "
+                        f"calendar {op['calendar_id']} in this slot."
+                    ) from e
+                self._audit_group_scoped_quota_rule_write(
+                    AuditAction.CREATE, acting_principal, rule
+                )
+            elif action == "update":
+                rule = rules_by_op_id[op["rule_id"]]
+                before = {"period": rule.period, "cap": rule.cap}
+                update_fields: list[str] = []
+                if "period" in op:
+                    rule.period = op["period"]
+                    update_fields.append("period")
+                if "cap" in op:
+                    rule.cap = op["cap"]
+                    update_fields.append("cap")
+                if update_fields:
+                    try:
+                        with transaction.atomic():
+                            rule.save(update_fields=[*update_fields, "modified"])
+                    except IntegrityError as e:
+                        raise CalendarGroupValidationError(
+                            f"A quota rule for period {rule.period!r} already exists for "
+                            "this calendar and slot."
+                        ) from e
+                after = {"period": rule.period, "cap": rule.cap}
+                self._audit_group_scoped_quota_rule_write(
+                    AuditAction.UPDATE, acting_principal, rule, diff=compute_diff(before, after)
+                )
+            elif action == "delete":
+                rule = rules_by_op_id[op["rule_id"]]
+                self._audit_group_scoped_quota_rule_write(
+                    AuditAction.DELETE, acting_principal, rule
+                )
+                rule.delete()
+
+        return list(
+            CalendarGroupSlotQuotaRule.objects.for_group_slot(group_slot_id)
+            .filter_by_organization(organization.id)
             .order_by("pk")
         )
 

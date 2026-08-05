@@ -312,3 +312,62 @@ class GroupScopedBlockedTimePermission(BasePermission):
 
         view.group_slot = group_slot
         return True
+
+
+class GroupScopedQuotaRulePermission(BasePermission):
+    """Route-level group-visibility gate for the group-scoped quota rule
+    routes nested under a group's slot
+    (``calendar-groups/<group_id>/slots/<slot_id>/quota-rules/...``,
+    CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 3c).
+
+    Identical in every respect to ``GroupScopedAvailabilityWindowPermission``/
+    ``GroupScopedBlockedTimePermission`` -- same coarse route-level gate
+    (``can_manage_calendar_group``), same non-disclosure ``Http404`` on a
+    stranger, a cross-organization slot, or a slot belonging to a different
+    group than the one in the URL. See ``GroupScopedAvailabilityWindowPermission``'s
+    docstring for the full rationale; only the resource it guards differs
+    (quota rules instead of windows).
+    """
+
+    @inject
+    def __init__(
+        self,
+        calendar_permission_service: "CalendarPermissionService | None" = Provide[
+            "calendar_permission_service"
+        ],
+    ):
+        self.calendar_permission_service = calendar_permission_service
+
+    def has_permission(self, request, view) -> bool:
+        user = request.user
+        if not user.is_authenticated:
+            return False
+        membership = get_active_organization_membership(user)
+        if membership is None:
+            return False
+
+        group_id = view.kwargs.get("group_id")
+        slot_id = view.kwargs.get("slot_id")
+        if group_id is None or slot_id is None:
+            return False
+
+        try:
+            group_slot = (
+                CalendarGroupSlot.objects.filter_by_organization(membership.organization_id)
+                .select_related("group")
+                .get(id=slot_id, group_fk_id=group_id)
+            )
+        except CalendarGroupSlot.DoesNotExist:
+            raise Http404() from None
+
+        if self.calendar_permission_service is None or not (
+            self.calendar_permission_service.can_manage_calendar_group(
+                user=user, group=group_slot.group
+            )
+        ):
+            # Same not-found shape as a genuinely missing slot -- a member must
+            # not learn this group/slot exists through a distinguishable 403.
+            raise Http404()
+
+        view.group_slot = group_slot
+        return True

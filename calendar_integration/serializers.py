@@ -10,7 +10,12 @@ from allauth.socialaccount.models import SocialAccount
 from dependency_injector.wiring import Provide, inject
 from rest_framework import serializers
 
-from calendar_integration.constants import CalendarProvider, CalendarType, CalendarVisibility
+from calendar_integration.constants import (
+    CalendarProvider,
+    CalendarType,
+    CalendarVisibility,
+    QuotaPeriod,
+)
 from calendar_integration.exceptions import (
     CalendarGroupError,
     CalendarIntegrationError,
@@ -27,6 +32,7 @@ from calendar_integration.models import (
     CalendarGroup,
     CalendarGroupSlot,
     CalendarGroupSlotMembership,
+    CalendarGroupSlotQuotaRule,
     CalendarOwnership,
     CalendarSync,
     ChildrenCalendarRelationship,
@@ -70,6 +76,7 @@ from calendar_integration.virtual_models import (
     ExternalEventChangeRequestVirtualModel,
     GroupScopedAvailabilityWindowVirtualModel,
     GroupScopedBlockedTimeVirtualModel,
+    GroupScopedQuotaRuleVirtualModel,
     RecurrenceRuleVirtualModel,
     ResourceAllocationVirtualModel,
 )
@@ -2817,6 +2824,87 @@ class GroupScopedBlockWriteResultSerializer(serializers.Serializer):
             "needed."
         ),
     )
+
+
+class GroupScopedQuotaRuleSerializer(VirtualModelSerializer):
+    """Read representation of a group-scoped quota rule
+    (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 3c).
+
+    Simpler than ``GroupScopedAvailabilityWindowSerializer``/
+    ``GroupScopedBlockedTimeSerializer``: quota rules are non-recurring (no
+    ``rrule_string``, no ``timezone``, no time range) -- just the period and
+    the cap, matching exactly what ``CalendarGroupService``'s quota-write
+    methods accept, so the REST shape and the service signature cannot drift
+    apart.
+    """
+
+    calendar_id = serializers.IntegerField(source="calendar_fk_id", read_only=True)
+    group_slot_id = serializers.IntegerField(source="group_slot_fk_id", read_only=True)
+
+    class Meta:
+        model = CalendarGroupSlotQuotaRule
+        virtual_model = GroupScopedQuotaRuleVirtualModel
+        fields = (
+            "id",
+            "calendar_id",
+            "group_slot_id",
+            "period",
+            "cap",
+            "created",
+            "modified",
+        )
+        read_only_fields = fields
+
+
+class GroupScopedQuotaRuleCreateSerializer(serializers.Serializer):
+    """Input for creating a group-scoped quota rule.
+
+    Field names map 1:1 onto
+    ``CalendarGroupService.create_group_scoped_quota_rule``'s keyword
+    arguments (``calendar_id``, ``period``, ``cap``) so the REST shape can
+    never silently drift from the service signature it delegates to.
+    """
+
+    calendar = serializers.PrimaryKeyRelatedField(
+        queryset=Calendar.original_manager.none(),
+        help_text="Calendar this quota rule applies to. Must be a member of the target slot.",
+    )
+    period = serializers.ChoiceField(
+        choices=QuotaPeriod.choices,
+        help_text="Fixed calendar period the cap applies to (day, week, or month).",
+    )
+    cap = serializers.IntegerField(
+        min_value=1,
+        help_text=(
+            "Maximum number of live bookings made through this group slot the "
+            "calendar may hold within one period."
+        ),
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        user = (
+            self.context["request"].user if self.context and self.context.get("request") else None
+        )
+        membership = (
+            get_active_organization_membership(user) if user and user.is_authenticated else None
+        )
+        self.fields["calendar"].queryset = (
+            Calendar.objects.filter_by_organization(membership.organization_id)
+            if membership
+            else Calendar.original_manager.none()
+        )
+
+
+class GroupScopedQuotaRuleUpdateSerializer(serializers.Serializer):
+    """Input for partially updating a group-scoped quota rule.
+
+    Every field is optional -- only provided fields change, mirroring
+    ``CalendarGroupService.update_group_scoped_quota_rule``.
+    """
+
+    period = serializers.ChoiceField(choices=QuotaPeriod.choices, required=False)
+    cap = serializers.IntegerField(min_value=1, required=False)
 
 
 class CalendarGroupSlotSerializer(VirtualModelSerializer):

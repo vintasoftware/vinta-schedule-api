@@ -6401,6 +6401,627 @@ paths:
       responses:
         '204':
           description: No response body
+  /calendar-groups/{group_id}/slots/{slot_id}/quota-rules/:
+    get:
+      operationId: calendar_groups_slots_quota_rules_list
+      description: |-
+        Nested under a group's slot: manage group-scoped quota rules for
+        calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
+        Phase 3c).
+
+        Mirrors ``GroupScopedAvailabilityWindowViewSet``/``GroupScopedBlockedTimeViewSet``
+        exactly -- reads go through
+        ``CalendarGroupSlotQuotaRule.objects.for_group_slot(...)``, every write
+        delegates to the Phase 3c ``CalendarGroupService`` quota-write methods,
+        and route visibility is gated by ``GroupScopedQuotaRulePermission``. The
+        resource is simpler than windows/blocks: quota rules are non-recurring
+        (no ``rrule_string``/``timezone``/time range) and unmetered (no
+        entitlement ``check_limit`` gates their creation -- only
+        ``check_not_restricted``, like blocks). There is also no
+        orphaned-booking report: a quota rule caps FUTURE bookings and never
+        narrows already-confirmed ones, so the create/update responses return the
+        saved rule directly rather than a write-result wrapper.
+
+        The uniqueness constraint on (calendar, slot, period) is surfaced here as
+        a 400 validation error (``CalendarGroupValidationError`` -> DRF
+        ``ValidationError``), never an unhandled ``IntegrityError``/500.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: group_id
+        schema:
+          type: integer
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: path
+        name: slot_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - Calendar Group Scoped Quota Rules
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedGroupScopedQuotaRuleList'
+          description: ''
+    post:
+      operationId: calendar_groups_slots_quota_rules_create
+      description: Creates a group-scoped quota rule capping a calendar's live bookings
+        made through a group slot within a fixed period. Not metered -- no entitlement
+        limit gates this write.
+      summary: Create a group-scoped quota rule
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: group_id
+        schema:
+          type: integer
+        required: true
+      - in: path
+        name: slot_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - Calendar Group Scoped Quota Rules
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GroupScopedQuotaRuleCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/GroupScopedQuotaRuleCreate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/GroupScopedQuotaRuleCreate'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroupScopedQuotaRule'
+          description: ''
+  /calendar-groups/{group_id}/slots/{slot_id}/quota-rules{format}:
+    get:
+      operationId: calendar_groups_slots_quota_rules_formatted_list
+      description: |-
+        Nested under a group's slot: manage group-scoped quota rules for
+        calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
+        Phase 3c).
+
+        Mirrors ``GroupScopedAvailabilityWindowViewSet``/``GroupScopedBlockedTimeViewSet``
+        exactly -- reads go through
+        ``CalendarGroupSlotQuotaRule.objects.for_group_slot(...)``, every write
+        delegates to the Phase 3c ``CalendarGroupService`` quota-write methods,
+        and route visibility is gated by ``GroupScopedQuotaRulePermission``. The
+        resource is simpler than windows/blocks: quota rules are non-recurring
+        (no ``rrule_string``/``timezone``/time range) and unmetered (no
+        entitlement ``check_limit`` gates their creation -- only
+        ``check_not_restricted``, like blocks). There is also no
+        orphaned-booking report: a quota rule caps FUTURE bookings and never
+        narrows already-confirmed ones, so the create/update responses return the
+        saved rule directly rather than a write-result wrapper.
+
+        The uniqueness constraint on (calendar, slot, period) is surfaced here as
+        a 400 validation error (``CalendarGroupValidationError`` -> DRF
+        ``ValidationError``), never an unhandled ``IntegrityError``/500.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: group_id
+        schema:
+          type: integer
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: path
+        name: slot_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - Calendar Group Scoped Quota Rules
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedGroupScopedQuotaRuleList'
+          description: ''
+    post:
+      operationId: calendar_groups_slots_quota_rules_formatted_create
+      description: Creates a group-scoped quota rule capping a calendar's live bookings
+        made through a group slot within a fixed period. Not metered -- no entitlement
+        limit gates this write.
+      summary: Create a group-scoped quota rule
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: group_id
+        schema:
+          type: integer
+        required: true
+      - in: path
+        name: slot_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - Calendar Group Scoped Quota Rules
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GroupScopedQuotaRuleCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/GroupScopedQuotaRuleCreate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/GroupScopedQuotaRuleCreate'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroupScopedQuotaRule'
+          description: ''
+  /calendar-groups/{group_id}/slots/{slot_id}/quota-rules/{id}/:
+    get:
+      operationId: calendar_groups_slots_quota_rules_retrieve
+      description: |-
+        Nested under a group's slot: manage group-scoped quota rules for
+        calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
+        Phase 3c).
+
+        Mirrors ``GroupScopedAvailabilityWindowViewSet``/``GroupScopedBlockedTimeViewSet``
+        exactly -- reads go through
+        ``CalendarGroupSlotQuotaRule.objects.for_group_slot(...)``, every write
+        delegates to the Phase 3c ``CalendarGroupService`` quota-write methods,
+        and route visibility is gated by ``GroupScopedQuotaRulePermission``. The
+        resource is simpler than windows/blocks: quota rules are non-recurring
+        (no ``rrule_string``/``timezone``/time range) and unmetered (no
+        entitlement ``check_limit`` gates their creation -- only
+        ``check_not_restricted``, like blocks). There is also no
+        orphaned-booking report: a quota rule caps FUTURE bookings and never
+        narrows already-confirmed ones, so the create/update responses return the
+        saved rule directly rather than a write-result wrapper.
+
+        The uniqueness constraint on (calendar, slot, period) is surfaced here as
+        a 400 validation error (``CalendarGroupValidationError`` -> DRF
+        ``ValidationError``), never an unhandled ``IntegrityError``/500.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: group_id
+        schema:
+          type: integer
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      - in: path
+        name: slot_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - Calendar Group Scoped Quota Rules
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroupScopedQuotaRule'
+          description: ''
+    patch:
+      operationId: calendar_groups_slots_quota_rules_partial_update
+      description: Partial update -- only provided fields change.
+      summary: Update a group-scoped quota rule
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: group_id
+        schema:
+          type: integer
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      - in: path
+        name: slot_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - Calendar Group Scoped Quota Rules
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedGroupScopedQuotaRuleUpdate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedGroupScopedQuotaRuleUpdate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedGroupScopedQuotaRuleUpdate'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroupScopedQuotaRule'
+          description: ''
+    delete:
+      operationId: calendar_groups_slots_quota_rules_destroy
+      description: |-
+        Nested under a group's slot: manage group-scoped quota rules for
+        calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
+        Phase 3c).
+
+        Mirrors ``GroupScopedAvailabilityWindowViewSet``/``GroupScopedBlockedTimeViewSet``
+        exactly -- reads go through
+        ``CalendarGroupSlotQuotaRule.objects.for_group_slot(...)``, every write
+        delegates to the Phase 3c ``CalendarGroupService`` quota-write methods,
+        and route visibility is gated by ``GroupScopedQuotaRulePermission``. The
+        resource is simpler than windows/blocks: quota rules are non-recurring
+        (no ``rrule_string``/``timezone``/time range) and unmetered (no
+        entitlement ``check_limit`` gates their creation -- only
+        ``check_not_restricted``, like blocks). There is also no
+        orphaned-booking report: a quota rule caps FUTURE bookings and never
+        narrows already-confirmed ones, so the create/update responses return the
+        saved rule directly rather than a write-result wrapper.
+
+        The uniqueness constraint on (calendar, slot, period) is surfaced here as
+        a 400 validation error (``CalendarGroupValidationError`` -> DRF
+        ``ValidationError``), never an unhandled ``IntegrityError``/500.
+      summary: Delete a group-scoped quota rule
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: group_id
+        schema:
+          type: integer
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      - in: path
+        name: slot_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - Calendar Group Scoped Quota Rules
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /calendar-groups/{group_id}/slots/{slot_id}/quota-rules/{id}{format}:
+    get:
+      operationId: calendar_groups_slots_quota_rules_formatted_retrieve
+      description: |-
+        Nested under a group's slot: manage group-scoped quota rules for
+        calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
+        Phase 3c).
+
+        Mirrors ``GroupScopedAvailabilityWindowViewSet``/``GroupScopedBlockedTimeViewSet``
+        exactly -- reads go through
+        ``CalendarGroupSlotQuotaRule.objects.for_group_slot(...)``, every write
+        delegates to the Phase 3c ``CalendarGroupService`` quota-write methods,
+        and route visibility is gated by ``GroupScopedQuotaRulePermission``. The
+        resource is simpler than windows/blocks: quota rules are non-recurring
+        (no ``rrule_string``/``timezone``/time range) and unmetered (no
+        entitlement ``check_limit`` gates their creation -- only
+        ``check_not_restricted``, like blocks). There is also no
+        orphaned-booking report: a quota rule caps FUTURE bookings and never
+        narrows already-confirmed ones, so the create/update responses return the
+        saved rule directly rather than a write-result wrapper.
+
+        The uniqueness constraint on (calendar, slot, period) is surfaced here as
+        a 400 validation error (``CalendarGroupValidationError`` -> DRF
+        ``ValidationError``), never an unhandled ``IntegrityError``/500.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: group_id
+        schema:
+          type: integer
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      - in: path
+        name: slot_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - Calendar Group Scoped Quota Rules
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroupScopedQuotaRule'
+          description: ''
+    patch:
+      operationId: calendar_groups_slots_quota_rules_formatted_partial_update
+      description: Partial update -- only provided fields change.
+      summary: Update a group-scoped quota rule
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: group_id
+        schema:
+          type: integer
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      - in: path
+        name: slot_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - Calendar Group Scoped Quota Rules
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedGroupScopedQuotaRuleUpdate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedGroupScopedQuotaRuleUpdate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedGroupScopedQuotaRuleUpdate'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroupScopedQuotaRule'
+          description: ''
+    delete:
+      operationId: calendar_groups_slots_quota_rules_formatted_destroy
+      description: |-
+        Nested under a group's slot: manage group-scoped quota rules for
+        calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
+        Phase 3c).
+
+        Mirrors ``GroupScopedAvailabilityWindowViewSet``/``GroupScopedBlockedTimeViewSet``
+        exactly -- reads go through
+        ``CalendarGroupSlotQuotaRule.objects.for_group_slot(...)``, every write
+        delegates to the Phase 3c ``CalendarGroupService`` quota-write methods,
+        and route visibility is gated by ``GroupScopedQuotaRulePermission``. The
+        resource is simpler than windows/blocks: quota rules are non-recurring
+        (no ``rrule_string``/``timezone``/time range) and unmetered (no
+        entitlement ``check_limit`` gates their creation -- only
+        ``check_not_restricted``, like blocks). There is also no
+        orphaned-booking report: a quota rule caps FUTURE bookings and never
+        narrows already-confirmed ones, so the create/update responses return the
+        saved rule directly rather than a write-result wrapper.
+
+        The uniqueness constraint on (calendar, slot, period) is surfaced here as
+        a 400 validation error (``CalendarGroupValidationError`` -> DRF
+        ``ValidationError``), never an unhandled ``IntegrityError``/500.
+      summary: Delete a group-scoped quota rule
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: group_id
+        schema:
+          type: integer
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      - in: path
+        name: slot_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - Calendar Group Scoped Quota Rules
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
   /calendar-groups/{id}/:
     get:
       operationId: calendar_groups_retrieve
@@ -14471,6 +15092,8 @@ components:
       - batch_upsert_group_scoped_availability_windows
       - group_scoped_blocked_times
       - batch_upsert_group_scoped_blocked_times
+      - group_scoped_quota_rules
+      - batch_upsert_group_scoped_quota_rules
       type: string
       description: |-
         * `calendar_event` - Calendar Event
@@ -14521,6 +15144,8 @@ components:
         * `batch_upsert_group_scoped_availability_windows` - Batch Upsert Group-Scoped Availability Windows
         * `group_scoped_blocked_times` - Group-Scoped Blocked Times
         * `batch_upsert_group_scoped_blocked_times` - Batch Upsert Group-Scoped Blocked Times
+        * `group_scoped_quota_rules` - Group-Scoped Quota Rules
+        * `batch_upsert_group_scoped_quota_rules` - Batch Upsert Group-Scoped Quota Rules
     AvailableTime:
       type: object
       description: Serializer for AvailableTime model with recurring support.
@@ -16267,6 +16892,91 @@ components:
       - end_time
       - start_time
       - timezone
+    GroupScopedQuotaRule:
+      type: object
+      description: |-
+        Read representation of a group-scoped quota rule
+        (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 3c).
+
+        Simpler than ``GroupScopedAvailabilityWindowSerializer``/
+        ``GroupScopedBlockedTimeSerializer``: quota rules are non-recurring (no
+        ``rrule_string``, no ``timezone``, no time range) -- just the period and
+        the cap, matching exactly what ``CalendarGroupService``'s quota-write
+        methods accept, so the REST shape and the service signature cannot drift
+        apart.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        calendar_id:
+          type: integer
+          readOnly: true
+        group_slot_id:
+          type: integer
+          readOnly: true
+        period:
+          allOf:
+          - $ref: '#/components/schemas/PeriodEnum'
+          readOnly: true
+          description: |-
+            Fixed calendar period the cap applies to (day, week, or month).
+
+            * `day` - Day
+            * `week` - Week
+            * `month` - Month
+        cap:
+          type: integer
+          readOnly: true
+          description: Maximum number of live bookings made through this group slot
+            a calendar may hold within one period. Must be at least 1.
+        created:
+          type: string
+          format: date-time
+          readOnly: true
+        modified:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - calendar_id
+      - cap
+      - created
+      - group_slot_id
+      - id
+      - modified
+      - period
+    GroupScopedQuotaRuleCreate:
+      type: object
+      description: |-
+        Input for creating a group-scoped quota rule.
+
+        Field names map 1:1 onto
+        ``CalendarGroupService.create_group_scoped_quota_rule``'s keyword
+        arguments (``calendar_id``, ``period``, ``cap``) so the REST shape can
+        never silently drift from the service signature it delegates to.
+      properties:
+        calendar:
+          type: integer
+          description: Calendar this quota rule applies to. Must be a member of the
+            target slot.
+        period:
+          allOf:
+          - $ref: '#/components/schemas/PeriodEnum'
+          description: |-
+            Fixed calendar period the cap applies to (day, week, or month).
+
+            * `day` - Day
+            * `week` - Week
+            * `month` - Month
+        cap:
+          type: integer
+          minimum: 1
+          description: Maximum number of live bookings made through this group slot
+            the calendar may hold within one period.
+      required:
+      - calendar
+      - cap
+      - period
     MyMembership:
       type: object
       description: |-
@@ -16891,6 +17601,29 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/GroupScopedBlockedTime'
+    PaginatedGroupScopedQuotaRuleList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=400&limit=100
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=200&limit=100
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/GroupScopedQuotaRule'
     PaginatedOrganizationInvitationList:
       type: object
       required:
@@ -17535,6 +18268,19 @@ components:
           nullable: true
           description: RRULE string for a recurring block. Set to null to make it
             non-recurring.
+    PatchedGroupScopedQuotaRuleUpdate:
+      type: object
+      description: |-
+        Input for partially updating a group-scoped quota rule.
+
+        Every field is optional -- only provided fields change, mirroring
+        ``CalendarGroupService.update_group_scoped_quota_rule``.
+      properties:
+        period:
+          $ref: '#/components/schemas/PeriodEnum'
+        cap:
+          type: integer
+          minimum: 1
     PatchedOrganization:
       type: object
       description: |-
@@ -17723,6 +18469,16 @@ components:
       description: |-
         * `monthly` - Monthly
         * `annual` - Annual
+    PeriodEnum:
+      enum:
+      - day
+      - week
+      - month
+      type: string
+      description: |-
+        * `day` - Day
+        * `week` - Week
+        * `month` - Month
     PlanEntitlement:
       type: object
       properties:

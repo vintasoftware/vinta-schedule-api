@@ -76,6 +76,10 @@ class OrganizationResourceAccess(BasePermission):
         "batchUpsertGroupScopedBlockedTimes": (
             PublicAPIResources.BATCH_UPSERT_GROUP_SCOPED_BLOCKED_TIMES
         ),
+        "groupScopedQuotaRules": PublicAPIResources.GROUP_SCOPED_QUOTA_RULES,
+        "batchUpsertGroupScopedQuotaRules": (
+            PublicAPIResources.BATCH_UPSERT_GROUP_SCOPED_QUOTA_RULES
+        ),
         "createBlockedTime": PublicAPIResources.CREATE_BLOCKED_TIME,
         "updateBlockedTime": PublicAPIResources.UPDATE_BLOCKED_TIME,
         "deleteBlockedTime": PublicAPIResources.DELETE_BLOCKED_TIME,

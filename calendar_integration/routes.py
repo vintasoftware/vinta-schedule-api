@@ -10,6 +10,7 @@ from .views import (
     ExternalEventChangeRequestViewSet,
     GroupScopedAvailabilityWindowViewSet,
     GroupScopedBlockedTimeViewSet,
+    GroupScopedQuotaRuleViewSet,
 )
 
 
@@ -33,6 +34,11 @@ routes: list[RouteDict] = [
         "regex": r"calendar-groups/<int:group_id>/slots/<int:slot_id>/blocked-times",
         "viewset": GroupScopedBlockedTimeViewSet,
         "basename": "GroupScopedBlockedTimes",
+    },
+    {
+        "regex": r"calendar-groups/<int:group_id>/slots/<int:slot_id>/quota-rules",
+        "viewset": GroupScopedQuotaRuleViewSet,
+        "basename": "GroupScopedQuotaRules",
     },
     {
         "regex": r"calendar",

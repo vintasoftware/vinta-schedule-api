@@ -37,10 +37,12 @@ from calendar_integration.graphql import (
     ExternalEventChangeRequestGraphQLType,
     GroupScopedAvailabilityWindowGraphQLType,
     GroupScopedBlockedTimeGraphQLType,
+    GroupScopedQuotaRuleGraphQLType,
     UnavailableTimeWindowGraphQLType,
     WebhookSubscriptionStatusGraphQLType,
     group_scoped_availability_window_from_model,
     group_scoped_blocked_time_from_model,
+    group_scoped_quota_rule_from_model,
 )
 from calendar_integration.models import (
     AvailableTime,
@@ -48,6 +50,7 @@ from calendar_integration.models import (
     Calendar,
     CalendarEvent,
     CalendarGroup,
+    CalendarGroupSlotQuotaRule,
     CalendarManagementToken,
     ExternalEventChangeRequest,
 )
@@ -1047,6 +1050,42 @@ class Query:
 
         blocks = _slice_qs(qs.order_by("pk"), offset, limit)
         return [group_scoped_blocked_time_from_model(b) for b in blocks]
+
+    @strawberry.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def group_scoped_quota_rules(
+        self,
+        info: strawberry.Info,
+        group_slot_id: int,
+        calendar_id: int | None = None,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> list[GroupScopedQuotaRuleGraphQLType]:
+        """List group-scoped quota rules for a group slot's roster.
+
+        Mirrors the internal REST surface's list shape
+        (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 3c). Optionally filtered to
+        a single calendar in the slot's roster.
+        """
+        org = _get_org(info)
+
+        qs = CalendarGroupSlotQuotaRule.objects.for_group_slot(
+            group_slot_id
+        ).filter_by_organization(org.id)
+
+        # Owner-scope: for scoped tokens, only return rules on calendars in
+        # the token owner's set.
+        request: PublicApiHttpRequest = info.context.request
+        system_user = request.public_api_system_user
+        if system_user is not None:
+            allowed_ids = scoped_calendar_ids(system_user, org)
+            if allowed_ids is not None:
+                qs = qs.filter(calendar_fk__in=allowed_ids)
+
+        if calendar_id is not None:
+            qs = qs.filter(calendar_fk_id=calendar_id)
+
+        rules = _slice_qs(qs.order_by("pk"), offset, limit)
+        return [group_scoped_quota_rule_from_model(r) for r in rules]
 
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def child_organizations(

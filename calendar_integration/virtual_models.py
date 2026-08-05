@@ -9,6 +9,7 @@ from calendar_integration.models import (
     CalendarGroup,
     CalendarGroupSlot,
     CalendarGroupSlotMembership,
+    CalendarGroupSlotQuotaRule,
     CalendarOwnership,
     EventAttendance,
     EventExternalAttendance,
@@ -191,6 +192,23 @@ class GroupScopedBlockedTimeVirtualModel(v.VirtualModel):
 
     class Meta:
         model = BlockedTime
+
+
+class GroupScopedQuotaRuleVirtualModel(v.VirtualModel):
+    """Virtual model for ``GroupScopedQuotaRuleSerializer``
+    (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 3c).
+
+    Simpler than ``GroupScopedAvailabilityWindowVirtualModel``/
+    ``GroupScopedBlockedTimeVirtualModel``: a quota rule has no recurrence and
+    no time range, so there is no ``recurrence_rule``/``parent_recurring_object``
+    to fetch. The serializer sources ``calendar_id``/``group_slot_id`` from the
+    raw FK columns and never nests a ``calendar`` field, so no sub-field is
+    declared here either -- avoids pulling in ``CalendarVirtualModel``'s eager
+    memberships/calendar_ownerships graph, which this serializer never reads.
+    """
+
+    class Meta:
+        model = CalendarGroupSlotQuotaRule
 
 
 class ExternalEventChangeRequestVirtualModel(v.VirtualModel):
