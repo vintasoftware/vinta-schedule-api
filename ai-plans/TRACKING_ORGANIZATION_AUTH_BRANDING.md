@@ -61,7 +61,7 @@ Command translation (container → host):
 | 5 | Resolve branding (parentless) | 3 | ✅ done — [PR #211](https://github.com/vintasoftware/vinta-schedule-api/pull/211) | plan/organization-auth-branding/phase-5 |
 | 6 | Invitation reply-to | 2 | ✅ done — [PR #212](https://github.com/vintasoftware/vinta-schedule-api/pull/212) | plan/organization-auth-branding/phase-6 |
 | 7 | Post-auth destination server-side | 3 | ✅ done — [PR #213](https://github.com/vintasoftware/vinta-schedule-api/pull/213) | plan/organization-auth-branding/phase-7 |
-| 8 | Branded login by slug | 2 | ⏳ pending | plan/organization-auth-branding/phase-8 |
+| 8 | Branded login by slug | 2 | ✅ done — [PR #214](https://github.com/vintasoftware/vinta-schedule-api/pull/214) | plan/organization-auth-branding/phase-8 |
 | 9 | Client handoff (SPA) | 1 | ⏳ pending | plan/organization-auth-branding/phase-9 |
 
 ## Completed phases
@@ -139,9 +139,16 @@ Command translation (container → host):
 - **Review (no BLOCKER)**: open-redirect verdict CLEAN by full trace (custom dispatch skips tenant-scoping so even `X-Organization-Id` can't steer org). Fixed: type hint, env-example docs, in-place response rewrite. Open-redirect guards (`state["next"]=https://evil.example` → destination unaffected on branded + fallback paths) pass.
 - Gates: ruff/format clean, `makemigrations --check` no changes, `manage.py check` clean, mypy no new errors, **full suite 4833 passed**.
 
+### Phase 8 — Branded login by slug ✅
+- **Branch**: `plan/organization-auth-branding/phase-8` (base: phase-7) · **PR**: [#214](https://github.com/vintasoftware/vinta-schedule-api/pull/214)
+- **Implementer**: sonnet (T2) · **Reviewer**: sonnet (T3)
+- **Tests-only, no production change** — no backend gap (confirmed by reviewer): `brandingForTenant(slug=...)` already delivered in Phase 5; login is SPA-driven headless (no server-rendered login page); Phase 7 destination resolves only from `request.user`'s membership. Touch List's `accounts/urls.py`/`queries.py` entries were aspirational/superseded.
+- Added: standalone (parentless non-reseller entitled) org resolves own branding by own slug (prior slug tests all used resellers); generic-login-unchanged guards (callback ignores `X-Organization-Id` header, `Referer`, org cookie; redirect form has no org/slug field). No-oracle relies on existing Phase 5 tests.
+- Gates: ruff/format clean, `makemigrations --check` no changes, `manage.py check` clean, mypy no new errors, schema.yml byte-identical, **full suite 4838 passed**. NIT (docstring Phase 4→5) corrected.
+
 ## Current phase
 
-Phase 8 — Branded login by organization slug.
+Phase 9 — Client handoff for the SPA.
 
 ## Deferred phases
 
