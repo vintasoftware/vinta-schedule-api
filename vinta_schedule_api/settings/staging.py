@@ -13,5 +13,10 @@ HEADLESS_FRONTEND_URLS = {
     "account_reset_password_from_key": f"{FRONTEND_BASE_URL}/auth/reset-password/{{key}}",
     "account_signup": f"{FRONTEND_BASE_URL}/auth/signup",
     "account_accept_invitation": f"{FRONTEND_BASE_URL}/auth/accept-invite/?token={{token}}",
+    # See vinta_schedule_api.settings.production for why this exists alongside
+    # the entry above.
+    "account_accept_invitation_branded": (
+        f"{FRONTEND_BASE_URL}/o/{{org_slug}}/auth/accept-invite/?token={{token}}"
+    ),
     "socialaccount_login_error": f"{FRONTEND_BASE_URL}/auth/social-login-error",
 }

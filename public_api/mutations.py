@@ -3,7 +3,6 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, cast
 
-from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -60,7 +59,13 @@ from organizations.exceptions import (
     NoServiceAccountConfiguredError,
     UserAlreadyHasMembershipError,
 )
-from organizations.models import Organization, OrganizationBranding, OrganizationMembership
+from organizations.invitation_urls import build_invitation_accept_url
+from organizations.models import (
+    Organization,
+    OrganizationBranding,
+    OrganizationMembership,
+    resolve_branding_for_display,
+)
 from organizations.permissions import (
     BrandingWriteGateReason,
     evaluate_branding_write_gate,
@@ -1104,14 +1109,14 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             # The service always attaches _raw_token; retrieve it once so it is not
             # inadvertently retained beyond this scope.
             raw_token = invitation._raw_token  # type: ignore[attr-defined]
-            # Build the invite URL using the same template the branded email uses.
-            # A later change may refine this URL from the reseller's redirect_url
-            # once OrganizationBranding is available; for now we use the same base as the
-            # email.
-            url_template: str = getattr(settings, "HEADLESS_FRONTEND_URLS", {}).get(
-                "account_accept_invitation", ""
+            # Build the invite URL exactly as the branded email does -- keyed on the
+            # branding root's slug (not target_org's directly), so a child
+            # organization's invite carries its reseller's slug. See
+            # organizations.invitation_urls.build_invitation_accept_url.
+            branding_root = resolve_branding_for_display(target_org)
+            invite_url = build_invitation_accept_url(
+                branding_root.organization if branding_root else None, raw_token
             )
-            invite_url = url_template.format(token=raw_token) if url_template else None
 
         return CreateInvitationResult(
             invitation=InvitationResult(

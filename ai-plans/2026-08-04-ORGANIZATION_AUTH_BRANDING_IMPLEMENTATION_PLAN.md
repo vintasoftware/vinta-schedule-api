@@ -65,6 +65,7 @@ them):
 | **Slug is mutable** | An admin can change it; previously-issued branded login URLs stop resolving and fall back to our default identity. No history table, no reclaim policy. The alternative — keeping old slugs alive — buys URL stability at the cost of a table and a policy for a problem no customer has yet. |
 | **Slug validation** | Three rules, because it is self-serve and lands in a URL path: a reserved-word list covering our own route names and names implying us; format and length limits (lowercase alphanumeric with hyphens, bounded); and rejection of mixed-script and confusable characters so one organization cannot register a visual twin of another's. The last is a phishing defense, not tidiness — a lookalike slug plus a lookalike logo is the whole attack. |
 | **Login URL shape** | Path segment carrying the slug. Survives copy-paste in a way a query parameter does not, and reads as a real branded entry point. |
+| **Invitation accept URL shape (2026-08-06 amendment)** | Same path-segment convention as the login URL: `HEADLESS_FRONTEND_URLS["account_accept_invitation_branded"]` = `{FRONTEND_BASE_URL}/o/{org_slug}/auth/accept-invite/?token={token}`, used instead of the plain `account_accept_invitation` template whenever the invitation's branding root has a slug. Phase 5 shipped the resolution that brands the email's *content* but never threaded the resolved root into the *link* itself — every invitation kept the same slug-less URL regardless of branding, so the SPA's accept page had nothing to key a `brandingForTenant` call on before the invitee authenticates. Keyed on the **branding root** (`resolve_branding_for_display(organization).organization`), not the invited organization directly — a reseller's child organization has no slug of its own, so its invitations must carry the reseller's. Falls back to the plain template, byte-for-byte, when no branding root resolves or the branded template is unset — an unbranded organization's invitation is unchanged. See `organizations/invitation_urls.py`. |
 | **Entitlement seeds** | Untouched. The seeded plans already say what we want — free off, unlimited on — and this work is about dropping the reseller gate, not about repricing. |
 | **Audit** | Branding writes go through `AuditService` with diffs on update, matching how it is wired into other business services. A branded invitation email is a plausible phishing vector, so a trail of who set what and when has value beyond bookkeeping. |
 | **Capability signal** | A read-only `can_manage_branding` field on the membership/organization payload the SPA already fetches, computed as parentless-and-entitled — deliberately **not** including the slug. An organization missing only a slug should still see the branding page, with a refusal that reads as "pick a slug first" rather than a page that silently is not there. Folding the slug in would hide the page from exactly the admins who are one step away from using it. |
@@ -512,6 +513,30 @@ Changes:
    semantics.
 3. @public_api/queries.py: `branding_for_tenant` inherits the widened root; add slug lookup
    alongside the tenant-id argument, preserving the default-on-unknown behavior for both.
+4. **(2026-08-06 amendment)** @organizations/invitation_urls.py: new module holding
+   `build_invitation_accept_url(branding_root, token)`. The accept-invite *link itself*
+   was never keyed on the resolved branding root's slug — only the email's rendered
+   *content* (app name, logo, colors) went through `resolve_branding_for_display`. Every
+   invitation, branded or not, kept pointing at the same slug-less
+   `HEADLESS_FRONTEND_URLS["account_accept_invitation"]` template, so a branded
+   organization's accept page had no way to know which organization's branding to render.
+   There is also no unauthenticated "resolve invitation by token" endpoint anywhere in the
+   codebase (confirmed by reading `organizations.services.OrganizationService
+   .accept_invitation`, which requires an authenticated user and narrows by *email*, not
+   token, before verifying the hash) — so the slug can only reach the SPA through the URL
+   itself; a second backend lookup call is not an available alternative. See **Guiding
+   Decisions** for the new `account_accept_invitation_branded` template and its path-segment
+   shape.
+5. **(2026-08-06 amendment)** @organizations/services.py:
+   `OrganizationService.invite_user_to_organization` resolves
+   `resolve_branding_for_display(organization)` and passes the branding row's
+   `organization` (the branding root, not necessarily the invited organization — a child
+   under a reseller must carry the reseller's slug) into `build_invitation_accept_url`
+   before building `context_kwargs["invitation_url"]`.
+6. **(2026-08-06 amendment)** @public_api/mutations.py: `Mutation.create_invitation`'s
+   `send_email=False` branch does the same resolution against `target_org` before building
+   `invite_url`, replacing the ad-hoc `.format(token=...)` call the phase originally shipped
+   with (which the code's own comment already flagged as provisional).
 
 Spec use-case: **Use-case 2** (invited user accepts from a branded organization),
 **Use-case 4** (invited user of a reseller's child accepts), and **Use-case 6** (a branded
@@ -523,11 +548,20 @@ Tests:
   non-reseller returns itself; for a child under a reseller returns the reseller; for a child
   under a non-reseller parent returns `None`; for an unentitled parentless organization the
   display variant returns `None` while values remain in the database.
+  **(2026-08-06 amendment)** @organizations/tests/test_invitation_urls.py — `None` and a
+  slug-less branding root fall back to the plain template byte-for-byte; a slugged branding
+  root produces the branded template; a missing branded template falls back to the plain one
+  rather than raising.
 - **Integration**: @organizations/tests/test_branding.py — the invitation email context
   carries the organization's app name, logo, and colors for a branded parentless
   organization, and our defaults for an unentitled one whose row still exists.
   @public_api/tests/test_queries.py — `brandingForTenant` returns the organization's branding
   by id and by slug, and the default for an unknown value of either.
+  **(2026-08-06 amendment)** @organizations/tests/test_services.py — a branded, slugged
+  organization's invite produces a branded `invitation_url` in the notification
+  context_kwargs; an unbranded organization's is byte-for-byte unchanged.
+  @public_api/tests/test_provisioning_flow.py — the `sendEmail=false` `inviteUrl` for a
+  reseller's child organization carries the *reseller's* slug, not the child's.
 
 **Review models**: reviewer Tier 4 — this changes the return value of the single function
 every branding caller depends on, including an unauthenticated public query. A mistake here
@@ -541,7 +575,8 @@ to defaults.
 Acceptance: an invited user of a branded parentless organization receives an email and sees
 an accept page carrying that organization's identity; a child organization under a branded
 reseller still renders the reseller's; an unentitled organization renders ours with its saved
-values intact.
+values intact. **(2026-08-06 amendment)** The accept-invite link itself carries the branding
+root's slug when one resolves, and is byte-for-byte unchanged when none does.
 
 ---
 
@@ -829,6 +864,13 @@ objective can only be run after the SPA ships its side.
 - [public_api/queries.py](../public_api/queries.py) — edited
 - [organizations/tests/test_branding.py](../organizations/tests/test_branding.py) — edited
 - [public_api/tests/test_queries.py](../public_api/tests/test_queries.py) — edited
+- **(2026-08-06 amendment)** @organizations/invitation_urls.py — new
+- **(2026-08-06 amendment)** [organizations/services.py](../organizations/services.py) — edited (`invite_user_to_organization` resolves the branding root before building `invitation_url`)
+- **(2026-08-06 amendment)** [public_api/mutations.py](../public_api/mutations.py) — edited (`create_invitation`'s `send_email=False` branch, same resolution)
+- **(2026-08-06 amendment)** [vinta_schedule_api/settings/production.py](../vinta_schedule_api/settings/production.py), [staging.py](../vinta_schedule_api/settings/staging.py), [local.py](../vinta_schedule_api/settings/local.py), [test.py](../vinta_schedule_api/settings/test.py) — edited (new `account_accept_invitation_branded` template; `base.py` has no `account_accept_invitation` key today, so it needs none either)
+- **(2026-08-06 amendment)** @organizations/tests/test_invitation_urls.py — new
+- **(2026-08-06 amendment)** [organizations/tests/test_services.py](../organizations/tests/test_services.py) — edited
+- **(2026-08-06 amendment)** [public_api/tests/test_provisioning_flow.py](../public_api/tests/test_provisioning_flow.py) — edited
 
 **Phase 6 — invitation reply-to**
 - [organizations/notification_contexts.py](../organizations/notification_contexts.py) — edited
@@ -860,3 +902,26 @@ objective can only be run after the SPA ships its side.
   test enforcing that every top-level URL route segment is in the reserved-slug set.
   Affected phases: 1 (body-amended); all downstream rebased. Branches force-pushed: phase-1,
   phase-2a, phase-2b, phase-3, phase-4, phase-5, phase-6, phase-7, phase-8, phase-9.
+
+- **2026-08-06** — Fix: the invitation accept-invite *link* never carried branding. Found
+  during post-release manual testing: an invited user of a branded organization still landed
+  on the generic, vendor-owned `/auth/accept-invite/?token=...` URL, so the accept page (SPA)
+  had no way to render that organization's identity — the objective Phase 5 was meant to
+  deliver held for the email's *content* (app name, logo, colors, via
+  `resolve_branding_for_display`) but not for the link itself, which both call sites
+  (`organizations/services.py`'s `invite_user_to_organization` and
+  `public_api/mutations.py`'s `create_invitation`) built from the same slug-less
+  `HEADLESS_FRONTEND_URLS["account_accept_invitation"]` template regardless of branding.
+  Confirmed there is no alternative path either: no unauthenticated "resolve invitation by
+  token" endpoint exists anywhere in the codebase, so the SPA's accept page can only learn
+  which organization a bare token belongs to if the URL itself carries it. Fix: a new
+  `organizations/invitation_urls.py` module (`build_invitation_accept_url`) and a new
+  `account_accept_invitation_branded` settings template, keyed on the **branding root's**
+  slug (so a reseller's child organization's invitation carries the reseller's slug, not its
+  own unset one) — same path-segment convention as the Phase 8 login URL shape. Falls back to
+  the original template, byte-for-byte, when no branding root resolves or the branded
+  template is absent. Affected phase: 5 (body-amended, touch list updated); no other phase
+  touched, and no branch was rebased or force-pushed — Phase 5's PR (#211) is already merged
+  to `main`, so this landed as a new, ordinary follow-up change rather than a history rewrite
+  of a closed PR. Full `organizations/` + `public_api/` suite re-run clean (1493 passed) after
+  the change.

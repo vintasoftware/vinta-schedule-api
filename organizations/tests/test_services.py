@@ -19,6 +19,7 @@ from organizations.exceptions import (
 )
 from organizations.models import (
     Organization,
+    OrganizationBranding,
     OrganizationInvitation,
     OrganizationMembership,
     OrganizationRole,
@@ -350,6 +351,66 @@ class TestOrganizationService:
             OrganizationInvitation.objects.filter(email=email, organization=organization).count()
             == 1
         )
+
+    def test_invite_user_to_organization_branded_org_gets_the_branded_invitation_url(
+        self, organization_service_with_mocks, user, mock_notification_service, settings
+    ):
+        """Organization Auth-Area Branding plan, Phase 5 amendment (2026-08-06): the
+        accept-invite link must carry the branding root's slug, or the SPA has no way
+        to resolve that organization's branding before the invitee authenticates."""
+        settings.HEADLESS_FRONTEND_URLS = {
+            "account_accept_invitation": "https://app.example.com/auth/accept-invite/?token={token}",
+            "account_accept_invitation_branded": (
+                "https://app.example.com/o/{org_slug}/auth/accept-invite/?token={token}"
+            ),
+        }
+        # provision_default_subscription (conftest.py) auto-grants every entitlement,
+        # white_label_branding included, to every baker-made Organization -- so only
+        # the slug and an actual OrganizationBranding row need to be set up here.
+        branded_org = baker.make(Organization, parent=None, slug="brandco")
+        baker.make(OrganizationBranding, organization=branded_org, app_name="BrandCo")
+
+        with patch("organizations.services.transaction.on_commit") as mock_on_commit:
+            mock_on_commit.side_effect = lambda func: func()
+
+            organization_service_with_mocks.invite_user_to_organization(
+                email="invitee@example.com",
+                first_name="In",
+                last_name="Vitee",
+                invited_by=user,
+                organization=branded_org,
+            )
+
+        call_kwargs = mock_notification_service.create_one_off_notification.call_args[1]
+        invitation_url = call_kwargs["context_kwargs"]["invitation_url"]
+        assert invitation_url.startswith("https://app.example.com/o/brandco/auth/accept-invite/?token=")
+
+    def test_invite_user_to_organization_unbranded_org_keeps_the_plain_invitation_url(
+        self, organization_service_with_mocks, user, organization, mock_notification_service, settings
+    ):
+        """An organization with no branding row configured must get exactly the URL
+        it always got -- this change must not alter behavior for the common case."""
+        settings.HEADLESS_FRONTEND_URLS = {
+            "account_accept_invitation": "https://app.example.com/auth/accept-invite/?token={token}",
+            "account_accept_invitation_branded": (
+                "https://app.example.com/o/{org_slug}/auth/accept-invite/?token={token}"
+            ),
+        }
+
+        with patch("organizations.services.transaction.on_commit") as mock_on_commit:
+            mock_on_commit.side_effect = lambda func: func()
+
+            organization_service_with_mocks.invite_user_to_organization(
+                email="invitee2@example.com",
+                first_name="In",
+                last_name="Vitee",
+                invited_by=user,
+                organization=organization,
+            )
+
+        call_kwargs = mock_notification_service.create_one_off_notification.call_args[1]
+        invitation_url = call_kwargs["context_kwargs"]["invitation_url"]
+        assert invitation_url.startswith("https://app.example.com/auth/accept-invite/?token=")
 
     def test_accept_invitation_valid_token(self, organization_service, user, organization):
         """Test accepting an invitation with a valid token."""
