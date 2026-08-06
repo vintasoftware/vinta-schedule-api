@@ -150,7 +150,9 @@ class TestProfilePictureUploadParams:
         assert data["region"] == "us-east-1"
         assert data["bucket"] == "test-bucket"
         assert data["endpoint"] == "https://s3.us-east-1.amazonaws.com"
-        assert data["acl"] == "private"
+        # The only canned ACL the media bucket accepts; see
+        # s3direct_overrides/tests/test_upload_acl_contract.py.
+        assert data["acl"] == "bucket-owner-full-control"
 
     @patch("users.views.get_aws_credentials")
     def test_success_by_pk(self, mock_creds, auth_client, user, settings):

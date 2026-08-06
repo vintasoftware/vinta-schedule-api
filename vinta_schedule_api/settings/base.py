@@ -469,7 +469,13 @@ S3DIRECT_DESTINATIONS = {
         "key": generate_s3direct_file_name,
         "key_args": "uploads/profile_pictures",
         "auth": lambda u: u.is_authenticated,
-        "acl": "private",
+        # The media bucket has Object Ownership set to BucketOwnerEnforced, so ACLs are
+        # disabled and every canned ACL except this one is rejected. s3direct offers no
+        # way to omit the header — an empty `acl` makes it fall back to `public-read` —
+        # so this is the only value that survives. Objects stay private either way: the
+        # bucket blocks public access and is readable only through the signed-URL
+        # CloudFront distribution.
+        "acl": "bucket-owner-full-control",
     },
     "branding_logos": {
         "key": generate_s3direct_file_name,
