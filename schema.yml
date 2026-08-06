@@ -3694,6 +3694,68 @@ paths:
             slug; or not an admin
         '404':
           description: Branding not yet configured
+  /branding/logo-upload-params/:
+    post:
+      operationId: branding_logo_upload_params_create
+      description: |-
+        Signs a ``branding_logos`` S3 upload for the acting organization's admin.
+
+        The shipped ``django-s3direct`` signing view (``POST
+        /s3direct/get_upload_params/``) is a plain Django view authenticated only
+        by session cookie -- it never reaches DRF's ``JWTAuthentication``, so the
+        JWT-only frontend SPA gets ``AnonymousUser`` there and is refused
+        unconditionally. This view is the REST sibling of the GraphQL
+        ``create_branding_logo_upload`` mutation (``public_api.mutations.Mutation``),
+        reusing the same ``sign_branding_logo_upload`` signing helper so the S3
+        key/credential logic has one implementation.
+
+        Gated on the two-condition branding **eligibility** check
+        (``organizations.permissions.check_branding_read_eligibility`` -- parentless
+        AND entitled), not the three-condition write gate: the frontend uploads a
+        logo on file-picker change, before the slug/branding PUT on form submit, so
+        requiring a slug here would refuse an upload the write gate itself never
+        sees. Matches ``OrganizationBrandingView.get``'s read gate.
+      summary: Sign a branding logo upload
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      tags:
+      - Branding
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationBrandingLogoUploadParamsRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OrganizationBrandingLogoUploadParamsRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/OrganizationBrandingLogoUploadParamsRequest'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationBrandingLogoUploadParams'
+          description: ''
+        '400':
+          description: Disallowed content type or file size
+        '403':
+          description: Organization has a parent or lacks the entitlement; or not
+            an admin
   /branding/logo/{org_slug}/:
     get:
       operationId: branding_logo_retrieve
@@ -15146,6 +15208,57 @@ components:
           maxLength: 200
       required:
       - app_name
+    OrganizationBrandingLogoUploadParams:
+      type: object
+      description: |-
+        Response body for ``OrganizationBrandingLogoUploadParamsView`` — the same
+        shape ``organizations.branding_logo.sign_branding_logo_upload`` and the
+        GraphQL ``create_branding_logo_upload`` mutation return.
+      properties:
+        object_key:
+          type: string
+        access_key_id:
+          type: string
+          nullable: true
+        session_token:
+          type: string
+          nullable: true
+        region:
+          type: string
+          nullable: true
+        bucket:
+          type: string
+          nullable: true
+        endpoint:
+          type: string
+          nullable: true
+        acl:
+          type: string
+      required:
+      - access_key_id
+      - acl
+      - bucket
+      - endpoint
+      - object_key
+      - region
+      - session_token
+    OrganizationBrandingLogoUploadParamsRequest:
+      type: object
+      description: |-
+        Request body for ``OrganizationBrandingLogoUploadParamsView``. Mirrors
+        ``users.serializers.ProfilePictureUploadParamsRequestSerializer``.
+      properties:
+        file_name:
+          type: string
+        file_type:
+          type: string
+        file_size:
+          type: integer
+          minimum: 1
+      required:
+      - file_name
+      - file_size
+      - file_type
     OrganizationBrief:
       type: object
       description: |-
