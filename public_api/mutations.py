@@ -7,7 +7,6 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.core.validators import URLValidator
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
@@ -15,6 +14,9 @@ import strawberry
 from dependency_injector.wiring import Provide, inject
 from graphql import GraphQLError
 
+from audit.constants import AuditAction
+from audit.diff import compute_diff
+from audit.services import AuditService
 from calendar_integration.constants import CalendarType
 from calendar_integration.exceptions import (
     BookingPolicyViolationError,
@@ -47,9 +49,26 @@ from calendar_integration.services.dataclasses import (
     ExternalAttendeeInputData,
     ResourceAllocationInputData,
 )
-from organizations.exceptions import NoServiceAccountConfiguredError, UserAlreadyHasMembershipError
+from organizations.branding_logo import (
+    branding_diff_state,
+    build_logo_delivery_url,
+    normalize_uploaded_logo_key,
+    sign_branding_logo_upload,
+)
+from organizations.exceptions import (
+    BrandingLogoUploadRejectedError,
+    NoServiceAccountConfiguredError,
+    UserAlreadyHasMembershipError,
+)
 from organizations.models import Organization, OrganizationBranding, OrganizationMembership
+from organizations.permissions import (
+    BrandingWriteGateReason,
+    evaluate_branding_write_gate,
+    is_branding_eligible_organization,
+)
+from organizations.redirect_url_validation import validate_redirect_url
 from organizations.services import OrganizationService
+from organizations.slug_validation import validate_organization_slug
 from payments.exceptions import OverLimitError
 from payments.services.subscription_service import SubscriptionService
 from public_api.capabilities import assert_org_can_invite, assert_target_in_subtree
@@ -60,6 +79,7 @@ from public_api.permissions import IsAuthenticated, OrganizationResourceAccess
 from public_api.scoping import assert_calendar_in_owner_scope
 from public_api.services import PublicAPIAuthService
 from public_api.types import (
+    BrandingLogoUploadResult,
     BrandingResult,
     CreateInvitationInput,
     CreateInvitationResult,
@@ -94,10 +114,66 @@ if TYPE_CHECKING:
 
 # Module-scope constants for validation
 HEX_COLOR_PATTERN = re.compile(r"^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$")
-_url_validator = URLValidator(schemes=["http", "https"])
 # Mirrors CalendarEvent.title's max_length so an over-long title is rejected with a clean
 # GraphQL error rather than surfacing as a DB-level error after work has begun.
 EVENT_TITLE_MAX_LENGTH = 255
+
+# One message per ``organizations.permissions.BrandingWriteGateReason`` failure --
+# this surface's translation of the shared write gate into its own error idiom
+# (GraphQLError), matching the plan's Shared gate helper guiding decision. Kept
+# distinct in wording from the REST 403 bodies (organizations.exceptions) and the
+# admin form error (organizations.admin) so each surface reads naturally, while
+# preserving the same three-way distinguishability.
+_BRANDING_GATE_MESSAGES: dict[BrandingWriteGateReason, str] = {
+    BrandingWriteGateReason.HAS_PARENT: (
+        "This organization has a parent organization and cannot manage its own "
+        "branding. Branding for organizations inside a hierarchy is controlled by "
+        "the reseller organization above them."
+    ),
+    BrandingWriteGateReason.NOT_ENTITLED: (
+        "This organization's plan does not include white-label branding."
+    ),
+    BrandingWriteGateReason.NO_SLUG: (
+        "Pick a public slug for this organization before configuring branding. "
+        "Supply `slug` on this mutation, or set one via the organization endpoint first."
+    ),
+}
+
+
+def _apply_input_slug(organization: Organization, slug: str) -> None:
+    """Validate ``slug`` with the shared organization-slug rules, check
+    uniqueness excluding ``organization`` itself, and persist it immediately.
+
+    Called from ``update_branding`` when ``UpdateBrandingInput.slug`` is
+    supplied, BEFORE the write gate's slug condition is evaluated -- see that
+    mutation's docstring. The caller wraps this call in ``transaction.atomic()``:
+    an invalid or colliding slug raises ``GraphQLError`` here, and because that
+    propagates out of the atomic block, the slug write (and anything else the
+    block did) is rolled back rather than partially applied.
+
+    The uniqueness pre-check above is a TOCTOU race: a concurrent caller could
+    claim the same slug between the ``exists()`` check and this function's own
+    ``save()``. The ``save()`` call is wrapped in its own nested
+    ``transaction.atomic()`` (a savepoint) so a resulting ``IntegrityError`` can
+    be caught and converted to the same friendly ``GraphQLError`` without
+    poisoning the caller's outer atomic block -- an uncaught ``IntegrityError``
+    marks the enclosing transaction/savepoint for rollback, so catching it
+    anywhere outside its own savepoint would leave the outer block unusable.
+    """
+    try:
+        validate_organization_slug(slug)
+    except DjangoValidationError as e:
+        raise GraphQLError("; ".join(e.messages)) from e
+
+    if Organization.objects.filter(slug=slug).exclude(pk=organization.pk).exists():
+        raise GraphQLError(f"An organization with the slug '{slug}' already exists.")
+
+    organization.slug = slug
+    try:
+        with transaction.atomic():
+            organization.save(update_fields=["slug"])
+    except IntegrityError as e:
+        raise GraphQLError(f"An organization with the slug '{slug}' already exists.") from e
 
 
 @dataclass
@@ -190,6 +266,21 @@ def get_booking_policy_permission_service(
     if booking_policy_permission_service is None:
         raise GraphQLError("Missing required dependency: booking_policy_permission_service")
     return booking_policy_permission_service
+
+
+@inject
+def get_audit_service(
+    audit_service: Annotated["AuditService | None", Provide["audit_service"]] = None,
+) -> "AuditService":
+    """Resolve the AuditService from the DI container.
+
+    Used by mutations that write directly (no dedicated service layer holding
+    its own injected ``audit_service``) -- e.g. ``update_branding`` -- mirroring
+    ``get_booking_policy_mutation_dependencies``'s resolve-or-raise shape.
+    """
+    if audit_service is None:
+        raise GraphQLError("Missing required dependency: audit_service")
+    return audit_service
 
 
 def _get_org_and_init_calendar_service(
@@ -1014,7 +1105,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             # inadvertently retained beyond this scope.
             raw_token = invitation._raw_token  # type: ignore[attr-defined]
             # Build the invite URL using the same template the branded email uses.
-            # A later change may refine this URL from the reseller's return_url_allowlist
+            # A later change may refine this URL from the reseller's redirect_url
             # once OrganizationBranding is available; for now we use the same base as the
             # email.
             url_template: str = getattr(settings, "HEADLESS_FRONTEND_URLS", {}).get(
@@ -1235,15 +1326,43 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         input: UpdateBrandingInput,  # noqa: A002
     ) -> UpdateBrandingResult:
         """
-        Update or create branding for the acting (reseller) organization.
+        Update or create branding for the acting organization.
 
         The mutation:
-        1. Checks that the acting org has can_invite_organizations (via assert_org_can_invite).
-        2. Validates app_name: non-empty and max 120 characters.
-        3. Validates primary_color and secondary_color format (#RRGGBB or #RRGGBBAA).
-        4. Validates each entry in return_url_allowlist is a valid URL using Django's URLValidator.
-        5. Upserts OrganizationBranding on the acting org only (always keyed to acting_org).
-        6. Returns the upserted branding row (without internal fields like support_email/allowlist).
+        1. When ``input.slug`` is supplied, validates it with the shared
+           organization-slug rules and a uniqueness check (excluding the acting
+           org itself) and applies it to the acting org BEFORE step 2 -- see
+           ``UpdateBrandingInput.slug``'s docstring and ``_apply_input_slug``.
+        2. Evaluates the shared branding write gate -- parentless, entitled,
+           slug-set (``organizations.permissions.evaluate_branding_write_gate``).
+           Replaces the old ``can_invite_organizations``-only check
+           (``assert_org_can_invite``): a reseller is not exempt from any of
+           the three conditions. Raises a distinguishable ``GraphQLError`` per
+           failed condition.
+        3. Validates app_name: non-empty and max 120 characters.
+        4. Validates primary_color and secondary_color format (#RRGGBB or #RRGGBBAA).
+        5. Validates redirect_url: HTTPS scheme, no wildcard, no path-prefix pattern
+           (organizations.redirect_url_validation, shared with the REST serializer).
+        6. Upserts OrganizationBranding on the acting org only (always keyed to acting_org).
+        7. Returns the upserted branding row (without internal fields like support_email/
+           redirect_url).
+
+        Steps 1 through 6 run inside one ``transaction.atomic()`` block: a
+        rejected slug, a failed gate, or any field-validation failure rolls
+        back everything this call did -- including the slug write -- rather
+        than partially applying (see the plan's Slug is a precondition for
+        branding guiding decision).
+
+        Audited (Organization Auth-Area Branding plan, Phase 4): every raise
+        above (slug rejection, gate failure, field validation) happens before
+        the upsert and rolls back the whole atomic block, so a refused write
+        never reaches the audit call below -- nothing is recorded for it. A
+        first-time upsert records a CREATE with no diff; an upsert that
+        replaces an existing row records an UPDATE with a diff naming only the
+        fields that changed, using the before-state captured BEFORE the
+        transaction starts. Actor is the token's system user
+        (``AuditService.actor_from_system_user``), matching the actor
+        derivation already used by the BookingPolicy partner-API mutations.
 
         The token's OrganizationResourceAccess must include the BRANDING resource.
         """
@@ -1251,62 +1370,152 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         if not acting_org:
             raise GraphQLError("Organization not found")
 
-        # Gate: check the org can invite before proceeding
-        assert_org_can_invite(acting_org)
-
-        # Validate app_name: must be non-empty and at most 120 characters
-        if input.app_name:
-            if not input.app_name.strip():
-                raise GraphQLError("app_name must not be empty or whitespace-only.")
-            if len(input.app_name) > 120:
-                raise GraphQLError("app_name must be 120 characters or fewer.")
-
-        # Validate color format: #RRGGBB or #RRGGBBAA (6 or 8 hex chars after #)
-        if input.primary_color and not HEX_COLOR_PATTERN.match(input.primary_color):
-            raise GraphQLError(
-                f"Invalid primary_color format: '{input.primary_color}'. "
-                "Expected #RRGGBB or #RRGGBBAA."
-            )
-
-        if input.secondary_color and not HEX_COLOR_PATTERN.match(input.secondary_color):
-            raise GraphQLError(
-                f"Invalid secondary_color format: '{input.secondary_color}'. "
-                "Expected #RRGGBB or #RRGGBBAA."
-            )
-
-        # Validate return_url_allowlist entries are valid URLs using Django's URLValidator
-        allowlist = input.return_url_allowlist or []
-        for url in allowlist:
-            try:
-                _url_validator(url)
-            except DjangoValidationError as e:
-                raise GraphQLError(
-                    f"Invalid URL in return_url_allowlist: '{url}'. Must be a valid http(s) URL."
-                ) from e
-
-        # Upsert branding on the acting org (always acts on acting org, never another org)
-        branding, _ = OrganizationBranding.objects.update_or_create(
-            organization=acting_org,
-            defaults={
-                "app_name": input.app_name,
-                "logo_url": input.logo_url,
-                "primary_color": input.primary_color,
-                "secondary_color": input.secondary_color,
-                "support_email": input.support_email,
-                "return_url_allowlist": allowlist,
-            },
+        existing_branding = OrganizationBranding.objects.filter(organization=acting_org).first()
+        before_state = (
+            branding_diff_state(existing_branding) if existing_branding is not None else None
         )
 
-        # Return the branding without internal fields (no support_email, no allowlist)
+        with transaction.atomic():
+            # Slug application happens BEFORE the gate is evaluated so a
+            # partner-API caller can satisfy the gate's slug precondition and
+            # set branding in one call.
+            if input.slug:
+                _apply_input_slug(acting_org, input.slug)
+
+            gate_reason = evaluate_branding_write_gate(acting_org)
+            if gate_reason is not BrandingWriteGateReason.OK:
+                raise GraphQLError(_BRANDING_GATE_MESSAGES[gate_reason])
+
+            # Validate app_name: must be non-empty and at most 120 characters
+            if input.app_name:
+                if not input.app_name.strip():
+                    raise GraphQLError("app_name must not be empty or whitespace-only.")
+                if len(input.app_name) > 120:
+                    raise GraphQLError("app_name must be 120 characters or fewer.")
+
+            # Validate color format: #RRGGBB or #RRGGBBAA (6 or 8 hex chars after #)
+            if input.primary_color and not HEX_COLOR_PATTERN.match(input.primary_color):
+                raise GraphQLError(
+                    f"Invalid primary_color format: '{input.primary_color}'. "
+                    "Expected #RRGGBB or #RRGGBBAA."
+                )
+
+            if input.secondary_color and not HEX_COLOR_PATTERN.match(input.secondary_color):
+                raise GraphQLError(
+                    f"Invalid secondary_color format: '{input.secondary_color}'. "
+                    "Expected #RRGGBB or #RRGGBBAA."
+                )
+
+            # Validate redirect_url: HTTPS scheme, no wildcard, no path-prefix pattern.
+            # Shared with the REST serializer's validate_redirect_url.
+            try:
+                validate_redirect_url(input.redirect_url)
+            except DjangoValidationError as e:
+                raise GraphQLError("; ".join(e.messages)) from e
+
+            # `logo_url` is write-only here despite the name: normalize a bare key or a
+            # full signed/public URL down to the bare S3 key -- the persisted value,
+            # never a URL. See organizations.branding_logo.normalize_uploaded_logo_key.
+            # Raises BrandingLogoUploadRejectedError if the normalized key falls
+            # outside the branding_logos upload prefix (e.g. a key from another
+            # destination in the shared media bucket) -- see BRANDING_LOGO_KEY_PREFIX.
+            try:
+                logo_key = normalize_uploaded_logo_key(input.logo_url)
+            except BrandingLogoUploadRejectedError as e:
+                raise GraphQLError(str(e)) from e
+
+            # Upsert branding on the acting org (always acts on acting org, never another org)
+            branding, created = OrganizationBranding.objects.update_or_create(
+                organization=acting_org,
+                defaults={
+                    "app_name": input.app_name,
+                    "logo": logo_key,
+                    "primary_color": input.primary_color,
+                    "secondary_color": input.secondary_color,
+                    "support_email": input.support_email,
+                    "redirect_url": input.redirect_url,
+                },
+            )
+
+        audit_service = get_audit_service()
+        actor = AuditService.actor_from_system_user(info.context.request.public_api_system_user)
+        subject = audit_service.subject_from_instance(branding, label=branding.app_name)
+        if created:
+            audit_service.record(
+                organization_id=acting_org.id,
+                action=AuditAction.CREATE,
+                actor=actor,
+                subject=subject,
+            )
+        else:
+            after_state = branding_diff_state(branding)
+            diff = compute_diff(before_state or {}, after_state)
+            audit_service.record(
+                organization_id=acting_org.id,
+                action=AuditAction.UPDATE,
+                actor=actor,
+                subject=subject,
+                diff=diff,
+            )
+
+        # Return the branding without internal fields (no support_email, no redirect_url).
+        # logo_url is always the logo delivery route's URL, keyed by the acting org's
+        # slug -- never a raw or signed S3 URL, regardless of whether a logo is set.
         branding_result = BrandingResult(
             id=branding.id,
             app_name=branding.app_name,
-            logo_url=branding.logo_url,
+            logo_url=build_logo_delivery_url(branding.organization, request=info.context.request),
             primary_color=branding.primary_color,
             secondary_color=branding.secondary_color,
         )
 
         return UpdateBrandingResult(branding=branding_result)
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def create_branding_logo_upload(
+        self,
+        info: strawberry.Info,
+        file_name: str,
+        file_type: str,
+        file_size: int,
+    ) -> BrandingLogoUploadResult:
+        """
+        Mint a signed upload payload for the acting organization's branding logo.
+
+        Same shape s3direct's own signing view returns, for partner-API callers
+        that cannot POST to that Django-session-scoped `/s3direct/` endpoint
+        directly. Gated on the branding eligibility helper -- the acting
+        organization must have no parent and hold the `white_label_branding`
+        entitlement -- evaluated against the acting organization directly
+        (`is_branding_eligible_organization`), NOT the destination's own `auth`
+        callable: that callable only ever receives a bare user (see
+        `organizations.permissions.user_administers_branding_eligible_organization`),
+        so this mutation gets the tighter, org-specific check its caller's token
+        already carries via `OrganizationResourceAccess`.
+
+        Content-type and size are re-validated against the `branding_logos`
+        destination's own allowlist/size cap (PNG/JPEG/WebP only, size-capped) --
+        rejected before any S3 credential is minted, naming the specific rule
+        broken.
+
+        The token's OrganizationResourceAccess must include the BRANDING resource.
+        """
+        acting_org = info.context.request.public_api_organization
+        if not acting_org:
+            raise GraphQLError("Organization not found")
+
+        if not is_branding_eligible_organization(acting_org):
+            raise GraphQLError(
+                "This organization is not eligible to manage branding: it must have "
+                "no parent organization and hold the white-label branding entitlement."
+            )
+
+        try:
+            payload = sign_branding_logo_upload(file_name, file_type, file_size)
+        except BrandingLogoUploadRejectedError as e:
+            raise GraphQLError(str(e)) from e
+
+        return BrandingLogoUploadResult(**payload)
 
     @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def create_webhook_configuration(

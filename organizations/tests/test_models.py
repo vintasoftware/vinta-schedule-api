@@ -239,10 +239,14 @@ class TestOrganizationParentAndCapabilities:
         child = baker.make(Organization, parent=org, can_invite_organizations=False)
         assert child.get_branding_root() is None
 
-    def test_get_branding_root_none_when_no_parent(self):
-        """get_branding_root() returns None for a standalone non-reseller org."""
+    def test_get_branding_root_returns_self_when_no_parent(self):
+        """get_branding_root() returns itself for a standalone (parentless)
+        non-reseller org -- Organization Auth-Area Branding plan, Phase 5 widens
+        resolution beyond resellers to any parentless organization. The reseller
+        branch above is checked first and unchanged; this is the new fallback for
+        the case that used to return None."""
         org = baker.make(Organization, can_invite_organizations=False)
-        assert org.get_branding_root() is None
+        assert org.get_branding_root() == org
 
     def test_parent_protect_prevents_deletion_of_reseller_with_children(self):
         """on_delete=PROTECT prevents deleting a reseller that has children."""
@@ -436,3 +440,45 @@ class TestExternalEventUpdatePolicy:
         )
         org.refresh_from_db()
         assert org.external_event_update_policy == ExternalEventUpdatePolicy.CHANGE_REQUEST
+
+
+@pytest.mark.django_db
+class TestOrganizationSlug:
+    """Unit tests for Organization.slug (Phase 1 — self-serve organization slug)."""
+
+    def test_slug_is_optional_on_creation(self):
+        """A freshly created Organization has slug=None when not supplied."""
+        org = baker.make(Organization)
+        assert org.slug is None
+
+    def test_slug_can_be_set_on_creation(self):
+        """slug can be supplied at creation time."""
+        org = baker.make(Organization, slug="my-org")
+        assert org.slug == "my-org"
+
+    def test_multiple_null_slugs_coexist(self):
+        """Postgres's unique index admits any number of NULL slugs."""
+        org_a = baker.make(Organization)
+        org_b = baker.make(Organization)
+        assert org_a.slug is None
+        assert org_b.slug is None
+        # No IntegrityError raised by baker.make above is the assertion — both rows
+        # persisted with slug=NULL.
+        assert Organization.objects.filter(slug__isnull=True).count() >= 2
+
+    def test_duplicate_slug_raises_integrity_error(self):
+        """Two organizations cannot share the same non-null slug."""
+        baker.make(Organization, slug="duplicate-slug")
+
+        with pytest.raises(IntegrityError):
+            with django.db.transaction.atomic():
+                baker.make(Organization, slug="duplicate-slug")
+
+    def test_changing_an_existing_slug_succeeds(self):
+        """slug is mutable after being set."""
+        org = baker.make(Organization, slug="first-slug")
+        org.slug = "second-slug"
+        org.save()
+
+        org.refresh_from_db()
+        assert org.slug == "second-slug"

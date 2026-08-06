@@ -2,11 +2,13 @@ from typing import Annotated, Any
 
 from django import forms
 from django.contrib import admin
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.http import HttpRequest
 
 from dependency_injector.wiring import Provide, inject
 
 from organizations.models import Organization, OrganizationBranding
+from organizations.slug_validation import validate_organization_slug
 from payments.services.subscription_service import SubscriptionService
 
 
@@ -22,15 +24,48 @@ class OrganizationAdminForm(forms.ModelForm):
     immutability, is what protects the rule.
     """
 
+    # Explicitly declared as CharField (rather than left to ModelForm
+    # auto-build from Organization.slug's models.SlugField, and NOT as
+    # forms.SlugField) so Django does NOT auto-attach the SlugField's
+    # ASCII-only RegexValidator: it would run before clean_slug() below and
+    # preempt the confusables/reserved-word rules, which are the sole source
+    # of format/confusable/reserved validation on this form.
+    slug = forms.CharField(required=False)
+
     class Meta:
         model = Organization
         fields = (
             "name",
+            "slug",
             "parent",
             "should_sync_rooms",
             "external_event_update_policy",
             "can_invite_organizations",
         )
+
+    def clean_slug(self) -> str | None:
+        """Run the shared slug rules, then check uniqueness against the DB.
+
+        A blank submission normalizes to ``None`` (the model's NULL-when-unset
+        contract) before the uniqueness check — otherwise two organizations both
+        left blank would collide on the stored empty string, which is not the
+        "multiple NULLs coexist" behavior the field is nullable for.
+        """
+        value = self.cleaned_data.get("slug")
+        if not value:
+            return None
+
+        try:
+            validate_organization_slug(value)
+        except DjangoValidationError as exc:
+            raise forms.ValidationError(exc.messages) from exc
+
+        queryset = Organization.objects.filter(slug=value)
+        if self.instance.pk is not None:
+            queryset = queryset.exclude(pk=self.instance.pk)
+        if queryset.exists():
+            raise forms.ValidationError(f"An organization with the slug '{value}' already exists.")
+        return value
 
     def clean(self) -> dict[str, Any] | None:
         cleaned_data = super().clean()
@@ -83,6 +118,7 @@ class OrganizationAdmin(admin.ModelAdmin):
     list_display = (
         "id",
         "name",
+        "slug",
         "can_invite_organizations",
         "external_event_update_policy",
         "parent",
@@ -95,7 +131,7 @@ class OrganizationAdmin(admin.ModelAdmin):
         "created",
         "modified",
     )
-    search_fields = ("name", "id")
+    search_fields = ("name", "id", "slug")
     ordering = ("-created",)
     readonly_fields = ("created", "modified", "id")
 
@@ -106,6 +142,7 @@ class OrganizationAdmin(admin.ModelAdmin):
                 "fields": (
                     "id",
                     "name",
+                    "slug",
                     "parent",
                     "should_sync_rooms",
                     "external_event_update_policy",
@@ -159,10 +196,58 @@ class OrganizationAdmin(admin.ModelAdmin):
         subscription_service.create_subscription_for_organization(obj)
 
 
+class OrganizationBrandingAdminForm(forms.ModelForm):
+    """Refuses to save branding for an organization that has a parent.
+
+    Admin is not an escape hatch: "no branding for organizations inside a
+    hierarchy" (see the plan's Non-goals) holds for staff too, mirroring here
+    what the other two write surfaces (``OrganizationBrandingView``,
+    ``update_branding``) enforce via ``organizations.permissions.
+    evaluate_branding_write_gate``. Deliberately checks ONLY the parent
+    condition, not entitlement or slug: those are self-serve/billing states an
+    operator may legitimately need to seed branding ahead of (e.g. before the
+    organization's own admin has picked a slug), whereas the parent rule is a
+    hard structural boundary with no legitimate admin override.
+    """
+
+    class Meta:
+        model = OrganizationBranding
+        fields = (
+            "organization",
+            "app_name",
+            "logo",
+            "primary_color",
+            "secondary_color",
+            "support_email",
+            "redirect_url",
+        )
+
+    def clean(self) -> dict[str, Any] | None:
+        cleaned_data = super().clean()
+        organization = None if cleaned_data is None else cleaned_data.get("organization")
+        if organization is not None and organization.parent_id is not None:
+            raise forms.ValidationError(
+                {
+                    "organization": (
+                        "This organization has a parent organization and cannot have "
+                        "its own branding. Branding for organizations inside a "
+                        "hierarchy is controlled by the reseller organization above them."
+                    )
+                }
+            )
+        return cleaned_data
+
+
 @admin.register(OrganizationBranding)
 class OrganizationBrandingAdmin(admin.ModelAdmin):
-    """Admin interface for OrganizationBranding."""
+    """Admin interface for OrganizationBranding.
 
+    ``form`` refuses to save branding for an organization that has a parent
+    (``OrganizationBrandingAdminForm.clean``) -- the parent-present rule holds
+    for staff too, not just the REST/GraphQL write surfaces.
+    """
+
+    form = OrganizationBrandingAdminForm
     list_display = ("id", "organization", "app_name", "support_email", "created_at", "updated_at")
     list_filter = ("created_at", "updated_at")
     search_fields = ("organization__name", "app_name", "support_email")
@@ -175,11 +260,11 @@ class OrganizationBrandingAdmin(admin.ModelAdmin):
                     "id",
                     "organization",
                     "app_name",
-                    "logo_url",
+                    "logo",
                     "primary_color",
                     "secondary_color",
                     "support_email",
-                    "return_url_allowlist",
+                    "redirect_url",
                     "created_at",
                     "updated_at",
                 )

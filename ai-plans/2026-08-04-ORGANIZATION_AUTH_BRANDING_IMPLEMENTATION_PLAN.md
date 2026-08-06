@@ -51,7 +51,7 @@ them):
 | **Branding root** | `Organization.get_branding_root()` returns the nearest reseller ancestor if one exists, otherwise `self` when the organization has no parent, otherwise `None`. Today it returns `None` for a parentless non-reseller, which is exactly the line that locks branding to resellers. Changing this one method is what widens the read side; every presentation caller already flows through it. |
 | **Write gate** | Writes require the acting organization to have `parent_id IS NULL`, to hold the `white_label_branding` entitlement, and to end the write with a slug set. Replaces the `is_reseller()` check on every write surface. Parentless-ness forbids child organizations; the entitlement keeps the free plan out; the slug guarantees a branded organization always has a branded login URL to hand out. Each condition fails with its own distinguishable reason — the first is permanent, the second is a billing state, the third is a step the admin can take right now. |
 | **Enforcement layer** | Service/permission layer, per surface — REST view, GraphQL mutation, admin form. No model-level `clean()` and no database constraint. A cross-row rule on `parent_id` would need a trigger rather than a `CHECK`, and the write surfaces are a closed, enumerable set. The cost is that a future fourth surface must remember; the shared helper below keeps that cheap. |
-| **Shared gate helper** | One function in the organizations app, called by all three surfaces, so the rule has a single definition even though enforcement is per-surface. Each surface translates its refusal into its own error idiom (DRF `PermissionDenied`, `GraphQLError`, admin `ValidationError`). |
+| **Shared gate helper** | One function in the organizations app, called by all three surfaces, so the rule has a single definition even though enforcement is per-surface. Each surface translates its refusal into its own error idiom (DRF `PermissionDenied`, `GraphQLError`, admin `ValidationError`). The helper resolves the entitlement service through the DI framework (`@inject` + `Annotated[EntitlementService, Provide["entitlement_service"]] = None`, fail-closed), not by importing `di_core.containers.container` as a service locator — amended 2026-08-05, applies to every branding entitlement helper in Phases 2b/3/4. |
 | **Logo storage** | The upload replaces `logo_url` rather than sitting beside it. One source of truth, and we stop rendering an arbitrary third-party URL on our own login page — hotlinking a URL an organization controls means whatever it points at today can become something else tomorrow, on a page carrying our session. |
 | **Logo upload path** | Reuse the shipped `s3direct` signing view with a new destination rather than writing our own endpoint, plus a GraphQL mutation returning the same signed payload for partner-API callers. The destination's `auth` callable is tightened from bare `is_authenticated` to the branding-eligible check, so the signing surface is not open to every logged-in user on the platform. That callable receives only the user, so it authorizes "this user administers some branding-eligible organization" rather than "acting for this specific organization" — accepted, because the generated key is unique per upload and the object only becomes visible once a branding row references it. |
 | **Logo delivery** | An unauthenticated route on our domain streams the object; the bucket stays private and no signed URL ever reaches a client. This is what makes the logo work in an invitation email opened days later, which a 2-hour signed URL cannot. The route is keyed on the organization's slug, not on an object key, so it resolves slug → branding row → stored key and can only ever serve an object some branding row references. An unknown slug returns our default logo, matching `brandingForTenant`'s no-enumeration-oracle behavior. |
@@ -230,6 +230,13 @@ Tests:
   claiming the same slug gets 400 with a message naming the collision, not a 500; changing
   an existing slug succeeds and the old value stops resolving.
   @organizations/tests/test_organization_admin.py — the same rules apply in admin.
+- **Route/reserved-slug sync guard** (added by the 2026-08-05 amendment): a test that
+  enumerates the project's top-level URL route segments and asserts every one of them is
+  present in the reserved-slug set, so a future route added without updating the reserved
+  list fails CI. This answers the review question on keeping the two in sync: enforcement
+  lives in the test suite, not in a reviewer's memory. The reverse direction (a slug already
+  taken when a route of the same name is later added) is a deliberate non-goal — routes are
+  ours to name and the reserved list is the one-way guard; the test documents that stance.
 
 **Review models**: reviewer Tier 3 — the confusables and reserved-word rules are the phishing
 control for the whole feature, and a permissive gap in either is invisible until someone
@@ -310,6 +317,13 @@ Changes:
    organization is parentless and holds `white_label_branding`. This phase is the first
    caller; Phase 3 extends it with the slug condition and wires it into the write surfaces.
    Introduced here rather than in Phase 3 so the signing surface is never the loose version.
+   The entitlement lookup is obtained through the DI framework — `@inject` plus an
+   `Annotated[EntitlementService, Provide["entitlement_service"]] = None` parameter,
+   fail-closed when the service is unresolvable — following the established pattern
+   (`audit/services.py`, `accounts/account_adapters.py`); the `organizations` package is
+   already wired via `container.wire(packages=INTERNAL_INSTALLED_APPS)`. Do NOT reach into
+   `di_core.containers.container` as a service locator. (Clarified by the 2026-08-05
+   amendment; the same rule governs the helpers Phase 3 and Phase 4 add.)
 2. @vinta_schedule_api/settings/base.py: add a `branding_logos` entry to
    `S3DIRECT_DESTINATIONS` — private ACL, its own key prefix, content-type allowlist of
    PNG/JPEG/WebP, a maximum size in the signed policy, and an `auth` callable tightened from
@@ -833,3 +847,16 @@ objective can only be run after the SPA ships its side.
 
 **Phase 9 — client handoff**
 - @docs/ or the handoff skill's output location — new document
+
+## Amendments
+
+- **2026-08-05** — Address stacked-PR review comments. (1) DI correctness (PR #210,
+  `organizations/permissions.py`, reviewer hugobessa): the branding entitlement helpers must
+  obtain `EntitlementService` through the DI framework (`@inject` + `Annotated[...,
+  Provide["entitlement_service"]] = None`, fail-closed) instead of the
+  `di_core.containers.container` service-locator. Applied at the origin of the pattern.
+  Affected phases: 2b, 3, 4 (body-amended); 2a, 5, 6, 7, 8, 9 (rebased). (2) Route/reserved
+  sync (PR #206, `organizations/slug_validation.py`, reviewer arthurzeras): added a Phase 1
+  test enforcing that every top-level URL route segment is in the reserved-slug set.
+  Affected phases: 1 (body-amended); all downstream rebased. Branches force-pushed: phase-1,
+  phase-2a, phase-2b, phase-3, phase-4, phase-5, phase-6, phase-7, phase-8, phase-9.

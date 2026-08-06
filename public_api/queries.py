@@ -1,7 +1,6 @@
 import datetime
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, cast
-from urllib.parse import urlsplit
 
 from django.db.models import Count as DjangoCount
 from django.db.models import OuterRef, Subquery, Value
@@ -48,10 +47,10 @@ from calendar_integration.models import (
     ExternalEventChangeRequest,
 )
 from calendar_integration.services.ics_service import CalendarEventICSService
+from organizations.branding_logo import build_logo_delivery_url
 from organizations.models import (
     Organization,
     OrganizationMembership,
-    resolve_branding,
     resolve_branding_for_display,
 )
 from public_api.capabilities import assert_org_can_invite
@@ -64,7 +63,6 @@ from public_api.types import (
     ChildOrganizationMetrics,
     PublicApiHttpRequest,
     PublicBrandingResult,
-    ValidateReturnUrlResult,
 )
 from users.graphql import UserGraphQLType
 from users.models import User
@@ -165,54 +163,22 @@ def _get_org(info: strawberry.Info):
     return org
 
 
-def _vinta_default_branding() -> PublicBrandingResult:
+def _vinta_default_branding(request=None) -> PublicBrandingResult:
     """Return the Vinta Schedule default branding sentinel.
 
     Used for both missing tenants (no enumeration oracle) and unbranded
     organizations, ensuring the response is identical for unknown vs unbranded
-    to prevent enumeration attacks.
+    to prevent enumeration attacks. ``logo_url`` is the logo delivery route's
+    URL keyed by its reserved "default" sentinel slug (see
+    ``organizations.branding_logo.build_logo_delivery_url``), never empty --
+    the route always streams something, even our own default logo.
     """
     return PublicBrandingResult(
         app_name="Vinta Schedule",
-        logo_url="",
+        logo_url=build_logo_delivery_url(None, request=request),
         primary_color="",
         secondary_color="",
     )
-
-
-_ALLOWED_RETURN_URL_SCHEMES = ("http", "https")
-_DEFAULT_SCHEME_PORTS = {"http": 80, "https": 443}
-
-
-def _return_url_origin(raw: str) -> tuple[str, str, int] | None:
-    """Parse a URL into its (scheme, host, port) origin, or None if not eligible.
-
-    Returns None for anything that can never be an allowed return URL:
-    - non-http/https schemes (javascript:, data:, etc.)
-    - protocol-relative URLs (//host — no scheme)
-    - URLs without a host
-    - unparseable input or out-of-range ports
-
-    The port is normalized to the scheme default when omitted so that
-    https://app.example.com and https://app.example.com:443 share one origin.
-    Host is lowercased; comparison of two origins is then EXACT tuple equality,
-    so https://app.example.com never admits https://app.example.com.evil.com.
-    """
-    try:
-        parts = urlsplit(raw)
-        scheme = parts.scheme.lower()
-        if scheme not in _ALLOWED_RETURN_URL_SCHEMES:
-            return None
-        host = parts.hostname
-        if not host:
-            return None
-        port = parts.port
-    except (ValueError, TypeError):
-        # Malformed URL or out-of-range port (parts.port raises ValueError).
-        return None
-    if port is None:
-        port = _DEFAULT_SCHEME_PORTS[scheme]
-    return (scheme, host.lower(), port)
 
 
 def _slice_qs[TQuerySet: QuerySet](qs: TQuerySet, offset: int, limit: int) -> TQuerySet:
@@ -1449,29 +1415,45 @@ class Query:
         ]
 
     @strawberry.field()
-    def branding_for_tenant(self, tenant_id: strawberry.ID) -> PublicBrandingResult:
+    def branding_for_tenant(
+        self,
+        info: strawberry.Info,
+        tenant_id: strawberry.ID | None = None,
+        slug: str | None = None,
+    ) -> PublicBrandingResult:
         """Get resolved branding for a tenant, or vinta default if unbranded.
 
         This is an unauthenticated, rate-limited public query for frontend interstitials.
-        It returns the parent-walked branding for the given tenant ID, or the vinta
-        default when none. No enumeration oracle: unknown tenant ID returns the same
-        default as an unbranded subtree.
+        It returns the parent-walked branding for the given tenant, identified either by
+        ``tenant_id`` or by ``slug``, or the vinta default when neither resolves. No
+        enumeration oracle: an unknown tenant ID and an unknown slug both return the
+        same default as an unbranded subtree, indistinguishably.
+
+        When both arguments are supplied, ``tenant_id`` takes precedence -- callers are
+        expected to pass exactly one. When neither is supplied, the organization is
+        treated as unknown (same default-on-unknown path).
 
         Args:
             tenant_id: The ID of the organization to get branding for.
+            slug: The organization's public slug, as an alternative to ``tenant_id``.
 
         Returns:
             PublicBrandingResult with app name, logo, and colors (no secrets).
         """
-        try:
-            tenant_id_int = int(tenant_id)
-            org = Organization.objects.filter(id=tenant_id_int).first()
-        except (ValueError, TypeError):
-            org = None
+        request = info.context.request
+        org = None
+        if tenant_id is not None:
+            try:
+                tenant_id_int = int(tenant_id)
+                org = Organization.objects.filter(id=tenant_id_int).first()
+            except (ValueError, TypeError):
+                org = None
+        elif slug is not None:
+            org = Organization.objects.filter(slug=slug).first()
 
         if org is None:
-            # Unknown tenant ID returns the vinta default (no enumeration oracle)
-            return _vinta_default_branding()
+            # Unknown tenant ID/slug returns the vinta default (no enumeration oracle)
+            return _vinta_default_branding(request=request)
 
         # Resolve branding by walking up the parent chain to the nearest reseller.
         # Presentation caller -> gated on `white_label_branding`; a reseller without it
@@ -1479,79 +1461,16 @@ class Query:
         branding = resolve_branding_for_display(org)
         if branding is None:
             # Unbranded subtree returns the vinta default
-            return _vinta_default_branding()
+            return _vinta_default_branding(request=request)
 
-        # Return the resolved branding (no secrets exposed)
+        # Return the resolved branding (no secrets exposed). logo_url is keyed by the
+        # resolved branding ROOT's slug (branding.organization -- the reseller ancestor
+        # for a child `org`, or `org` itself), never by `org`'s own slug: a child usually
+        # has none, and the delivery route must resolve to the reseller's real logo, not
+        # silently fall back to the default.
         return PublicBrandingResult(
             app_name=branding.app_name,
-            logo_url=branding.logo_url,
+            logo_url=build_logo_delivery_url(branding.organization, request=request),
             primary_color=branding.primary_color,
             secondary_color=branding.secondary_color,
         )
-
-    @strawberry.field()
-    def validate_return_url(self, tenant_id: strawberry.ID, url: str) -> ValidateReturnUrlResult:
-        """Validate an OAuth return ("next") URL against a tenant's branding allowlist.
-
-        Unauthenticated, rate-limited public query for the OAuth interstitial
-        callback, which has no session yet and so cannot use the reseller-admin
-        REST /branding/ endpoint. Answers a yes/no question WITHOUT ever
-        serializing the reseller-internal return_url_allowlist (preserves §4.6).
-
-        The candidate URL's ORIGIN (scheme + host + port) must EXACTLY equal the
-        origin of an allowlist entry — never a prefix/substring match — so an
-        allowlisted https://app.example.com does NOT admit
-        https://app.example.com.evil.com. Only http/https candidates can ever be
-        allowed; javascript:, data:, protocol-relative //host, and unparseable
-        input are rejected.
-
-        No enumeration oracle: unknown tenant ID, no branding row, empty
-        allowlist, and any not-allowed case ALL return the identical shape
-        {allowed: False, sanitized_url: None} with no error that distinguishes
-        "tenant exists" from "doesn't". Never raises on a bad tenant ID.
-
-        Args:
-            tenant_id: The ID of the organization whose reseller allowlist applies.
-            url: The candidate return URL to validate.
-
-        Returns:
-            ValidateReturnUrlResult with allowed and, when allowed, the echoed url.
-        """
-        not_allowed = ValidateReturnUrlResult(allowed=False, sanitized_url=None)
-
-        # Scheme/parse guard first — never reveals anything about the tenant.
-        candidate_origin = _return_url_origin(url)
-        if candidate_origin is None:
-            return not_allowed
-
-        try:
-            tenant_id_int = int(tenant_id)
-            org = Organization.objects.filter(id=tenant_id_int).first()
-        except (ValueError, TypeError):
-            org = None
-
-        if org is None:
-            # Unknown / unparseable tenant — same shape as not-allowed (no oracle).
-            return not_allowed
-
-        # Deliberately the UNGATED `resolve_branding`. This is an auth-flow decision
-        # (may this OAuth return URL be honoured?), not a cosmetic one: gating it would
-        # let a reseller's downgrade off a cosmetic entitlement break the OAuth return
-        # flow for every tenant underneath it. See `resolve_branding`'s docstring.
-        branding = resolve_branding(org)
-        if branding is None:
-            # Unbranded subtree — same shape as not-allowed (no oracle).
-            return not_allowed
-
-        # Build the set of allowed origins; ineligible entries are simply skipped.
-        # The allowlist itself is NEVER serialized into the response (§4.6).
-        allowed_origins = {
-            origin
-            for entry in (branding.return_url_allowlist or [])
-            if (origin := _return_url_origin(entry)) is not None
-        }
-
-        if candidate_origin in allowed_origins:
-            return ValidateReturnUrlResult(allowed=True, sanitized_url=url)
-
-        return not_allowed

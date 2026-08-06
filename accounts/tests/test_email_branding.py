@@ -28,17 +28,24 @@ from users.factories import UserFactory
 
 
 def _make_reseller_with_branding(app_name="ResellApp"):
-    """Create a reseller org with a branding row and return (reseller, branding)."""
+    """Create a reseller org with a branding row and return (reseller, branding).
+
+    ``slug`` is set so the invitation context's ``logo_url`` (the logo delivery
+    route's URL, see ``organizations.branding_logo.build_logo_delivery_url``)
+    resolves to a deterministic, org-specific path rather than the reserved
+    "default" sentinel.
+    """
     reseller = baker.make(
         Organization,
         name="Reseller Org",
         can_invite_organizations=True,
+        slug="reseller-org",
     )
     branding = baker.make(
         OrganizationBranding,
         organization=reseller,
         app_name=app_name,
-        logo_url="https://reseller.example.com/logo.png",
+        logo="uploads/branding_logos/reseller-logo.png",
         support_email="support@reseller.com",
         primary_color="#FF0000",
         secondary_color="#00FF00",
@@ -91,7 +98,16 @@ class TestEmailBranding:
 
         assert "branding" in ctx, "Branding should be in context for a branded child org"
         assert ctx["branding"]["app_name"] == "ResellApp"
-        assert ctx["branding"]["logo_url"] == "https://reseller.example.com/logo.png"
+        # logo_url is an ABSOLUTE delivery-route URL, keyed by the reseller's slug --
+        # never a signed S3 URL (would contain query-string auth params) and never a
+        # bare key (would have no scheme/host).
+        logo_url = ctx["branding"]["logo_url"]
+        assert logo_url.startswith("http://") or logo_url.startswith("https://"), logo_url
+        assert logo_url.endswith("/branding/logo/reseller-org/"), logo_url
+        assert "?" not in logo_url, f"logo_url must not carry signed-URL query params: {logo_url}"
+        assert "uploads/branding_logos" not in logo_url, (
+            f"logo_url must not be the bare stored key: {logo_url}"
+        )
         assert ctx["branding"]["support_email"] == "support@reseller.com"
         assert ctx["branding"]["primary_color"] == "#FF0000"
         assert ctx["branding"]["secondary_color"] == "#00FF00"

@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, ClassVar
 
 from django.conf import settings
-from django.contrib.postgres.fields import ArrayField
 from django.core.exceptions import FieldDoesNotExist, ObjectDoesNotExist
 from django.db import models
 
@@ -19,8 +18,10 @@ from organizations.managers import (
     OrganizationInvitationManager,
     OrganizationMembershipManager,
 )
+from organizations.slug_validation import SLUG_MAX_LENGTH
 from payments.billing_constants import Entitlement
 from payments.entitlement_cache import has_entitlement_cached
+from s3direct_overrides.model_fields import S3DirectImageField
 
 
 if TYPE_CHECKING:
@@ -125,6 +126,25 @@ class Organization(BaseModel):
             "Enables the whole reseller capability bundle."
         ),
     )
+    slug = models.SlugField(
+        max_length=SLUG_MAX_LENGTH,
+        unique=True,
+        null=True,
+        blank=True,
+        default=None,
+        help_text=(
+            "Public, URL-safe identifier used by the organization's branded login page "
+            "and by brandingForTenant. Optional until the organization sets one "
+            "self-serve; stored as NULL (never empty string) when unset — default=None "
+            "keeps a field left blank in a form/serializer NULL rather than '', which "
+            "is what lets the unique index admit any number of organizations with no "
+            "slug. Mutable after set: changing it orphans previously-issued branded "
+            "login URLs, which then fall back to the default identity rather than "
+            "erroring. Format, reserved-word, and confusable-character rules live in "
+            "organizations.slug_validation and are enforced by each write surface "
+            "(REST serializer, admin form, GraphQL input), not here."
+        ),
+    )
 
     class Meta:
         constraints: ClassVar = [
@@ -143,10 +163,21 @@ class Organization(BaseModel):
 
     def get_branding_root(self) -> Organization | None:
         """
-        Walk up the parent chain to the nearest ancestor with can_invite_organizations=True.
+        Resolve the organization whose branding row applies to this organization.
 
-        Returns the reseller ancestor (which has branding), or None if no such ancestor exists.
-        The None case means this org (or its entire lineage) has no reseller, so vinta defaults apply.
+        Checked in this order:
+        1. Walk up the parent chain for the nearest ancestor with
+           ``can_invite_organizations=True`` (a reseller). If one exists, it wins --
+           unchanged, and checked first, which is what preserves reseller precedence:
+           a child under a reseller always resolves to the reseller, never to itself.
+        2. Otherwise, if this organization itself has no parent (``parent_id is
+           None``), it is its own branding root -- a parentless organization can hold
+           and apply its own branding (see the write gate in
+           ``organizations.permissions``, which requires the same parentless
+           condition before admitting a branding write).
+        3. Otherwise (a child with no reseller ancestor), ``None`` -- it cannot brand
+           itself (enforced by the write gate) and has no reseller to inherit from, so
+           vinta defaults apply.
         """
         seen: set[int] = set()
         org: Organization | None = self
@@ -155,6 +186,8 @@ class Organization(BaseModel):
                 return org
             seen.add(org.pk)
             org = org.parent
+        if self.parent_id is None:
+            return self
         return None
 
 
@@ -468,10 +501,17 @@ class OrganizationBranding(models.Model):
         max_length=120,
         help_text="The display name of the white-labeled app (e.g., 'MyScheduler').",
     )
-    logo_url = models.URLField(
+    logo = S3DirectImageField(
+        dest="branding_logos",
         blank=True,
-        default="",
-        help_text="URL to the reseller's logo image.",
+        null=True,
+        help_text=(
+            "S3 key of the reseller's uploaded logo image (PNG/JPEG/WebP; SVG rejected -- "
+            "see vinta_schedule_api.settings.base.S3DIRECT_DESTINATIONS['branding_logos']). "
+            "Replaces the old logo_url: the upload goes straight from the browser to our "
+            "storage, and nothing renders it as a raw or signed URL -- every read goes "
+            "through organizations.branding_logo.build_logo_delivery_url instead."
+        ),
     )
     primary_color = models.CharField(
         max_length=9,
@@ -490,11 +530,16 @@ class OrganizationBranding(models.Model):
         default="",
         help_text="Email address for the From/reply-to on branded transactional emails.",
     )
-    return_url_allowlist = ArrayField(
-        models.URLField(),
-        default=list,
+    redirect_url = models.URLField(
         blank=True,
-        help_text="List of URLs that are allowed as return addresses after OAuth flows.",
+        default="",
+        help_text=(
+            "Single post-authentication redirect destination for this organization. "
+            "Replaces the old return_url_allowlist: no caller-supplied redirect target "
+            "is ever honored, so there is nothing to validate at request time and no "
+            "open-redirect surface. Must be HTTPS with no wildcard character and no "
+            "path-prefix pattern (organizations.redirect_url_validation)."
+        ),
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -517,13 +562,19 @@ def resolve_branding(org: Organization) -> OrganizationBranding | None:
 
     If no reseller ancestor exists, returns None (vinta default branding applies).
 
-    **Deliberately ungated.** The ``white_label_branding`` entitlement is applied by
-    ``resolve_branding_for_display`` instead, because not every caller of this function
-    is presenting branding. ``public_api.queries.validate_return_url`` reads
-    ``return_url_allowlist`` off the row to answer whether an OAuth return URL is
-    permitted — an **auth-flow** decision, not a cosmetic one. Gating that would mean a
-    reseller downgrading off a cosmetic entitlement silently breaks the OAuth return
-    flow for every tenant underneath it, which is a lockout, not a downgrade.
+    **Deliberately ungated and, as of this phase, uncalled in production code.**
+    The ``white_label_branding`` entitlement is applied by ``resolve_branding_for_display``
+    instead, because not every caller of this function is presenting branding. Its only
+    caller was ``public_api.queries.validate_return_url``, which read
+    ``return_url_allowlist`` off the row to answer whether an OAuth return URL was
+    permitted — an **auth-flow** decision, not a cosmetic one, which is why it was never
+    gated: a reseller downgrading off a cosmetic entitlement must not silently break the
+    OAuth return flow for every tenant underneath it. ``validate_return_url`` and the
+    allowlist it read are gone (see the Organization Auth-Area Branding plan, Phase 2a),
+    which leaves this function with no caller. It is kept rather than deleted here because
+    Phase 5 of that plan (branding resolution) is expected to need the same ungated
+    parent-walk semantics for a non-cosmetic decision; re-examine whether it still earns
+    its keep once that phase lands.
 
     Args:
         org: The Organization instance to resolve branding for.
@@ -537,14 +588,23 @@ def resolve_branding(org: Organization) -> OrganizationBranding | None:
     return getattr(branding_root, "branding", None)
 
 
-def resolve_branding_for_display(org: Organization) -> OrganizationBranding | None:
+def resolve_branding_for_display(org: Organization | None) -> OrganizationBranding | None:
     """``resolve_branding``, gated on the ``white_label_branding`` entitlement.
+
+    ``org`` may be ``None`` -- returns ``None`` immediately, at zero extra query
+    cost, the same as a real, non-reseller organization with no branding-eligible
+    ancestor (``get_branding_root()`` returning ``None``). This lets a caller like
+    ``organizations.views.OrganizationLogoDeliveryView._resolve_logo_key`` call
+    this function unconditionally on every non-sentinel slug -- whether or not the
+    slug matched a row -- instead of branching around it, which would otherwise
+    make "was this function even called" an observable (query-count) difference
+    between an unknown slug and an existing, unbranded organization.
 
     Use this for every **presentation** caller — anything that renders the reseller's
     app name, logo, colors, or support address (``branding_for_tenant``,
     ``organizations.notification_contexts``). Use plain ``resolve_branding`` when the
-    row is being read for a non-cosmetic decision, i.e. ``validate_return_url``'s
-    allowlist check.
+    row is being read for a non-cosmetic, auth-flow decision instead — see that
+    function's docstring for why it currently has no caller.
 
     The entitlement is resolved at the reseller's own billing root, which may differ
     from the branding root when the reseller itself pools against a grandparent — see
@@ -573,6 +633,9 @@ def resolve_branding_for_display(org: Organization) -> OrganizationBranding | No
     condition: an unresolvable entitlement service denies. Here that costs a reseller
     its logo until DI is repaired, which is the cheap direction to be wrong in.
     """
+    if org is None:
+        return None
+
     branding_root = org.get_branding_root()
     if branding_root is None:
         return None

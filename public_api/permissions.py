@@ -49,6 +49,7 @@ class OrganizationResourceAccess(BasePermission):
         "createSystemUserToken": PublicAPIResources.SYSTEM_USER,
         "createScopedSystemUser": PublicAPIResources.SYSTEM_USER,
         "updateBranding": PublicAPIResources.BRANDING,
+        "createBrandingLogoUpload": PublicAPIResources.BRANDING,
         "childOrganizations": PublicAPIResources.CHILD_ORG_ANALYTICS,
         # Single-use booking-code create / revoke mutations
         "createCalendarBookingCode": PublicAPIResources.CALENDAR_BOOKING_CODE,
