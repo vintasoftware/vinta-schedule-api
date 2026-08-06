@@ -66,7 +66,7 @@ from public_api.permissions import (
     IsAuthenticated,
     OrganizationResourceAccess,
 )
-from public_api.scoping import scoped_calendar_ids
+from public_api.scoping import scoped_calendar_group_queryset, scoped_calendar_ids
 from public_api.types import (
     ChildOrganizationMetrics,
     PublicApiHttpRequest,
@@ -807,9 +807,22 @@ class Query:
     def calendar_group(
         self, info: strawberry.Info, group_id: int
     ) -> CalendarGroupGraphQLType | None:
-        """Fetch a single CalendarGroup scoped to the caller's organization."""
+        """Fetch a single CalendarGroup scoped to the caller's organization.
+
+        Role-aware scope (calendar-group membership-permissions fix): org-wide
+        and scoped-admin tokens may fetch any group in the org; a scoped-member
+        token only a group it participates in (owns a calendar in one of the
+        group's slots); a scoped token whose membership is missing/inactive
+        sees none (fail closed) -- see ``public_api.scoping.system_user_scope``.
+        """
         org = _get_org(info)
-        return CalendarGroup.objects.filter_by_organization(org.id).filter(id=group_id).first()
+        request: PublicApiHttpRequest = info.context.request
+        qs = scoped_calendar_group_queryset(
+            request.public_api_system_user,
+            org,
+            CalendarGroup.objects.filter_by_organization(org.id),
+        )
+        return qs.filter(id=group_id).first()
 
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def calendar_groups(
@@ -818,13 +831,20 @@ class Query:
         offset: int = 0,
         limit: int = 100,
     ) -> list[CalendarGroupGraphQLType]:
-        """List CalendarGroups for the caller's organization."""
+        """List CalendarGroups for the caller's organization.
+
+        Role-aware scope: see ``calendar_group`` above -- org-wide/scoped-admin
+        see every group, scoped-member sees only groups it participates in,
+        missing/inactive scoped membership sees none.
+        """
         org = _get_org(info)
-        qs = (
-            CalendarGroup.objects.filter_by_organization(org.id)
-            .prefetch_related("slots__calendars__ownerships__membership")
-            .order_by("pk")
+        request: PublicApiHttpRequest = info.context.request
+        qs = scoped_calendar_group_queryset(
+            request.public_api_system_user,
+            org,
+            CalendarGroup.objects.filter_by_organization(org.id),
         )
+        qs = qs.prefetch_related("slots__calendars__ownerships__membership").order_by("pk")
         return cast(list[CalendarGroupGraphQLType], list(_slice_qs(qs, offset, limit)))
 
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
