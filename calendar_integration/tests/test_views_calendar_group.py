@@ -27,7 +27,7 @@ from calendar_integration.models import (
     CalendarGroupSlotMembership,
     CalendarManagementToken,
 )
-from organizations.models import Organization, OrganizationMembership
+from organizations.models import Organization, OrganizationMembership, OrganizationRole
 
 
 def _grant_calendar_owner_token(user, calendar):
@@ -63,6 +63,20 @@ def organization(user):
     org = baker.make(Organization, name=f"Org {uuid.uuid4().hex[:6]}")
     baker.make(OrganizationMembership, user=user, organization=org)
     return org
+
+
+@pytest.fixture
+def admin_user(user, organization):
+    """Promote `user`'s membership in `organization` to admin.
+
+    Group create/update/delete is admin-only (CALENDAR_GROUP_SCOPED_AVAILABILITY
+    membership-permissions fix). Depend on this fixture -- in addition to
+    `auth_client` -- in any test that expects a write to succeed.
+    """
+    membership = OrganizationMembership.objects.get(user=user, organization=organization)
+    membership.role = OrganizationRole.ADMIN
+    membership.save(update_fields=["role"])
+    return user
 
 
 @pytest.fixture
@@ -128,6 +142,43 @@ class TestCalendarGroupCrud:
         ids = [g["id"] for g in response.data["results"]]
         assert ids == [owned_group.id]
 
+    def test_list_excludes_group_member_is_not_part_of(
+        self, auth_client, organization, owned_group, internal_calendars
+    ):
+        """Same-org group the caller owns no pool calendar in is simply absent
+        from a non-admin member's list -- not merely 403 on retrieve."""
+        foreign_group = CalendarGroup.objects.create(organization=organization, name="Foreign")
+        slot = CalendarGroupSlot.objects.create(
+            organization=organization, group=foreign_group, name="Slot"
+        )
+        CalendarGroupSlotMembership.objects.create(
+            organization=organization, slot=slot, calendar=internal_calendars["phys_b"]
+        )
+        url = reverse("api:CalendarGroups-list")
+        response = auth_client.get(url)
+        _assert_status(response, status.HTTP_200_OK)
+        ids = [g["id"] for g in response.data["results"]]
+        assert ids == [owned_group.id]
+        assert foreign_group.id not in ids
+
+    def test_list_admin_sees_every_group_in_organization(
+        self, auth_client, organization, owned_group, internal_calendars, admin_user
+    ):
+        """An org admin sees every group in the org, including ones they own
+        no pool calendar in."""
+        foreign_group = CalendarGroup.objects.create(organization=organization, name="Foreign")
+        slot = CalendarGroupSlot.objects.create(
+            organization=organization, group=foreign_group, name="Slot"
+        )
+        CalendarGroupSlotMembership.objects.create(
+            organization=organization, slot=slot, calendar=internal_calendars["phys_b"]
+        )
+        url = reverse("api:CalendarGroups-list")
+        response = auth_client.get(url)
+        _assert_status(response, status.HTTP_200_OK)
+        ids = {g["id"] for g in response.data["results"]}
+        assert ids == {owned_group.id, foreign_group.id}
+
     def test_retrieve(self, auth_client, owned_group):
         url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
         response = auth_client.get(url)
@@ -135,20 +186,96 @@ class TestCalendarGroupCrud:
         assert response.data["name"] == "Clinic"
         assert {s["name"] for s in response.data["slots"]} == {"Physicians", "Rooms"}
 
-    def test_retrieve_forbidden_if_user_does_not_own_any_pool_calendar(
+    def test_retrieve_not_found_if_user_does_not_own_any_pool_calendar(
         self, auth_client, organization, internal_calendars
+    ):
+        """A same-org group the caller isn't part of is 404 (not merely 403):
+        `get_queryset()` scopes a non-admin member's visibility to groups they
+        participate in, so a non-part-of group never reaches the object-level
+        permission check at all."""
+        group = CalendarGroup.objects.create(organization=organization, name="Foreign")
+        slot = CalendarGroupSlot.objects.create(organization=organization, group=group, name="Slot")
+        CalendarGroupSlotMembership.objects.create(
+            organization=organization, slot=slot, calendar=internal_calendars["phys_b"]
+        )
+        # user doesn't own phys_b → not a participant → absent from the queryset
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": group.id})
+        response = auth_client.get(url)
+        _assert_status(response, status.HTTP_404_NOT_FOUND)
+
+    def test_retrieve_admin_sees_group_they_do_not_participate_in(
+        self, auth_client, organization, internal_calendars, admin_user
     ):
         group = CalendarGroup.objects.create(organization=organization, name="Foreign")
         slot = CalendarGroupSlot.objects.create(organization=organization, group=group, name="Slot")
         CalendarGroupSlotMembership.objects.create(
             organization=organization, slot=slot, calendar=internal_calendars["phys_b"]
         )
-        # user doesn't own phys_b → no permission
         url = reverse("api:CalendarGroups-detail", kwargs={"pk": group.id})
         response = auth_client.get(url)
-        _assert_status(response, status.HTTP_403_FORBIDDEN)
+        _assert_status(response, status.HTTP_200_OK)
+        assert response.data["name"] == "Foreign"
 
-    def test_create_group(self, auth_client, organization, internal_calendars, user):
+    def test_create_group_member_forbidden(
+        self, auth_client, organization, internal_calendars, user
+    ):
+        """A non-admin member may not create a CalendarGroup, even though they
+        own calendars that would be in its slots."""
+        create_calendar_ownership(
+            calendar=internal_calendars["phys_a"],
+            user=user,
+        )
+        url = reverse("api:CalendarGroups-list")
+        payload = {
+            "name": "New Clinic",
+            "description": "",
+            "slots": [
+                {
+                    "name": "Physicians",
+                    "calendar_ids": [internal_calendars["phys_a"].id],
+                    "required_count": 1,
+                    "order": 0,
+                },
+            ],
+        }
+        response = auth_client.post(url, payload, format="json")
+        _assert_status(response, status.HTTP_403_FORBIDDEN)
+        assert (
+            not CalendarGroup.objects.filter_by_organization(organization.id)
+            .filter(name="New Clinic")
+            .exists()
+        )
+
+    def test_update_group_member_forbidden(self, auth_client, owned_group, internal_calendars):
+        """A non-admin member who participates in `owned_group` still may not
+        update it -- participation grants visibility, not management."""
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        payload = {
+            "name": "Hijacked",
+            "description": "",
+            "slots": [
+                {
+                    "name": "Physicians",
+                    "calendar_ids": [internal_calendars["phys_a"].id],
+                    "required_count": 1,
+                    "order": 0,
+                },
+            ],
+        }
+        response = auth_client.put(url, payload, format="json")
+        _assert_status(response, status.HTTP_403_FORBIDDEN)
+        owned_group.refresh_from_db()
+        assert owned_group.name == "Clinic"
+
+    def test_destroy_group_member_forbidden(self, auth_client, owned_group):
+        """A non-admin member who participates in `owned_group` still may not
+        delete it."""
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        response = auth_client.delete(url)
+        _assert_status(response, status.HTTP_403_FORBIDDEN)
+        assert CalendarGroup.objects.filter(id=owned_group.id).exists()
+
+    def test_create_group(self, auth_client, organization, internal_calendars, user, admin_user):
         # The create endpoint uses the serializer which delegates to
         # CalendarGroupService; make sure the user owns one calendar so
         # the subsequent object-level access on retrieve works too.
@@ -186,7 +313,7 @@ class TestCalendarGroupCrud:
         assert set(created.slots.values_list("name", flat=True)) == {"Physicians", "Rooms"}
 
     def test_create_group_rejects_duplicate_slot_name(
-        self, auth_client, organization, internal_calendars, user
+        self, auth_client, organization, internal_calendars, user, admin_user
     ):
         create_calendar_ownership(
             calendar=internal_calendars["phys_a"],
@@ -204,7 +331,7 @@ class TestCalendarGroupCrud:
         _assert_status(response, status.HTTP_400_BAD_REQUEST)
         assert "duplicate" in json.dumps(response.data).lower()
 
-    def test_update_group(self, auth_client, owned_group, internal_calendars):
+    def test_update_group(self, auth_client, owned_group, internal_calendars, admin_user):
         url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
         payload = {
             "name": "Clinic Renamed",
@@ -232,14 +359,14 @@ class TestCalendarGroupCrud:
             owned_group.slots.get(name="Physicians").calendars.values_list("external_id", flat=True)
         ) == {"phys_a"}
 
-    def test_destroy(self, auth_client, owned_group):
+    def test_destroy(self, auth_client, owned_group, admin_user):
         url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
         response = auth_client.delete(url)
         _assert_status(response, status.HTTP_204_NO_CONTENT)
         assert not CalendarGroup.objects.filter(id=owned_group.id).exists()
 
     def test_destroy_refused_when_group_has_events(
-        self, auth_client, owned_group, internal_calendars, organization
+        self, auth_client, owned_group, internal_calendars, organization, admin_user
     ):
         baker.make(
             CalendarEvent,

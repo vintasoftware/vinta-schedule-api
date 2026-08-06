@@ -852,6 +852,21 @@ class CalendarGroupQuerySet(BaseOrganizationModelQuerySet):
     Custom QuerySet for CalendarGroup model to handle specific queries.
     """
 
+    def only_member_of(self, membership_user_id: int) -> "CalendarGroupQuerySet":
+        """Groups where `membership_user_id` owns a calendar in ANY slot's roster.
+
+        "Part of a group" == owns at least one ``CalendarOwnership`` row for a
+        calendar that is a member of any of the group's slots -- matches
+        ``CalendarPermissionService.can_view_calendar_group``. Used to scope
+        list/retrieve visibility for non-admin members on both the internal
+        REST surface and the public GraphQL surface (scoped-member tokens).
+        ``distinct()`` because a user may own multiple calendars across
+        multiple slots of the same group.
+        """
+        return self.filter(
+            slots__memberships__calendar_fk__ownerships__membership_user_id=membership_user_id
+        ).distinct()
+
     def only_groups_bookable_in_ranges(
         self, ranges: Iterable[tuple[datetime.datetime, datetime.datetime]]
     ):

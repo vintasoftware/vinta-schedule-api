@@ -142,10 +142,24 @@ class CalendarGroupPermission(BasePermission):
     Permission for CalendarGroup REST endpoints.
 
     - `has_permission` requires an authenticated user with an active
-      organization membership; list/create are org-scoped by the viewset.
-    - `has_object_permission` delegates the "can this user manage this group"
-      decision to `CalendarPermissionService.can_manage_calendar_group` so the
-      rule (and future org-admin override) has a single implementation.
+      organization membership for every action. For the `create` action
+      (no object exists yet to gate in `has_object_permission`), it
+      additionally requires the caller to be an org admin -- creating a
+      CalendarGroup is an admin-only structural change (see
+      `CalendarPermissionService.can_manage_calendar_group`).
+    - `has_object_permission` splits on `view.action`:
+      - `update` / `partial_update` / `destroy` (mutating the group's own
+        structure) delegate to `CalendarPermissionService.can_manage_calendar_group`
+        -- admin only.
+      - every other object-level action (`retrieve`, and the custom
+        booking/read actions like `create_event`, `list_events`,
+        `availability`, `bookable-slots`) delegates to
+        `CalendarPermissionService.can_view_calendar_group` -- admin, or any
+        member who owns a calendar somewhere in the group's slots. This
+        preserves member access to book/read against a group they
+        participate in; `get_queryset()` already keeps a non-participant
+        member from ever reaching a group to retrieve/act on in the first
+        place (404, not 403 -- see the viewset).
     """
 
     @inject
@@ -161,20 +175,40 @@ class CalendarGroupPermission(BasePermission):
         user = request.user
         if not user.is_authenticated:
             return False
-        return get_active_organization_membership(user) is not None
+        membership = get_active_organization_membership(user)
+        if membership is None:
+            return False
+        if getattr(view, "action", None) == "create":
+            return user.is_organization_admin(membership.organization_id)
+        return True
 
     def has_object_permission(self, request, view, obj):
         membership = get_active_organization_membership(request.user)
         if membership is None or obj.organization_id != membership.organization_id:
             return False
+
+        is_manage_action = getattr(view, "action", None) in (
+            "update",
+            "partial_update",
+            "destroy",
+        )
+
         if self.calendar_permission_service is None:
             # Fallback if DI isn't wired (should not happen in normal flows).
-            return (
+            is_admin = request.user.is_organization_admin(obj.organization_id)
+            if is_manage_action:
+                return is_admin
+            return is_admin or (
                 CalendarOwnership.objects.filter_by_organization(obj.organization_id)
                 .filter(membership_user_id=request.user.id, calendar_fk__group_slots__group_fk=obj)
                 .exists()
             )
-        return self.calendar_permission_service.can_manage_calendar_group(
+
+        if is_manage_action:
+            return self.calendar_permission_service.can_manage_calendar_group(
+                user=request.user, group=obj
+            )
+        return self.calendar_permission_service.can_view_calendar_group(
             user=request.user, group=obj
         )
 
@@ -189,7 +223,7 @@ class GroupScopedAvailabilityWindowPermission(BasePermission):
     once, org-scoped, and stashes it on the view as ``view.group_slot`` so the
     viewset doesn't repeat the query. Visibility uses the same "can this user
     see the group at all" rule as ``CalendarGroupPermission``
-    (``CalendarPermissionService.can_manage_calendar_group`` — admin, or owns
+    (``CalendarPermissionService.can_view_calendar_group`` — admin, or owns
     ANY calendar in ANY slot of the group; matches the Phase 1a service tests,
     where owning a calendar in a *different* slot of the same group is enough
     to see the group but not enough to manage a calendar the caller doesn't
@@ -244,7 +278,7 @@ class GroupScopedAvailabilityWindowPermission(BasePermission):
             raise Http404() from None
 
         if self.calendar_permission_service is None or not (
-            self.calendar_permission_service.can_manage_calendar_group(
+            self.calendar_permission_service.can_view_calendar_group(
                 user=user, group=group_slot.group
             )
         ):
@@ -263,7 +297,7 @@ class GroupScopedBlockedTimePermission(BasePermission):
     CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 2b).
 
     Identical in every respect to ``GroupScopedAvailabilityWindowPermission``
-    -- same coarse route-level gate (``can_manage_calendar_group``), same
+    -- same coarse route-level gate (``can_view_calendar_group``), same
     non-disclosure ``Http404`` on a stranger, a cross-organization slot, or
     a slot belonging to a different group than the one in the URL. See that
     class's docstring for the full rationale; only the resource it guards
@@ -302,7 +336,7 @@ class GroupScopedBlockedTimePermission(BasePermission):
             raise Http404() from None
 
         if self.calendar_permission_service is None or not (
-            self.calendar_permission_service.can_manage_calendar_group(
+            self.calendar_permission_service.can_view_calendar_group(
                 user=user, group=group_slot.group
             )
         ):
@@ -322,7 +356,7 @@ class GroupScopedQuotaRulePermission(BasePermission):
 
     Identical in every respect to ``GroupScopedAvailabilityWindowPermission``/
     ``GroupScopedBlockedTimePermission`` -- same coarse route-level gate
-    (``can_manage_calendar_group``), same non-disclosure ``Http404`` on a
+    (``can_view_calendar_group``), same non-disclosure ``Http404`` on a
     stranger, a cross-organization slot, or a slot belonging to a different
     group than the one in the URL. See ``GroupScopedAvailabilityWindowPermission``'s
     docstring for the full rationale; only the resource it guards differs
@@ -361,7 +395,7 @@ class GroupScopedQuotaRulePermission(BasePermission):
             raise Http404() from None
 
         if self.calendar_permission_service is None or not (
-            self.calendar_permission_service.can_manage_calendar_group(
+            self.calendar_permission_service.can_view_calendar_group(
                 user=user, group=group_slot.group
             )
         ):

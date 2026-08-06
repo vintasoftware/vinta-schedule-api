@@ -2308,13 +2308,22 @@ class CalendarGroupViewSet(VintaScheduleModelViewSet):
     filterset_class = CalendarGroupFilterSet
 
     def get_queryset(self):
+        """Org-scoped, then role-scoped: admins see every group in the org;
+        non-admin members see only groups they participate in (own a
+        calendar in one of the group's slots). This is what makes a
+        non-part-of group retrieve 404 rather than 403 -- it is simply not
+        in the queryset ``get_object()`` looks up against.
+        """
         user = self.request.user
         if not user.is_authenticated:
             return CalendarGroup.original_manager.none()
         membership = get_active_organization_membership(user)
         if not membership:
             return CalendarGroup.original_manager.none()
-        return super().get_queryset().filter_by_organization(membership.organization_id)
+        qs = super().get_queryset().filter_by_organization(membership.organization_id)
+        if user.is_organization_admin(membership.organization_id):
+            return qs
+        return qs.only_member_of(membership.user_id)
 
     @extend_schema(
         summary="Delete calendar group",

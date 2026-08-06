@@ -261,6 +261,10 @@ class CalendarGroupManager(BaseOrganizationModelManager):
     def get_queryset(self) -> CalendarGroupQuerySet:
         return CalendarGroupQuerySet(self.model, using=self._db)
 
+    def only_member_of(self, membership_user_id: int) -> CalendarGroupQuerySet:
+        """Wraps :meth:`CalendarGroupQuerySet.only_member_of`."""
+        return self.get_queryset().only_member_of(membership_user_id)
+
     def only_groups_bookable_in_ranges(
         self, ranges: Iterable[tuple[datetime.datetime, datetime.datetime]]
     ):
