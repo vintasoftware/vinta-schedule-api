@@ -14958,6 +14958,14 @@ components:
             admin's, matching the read gate's own admin-agnostic eligibility
             check -- role-based write authorization is enforced separately by
             ``IsOrganizationAdmin`` on the branding endpoints themselves.
+
+            Reads from the batch ``_MyMembershipListSerializer`` precomputes on the
+            shared context when serializing a list (the ``many=True`` path this
+            serializer is actually used on). Falls back to the single-organization
+            ``is_branding_eligible_organization`` call when there is no such batch
+            in context (e.g. this serializer instantiated directly against one
+            membership), which is exactly what the batch entry would have computed
+            for that one organization anyway.
           readOnly: true
       required:
       - can_manage_branding

@@ -2209,6 +2209,314 @@ class TestBrandingForTenantQuery:
             "Rate limiter should be called for unauthenticated requests"
         )
 
+    def test_branding_for_tenant_by_slug_returns_the_organizations_branding(
+        self, mock_rate_limiter, anonymous_client
+    ):
+        """Phase 5 -- ``brandingForTenant`` resolves by slug as an alternative to
+        ``tenantId``."""
+        mock_rate_limiter.return_value = iter([None])
+
+        reseller = baker.make(
+            Organization,
+            name="Reseller",
+            can_invite_organizations=True,
+            slug="slug-lookup-reseller",
+        )
+        baker.make(
+            "organizations.OrganizationBranding",
+            organization=reseller,
+            app_name="SlugLookupBrand",
+            logo="uploads/branding_logos/logo.png",
+            primary_color="#112233",
+            secondary_color="#445566",
+        )
+
+        query = """
+            query GetBrandingForTenant($slug: String!) {
+                brandingForTenant(slug: $slug) {
+                    appName
+                    logoUrl
+                    primaryColor
+                    secondaryColor
+                }
+            }
+        """
+        variables = {"slug": "slug-lookup-reseller"}
+
+        response = anonymous_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        branding = data["brandingForTenant"]
+
+        assert branding["appName"] == "SlugLookupBrand"
+        assert branding["logoUrl"].endswith("/branding/logo/slug-lookup-reseller/")
+        assert branding["primaryColor"] == "#112233"
+        assert branding["secondaryColor"] == "#445566"
+
+    def test_branding_for_unknown_slug_returns_vinta_default(
+        self, mock_rate_limiter, anonymous_client
+    ):
+        """An unknown slug returns the same vinta default as an unbranded org and as
+        an unknown tenant ID -- no enumeration oracle on either identifier."""
+        mock_rate_limiter.return_value = iter([None])
+
+        query = """
+            query GetBrandingForTenant($slug: String!) {
+                brandingForTenant(slug: $slug) {
+                    appName
+                    logoUrl
+                    primaryColor
+                    secondaryColor
+                }
+            }
+        """
+        variables = {"slug": "no-such-organization-slug"}
+
+        response = anonymous_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        branding = data["brandingForTenant"]
+
+        assert branding["appName"] == "Vinta Schedule"
+        assert branding["logoUrl"].endswith("/branding/logo/default/")
+        assert branding["primaryColor"] == ""
+        assert branding["secondaryColor"] == ""
+
+    def test_unknown_slug_and_unknown_tenant_id_responses_are_indistinguishable(
+        self, mock_rate_limiter, anonymous_client
+    ):
+        """No-enumeration-oracle guarantee, made explicit: an unknown slug and an
+        unknown tenant ID must produce byte-for-byte identical responses -- neither
+        can be used to probe whether *something* exists at that identifier versus
+        nothing at all."""
+        mock_rate_limiter.return_value = iter([None])
+
+        by_slug_query = """
+            query GetBrandingForTenant($slug: String!) {
+                brandingForTenant(slug: $slug) {
+                    appName
+                    logoUrl
+                    primaryColor
+                    secondaryColor
+                }
+            }
+        """
+        by_id_query = """
+            query GetBrandingForTenant($tenantId: ID!) {
+                brandingForTenant(tenantId: $tenantId) {
+                    appName
+                    logoUrl
+                    primaryColor
+                    secondaryColor
+                }
+            }
+        """
+
+        slug_response = anonymous_client.post(
+            "/graphql/",
+            data=json.dumps(
+                {"query": by_slug_query, "variables": {"slug": "definitely-not-a-real-slug"}}
+            ),
+            content_type="application/json",
+        )
+        id_response = anonymous_client.post(
+            "/graphql/",
+            data=json.dumps({"query": by_id_query, "variables": {"tenantId": "999999"}}),
+            content_type="application/json",
+        )
+
+        slug_data = assert_graphql_success(slug_response)["brandingForTenant"]
+        id_data = assert_graphql_success(id_response)["brandingForTenant"]
+
+        assert slug_data == id_data
+
+    def test_branding_for_tenant_with_neither_argument_returns_vinta_default(
+        self, mock_rate_limiter, anonymous_client
+    ):
+        """Neither identifier supplied resolves through the same default-on-unknown
+        path -- there is no third, unguarded branch."""
+        mock_rate_limiter.return_value = iter([None])
+
+        query = """
+            query {
+                brandingForTenant {
+                    appName
+                    logoUrl
+                }
+            }
+        """
+
+        response = anonymous_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        branding = data["brandingForTenant"]
+
+        assert branding["appName"] == "Vinta Schedule"
+        assert branding["logoUrl"].endswith("/branding/logo/default/")
+
+    def test_branding_for_tenant_id_takes_precedence_over_slug_when_both_supplied(
+        self, mock_rate_limiter, anonymous_client
+    ):
+        """When both ``tenantId`` and ``slug`` are supplied, ``tenantId`` wins -- pins
+        the documented precedence against a refactor that would flip the ``elif`` to an
+        unconditional ``if`` (or otherwise change which identifier is authoritative)."""
+        mock_rate_limiter.return_value = iter([None])
+
+        org_a = baker.make(
+            Organization,
+            name="Org A",
+            can_invite_organizations=True,
+            slug="org-a-by-id",
+        )
+        baker.make(
+            "organizations.OrganizationBranding",
+            organization=org_a,
+            app_name="BrandA",
+            logo="uploads/branding_logos/logo-a.png",
+            primary_color="#AAAAAA",
+            secondary_color="#111111",
+        )
+
+        org_b = baker.make(
+            Organization,
+            name="Org B",
+            can_invite_organizations=True,
+            slug="org-b-by-slug",
+        )
+        baker.make(
+            "organizations.OrganizationBranding",
+            organization=org_b,
+            app_name="BrandB",
+            logo="uploads/branding_logos/logo-b.png",
+            primary_color="#BBBBBB",
+            secondary_color="#222222",
+        )
+
+        query = """
+            query GetBrandingForTenant($tenantId: ID!, $slug: String!) {
+                brandingForTenant(tenantId: $tenantId, slug: $slug) {
+                    appName
+                    logoUrl
+                    primaryColor
+                    secondaryColor
+                }
+            }
+        """
+        # tenantId points at org A, slug points at a DIFFERENT org B.
+        variables = {"tenantId": str(org_a.id), "slug": org_b.slug}
+
+        response = anonymous_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        branding = data["brandingForTenant"]
+
+        # Org A's branding wins -- tenantId took precedence over slug.
+        assert branding["appName"] == "BrandA"
+        assert branding["logoUrl"].endswith("/branding/logo/org-a-by-id/")
+        assert branding["primaryColor"] == "#AAAAAA"
+        assert branding["secondaryColor"] == "#111111"
+
+    def test_branding_for_unparseable_tenant_id_with_valid_slug_returns_default(
+        self, mock_rate_limiter, anonymous_client
+    ):
+        """A present-but-unparseable ``tenantId`` short-circuits to the default branding
+        rather than falling through to resolve the accompanying ``slug`` -- pins the
+        current ``elif`` behavior (an ``int()`` failure does not cascade to the slug
+        branch)."""
+        mock_rate_limiter.return_value = iter([None])
+
+        reseller = baker.make(
+            Organization,
+            name="Reseller",
+            can_invite_organizations=True,
+            slug="valid-slug-not-used",
+        )
+        baker.make(
+            "organizations.OrganizationBranding",
+            organization=reseller,
+            app_name="ShouldNotBeReturned",
+            logo="uploads/branding_logos/logo.png",
+            primary_color="#FF00FF",
+            secondary_color="#00FFFF",
+        )
+
+        query = """
+            query GetBrandingForTenant($tenantId: ID!, $slug: String!) {
+                brandingForTenant(tenantId: $tenantId, slug: $slug) {
+                    appName
+                    logoUrl
+                    primaryColor
+                    secondaryColor
+                }
+            }
+        """
+        variables = {"tenantId": "not-a-number", "slug": "valid-slug-not-used"}
+
+        response = anonymous_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        branding = data["brandingForTenant"]
+
+        assert branding["appName"] == "Vinta Schedule"
+        assert branding["logoUrl"].endswith("/branding/logo/default/")
+        assert branding["primaryColor"] == ""
+        assert branding["secondaryColor"] == ""
+
+    def test_branding_for_non_numeric_tenant_id_alone_returns_vinta_default(
+        self, mock_rate_limiter, anonymous_client
+    ):
+        """A non-numeric ``tenantId`` supplied alone (no ``slug``) also resolves to the
+        default -- completes the four miss modes (unknown id, unknown slug, unparseable
+        id with a slug present, unparseable id alone) that must all be indistinguishable
+        from an unbranded org."""
+        mock_rate_limiter.return_value = iter([None])
+
+        query = """
+            query GetBrandingForTenant($tenantId: ID!) {
+                brandingForTenant(tenantId: $tenantId) {
+                    appName
+                    logoUrl
+                    primaryColor
+                    secondaryColor
+                }
+            }
+        """
+        variables = {"tenantId": "not-a-number"}
+
+        response = anonymous_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": variables}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        branding = data["brandingForTenant"]
+
+        assert branding["appName"] == "Vinta Schedule"
+        assert branding["logoUrl"].endswith("/branding/logo/default/")
+        assert branding["primaryColor"] == ""
+        assert branding["secondaryColor"] == ""
+
 
 @pytest.mark.django_db
 class TestValidateReturnUrlRemoved:

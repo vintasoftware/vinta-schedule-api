@@ -239,10 +239,14 @@ class TestOrganizationParentAndCapabilities:
         child = baker.make(Organization, parent=org, can_invite_organizations=False)
         assert child.get_branding_root() is None
 
-    def test_get_branding_root_none_when_no_parent(self):
-        """get_branding_root() returns None for a standalone non-reseller org."""
+    def test_get_branding_root_returns_self_when_no_parent(self):
+        """get_branding_root() returns itself for a standalone (parentless)
+        non-reseller org -- Organization Auth-Area Branding plan, Phase 5 widens
+        resolution beyond resellers to any parentless organization. The reseller
+        branch above is checked first and unchanged; this is the new fallback for
+        the case that used to return None."""
         org = baker.make(Organization, can_invite_organizations=False)
-        assert org.get_branding_root() is None
+        assert org.get_branding_root() == org
 
     def test_parent_protect_prevents_deletion_of_reseller_with_children(self):
         """on_delete=PROTECT prevents deleting a reseller that has children."""

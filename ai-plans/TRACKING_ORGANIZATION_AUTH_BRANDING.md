@@ -58,7 +58,7 @@ Command translation (container → host):
 | 2b | Logo upload and delivery | 3 | ✅ done — [PR #208](https://github.com/vintasoftware/vinta-schedule-api/pull/208) | plan/organization-auth-branding/phase-2b |
 | 3 | Widen write gate | 3 | ✅ done — [PR #209](https://github.com/vintasoftware/vinta-schedule-api/pull/209) | plan/organization-auth-branding/phase-3 |
 | 4 | Audit + capability field | 2 | ✅ done — [PR #210](https://github.com/vintasoftware/vinta-schedule-api/pull/210) | plan/organization-auth-branding/phase-4 |
-| 5 | Resolve branding (parentless) | 3 | ⏳ pending | plan/organization-auth-branding/phase-5 |
+| 5 | Resolve branding (parentless) | 3 | ✅ done — [PR #211](https://github.com/vintasoftware/vinta-schedule-api/pull/211) | plan/organization-auth-branding/phase-5 |
 | 6 | Invitation reply-to | 2 | ⏳ pending | plan/organization-auth-branding/phase-6 |
 | 7 | Post-auth destination server-side | 3 | ⏳ pending | plan/organization-auth-branding/phase-7 |
 | 8 | Branded login by slug | 2 | ⏳ pending | plan/organization-auth-branding/phase-8 |
@@ -116,9 +116,17 @@ Command translation (container → host):
 - Gates: ruff/format clean, `makemigrations --check` no changes, `manage.py check` clean, mypy no new errors, **full suite 4800 passed**. schema.yml regenerated.
 - Carry-forward: bulk helpers `EntitlementService.has_entitlement_for_organizations` + `is_branding_eligible_organizations` now exist. 3 redundant local `AuditService` imports remain in unrelated booking-policy mutations (out-of-scope cleanup).
 
+### Phase 5 — Resolve branding for parentless orgs ✅
+- **Branch**: `plan/organization-auth-branding/phase-5` (base: phase-4) · **PR**: [#211](https://github.com/vintasoftware/vinta-schedule-api/pull/211)
+- **Implementer**: sonnet (T3) · **Reviewer**: opus (T4) · **Fixer**: sonnet (T2)
+- `get_branding_root()`: reseller ancestor first (unchanged) → else `self` when parentless → else `None`. Parentless non-reseller now resolves to itself; child under non-reseller parent still `None` (fallback keys on `self.parent_id`, not the walk var → no leak to children). `branding_for_tenant` gains slug lookup (id precedence; all miss modes → default indistinguishably, body-level). `notification_contexts.py` unchanged (already flows through widened root). No migration.
+- **Review (no BLOCKER)**: root matrix verified on every flowchart branch, no cross-org leak, downgrade gate fires for new self-root. Added tests pinning brandingForTenant id-vs-slug tie-break.
+- **⚠️ ACCEPTED TRADE-OFF (supersedes plan L57/L325 "same path / not an existence oracle" claim)**: widening the root reopens a **1-query timing divergence** on the unauthenticated logo route + brandingForTenant — a real parentless org runs one entitlement query an unknown slug doesn't. Response **body/status/headers stay byte-identical**; only server-side query-count/timing differs → timing-only, not reliably weaponizable over the network. Hard close (phantom query on every anon cache-miss) not worth it; a child already pays a parent-walk query, so found≠not-found in query count is unavoidable once branding widens past resellers. **Accepted; not fixed.** The Phase 2b oracle test now asserts "exactly one expected extra query" (still catches N+1 regressions).
+- Gates: ruff/format clean, `makemigrations --check` no changes, `manage.py check` clean, mypy no new errors, **full suite 4818 passed**. schema.yml regenerated (incl. a benign Phase-4 `can_manage_branding` docstring hunk that Phase 4 never regenerated).
+
 ## Current phase
 
-Phase 5 — Resolve branding for parentless organizations.
+Phase 6 — Route invitation replies to the organization.
 
 ## Deferred phases
 

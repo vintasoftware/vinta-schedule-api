@@ -1416,30 +1416,43 @@ class Query:
 
     @strawberry.field()
     def branding_for_tenant(
-        self, info: strawberry.Info, tenant_id: strawberry.ID
+        self,
+        info: strawberry.Info,
+        tenant_id: strawberry.ID | None = None,
+        slug: str | None = None,
     ) -> PublicBrandingResult:
         """Get resolved branding for a tenant, or vinta default if unbranded.
 
         This is an unauthenticated, rate-limited public query for frontend interstitials.
-        It returns the parent-walked branding for the given tenant ID, or the vinta
-        default when none. No enumeration oracle: unknown tenant ID returns the same
-        default as an unbranded subtree.
+        It returns the parent-walked branding for the given tenant, identified either by
+        ``tenant_id`` or by ``slug``, or the vinta default when neither resolves. No
+        enumeration oracle: an unknown tenant ID and an unknown slug both return the
+        same default as an unbranded subtree, indistinguishably.
+
+        When both arguments are supplied, ``tenant_id`` takes precedence -- callers are
+        expected to pass exactly one. When neither is supplied, the organization is
+        treated as unknown (same default-on-unknown path).
 
         Args:
             tenant_id: The ID of the organization to get branding for.
+            slug: The organization's public slug, as an alternative to ``tenant_id``.
 
         Returns:
             PublicBrandingResult with app name, logo, and colors (no secrets).
         """
         request = info.context.request
-        try:
-            tenant_id_int = int(tenant_id)
-            org = Organization.objects.filter(id=tenant_id_int).first()
-        except (ValueError, TypeError):
-            org = None
+        org = None
+        if tenant_id is not None:
+            try:
+                tenant_id_int = int(tenant_id)
+                org = Organization.objects.filter(id=tenant_id_int).first()
+            except (ValueError, TypeError):
+                org = None
+        elif slug is not None:
+            org = Organization.objects.filter(slug=slug).first()
 
         if org is None:
-            # Unknown tenant ID returns the vinta default (no enumeration oracle)
+            # Unknown tenant ID/slug returns the vinta default (no enumeration oracle)
             return _vinta_default_branding(request=request)
 
         # Resolve branding by walking up the parent chain to the nearest reseller.

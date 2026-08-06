@@ -22,7 +22,12 @@ from organizations.models import (
     resolve_branding,
     resolve_branding_for_display,
 )
-from organizations.notification_contexts import organization_invitation_context
+from organizations.notification_contexts import (
+    VINTA_DEFAULT_APP_NAME,
+    VINTA_DEFAULT_PRIMARY_COLOR,
+    VINTA_DEFAULT_SECONDARY_COLOR,
+    organization_invitation_context,
+)
 from organizations.permissions import (
     BrandingWriteGateReason,
     evaluate_branding_write_gate,
@@ -142,6 +147,65 @@ class TestResolveBranding:
 
         # Should only have one OrganizationBranding row for this org
         assert OrganizationBranding.objects.filter(organization=reseller).count() == 1
+
+
+@pytest.mark.django_db
+class TestGetBrandingRootParentlessResolution:
+    """``Organization.get_branding_root()`` -- Organization Auth-Area Branding plan,
+    Phase 5. Widens resolution so a branded parentless organization can be its own
+    branding root. The reseller branch is checked FIRST and is unchanged -- that
+    ordering is what preserves reseller precedence; only a parentless organization
+    that is NOT a reseller newly resolves to itself. A child under a non-reseller
+    parent must still resolve to ``None`` -- it cannot brand itself (enforced by the
+    write gate) and must not silently pick up its own identity as a fallback.
+    """
+
+    def test_parentless_non_reseller_returns_itself(self):
+        """The one new behavior this phase adds."""
+        org = baker.make(Organization, parent=None, can_invite_organizations=False)
+
+        assert org.get_branding_root() == org
+
+    def test_reseller_still_returns_itself_via_the_unchanged_reseller_branch(self):
+        """A reseller is parentless too, but it must resolve via the FIRST branch
+        (it is a reseller), not fall through to the new parentless fallback --
+        pinned so a future refactor can't collapse the two branches and still pass
+        the simpler ``test_parentless_non_reseller_returns_itself`` case above."""
+        reseller = baker.make(Organization, parent=None, can_invite_organizations=True)
+
+        assert reseller.get_branding_root() == reseller
+
+    def test_child_under_a_reseller_still_returns_the_reseller(self):
+        """Reseller precedence is unchanged: a child underneath a reseller resolves
+        to the reseller, never to itself, even though the reseller is also
+        parentless."""
+        reseller = baker.make(Organization, parent=None, can_invite_organizations=True)
+        child = baker.make(Organization, parent=reseller, can_invite_organizations=False)
+
+        assert child.get_branding_root() == reseller
+
+    def test_grandchild_under_a_reseller_still_returns_the_reseller(self):
+        reseller = baker.make(Organization, parent=None, can_invite_organizations=True)
+        child = baker.make(Organization, parent=reseller, can_invite_organizations=False)
+        grandchild = baker.make(Organization, parent=child, can_invite_organizations=False)
+
+        assert grandchild.get_branding_root() == reseller
+
+    def test_child_under_a_non_reseller_parent_returns_none(self):
+        """A child under a non-reseller parent cannot brand itself (enforced by the
+        write gate) and has no reseller ancestor to inherit from -- it must NOT
+        resolve to itself, unlike its parentless parent."""
+        parent = baker.make(Organization, parent=None, can_invite_organizations=False)
+        child = baker.make(Organization, parent=parent, can_invite_organizations=False)
+
+        assert child.get_branding_root() is None
+
+    def test_grandchild_under_a_non_reseller_chain_returns_none(self):
+        root = baker.make(Organization, parent=None, can_invite_organizations=False)
+        child = baker.make(Organization, parent=root, can_invite_organizations=False)
+        grandchild = baker.make(Organization, parent=child, can_invite_organizations=False)
+
+        assert grandchild.get_branding_root() is None
 
 
 def _reseller_with_entitlement(entitlement_key: str, is_enabled: bool) -> Organization:
@@ -341,6 +405,56 @@ def _org_with_entitlement(entitlement_key: str, is_enabled: bool, **org_kwargs) 
         is_enabled=is_enabled,
     )
     return org
+
+
+@pytest.mark.django_db
+class TestResolveBrandingForDisplayParentlessOrganization:
+    """``resolve_branding_for_display`` for a parentless, non-reseller organization
+    -- Organization Auth-Area Branding plan, Phase 5. Exercises the same entitlement
+    gate as ``TestResolveBrandingForDisplayEntitlementGate`` above, but through the
+    newly-widened root (a parentless org resolving to itself) rather than through a
+    reseller ancestor -- pinning Use-case 6 (a branded organization downgrades): the
+    saved values are retained in the database but stop being applied the moment the
+    entitlement is lost, and re-apply with no re-entry once it returns.
+    """
+
+    def test_entitled_parentless_organization_own_branding_is_applied(self):
+        org = _org_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None)
+        branding = baker.make(OrganizationBranding, organization=org, app_name="SoloBrand")
+
+        result = resolve_branding_for_display(org)
+        assert result is not None
+        assert result.id == branding.id
+
+    def test_unentitled_parentless_organization_display_is_none_but_row_persists(self):
+        """The downgrade case: display resolves to ``None`` (defaults apply
+        upstream), while the row itself is untouched in the database -- nothing is
+        deleted, only stops being read for presentation."""
+        org = _org_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=False, parent=None)
+        branding = baker.make(OrganizationBranding, organization=org, app_name="KeepMe")
+
+        assert resolve_branding_for_display(org) is None
+        # The raw row survives the downgrade untouched -- "stops applying" is not
+        # "deleted".
+        assert OrganizationBranding.objects.get(id=branding.id).app_name == "KeepMe"
+
+    def test_reupgrade_applies_the_saved_values_with_no_re_entry(self):
+        """On re-upgrade, the previously-saved values apply again -- there is no
+        separate re-save step, since the row was never touched by the downgrade."""
+        org = _org_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=False, parent=None)
+        branding = baker.make(OrganizationBranding, organization=org, app_name="KeepMe")
+        assert resolve_branding_for_display(org) is None
+
+        subscription_entitlement = SubscriptionEntitlement.objects.get(
+            subscription__organization=org, entitlement_key=Entitlement.WHITE_LABEL_BRANDING
+        )
+        subscription_entitlement.is_enabled = True
+        subscription_entitlement.save(update_fields=["is_enabled"])
+
+        result = resolve_branding_for_display(org)
+        assert result is not None
+        assert result.id == branding.id
+        assert result.app_name == "KeepMe"
 
 
 @pytest.mark.django_db
@@ -692,3 +806,73 @@ class TestInvitationContextLogoUrl:
         logo_url = ctx["branding"]["logo_url"]
         assert logo_url.startswith("http://") or logo_url.startswith("https://"), logo_url
         assert logo_url.endswith("/branding/logo/default/"), logo_url
+
+    def test_branded_parentless_non_reseller_organization_carries_its_own_identity(self):
+        """Organization Auth-Area Branding plan, Phase 5 -- Use-case 2. A parentless
+        organization that is NOT a reseller can now be its own branding root, so its
+        invitation email carries its own app name, logo, and colors -- not the vinta
+        default and not some other organization's."""
+        org = _org_with_entitlement(
+            Entitlement.WHITE_LABEL_BRANDING,
+            is_enabled=True,
+            can_invite_organizations=False,
+            parent=None,
+        )
+        org.slug = "solo-brand"
+        org.save(update_fields=["slug"])
+        baker.make(
+            OrganizationBranding,
+            organization=org,
+            app_name="SoloBrand",
+            logo="uploads/branding_logos/solo-logo.png",
+            primary_color="#123456",
+            secondary_color="#654321",
+        )
+        invitation = self._make_invitation(org)
+
+        ctx = organization_invitation_context(
+            organization_invitation_id=invitation.id,
+            invitation_url="https://example.com/accept?token=fake",
+        )
+
+        branding_ctx = ctx["branding"]
+        assert branding_ctx["app_name"] == "SoloBrand"
+        assert branding_ctx["logo_url"].endswith("/branding/logo/solo-brand/")
+        assert branding_ctx["primary_color"] == "#123456"
+        assert branding_ctx["secondary_color"] == "#654321"
+
+    def test_unentitled_parentless_organization_with_a_row_still_uses_vinta_defaults(self):
+        """Use-case 6 -- a downgrade retains the saved values in the database but the
+        invitation email must revert fully to the vinta defaults, not a mix of the
+        two."""
+        org = _org_with_entitlement(
+            Entitlement.WHITE_LABEL_BRANDING,
+            is_enabled=False,
+            parent=None,
+        )
+        org.slug = "downgraded-org"
+        org.save(update_fields=["slug"])
+        baker.make(
+            OrganizationBranding,
+            organization=org,
+            app_name="ShouldNotAppear",
+            logo="uploads/branding_logos/should-not-appear.png",
+            primary_color="#ABCDEF",
+            secondary_color="#FEDCBA",
+        )
+        invitation = self._make_invitation(org)
+
+        ctx = organization_invitation_context(
+            organization_invitation_id=invitation.id,
+            invitation_url="https://example.com/accept?token=fake",
+        )
+
+        branding_ctx = ctx["branding"]
+        assert branding_ctx["app_name"] == VINTA_DEFAULT_APP_NAME
+        assert branding_ctx["logo_url"].endswith("/branding/logo/default/")
+        assert branding_ctx["primary_color"] == VINTA_DEFAULT_PRIMARY_COLOR
+        assert branding_ctx["secondary_color"] == VINTA_DEFAULT_SECONDARY_COLOR
+        # The row itself is untouched -- retained, not deleted.
+        assert OrganizationBranding.objects.filter(
+            organization=org, app_name="ShouldNotAppear"
+        ).exists()
