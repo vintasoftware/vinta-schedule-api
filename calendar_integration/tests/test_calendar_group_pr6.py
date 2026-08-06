@@ -24,7 +24,7 @@ from calendar_integration.services.calendar_group_service import CalendarGroupSe
 from calendar_integration.services.calendar_permission_service import (
     CalendarPermissionService,
 )
-from organizations.models import Organization, OrganizationMembership
+from organizations.models import Organization, OrganizationMembership, OrganizationRole
 from users.models import User
 
 
@@ -338,7 +338,9 @@ def test_can_manage_calendar_group_scoped_to_org(organization, other_org, clinic
     other_calendar = Calendar.objects.create(
         organization=other_org, name="X", external_id="x", provider=CalendarProvider.INTERNAL
     )
-    OrganizationMembership.objects.get_or_create(user=user, organization=other_org)
+    membership = OrganizationMembership.objects.get_or_create(user=user, organization=other_org)[0]
+    membership.role = OrganizationRole.ADMIN
+    membership.save()
     CalendarOwnership.objects.create(
         organization=other_org,
         calendar=other_calendar,

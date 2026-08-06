@@ -28,6 +28,30 @@ def _resolve_scoped_membership(
     ).first()
 
 
+def _resolve_scope_and_membership(
+    system_user: SystemUser, organization: Organization
+) -> tuple[SystemUserScope, OrganizationMembership | None]:
+    """Resolve the scope label and active membership for a system user in one call.
+
+    Combines ``system_user_scope`` and ``_resolve_scoped_membership`` logic
+    to avoid redundant database queries when both the scope and membership
+    are needed (common in filtering operations).
+
+    Returns a tuple of (scope, membership):
+    - scope: "org_wide" if token is unrestricted, "scoped_admin" if an
+      active admin member, "scoped_member" otherwise (including when the
+      membership is missing/inactive, fail-closed).
+    - membership: The active OrganizationMembership if scoped, or None if
+      org-wide or missing/inactive.
+    """
+    if system_user.scoped_to_membership_user_id is None:
+        return ("org_wide", None)
+    membership = _resolve_scoped_membership(system_user, organization)
+    if membership is not None and membership.is_admin:
+        return ("scoped_admin", membership)
+    return ("scoped_member", membership)
+
+
 def system_user_scope(system_user: SystemUser, organization: Organization) -> SystemUserScope:
     """Resolve a ``SystemUser`` token's effective role-based scope for `organization`.
 
@@ -44,12 +68,8 @@ def system_user_scope(system_user: SystemUser, organization: Organization) -> Sy
       both re-resolve the membership to distinguish "real member" from
       "missing/inactive" and return empty for the latter.
     """
-    if system_user.scoped_to_membership_user_id is None:
-        return "org_wide"
-    membership = _resolve_scoped_membership(system_user, organization)
-    if membership is not None and membership.is_admin:
-        return "scoped_admin"
-    return "scoped_member"
+    scope, _ = _resolve_scope_and_membership(system_user, organization)
+    return scope
 
 
 def scoped_calendar_ids(system_user: SystemUser, organization: Organization) -> set[int] | None:
@@ -70,15 +90,13 @@ def scoped_calendar_ids(system_user: SystemUser, organization: Organization) -> 
         (empty when the scoped membership is missing/inactive -- fail
         closed, never elevate) otherwise.
     """
-    if system_user.scoped_to_membership_user_id is None:
+    scope, membership = _resolve_scope_and_membership(system_user, organization)
+    if scope == "org_wide" or scope == "scoped_admin":
         return None
-    membership = _resolve_scoped_membership(system_user, organization)
     if membership is None:
         # Scoped token whose membership was revoked/deactivated since minting:
         # fail closed with no access, rather than falling back to unrestricted.
         return set()
-    if membership.is_admin:
-        return None
     # The queryset is already org-scoped via filter_by_organization, so filtering
     # ownerships by the membership's user_id is equivalent to the full
     # (organization_id, user_id) membership identity — the org is fixed.
@@ -118,10 +136,9 @@ def scoped_calendar_group_queryset(
     """
     if system_user is None:
         return base_qs
-    scope = system_user_scope(system_user, organization)
+    scope, membership = _resolve_scope_and_membership(system_user, organization)
     if scope != "scoped_member":
         return base_qs
-    membership = _resolve_scoped_membership(system_user, organization)
     if membership is None:
         return base_qs.none()
     return base_qs.only_member_of(membership.user_id)
