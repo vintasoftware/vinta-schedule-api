@@ -1,8 +1,5 @@
 from dependency_injector import containers, providers
 from vintasend.services.notification_service import NotificationService
-from vintasend_django.services.notification_adapters.django_email import (
-    DjangoEmailNotificationAdapter,
-)
 from vintasend_django.services.notification_backends.django_db_notification_backend import (
     DjangoDbNotificationBackend,
 )
@@ -25,6 +22,9 @@ from calendar_integration.services.external_event_change_request_service import 
     ExternalEventChangeRequestService,
 )
 from legal.services import ConsentService
+from notifications.notification_adapters.django_email import (
+    ReplyToDjangoEmailNotificationAdapter,
+)
 from notifications.notification_adapters.django_in_app import DjangoInAppNotificationAdapter
 from notifications.notification_template_renderers.django_in_app_renderer import (
     DjangoTemplatedInAppRenderer,
@@ -138,13 +138,13 @@ class AppContainer(containers.DeclarativeContainer):
 
     notification_service = providers.Singleton(
         NotificationService[
-            DjangoEmailNotificationAdapter[
+            ReplyToDjangoEmailNotificationAdapter[
                 DjangoDbNotificationBackend, DjangoTemplatedEmailRenderer
             ],
             DjangoDbNotificationBackend,
         ],
         notification_adapters=[
-            DjangoEmailNotificationAdapter(
+            ReplyToDjangoEmailNotificationAdapter(
                 DjangoTemplatedEmailRenderer(),
                 DjangoDbNotificationBackend(),
             ),

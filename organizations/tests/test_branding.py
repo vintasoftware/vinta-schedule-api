@@ -5,12 +5,26 @@ import datetime
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser
+from django.core import mail
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils import timezone
 
 import pytest
 from model_bakery import baker
+from vintasend.app_settings import NotificationSettings
+from vintasend.constants import NotificationTypes
+from vintasend.services.dataclasses import NotificationContextDict
+from vintasend.services.notification_service import NotificationService
+from vintasend_django.services.notification_backends.django_db_notification_backend import (
+    DjangoDbNotificationBackend,
+)
+from vintasend_django.services.notification_template_renderers.django_templated_email_renderer import (
+    DjangoTemplatedEmailRenderer,
+)
 
+from notifications.notification_adapters.django_email import (
+    ReplyToDjangoEmailNotificationAdapter,
+)
 from organizations.branding_logo import sign_branding_logo_upload
 from organizations.exceptions import BrandingLogoUploadRejectedError
 from organizations.models import (
@@ -876,3 +890,153 @@ class TestInvitationContextLogoUrl:
         assert OrganizationBranding.objects.filter(
             organization=org, app_name="ShouldNotAppear"
         ).exists()
+
+
+def _build_email_notification_service() -> NotificationService:
+    """A NotificationService wired with only the real email adapter (mirrors the
+    email channel of the DI wiring in di_core/containers.py), so
+    ``create_one_off_notification`` sends through the actual send path -- context
+    resolution, template rendering, and ``ReplyToDjangoEmailNotificationAdapter`` --
+    landing in ``django.core.mail.outbox`` under the test settings' locmem backend."""
+    return NotificationService(
+        notification_adapters=[
+            ReplyToDjangoEmailNotificationAdapter(
+                DjangoTemplatedEmailRenderer(),
+                DjangoDbNotificationBackend(),
+            ),
+        ],
+        notification_backend=DjangoDbNotificationBackend(),
+    )
+
+
+@pytest.mark.django_db
+class TestInvitationReplyToEmailSend:
+    """Organization Auth-Area Branding plan, Phase 6 -- Use-case 2's reply-to half.
+
+    Sends a real invitation email end-to-end (context resolution -> template
+    rendering -> ReplyToDjangoEmailNotificationAdapter) and inspects
+    ``django.core.mail.outbox``. The From address must be identical in every case
+    -- branded, unbranded, or downgraded -- because Non-goals forbid a custom
+    sender; only the reply-to may vary.
+    """
+
+    def _make_invitation(self, organization: Organization) -> OrganizationInvitation:
+        inviter = UserFactory().create_user(email="inviter@example.com")
+        return baker.make(
+            OrganizationInvitation,
+            email="invitee@example.com",
+            organization=organization,
+            invited_by=inviter,
+            expires_at=timezone.now() + datetime.timedelta(days=7),
+            accepted_at=None,
+            membership_user_id=None,
+        )
+
+    def _send_invitation_email(self, invitation: OrganizationInvitation) -> None:
+        service = _build_email_notification_service()
+        service.create_one_off_notification(
+            email_or_phone=invitation.email,
+            first_name=invitation.first_name,
+            last_name=invitation.last_name,
+            notification_type=NotificationTypes.EMAIL.value,
+            title="Invitation to join organization",
+            body_template="organizations/emails/organization_invitation.body.html",
+            context_name="organization_invitation_context",
+            context_kwargs=NotificationContextDict(
+                {
+                    "organization_invitation_id": invitation.id,
+                    "invitation_url": "https://example.com/accept?token=fake",
+                }
+            ),
+            subject_template="organizations/emails/organization_invitation.subject.txt",
+            preheader_template="organizations/emails/organization_invitation.pre_header.txt",
+        )
+
+    def test_branded_entitled_organization_reply_to_is_its_support_address(self):
+        org = _org_with_entitlement(
+            Entitlement.WHITE_LABEL_BRANDING,
+            is_enabled=True,
+            parent=None,
+        )
+        org.slug = "brandco-replyto"
+        org.save(update_fields=["slug"])
+        baker.make(
+            OrganizationBranding,
+            organization=org,
+            app_name="BrandCo",
+            support_email="support@brandco.example",
+        )
+        invitation = self._make_invitation(org)
+
+        self._send_invitation_email(invitation)
+
+        assert len(mail.outbox) == 1
+        sent = mail.outbox[0]
+        assert sent.from_email == NotificationSettings().NOTIFICATION_DEFAULT_FROM_EMAIL
+        assert sent.reply_to == ["support@brandco.example"]
+        # The From address is the one accepted exception (spec Objective 1) -- it
+        # must NOT be the organization's support address.
+        assert sent.from_email != "support@brandco.example"
+
+    def test_unbranded_organization_has_no_reply_to_header(self):
+        """No branding row at all -- today's behavior, unchanged: no Reply-To
+        header at all."""
+        org = baker.make(Organization, parent=None)
+        invitation = self._make_invitation(org)
+
+        self._send_invitation_email(invitation)
+
+        assert len(mail.outbox) == 1
+        sent = mail.outbox[0]
+        assert sent.from_email == NotificationSettings().NOTIFICATION_DEFAULT_FROM_EMAIL
+        assert sent.reply_to == []
+
+    def test_unentitled_organization_with_a_branding_row_has_no_reply_to_header(self):
+        """A downgraded organization keeps its saved branding row (support_email
+        included), but the invitation must fully revert to vinta defaults -- reply-to
+        included, not just app_name/logo/colors."""
+        org = _org_with_entitlement(
+            Entitlement.WHITE_LABEL_BRANDING,
+            is_enabled=False,
+            parent=None,
+        )
+        org.slug = "downgraded-replyto"
+        org.save(update_fields=["slug"])
+        baker.make(
+            OrganizationBranding,
+            organization=org,
+            app_name="ShouldNotAppear",
+            support_email="support@shouldnotappear.example",
+        )
+        invitation = self._make_invitation(org)
+
+        self._send_invitation_email(invitation)
+
+        assert len(mail.outbox) == 1
+        sent = mail.outbox[0]
+        assert sent.from_email == NotificationSettings().NOTIFICATION_DEFAULT_FROM_EMAIL
+        assert sent.reply_to == []
+
+    def test_branded_entitled_organization_with_no_support_email_has_no_reply_to_header(self):
+        """An entitled, branded organization that never set a support email gets
+        no Reply-To header at all -- a blank support_email is falsy, not a
+        distinct "empty reply-to" state."""
+        org = _org_with_entitlement(
+            Entitlement.WHITE_LABEL_BRANDING,
+            is_enabled=True,
+            parent=None,
+        )
+        org.slug = "brandco-no-support-email"
+        org.save(update_fields=["slug"])
+        baker.make(
+            OrganizationBranding,
+            organization=org,
+            app_name="BrandCo",
+            support_email="",
+        )
+        invitation = self._make_invitation(org)
+
+        self._send_invitation_email(invitation)
+
+        sent = mail.outbox[0]
+        assert sent.reply_to == []
