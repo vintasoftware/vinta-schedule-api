@@ -21,6 +21,9 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.viewsets import GenericViewSet
 
+from audit.constants import AuditAction
+from audit.diff import compute_diff
+from audit.services import AuditService
 from calendar_integration.models import GoogleCalendarServiceAccount
 from calendar_integration.serializers import CalendarSyncRequestSerializer
 from common.media_storage_backend import MediaStorage
@@ -37,6 +40,7 @@ from organizations.branding_logo import (
     DEFAULT_LOGO_ETAG_IDENTITY,
     DEFAULT_LOGO_SLUG_SENTINEL,
     LOGO_CACHE_MAX_AGE_SECONDS,
+    branding_diff_state,
     compute_logo_etag,
     guess_logo_content_type,
 )
@@ -1032,6 +1036,16 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
     permission_classes = (IsOrganizationAdmin,)
     serializer_class = OrganizationBrandingSerializer
 
+    @inject
+    def __init__(
+        self,
+        *args,
+        audit_service: Annotated[AuditService, Provide["audit_service"]],
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.audit_service = audit_service
+
     _GATE_EXCEPTIONS: ClassVar[dict[BrandingWriteGateReason, type[PermissionDenied]]] = {
         BrandingWriteGateReason.HAS_PARENT: OrganizationHasParentBrandingError,
         BrandingWriteGateReason.NOT_ENTITLED: BrandingEntitlementRequiredError,
@@ -1123,7 +1137,15 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
         },
     )
     def put(self, request, *args, **kwargs):
-        """PUT /branding/ — create or replace the acting org's branding."""
+        """PUT /branding/ — create or replace the acting org's branding.
+
+        Audited (Organization Auth-Area Branding plan, Phase 4): a refused write
+        (gate failure or serializer validation error) raises before this method
+        reaches the upsert, so nothing is ever recorded for a refused write. A
+        first-time upsert records a CREATE with no diff; an upsert that replaces
+        an existing row records an UPDATE with a diff naming only the fields that
+        actually changed, using the before-state captured BEFORE the write.
+        """
         self._check_branding_write_gate()
         membership = get_active_organization_membership(request.user)
         if membership is None:
@@ -1132,11 +1154,18 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
         serializer = OrganizationBrandingSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
 
+        existing = OrganizationBranding.objects.filter(
+            organization_id=membership.organization_id
+        ).first()
+        before = branding_diff_state(existing) if existing is not None else None
+
         # Create or update (upsert) the branding row for the acting org
         instance, created = OrganizationBranding.objects.update_or_create(
             organization_id=membership.organization_id,
             defaults=serializer.validated_data,
         )
+
+        self._record_branding_audit(membership, instance, created=created, before=before)
 
         status_code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
         return Response(
@@ -1157,9 +1186,18 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
         },
     )
     def patch(self, request, *args, **kwargs):
-        """PATCH /branding/ — update the acting org's branding (partial)."""
+        """PATCH /branding/ — update the acting org's branding (partial).
+
+        Audited (Organization Auth-Area Branding plan, Phase 4): a refused write
+        (gate failure, 404-not-configured, or serializer validation error) raises
+        before this method reaches ``serializer.save()``, so nothing is ever
+        recorded for a refused write. Always an UPDATE (PATCH never creates —
+        see ``_get_branding_or_404``); the before-state is captured BEFORE
+        ``serializer.save()`` mutates ``instance`` in place.
+        """
         self._check_branding_write_gate()
         instance = self._get_branding_or_404()
+        before = branding_diff_state(instance)
 
         serializer = OrganizationBrandingSerializer(
             instance, data=request.data, partial=True, context={"request": request}
@@ -1167,7 +1205,46 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
 
+        membership = get_active_organization_membership(request.user)
+        if membership is None:
+            raise PermissionDenied("No active organization membership.")
+        self._record_branding_audit(membership, instance, created=False, before=before)
+
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def _record_branding_audit(
+        self,
+        membership: OrganizationMembership,
+        instance: OrganizationBranding,
+        *,
+        created: bool,
+        before: dict[str, str] | None,
+    ) -> None:
+        """Emit the ``AuditService`` CREATE/UPDATE record for a successful
+        branding write. Actor is the acting admin's membership (mirrors
+        ``OrganizationService.create_organization``'s actor derivation for an
+        org-level write). ``UPDATE`` carries a diff naming only the fields that
+        changed; ``CREATE`` carries none."""
+        actor = self.audit_service.actor_from_membership(membership)
+        subject = self.audit_service.subject_from_instance(instance, label=instance.app_name)
+        if created:
+            self.audit_service.record(
+                organization_id=membership.organization_id,
+                action=AuditAction.CREATE,
+                actor=actor,
+                subject=subject,
+            )
+            return
+
+        after = branding_diff_state(instance)
+        diff = compute_diff(before or {}, after)
+        self.audit_service.record(
+            organization_id=membership.organization_id,
+            action=AuditAction.UPDATE,
+            actor=actor,
+            subject=subject,
+            diff=diff,
+        )
 
 
 @extend_schema(tags=["Branding"])

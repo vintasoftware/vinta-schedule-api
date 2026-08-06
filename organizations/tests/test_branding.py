@@ -29,6 +29,7 @@ from organizations.permissions import (
     is_branding_eligible_organization,
 )
 from organizations.redirect_url_validation import validate_redirect_url
+from organizations.serializers import CurrentMembershipSerializer, MyMembershipSerializer
 from payments.billing_constants import BillingState, Entitlement
 from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
 from users.factories import UserFactory
@@ -421,6 +422,108 @@ class TestEvaluateBrandingWriteGate:
 
         assert is_branding_eligible_organization(org) is True
         assert evaluate_branding_write_gate(org) is BrandingWriteGateReason.NO_SLUG
+
+
+@pytest.mark.django_db
+class TestCanManageBrandingCapabilityField:
+    """``can_manage_branding`` on ``CurrentMembershipSerializer`` and
+    ``MyMembershipSerializer`` (Organization Auth-Area Branding plan, Phase 4
+    Capability signal guiding decision).
+
+    Must track ``is_branding_eligible_organization`` (the two-condition,
+    parentless-and-entitled gate) exactly -- NOT ``evaluate_branding_write_gate``
+    (the three-condition write gate). The key regression this pins: a
+    parentless, entitled organization with NO slug still reports
+    ``can_manage_branding is True`` -- folding the slug condition in would hide
+    the branding page from exactly the admins who are one step away from using
+    it (spec: "Eligible org with no public identifier yet").
+    """
+
+    def _membership(self, organization: Organization, role: str = OrganizationRole.ADMIN):
+        user = baker.make(User)
+        return baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=role,
+            is_active=True,
+        )
+
+    def test_true_for_a_parentless_entitled_organization(self):
+        org = _org_with_entitlement(
+            Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="eligible-org"
+        )
+        membership = self._membership(org)
+
+        assert CurrentMembershipSerializer(membership).data["can_manage_branding"] is True
+        assert MyMembershipSerializer(membership).data["can_manage_branding"] is True
+
+    def test_true_for_a_parentless_entitled_organization_with_no_slug(self):
+        """The key case: NOT including the slug condition. Pins the split against
+        `evaluate_branding_write_gate`, which would return NO_SLUG (falsy) for
+        this exact organization."""
+        org = _org_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None)
+        assert org.slug is None
+        membership = self._membership(org)
+
+        assert CurrentMembershipSerializer(membership).data["can_manage_branding"] is True
+        assert MyMembershipSerializer(membership).data["can_manage_branding"] is True
+        # ... and pin the split explicitly: the three-condition gate refuses here.
+        assert evaluate_branding_write_gate(org) is BrandingWriteGateReason.NO_SLUG
+
+    def test_false_for_a_parented_organization(self):
+        parent_org = _org_with_entitlement(
+            Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="parent-org-cap"
+        )
+        child_org = baker.make(Organization, parent=parent_org, slug="child-org-cap")
+        membership = self._membership(child_org)
+
+        assert CurrentMembershipSerializer(membership).data["can_manage_branding"] is False
+        assert MyMembershipSerializer(membership).data["can_manage_branding"] is False
+
+    def test_false_for_an_unentitled_organization(self):
+        org = _org_with_entitlement(
+            Entitlement.WHITE_LABEL_BRANDING, is_enabled=False, parent=None, slug="free-plan-cap"
+        )
+        membership = self._membership(org)
+
+        assert CurrentMembershipSerializer(membership).data["can_manage_branding"] is False
+        assert MyMembershipSerializer(membership).data["can_manage_branding"] is False
+
+    def test_non_admin_membership_reports_the_same_org_level_capability(self):
+        """`can_manage_branding` is an organization-level fact, not a per-role
+        one -- a non-admin member's entry reports it identically to an admin's.
+        Write authorization (who may actually POST/PATCH) is a separate,
+        role-based check (`IsOrganizationAdmin`) on the branding endpoints
+        themselves."""
+        org = _org_with_entitlement(
+            Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="member-org-cap"
+        )
+        admin_membership = self._membership(org, role=OrganizationRole.ADMIN)
+        member_membership = self._membership(org, role=OrganizationRole.MEMBER)
+
+        assert (
+            CurrentMembershipSerializer(admin_membership).data["can_manage_branding"]
+            is CurrentMembershipSerializer(member_membership).data["can_manage_branding"]
+            is True
+        )
+
+    def test_tracks_the_shared_helper_rather_than_duplicating_it(self):
+        """Every case above is also directly pinned against
+        `is_branding_eligible_organization` itself, so a change to the shared
+        helper's semantics is guaranteed to move this field too."""
+        eligible = _org_with_entitlement(
+            Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None
+        )
+        ineligible = _org_with_entitlement(
+            Entitlement.WHITE_LABEL_BRANDING, is_enabled=False, parent=None
+        )
+
+        for org in (eligible, ineligible):
+            membership = self._membership(org)
+            expected = is_branding_eligible_organization(org)
+            assert CurrentMembershipSerializer(membership).data["can_manage_branding"] == expected
+            assert MyMembershipSerializer(membership).data["can_manage_branding"] == expected
 
 
 @pytest.mark.django_db

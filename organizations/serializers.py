@@ -17,6 +17,10 @@ from organizations.models import (
     OrganizationMembership,
     OrganizationRole,
 )
+from organizations.permissions import (
+    is_branding_eligible_organization,
+    is_branding_eligible_organizations,
+)
 from organizations.redirect_url_validation import (
     validate_redirect_url as validate_redirect_url_rule,
 )
@@ -297,15 +301,31 @@ class CurrentMembershipSerializer(serializers.ModelSerializer):
     """
 
     organization = serializers.SerializerMethodField()
+    can_manage_branding = serializers.SerializerMethodField()
 
     class Meta:
         model = OrganizationMembership
-        fields = ("role", "organization")
-        read_only_fields = ("role", "organization")
+        fields = ("role", "organization", "can_manage_branding")
+        read_only_fields = ("role", "organization", "can_manage_branding")
 
     def get_organization(self, obj: OrganizationMembership) -> dict:
         """Serialize the related organization using OrganizationSerializer."""
         return OrganizationSerializer(obj.organization, context=self.context).data  # type: ignore[call-arg]
+
+    def get_can_manage_branding(self, obj: OrganizationMembership) -> bool:
+        """Whether the membership's organization is branding-eligible.
+
+        Computed as parentless-and-entitled -- deliberately excludes the slug
+        condition (Organization Auth-Area Branding plan, Phase 4 Capability
+        signal guiding decision), so an organization missing only a slug still
+        sees the branding page instead of it being silently absent. Shares
+        ``organizations.permissions.is_branding_eligible_organization`` rather
+        than restating the two-condition check, so this tracks the same gate
+        that governs ``GET /branding/`` (see
+        ``OrganizationBrandingView._check_branding_read_gate``) rather than
+        the three-condition write gate.
+        """
+        return is_branding_eligible_organization(obj.organization)
 
 
 class OrganizationBriefSerializer(serializers.ModelSerializer):
@@ -324,20 +344,71 @@ class OrganizationBriefSerializer(serializers.ModelSerializer):
         read_only_fields = ("id", "name", "slug")
 
 
+class _MyMembershipListSerializer(serializers.ListSerializer):
+    """Batches ``can_manage_branding`` for the whole membership list up front.
+
+    ``GET /organizations/mine/`` lists every active membership for the caller,
+    which can span N distinct organizations. Left to
+    ``MyMembershipSerializer.get_can_manage_branding`` calling
+    ``is_branding_eligible_organization`` per row, that would be N entitlement
+    lookups (see ``EntitlementService.has_entitlement_for_organizations`` for
+    what each one costs). This resolves the whole batch with
+    ``is_branding_eligible_organizations`` once, in two queries total, and
+    stashes the result on the shared serializer context so each child's
+    ``get_can_manage_branding`` reads from it instead of asking individually.
+    """
+
+    def to_representation(self, data):
+        iterable = data.all() if hasattr(data, "all") else data
+        memberships = list(iterable)
+        self.context["_can_manage_branding_by_organization_pk"] = (
+            is_branding_eligible_organizations(
+                [membership.organization for membership in memberships]
+            )
+        )
+        return super().to_representation(memberships)
+
+
 class MyMembershipSerializer(serializers.ModelSerializer):
     """Read-only serializer for the caller's active organization memberships.
 
     Used by ``GET /organizations/mine/`` to power the frontend org switcher.
-    Returns a list of ``{organization: {id, name}, role}`` entries — one per
-    active membership — without requiring the ``X-Organization-Id`` header.
+    Returns a list of ``{organization: {id, name}, role, can_manage_branding}``
+    entries — one per active membership — without requiring the
+    ``X-Organization-Id`` header.
     """
 
     organization = OrganizationBriefSerializer(read_only=True)
+    can_manage_branding = serializers.SerializerMethodField()
 
     class Meta:
         model = OrganizationMembership
-        fields = ("organization", "role")
-        read_only_fields = ("organization", "role")
+        fields = ("organization", "role", "can_manage_branding")
+        read_only_fields = ("organization", "role", "can_manage_branding")
+        list_serializer_class = _MyMembershipListSerializer
+
+    def get_can_manage_branding(self, obj: OrganizationMembership) -> bool:
+        """Whether this membership's organization is branding-eligible
+        (parentless-and-entitled, excluding the slug condition) -- see
+        ``CurrentMembershipSerializer.get_can_manage_branding`` for the full
+        rationale. Computed per-membership (not per-role): a non-admin
+        member's entry reports the same organization-level capability as an
+        admin's, matching the read gate's own admin-agnostic eligibility
+        check -- role-based write authorization is enforced separately by
+        ``IsOrganizationAdmin`` on the branding endpoints themselves.
+
+        Reads from the batch ``_MyMembershipListSerializer`` precomputes on the
+        shared context when serializing a list (the ``many=True`` path this
+        serializer is actually used on). Falls back to the single-organization
+        ``is_branding_eligible_organization`` call when there is no such batch
+        in context (e.g. this serializer instantiated directly against one
+        membership), which is exactly what the batch entry would have computed
+        for that one organization anyway.
+        """
+        batch = self.context.get("_can_manage_branding_by_organization_pk")
+        if batch is not None:
+            return batch.get(obj.organization_id, False)
+        return is_branding_eligible_organization(obj.organization)
 
 
 class OrganizationMembershipSerializer(serializers.ModelSerializer):

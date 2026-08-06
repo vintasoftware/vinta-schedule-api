@@ -25,7 +25,7 @@ from organizations.exceptions import BrandingLogoUploadRejectedError
 
 
 if TYPE_CHECKING:
-    from organizations.models import Organization
+    from organizations.models import Organization, OrganizationBranding
 
 
 # Reserved slug (also listed in `organizations.slug_validation._RESERVED_ROUTE_SLUGS`,
@@ -263,4 +263,43 @@ def sign_branding_logo_upload(
         "bucket": dest.get("bucket") or getattr(settings, "AWS_STORAGE_BUCKET_NAME", None),
         "endpoint": dest.get("endpoint") or getattr(settings, "AWS_S3_ENDPOINT_URL", None),
         "acl": dest.get("acl") or "public-read",
+    }
+
+
+def branding_diff_state(branding: OrganizationBranding | None) -> dict[str, str]:
+    """Field-level snapshot of an ``OrganizationBranding`` row for audit diffs
+    (Organization Auth-Area Branding plan, Phase 4).
+
+    Shared by both write surfaces -- ``organizations.views.OrganizationBrandingView``
+    (REST) and ``public_api.mutations.Mutation.update_branding`` (GraphQL) -- so
+    they feed ``audit.diff.compute_diff`` identically-shaped before/after states
+    rather than each re-deriving the field list.
+
+    ``logo`` is captured as its stored key (``FieldFile.name``, normalized to
+    ``""`` when unset) rather than the ``FieldFile`` object itself, so equality
+    comparison in ``compute_diff`` behaves like every other plain string field.
+
+    Returns an all-empty state (never ``None``) when ``branding`` is ``None`` --
+    the "before" side of a create, where there is no prior row to diff against.
+    Callers creating a fresh row should skip diffing entirely (an audit CREATE
+    record carries no diff) rather than feed this into ``compute_diff`` against
+    an all-empty "before", which would misrepresent a creation as an update of
+    every field from empty.
+    """
+    if branding is None:
+        return {
+            "app_name": "",
+            "logo": "",
+            "primary_color": "",
+            "secondary_color": "",
+            "support_email": "",
+            "redirect_url": "",
+        }
+    return {
+        "app_name": branding.app_name,
+        "logo": branding.logo.name or "",
+        "primary_color": branding.primary_color,
+        "secondary_color": branding.secondary_color,
+        "support_email": branding.support_email,
+        "redirect_url": branding.redirect_url,
     }

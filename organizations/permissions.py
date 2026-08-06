@@ -1,4 +1,5 @@
 import enum
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Annotated
 
 from dependency_injector.wiring import Provide, inject
@@ -49,6 +50,28 @@ def _organization_holds_white_label_branding(
     )
 
 
+@inject
+def _organizations_hold_white_label_branding(
+    organizations: Sequence[Organization],
+    entitlement_service: Annotated[EntitlementService, Provide["entitlement_service"]] = None,  # type: ignore[assignment]
+) -> dict[int, bool]:
+    """Bulk sibling of ``_organization_holds_white_label_branding``, backing
+    ``is_branding_eligible_organizations``. Same ``@inject``/``Provide``
+    fail-closed pattern: an unresolvable entitlement service denies every
+    organization in the batch rather than admitting any of it.
+
+    Deliberately does not go through ``has_entitlement_cached`` — the point of
+    this function is to answer for the whole batch in two queries, which
+    already beats what the per-organization request memo achieves for a batch
+    of distinct organizations.
+    """
+    if entitlement_service is None or not organizations:
+        return {}
+    return entitlement_service.has_entitlement_for_organizations(
+        organizations, Entitlement.WHITE_LABEL_BRANDING
+    )
+
+
 def is_branding_eligible_organization(organization: Organization | None) -> bool:
     """Shared branding-eligibility gate: ``organization`` has no parent AND holds
     the ``white_label_branding`` entitlement.
@@ -67,6 +90,33 @@ def is_branding_eligible_organization(organization: Organization | None) -> bool
     if organization is None or organization.parent_id is not None:
         return False
     return _organization_holds_white_label_branding(organization)
+
+
+def is_branding_eligible_organizations(organizations: Sequence[Organization]) -> dict[int, bool]:
+    """Bulk sibling of ``is_branding_eligible_organization``: the same
+    parentless-and-entitled check for many organizations, in two queries total
+    instead of two per organization.
+
+    Built for ``MyMembershipSerializer.get_can_manage_branding``, which
+    computes this per membership row on ``GET /organizations/mine/`` — one call
+    to ``is_branding_eligible_organization`` per row would pay a subscription
+    fetch plus entitlement-row fetch per distinct organization the caller
+    belongs to. Organizations with a parent are excluded from the entitlement
+    batch (same short-circuit as the single-organization function above) since
+    their answer is always ``False`` without needing an entitlement lookup at
+    all. See ``EntitlementService.has_entitlement_for_organizations`` for what
+    the batching itself looks like.
+
+    Returns ``{organization.pk: bool}`` for every organization passed in.
+    """
+    parentless = [organization for organization in organizations if organization.parent_id is None]
+    entitled_by_pk = _organizations_hold_white_label_branding(parentless)
+    return {
+        organization.pk: (
+            organization.parent_id is None and entitled_by_pk.get(organization.pk, False)
+        )
+        for organization in organizations
+    }
 
 
 class BrandingWriteGateReason(enum.Enum):

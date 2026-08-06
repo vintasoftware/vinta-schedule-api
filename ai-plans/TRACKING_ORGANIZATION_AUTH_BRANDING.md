@@ -57,7 +57,7 @@ Command translation (container → host):
 | 2a | Swap allowlist → single redirect | 2 | ✅ done — [PR #207](https://github.com/vintasoftware/vinta-schedule-api/pull/207) | plan/organization-auth-branding/phase-2a |
 | 2b | Logo upload and delivery | 3 | ✅ done — [PR #208](https://github.com/vintasoftware/vinta-schedule-api/pull/208) | plan/organization-auth-branding/phase-2b |
 | 3 | Widen write gate | 3 | ✅ done — [PR #209](https://github.com/vintasoftware/vinta-schedule-api/pull/209) | plan/organization-auth-branding/phase-3 |
-| 4 | Audit + capability field | 2 | ⏳ pending | plan/organization-auth-branding/phase-4 |
+| 4 | Audit + capability field | 2 | ✅ done — [PR #210](https://github.com/vintasoftware/vinta-schedule-api/pull/210) | plan/organization-auth-branding/phase-4 |
 | 5 | Resolve branding (parentless) | 3 | ⏳ pending | plan/organization-auth-branding/phase-5 |
 | 6 | Invitation reply-to | 2 | ⏳ pending | plan/organization-auth-branding/phase-6 |
 | 7 | Post-auth destination server-side | 3 | ⏳ pending | plan/organization-auth-branding/phase-7 |
@@ -107,9 +107,18 @@ Command translation (container → host):
 - Gates: ruff/format clean, `makemigrations --check` no changes, `manage.py check` clean, mypy no new errors (+ fixed a latent User|None narrowing at 2 touched sites), **full suite 4778 passed**. schema.yml regenerated (only 403 descriptions changed).
 - Carry-forward: `can_manage_branding` (Phase 4) = parentless+entitled (NO slug) — must equal GET-reachability. Out-of-scope flagged: pre-existing `S3DirectWidget`/admin-form required-when-blank + re-render crash (worked around in tests).
 
+### Phase 4 — Audit + capability field ✅
+- **Branch**: `plan/organization-auth-branding/phase-4` (base: phase-3) · **PR**: [#210](https://github.com/vintasoftware/vinta-schedule-api/pull/210)
+- **Implementer**: sonnet (T2) · **Reviewer**: sonnet (T3) · **Fixer**: sonnet (T2)
+- Audit on branding create (no diff) + update (diff of changed fields) via `AuditService.record` on REST PUT/PATCH + GraphQL `updateBranding`; actor `actor_from_membership` (REST) / `actor_from_system_user` (partner API); refused writes record nothing (audit call unreachable + `on_commit` defer). Shared `branding_diff_state()` helper (6 fields; logo→key).
+- `can_manage_branding` read-only on `CurrentMembershipSerializer` + `MyMembershipSerializer` = `is_branding_eligible_organization` (parentless+entitled, NO slug) → equals GET-reachability. No migration.
+- **Review (no BLOCKER)**: fixed N+1 on `/organizations/mine/` (new `EntitlementService.has_entitlement_for_organizations` bulk helper + `_MyMembershipListSerializer` batching; query-count test proves no linear scaling); hoisted late audit imports (no cycle).
+- Gates: ruff/format clean, `makemigrations --check` no changes, `manage.py check` clean, mypy no new errors, **full suite 4800 passed**. schema.yml regenerated.
+- Carry-forward: bulk helpers `EntitlementService.has_entitlement_for_organizations` + `is_branding_eligible_organizations` now exist. 3 redundant local `AuditService` imports remain in unrelated booking-policy mutations (out-of-scope cleanup).
+
 ## Current phase
 
-Phase 4 — Audit branding writes and expose the capability field.
+Phase 5 — Resolve branding for parentless organizations.
 
 ## Deferred phases
 
