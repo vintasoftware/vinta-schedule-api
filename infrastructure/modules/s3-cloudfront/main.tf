@@ -368,6 +368,10 @@ data "aws_iam_policy_document" "app" {
     sid = "ObjectAccess"
     actions = [
       "s3:PutObject",
+      # Browser uploads go through django-s3direct, which always signs an x-amz-acl
+      # header. S3 authorizes any ACL-bearing PutObject against s3:PutObjectAcl too,
+      # and denies with 403 before it ever looks at the ACL value.
+      "s3:PutObjectAcl",
       "s3:GetObject",
       "s3:DeleteObject",
     ]
