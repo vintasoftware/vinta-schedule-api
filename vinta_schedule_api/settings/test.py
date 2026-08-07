@@ -7,6 +7,11 @@ DEBUG = True
 
 # Add the invitation-accept URLs so sendEmail=false tests receive a non-null inviteUrl.
 # The base settings omit these keys; staging/production set them against FRONTEND_BASE_URL.
+# Unlike staging/production, these values are plain strings, not f-strings -- the host
+# here is a hardcoded literal, so {token}/{org_slug} don't need the {{ }} escaping those
+# other settings use to survive f-string interpolation of FRONTEND_BASE_URL. Single braces
+# is correct here: build_invitation_accept_url calls .format(token=..., org_slug=...) on
+# these templates directly.
 HEADLESS_FRONTEND_URLS = {
     **HEADLESS_FRONTEND_URLS,
     "account_accept_invitation": "http://localhost:3000/auth/accept-invite/?token={token}",
