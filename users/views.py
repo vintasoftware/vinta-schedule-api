@@ -1,5 +1,7 @@
 from django.conf import settings
 
+import boto3
+from botocore.config import Config as BotoConfig
 from django_virtual_models.generic_views import GenericVirtualModelViewMixin
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import status
@@ -19,6 +21,11 @@ from users.serializers import (
 
 from .models import Profile
 from .permissions import ProfileReadOnlyExceptYourOwn
+
+
+# Long enough for a slow mobile connection to finish a photo upload, short enough that a
+# leaked URL is not a lasting write grant on the bucket.
+PROFILE_PICTURE_UPLOAD_URL_EXPIRY_SECONDS = 900
 
 
 class ProfileViewSet(GenericVirtualModelViewMixin, ViewSet, RetrieveUpdateAPIView):
@@ -111,6 +118,8 @@ class ProfileViewSet(GenericVirtualModelViewMixin, ViewSet, RetrieveUpdateAPIVie
         request_serializer.is_valid(raise_exception=True)
         file_name = request_serializer.validated_data["file_name"]
 
+        file_type = request_serializer.validated_data["file_type"]
+
         dest = get_s3direct_destinations().get("profile_pictures")
 
         bucket = dest.get("bucket", getattr(settings, "AWS_STORAGE_BUCKET_NAME", None))
@@ -121,15 +130,38 @@ class ProfileViewSet(GenericVirtualModelViewMixin, ViewSet, RetrieveUpdateAPIVie
         if not bucket or not region or not endpoint:
             raise ValidationError("S3 configuration is incomplete.")
 
+        object_key = get_key(dest["key"], file_name, dest)
+
+        s3_client = boto3.client(
+            "s3",
+            region_name=region,
+            endpoint_url=endpoint,
+            aws_access_key_id=aws_credentials.access_key,
+            aws_secret_access_key=aws_credentials.secret_key,
+            aws_session_token=aws_credentials.token,
+            config=BotoConfig(
+                signature_version="s3v4",
+                # Floci (local) only answers path-style; on AWS "auto" picks
+                # virtual-hosted. Mirrors what django-storages reads for the same call.
+                s3={"addressing_style": getattr(settings, "AWS_S3_ADDRESSING_STYLE", "auto")},
+            ),
+        )
+
+        # No ACL in the signed params: the media bucket sets Object Ownership to
+        # BucketOwnerEnforced, which rejects any upload carrying an x-amz-acl header.
+        # Objects stay private through the bucket's public-access block, and are served
+        # only via the signed-URL CloudFront distribution.
+        upload_url = s3_client.generate_presigned_url(
+            "put_object",
+            Params={"Bucket": bucket, "Key": object_key, "ContentType": file_type},
+            ExpiresIn=PROFILE_PICTURE_UPLOAD_URL_EXPIRY_SECONDS,
+            HttpMethod="PUT",
+        )
+
         upload_data = {
-            "object_key": get_key(dest["key"], file_name, dest),
-            "access_key_id": aws_credentials.access_key,
-            "session_token": aws_credentials.token,
-            "region": region,
-            "bucket": bucket,
-            "endpoint": endpoint,
-            "acl": dest.get("acl") or "public-read",
-            "allow_existence_optimization": dest.get("allow_existence_optimization", False),
+            "object_key": object_key,
+            "upload_url": upload_url,
+            "expires_in": PROFILE_PICTURE_UPLOAD_URL_EXPIRY_SECONDS,
         }
 
         serializer = ProfilePictureUploadParamsSerializer(upload_data)

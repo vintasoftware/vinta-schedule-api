@@ -485,11 +485,8 @@ S3DIRECT_DESTINATIONS = {
         # branding-eligible organization -- see the plan's "Logo upload path"
         # guiding decision.
         "auth": _user_administers_branding_eligible_organization,
-        # Was `private`, which reads like the safer choice but is rejected outright:
-        # the media bucket is BucketOwnerEnforced, so S3 accepts no canned ACL other
-        # than the one below. See the note on `profile_pictures` above. Logos stay
-        # private through the bucket policy and signed-URL CloudFront distribution,
-        # not through this header.
+        # Same constraint as `profile_pictures` above: BucketOwnerEnforced rejects
+        # every other canned ACL, and s3direct always sends one.
         "acl": "bucket-owner-full-control",
         "allowed": list(BRANDING_LOGO_CONTENT_TYPES),
         "content_length_range": [1, BRANDING_LOGO_MAX_SIZE_BYTES],
