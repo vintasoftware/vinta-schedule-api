@@ -3,6 +3,7 @@ from django.urls import path
 from common.types import RouteDict
 
 from .views import (
+    OrganizationBrandingLogoUploadParamsView,
     OrganizationBrandingView,
     OrganizationInvitationViewSet,
     OrganizationLogoDeliveryView,
@@ -38,6 +39,11 @@ routes: list[RouteDict] = [
 # Non-viewset routes (APIViews) — URL patterns to register with Django URL conf
 extra_patterns = [
     path("branding/", OrganizationBrandingView.as_view(), name="branding"),
+    path(
+        "branding/logo-upload-params/",
+        OrganizationBrandingLogoUploadParamsView.as_view(),
+        name="branding-logo-upload-params",
+    ),
     # Unauthenticated -- keyed on the organization's public slug, never an object
     # key. See OrganizationLogoDeliveryView's docstring.
     path(
