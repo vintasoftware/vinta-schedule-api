@@ -2538,10 +2538,8 @@ CREATE_BRANDING_LOGO_UPLOAD_MUTATION = """
 mutation CreateBrandingLogoUpload($fileName: String!, $fileType: String!, $fileSize: Int!) {
     createBrandingLogoUpload(fileName: $fileName, fileType: $fileType, fileSize: $fileSize) {
         objectKey
-        bucket
-        region
-        endpoint
-        acl
+        uploadUrl
+        expiresIn
     }
 }
 """
@@ -2601,10 +2599,16 @@ class TestCreateBrandingLogoUploadMutation:
     def setup_method(self):
         self.client = APIClient()
 
-    def test_eligible_caller_receives_a_signed_payload(self):
+    def test_eligible_caller_receives_a_signed_payload(self, settings):
         """Parentless + entitled (the suite's autouse fixture grants every
         baker-made Organization full entitlements) -- the eligible case."""
+        from s3direct.utils import AWSCredentials
+
         from di_core.containers import container
+
+        settings.AWS_STORAGE_BUCKET_NAME = "test-bucket"
+        settings.AWS_S3_REGION_NAME = "us-east-1"
+        settings.AWS_S3_ENDPOINT_URL = "https://s3.us-east-1.amazonaws.com"
 
         org = baker.make(Organization, name="Eligible Org", parent=None)
         auth_service = PublicAPIAuthService()
@@ -2613,7 +2617,13 @@ class TestCreateBrandingLogoUploadMutation:
         )
         baker.make(ResourceAccess, system_user=system_user, resource_name="branding")
 
-        with container.public_api_auth_service.override(auth_service):
+        with (
+            container.public_api_auth_service.override(auth_service),
+            patch(
+                "organizations.branding_logo.get_aws_credentials",
+                return_value=AWSCredentials(token=None, secret_key="secret", access_key="AKIATEST"),
+            ),
+        ):
             response = self.client.post(
                 "/graphql/",
                 data={
@@ -2633,7 +2643,8 @@ class TestCreateBrandingLogoUploadMutation:
         assert "errors" not in data or not data["errors"], data
         payload = data["data"]["createBrandingLogoUpload"]
         assert payload["objectKey"], "must mint an object key"
-        assert payload["acl"]
+        assert payload["uploadUrl"].startswith("https://")
+        assert payload["expiresIn"] == 900
 
     @pytest.mark.no_auto_subscription
     def test_free_plan_organization_is_refused(self):
