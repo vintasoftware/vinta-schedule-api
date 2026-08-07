@@ -193,6 +193,7 @@ class TestOrganizationAdminSlugValidation:
                 "slug": "slug-admin-org",
                 "should_sync_rooms": "",
                 "external_event_update_policy": "change_request",
+                "week_start": "monday",
             },
         )
 
@@ -211,6 +212,7 @@ class TestOrganizationAdminSlugValidation:
                 "slug": "admin",
                 "should_sync_rooms": "",
                 "external_event_update_policy": "change_request",
+                "week_start": "monday",
             },
         )
 
@@ -229,6 +231,7 @@ class TestOrganizationAdminSlugValidation:
                 "slug": "Not_Valid",
                 "should_sync_rooms": "",
                 "external_event_update_policy": "change_request",
+                "week_start": "monday",
             },
         )
 
@@ -248,6 +251,7 @@ class TestOrganizationAdminSlugValidation:
                 "slug": "taken-slug",
                 "should_sync_rooms": "",
                 "external_event_update_policy": "change_request",
+                "week_start": "monday",
             },
         )
 
@@ -278,6 +282,7 @@ class TestOrganizationAdminSlugValidation:
                 "slug": lookalike_slug,
                 "should_sync_rooms": "",
                 "external_event_update_policy": "change_request",
+                "week_start": "monday",
             },
         )
 
@@ -304,6 +309,7 @@ class TestOrganizationAdminSlugValidation:
                 "slug": "super",
                 "should_sync_rooms": "",
                 "external_event_update_policy": "change_request",
+                "week_start": "monday",
             },
         )
 
@@ -322,6 +328,7 @@ class TestOrganizationAdminSlugValidation:
                 "slug": "",
                 "should_sync_rooms": "",
                 "external_event_update_policy": "change_request",
+                "week_start": "monday",
             },
         )
 
