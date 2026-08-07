@@ -1,4 +1,6 @@
 import json
+from unittest.mock import patch
+from urllib.parse import parse_qs, urlparse
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -7,6 +9,7 @@ import pytest
 from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
+from s3direct.utils import AWSCredentials
 
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
 from organizations.tests.test_branding_rest import _make_unentitled_org
@@ -15,6 +18,12 @@ from organizations.tests.test_branding_rest import _make_unentitled_org
 User = get_user_model()
 
 UPLOAD_PARAMS_URL = "/branding/logo-upload-params/"
+
+S3_TEST_SETTINGS = {
+    "AWS_STORAGE_BUCKET_NAME": "test-bucket",
+    "AWS_S3_REGION_NAME": "us-east-1",
+    "AWS_S3_ENDPOINT_URL": "https://s3.us-east-1.amazonaws.com",
+}
 
 
 def assert_response_status_code(response, expected_status_code):
@@ -101,6 +110,22 @@ def parented_org_admin(user, parented_org):
 VALID_PAYLOAD = {"file_name": "logo.png", "file_type": "image/png", "file_size": 1024}
 
 
+@pytest.fixture(autouse=True)
+def _s3_upload_settings(settings):
+    """Every test in this module posts to the signing endpoint, which now needs a
+    complete S3 config (bucket/region/endpoint) to mint a presigned URL -- these
+    settings aren't defined in `vinta_schedule_api.settings.test`. Credentials are
+    mocked too, since `generate_presigned_url` needs a structurally valid access
+    key/secret to sign with (it never makes a network call)."""
+    for k, v in S3_TEST_SETTINGS.items():
+        setattr(settings, k, v)
+    with patch(
+        "organizations.branding_logo.get_aws_credentials",
+        return_value=AWSCredentials(token=None, secret_key="secret", access_key="AKIATEST"),
+    ):
+        yield
+
+
 @pytest.mark.django_db
 class TestOrganizationBrandingLogoUploadParamsView:
     def test_admin_of_eligible_org_gets_signed_params(
@@ -114,7 +139,66 @@ class TestOrganizationBrandingLogoUploadParamsView:
 
         data = response.json()
         assert data["object_key"]
-        assert data["acl"]
+        assert data["upload_url"].startswith("https://")
+        assert data["expires_in"] == 900
+
+    def test_returns_a_presigned_url_the_browser_can_put_to_unaided(
+        self, client, user, eligible_org, eligible_org_admin
+    ):
+        """The response must carry a complete SigV4 presigned URL: the SPA
+        authenticates with JWT and has no way to reach s3direct's session+CSRF
+        signing view, so it cannot sign a request itself. Everything S3 needs has
+        to be in this URL's query string or the upload PUT goes out unsigned and
+        S3 answers 403."""
+        client.force_authenticate(user)
+        client.credentials(HTTP_X_ORGANIZATION_ID=str(eligible_org.id))
+
+        response = client.post(UPLOAD_PARAMS_URL, data=VALID_PAYLOAD, format="json")
+        assert_response_status_code(response, status.HTTP_200_OK)
+
+        data = response.json()
+        parsed = urlparse(data["upload_url"])
+        query = parse_qs(parsed.query)
+
+        assert parsed.path.endswith(data["object_key"])
+        assert query["X-Amz-Algorithm"] == ["AWS4-HMAC-SHA256"]
+        assert query["X-Amz-Signature"][0]
+        assert query["X-Amz-Credential"][0].startswith("AKIATEST/")
+        assert int(query["X-Amz-Expires"][0]) == data["expires_in"]
+
+    def test_presigned_url_signs_content_type_but_never_an_acl(
+        self, client, user, eligible_org, eligible_org_admin
+    ):
+        """No `x-amz-acl` anywhere: the media bucket has ACLs disabled
+        (BucketOwnerEnforced). Content-Type is signed so the type is fixed when
+        the URL is issued and cannot be swapped on the PUT."""
+        client.force_authenticate(user)
+        client.credentials(HTTP_X_ORGANIZATION_ID=str(eligible_org.id))
+
+        response = client.post(UPLOAD_PARAMS_URL, data=VALID_PAYLOAD, format="json")
+        assert_response_status_code(response, status.HTTP_200_OK)
+
+        upload_url = response.json()["upload_url"]
+        signed_headers = parse_qs(urlparse(upload_url).query)["X-Amz-SignedHeaders"][0]
+
+        assert "x-amz-acl" not in signed_headers
+        assert "acl" not in upload_url.lower()
+        assert "content-type" in signed_headers
+
+    def test_response_no_longer_leaks_aws_credentials_to_the_browser(
+        self, client, user, eligible_org, eligible_org_admin
+    ):
+        """The presigned URL replaces the raw key id the old handshake had to
+        expose."""
+        client.force_authenticate(user)
+        client.credentials(HTTP_X_ORGANIZATION_ID=str(eligible_org.id))
+
+        response = client.post(UPLOAD_PARAMS_URL, data=VALID_PAYLOAD, format="json")
+        assert_response_status_code(response, status.HTTP_200_OK)
+
+        data = response.json()
+        assert "access_key_id" not in data
+        assert "session_token" not in data
 
     def test_admin_of_a_no_slug_org_still_gets_signed_params(
         self, client, user, no_slug_org, no_slug_org_admin
