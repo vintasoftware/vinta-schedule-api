@@ -585,12 +585,14 @@ class OrganizationBrandingLogoUploadParamsRequestSerializer(serializers.Serializ
 class OrganizationBrandingLogoUploadParamsSerializer(serializers.Serializer):
     """Response body for ``OrganizationBrandingLogoUploadParamsView`` — the same
     shape ``organizations.branding_logo.sign_branding_logo_upload`` and the
-    GraphQL ``create_branding_logo_upload`` mutation return."""
+    GraphQL ``create_branding_logo_upload`` mutation return.
+
+    ``upload_url`` is a complete SigV4 presigned PUT URL. The client uploads by
+    PUTting the file body straight to it with a matching Content-Type and no
+    other headers — no AWS credentials reach the browser and nothing has to be
+    signed client-side. Mirrors ``users.serializers.ProfilePictureUploadParamsSerializer``.
+    """
 
     object_key = serializers.CharField()
-    access_key_id = serializers.CharField(allow_null=True)
-    session_token = serializers.CharField(allow_null=True)
-    region = serializers.CharField(allow_null=True)
-    bucket = serializers.CharField(allow_null=True)
-    endpoint = serializers.CharField(allow_null=True)
-    acl = serializers.CharField()
+    upload_url = serializers.URLField()
+    expires_in = serializers.IntegerField()

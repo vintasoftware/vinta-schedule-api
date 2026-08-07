@@ -200,6 +200,13 @@ HEADLESS_FRONTEND_URLS = {
     "account_reset_password_from_key": f"{FRONTEND_BASE_URL}/auth/reset-password/{{key}}",
     "account_signup": f"{FRONTEND_BASE_URL}/auth/signup",
     "account_accept_invitation": f"{FRONTEND_BASE_URL}/auth/accept-invite/?token={{token}}",
+    # Used instead of the entry above when the invitation's branding root has a
+    # slug -- see organizations.invitation_urls.build_invitation_accept_url. The
+    # path segment is what lets the accept page resolve that organization's
+    # branding before the user authenticates.
+    "account_accept_invitation_branded": (
+        f"{FRONTEND_BASE_URL}/o/{{org_slug}}/auth/accept-invite/?token={{token}}"
+    ),
     "socialaccount_login_error": f"{FRONTEND_BASE_URL}/auth/social-login-error",
 }
 

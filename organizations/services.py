@@ -2,7 +2,6 @@ import datetime
 import logging
 from typing import Annotated
 
-from django.conf import settings
 from django.db import IntegrityError, transaction
 
 from allauth.socialaccount.models import SocialAccount
@@ -35,11 +34,13 @@ from organizations.exceptions import (
     NoServiceAccountConfiguredError,
     UserAlreadyHasMembershipError,
 )
+from organizations.invitation_urls import build_invitation_accept_url
 from organizations.models import (
     Organization,
     OrganizationInvitation,
     OrganizationMembership,
     OrganizationRole,
+    resolve_branding_for_display,
 )
 from payments.billing_constants import LimitedResource
 from payments.exceptions import OverLimitError
@@ -408,6 +409,15 @@ class OrganizationService:
             # the organization's branding by organization_invitation_context() at send
             # time and applied by ReplyToDjangoEmailNotificationAdapter
             # (notifications/notification_adapters/django_email.py).
+            #
+            # The accept-invite link itself is keyed on the *branding root's* slug
+            # (not organization.slug directly), so an invitation from a reseller's
+            # child organization carries the reseller's slug -- see
+            # organizations.invitation_urls.build_invitation_accept_url.
+            branding_root = resolve_branding_for_display(organization)
+            invitation_url = build_invitation_accept_url(
+                branding_root.organization if branding_root else None, token
+            )
             transaction.on_commit(
                 lambda: self.notification_service.create_one_off_notification(
                     email_or_phone=email,
@@ -420,9 +430,7 @@ class OrganizationService:
                     context_kwargs=NotificationContextDict(
                         {
                             "organization_invitation_id": invitation.id,
-                            "invitation_url": (getattr(settings, "HEADLESS_FRONTEND_URLS", {}))
-                            .get("account_accept_invitation", "")
-                            .format(token=token),
+                            "invitation_url": invitation_url,
                         }
                     ),
                     subject_template="organizations/emails/organization_invitation.subject.txt",

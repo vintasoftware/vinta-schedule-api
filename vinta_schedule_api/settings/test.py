@@ -5,11 +5,19 @@ from .base import *
 # and N+1 regressions fail the suite instead of only surfacing on the dev runtime.
 DEBUG = True
 
-# Add the invitation-accept URL so sendEmail=false tests receive a non-null inviteUrl.
-# The base settings omit this key; staging/production set it against FRONTEND_BASE_URL.
+# Add the invitation-accept URLs so sendEmail=false tests receive a non-null inviteUrl.
+# The base settings omit these keys; staging/production set them against FRONTEND_BASE_URL.
+# Unlike staging/production, these values are plain strings, not f-strings -- the host
+# here is a hardcoded literal, so {token}/{org_slug} don't need the {{ }} escaping those
+# other settings use to survive f-string interpolation of FRONTEND_BASE_URL. Single braces
+# is correct here: build_invitation_accept_url calls .format(token=..., org_slug=...) on
+# these templates directly.
 HEADLESS_FRONTEND_URLS = {
     **HEADLESS_FRONTEND_URLS,
     "account_accept_invitation": "http://localhost:3000/auth/accept-invite/?token={token}",
+    "account_accept_invitation_branded": (
+        "http://localhost:3000/o/{org_slug}/auth/accept-invite/?token={token}"
+    ),
 }
 
 SECRET_KEY = "test-secret-key-not-for-production-use-only-0123456789"  # nosec

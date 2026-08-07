@@ -731,10 +731,29 @@ class TestSignBrandingLogoUpload:
     destination's content-type allowlist and size cap, re-checked independently of the
     shipped s3direct signing view (this is what the GraphQL signing mutation calls)."""
 
+    @pytest.fixture(autouse=True)
+    def _s3_upload_settings(self, settings):
+        """Only the accepted-upload cases below reach the presigned-URL step --
+        the rejection cases raise before ever needing a bucket/region/endpoint or
+        credentials, so they're unaffected by this fixture."""
+        from unittest.mock import patch
+
+        from s3direct.utils import AWSCredentials
+
+        settings.AWS_STORAGE_BUCKET_NAME = "test-bucket"
+        settings.AWS_S3_REGION_NAME = "us-east-1"
+        settings.AWS_S3_ENDPOINT_URL = "https://s3.us-east-1.amazonaws.com"
+        with patch(
+            "organizations.branding_logo.get_aws_credentials",
+            return_value=AWSCredentials(token=None, secret_key="secret", access_key="AKIATEST"),
+        ):
+            yield
+
     @pytest.mark.parametrize("content_type", ["image/png", "image/jpeg", "image/webp"])
     def test_accepts_allowed_content_types(self, content_type):
         payload = sign_branding_logo_upload("logo.png", content_type, 1024)
         assert payload["object_key"]
+        assert payload["upload_url"].startswith("https://")
 
     def test_rejects_svg_explicitly(self):
         """SVG is the one format a reviewer will assume works -- it does not."""
