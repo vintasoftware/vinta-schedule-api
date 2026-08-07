@@ -1,4 +1,5 @@
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlparse
 
 from django.urls import reverse
 
@@ -146,13 +147,81 @@ class TestProfilePictureUploadParams:
         data = response.data
         assert "object_key" in data
         assert data["object_key"].startswith("uploads/profile_pictures/")
-        assert data["access_key_id"] == "AKIATEST"
-        assert data["region"] == "us-east-1"
-        assert data["bucket"] == "test-bucket"
-        assert data["endpoint"] == "https://s3.us-east-1.amazonaws.com"
-        # The only canned ACL the media bucket accepts; see
-        # s3direct_overrides/tests/test_upload_acl_contract.py.
-        assert data["acl"] == "bucket-owner-full-control"
+        assert data["upload_url"].startswith("https://")
+        assert "test-bucket" in data["upload_url"]
+        assert data["expires_in"] == 900
+
+    @patch("users.views.get_aws_credentials")
+    def test_returns_a_presigned_url_the_browser_can_put_to_unaided(
+        self, mock_creds, auth_client, settings
+    ):
+        """The response must carry a complete SigV4 presigned URL.
+
+        The SPA authenticates with JWT and cannot reach s3direct's session+CSRF signing
+        view, so it has no way to sign a request itself. Everything S3 needs has to be
+        in this URL's query string or the upload PUT goes out unsigned and S3 answers 403.
+        """
+        mock_creds.return_value = AWSCredentials(
+            token=None, secret_key="secret", access_key="AKIATEST"
+        )
+        for k, v in S3_TEST_SETTINGS.items():
+            setattr(settings, k, v)
+
+        response = auth_client.post(self._url("me"), self._valid_payload(), format="json")
+
+        assert response.status_code == status.HTTP_200_OK
+        upload_url = response.data["upload_url"]
+
+        parsed = urlparse(upload_url)
+        query = parse_qs(parsed.query)
+
+        assert parsed.path.endswith(response.data["object_key"])
+        assert query["X-Amz-Algorithm"] == ["AWS4-HMAC-SHA256"]
+        assert query["X-Amz-Signature"][0]
+        assert query["X-Amz-Credential"][0].startswith("AKIATEST/")
+        assert "us-east-1/s3/aws4_request" in query["X-Amz-Credential"][0]
+        assert query["X-Amz-Date"][0]
+        assert int(query["X-Amz-Expires"][0]) == response.data["expires_in"]
+
+    @patch("users.views.get_aws_credentials")
+    def test_presigned_url_signs_content_type_but_never_an_acl(
+        self, mock_creds, auth_client, settings
+    ):
+        """No `x-amz-acl` anywhere: the media bucket has ACLs disabled (BucketOwnerEnforced).
+
+        Content-Type is signed so the type is fixed when the URL is issued and cannot be
+        swapped on the PUT.
+        """
+        mock_creds.return_value = AWSCredentials(
+            token=None, secret_key="secret", access_key="AKIATEST"
+        )
+        for k, v in S3_TEST_SETTINGS.items():
+            setattr(settings, k, v)
+
+        response = auth_client.post(self._url("me"), self._valid_payload(), format="json")
+
+        upload_url = response.data["upload_url"]
+        signed_headers = parse_qs(urlparse(upload_url).query)["X-Amz-SignedHeaders"][0]
+
+        assert "x-amz-acl" not in signed_headers
+        assert "acl" not in upload_url.lower()
+        assert "content-type" in signed_headers
+
+    @patch("users.views.get_aws_credentials")
+    def test_response_no_longer_leaks_aws_credentials_to_the_browser(
+        self, mock_creds, auth_client, settings
+    ):
+        """The presigned URL replaces the raw key id the old handshake had to expose."""
+        mock_creds.return_value = AWSCredentials(
+            token=None, secret_key="secret", access_key="AKIATEST"
+        )
+        for k, v in S3_TEST_SETTINGS.items():
+            setattr(settings, k, v)
+
+        response = auth_client.post(self._url("me"), self._valid_payload(), format="json")
+
+        assert "access_key_id" not in response.data
+        assert "session_token" not in response.data
 
     @patch("users.views.get_aws_credentials")
     def test_success_by_pk(self, mock_creds, auth_client, user, settings):

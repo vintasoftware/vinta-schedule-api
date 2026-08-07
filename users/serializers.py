@@ -13,14 +13,12 @@ class ProfilePictureUploadParamsRequestSerializer(serializers.Serializer):
 
 
 class ProfilePictureUploadParamsSerializer(serializers.Serializer):
+    # `upload_url` is a complete SigV4 presigned PUT URL. The client uploads by PUTting
+    # the file body straight to it with a matching Content-Type and no other headers —
+    # no AWS credentials reach the browser and nothing has to be signed client-side.
     object_key = serializers.CharField()
-    access_key_id = serializers.CharField(allow_null=True)
-    session_token = serializers.CharField(allow_null=True)
-    region = serializers.CharField()
-    bucket = serializers.CharField()
-    endpoint = serializers.CharField()
-    acl = serializers.CharField()
-    allow_existence_optimization = serializers.BooleanField()
+    upload_url = serializers.URLField()
+    expires_in = serializers.IntegerField()
 
 
 class ProfileBasicSerializer(serializers.ModelSerializer):

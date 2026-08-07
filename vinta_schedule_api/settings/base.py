@@ -485,7 +485,9 @@ S3DIRECT_DESTINATIONS = {
         # branding-eligible organization -- see the plan's "Logo upload path"
         # guiding decision.
         "auth": _user_administers_branding_eligible_organization,
-        "acl": "private",
+        # Same constraint as `profile_pictures` above: BucketOwnerEnforced rejects
+        # every other canned ACL, and s3direct always sends one.
+        "acl": "bucket-owner-full-control",
         "allowed": list(BRANDING_LOGO_CONTENT_TYPES),
         "content_length_range": [1, BRANDING_LOGO_MAX_SIZE_BYTES],
     },

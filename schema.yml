@@ -16427,31 +16427,15 @@ components:
       properties:
         object_key:
           type: string
-        access_key_id:
+        upload_url:
           type: string
-          nullable: true
-        session_token:
-          type: string
-          nullable: true
-        region:
-          type: string
-        bucket:
-          type: string
-        endpoint:
-          type: string
-        acl:
-          type: string
-        allow_existence_optimization:
-          type: boolean
+          format: uri
+        expires_in:
+          type: integer
       required:
-      - access_key_id
-      - acl
-      - allow_existence_optimization
-      - bucket
-      - endpoint
+      - expires_in
       - object_key
-      - region
-      - session_token
+      - upload_url
     ProfilePictureUploadParamsRequest:
       type: object
       properties:
