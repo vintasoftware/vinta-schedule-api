@@ -353,6 +353,13 @@ HEADLESS_FRONTEND_URLS = {
     "account_signup": "http://localhost:3000/account/signup",
     "socialaccount_login_error": "http://localhost:3000/account/provider/callback",
 }
+# The SPA's own base URL -- "our dashboard" for callers that need a stable, non
+# organization-specific fallback destination (e.g. accounts.views.ProviderCallbackAPIView,
+# which lands a just-authenticated user here when their organization has no configured
+# post-authentication redirect). staging.py/production.py override this with their real
+# frontend origin; this default matches the local dev frontend port used throughout
+# HEADLESS_FRONTEND_URLS above.
+FRONTEND_BASE_URL = config("FRONTEND_BASE_URL", default="http://localhost:3000").rstrip("/")
 MFA_SUPPORTED_TYPES = ["totp", "recovery_codes"]
 MFA_PASSKEY_LOGIN_ENABLED = False
 HEADLESS_SERVE_SPECIFICATION = True
@@ -433,12 +440,54 @@ def generate_s3direct_file_name(original_file_name, dest):
     return f"{dest}/{unique_file_name}"
 
 
+# Logos are small brand assets (a wordmark / mark, not a photo). 5 MB is well above
+# any legitimate PNG/JPEG/WebP logo and well below a size that could meaningfully
+# strain storage or the unauthenticated delivery route's bandwidth.
+BRANDING_LOGO_MAX_SIZE_BYTES = 5 * 1024 * 1024
+# SVG is deliberately excluded: it can carry script and would render on our own
+# login page, making it a stored-XSS surface -- see the plan's "Logo limits"
+# guiding decision.
+BRANDING_LOGO_CONTENT_TYPES = ("image/png", "image/jpeg", "image/webp")
+
+
+def _user_administers_branding_eligible_organization(user):
+    """``auth`` callable for the ``branding_logos`` destination.
+
+    Settings modules must not import app code at module scope -- the app
+    registry isn't ready during settings load. This deferred import is only
+    ever invoked by s3direct's signing view at request time, well after
+    startup, mirroring the pattern ``organizations.models.
+    resolve_branding_for_display`` uses for ``di_core.containers.container``.
+    """
+    from organizations.permissions import user_administers_branding_eligible_organization
+
+    return user_administers_branding_eligible_organization(user)
+
+
 S3DIRECT_DESTINATIONS = {
     "profile_pictures": {
         "key": generate_s3direct_file_name,
         "key_args": "uploads/profile_pictures",
         "auth": lambda u: u.is_authenticated,
+        # The media bucket has Object Ownership set to BucketOwnerEnforced, so ACLs are
+        # disabled and every canned ACL except this one is rejected. s3direct offers no
+        # way to omit the header — an empty `acl` makes it fall back to `public-read` —
+        # so this is the only value that survives. Objects stay private either way: the
+        # bucket blocks public access and is readable only through the signed-URL
+        # CloudFront distribution.
+        "acl": "bucket-owner-full-control",
+    },
+    "branding_logos": {
+        "key": generate_s3direct_file_name,
+        "key_args": "uploads/branding_logos",
+        # Tightened from bare `is_authenticated`: the signing surface is not open
+        # to every logged-in user on the platform, only to an admin of some
+        # branding-eligible organization -- see the plan's "Logo upload path"
+        # guiding decision.
+        "auth": _user_administers_branding_eligible_organization,
         "acl": "private",
+        "allowed": list(BRANDING_LOGO_CONTENT_TYPES),
+        "content_length_range": [1, BRANDING_LOGO_MAX_SIZE_BYTES],
     },
 }
 

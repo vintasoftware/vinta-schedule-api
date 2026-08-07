@@ -101,6 +101,42 @@ def test_truncate_clears_count_and_sets_until():
 
 
 @pytest.mark.django_db
+def test_split_returns_rules_that_do_not_alias_the_original_row():
+    """Both halves of a split must be new rows, not aliases of the input rule.
+
+    ``copy.deepcopy`` of a saved model preserves its ``pk``. If either half comes
+    back carrying the original pk, saving it issues an ``UPDATE`` against the
+    original rule instead of an ``INSERT`` -- which is how a bulk modification
+    used to erase the parent's truncation and duplicate the series.
+    """
+    org = baker.make("organizations.Organization")
+    start = _dt(2025, 1, 1)
+    rule = baker.make(
+        RecurrenceRule,
+        organization=org,
+        frequency=RecurrenceFrequency.DAILY,
+        interval=1,
+        count=None,
+        until=None,
+    )
+
+    truncated, continuation = RecurrenceRuleSplitter.split_at_date(rule, _dt(2025, 1, 5), start)
+
+    assert truncated is not None
+    assert continuation is not None
+    assert truncated.pk is None
+    assert continuation.pk is None
+
+    # Saving either half must leave the original row untouched.
+    truncated.save()
+    continuation.save()
+    rule.refresh_from_db()
+    assert rule.count is None
+    assert rule.until is None
+    assert {truncated.pk, continuation.pk}.isdisjoint({rule.pk})
+
+
+@pytest.mark.django_db
 def test_split_monthly_edge_case_with_jan31():
     org = baker.make("organizations.Organization")
     start = _dt(2025, 1, 31)

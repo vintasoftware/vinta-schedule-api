@@ -712,64 +712,28 @@ class TestFirstOccurrenceSplitIsNotDeduplicated:
 
 
 @pytest.mark.django_db
-class TestBulkModificationWithOffsetOverBills:
-    """Characterization of a **known, unfixed** over-count, measured exactly.
+class TestBulkModificationWithOffsetTilesTheTimeline:
+    """A bulk modification with an offset must tile the timeline, not double it.
 
     ``create_recurring_event_bulk_modification`` with a
     ``modified_start_time_offset`` is an ordinary owner action: "from next Monday,
-    the standup moves to 10:30". Applied to a five-occurrence weekly series it
-    produces **eight** billable occurrences, and applied to a stretch that has
-    already been metered, **nine**.
+    the standup moves to 10:30". Applied to a five-occurrence weekly series it must
+    still produce **five** billable occurrences — Monday 1 at 10:00 from the
+    truncated parent, Mondays 2-5 at 10:30 from the continuation.
 
-    The mechanism is *not* the identity churn the metering design was built around,
-    and saying so precisely matters because it changes the size of the exposure:
+    This class used to assert eight (and nine over an already-metered month),
+    characterizing a defect where the truncation never reached the database.
+    ``RecurrenceRuleSplitter`` returned ``copy.deepcopy`` clones, which preserve the
+    saved model's ``pk``, so both halves of a split aliased the original rule row;
+    the continuation's ``save()`` then ``UPDATE``d the parent's row and erased the
+    ``UNTIL`` just written. The splitter now returns genuinely detached copies and
+    each side owns its own row, so the parent stops where it is told to.
 
-    The **rule arithmetic is correct**. ``RecurrenceRuleSplitter.split_at_date``
-    returns a truncated parent rule (``count=None``, ``until=<Monday #1>``) and a
-    continuation rule with ``count=4``; 1 + 4 == 5. Verified directly against the
-    splitter. The defect is that the truncation never reaches the database.
-
-    ``copy.deepcopy`` of a *saved* Django model **preserves its pk**, so both rules
-    the splitter returns are aliases for the original row — not the "new, unsaved
-    instances" ``recurrence_utils``' module docstring promises. In
-    ``RecurrenceManager.create_bulk_modification_generic`` the parent is truncated
-    first and ``continuation_rule.save()`` runs second; carrying the original pk, it
-    ``UPDATE``s the **parent's** rule row and overwrites the ``UNTIL`` just written.
-    The continuation is unharmed — it is built from an rrule *string* and gets a
-    fresh rule row — so the clobber is pure collateral damage.
-
-    Persisted state after splitting this five-occurrence series at Monday #2,
-    read back from the database:
-
-    - original rule id 1 → ``COUNT=4, until=NULL`` (the *continuation's* remaining
-      count, written over the parent's truncation);
-    - continuation → a **new** rule id 2, ``COUNT=4, until=NULL``, correct.
-
-    So the parent yields Mondays 1-4 at 10:00 and the continuation yields Mondays
-    2-5 at 10:30 — eight where five exist. See
-    ``test_an_open_ended_series_loses_its_truncation_entirely`` for the more severe
-    shape, where the parent reverts to an unbounded rule.
-
-    **This is an upstream recurrence defect, not a metering one.**
-    ``get_calendar_events_expanded`` returns the same eight events, so the calendar
-    genuinely contains them and the meter is faithfully billing what it is shown.
-    Fixing it belongs in ``RecurrenceManager`` / ``recurrence_utils``, not here.
-
-    The consequences for billing are what these tests pin down, and one of them is
-    materially worse than the first-occurrence hazard in
-    ``TestFirstOccurrenceSplitIsNotDeduplicated``:
-
-    - The over-count does **not** require the period to have been metered before.
-      A single fresh sweep over-bills 8/5. The first-occurrence hazard needs an
-      already-metered window; this does not.
-    - ``reconcile_period`` cannot see it. Reconciliation recomputes from the same
-      calendar state, which also says eight, so it reports ``drift == 0,
-      is_clean == True``. The ``orphaned`` surfacing that mitigates every other
-      identity-churn path is **absent** here.
-
-    These tests assert the current, wrong numbers on purpose so the exposure is
-    written down and a failing test tells whoever fixes ``truncate_parent`` that
-    this file needs revisiting. They are not an endorsement of the behavior.
+    What remains, and is asserted below, is the **identity churn** the metering
+    design was always built around: an occurrence that moves to a new time has a
+    new identity, so a period metered *before* the edit keeps rows for the old
+    slots. Unlike the truncation defect, this needs an already-metered window and
+    ``reconcile_period`` surfaces every superseded row as ``orphaned``.
     """
 
     @staticmethod
@@ -786,7 +750,7 @@ class TestBulkModificationWithOffsetOverBills:
             modified_start_time_offset=datetime.timedelta(minutes=30),
         )
 
-    def test_a_fresh_sweep_bills_eight_occurrences_for_a_five_occurrence_series(
+    def test_a_fresh_sweep_bills_five_occurrences_for_a_five_occurrence_series(
         self,
         metering_service: MeteringService,
         event_service: CalendarEventService,
@@ -794,30 +758,25 @@ class TestBulkModificationWithOffsetOverBills:
         subscription: Subscription,
         weekly_series: CalendarEvent,
     ):
-        """The worst case: over-billing with **no prior metering at all**.
+        """Nothing swept before the edit, so the sweep sees exactly the real series.
 
-        Nothing has been swept before the edit, so no identity churn is possible.
-        The very first sweep still records eight rows for a month that contains
-        five real occurrences — a 60% over-bill on this series — because the
-        calendar itself now contains eight events.
+        The parent stops at Monday 1 and the continuation picks up from Monday 2 at
+        the new time. Five occurrences exist and five are billed.
         """
         self._split_with_offset(event_service, social_account, weekly_series)
 
         _meter_the_period(metering_service, subscription)
 
         assert _occurrence_starts(subscription) == [
-            ALL_MONDAYS[0],  # 10:00, parent
-            ALL_MONDAYS[1],  # 10:00, parent — should not exist, split was here
+            ALL_MONDAYS[0],  # 10:00, truncated parent
             ALL_MONDAYS[1] + datetime.timedelta(minutes=30),  # 10:30, continuation
-            ALL_MONDAYS[2],  # 10:00, parent — should not exist
             ALL_MONDAYS[2] + datetime.timedelta(minutes=30),
-            ALL_MONDAYS[3],  # 10:00, parent — should not exist
             ALL_MONDAYS[3] + datetime.timedelta(minutes=30),
             ALL_MONDAYS[4] + datetime.timedelta(minutes=30),
         ]
-        assert MeteredOccurrence.objects.filter(subscription=subscription).count() == 8
+        assert MeteredOccurrence.objects.filter(subscription=subscription).count() == 5
 
-    def test_reconciliation_is_blind_to_the_fresh_sweep_over_count(
+    def test_a_fresh_sweep_over_a_split_reconciles_clean(
         self,
         metering_service: MeteringService,
         event_service: CalendarEventService,
@@ -825,23 +784,21 @@ class TestBulkModificationWithOffsetOverBills:
         subscription: Subscription,
         weekly_series: CalendarEvent,
     ):
-        """The part that makes this worse than the first-occurrence hazard.
+        """Clean here means correct, not blind.
 
         ``reconcile_period`` compares the ledger against a fresh expansion of the
-        same calendar. Both say eight, so it reports a clean period. There is no
-        ``orphaned`` signal for finance to act on — the over-bill is genuinely
-        silent, which is the failure mode the metering tests' module docstring opens
-        by naming.
+        same calendar. Both say five — the number of occurrences that actually
+        exist — so the period is clean with nothing for finance to act on.
         """
         self._split_with_offset(event_service, social_account, weekly_series)
         _meter_the_period(metering_service, subscription)
 
         report = metering_service.reconcile_period(subscription, PERIOD_START)
 
-        assert report.expected_count == 8
-        assert report.metered_count == 8
+        assert report.expected_count == 5
+        assert report.metered_count == 5
         assert report.drift == 0
-        assert report.is_clean, "reconciliation cannot see this class of over-bill"
+        assert report.is_clean
 
     def test_a_split_over_an_already_metered_month_bills_nine(
         self,
@@ -851,20 +808,19 @@ class TestBulkModificationWithOffsetOverBills:
         subscription: Subscription,
         weekly_series: CalendarEvent,
     ):
-        """The realistic sweep order, and the one row that *is* identity churn.
+        """The realistic sweep order, and the identity churn it exposes.
 
-        Metering first, then editing, gives nine rows. The decomposition matters:
+        Metering first, then editing, gives nine rows. The decomposition is now
+        entirely identity churn:
 
-        - **5** are the occurrences that genuinely happened;
-        - **3** are the upstream ``truncate_parent`` overlap (Mondays 2-4 at 10:00),
-          which a fresh sweep would also have recorded — see the test above;
-        - **1** is true identity churn: Monday 5 at 10:00 was billed before the
-          edit and the series no longer generates it, because the occurrence moved
-          to 10:30 and a moved occurrence has a different identity.
+        - **5** from the first sweep — Mondays 1-5 at 10:00, correct at the time;
+        - **4** added by the second sweep — Mondays 2-5 at 10:30, the moved
+          occurrences, which carry a different identity than the 10:00 rows they
+          replace.
 
-        Only that last row is the hazard this design is responsible for,
-        and it behaves exactly as documented: bounded by an already-metered window,
-        and surfaced as ``orphaned``.
+        The four superseded 10:00 rows are the hazard this design is responsible
+        for, and it behaves exactly as documented: bounded by an already-metered
+        window, and surfaced as ``orphaned``.
         """
         _meter_the_period(metering_service, subscription)
         assert MeteredOccurrence.objects.filter(subscription=subscription).count() == 5
@@ -874,7 +830,7 @@ class TestBulkModificationWithOffsetOverBills:
 
         assert MeteredOccurrence.objects.filter(subscription=subscription).count() == 9
 
-    def test_reconciliation_reports_only_the_identity_churn_row(
+    def test_reconciliation_reports_every_superseded_row_as_orphaned(
         self,
         metering_service: MeteringService,
         event_service: CalendarEventService,
@@ -882,14 +838,12 @@ class TestBulkModificationWithOffsetOverBills:
         subscription: Subscription,
         weekly_series: CalendarEvent,
     ):
-        """Reconciliation understates the over-bill by design, not by accident.
+        """Reconciliation now accounts for the whole over-count, not a fraction of it.
 
-        Nine rows are recorded where five occurrences happened, but only **one** is
-        reported as drift — the moved occurrence's superseded row. The other three
-        extra rows are inside ``expected``, because the calendar really does contain
-        them. An operator reading ``drift == 1`` would materially underestimate the
-        problem; that is precisely why the upstream ``truncate_parent`` defect gates
-        cycle close rather than being something reconciliation covers.
+        Nine rows are recorded where five occurrences happened, and all four extra
+        rows are reported as drift. ``expected`` is five — the calendar contains
+        exactly the real series — so an operator reading ``drift == 4`` sees the
+        full size of the discrepancy.
         """
         _meter_the_period(metering_service, subscription)
         self._split_with_offset(event_service, social_account, weekly_series)
@@ -898,9 +852,9 @@ class TestBulkModificationWithOffsetOverBills:
         report = metering_service.reconcile_period(subscription, PERIOD_START)
 
         assert report.metered_count == 9
-        assert report.expected_count == 8
-        assert report.drift == 1
-        assert [identity.occurrence_start for identity in report.orphaned] == [ALL_MONDAYS[4]]
+        assert report.expected_count == 5
+        assert report.drift == 4
+        assert [identity.occurrence_start for identity in report.orphaned] == list(ALL_MONDAYS[1:])
         assert report.unmetered == ()
 
     def test_the_whole_series_stays_attributed_to_the_series_root(
@@ -937,18 +891,15 @@ class TestBulkModificationWithOffsetOverBills:
         subscription: Subscription,
         weekly_series: CalendarEvent,
     ):
-        """Isolate the arithmetic from the persistence, so blame lands correctly.
+        """Both the arithmetic and the row identity, asserted at the source.
 
-        It would be easy to read the over-count above and "fix" the splitter's
-        remaining-count maths, which is not wrong. Split a ``COUNT=5`` series at its
-        second occurrence and the returned pair is exactly right: the parent is
-        bounded by ``UNTIL=<Monday #1>`` with no count, the continuation carries the
-        remaining four. One plus four is five.
+        Split a ``COUNT=5`` series at its second occurrence and the returned pair is
+        exactly right: the parent is bounded by ``UNTIL=<Monday #1>`` with no count,
+        the continuation carries the remaining four. One plus four is five.
 
-        The assertion that matters is the last one: **all three objects share a pk**.
-        ``copy.deepcopy`` preserves it, so these are aliases for the original row,
-        and saving either one writes over the original rule. That is the bug, and it
-        is in the persistence step, not the arithmetic.
+        The last assertion is the one that used to fail. Both halves must be
+        *detached* from the original row, or saving either writes over the rule the
+        parent is still using.
         """
         from calendar_integration.recurrence_utils import RecurrenceRuleSplitter
 
@@ -964,24 +915,22 @@ class TestBulkModificationWithOffsetOverBills:
 
         assert (truncated.count, truncated.until) == (None, ALL_MONDAYS[0])
         assert (continuation.count, continuation.until) == (4, None)
-        assert truncated.pk == continuation.pk == original.pk, (
-            "deepcopy preserves the pk, so both 'copies' alias the original row"
-        )
+        assert truncated.pk is None
+        assert continuation.pk is None
 
-    def test_the_parents_rule_row_is_overwritten_by_the_continuations(
+    def test_the_parents_rule_row_holds_the_truncation(
         self,
         event_service: CalendarEventService,
         social_account: SocialAccount,
         subscription: Subscription,
         weekly_series: CalendarEvent,
     ):
-        """The persisted evidence for the mechanism, read back from the database.
+        """The persisted evidence for the split, read back from the database.
 
-        After the split the parent still points at the *original* rule row, and that
-        row now holds the continuation's values — ``COUNT=4`` with no ``UNTIL`` —
-        rather than the truncation. The continuation meanwhile has a rule row of its
-        own, which is how we know the ``save()`` that clobbered row 1 was collateral
-        damage rather than the continuation claiming it.
+        After the split the parent still points at its original rule row, and that
+        row now holds the truncation — ``UNTIL=<Monday #1>`` with no count. The
+        continuation has a rule row of its own, built from an rrule string, so
+        neither side can write over the other.
         """
         from calendar_integration.models import RecurrenceRule
 
@@ -1002,11 +951,12 @@ class TestBulkModificationWithOffsetOverBills:
         parent_rule = RecurrenceRule.objects.filter(organization=subscription.organization).get(
             pk=original_rule_id
         )
-        assert (parent_rule.count, parent_rule.until) == (4, None), (
-            "the parent's UNTIL truncation was overwritten with the continuation's count"
+        assert (parent_rule.count, parent_rule.until) == (None, ALL_MONDAYS[0]), (
+            "the parent's rule row holds the truncation, bounded at the last "
+            "occurrence before the split"
         )
 
-    def test_an_open_ended_series_loses_its_truncation_entirely(
+    def test_an_open_ended_series_is_bounded_by_the_split(
         self,
         metering_service: MeteringService,
         event_service: CalendarEventService,
@@ -1014,19 +964,18 @@ class TestBulkModificationWithOffsetOverBills:
         subscription: Subscription,
         calendar: Calendar,
     ):
-        """The severe shape: the parent reverts to an **unbounded** rule.
+        """The shape that used to be unbounded, and the reason this defect mattered.
 
         An open-ended series has ``count=None`` and ``until=None``, so the
-        continuation rule the splitter derives also carries ``count=None,
-        until=None`` — which is byte-for-byte the *original* unbounded rule. Saving
-        it over the parent's row does not merely move the boundary, it **erases the
-        truncation completely**.
+        continuation the splitter derives is byte-for-byte the *original* unbounded
+        rule. When the two shared a row, saving the continuation did not merely move
+        the boundary — it erased the truncation, the parent never stopped, and the
+        series duplicated **forever**, every future month billed twice.
 
-        The parent therefore never stops. Where the ``COUNT``-bounded case
-        over-bills by a bounded three occurrences, this one duplicates the series
-        **forever**: every future month is billed twice, once at each time. It is the
-        shape most real standing meetings have, since an open-ended weekly series is
-        the default way to express "every Monday until further notice".
+        It is the shape most real standing meetings have, since an open-ended weekly
+        series is the default way to express "every Monday until further notice",
+        which is what made this the severe case. The parent must now carry an
+        ``UNTIL`` even though the rule it was cloned from had none.
         """
         series = CalendarEventFactory.create_recurring_event(
             calendar=calendar,
@@ -1048,15 +997,16 @@ class TestBulkModificationWithOffsetOverBills:
         parent = CalendarEvent.objects.filter(organization=subscription.organization).get(
             pk=series.pk
         )
-        assert (parent.recurrence_rule.count, parent.recurrence_rule.until) == (None, None), (
-            "the parent reverted to the original unbounded rule; the split is gone"
-        )
+        assert (parent.recurrence_rule.count, parent.recurrence_rule.until) == (
+            None,
+            ALL_MONDAYS[0],
+        ), "the once-unbounded parent now stops at the last occurrence before the split"
 
         _meter_the_period(metering_service, subscription)
 
-        # All five Mondays at 10:00 (parent, unbounded) plus the four from the
-        # split onwards at 10:30 (continuation) — and this repeats every month.
-        assert _occurrence_starts(subscription) == sorted(
-            ALL_MONDAYS + [monday + datetime.timedelta(minutes=30) for monday in ALL_MONDAYS[1:]]
-        )
-        assert MeteredOccurrence.objects.filter(subscription=subscription).count() == 9
+        # Monday 1 at 10:00 from the parent, then 10:30 from the continuation.
+        assert _occurrence_starts(subscription) == [
+            ALL_MONDAYS[0],
+            *[monday + datetime.timedelta(minutes=30) for monday in ALL_MONDAYS[1:]],
+        ]
+        assert MeteredOccurrence.objects.filter(subscription=subscription).count() == 5

@@ -116,10 +116,32 @@ class CreateSystemUserTokenResult:
 
 @strawberry.input
 class UpdateBrandingInput:
-    """Input for updating reseller branding.
+    """Input for updating an organization's branding.
 
-    Updates branding on the acting org (must be a reseller). Always upserts
-    (creates if missing, updates if exists). Cannot target another org's tree.
+    Updates branding on the acting org. Always upserts (creates if missing,
+    updates if exists). Cannot target another org's tree. The acting org must
+    pass the shared branding write gate (parentless, entitled, slug-set --
+    ``organizations.permissions.evaluate_branding_write_gate``); a reseller is
+    not exempt from any of those three conditions.
+
+    ``logo_url`` is write-only despite the name (kept for symmetry with the REST
+    serializer's field): it accepts the S3 key returned by
+    ``createBrandingLogoUpload`` (a bare key or a full signed/public URL, either
+    way normalized to a key before it is stored). Reads never echo this value
+    back — ``BrandingResult.logo_url`` is always the logo delivery route's URL.
+
+    ``slug``: optional. When supplied, it is validated with the same shared
+    rules the organization REST endpoint uses (``organizations.slug_validation
+    .validate_organization_slug``, plus a uniqueness check excluding the acting
+    org itself) and applied to the acting organization BEFORE the write gate's
+    slug condition is evaluated -- so a partner-API caller can satisfy the
+    slug precondition and set branding in a single call, rather than needing a
+    separate organization-update mutation that does not exist on this surface.
+    When omitted (``None``), the acting organization's already-stored slug
+    must satisfy the gate on its own. The slug write and the branding upsert
+    land in one transaction: an invalid or colliding slug, or a
+    field-validation failure anywhere else in this input, rejects the whole
+    call and leaves the organization's slug unchanged.
     """
 
     app_name: str
@@ -127,15 +149,16 @@ class UpdateBrandingInput:
     primary_color: str = ""
     secondary_color: str = ""
     support_email: str = ""
-    return_url_allowlist: list[str] | None = None
+    redirect_url: str = ""
+    slug: str | None = None
 
 
 @strawberry.type
 class BrandingResult:
     """Represents resolved branding in the API response.
 
-    Never includes secrets like support_email or allowlist; those are for internal
-    use only (email rendering, OAuth return-URL validation).
+    Never includes secrets like support_email or redirect_url; those are for internal
+    use only (email rendering, post-authentication redirect resolution).
     """
 
     id: int
@@ -157,13 +180,34 @@ class PublicBrandingResult:
     """Represents public, secret-free branding for unauthenticated access.
 
     Used by brandingForTenant query for frontend interstitials.
-    Excludes the branding row id, support_email, and return_url_allowlist.
+    Excludes the branding row id, support_email, and redirect_url.
     """
 
     app_name: str
     logo_url: str
     primary_color: str
     secondary_color: str
+
+
+@strawberry.type
+class BrandingLogoUploadResult:
+    """Signed upload payload for the ``branding_logos`` S3Direct destination.
+
+    Same shape the shipped s3direct signing view (``POST /s3direct/get_upload_params/``)
+    returns, for partner-API callers that cannot reach that Django-session-scoped
+    endpoint directly. Authorized by the branding eligibility helper (acting
+    organization is parentless and holds ``white_label_branding``), not by the
+    destination's own ``auth`` callable — see the plan's Logo upload path guiding
+    decision.
+    """
+
+    object_key: str
+    access_key_id: str | None
+    session_token: str | None
+    region: str | None
+    bucket: str | None
+    endpoint: str | None
+    acl: str
 
 
 @strawberry.input
@@ -196,23 +240,6 @@ class CreateScopedSystemUserResult:
     available_resources: list[str]
     scoped_to_user_id: int
     token: str
-
-
-@strawberry.type
-class ValidateReturnUrlResult:
-    """Result of validating an OAuth return ("next") URL against a tenant's allowlist.
-
-    Used by the unauthenticated validateReturnUrl query so the OAuth interstitial
-    callback (which has no session yet) can ask a yes/no question WITHOUT the
-    reseller-internal return_url_allowlist ever being serialized into a response.
-
-    Identical shape for every not-allowed case (unknown tenant, no branding,
-    empty allowlist, bad scheme, origin mismatch) so the query is not an
-    enumeration oracle: allowed=False, sanitized_url=None.
-    """
-
-    allowed: bool
-    sanitized_url: str | None = None
 
 
 @strawberry.type

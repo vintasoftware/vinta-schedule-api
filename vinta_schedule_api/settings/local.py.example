@@ -19,6 +19,7 @@ if USE_LOCALSTACK:
     AWS_MEDIA_REGION = AWS_S3_REGION_NAME
     S3DIRECT_DESTINATIONS.setdefault("providers_documents", {})
     S3DIRECT_DESTINATIONS.setdefault("healthcare_entities_documents", {})
+    S3DIRECT_DESTINATIONS.setdefault("branding_logos", {})
     S3DIRECT_DESTINATIONS["providers_documents"]["bucket"] = AWS_MEDIA_BUCKET_NAME
     S3DIRECT_DESTINATIONS["providers_documents"]["acl"] = "private"
     S3DIRECT_DESTINATIONS["providers_documents"]["endpoint"] = S3DIRECT_ENDPOINT
@@ -27,6 +28,15 @@ if USE_LOCALSTACK:
     S3DIRECT_DESTINATIONS["healthcare_entities_documents"]["acl"] = "private"
     S3DIRECT_DESTINATIONS["healthcare_entities_documents"]["endpoint"] = S3DIRECT_ENDPOINT
     S3DIRECT_DESTINATIONS["healthcare_entities_documents"]["region"] = AWS_MEDIA_REGION
+    # `branding_logos` is declared in settings/base.py without a bucket/endpoint/
+    # region (like `profile_pictures`) -- but unlike `profile_pictures`, this repo
+    # never sets the `AWS_STORAGE_BUCKET_NAME` / `AWS_S3_REGION_NAME` /
+    # `AWS_S3_ENDPOINT_URL` globals s3direct falls back to when a destination omits
+    # them, so it needs the same explicit per-destination wiring the two
+    # destinations above already carry to actually sign in local dev.
+    S3DIRECT_DESTINATIONS["branding_logos"]["bucket"] = AWS_MEDIA_BUCKET_NAME
+    S3DIRECT_DESTINATIONS["branding_logos"]["endpoint"] = S3DIRECT_ENDPOINT
+    S3DIRECT_DESTINATIONS["branding_logos"]["region"] = AWS_MEDIA_REGION
 
     # Use S3 storage backend for LocalStack
     STORAGES["default"]["BACKEND"] = "common.media_storage_backend.MediaStorage"
@@ -49,6 +59,7 @@ else:
     AWS_CLOUDFRONT_KEY = config("AWS_CLOUDFRONT_KEY")
     S3DIRECT_DESTINATIONS.setdefault("providers_documents", {})
     S3DIRECT_DESTINATIONS.setdefault("healthcare_entities_documents", {})
+    S3DIRECT_DESTINATIONS.setdefault("branding_logos", {})
     S3DIRECT_DESTINATIONS["providers_documents"]["bucket"] = AWS_MEDIA_BUCKET_NAME
     S3DIRECT_DESTINATIONS["providers_documents"]["acl"] = "private"
     S3DIRECT_DESTINATIONS["providers_documents"]["endpoint"] = S3DIRECT_ENDPOINT
@@ -57,6 +68,9 @@ else:
     S3DIRECT_DESTINATIONS["healthcare_entities_documents"]["acl"] = "private"
     S3DIRECT_DESTINATIONS["healthcare_entities_documents"]["endpoint"] = S3DIRECT_ENDPOINT
     S3DIRECT_DESTINATIONS["healthcare_entities_documents"]["region"] = AWS_MEDIA_REGION
+    S3DIRECT_DESTINATIONS["branding_logos"]["bucket"] = AWS_MEDIA_BUCKET_NAME
+    S3DIRECT_DESTINATIONS["branding_logos"]["endpoint"] = S3DIRECT_ENDPOINT
+    S3DIRECT_DESTINATIONS["branding_logos"]["region"] = AWS_MEDIA_REGION
 
     STORAGES["default"]["BACKEND"] = "common.media_storage_backend.MediaStorage"
 

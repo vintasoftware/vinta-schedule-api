@@ -35,7 +35,12 @@ from payments.billing_constants import (
     LimitRemedy,
 )
 from payments.exceptions import InapplicableInvitationExclusionError, OverLimitError
-from payments.models import MeteredOccurrence, PaymentMethod, Subscription
+from payments.models import (
+    MeteredOccurrence,
+    PaymentMethod,
+    Subscription,
+    SubscriptionEntitlement,
+)
 from payments.services.billing_dataclasses import EffectiveLimit, LimitCheckResult
 from payments.services.subscription_service import (
     current_billing_period_start,
@@ -843,6 +848,62 @@ class EntitlementService:
             return False
         entitlement = subscription.entitlements.filter(entitlement_key=entitlement_key).first()
         return entitlement is not None and entitlement.is_enabled
+
+    def has_entitlement_for_organizations(
+        self, organizations: Sequence[Organization], entitlement_key: str
+    ) -> dict[int, bool]:
+        """Bulk ``has_entitlement``: the same fail-closed boolean gate for many
+        organizations, in two queries total instead of two per organization.
+
+        Built for list endpoints that compute a per-row entitlement-derived field
+        (e.g. ``MyMembershipSerializer.get_can_manage_branding`` across a
+        caller's memberships) — calling ``has_entitlement`` once per row would
+        pay a full subscription fetch plus entitlement-row fetch per distinct
+        organization.
+
+        Billing-root resolution stays per-organization (``resolve_billing_root``,
+        unchanged): it is a ``parent``-chain walk, not something that batches
+        into a single query, and it costs nothing extra for a parentless
+        organization (the common case for callers that already filtered to
+        roots, like ``is_branding_eligible_organization``) — only a genuinely
+        nested chain triggers a query. What this method batches is the
+        subscription fetch and the entitlement-row fetch, which
+        ``has_entitlement`` otherwise repeats per organization.
+
+        Returns ``{organization.pk: bool}`` for every organization passed in.
+        An organization whose billing root has no resolvable subscription reads
+        ``False`` (same fail-closed behavior as ``has_entitlement``), but unlike
+        ``has_entitlement`` this does not log a warning per organization — doing
+        so would make a list endpoint log once per row for a state that is
+        normal at this call site, not the broken-invariant signal the warning
+        is meant to be on the single-organization path.
+        """
+        roots_by_organization_pk = {
+            organization.pk: resolve_billing_root(organization) for organization in organizations
+        }
+        root_ids = {root.pk for root in roots_by_organization_pk.values()}
+        if not root_ids:
+            return {}
+        subscription_by_root_id = {
+            subscription.organization_id: subscription
+            for subscription in Subscription.objects.filter(organization_id__in=root_ids)
+        }
+        granted_subscription_ids = set(
+            SubscriptionEntitlement.objects.filter(
+                subscription_id__in=[
+                    subscription.pk for subscription in subscription_by_root_id.values()
+                ],
+                entitlement_key=entitlement_key,
+                is_enabled=True,
+            ).values_list("subscription_id", flat=True)
+        )
+        result: dict[int, bool] = {}
+        for organization_pk, root in roots_by_organization_pk.items():
+            subscription = subscription_by_root_id.get(root.pk)
+            result[organization_pk] = (
+                subscription is not None and subscription.pk in granted_subscription_ids
+            )
+        return result
 
     def _resolve_remedy_for(
         self, subscription: Subscription | None, effective_limit: EffectiveLimit

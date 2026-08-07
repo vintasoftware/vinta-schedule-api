@@ -408,12 +408,11 @@ class OrganizationService:
         invitation._raw_token = token  # type: ignore[attr-defined]
 
         if send_email:
-            # TODO: set From=support_email when branded.
-            # resolve_branding(invitation.organization) gives the reseller's support_email,
-            # but DjangoEmailNotificationAdapter.send() always uses
-            # NOTIFICATION_DEFAULT_FROM_EMAIL and does not accept a per-notification
-            # from_email override. Connecting this requires extending the vintasend
-            # adapter API.
+            # Reply-to (not From -- the From address is intentionally left untouched,
+            # see the Organization Auth-Area Branding plan's Non-goals) is resolved from
+            # the organization's branding by organization_invitation_context() at send
+            # time and applied by ReplyToDjangoEmailNotificationAdapter
+            # (notifications/notification_adapters/django_email.py).
             transaction.on_commit(
                 lambda: self.notification_service.create_one_off_notification(
                     email_or_phone=email,

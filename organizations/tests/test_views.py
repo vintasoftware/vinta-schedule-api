@@ -452,6 +452,153 @@ class TestOrganizationViewSet:
 
 
 @pytest.mark.django_db
+class TestOrganizationSlugUpdate:
+    """Integration tests: self-serve slug via PATCH /organizations/{id}/ (Phase 1).
+
+    Covers the acceptance criteria from the plan's Phase 1: an admin sets a unique
+    slug; a non-admin is refused; a duplicate is rejected with a message naming the
+    conflict (not a 500); changing an existing slug succeeds.
+    """
+
+    def _make_admin_client(self, organization):
+        from users.factories import UserFactory
+
+        user = UserFactory().create_user()
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return user, client
+
+    def test_admin_sets_slug_via_patch(self):
+        """An admin can set a unique, valid slug through PATCH."""
+        organization = OrganizationTestFactory.create_organization(name="Slug Org")
+        _user, client = self._make_admin_client(organization)
+
+        url = reverse("api:Organizations-detail", kwargs={"pk": organization.pk})
+        response = client.patch(url, {"slug": "slug-org"}, format="json")
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert response.json()["slug"] == "slug-org"
+        organization.refresh_from_db()
+        assert organization.slug == "slug-org"
+
+    def test_non_admin_member_cannot_set_slug(
+        self, auth_client, user, organization_with_membership
+    ):
+        """A non-admin member is refused (IsOrganizationAdmin gates the whole update)."""
+        url = reverse("api:Organizations-detail", kwargs={"pk": organization_with_membership.pk})
+        response = auth_client.patch(url, {"slug": "member-org"}, format="json")
+
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+        organization_with_membership.refresh_from_db()
+        assert organization_with_membership.slug is None
+
+    def test_duplicate_slug_returns_400_naming_the_collision(self):
+        """A second organization claiming a taken slug gets 400, not a 500."""
+        existing = OrganizationTestFactory.create_organization(name="Existing Org")
+        existing.slug = "taken-slug"
+        existing.save()
+
+        organization = OrganizationTestFactory.create_organization(name="Second Org")
+        _user, client = self._make_admin_client(organization)
+
+        url = reverse("api:Organizations-detail", kwargs={"pk": organization.pk})
+        response = client.patch(url, {"slug": "taken-slug"}, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        body = response.json()
+        assert "slug" in body
+        assert "taken-slug" in body["slug"][0]
+        organization.refresh_from_db()
+        assert organization.slug is None
+
+    def test_changing_an_existing_slug_succeeds(self):
+        """An admin can change an already-set slug to a new unique value."""
+        organization = OrganizationTestFactory.create_organization(name="Rename Org")
+        organization.slug = "old-slug"
+        organization.save()
+        _user, client = self._make_admin_client(organization)
+
+        url = reverse("api:Organizations-detail", kwargs={"pk": organization.pk})
+        response = client.patch(url, {"slug": "new-slug"}, format="json")
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        organization.refresh_from_db()
+        assert organization.slug == "new-slug"
+
+    def test_reserved_word_slug_returns_400_naming_the_rule(self):
+        """A reserved-word slug is rejected with a message naming the rule."""
+        organization = OrganizationTestFactory.create_organization(name="Invalid Org")
+        _user, client = self._make_admin_client(organization)
+
+        url = reverse("api:Organizations-detail", kwargs={"pk": organization.pk})
+        response = client.patch(url, {"slug": "admin"}, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "reserved" in response.json()["slug"][0]
+
+    def test_blank_slug_clears_to_none(self):
+        """Submitting a blank slug clears it to NULL rather than storing ''."""
+        organization = OrganizationTestFactory.create_organization(name="Clear Org")
+        organization.slug = "clearable"
+        organization.save()
+        _user, client = self._make_admin_client(organization)
+
+        url = reverse("api:Organizations-detail", kwargs={"pk": organization.pk})
+        response = client.patch(url, {"slug": ""}, format="json")
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        organization.refresh_from_db()
+        assert organization.slug is None
+
+    def test_confusable_slug_returns_400_naming_the_confusable_rule(self):
+        """A mixed-script lookalike slug is rejected by the confusables rule, not
+        DRF's generic ASCII-only slug regex message. This exercises the actual
+        REST surface: the ``slug`` field must not be a ``SlugField`` (whose
+        auto-attached RegexValidator would preempt ``validate_slug`` and raise
+        the generic DRF message before the confusable-specific one is reached).
+        """
+        organization = OrganizationTestFactory.create_organization(name="Confusable Org")
+        _user, client = self._make_admin_client(organization)
+
+        url = reverse("api:Organizations-detail", kwargs={"pk": organization.pk})
+        # Built from chr() rather than typed as a literal character so the
+        # ambiguous codepoint doesn't trip ruff's homoglyph lint (RUF001) on
+        # this file (see test_slug_validation.py's TestConfusableSlugs).
+        cyrillic_a = chr(0x0430)  # CYRILLIC SMALL LETTER A — visually "a"
+        lookalike_slug = cyrillic_a + "cme"
+        response = client.patch(url, {"slug": lookalike_slug}, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        message = response.json()["slug"][0]
+        assert "non-ASCII character" in message
+        assert "lookalike" in message
+        organization.refresh_from_db()
+        assert organization.slug is None
+
+    def test_super_route_slug_is_rejected_as_reserved(self):
+        """The real admin path segment ``super`` (see ``vinta_schedule_api/urls.py``)
+        is rejected as reserved, naming the reserved-word rule.
+        """
+        organization = OrganizationTestFactory.create_organization(name="Super Org")
+        _user, client = self._make_admin_client(organization)
+
+        url = reverse("api:Organizations-detail", kwargs={"pk": organization.pk})
+        response = client.patch(url, {"slug": "super"}, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "reserved" in response.json()["slug"][0]
+        organization.refresh_from_db()
+        assert organization.slug is None
+
+
+@pytest.mark.django_db
 class TestOrganizationPermissions:
     """Test suite for organization permissions"""
 

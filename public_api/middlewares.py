@@ -121,10 +121,10 @@ class PublicApiSystemUserMiddleware:
 
         # Scope the per-request entitlement memo around the whole GraphQL request, not
         # just the gate below: `resolve_branding_for_display` checks
-        # `white_label_branding` inside resolvers, and `brandingForTenant` /
-        # `validateReturnUrl` are unauthenticated public queries with an
-        # attacker-supplied `tenant_id`. See `payments/entitlement_cache.py` for why the
-        # cache is scoped rather than process-wide.
+        # `white_label_branding` inside resolvers, and `brandingForTenant` is an
+        # unauthenticated public query with an attacker-supplied `tenant_id`. See
+        # `payments/entitlement_cache.py` for why the cache is scoped rather than
+        # process-wide.
         with entitlement_request_cache():
             if extended_request.get_full_path().startswith("/graphql/"):
                 extended_request.public_api_system_user = self._get_system_user_from_request(

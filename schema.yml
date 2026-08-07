@@ -3546,7 +3546,13 @@ paths:
   /branding/:
     get:
       operationId: branding_retrieve
-      description: GET /branding/ — retrieve the acting org's branding.
+      description: |-
+        GET /branding/ — retrieve the acting org's branding.
+
+        Uses the two-condition eligibility gate, not the full write gate: a
+        slug-less-but-otherwise-eligible org is admitted here (and falls
+        through to the normal 404-no-row-yet / 200-with-a-row branch below)
+        -- see ``_check_branding_read_gate``.
       summary: Retrieve the acting organization's branding
       parameters:
       - in: header
@@ -3572,12 +3578,22 @@ paths:
                 $ref: '#/components/schemas/OrganizationBranding'
           description: ''
         '403':
-          description: Not a reseller or not an admin
+          description: Organization has a parent or lacks the entitlement; or not
+            an admin. A slug-less-but-otherwise-eligible org is NOT refused here --
+            see 404.
         '404':
           description: Branding not yet configured
     put:
       operationId: branding_update
-      description: PUT /branding/ — create or replace the acting org's branding.
+      description: |-
+        PUT /branding/ — create or replace the acting org's branding.
+
+        Audited (Organization Auth-Area Branding plan, Phase 4): a refused write
+        (gate failure or serializer validation error) raises before this method
+        reaches the upsert, so nothing is ever recorded for a refused write. A
+        first-time upsert records a CREATE with no diff; an upsert that replaces
+        an existing row records an UPDATE with a diff naming only the fields that
+        actually changed, using the before-state captured BEFORE the write.
       summary: Create or replace the acting organization's branding
       parameters:
       - in: header
@@ -3623,10 +3639,19 @@ paths:
         '400':
           description: Invalid input (color format, URL validation)
         '403':
-          description: Not a reseller or not an admin
+          description: Organization has a parent, lacks the entitlement, or has no
+            slug; or not an admin
     patch:
       operationId: branding_partial_update
-      description: PATCH /branding/ — update the acting org's branding (partial).
+      description: |-
+        PATCH /branding/ — update the acting org's branding (partial).
+
+        Audited (Organization Auth-Area Branding plan, Phase 4): a refused write
+        (gate failure, 404-not-configured, or serializer validation error) raises
+        before this method reaches ``serializer.save()``, so nothing is ever
+        recorded for a refused write. Always an UPDATE (PATCH never creates —
+        see ``_get_branding_or_404``); the before-state is captured BEFORE
+        ``serializer.save()`` mutates ``instance`` in place.
       summary: Update the acting organization's branding (partial)
       parameters:
       - in: header
@@ -3665,9 +3690,34 @@ paths:
         '400':
           description: Invalid input (color format, URL validation)
         '403':
-          description: Not a reseller or not an admin
+          description: Organization has a parent, lacks the entitlement, or has no
+            slug; or not an admin
         '404':
           description: Branding not yet configured
+  /branding/logo/{org_slug}/:
+    get:
+      operationId: branding_logo_retrieve
+      description: GET /branding/logo/<org_slug>/ — stream the resolved logo or the
+        default.
+      summary: Deliver an organization's branding logo (or our default)
+      parameters:
+      - in: path
+        name: org_slug
+        schema:
+          type: string
+        required: true
+      tags:
+      - Branding
+      security:
+      - {}
+      responses:
+        '200':
+          content:
+            image/*:
+              schema:
+                type: string
+                format: binary
+          description: ''
   /calendar/:
     get:
       operationId: calendar_list
@@ -16265,7 +16315,23 @@ components:
           additionalProperties: {}
           description: Serialize the related organization using OrganizationSerializer.
           readOnly: true
+        can_manage_branding:
+          type: boolean
+          description: |-
+            Whether the membership's organization is branding-eligible.
+
+            Computed as parentless-and-entitled -- deliberately excludes the slug
+            condition (Organization Auth-Area Branding plan, Phase 4 Capability
+            signal guiding decision), so an organization missing only a slug still
+            sees the branding page instead of it being silently absent. Shares
+            ``organizations.permissions.is_branding_eligible_organization`` rather
+            than restating the two-condition check, so this tracks the same gate
+            that governs ``GET /branding/`` (see
+            ``OrganizationBrandingView._check_branding_read_gate``) rather than
+            the three-condition write gate.
+          readOnly: true
       required:
+      - can_manage_branding
       - organization
       - role
     DocumentTypeEnum:
@@ -16983,8 +17049,9 @@ components:
         Read-only serializer for the caller's active organization memberships.
 
         Used by ``GET /organizations/mine/`` to power the frontend org switcher.
-        Returns a list of ``{organization: {id, name}, role}`` entries — one per
-        active membership — without requiring the ``X-Organization-Id`` header.
+        Returns a list of ``{organization: {id, name}, role, can_manage_branding}``
+        entries — one per active membership — without requiring the
+        ``X-Organization-Id`` header.
       properties:
         organization:
           allOf:
@@ -16999,7 +17066,28 @@ components:
 
             * `member` - Member
             * `admin` - Admin
+        can_manage_branding:
+          type: boolean
+          description: |-
+            Whether this membership's organization is branding-eligible
+            (parentless-and-entitled, excluding the slug condition) -- see
+            ``CurrentMembershipSerializer.get_can_manage_branding`` for the full
+            rationale. Computed per-membership (not per-role): a non-admin
+            member's entry reports the same organization-level capability as an
+            admin's, matching the read gate's own admin-agnostic eligibility
+            check -- role-based write authorization is enforced separately by
+            ``IsOrganizationAdmin`` on the branding endpoints themselves.
+
+            Reads from the batch ``_MyMembershipListSerializer`` precomputes on the
+            shared context when serializing a list (the ``many=True`` path this
+            serializer is actually used on). Falls back to the single-organization
+            ``is_branding_eligible_organization`` call when there is no such batch
+            in context (e.g. this serializer instantiated directly against one
+            membership), which is exactly what the batch entry would have computed
+            for that one organization anyway.
+          readOnly: true
       required:
+      - can_manage_branding
       - organization
       - role
     Notification:
@@ -17084,6 +17172,10 @@ components:
         name:
           type: string
           maxLength: 255
+        slug:
+          type: string
+          nullable: true
+          maxLength: 63
         should_sync_rooms:
           type: boolean
           description: Whether to sync rooms for this organization.
@@ -17138,12 +17230,17 @@ components:
         Serializer for OrganizationBranding (reseller-admin REST endpoints).
 
         Exposes app_name, logo_url, primary_color, secondary_color, support_email,
-        and return_url_allowlist. NEVER exposes can_invite_organizations or makes
+        and redirect_url. NEVER exposes can_invite_organizations or makes
         organization writable (the org is set from the acting org in the view).
 
         Validates:
         - Color format: #RRGGBB or #RRGGBBAA (regex).
-        - Each return_url_allowlist entry is a valid URL (URLValidator).
+        - redirect_url: HTTPS scheme, no wildcard character, no path-prefix pattern
+          (organizations.redirect_url_validation).
+
+        ``logo_url`` round-trips through ``organizations.branding_logo``: reads
+        return the logo delivery route's URL (never a raw or signed S3 URL), writes
+        accept the uploaded S3 key from the ``branding_logos`` S3Direct destination.
       properties:
         app_name:
           type: string
@@ -17151,9 +17248,6 @@ components:
           maxLength: 120
         logo_url:
           type: string
-          format: uri
-          description: URL to the reseller's logo image.
-          maxLength: 200
         primary_color:
           type: string
           description: 'Primary color as hex code: #RRGGBB or #RRGGBBAA.'
@@ -17168,14 +17262,15 @@ components:
           description: Email address for the From/reply-to on branded transactional
             emails.
           maxLength: 254
-        return_url_allowlist:
-          type: array
-          items:
-            type: string
-            format: uri
-            maxLength: 200
-          description: List of URLs that are allowed as return addresses after OAuth
-            flows.
+        redirect_url:
+          type: string
+          format: uri
+          description: 'Single post-authentication redirect destination for this organization.
+            Replaces the old return_url_allowlist: no caller-supplied redirect target
+            is ever honored, so there is nothing to validate at request time and no
+            open-redirect surface. Must be HTTPS with no wildcard character and no
+            path-prefix pattern (organizations.redirect_url_validation).'
+          maxLength: 200
       required:
       - app_name
     OrganizationBrief:
@@ -17183,9 +17278,11 @@ components:
       description: |-
         Lightweight read-only serializer for an Organization.
 
-        Exposes only the fields needed for the org-switcher list: ``id`` and ``name``.
-        Intentionally avoids the heavier ``OrganizationSerializer`` (which loads the
-        Google service account) to keep ``GET /organizations/mine/`` fast.
+        Exposes only the fields needed for the org-switcher list: ``id``, ``name``,
+        and the read-only ``slug`` (so the frontend can render/link the branded login
+        URL without a second request). Intentionally avoids the heavier
+        ``OrganizationSerializer`` (which loads the Google service account) to keep
+        ``GET /organizations/mine/`` fast.
       properties:
         id:
           type: integer
@@ -17193,9 +17290,25 @@ components:
         name:
           type: string
           readOnly: true
+        slug:
+          type: string
+          readOnly: true
+          nullable: true
+          description: 'Public, URL-safe identifier used by the organization''s branded
+            login page and by brandingForTenant. Optional until the organization sets
+            one self-serve; stored as NULL (never empty string) when unset — default=None
+            keeps a field left blank in a form/serializer NULL rather than '''', which
+            is what lets the unique index admit any number of organizations with no
+            slug. Mutable after set: changing it orphans previously-issued branded
+            login URLs, which then fall back to the default identity rather than erroring.
+            Format, reserved-word, and confusable-character rules live in organizations.slug_validation
+            and are enforced by each write surface (REST serializer, admin form, GraphQL
+            input), not here.'
+          pattern: ^[-a-zA-Z0-9_]+$
       required:
       - id
       - name
+      - slug
     OrganizationInvitation:
       type: object
       description: Serializer for managing OrganizationInvitation instances.
@@ -18299,6 +18412,10 @@ components:
         name:
           type: string
           maxLength: 255
+        slug:
+          type: string
+          nullable: true
+          maxLength: 63
         should_sync_rooms:
           type: boolean
           description: Whether to sync rooms for this organization.
@@ -18346,12 +18463,17 @@ components:
         Serializer for OrganizationBranding (reseller-admin REST endpoints).
 
         Exposes app_name, logo_url, primary_color, secondary_color, support_email,
-        and return_url_allowlist. NEVER exposes can_invite_organizations or makes
+        and redirect_url. NEVER exposes can_invite_organizations or makes
         organization writable (the org is set from the acting org in the view).
 
         Validates:
         - Color format: #RRGGBB or #RRGGBBAA (regex).
-        - Each return_url_allowlist entry is a valid URL (URLValidator).
+        - redirect_url: HTTPS scheme, no wildcard character, no path-prefix pattern
+          (organizations.redirect_url_validation).
+
+        ``logo_url`` round-trips through ``organizations.branding_logo``: reads
+        return the logo delivery route's URL (never a raw or signed S3 URL), writes
+        accept the uploaded S3 key from the ``branding_logos`` S3Direct destination.
       properties:
         app_name:
           type: string
@@ -18359,9 +18481,6 @@ components:
           maxLength: 120
         logo_url:
           type: string
-          format: uri
-          description: URL to the reseller's logo image.
-          maxLength: 200
         primary_color:
           type: string
           description: 'Primary color as hex code: #RRGGBB or #RRGGBBAA.'
@@ -18376,14 +18495,15 @@ components:
           description: Email address for the From/reply-to on branded transactional
             emails.
           maxLength: 254
-        return_url_allowlist:
-          type: array
-          items:
-            type: string
-            format: uri
-            maxLength: 200
-          description: List of URLs that are allowed as return addresses after OAuth
-            flows.
+        redirect_url:
+          type: string
+          format: uri
+          description: 'Single post-authentication redirect destination for this organization.
+            Replaces the old return_url_allowlist: no caller-supplied redirect target
+            is ever honored, so there is nothing to validate at request time and no
+            open-redirect surface. Must be HTTPS with no wildcard character and no
+            path-prefix pattern (organizations.redirect_url_validation).'
+          maxLength: 200
     PatchedProfile:
       type: object
       properties:
