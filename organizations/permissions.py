@@ -3,8 +3,14 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Annotated
 
 from dependency_injector.wiring import Provide, inject
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import BasePermission
 
+from organizations.exceptions import (
+    BrandingEntitlementRequiredError,
+    OrganizationHasParentBrandingError,
+    OrganizationSlugRequiredForBrandingError,
+)
 from organizations.models import (
     Organization,
     OrganizationInvitation,
@@ -170,6 +176,31 @@ def evaluate_branding_write_gate(organization: Organization | None) -> BrandingW
     if not organization.slug:
         return BrandingWriteGateReason.NO_SLUG
     return BrandingWriteGateReason.OK
+
+
+BRANDING_GATE_EXCEPTIONS: dict[BrandingWriteGateReason, type[PermissionDenied]] = {
+    BrandingWriteGateReason.HAS_PARENT: OrganizationHasParentBrandingError,
+    BrandingWriteGateReason.NOT_ENTITLED: BrandingEntitlementRequiredError,
+    BrandingWriteGateReason.NO_SLUG: OrganizationSlugRequiredForBrandingError,
+}
+
+
+def check_branding_read_eligibility(organization: Organization | None) -> None:
+    """Two-condition branding **eligibility** gate (parentless, entitled),
+    shared by every branding read-adjacent surface: ``OrganizationBrandingView.get``
+    and ``OrganizationBrandingLogoUploadParamsView.post`` (``organizations/views.py``).
+
+    Derives its reason from ``evaluate_branding_write_gate`` but admits
+    ``NO_SLUG`` -- a slug-less eligible organization must still be able to see
+    the branding page and upload a logo (the frontend uploads a logo on
+    file-picker change, before the slug/branding write on form submit). Raises
+    the matching ``PermissionDenied`` subclass on the first failed condition;
+    a no-op when the gate admits the organization.
+    """
+    reason = evaluate_branding_write_gate(organization)
+    if reason in (BrandingWriteGateReason.OK, BrandingWriteGateReason.NO_SLUG):
+        return
+    raise BRANDING_GATE_EXCEPTIONS[reason]()
 
 
 def user_administers_branding_eligible_organization(user: "User | None") -> bool:

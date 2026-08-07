@@ -43,15 +43,14 @@ from organizations.branding_logo import (
     branding_diff_state,
     compute_logo_etag,
     guess_logo_content_type,
+    sign_branding_logo_upload,
 )
 from organizations.exceptions import (
-    BrandingEntitlementRequiredError,
+    BrandingLogoUploadRejectedError,
     DuplicateInvitationError,
     InvalidInvitationTokenError,
     InvitationNotFoundError,
     NoServiceAccountConfiguredError,
-    OrganizationHasParentBrandingError,
-    OrganizationSlugRequiredForBrandingError,
     UserAlreadyHasMembershipError,
 )
 from organizations.filtersets import (
@@ -68,10 +67,12 @@ from organizations.models import (
     resolve_branding_for_display,
 )
 from organizations.permissions import (
+    BRANDING_GATE_EXCEPTIONS,
     BrandingWriteGateReason,
     IsOrganizationAdmin,
     OrganizationInvitationPermission,
     OrganizationManagementPermission,
+    check_branding_read_eligibility,
     evaluate_branding_write_gate,
 )
 from organizations.serializers import (
@@ -79,6 +80,8 @@ from organizations.serializers import (
     CurrentMembershipSerializer,
     GoogleServiceAccountWriteSerializer,
     MyMembershipSerializer,
+    OrganizationBrandingLogoUploadParamsRequestSerializer,
+    OrganizationBrandingLogoUploadParamsSerializer,
     OrganizationBrandingSerializer,
     OrganizationInvitationSerializer,
     OrganizationMembershipSerializer,
@@ -1046,11 +1049,9 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
         super().__init__(*args, **kwargs)
         self.audit_service = audit_service
 
-    _GATE_EXCEPTIONS: ClassVar[dict[BrandingWriteGateReason, type[PermissionDenied]]] = {
-        BrandingWriteGateReason.HAS_PARENT: OrganizationHasParentBrandingError,
-        BrandingWriteGateReason.NOT_ENTITLED: BrandingEntitlementRequiredError,
-        BrandingWriteGateReason.NO_SLUG: OrganizationSlugRequiredForBrandingError,
-    }
+    _GATE_EXCEPTIONS: ClassVar[dict[BrandingWriteGateReason, type[PermissionDenied]]] = (
+        BRANDING_GATE_EXCEPTIONS
+    )
 
     def _check_branding_write_gate(self) -> None:
         """Verify the acting org passes the full write gate (parentless,
@@ -1074,21 +1075,16 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
         """Verify the acting org passes the two-condition branding
         **eligibility** gate (parentless, entitled) used for GET.
 
-        Reuses ``evaluate_branding_write_gate`` to derive the failure reason
-        so the parent/entitlement 403 bodies stay byte-for-byte identical to
-        the write gate's, but treats ``NO_SLUG`` as admitted here -- a
-        slug-less eligible org must still be able to see the branding page
-        (see the class docstring). A no-op when the gate admits the org."""
+        Delegates to ``organizations.permissions.check_branding_read_eligibility``,
+        shared with ``OrganizationBrandingLogoUploadParamsView`` -- see that
+        function's docstring for why ``NO_SLUG`` is admitted here."""
         user = self.request.user
         if not user.is_authenticated:
             raise PermissionDenied("No active organization membership.")
         membership = get_active_organization_membership(user)
         if membership is None:
             raise PermissionDenied("No active organization membership.")
-        reason = evaluate_branding_write_gate(membership.organization)
-        if reason in (BrandingWriteGateReason.OK, BrandingWriteGateReason.NO_SLUG):
-            return
-        raise self._GATE_EXCEPTIONS[reason]()
+        check_branding_read_eligibility(membership.organization)
 
     def _get_branding_or_404(self):
         """Get the acting org's branding, or raise 404 if not set."""
@@ -1245,6 +1241,60 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
             subject=subject,
             diff=diff,
         )
+
+
+@extend_schema(tags=["Branding"])
+class OrganizationBrandingLogoUploadParamsView(TenantScopedViewMixin, views.APIView):
+    """Signs a ``branding_logos`` S3 upload for the acting organization's admin.
+
+    The shipped ``django-s3direct`` signing view (``POST
+    /s3direct/get_upload_params/``) is a plain Django view authenticated only
+    by session cookie -- it never reaches DRF's ``JWTAuthentication``, so the
+    JWT-only frontend SPA gets ``AnonymousUser`` there and is refused
+    unconditionally. This view is the REST sibling of the GraphQL
+    ``create_branding_logo_upload`` mutation (``public_api.mutations.Mutation``),
+    reusing the same ``sign_branding_logo_upload`` signing helper so the S3
+    key/credential logic has one implementation.
+
+    Gated on the two-condition branding **eligibility** check
+    (``organizations.permissions.check_branding_read_eligibility`` -- parentless
+    AND entitled), not the three-condition write gate: the frontend uploads a
+    logo on file-picker change, before the slug/branding PUT on form submit, so
+    requiring a slug here would refuse an upload the write gate itself never
+    sees. Matches ``OrganizationBrandingView.get``'s read gate.
+    """
+
+    permission_classes = (IsOrganizationAdmin,)
+
+    @extend_schema(
+        summary="Sign a branding logo upload",
+        request=OrganizationBrandingLogoUploadParamsRequestSerializer,
+        responses={
+            200: OrganizationBrandingLogoUploadParamsSerializer,
+            400: OpenApiResponse(description="Disallowed content type or file size"),
+            403: OpenApiResponse(
+                description="Organization has a parent or lacks the entitlement; or not an admin"
+            ),
+        },
+    )
+    def post(self, request, *args, **kwargs):
+        membership = get_active_organization_membership(request.user)
+        if membership is None:
+            raise PermissionDenied("No active organization membership.")
+        check_branding_read_eligibility(membership.organization)
+
+        request_serializer = OrganizationBrandingLogoUploadParamsRequestSerializer(
+            data=request.data
+        )
+        request_serializer.is_valid(raise_exception=True)
+
+        try:
+            payload = sign_branding_logo_upload(**request_serializer.validated_data)
+        except BrandingLogoUploadRejectedError as e:
+            raise ValidationError(str(e)) from e
+
+        serializer = OrganizationBrandingLogoUploadParamsSerializer(payload)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 @extend_schema(tags=["Branding"])

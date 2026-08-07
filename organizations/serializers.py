@@ -573,3 +573,26 @@ class OrganizationBrandingSerializer(serializers.ModelSerializer):
         except DjangoValidationError as exc:
             raise serializers.ValidationError(exc.messages) from exc
         return value
+
+
+class OrganizationBrandingLogoUploadParamsRequestSerializer(serializers.Serializer):
+    """Request body for ``OrganizationBrandingLogoUploadParamsView``. Mirrors
+    ``users.serializers.ProfilePictureUploadParamsRequestSerializer``."""
+
+    file_name = serializers.CharField()
+    file_type = serializers.CharField()
+    file_size = serializers.IntegerField(min_value=1)
+
+
+class OrganizationBrandingLogoUploadParamsSerializer(serializers.Serializer):
+    """Response body for ``OrganizationBrandingLogoUploadParamsView`` — the same
+    shape ``organizations.branding_logo.sign_branding_logo_upload`` and the
+    GraphQL ``create_branding_logo_upload`` mutation return."""
+
+    object_key = serializers.CharField()
+    access_key_id = serializers.CharField(allow_null=True)
+    session_token = serializers.CharField(allow_null=True)
+    region = serializers.CharField(allow_null=True)
+    bucket = serializers.CharField(allow_null=True)
+    endpoint = serializers.CharField(allow_null=True)
+    acl = serializers.CharField()
