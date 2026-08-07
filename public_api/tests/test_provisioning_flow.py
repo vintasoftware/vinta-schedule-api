@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 from django.contrib.auth import get_user_model
 
 import pytest
+from allauth.account.models import EmailAddress
 from allauth.socialaccount.models import SocialLogin
 from model_bakery import baker
 from rest_framework.test import APIClient
@@ -243,13 +244,16 @@ class TestCreateOrganizationProvisioning:
 # ---------------------------------------------------------------------------
 
 
-def _social_save_user(email: str) -> User:
+def _social_save_user(email: str, email_verified: bool = True) -> User:
     """Simulate the allauth social save_user path for *email*.
 
     Mirrors the helper in test_social_invite_autojoin.py: the super() call is
-    replaced by a minimal stub that persists the user, then the real
-    SocialAccountAdapter.save_user runs so that profile-creation and invite
-    auto-join logic execute exactly as in production.
+    replaced by a minimal stub that persists the user and records the provider's
+    email address (as allauth's ``setup_user_email`` does inside the real
+    ``super().save_user()``), then the real SocialAccountAdapter.save_user runs
+    so that profile-creation and invite auto-join logic execute exactly as in
+    production. The recorded address must be verified for the auto-join to
+    happen -- see ``accounts.account_adapters.is_verified_for_provisioning``.
     """
     adapter = SocialAccountAdapter()
     new_user = User(email=email)
@@ -260,6 +264,11 @@ def _social_save_user(email: str) -> User:
 
     def _super_save(request, sociallogin, form=None):
         sociallogin.user.save()
+        EmailAddress.objects.get_or_create(
+            user=sociallogin.user,
+            email=sociallogin.user.email,
+            defaults={"verified": email_verified, "primary": True},
+        )
         return sociallogin.user
 
     with patch.object(SocialAccountAdapter.__bases__[0], "save_user", side_effect=_super_save):

@@ -1447,8 +1447,8 @@ class TestUpdateBranding:
         """Test successful branding update by a reseller."""
         from di_core.containers import container
 
-        # Create a reseller org (with a slug, so logoUrl resolves to a deterministic
-        # per-org delivery URL rather than the "default" sentinel).
+        # Create a reseller org (with a slug -- irrelevant to logoUrl now that it
+        # signs the stored key, but the write gate still requires one).
         reseller_org = baker.make(
             Organization,
             name="Reseller",
@@ -1502,12 +1502,12 @@ class TestUpdateBranding:
         assert "data" in data
         assert data["data"]["updateBranding"]["branding"] is not None
         assert data["data"]["updateBranding"]["branding"]["appName"] == "MyApp"
-        # logoUrl is write-only despite the name: reads always return the logo
-        # delivery route's URL, keyed by the acting org's slug -- never the S3
-        # key that was written.
-        assert (data["data"]["updateBranding"]["branding"]["logoUrl"]).endswith(
-            "/branding/logo/acme-reseller/"
-        )
+        # logoUrl does not round-trip byte-for-byte: the bare key is written, and
+        # the read is a storage URL for that key (branding_logo.signed_logo_url),
+        # so the caller can render the new logo with no cache to invalidate.
+        returned_logo_url = data["data"]["updateBranding"]["branding"]["logoUrl"]
+        assert "uploads/branding_logos/logo.png" in returned_logo_url
+        assert "/branding/logo/" not in returned_logo_url
         assert data["data"]["updateBranding"]["branding"]["primaryColor"] == "#FF0000"
 
         # The bare S3 key is what is actually persisted -- never a URL.

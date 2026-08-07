@@ -1323,6 +1323,14 @@ class OrganizationLogoDeliveryView(views.APIView):
     stored key (or a fixed sentinel for the default logo): the route's URL is
     stable across re-uploads, so a long max-age would pin a replaced logo in
     caches and in already-delivered emails.
+
+    That stable URL is exactly why the API read surfaces no longer use this route:
+    ``OrganizationBrandingSerializer`` and ``branding_for_tenant`` hand out signed
+    S3 URLs (``organizations.branding_logo.signed_logo_url``), which change with
+    the stored key and so cannot be cached past a re-upload. This route remains
+    the delivery path for the two cases a signature cannot serve: the invitation
+    email (opened long after any signature would expire) and the bundled default
+    logo for organizations with none of their own.
     """
 
     authentication_classes = ()

@@ -50,7 +50,7 @@ from calendar_integration.services.dataclasses import (
 )
 from organizations.branding_logo import (
     branding_diff_state,
-    build_logo_delivery_url,
+    build_logo_display_url,
     normalize_uploaded_logo_key,
     sign_branding_logo_upload,
 )
@@ -1464,12 +1464,13 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             )
 
         # Return the branding without internal fields (no support_email, no redirect_url).
-        # logo_url is always the logo delivery route's URL, keyed by the acting org's
-        # slug -- never a raw or signed S3 URL, regardless of whether a logo is set.
+        # logo_url is a signed URL for the just-written logo (so the caller renders the
+        # new image immediately, with no cache to invalidate), or the default-logo
+        # delivery URL when the row has no logo -- see build_logo_display_url.
         branding_result = BrandingResult(
             id=branding.id,
             app_name=branding.app_name,
-            logo_url=build_logo_delivery_url(branding.organization, request=info.context.request),
+            logo_url=build_logo_display_url(branding, request=info.context.request),
             primary_color=branding.primary_color,
             secondary_color=branding.secondary_color,
         )

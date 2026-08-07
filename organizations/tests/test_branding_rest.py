@@ -53,14 +53,20 @@ def _make_unentitled_org(**org_kwargs) -> Organization:
 BRANDING_URL = "/branding/"
 
 
-def assert_logo_delivery_url(url: str) -> None:
-    """``logo_url`` is always the logo delivery route's absolute URL -- see
-    ``organizations.branding_logo.build_logo_delivery_url``. It is never the
-    raw/signed S3 value that was written (round-trip identity is not the
-    contract here -- ``organizations/tests/test_branding_logo.py`` covers
-    slug-keyed resolution specifically)."""
+def assert_signed_logo_url(url: str | None, expected_key: str) -> None:
+    """``logo_url`` reads back as the storage URL for the stored key, minted by
+    ``organizations.branding_logo.signed_logo_url`` (the same S3-direct signing
+    path every other uploaded file uses).
+
+    It is never the delivery route's stable per-slug URL: that URL cannot change
+    when the logo is replaced, which is exactly the cache staleness this field
+    avoids. The route is still what the invitation email uses -- see
+    ``organizations/tests/test_branding_logo.py``.
+    """
+    assert url is not None, "logo_url must not be null when a logo is stored"
     assert url.startswith("http"), url
-    assert "/branding/logo/" in url, url
+    assert expected_key in url, url
+    assert "/branding/logo/" not in url, url
 
 
 def assert_response_status_code(response, expected_status_code):
@@ -234,7 +240,7 @@ class TestOrganizationBrandingViewSet:
 
         data = response.json()
         assert data["app_name"] == "MyScheduler"
-        assert_logo_delivery_url(data["logo_url"])
+        assert_signed_logo_url(data["logo_url"], "uploads/branding_logos/logo.png")
         assert data["primary_color"] == "#FF0000"
         assert data["secondary_color"] == "#00FF00"
         assert data["support_email"] == "support@example.com"
@@ -260,7 +266,7 @@ class TestOrganizationBrandingViewSet:
         data = response.json()
         assert data["app_name"] == "MyScheduler"
         assert data["support_email"] == "support@example.com"
-        assert_logo_delivery_url(data["logo_url"])
+        assert_signed_logo_url(data["logo_url"], "uploads/branding_logos/logo.png")
 
         # Verify branding was created in DB, storing the bare key (never a URL).
         branding = OrganizationBranding.objects.get(organization_id=reseller_org.id)
@@ -300,7 +306,7 @@ class TestOrganizationBrandingViewSet:
         data = response.json()
         assert data["app_name"] == "NewName"
         assert data["support_email"] == "new@example.com"
-        assert_logo_delivery_url(data["logo_url"])
+        assert_signed_logo_url(data["logo_url"], "uploads/branding_logos/new-logo.png")
 
         # PUT is a full replace: the new key is stored, not the old one.
         branding = OrganizationBranding.objects.get(organization_id=reseller_org.id)
@@ -336,7 +342,7 @@ class TestOrganizationBrandingViewSet:
         assert data["app_name"] == "UpdatedName"
         assert data["support_email"] == "updated@example.com"
         # Unchanged fields should remain
-        assert_logo_delivery_url(data["logo_url"])
+        assert_signed_logo_url(data["logo_url"], "uploads/branding_logos/original-logo.png")
         assert data["primary_color"] == "#FF0000"
 
         # PATCH omitted logo_url entirely: the stored key is untouched.
@@ -603,10 +609,9 @@ class TestOrganizationBrandingViewSet:
     def test_roundtrip_all_fields(self, client, user, reseller_org, reseller_org_admin):
         """Create and retrieve branding; all fields round-trip.
 
-        ``logo_url`` is the one field that deliberately does NOT round-trip to
-        the written value -- it always reads back as the logo delivery route's
-        URL (see ``organizations.branding_logo.build_logo_delivery_url``), keyed
-        by the acting org's slug, not the S3 key that was written.
+        ``logo_url`` is the one field that does not round-trip byte-for-byte:
+        the written S3 key is stored, and reads return a storage URL for that
+        key (see ``organizations.branding_logo.signed_logo_url``).
         """
         reseller_org.slug = "clinic-scheduler"
         reseller_org.save(update_fields=["slug"])
@@ -633,7 +638,7 @@ class TestOrganizationBrandingViewSet:
 
         data = response.json()
         assert data["app_name"] == original_payload["app_name"]
-        assert data["logo_url"].endswith("/branding/logo/clinic-scheduler/")
+        assert_signed_logo_url(data["logo_url"], "uploads/branding_logos/clinic-logo.png")
         assert data["primary_color"] == original_payload["primary_color"]
         assert data["secondary_color"] == original_payload["secondary_color"]
         assert data["support_email"] == original_payload["support_email"]
@@ -847,6 +852,85 @@ class TestBrandingLogoKeyPrefixIsEnforcedOnWrite:
 
         response = client.put(BRANDING_URL, data=payload, format="json")
         assert_response_status_code(response, status.HTTP_201_CREATED)
+
+
+@pytest.mark.django_db
+class TestBrandingLogoIsReadBackAsASignedUrl:
+    """``logo_url`` reads through ``organizations.branding_logo.signed_logo_url``:
+    a storage URL for the stored key, so replacing the logo changes the URL and
+    no cache can keep serving the old image."""
+
+    def test_a_re_upload_changes_the_url(self, client, user, reseller_org, reseller_org_admin):
+        """The whole point of signing the key instead of pointing at the stable
+        per-slug delivery route: two different logos never share a URL."""
+        client.force_authenticate(user)
+        client.credentials(HTTP_X_ORGANIZATION_ID=str(reseller_org.id))
+
+        base_payload = {
+            "app_name": "MyScheduler",
+            "primary_color": "#FF0000",
+            "secondary_color": "#00FF00",
+            "support_email": "support@example.com",
+            "redirect_url": "https://example.com/return",
+        }
+
+        first = client.put(
+            BRANDING_URL,
+            data={**base_payload, "logo_url": "uploads/branding_logos/first.png"},
+            format="json",
+        )
+        assert_response_status_code(first, status.HTTP_201_CREATED)
+
+        second = client.put(
+            BRANDING_URL,
+            data={**base_payload, "logo_url": "uploads/branding_logos/second.png"},
+            format="json",
+        )
+        assert_response_status_code(second, status.HTTP_200_OK)
+
+        assert first.json()["logo_url"] != second.json()["logo_url"]
+        assert_signed_logo_url(second.json()["logo_url"], "uploads/branding_logos/second.png")
+
+    def test_no_logo_reads_back_as_null(self, client, user, reseller_org, reseller_org_admin):
+        """An organization that has not uploaded a logo gets ``null`` -- the
+        honest answer, and what lets the settings form render an empty upload
+        widget. Substituting our default logo is the *public* read surfaces' job
+        (``build_logo_display_url``), not this admin round-trip's."""
+        baker.make(
+            OrganizationBranding,
+            organization=reseller_org,
+            app_name="MyScheduler",
+            logo="",
+        )
+
+        client.force_authenticate(user)
+        client.credentials(HTTP_X_ORGANIZATION_ID=str(reseller_org.id))
+
+        response = client.get(BRANDING_URL)
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert response.json()["logo_url"] is None
+
+    def test_foreign_prefix_key_is_never_signed(
+        self, client, user, reseller_org, reseller_org_admin
+    ):
+        """Defense in depth for the read direction: the write path rejects a key
+        outside ``uploads/branding_logos/`` (see
+        ``TestBrandingLogoKeyPrefixIsEnforcedOnWrite``), so this row can only
+        come from a direct DB write -- and even then the key must not be turned
+        into a readable URL for another destination's private object."""
+        baker.make(
+            OrganizationBranding,
+            organization=reseller_org,
+            app_name="MyScheduler",
+            logo="providers_documents/some-victim-file.pdf",
+        )
+
+        client.force_authenticate(user)
+        client.credentials(HTTP_X_ORGANIZATION_ID=str(reseller_org.id))
+
+        response = client.get(BRANDING_URL)
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert response.json()["logo_url"] is None
 
 
 @pytest.mark.django_db

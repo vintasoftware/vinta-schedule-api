@@ -69,14 +69,24 @@ def assert_graphql_success(response):
     return response_data["data"]
 
 
-def assert_logo_delivery_url(url: str) -> None:
-    """``logoUrl`` is always the logo delivery route's absolute URL -- see
-    ``organizations.branding_logo.build_logo_delivery_url``. It is never empty
-    (even the vinta-default case resolves to a real URL, keyed by the route's
-    reserved "default" sentinel slug) and never the raw/signed S3 value a
-    branding row happened to be created with."""
+def assert_default_logo_url(url: str) -> None:
+    """``logoUrl`` for an organization with no logo of its own: the delivery
+    route's URL keyed by its reserved "default" sentinel slug (see
+    ``organizations.branding_logo.build_logo_display_url``). Never empty, and
+    identical for an unknown tenant and a real-but-logoless one -- the
+    no-enumeration-oracle contract."""
     assert url.startswith("http"), url
-    assert "/branding/logo/" in url, url
+    assert url.endswith("/branding/logo/default/"), url
+
+
+def assert_signed_logo_url(url: str, expected_key: str) -> None:
+    """``logoUrl`` for an organization that has uploaded a logo: a storage URL
+    for the stored key (``organizations.branding_logo.signed_logo_url``), not
+    the delivery route's stable per-slug URL -- so replacing the logo changes
+    the URL and no cache can keep serving the old image."""
+    assert url.startswith("http"), url
+    assert expected_key in url, url
+    assert "/branding/logo/" not in url, url
 
 
 @pytest.fixture
@@ -1964,8 +1974,7 @@ class TestBrandingForTenantQuery:
         branding = data["brandingForTenant"]
 
         assert branding["appName"] == "Vinta Schedule"
-        assert_logo_delivery_url(branding["logoUrl"])
-        assert branding["logoUrl"].endswith("/branding/logo/default/")
+        assert_default_logo_url(branding["logoUrl"])
         assert branding["primaryColor"] == ""
         assert branding["secondaryColor"] == ""
 
@@ -1999,7 +2008,7 @@ class TestBrandingForTenantQuery:
 
         # Same response as unbranded org (no enumeration oracle)
         assert branding["appName"] == "Vinta Schedule"
-        assert branding["logoUrl"].endswith("/branding/logo/default/")
+        assert_default_logo_url(branding["logoUrl"])
         assert branding["primaryColor"] == ""
         assert branding["secondaryColor"] == ""
 
@@ -2044,7 +2053,7 @@ class TestBrandingForTenantQuery:
         returned_branding = data["brandingForTenant"]
 
         assert returned_branding["appName"] == "MyScheduler"
-        assert returned_branding["logoUrl"].endswith("/branding/logo/my-reseller/")
+        assert_signed_logo_url(returned_branding["logoUrl"], "uploads/branding_logos/logo.png")
         assert returned_branding["primaryColor"] == "#FF0000"
         assert returned_branding["secondaryColor"] == "#00FF00"
 
@@ -2094,7 +2103,9 @@ class TestBrandingForTenantQuery:
         # delivery route resolves to the reseller's real logo rather than silently
         # falling back to the default.
         assert returned_branding["appName"] == "ChildBranding"
-        assert returned_branding["logoUrl"].endswith("/branding/logo/parent-reseller/")
+        assert_signed_logo_url(
+            returned_branding["logoUrl"], "uploads/branding_logos/child-logo.png"
+        )
         assert returned_branding["primaryColor"] == "#0000FF"
         assert returned_branding["secondaryColor"] == "#FFFF00"
 
@@ -2253,7 +2264,7 @@ class TestBrandingForTenantQuery:
         branding = data["brandingForTenant"]
 
         assert branding["appName"] == "SlugLookupBrand"
-        assert branding["logoUrl"].endswith("/branding/logo/slug-lookup-reseller/")
+        assert_signed_logo_url(branding["logoUrl"], "uploads/branding_logos/logo.png")
         assert branding["primaryColor"] == "#112233"
         assert branding["secondaryColor"] == "#445566"
 
@@ -2286,7 +2297,7 @@ class TestBrandingForTenantQuery:
         branding = data["brandingForTenant"]
 
         assert branding["appName"] == "Vinta Schedule"
-        assert branding["logoUrl"].endswith("/branding/logo/default/")
+        assert_default_logo_url(branding["logoUrl"])
         assert branding["primaryColor"] == ""
         assert branding["secondaryColor"] == ""
 
@@ -2364,7 +2375,7 @@ class TestBrandingForTenantQuery:
         branding = data["brandingForTenant"]
 
         assert branding["appName"] == "Vinta Schedule"
-        assert branding["logoUrl"].endswith("/branding/logo/default/")
+        assert_default_logo_url(branding["logoUrl"])
 
     def test_branding_for_tenant_id_takes_precedence_over_slug_when_both_supplied(
         self, mock_rate_limiter, anonymous_client
@@ -2428,7 +2439,7 @@ class TestBrandingForTenantQuery:
 
         # Org A's branding wins -- tenantId took precedence over slug.
         assert branding["appName"] == "BrandA"
-        assert branding["logoUrl"].endswith("/branding/logo/org-a-by-id/")
+        assert_signed_logo_url(branding["logoUrl"], "uploads/branding_logos/logo-a.png")
         assert branding["primaryColor"] == "#AAAAAA"
         assert branding["secondaryColor"] == "#111111"
 
@@ -2478,7 +2489,7 @@ class TestBrandingForTenantQuery:
         branding = data["brandingForTenant"]
 
         assert branding["appName"] == "Vinta Schedule"
-        assert branding["logoUrl"].endswith("/branding/logo/default/")
+        assert_default_logo_url(branding["logoUrl"])
         assert branding["primaryColor"] == ""
         assert branding["secondaryColor"] == ""
 
@@ -2513,7 +2524,7 @@ class TestBrandingForTenantQuery:
         branding = data["brandingForTenant"]
 
         assert branding["appName"] == "Vinta Schedule"
-        assert branding["logoUrl"].endswith("/branding/logo/default/")
+        assert_default_logo_url(branding["logoUrl"])
         assert branding["primaryColor"] == ""
         assert branding["secondaryColor"] == ""
 
@@ -2568,7 +2579,7 @@ class TestBrandingForTenantQuery:
         branding = data["brandingForTenant"]
 
         assert branding["appName"] == "StandaloneBrand"
-        assert branding["logoUrl"].endswith("/branding/logo/standalone-brand/")
+        assert_signed_logo_url(branding["logoUrl"], "uploads/branding_logos/logo.png")
         assert branding["primaryColor"] == "#123123"
         assert branding["secondaryColor"] == "#321321"
 

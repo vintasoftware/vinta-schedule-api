@@ -15173,9 +15173,10 @@ components:
         - redirect_url: HTTPS scheme, no wildcard character, no path-prefix pattern
           (organizations.redirect_url_validation).
 
-        ``logo_url`` round-trips through ``organizations.branding_logo``: reads
-        return the logo delivery route's URL (never a raw or signed S3 URL), writes
-        accept the uploaded S3 key from the ``branding_logos`` S3Direct destination.
+        ``logo_url`` round-trips through ``BrandingLogoField``: reads return a
+        time-limited signed URL for the stored object (``None`` when no logo is
+        set), writes accept the uploaded S3 key from the ``branding_logos``
+        S3Direct destination.
       properties:
         app_name:
           type: string
@@ -15183,6 +15184,7 @@ components:
           maxLength: 120
         logo_url:
           type: string
+          nullable: true
         primary_color:
           type: string
           description: 'Primary color as hex code: #RRGGBB or #RRGGBBAA.'
@@ -16304,9 +16306,10 @@ components:
         - redirect_url: HTTPS scheme, no wildcard character, no path-prefix pattern
           (organizations.redirect_url_validation).
 
-        ``logo_url`` round-trips through ``organizations.branding_logo``: reads
-        return the logo delivery route's URL (never a raw or signed S3 URL), writes
-        accept the uploaded S3 key from the ``branding_logos`` S3Direct destination.
+        ``logo_url`` round-trips through ``BrandingLogoField``: reads return a
+        time-limited signed URL for the stored object (``None`` when no logo is
+        set), writes accept the uploaded S3 key from the ``branding_logos``
+        S3Direct destination.
       properties:
         app_name:
           type: string
@@ -16314,6 +16317,7 @@ components:
           maxLength: 120
         logo_url:
           type: string
+          nullable: true
         primary_color:
           type: string
           description: 'Primary color as hex code: #RRGGBB or #RRGGBBAA.'

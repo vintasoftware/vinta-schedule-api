@@ -15,6 +15,8 @@ Three scenarios are covered:
 
 import datetime
 
+from django.test import override_settings
+
 import pytest
 from allauth.account.adapter import get_adapter
 from allauth.account.models import EmailAddress
@@ -188,3 +190,106 @@ class TestProvisionOnEmailConfirmation:
         # The call completes without error; email is confirmed but no membership created.
         assert confirmed is True
         assert not OrganizationMembership.objects.filter(user=user).exists()
+
+
+@pytest.mark.django_db
+class TestProvisioningWaitsForEveryVerification:
+    """An invitation is accepted (and a seat consumed) only once the user has
+    proven every identity the signup flow asks for -- never on the strength of a
+    submitted signup form. See ``accounts.account_adapters.
+    is_verified_for_provisioning``.
+    """
+
+    def _invited_user(self, email: str, **user_kwargs):
+        inviter = UserFactory().create_user(email=f"inviter+{email}")
+        org = baker.make(Organization, name=f"Org for {email}")
+        user = UserFactory().create_user(email=email)
+        for field, value in user_kwargs.items():
+            setattr(user, field, value)
+        if user_kwargs:
+            user.save(update_fields=list(user_kwargs))
+        invitation = baker.make(
+            OrganizationInvitation,
+            email=email,
+            organization=org,
+            invited_by=inviter,
+            expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
+            accepted_at=None,
+            membership_user_id=None,
+        )
+        return user, org, invitation
+
+    def test_signup_alone_does_not_accept_the_invitation(self, rf):
+        """The signup form is submitted and the account exists, but nothing has
+        been verified: the invitation must still be pending."""
+        user, _org, invitation = self._invited_user("unverified@example.com")
+        _create_email_address(user, verified=False)
+
+        assert not OrganizationMembership.objects.filter(user=user).exists()
+        invitation.refresh_from_db()
+        assert invitation.accepted_at is None
+
+    @override_settings(ACCOUNT_PHONE_VERIFICATION_ENABLED=True)
+    def test_email_verified_but_phone_pending_defers(self, rf):
+        """With phone verification enabled, confirming the email is not enough --
+        the seat is not taken until the phone is proven too."""
+        user, _org, invitation = self._invited_user(
+            "phonepending@example.com", phone_number="+15550000001"
+        )
+        email_address = _create_email_address(user)
+
+        assert _confirm_email(rf, email_address) is True
+
+        assert not OrganizationMembership.objects.filter(user=user).exists()
+        invitation.refresh_from_db()
+        assert invitation.accepted_at is None
+
+    @override_settings(ACCOUNT_PHONE_VERIFICATION_ENABLED=True)
+    def test_phone_verification_completes_the_provisioning(self, rf):
+        """Whichever verification lands last is the one that provisions: here the
+        email was confirmed first (and deferred), so verifying the phone accepts
+        the invitation."""
+        user, org, invitation = self._invited_user(
+            "phonelast@example.com", phone_number="+15550000002"
+        )
+        email_address = _create_email_address(user)
+        _confirm_email(rf, email_address)
+
+        get_adapter().set_phone_verified(user, "+15550000002")
+
+        membership = OrganizationMembership.objects.get(user=user)
+        assert membership.organization == org
+        assert membership.role == "member"
+        invitation.refresh_from_db()
+        assert invitation.accepted_at is not None
+        assert invitation.membership_user_id == membership.user_id
+
+    @override_settings(ACCOUNT_PHONE_VERIFICATION_ENABLED=True)
+    def test_phone_verified_first_still_waits_for_the_email(self):
+        """The reverse order: the phone stage runs before the email stage in
+        allauth's login pipeline, so this is the common case -- and it must not
+        provision on the phone alone."""
+        user, _org, invitation = self._invited_user(
+            "phonefirst@example.com", phone_number="+15550000003"
+        )
+        _create_email_address(user, verified=False)
+
+        get_adapter().set_phone_verified(user, "+15550000003")
+
+        assert not OrganizationMembership.objects.filter(user=user).exists()
+        invitation.refresh_from_db()
+        assert invitation.accepted_at is None
+
+    @override_settings(ACCOUNT_PHONE_VERIFICATION_ENABLED=True)
+    def test_user_without_a_phone_is_not_blocked(self, rf):
+        """Phone verification enabled, but this user has no phone on file (e.g. a
+        social signup): there is no phone check to wait for, so the verified
+        email alone provisions."""
+        user, org, invitation = self._invited_user("nophone@example.com", phone_number="")
+        email_address = _create_email_address(user)
+
+        assert _confirm_email(rf, email_address) is True
+
+        assert OrganizationMembership.objects.get(user=user).organization == org
+        invitation.refresh_from_db()
+        assert invitation.accepted_at is not None

@@ -24,9 +24,12 @@ from botocore.config import Config as BotoConfig
 from s3direct.utils import get_aws_credentials, get_key
 
 from organizations.exceptions import BrandingLogoUploadRejectedError
+from s3direct_overrides.utils import get_signed_url
 
 
 if TYPE_CHECKING:
+    from django.db.models.fields.files import FieldFile
+
     from organizations.models import Organization, OrganizationBranding
 
 
@@ -61,7 +64,7 @@ DEFAULT_LOGO_ETAG_IDENTITY = "vinta-schedule-default-logo"
 # `f"{dest}/{unique_file_name}"` -- i.e. `uploads/branding_logos/<file>`.
 #
 # Both writers of the ``logo`` field (``organizations.serializers.
-# BrandingLogoURLField.to_internal_value`` and
+# BrandingLogoField.to_internal_value`` and
 # ``public_api.mutations.Mutation.update_branding``) reject any normalized key
 # that does not start with this prefix -- see ``validate_branding_logo_key``.
 # The delivery route (``organizations.views.OrganizationLogoDeliveryView.
@@ -141,6 +144,59 @@ def build_logo_delivery_url(organization: Organization | None, request=None) -> 
     if request is not None:
         return request.build_absolute_uri(path)
     return f"{settings.DEFAULT_PROTOCOL}://{settings.API_DOMAIN}{path}"
+
+
+def signed_logo_url(logo: FieldFile | str | None) -> str | None:
+    """Time-limited signed S3 URL for a branding row's stored logo, or ``None``
+    when no logo is set.
+
+    ``logo`` is the model's ``FieldFile`` (or a bare key string). The signature
+    is minted by ``s3direct_overrides.utils.get_signed_url``, the same helper
+    every other S3-backed field's serializer uses, so a re-uploaded logo is a
+    different URL and no cache -- browser, CDN, or SPA -- can pin the replaced
+    image. That is why the API surfaces sign the key instead of handing out the
+    delivery route's stable per-slug URL.
+
+    Returns ``None`` (never a signed URL) for a key outside
+    ``BRANDING_LOGO_KEY_PREFIX``. Both writers of the ``logo`` field already
+    reject such a key (``normalize_uploaded_logo_key``), so this only matters
+    for a row written around them -- e.g. a direct DB insert. It mirrors the
+    delivery route's own prefix guard
+    (``organizations.views.OrganizationLogoDeliveryView._resolve_logo_key``):
+    a key pointing at another destination's prefix in the shared media bucket
+    (``providers_documents/``, ``healthcare_entities_documents/``) must never
+    become a readable URL, signed or otherwise.
+    """
+    key = logo if isinstance(logo, str) else (getattr(logo, "name", "") or "")
+    if not key or not key.startswith(BRANDING_LOGO_KEY_PREFIX):
+        return None
+    return get_signed_url(key)
+
+
+def build_logo_display_url(branding: OrganizationBranding | None, request=None) -> str:
+    """Absolute, always-renderable logo URL for an API read surface.
+
+    A signed S3 URL when ``branding`` has a usable logo (see
+    ``signed_logo_url``), otherwise the delivery route's default-logo URL --
+    so callers keep the "never empty, always renders" contract they had when
+    every read went through the route.
+
+    The fallback is deliberately keyed by the reserved ``default`` sentinel
+    slug rather than the organization's own slug: an organization with no logo
+    resolves through the route to the same bundled default anyway, and keying
+    it by the sentinel keeps a branded-but-logoless organization's response
+    byte-for-byte identical to an unknown one -- the no-enumeration-oracle
+    contract ``public_api.queries.branding_for_tenant`` is built on.
+
+    Not used by the invitation email (``organizations.notification_contexts``):
+    a signed URL expires, and an email opened days later must still render its
+    logo, so that caller keeps ``build_logo_delivery_url``.
+    """
+    if branding is not None:
+        signed = signed_logo_url(branding.logo)
+        if signed:
+            return signed
+    return build_logo_delivery_url(None, request=request)
 
 
 def compute_logo_etag(identity: str) -> str:

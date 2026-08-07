@@ -7,8 +7,11 @@ from django.conf import settings
 from django.db import transaction
 from django.urls import reverse
 
+from allauth.account import app_settings as account_settings
 from allauth.account.adapter import DefaultAccountAdapter
+from allauth.account.adapter import get_adapter as get_account_adapter
 from allauth.account.models import EmailAddress
+from allauth.account.utils import has_verified_email
 from allauth.headless.adapter import DefaultHeadlessAdapter
 from allauth.socialaccount.adapter import DefaultSocialAccountAdapter
 from allauth.socialaccount.models import SocialLogin
@@ -28,6 +31,42 @@ from users.models import Profile, User
 
 
 logger = logging.getLogger(__name__)
+
+
+def is_verified_for_provisioning(user: User) -> bool:
+    """Whether *user* has completed every identity check signup requires, and so
+    may be provisioned into an organization (creating their own, or accepting a
+    pending invitation).
+
+    Provisioning is the step that turns a pending ``OrganizationInvitation`` into
+    a real membership and stamps ``accepted_at``. Running it earlier — at signup,
+    when the form is submitted — would hand an organization's seat to whoever
+    typed the invited address, before anyone proved they can receive mail at it.
+    So it is gated on:
+
+    - a verified email address, always; and
+    - a verified phone, when ``ACCOUNT_PHONE_VERIFICATION_ENABLED`` is on *and*
+      the user actually has a phone number on file. The setting is an env-driven
+      rollout gate (off by default while Twilio validates the messaging profile
+      per environment), and social signups never collect a phone at all — in
+      either case there is no phone check to wait for, and requiring one would
+      strand every user membership-less.
+
+    Whichever verification finishes last is the one that triggers provisioning:
+    both ``AccountAdapter.confirm_email`` and ``AccountAdapter.set_phone_verified``
+    call back in here, and only the call that finds the whole gate satisfied
+    proceeds.
+    """
+    if not has_verified_email(user):
+        return False
+
+    if not account_settings.PHONE_VERIFICATION_ENABLED:
+        return True
+
+    phone = get_account_adapter().get_phone(user)
+    if phone is None or not phone[0]:
+        return True
+    return phone[1]
 
 
 class SocialAccountAdapter(DefaultSocialAccountAdapter):
@@ -92,7 +131,10 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):
         user.profile = profile
         self._enqueue_profile_picture_download(profile, sociallogin)
         # Auto-join an invited org on social signup.
-        # At this point the user is persisted (has a pk) and has a Profile.
+        # At this point the user is persisted (has a pk), has a Profile, and
+        # super().save_user() has already run sociallogin.save() -> setup_user_email,
+        # so the provider's EmailAddress rows (and their verified flags) exist and
+        # the verification gate below can be evaluated.
         # Try to provision a tenant: if a pending invitation matches the social
         # email the user becomes a MEMBER of the inviting org immediately,
         # skipping the create-org prompt. When no invitation matches,
@@ -157,10 +199,27 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):
         created and committed. Falling through leaves the user membership-less
         (gated) — the same outcome as "no pending invitation" — rather than
         wedging the signup.
+
+        Gated on ``is_verified_for_provisioning``, the same check the
+        email/password path uses: a provider that vouches for the address (the
+        usual case — Google and Microsoft mark it verified, which is what makes
+        social signup a one-step flow) provisions right here, while a provider
+        that does not leaves the user gated until they confirm the address, at
+        which point ``AccountAdapter.confirm_email`` provisions instead. An
+        invitation is never accepted on an address nobody has proven belongs to
+        the person signing up.
         """
         if not user.email:
             logger.warning(
                 "Social user %s has no email; skipping org provisioning.",
+                user.pk,
+            )
+            return
+
+        if not is_verified_for_provisioning(user):
+            logger.debug(
+                "Social user %s has no verified email yet; deferring provisioning "
+                "(and any pending invitation) to email confirmation.",
                 user.pk,
             )
             return
@@ -343,21 +402,59 @@ class AccountAdapter(DefaultAccountAdapter):
         )
 
     def confirm_email(self, request, email_address: EmailAddress) -> bool:
-        """Override to provision a tenant the moment the user's email is verified.
+        """Override to provision a tenant once the user's email is verified.
 
         Calls the default allauth confirm_email (which marks the address verified and
-        emits the email_confirmed signal) then, on success, delegates to the
-        DI-injected OrganizationService's provision_tenant_for_user. This provisions
-        the tenant imperatively in the adapter — at the moment the email is verified —
-        rather than via a decoupled email_confirmed signal handler, so the email/password
-        path's provisioning lives at an explicit, step-debuggable call site (mirroring the
-        intent of provisioning inside the adapters rather than through signals).
+        emits the email_confirmed signal) then, on success, delegates to
+        ``_provision_verified_user``. This provisions the tenant imperatively in the
+        adapter — at the moment a verification completes — rather than via a decoupled
+        email_confirmed signal handler, so the email/password path's provisioning lives
+        at an explicit, step-debuggable call site (mirroring the intent of provisioning
+        inside the adapters rather than through signals).
+
+        Email verification is not always the *last* check: when phone verification is
+        enabled, ``_provision_verified_user`` no-ops here and the real provisioning
+        happens in ``set_phone_verified`` instead. See ``is_verified_for_provisioning``.
+        """
+        confirmed = super().confirm_email(request, email_address)
+        if not confirmed:
+            return confirmed
+
+        self._provision_verified_user(email_address.user)
+        return confirmed
+
+    def set_phone_verified(self, user: User, phone: str):
+        """Mark *phone* verified, then attempt provisioning.
+
+        The phone stage runs before the email stage in allauth's login pipeline
+        (``DefaultAccountAdapter.get_login_stages``), so on a clean signup this call
+        usually finds the email still unverified and ``_provision_verified_user``
+        no-ops — ``confirm_email`` provisions moments later. The call matters for
+        every flow where the two verifications land in the other order: a user who
+        verifies their email from the link in a later session and only then returns
+        to finish the phone stage would otherwise stay membership-less forever,
+        with their invitation left pending.
+        """
+        self.set_phone(user, phone, verified=True)
+        self._provision_verified_user(user)
+
+    def _provision_verified_user(self, user: User) -> None:
+        """Provision a tenant for *user*, if every signup verification is done.
+
+        Delegates to the DI-injected OrganizationService's
+        ``provision_tenant_for_user``, which either accepts the user's pending
+        invitation (joining the inviting org as MEMBER and stamping the
+        invitation ``accepted_at``) or creates the org named on their profile.
 
         OrganizationService arrives via constructor injection (see ``__init__``),
         matching how ``notification_service`` is supplied, instead of reaching into the
         DI container global at the call site.
 
-        Idempotent: swallows UserAlreadyHasMembershipError so re-confirmation is a no-op.
+        No-ops until ``is_verified_for_provisioning`` passes, so an invitation is
+        never accepted on the strength of a submitted signup form alone.
+
+        Idempotent: swallows UserAlreadyHasMembershipError so a re-confirmation, a
+        re-verified phone, or a race is a no-op.
 
         Also swallows ``OverLimitError`` (the inviting org is at its seat limit): this
         adapter runs under allauth.headless views, not DRF, so
@@ -368,20 +465,23 @@ class AccountAdapter(DefaultAccountAdapter):
         Falling through leaves the user membership-less (gated), matching the existing
         no-pending-invitation and no-org-name branch below.
         """
-        confirmed = super().confirm_email(request, email_address)
-        if not confirmed:
-            return confirmed
+        if not is_verified_for_provisioning(user):
+            logger.debug(
+                "User %s has not completed every signup verification yet; deferring "
+                "provisioning (and any pending invitation) until they do.",
+                user.pk,
+            )
+            return
 
-        user = email_address.user
         try:
             profile = user.profile
         except Profile.DoesNotExist:
             logger.warning(
-                "User %s has no profile at email confirmation time; "
+                "User %s has no profile at verification time; "
                 "skipping provisioning and leaving user membership-less.",
                 user.pk,
             )
-            return confirmed
+            return
 
         organization_name = profile.pending_organization_name or None
 
@@ -391,12 +491,12 @@ class AccountAdapter(DefaultAccountAdapter):
                 organization_name=organization_name,
             )
         except UserAlreadyHasMembershipError:
-            # Idempotent: re-confirmation or race — user already has a membership.
+            # Idempotent: re-verification or race — user already has a membership.
             logger.debug(
                 "User %s already has a membership; skipping re-provisioning.",
                 user.pk,
             )
-            return confirmed
+            return
         except OverLimitError:
             # Inviting org is at its seat limit: leave the user membership-less
             # (gated) instead of raising a 500 out of a headless view.
@@ -405,7 +505,7 @@ class AccountAdapter(DefaultAccountAdapter):
                 "reached. User remains membership-less (gated).",
                 user.pk,
             )
-            return confirmed
+            return
 
         if membership is not None:
             # Clear the stashed org name now that provisioning succeeded.
@@ -428,8 +528,6 @@ class AccountAdapter(DefaultAccountAdapter):
                 user.pk,
             )
 
-        return confirmed
-
     def send_mail(self, template_prefix, email, context):
         msg = super().render_mail(template_prefix, email, context)
         msg.extra_headers = {"X-SES-CONFIGURATION-SET": settings.SES_CONFIGURATION_SET}
@@ -451,9 +549,6 @@ class AccountAdapter(DefaultAccountAdapter):
         user.phone_number = phone
         user.phone_verified_date = datetime.datetime.now(tz=datetime.UTC) if verified else None
         user.save()
-
-    def set_phone_verified(self, user: User, phone: str):
-        return self.set_phone(user, phone, verified=True)
 
     def get_user_by_phone(self, phone: str):
         """
