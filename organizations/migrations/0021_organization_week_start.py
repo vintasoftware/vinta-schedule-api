@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('organizations', '0017_alter_organizationmembership_is_billing_owner'),
+        ('organizations', '0020_remove_organizationbranding_logo_url_and_more'),
     ]
 
     operations = [
