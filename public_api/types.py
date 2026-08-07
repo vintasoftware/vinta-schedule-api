@@ -193,21 +193,19 @@ class PublicBrandingResult:
 class BrandingLogoUploadResult:
     """Signed upload payload for the ``branding_logos`` S3Direct destination.
 
-    Same shape the shipped s3direct signing view (``POST /s3direct/get_upload_params/``)
-    returns, for partner-API callers that cannot reach that Django-session-scoped
-    endpoint directly. Authorized by the branding eligibility helper (acting
-    organization is parentless and holds ``white_label_branding``), not by the
-    destination's own ``auth`` callable — see the plan's Logo upload path guiding
-    decision.
+    ``upload_url`` is a complete SigV4 presigned PUT URL — the caller uploads by
+    PUTting the file body straight to it with a matching Content-Type and no
+    other headers. No AWS credentials ever reach a partner-API caller, unlike
+    the shipped s3direct signing view (``POST /s3direct/get_upload_params/``),
+    which this mutation exists to serve as a REST-reachable equivalent of.
+    Authorized by the branding eligibility helper (acting organization is
+    parentless and holds ``white_label_branding``), not by the destination's own
+    ``auth`` callable — see the plan's Logo upload path guiding decision.
     """
 
     object_key: str
-    access_key_id: str | None
-    session_token: str | None
-    region: str | None
-    bucket: str | None
-    endpoint: str | None
-    acl: str
+    upload_url: str
+    expires_in: int
 
 
 @strawberry.input

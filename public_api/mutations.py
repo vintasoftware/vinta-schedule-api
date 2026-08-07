@@ -1485,12 +1485,13 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         file_size: int,
     ) -> BrandingLogoUploadResult:
         """
-        Mint a signed upload payload for the acting organization's branding logo.
+        Mint a presigned S3 upload URL for the acting organization's branding logo.
 
-        Same shape s3direct's own signing view returns, for partner-API callers
-        that cannot POST to that Django-session-scoped `/s3direct/` endpoint
-        directly. Gated on the branding eligibility helper -- the acting
-        organization must have no parent and hold the `white_label_branding`
+        A REST-reachable equivalent of s3direct's own signing view, for partner-API
+        callers that cannot POST to that Django-session-scoped `/s3direct/` endpoint
+        directly -- but returns a presigned PUT URL instead of bare AWS credentials,
+        so no credential ever reaches the caller. Gated on the branding eligibility
+        helper -- the acting organization must have no parent and hold the `white_label_branding`
         entitlement -- evaluated against the acting organization directly
         (`is_branding_eligible_organization`), NOT the destination's own `auth`
         callable: that callable only ever receives a bare user (see
@@ -1500,7 +1501,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
 
         Content-type and size are re-validated against the `branding_logos`
         destination's own allowlist/size cap (PNG/JPEG/WebP only, size-capped) --
-        rejected before any S3 credential is minted, naming the specific rule
+        rejected before any presigned URL is minted, naming the specific rule
         broken.
 
         The token's OrganizationResourceAccess must include the BRANDING resource.
