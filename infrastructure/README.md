@@ -152,6 +152,26 @@ terragrunt plan
 terragrunt apply
 ```
 
+### Provider lock files must cover every platform
+
+`terragrunt init` on your laptop records a checksum only for the platform it ran
+on. Scalr runs `linux_amd64` and installs providers from its own cache, where the
+registry `zh:` checksums don't apply — so a Mac-only lock file makes every Scalr
+run fail at `init` with "the local package ... doesn't match any of the checksums
+previously recorded".
+
+After any provider version change, re-lock for all platforms and commit the
+result:
+
+```bash
+cd infrastructure/environments/staging/storage
+# `run --` passes the flags through; terragrunt would otherwise reject -platform.
+terragrunt run -- providers lock \
+  -platform=linux_amd64 \
+  -platform=darwin_arm64 \
+  -platform=darwin_amd64
+```
+
 ## Wire outputs into Render
 
 The `aws-storage` env var group in `render.yaml` has these as `sync: false`
