@@ -383,10 +383,17 @@ class TestOrganizationService:
 
         call_kwargs = mock_notification_service.create_one_off_notification.call_args[1]
         invitation_url = call_kwargs["context_kwargs"]["invitation_url"]
-        assert invitation_url.startswith("https://app.example.com/o/brandco/auth/accept-invite/?token=")
+        assert invitation_url.startswith(
+            "https://app.example.com/o/brandco/auth/accept-invite/?token="
+        )
 
     def test_invite_user_to_organization_unbranded_org_keeps_the_plain_invitation_url(
-        self, organization_service_with_mocks, user, organization, mock_notification_service, settings
+        self,
+        organization_service_with_mocks,
+        user,
+        organization,
+        mock_notification_service,
+        settings,
     ):
         """An organization with no branding row configured must get exactly the URL
         it always got -- this change must not alter behavior for the common case."""
