@@ -12,6 +12,7 @@ from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
+from rest_framework.views import APIView
 from rest_framework.viewsets import GenericViewSet, ViewSet
 
 from common.utils.view_utils import TenantScopedViewMixin
@@ -392,19 +393,30 @@ class PaymentProviderViewSet(TenantScopedViewMixin, ViewSet):
     ``PaymentProviderResolver``, the one place both this endpoint and Phase 4's charge
     routing implement that rule) plus that provider's browser-safe public credentials.
 
-    ``GET /billing/payment-provider/default/`` -- the system default provider's public
-    credentials, unauthenticated (mirrors ``PaymentsViewSet``'s pattern above): a frontend
-    needs this to render *a* payment form before, or entirely without, a session.
+    Split from the unauthenticated system-default endpoint (see
+    ``DefaultPaymentProviderView`` below): the two have different auth, throttle, and
+    cardinality semantics, and previously sharing one ``ViewSet`` required hand-rolling
+    DRF's authenticator resolution (``get_authenticators`` /
+    ``_action_for_current_request``) so ``authentication_classes = ()`` applied to only
+    one action.
 
-    Both actions return the identical ``PaymentProviderSerializer`` shape; only the object
-    matching ``provider`` is populated, the other is ``null``.
+    Mounted directly via ``path()`` in ``payments/routes.py``'s ``extra_patterns``
+    (``PaymentProviderViewSet.as_view({"get": "retrieve_provider"})``), bypassing the
+    shared DRF router, so the bare ``/billing/payment-provider/`` path does not depend on
+    the router's static list-route -- which always binds ``GET`` to an action literally
+    named ``list`` (``rest_framework.routers.SimpleRouter.routes``). That fixed binding
+    would force ``self.action == "list"`` regardless of the Python method name, which
+    makes drf-spectacular's ``AutoSchema._is_list_view()`` document this endpoint as an
+    array (``type: array, items: $ref PaymentProvider``) even with the explicit
+    ``responses={200: PaymentProviderSerializer}`` override below, since
+    ``_is_list_view()`` checks ``view.action == "list"`` before consulting the override.
+    Binding the action name as ``retrieve_provider`` instead means ``self.action`` is
+    never ``"list"``, so the override is honored and the schema documents a single
+    object, matching the actual response.
     """
 
     serializer_class = PaymentProviderSerializer
     permission_classes = (IsAuthenticated,)
-    #: Only the unauthenticated ``default`` action is throttled -- see ``get_throttles`` --
-    #: with the shared ``payment-provider`` scope (``settings.DEFAULT_THROTTLE_RATES``).
-    throttle_scope = "payment-provider"
 
     @inject
     def __init__(
@@ -417,41 +429,6 @@ class PaymentProviderViewSet(TenantScopedViewMixin, ViewSet):
     ):
         super().__init__(*args, **kwargs)
         self.payment_provider_resolver = payment_provider_resolver
-
-    def _action_for_current_request(self) -> str | None:
-        """``self.action`` looked up early, off ``self.action_map`` and the raw request.
-
-        DRF resolves ``self.action`` (``ViewSetMixin.initialize_request``) by calling
-        ``super().initialize_request()`` -- which is what builds the ``Request`` object
-        using ``self.get_authenticators()`` -- **before** setting ``self.action`` on the
-        instance. So ``get_authenticators()`` cannot read ``self.action`` directly; this
-        replicates the same ``request.method -> action`` lookup
-        (``self.action_map``, populated by ``ViewSetMixin.as_view()`` before ``dispatch()``
-        runs) against ``self.request``, which -- at this point in the request lifecycle --
-        is still the raw Django request set by the ``view()`` closure, not yet the wrapped
-        DRF ``Request``. Falls back to ``None`` outside a real request/response cycle (e.g.
-        schema generation), so authenticator resolution there is unaffected.
-        """
-        request = getattr(self, "request", None)
-        action_map = getattr(self, "action_map", None)
-        if request is None or action_map is None:
-            return None
-        return action_map.get(request.method.lower())
-
-    def get_authenticators(self):
-        if self._action_for_current_request() == "default":
-            return []
-        return super().get_authenticators()
-
-    def get_permissions(self):
-        if self.action == "default":
-            return [AllowAny()]
-        return super().get_permissions()
-
-    def get_throttles(self):
-        if self.action == "default":
-            return [ScopedRateThrottle()]
-        return super().get_throttles()
 
     @extend_schema(
         summary="Get the active organization's payment provider",
@@ -470,19 +447,9 @@ class PaymentProviderViewSet(TenantScopedViewMixin, ViewSet):
             },
         },
     )
-    def list(self, request, *args, **kwargs):
-        """``GET /billing/payment-provider/``.
-
-        Named ``list`` (rather than a custom ``@action``) deliberately: DRF's router
-        maps the collection-root ``GET /{prefix}/`` to a plain ``list`` method via its
-        static route table, with no path segment appended. A dynamic ``@action`` route
-        cannot produce that bare URL here -- ``@action``'s ``url_path`` falls back to
-        the method name whenever it is falsy (``url_path=""`` included, since DRF checks
-        truthiness, not ``is None``), which is why ``BillingUsageViewSet.retrieve_usage``
-        actually resolves to ``/billing/usage/retrieve_usage/`` rather than
-        ``/billing/usage/`` despite passing ``url_path=""``. Using the router's native
-        ``list`` action avoids repeating that trap for this endpoint.
-        """
+    def retrieve_provider(self, request, *args, **kwargs):
+        """``GET /billing/payment-provider/``. See the class docstring for why this is
+        not named ``list``."""
         organization = _require_organization(request)
         provider = self.payment_provider_resolver.resolve_for_organization(organization)
         try:
@@ -498,6 +465,38 @@ class PaymentProviderViewSet(TenantScopedViewMixin, ViewSet):
             )
         return Response(PaymentProviderSerializer(credentials).data)
 
+
+class DefaultPaymentProviderView(APIView):
+    """``GET /billing/payment-provider/default/`` -- the system default provider's public
+    credentials, unauthenticated (mirrors ``PaymentsViewSet``'s pattern above): a frontend
+    needs this to render *a* payment form before, or entirely without, a session.
+
+    A standalone ``APIView`` rather than a shared action on ``PaymentProviderViewSet`` --
+    see that class's docstring for why the two are split. ``authentication_classes`` /
+    ``permission_classes`` / ``throttle_classes`` are set once here, at class level, with
+    no per-action switching.
+    """
+
+    serializer_class = PaymentProviderSerializer
+    authentication_classes = ()
+    permission_classes = (AllowAny,)
+    #: Unauthenticated -- bound with the shared ``payment-provider`` scope
+    #: (``settings.DEFAULT_THROTTLE_RATES``).
+    throttle_classes = (ScopedRateThrottle,)
+    throttle_scope = "payment-provider"
+
+    @inject
+    def __init__(
+        self,
+        *args,
+        payment_provider_resolver: Annotated[
+            "PaymentProviderResolver", Provide["payment_provider_resolver"]
+        ],
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.payment_provider_resolver = payment_provider_resolver
+
     @extend_schema(
         summary="Get the system default payment provider",
         description=(
@@ -511,8 +510,7 @@ class PaymentProviderViewSet(TenantScopedViewMixin, ViewSet):
             429: {"description": "Throttled."},
         },
     )
-    @action(methods=["get"], detail=False, url_path="default", url_name="default")
-    def default(self, request, *args, **kwargs):
+    def get(self, request, *args, **kwargs):
         provider = self.payment_provider_resolver.resolve_default()
         try:
             credentials = resolve_public_credentials(provider)

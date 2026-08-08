@@ -21,11 +21,11 @@ pytestmark = pytest.mark.django_db
 
 
 def default_provider_url() -> str:
-    return reverse("api:BillingPaymentProvider-default")
+    return reverse("payment-provider-default")
 
 
 def org_provider_url() -> str:
-    return reverse("api:BillingPaymentProvider-list")
+    return reverse("payment-provider")
 
 
 @pytest.fixture
@@ -152,10 +152,10 @@ class TestOrganizationPaymentProviderEndpoint:
         assert response.status_code == status.HTTP_403_FORBIDDEN
 
     def test_401_when_fully_unauthenticated(self, anonymous_client):
-        """The org endpoint's per-action authenticator override only touches the
-        ``default`` action (see ``PaymentProviderViewSet._action_for_current_request``);
-        this endpoint keeps the normal DRF auth stack and must still reject a genuinely
-        anonymous request."""
+        """The org endpoint (``PaymentProviderViewSet``) and the unauthenticated default
+        endpoint (``DefaultPaymentProviderView``) are now split into separate views with
+        their own class-level auth; this endpoint keeps the normal DRF auth stack and must
+        still reject a genuinely anonymous request."""
         response = anonymous_client.get(org_provider_url())
 
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
@@ -180,6 +180,25 @@ class TestOrganizationPaymentProviderEndpoint:
         settings.STRIPE_PUBLISHABLE_KEY = "pk_test_org"
         settings.MERCADOPAGO_PUBLIC_KEY = ""
         make_billing_profile(organization, payment_provider=PaymentProviders.MERCADOPAGO)
+
+        response = auth_client.get(org_provider_url())
+
+        assert response.status_code == status.HTTP_409_CONFLICT
+        assert "pk_test_org" not in str(response.content)
+
+    def test_409_for_a_pin_naming_a_provider_absent_from_the_registry(
+        self, auth_client, admin_membership, organization, settings
+    ):
+        """A pin holding a slug that is not a member of ``PaymentProviders`` at all (e.g.
+        a provider retired after the org was pinned to it) must 409, not silently fall
+        back to the default -- ``choices`` is form/admin-level validation, not a DB
+        constraint, so this row is constructible in the database even though no API
+        surface can write it today.
+        """
+        settings.DEFAULT_PAYMENT_PROVIDER = PaymentProviders.STRIPE
+        settings.STRIPE_PUBLISHABLE_KEY = "pk_test_org"
+        settings.MERCADOPAGO_PUBLIC_KEY = "pub_test_org"
+        make_billing_profile(organization, payment_provider="legacy_provider_removed")
 
         response = auth_client.get(org_provider_url())
 
