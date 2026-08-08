@@ -40,6 +40,7 @@ class OrganizationAdminForm(forms.ModelForm):
             "parent",
             "should_sync_rooms",
             "external_event_update_policy",
+            "week_start",
             "can_invite_organizations",
         )
 
@@ -121,6 +122,7 @@ class OrganizationAdmin(admin.ModelAdmin):
         "slug",
         "can_invite_organizations",
         "external_event_update_policy",
+        "week_start",
         "parent",
         "created",
         "modified",
@@ -128,6 +130,7 @@ class OrganizationAdmin(admin.ModelAdmin):
     list_filter = (
         "can_invite_organizations",
         "external_event_update_policy",
+        "week_start",
         "created",
         "modified",
     )
@@ -146,6 +149,7 @@ class OrganizationAdmin(admin.ModelAdmin):
                     "parent",
                     "should_sync_rooms",
                     "external_event_update_policy",
+                    "week_start",
                     "created",
                     "modified",
                 )

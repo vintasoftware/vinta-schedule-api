@@ -87,7 +87,12 @@ def _mock_info_with_org(organization):
     info.context = Mock()
     info.context.request = Mock()
     info.context.request.public_api_organization = organization
-    info.context.request.public_api_system_user = Mock()
+    # None == "no public-API token" (internal/direct-call test harness), matching
+    # the semantics `scoped_calendar_group_queryset`/`scoped_calendar_ids` expect
+    # for a non-public-API caller -- a bare `Mock()` isn't a real `SystemUser` and
+    # trips the scoped-token code path (`scoped_to_membership_user_id` resolves to
+    # another Mock, which the ORM can't filter on).
+    info.context.request.public_api_system_user = None
     return info
 
 

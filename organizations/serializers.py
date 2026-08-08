@@ -160,6 +160,7 @@ class OrganizationSerializer(VirtualModelSerializer):
             "slug",
             "should_sync_rooms",
             "external_event_update_policy",
+            "week_start",
             "google_service_account",
             "can_invite_organizations",
             "created",
@@ -221,6 +222,7 @@ class OrganizationSerializer(VirtualModelSerializer):
             name=validated_data["name"],
             should_sync_rooms=validated_data.get("should_sync_rooms", False),
             external_event_update_policy=validated_data.get("external_event_update_policy"),
+            week_start=validated_data.get("week_start"),
         )
         return organization
 

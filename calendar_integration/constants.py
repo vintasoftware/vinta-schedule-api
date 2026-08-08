@@ -103,3 +103,33 @@ class ExternalEventChangeRequestStatus(TextChoices):
     REJECTED = "rejected", "Rejected"
     STALE = "stale", "Stale"
     AUTO_UNDONE = "auto_undone", "Auto-undone"
+
+
+class GroupScopedRuleType(TextChoices):
+    """Which group-scoped rule a booking or reschedule violated
+    (CALENDAR_GROUP_SCOPED_AVAILABILITY spec, Decisions -> Errors).
+
+    Named exactly as the spec requires them surfaced to a caller: outside
+    window, inside block, quota consumed -- never the configured values
+    themselves (e.g. the cap or current count). ``OUTSIDE_WINDOW`` is
+    enforced as of Phase 1b, ``INSIDE_BLOCK`` as of Phase 2a, and
+    ``QUOTA_CONSUMED`` as of Phase 3b.
+    """
+
+    OUTSIDE_WINDOW = "outside_window", "Outside window"
+    INSIDE_BLOCK = "inside_block", "Inside block"
+    QUOTA_CONSUMED = "quota_consumed", "Quota consumed"
+
+
+class QuotaPeriod(TextChoices):
+    """Fixed calendar period a ``CalendarGroupSlotQuotaRule`` cap applies to
+    (CALENDAR_GROUP_SCOPED_AVAILABILITY spec, "Time-bounded rules").
+
+    Values match exactly what the ``calculate_calendar_group_quota_period_counts``
+    Postgres function accepts for its ``p_period_type`` argument -- keep them in
+    sync if either side changes.
+    """
+
+    DAY = "day", "Day"
+    WEEK = "week", "Week"
+    MONTH = "month", "Month"

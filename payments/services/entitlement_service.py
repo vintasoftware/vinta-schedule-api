@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from django.db.models import Sum
 
 from calendar_integration.constants import CalendarType
-from calendar_integration.models import AvailableTime, Calendar, CalendarGroup
+from calendar_integration.models import AvailableTime, BlockedTime, Calendar, CalendarGroup
 from organizations.models import Organization, OrganizationInvitation, OrganizationMembership
 from payments.billing_constants import (
     BillingState,
@@ -123,21 +123,37 @@ def _count_calendar_groups(context: UsageContext) -> int:
 
 
 def _count_availability_windows(context: UsageContext) -> int:
-    """Availability windows the organization actually authored.
+    """Every time window the organization actually authored — availability
+    windows and blocked time alike, positive or negative.
 
-    Not every ``AvailableTime`` row is a window somebody created: editing one
-    occurrence of a recurring window, or splitting a series, *inserts* extra rows
-    (see ``AvailableTimeQuerySet.only_user_authored`` for the full list and the one
-    residual gap). Counting those would over-report — an organization with a limit
-    of 5 that created 3 recurring windows and edited 3 occurrences would read as 6
-    and be blocked below its real usage, which the rollout's "nobody is blocked as
-    a consequence of the rollout itself" rule forbids.
+    Not every ``AvailableTime``/``BlockedTime`` row is a window somebody created:
+    editing one occurrence of a recurring window, or splitting a series, *inserts*
+    extra rows (see ``AvailableTimeQuerySet.only_user_authored`` /
+    ``BlockedTimeQuerySet.only_user_authored`` for the full list and the one
+    residual gap each carries). Counting those would over-report — an organization
+    with a limit of 5 that created 3 recurring windows and edited 3 occurrences
+    would read as 6 and be blocked below its real usage, which the rollout's
+    "nobody is blocked as a consequence of the rollout itself" rule forbids.
+
+    Reads through ``unscoped()`` on both models
+    (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 0/1d/2c): the default manager on
+    each excludes group-scoped rows (``group_slot`` set) by design, so counting
+    through it would under-report and let group-scoped windows and blocks bypass
+    the plan limit entirely. The spec's metering rule is "every time window an
+    organization authors is metered" regardless of scope or sign, so base and
+    group-scoped rows of both models are counted together here (Phase 2c: blocked
+    time was not metered before this and now is, for every organization at once
+    — see that phase's rollout note on why this is a billing-rule change made
+    deliberately, not incidentally).
     """
-    return (
-        AvailableTime.objects.only_user_authored()
-        .filter(organization_id__in=context.organization_ids)
-        .count()
+    organization_filter = {"organization_id__in": context.organization_ids}
+    availability_windows = (
+        AvailableTime.objects.unscoped().only_user_authored().filter(**organization_filter).count()
     )
+    blocked_times = (
+        BlockedTime.objects.unscoped().only_user_authored().filter(**organization_filter).count()
+    )
+    return availability_windows + blocked_times
 
 
 def _count_webhook_subscriptions(context: UsageContext) -> int:

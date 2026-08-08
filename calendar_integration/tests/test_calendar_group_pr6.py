@@ -1,4 +1,5 @@
 """Tests for bulk-modification parity, batched `find_bookable_slots`, and
+`CalendarPermissionService.can_view_calendar_group` /
 `CalendarPermissionService.can_manage_calendar_group`."""
 
 from datetime import timedelta
@@ -23,7 +24,7 @@ from calendar_integration.services.calendar_group_service import CalendarGroupSe
 from calendar_integration.services.calendar_permission_service import (
     CalendarPermissionService,
 )
-from organizations.models import Organization, OrganizationMembership
+from organizations.models import Organization, OrganizationMembership, OrganizationRole
 from users.models import User
 
 
@@ -258,10 +259,19 @@ def test_find_bookable_slots_single_query_per_type(
 
 
 # ---------------------------------------------------------------------------
-# can_manage_calendar_group
+# can_view_calendar_group / can_manage_calendar_group
+#
+# CALENDAR_GROUP_SCOPED_AVAILABILITY membership-permissions fix: owning a
+# pool calendar grants VISIBILITY (``can_view_calendar_group``) but no longer
+# grants the right to CREATE/UPDATE/DELETE the group itself
+# (``can_manage_calendar_group``, now admin-only). The two
+# ``true_for_owner``/``false_for_non_owner`` cases below were previously
+# asserted against ``can_manage_calendar_group``; they now correctly target
+# ``can_view_calendar_group``, and a new pair of tests pins the (now
+# admin-only) ``can_manage_calendar_group`` behavior for the same owner.
 # ---------------------------------------------------------------------------
 @pytest.mark.django_db
-def test_can_manage_calendar_group_true_for_owner(organization, clinic_group, managed_calendars):
+def test_can_view_calendar_group_true_for_owner(organization, clinic_group, managed_calendars):
     owner = User.objects.create_user(email="owner@example.com")
     OrganizationMembership.objects.get_or_create(user=owner, organization=organization)
     CalendarOwnership.objects.create(
@@ -270,7 +280,48 @@ def test_can_manage_calendar_group_true_for_owner(organization, clinic_group, ma
         membership_user_id=owner.id,
     )
     svc = CalendarPermissionService()
-    assert svc.can_manage_calendar_group(user=owner, group=clinic_group) is True
+    assert svc.can_view_calendar_group(user=owner, group=clinic_group) is True
+
+
+@pytest.mark.django_db
+def test_can_view_calendar_group_false_for_non_owner(organization, clinic_group):
+    stranger = User.objects.create_user(email="stranger@example.com")
+    svc = CalendarPermissionService()
+    assert svc.can_view_calendar_group(user=stranger, group=clinic_group) is False
+
+
+@pytest.mark.django_db
+def test_can_view_calendar_group_scoped_to_org(organization, other_org, clinic_group):
+    # Owner of an *other-org* calendar doesn't pass.
+    user = User.objects.create_user(email="xorg@example.com")
+    other_calendar = Calendar.objects.create(
+        organization=other_org, name="X", external_id="x", provider=CalendarProvider.INTERNAL
+    )
+    OrganizationMembership.objects.get_or_create(user=user, organization=other_org)
+    CalendarOwnership.objects.create(
+        organization=other_org,
+        calendar=other_calendar,
+        membership_user_id=user.id,
+    )
+    svc = CalendarPermissionService()
+    assert svc.can_view_calendar_group(user=user, group=clinic_group) is False
+
+
+@pytest.mark.django_db
+def test_can_manage_calendar_group_false_for_owner_who_is_not_admin(
+    organization, clinic_group, managed_calendars
+):
+    """Owning a pool calendar is no longer enough to manage (create/update/
+    delete) the group itself -- that is admin-only now."""
+    owner = User.objects.create_user(email="owner-not-admin@example.com")
+    OrganizationMembership.objects.get_or_create(user=owner, organization=organization)
+    CalendarOwnership.objects.create(
+        organization=organization,
+        calendar=managed_calendars["phys_a"],
+        membership_user_id=owner.id,
+    )
+    svc = CalendarPermissionService()
+    assert svc.can_manage_calendar_group(user=owner, group=clinic_group) is False
 
 
 @pytest.mark.django_db
@@ -282,12 +333,14 @@ def test_can_manage_calendar_group_false_for_non_owner(organization, clinic_grou
 
 @pytest.mark.django_db
 def test_can_manage_calendar_group_scoped_to_org(organization, other_org, clinic_group):
-    # Owner of an *other-org* calendar doesn't pass.
+    # Admin of an *other-org* doesn't pass for this org's group.
     user = User.objects.create_user(email="xorg@example.com")
     other_calendar = Calendar.objects.create(
         organization=other_org, name="X", external_id="x", provider=CalendarProvider.INTERNAL
     )
-    OrganizationMembership.objects.get_or_create(user=user, organization=other_org)
+    membership = OrganizationMembership.objects.get_or_create(user=user, organization=other_org)[0]
+    membership.role = OrganizationRole.ADMIN
+    membership.save()
     CalendarOwnership.objects.create(
         organization=other_org,
         calendar=other_calendar,

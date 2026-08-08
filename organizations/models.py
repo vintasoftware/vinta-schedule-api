@@ -88,6 +88,18 @@ class ExternalEventUpdatePolicy(models.TextChoices):
     FORBIDDEN = "forbidden", "Updates are forbidden"
 
 
+class WeekStart(models.TextChoices):
+    """Day of the week that starts the week for quota period boundaries.
+
+    Used for calculating quota periods (daily / weekly / monthly) in
+    group-scoped availability rules. Does not affect recurrence rules,
+    existing week handling, or any display.
+    """
+
+    MONDAY = "monday", "Monday"
+    SUNDAY = "sunday", "Sunday"
+
+
 class Organization(BaseModel):
     """
     Represents a calendar organization.
@@ -105,6 +117,16 @@ class Organization(BaseModel):
         help_text=(
             "Policy for handling inbound external provider edits and deletions to synced events. "
             "ALLOW: apply directly. CHANGE_REQUEST: route to approval. FORBIDDEN: auto-undo."
+        ),
+    )
+    week_start = models.CharField(
+        max_length=20,
+        choices=WeekStart,
+        default=WeekStart.MONDAY,
+        db_default=WeekStart.MONDAY,
+        help_text=(
+            "Day of the week that starts the week for quota period boundaries. "
+            "Used for calculating quota periods in group-scoped availability rules."
         ),
     )
     parent = models.ForeignKey(

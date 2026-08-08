@@ -15,6 +15,7 @@ from organizations.models import (
     Organization,
     OrganizationMembership,
     OrganizationRole,
+    WeekStart,
     get_active_organization_membership,
 )
 
@@ -440,6 +441,68 @@ class TestExternalEventUpdatePolicy:
         )
         org.refresh_from_db()
         assert org.external_event_update_policy == ExternalEventUpdatePolicy.CHANGE_REQUEST
+
+
+@pytest.mark.django_db
+class TestWeekStart:
+    """Unit tests for week_start field on Organization."""
+
+    def test_default_is_monday(self):
+        """A freshly created Organization has week_start=MONDAY."""
+        org = baker.make(Organization)
+        assert org.week_start == WeekStart.MONDAY
+        assert org.week_start == "monday"
+
+    def test_choices_are_monday_sunday(self):
+        """WeekStart has exactly the two expected choices."""
+        assert set(WeekStart.choices) == {
+            ("monday", "Monday"),
+            ("sunday", "Sunday"),
+        }
+
+    def test_choices_have_correct_values(self):
+        """WeekStart members have the correct values."""
+        assert WeekStart.MONDAY == "monday"
+        assert WeekStart.SUNDAY == "sunday"
+
+    def test_can_set_to_sunday(self):
+        """week_start can be set to SUNDAY."""
+        org = baker.make(Organization, week_start=WeekStart.SUNDAY)
+        org.refresh_from_db()
+        assert org.week_start == WeekStart.SUNDAY
+
+    def test_can_set_to_monday(self):
+        """week_start can be set to MONDAY."""
+        org = baker.make(Organization, week_start=WeekStart.MONDAY)
+        org.refresh_from_db()
+        assert org.week_start == WeekStart.MONDAY
+
+    def test_db_default_applies_to_existing_organizations(self):
+        """An Organization row inserted without specifying week_start reads Monday.
+
+        This test verifies the DB-level default backfills for existing rows,
+        ensuring that rows created before the migration (via raw SQL or the
+        old schema) read the correct Monday default after migration 0018.
+        """
+        from django.db import connection
+
+        # Insert an Organization row without specifying week_start, so the
+        # Postgres db_default applies. This simulates a row created before
+        # the migration. Include all required columns to satisfy NOT NULL constraints.
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO organizations_organization
+                (name, should_sync_rooms, external_event_update_policy, meta, created, modified, can_invite_organizations)
+                VALUES (%s, %s, %s, %s, NOW(), NOW(), %s)
+                """,
+                ["Pre-migration Org", False, "change_request", "{}", False],
+            )
+
+        # Read the row back via the ORM and verify week_start is Monday.
+        org = Organization.objects.get(name="Pre-migration Org")
+        assert org.week_start == WeekStart.MONDAY
+        assert org.week_start == "monday"
 
 
 @pytest.mark.django_db

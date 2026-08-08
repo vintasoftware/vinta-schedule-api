@@ -10,7 +10,12 @@ from allauth.socialaccount.models import SocialAccount
 from dependency_injector.wiring import Provide, inject
 from rest_framework import serializers
 
-from calendar_integration.constants import CalendarProvider, CalendarType, CalendarVisibility
+from calendar_integration.constants import (
+    CalendarProvider,
+    CalendarType,
+    CalendarVisibility,
+    QuotaPeriod,
+)
 from calendar_integration.exceptions import (
     CalendarGroupError,
     CalendarIntegrationError,
@@ -27,6 +32,7 @@ from calendar_integration.models import (
     CalendarGroup,
     CalendarGroupSlot,
     CalendarGroupSlotMembership,
+    CalendarGroupSlotQuotaRule,
     CalendarOwnership,
     CalendarSync,
     ChildrenCalendarRelationship,
@@ -68,6 +74,9 @@ from calendar_integration.virtual_models import (
     EventRecurrenceExceptionVirtualModel,
     ExternalAttendeeVirtualModel,
     ExternalEventChangeRequestVirtualModel,
+    GroupScopedAvailabilityWindowVirtualModel,
+    GroupScopedBlockedTimeVirtualModel,
+    GroupScopedQuotaRuleVirtualModel,
     RecurrenceRuleVirtualModel,
     ResourceAllocationVirtualModel,
 )
@@ -2510,6 +2519,392 @@ class CalendarGroupSlotMembershipSerializer(VirtualModelSerializer):
         model = CalendarGroupSlotMembership
         virtual_model = CalendarGroupSlotMembershipVirtualModel
         fields = ("id", "calendar")
+
+
+class GroupScopedAvailabilityWindowSerializer(VirtualModelSerializer):
+    """Read representation of a group-scoped availability window
+    (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 1c).
+
+    Deliberately narrower than ``AvailableTimeSerializer``: there is no nested
+    ``recurrence_rule`` write path here, only ``rrule_string`` -- matching
+    exactly what ``CalendarGroupService``'s window-write methods accept, so the
+    REST shape and the service signature cannot drift apart.
+    """
+
+    calendar_id = serializers.IntegerField(source="calendar_fk_id", read_only=True)
+    group_slot_id = serializers.IntegerField(source="group_slot_fk_id", read_only=True)
+    rrule_string = serializers.SerializerMethodField(read_only=True)
+    is_recurring = serializers.SerializerMethodField(read_only=True)
+    start_time = serializers.DateTimeField(read_only=True)
+    end_time = serializers.DateTimeField(read_only=True)
+
+    class Meta:
+        model = AvailableTime
+        virtual_model = GroupScopedAvailabilityWindowVirtualModel
+        fields = (
+            "id",
+            "calendar_id",
+            "group_slot_id",
+            "start_time",
+            "end_time",
+            "timezone",
+            "rrule_string",
+            "is_recurring",
+            "created",
+            "modified",
+        )
+        read_only_fields = fields
+
+    @v.hints.no_deferred_fields()
+    def get_rrule_string(self, obj: AvailableTime) -> str | None:
+        """RRULE string for the window's recurrence, or ``None`` when it doesn't recur."""
+        return obj.recurrence_rule.to_rrule_string() if obj.recurrence_rule else None
+
+    @v.hints.no_deferred_fields()
+    def get_is_recurring(self, obj: AvailableTime) -> bool:
+        return obj.is_recurring
+
+    def to_representation(self, instance):
+        """Render start_time/end_time in the window's own IANA timezone, not UTC."""
+        data = super().to_representation(instance)
+        return _localize_times_in_representation(
+            data, instance, getattr(instance, "timezone", None)
+        )
+
+
+class GroupScopedAvailabilityWindowCreateSerializer(serializers.Serializer):
+    """Input for creating a group-scoped availability window.
+
+    Field names map 1:1 onto
+    ``CalendarGroupService.create_group_scoped_availability_window``'s keyword
+    arguments (``calendar_id``, ``start_time``, ``end_time``, ``tz``,
+    ``rrule_string``) so the REST shape can never silently drift from the
+    service signature it delegates to.
+    """
+
+    calendar = serializers.PrimaryKeyRelatedField(
+        queryset=Calendar.original_manager.none(),
+        help_text="Calendar this window applies to. Must be a member of the target slot.",
+    )
+    start_time = serializers.DateTimeField(required=True)
+    end_time = serializers.DateTimeField(required=True)
+    timezone = serializers.CharField(required=True)
+    rrule_string = serializers.CharField(
+        required=False,
+        allow_null=True,
+        help_text="RRULE string for a recurring window. Omit for a one-off window.",
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        user = (
+            self.context["request"].user if self.context and self.context.get("request") else None
+        )
+        membership = (
+            get_active_organization_membership(user) if user and user.is_authenticated else None
+        )
+        self.fields["calendar"].queryset = (
+            Calendar.objects.filter_by_organization(membership.organization_id)
+            if membership
+            else Calendar.original_manager.none()
+        )
+
+    def validate(self, attrs):
+        if attrs["start_time"] >= attrs["end_time"]:
+            raise serializers.ValidationError("start_time must be before end_time.")
+        return attrs
+
+
+class GroupScopedAvailabilityWindowUpdateSerializer(serializers.Serializer):
+    """Input for partially updating a group-scoped availability window.
+
+    Every field is optional -- only provided fields change, mirroring
+    ``CalendarGroupService.update_group_scoped_availability_window``.
+    """
+
+    start_time = serializers.DateTimeField(required=False)
+    end_time = serializers.DateTimeField(required=False)
+    timezone = serializers.CharField(required=False)
+    rrule_string = serializers.CharField(
+        required=False,
+        allow_null=True,
+        help_text="RRULE string for a recurring window. Set to null to make it non-recurring.",
+    )
+
+    def validate(self, attrs):
+        start_time = attrs.get("start_time")
+        end_time = attrs.get("end_time")
+        if start_time is not None and end_time is not None and start_time >= end_time:
+            raise serializers.ValidationError("start_time must be before end_time.")
+        return attrs
+
+
+class GroupScopedAvailabilityOrphanedBookingSerializer(serializers.Serializer):
+    """Minimal identification of a booking a narrowing write orphaned (spec UC-6)
+    -- enough for an admin to act on. Nothing about the booking itself is
+    modified by the write that produced this entry.
+    """
+
+    id = serializers.IntegerField(read_only=True)
+    calendar_id = serializers.IntegerField(source="calendar_fk_id", read_only=True)
+    title = serializers.CharField(read_only=True)
+    start_time = serializers.DateTimeField(read_only=True)
+    end_time = serializers.DateTimeField(read_only=True)
+
+
+class GroupScopedAvailabilityWriteResultSerializer(serializers.Serializer):
+    """Wraps a ``GroupScopedAvailabilityWriteResult``: the saved window plus any
+    confirmed future bookings the write orphaned. Returned by the create and
+    update actions of ``GroupScopedAvailabilityWindowViewSet``.
+    """
+
+    window = GroupScopedAvailabilityWindowSerializer(read_only=True)
+    orphaned_bookings = GroupScopedAvailabilityOrphanedBookingSerializer(
+        many=True,
+        read_only=True,
+        help_text=(
+            "Confirmed future bookings in this slot for this window's calendar that no "
+            "longer fall inside the calendar's group-scoped availability after this "
+            "write. Nothing about them is modified or cancelled -- act on them manually "
+            "if needed."
+        ),
+    )
+
+
+class GroupScopedBlockedTimeSerializer(VirtualModelSerializer):
+    """Read representation of a group-scoped blocked time
+    (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 2b).
+
+    Mirrors ``GroupScopedAvailabilityWindowSerializer`` exactly, plus
+    ``reason`` -- there is no nested ``recurrence_rule`` write path here,
+    only ``rrule_string``, matching exactly what ``CalendarGroupService``'s
+    block-write methods accept, so the REST shape and the service signature
+    cannot drift apart.
+    """
+
+    calendar_id = serializers.IntegerField(source="calendar_fk_id", read_only=True)
+    group_slot_id = serializers.IntegerField(source="group_slot_fk_id", read_only=True)
+    rrule_string = serializers.SerializerMethodField(read_only=True)
+    is_recurring = serializers.SerializerMethodField(read_only=True)
+    start_time = serializers.DateTimeField(read_only=True)
+    end_time = serializers.DateTimeField(read_only=True)
+
+    class Meta:
+        model = BlockedTime
+        virtual_model = GroupScopedBlockedTimeVirtualModel
+        fields = (
+            "id",
+            "calendar_id",
+            "group_slot_id",
+            "start_time",
+            "end_time",
+            "timezone",
+            "reason",
+            "rrule_string",
+            "is_recurring",
+            "created",
+            "modified",
+        )
+        read_only_fields = fields
+
+    @v.hints.no_deferred_fields()
+    def get_rrule_string(self, obj: BlockedTime) -> str | None:
+        """RRULE string for the block's recurrence, or ``None`` when it doesn't recur."""
+        return obj.recurrence_rule.to_rrule_string() if obj.recurrence_rule else None
+
+    @v.hints.no_deferred_fields()
+    def get_is_recurring(self, obj: BlockedTime) -> bool:
+        return obj.is_recurring
+
+    def to_representation(self, instance):
+        """Render start_time/end_time in the block's own IANA timezone, not UTC."""
+        data = super().to_representation(instance)
+        return _localize_times_in_representation(
+            data, instance, getattr(instance, "timezone", None)
+        )
+
+
+class GroupScopedBlockedTimeCreateSerializer(serializers.Serializer):
+    """Input for creating a group-scoped blocked time.
+
+    Field names map 1:1 onto
+    ``CalendarGroupService.create_group_scoped_blocked_time``'s keyword
+    arguments (``calendar_id``, ``start_time``, ``end_time``, ``tz``,
+    ``reason``, ``rrule_string``) so the REST shape can never silently drift
+    from the service signature it delegates to.
+    """
+
+    calendar = serializers.PrimaryKeyRelatedField(
+        queryset=Calendar.original_manager.none(),
+        help_text="Calendar this block applies to. Must be a member of the target slot.",
+    )
+    start_time = serializers.DateTimeField(required=True)
+    end_time = serializers.DateTimeField(required=True)
+    timezone = serializers.CharField(required=True)
+    reason = serializers.CharField(required=False, allow_blank=True, default="")
+    rrule_string = serializers.CharField(
+        required=False,
+        allow_null=True,
+        help_text="RRULE string for a recurring block. Omit for a one-off block.",
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        user = (
+            self.context["request"].user if self.context and self.context.get("request") else None
+        )
+        membership = (
+            get_active_organization_membership(user) if user and user.is_authenticated else None
+        )
+        self.fields["calendar"].queryset = (
+            Calendar.objects.filter_by_organization(membership.organization_id)
+            if membership
+            else Calendar.original_manager.none()
+        )
+
+    def validate(self, attrs):
+        if attrs["start_time"] >= attrs["end_time"]:
+            raise serializers.ValidationError("start_time must be before end_time.")
+        return attrs
+
+
+class GroupScopedBlockedTimeUpdateSerializer(serializers.Serializer):
+    """Input for partially updating a group-scoped blocked time.
+
+    Every field is optional -- only provided fields change, mirroring
+    ``CalendarGroupService.update_group_scoped_blocked_time``.
+    """
+
+    start_time = serializers.DateTimeField(required=False)
+    end_time = serializers.DateTimeField(required=False)
+    timezone = serializers.CharField(required=False)
+    reason = serializers.CharField(required=False, allow_blank=True)
+    rrule_string = serializers.CharField(
+        required=False,
+        allow_null=True,
+        help_text="RRULE string for a recurring block. Set to null to make it non-recurring.",
+    )
+
+    def validate(self, attrs):
+        start_time = attrs.get("start_time")
+        end_time = attrs.get("end_time")
+        if start_time is not None and end_time is not None and start_time >= end_time:
+            raise serializers.ValidationError("start_time must be before end_time.")
+        return attrs
+
+
+class GroupScopedBlockOrphanedBookingSerializer(serializers.Serializer):
+    """Minimal identification of a booking a block write orphaned (spec
+    UC-6's rule applied to blocks) -- enough for an admin to act on. Nothing
+    about the booking itself is modified by the write that produced this
+    entry.
+    """
+
+    id = serializers.IntegerField(read_only=True)
+    calendar_id = serializers.IntegerField(source="calendar_fk_id", read_only=True)
+    title = serializers.CharField(read_only=True)
+    start_time = serializers.DateTimeField(read_only=True)
+    end_time = serializers.DateTimeField(read_only=True)
+
+
+class GroupScopedBlockWriteResultSerializer(serializers.Serializer):
+    """Wraps a ``GroupScopedBlockWriteResult``: the saved block plus any
+    confirmed future bookings the write orphaned. Returned by the create and
+    update actions of ``GroupScopedBlockedTimeViewSet``.
+    """
+
+    block = GroupScopedBlockedTimeSerializer(read_only=True)
+    orphaned_bookings = GroupScopedBlockOrphanedBookingSerializer(
+        many=True,
+        read_only=True,
+        help_text=(
+            "Confirmed future bookings in this slot for this block's calendar that now "
+            "fall inside the calendar's group-scoped blocked time after this write. "
+            "Nothing about them is modified or cancelled -- act on them manually if "
+            "needed."
+        ),
+    )
+
+
+class GroupScopedQuotaRuleSerializer(VirtualModelSerializer):
+    """Read representation of a group-scoped quota rule
+    (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 3c).
+
+    Simpler than ``GroupScopedAvailabilityWindowSerializer``/
+    ``GroupScopedBlockedTimeSerializer``: quota rules are non-recurring (no
+    ``rrule_string``, no ``timezone``, no time range) -- just the period and
+    the cap, matching exactly what ``CalendarGroupService``'s quota-write
+    methods accept, so the REST shape and the service signature cannot drift
+    apart.
+    """
+
+    calendar_id = serializers.IntegerField(source="calendar_fk_id", read_only=True)
+    group_slot_id = serializers.IntegerField(source="group_slot_fk_id", read_only=True)
+
+    class Meta:
+        model = CalendarGroupSlotQuotaRule
+        virtual_model = GroupScopedQuotaRuleVirtualModel
+        fields = (
+            "id",
+            "calendar_id",
+            "group_slot_id",
+            "period",
+            "cap",
+            "created",
+            "modified",
+        )
+        read_only_fields = fields
+
+
+class GroupScopedQuotaRuleCreateSerializer(serializers.Serializer):
+    """Input for creating a group-scoped quota rule.
+
+    Field names map 1:1 onto
+    ``CalendarGroupService.create_group_scoped_quota_rule``'s keyword
+    arguments (``calendar_id``, ``period``, ``cap``) so the REST shape can
+    never silently drift from the service signature it delegates to.
+    """
+
+    calendar = serializers.PrimaryKeyRelatedField(
+        queryset=Calendar.original_manager.none(),
+        help_text="Calendar this quota rule applies to. Must be a member of the target slot.",
+    )
+    period = serializers.ChoiceField(
+        choices=QuotaPeriod.choices,
+        help_text="Fixed calendar period the cap applies to (day, week, or month).",
+    )
+    cap = serializers.IntegerField(
+        min_value=1,
+        help_text=(
+            "Maximum number of live bookings made through this group slot the "
+            "calendar may hold within one period."
+        ),
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        user = (
+            self.context["request"].user if self.context and self.context.get("request") else None
+        )
+        membership = (
+            get_active_organization_membership(user) if user and user.is_authenticated else None
+        )
+        self.fields["calendar"].queryset = (
+            Calendar.objects.filter_by_organization(membership.organization_id)
+            if membership
+            else Calendar.original_manager.none()
+        )
+
+
+class GroupScopedQuotaRuleUpdateSerializer(serializers.Serializer):
+    """Input for partially updating a group-scoped quota rule.
+
+    Every field is optional -- only provided fields change, mirroring
+    ``CalendarGroupService.update_group_scoped_quota_rule``.
+    """
+
+    period = serializers.ChoiceField(choices=QuotaPeriod.choices, required=False)
+    cap = serializers.IntegerField(min_value=1, required=False)
 
 
 class CalendarGroupSlotSerializer(VirtualModelSerializer):

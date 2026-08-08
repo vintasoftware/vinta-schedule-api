@@ -2,6 +2,7 @@ import datetime
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
+from django.db import models
 from django.db.models import (
     Case,
     Count,
@@ -59,6 +60,47 @@ class CalendarManagementTokenQuerySet(BaseOrganizationModelQuerySet):
             used_at__isnull=True,
             revoked_at__isnull=True,
         ).filter(Q(expires_at__isnull=True) | Q(expires_at__gt=now))
+
+
+if TYPE_CHECKING:
+    # Type-checking-only base so mypy resolves `self.filter(...)` below — at
+    # runtime this mixin is only ever combined with `BaseOrganizationModelQuerySet`
+    # subclasses (which already provide `filter`), never instantiated alone.
+    _GroupSlotScopedQuerySetBase = models.QuerySet
+else:
+    _GroupSlotScopedQuerySetBase = object
+
+
+class GroupSlotScopedQuerySetMixin(_GroupSlotScopedQuerySetBase):
+    """Chainable group-slot scoping shared by ``AvailableTimeQuerySet`` and ``BlockedTimeQuerySet``.
+
+    Both models carry a nullable ``group_slot`` reference (see
+    ``CALENDAR_GROUP_SCOPED_AVAILABILITY`` Phase 0): null means a base row —
+    today's behavior, visible on every existing read path. A non-null value
+    scopes the row to exactly one ``CalendarGroupSlot`` and must stay invisible
+    unless a caller explicitly opts in.
+
+    These methods are the composable building blocks; the corresponding
+    managers (``AvailableTimeManager`` / ``BlockedTimeManager``) wire
+    :meth:`base_rows_only` into ``get_queryset`` so it is the *default* — every
+    existing call site that goes through ``.objects`` keeps seeing only base
+    rows with zero edits. ``for_group_slot`` and an unfiltered queryset (the
+    "unscoped" view) are reached through the manager's explicit accessors,
+    never through ``get_queryset``.
+    """
+
+    def base_rows_only(self):
+        """Exclude group-scoped rows — the default, tenant-unaware-of-groups view."""
+        return self.filter(group_slot_fk__isnull=True)
+
+    def for_group_slot(self, group_slot_id: int):
+        """Return only the rows scoped to exactly one ``CalendarGroupSlot``.
+
+        Explicit opt-in accessor. Never chain this onto a queryset that has
+        already had :meth:`base_rows_only` applied — the two filters are
+        mutually exclusive and would always return nothing.
+        """
+        return self.filter(group_slot_fk_id=group_slot_id)
 
 
 class RecurringQuerySetMixin:
@@ -707,10 +749,50 @@ class CalendarSyncQuerySet(BaseOrganizationModelQuerySet):
         return self.filter(id=calendar_sync_id, status=CalendarSyncStatus.NOT_STARTED).first()
 
 
-class BlockedTimeQuerySet(BaseOrganizationModelQuerySet, RecurringQuerySetMixin):
+class BlockedTimeQuerySet(
+    BaseOrganizationModelQuerySet, RecurringQuerySetMixin, GroupSlotScopedQuerySetMixin
+):
     """
     Custom QuerySet for BlockedTime model to handle specific queries.
     """
+
+    def only_user_authored(self) -> "BlockedTimeQuerySet":
+        """Exclude rows the recurrence machinery derived from another row.
+
+        Direct translation of ``AvailableTimeQuerySet.only_user_authored`` --
+        ``BlockedTime`` shares ``RecurringMixin`` with ``AvailableTime``, so
+        every field this filters on (``exception_for``,
+        ``bulk_modification_parent``, ``is_recurring_exception``) exists on
+        ``BlockedTime`` with the identical name and the identical meaning:
+
+        * ``AvailabilityService.create_recurring_blocked_time_exception`` inserts a
+          standalone row for a modified occurrence and links it back through
+          ``BlockedTimeRecurrenceException.modified_blocked_time`` (reverse accessor
+          ``exception_for``), also flagging it ``is_recurring_exception``.
+        * ``create_recurring_blocked_time_bulk_modification`` inserts a continuation
+          row for the remainder of a split series, linked by
+          ``bulk_modification_parent``.
+
+        Counting those as separate blocks over-reports usage for the same reason
+        ``AvailableTimeQuerySet.only_user_authored`` documents: one blocked time the
+        user created can end up as several ``BlockedTime`` rows. Every caller that
+        wants "how many blocked times did this organization author" (the billing
+        usage counter above all, once blocked time is metered -- see
+        ``payments.services.entitlement_service._count_availability_windows``) wants
+        this queryset, not a bare ``filter(...)``.
+
+        Known gap: identical to ``AvailableTimeQuerySet.only_user_authored``'s --
+        editing or cancelling the first occurrence of a series truncates the master
+        row and creates a fresh series row with no link back to it, which is still
+        counted and compounds on every subsequent first-occurrence edit or cancel.
+        See that method's docstring for the full explanation; it applies here
+        unchanged since both models share the same recurrence machinery.
+        """
+        return self.filter(
+            exception_for__isnull=True,
+            bulk_modification_parent__isnull=True,
+            is_recurring_exception=False,
+        )
 
     def annotate_recurring_occurrences_on_date_range(
         self, start: datetime.datetime, end: datetime.datetime, max_occurrences=10000, overlap=False
@@ -747,6 +829,21 @@ class CalendarGroupQuerySet(BaseOrganizationModelQuerySet):
     """
     Custom QuerySet for CalendarGroup model to handle specific queries.
     """
+
+    def only_member_of(self, membership_user_id: int) -> "CalendarGroupQuerySet":
+        """Groups where `membership_user_id` owns a calendar in ANY slot's roster.
+
+        "Part of a group" == owns at least one ``CalendarOwnership`` row for a
+        calendar that is a member of any of the group's slots -- matches
+        ``CalendarPermissionService.can_view_calendar_group``. Used to scope
+        list/retrieve visibility for non-admin members on both the internal
+        REST surface and the public GraphQL surface (scoped-member tokens).
+        ``distinct()`` because a user may own multiple calendars across
+        multiple slots of the same group.
+        """
+        return self.filter(
+            slots__memberships__calendar_fk__ownerships__membership_user_id=membership_user_id
+        ).distinct()
 
     def only_groups_bookable_in_ranges(
         self, ranges: Iterable[tuple[datetime.datetime, datetime.datetime]]
@@ -953,7 +1050,21 @@ class CalendarEventGroupSelectionQuerySet(BaseOrganizationModelQuerySet):
     """
 
 
-class AvailableTimeQuerySet(BaseOrganizationModelQuerySet, RecurringQuerySetMixin):
+class CalendarGroupSlotQuotaRuleQuerySet(BaseOrganizationModelQuerySet):
+    """Custom QuerySet for CalendarGroupSlotQuotaRule model to handle specific queries."""
+
+    def for_group_slot(self, group_slot_id: int) -> "CalendarGroupSlotQuotaRuleQuerySet":
+        """Every quota rule attached to one ``CalendarGroupSlot``."""
+        return self.filter(group_slot_fk_id=group_slot_id)
+
+    def for_calendar(self, calendar_id: int) -> "CalendarGroupSlotQuotaRuleQuerySet":
+        """Every quota rule attached to one ``Calendar``, across every slot it's in."""
+        return self.filter(calendar_fk_id=calendar_id)
+
+
+class AvailableTimeQuerySet(
+    BaseOrganizationModelQuerySet, RecurringQuerySetMixin, GroupSlotScopedQuerySetMixin
+):
     """
     Custom QuerySet for AvailableTime model to handle specific queries.
     """

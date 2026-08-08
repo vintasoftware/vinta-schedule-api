@@ -34,8 +34,14 @@ from calendar_integration.graphql import (
     CalendarWebhookEventGraphQLType,
     CalendarWebhookSubscriptionGraphQLType,
     ExternalEventChangeRequestGraphQLType,
+    GroupScopedAvailabilityWindowGraphQLType,
+    GroupScopedBlockedTimeGraphQLType,
+    GroupScopedQuotaRuleGraphQLType,
     UnavailableTimeWindowGraphQLType,
     WebhookSubscriptionStatusGraphQLType,
+    group_scoped_availability_window_from_model,
+    group_scoped_blocked_time_from_model,
+    group_scoped_quota_rule_from_model,
 )
 from calendar_integration.models import (
     AvailableTime,
@@ -43,6 +49,7 @@ from calendar_integration.models import (
     Calendar,
     CalendarEvent,
     CalendarGroup,
+    CalendarGroupSlotQuotaRule,
     CalendarManagementToken,
     ExternalEventChangeRequest,
 )
@@ -58,7 +65,7 @@ from public_api.permissions import (
     IsAuthenticated,
     OrganizationResourceAccess,
 )
-from public_api.scoping import scoped_calendar_ids
+from public_api.scoping import scoped_calendar_group_queryset, scoped_calendar_ids
 from public_api.types import (
     ChildOrganizationMetrics,
     PublicApiHttpRequest,
@@ -766,9 +773,22 @@ class Query:
     def calendar_group(
         self, info: strawberry.Info, group_id: int
     ) -> CalendarGroupGraphQLType | None:
-        """Fetch a single CalendarGroup scoped to the caller's organization."""
+        """Fetch a single CalendarGroup scoped to the caller's organization.
+
+        Role-aware scope (calendar-group membership-permissions fix): org-wide
+        and scoped-admin tokens may fetch any group in the org; a scoped-member
+        token only a group it participates in (owns a calendar in one of the
+        group's slots); a scoped token whose membership is missing/inactive
+        sees none (fail closed) -- see ``public_api.scoping.system_user_scope``.
+        """
         org = _get_org(info)
-        return CalendarGroup.objects.filter_by_organization(org.id).filter(id=group_id).first()
+        request: PublicApiHttpRequest = info.context.request
+        qs = scoped_calendar_group_queryset(
+            request.public_api_system_user,
+            org,
+            CalendarGroup.objects.filter_by_organization(org.id),
+        )
+        return qs.filter(id=group_id).first()
 
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def calendar_groups(
@@ -777,13 +797,20 @@ class Query:
         offset: int = 0,
         limit: int = 100,
     ) -> list[CalendarGroupGraphQLType]:
-        """List CalendarGroups for the caller's organization."""
+        """List CalendarGroups for the caller's organization.
+
+        Role-aware scope: see ``calendar_group`` above -- org-wide/scoped-admin
+        see every group, scoped-member sees only groups it participates in,
+        missing/inactive scoped membership sees none.
+        """
         org = _get_org(info)
-        qs = (
-            CalendarGroup.objects.filter_by_organization(org.id)
-            .prefetch_related("slots__calendars__ownerships__membership")
-            .order_by("pk")
+        request: PublicApiHttpRequest = info.context.request
+        qs = scoped_calendar_group_queryset(
+            request.public_api_system_user,
+            org,
+            CalendarGroup.objects.filter_by_organization(org.id),
         )
+        qs = qs.prefetch_related("slots__calendars__ownerships__membership").order_by("pk")
         return cast(list[CalendarGroupGraphQLType], list(_slice_qs(qs, offset, limit)))
 
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
@@ -931,6 +958,120 @@ class Query:
             group_id=group_id, start=start_datetime, end=end_datetime
         )
         return cast(list[CalendarEventGraphQLType], list(events))
+
+    @strawberry.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def group_scoped_availability_windows(
+        self,
+        info: strawberry.Info,
+        group_slot_id: int,
+        calendar_id: int | None = None,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> list[GroupScopedAvailabilityWindowGraphQLType]:
+        """List group-scoped availability windows for a group slot's roster.
+
+        Returns raw window rows (one per recurring master or one-off window,
+        not expanded occurrences) -- mirrors the internal REST surface's list
+        shape (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 1c). Optionally
+        filtered to a single calendar in the slot's roster.
+        """
+        org = _get_org(info)
+
+        qs = (
+            AvailableTime.objects.for_group_slot(group_slot_id)
+            .filter_by_organization(org.id)
+            .select_related("recurrence_rule")
+        )
+
+        # Owner-scope: for scoped tokens, only return windows on calendars in
+        # the token owner's set.
+        request: PublicApiHttpRequest = info.context.request
+        system_user = request.public_api_system_user
+        if system_user is not None:
+            allowed_ids = scoped_calendar_ids(system_user, org)
+            if allowed_ids is not None:
+                qs = qs.filter(calendar_fk__in=allowed_ids)
+
+        if calendar_id is not None:
+            qs = qs.filter(calendar_fk_id=calendar_id)
+
+        windows = _slice_qs(qs.order_by("pk"), offset, limit)
+        return [group_scoped_availability_window_from_model(w) for w in windows]
+
+    @strawberry.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def group_scoped_blocked_times(
+        self,
+        info: strawberry.Info,
+        group_slot_id: int,
+        calendar_id: int | None = None,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> list[GroupScopedBlockedTimeGraphQLType]:
+        """List group-scoped blocked times for a group slot's roster.
+
+        Returns raw block rows (one per recurring master or one-off block,
+        not expanded occurrences) -- mirrors the internal REST surface's
+        list shape (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 2b). Optionally
+        filtered to a single calendar in the slot's roster.
+        """
+        org = _get_org(info)
+
+        qs = (
+            BlockedTime.objects.for_group_slot(group_slot_id)
+            .filter_by_organization(org.id)
+            .select_related("recurrence_rule")
+        )
+
+        # Owner-scope: for scoped tokens, only return blocks on calendars in
+        # the token owner's set.
+        request: PublicApiHttpRequest = info.context.request
+        system_user = request.public_api_system_user
+        if system_user is not None:
+            allowed_ids = scoped_calendar_ids(system_user, org)
+            if allowed_ids is not None:
+                qs = qs.filter(calendar_fk__in=allowed_ids)
+
+        if calendar_id is not None:
+            qs = qs.filter(calendar_fk_id=calendar_id)
+
+        blocks = _slice_qs(qs.order_by("pk"), offset, limit)
+        return [group_scoped_blocked_time_from_model(b) for b in blocks]
+
+    @strawberry.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def group_scoped_quota_rules(
+        self,
+        info: strawberry.Info,
+        group_slot_id: int,
+        calendar_id: int | None = None,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> list[GroupScopedQuotaRuleGraphQLType]:
+        """List group-scoped quota rules for a group slot's roster.
+
+        Mirrors the internal REST surface's list shape
+        (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 3c). Optionally filtered to
+        a single calendar in the slot's roster.
+        """
+        org = _get_org(info)
+
+        qs = CalendarGroupSlotQuotaRule.objects.for_group_slot(
+            group_slot_id
+        ).filter_by_organization(org.id)
+
+        # Owner-scope: for scoped tokens, only return rules on calendars in
+        # the token owner's set.
+        request: PublicApiHttpRequest = info.context.request
+        system_user = request.public_api_system_user
+        if system_user is not None:
+            allowed_ids = scoped_calendar_ids(system_user, org)
+            if allowed_ids is not None:
+                qs = qs.filter(calendar_fk__in=allowed_ids)
+
+        if calendar_id is not None:
+            qs = qs.filter(calendar_fk_id=calendar_id)
+
+        rules = _slice_qs(qs.order_by("pk"), offset, limit)
+        return [group_scoped_quota_rule_from_model(r) for r in rules]
 
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def child_organizations(

@@ -19,6 +19,7 @@ from organizations.models import (
     OrganizationInvitation,
     OrganizationMembership,
     OrganizationRole,
+    WeekStart,
 )
 from payments.billing_constants import BillingState
 from payments.models import Subscription
@@ -171,6 +172,7 @@ class TestOrganizationViewSet:
             name="New Organization",
             should_sync_rooms=False,
             external_event_update_policy=None,
+            week_start=None,
         )
 
     def test_create_organization_via_jwt_bearer_creates_membership(self, user):
@@ -227,6 +229,7 @@ class TestOrganizationViewSet:
             name="Sync Organization",
             should_sync_rooms=True,
             external_event_update_policy=None,
+            week_start=None,
         )
 
     def test_create_organization_authenticated_with_existing_membership(
@@ -4005,6 +4008,96 @@ class TestOrganizationMineAction:
         # No X-Organization-Id — multi-org users MUST supply the header for current.
         url = reverse("api:Organizations-current")
         response = client.get(url)
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+
+@pytest.mark.django_db
+class TestOrganizationWeekStart:
+    """Test the week_start field on Organization."""
+
+    def test_organization_week_start_default_monday(self, user):
+        """Newly created organizations default to Monday week start."""
+        organization = OrganizationTestFactory.create_organization(name="Default Week Org")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+        admin_client = APIClient()
+        admin_client.force_authenticate(user=user)
+
+        # Verify the default value is Monday by doing an empty PATCH
+        # which returns the current state
+        url = reverse("api:Organizations-detail", kwargs={"pk": organization.pk})
+        response = admin_client.patch(url, {}, format="json")
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert response.json()["week_start"] == WeekStart.MONDAY.value
+
+    def test_update_organization_week_start_admin(self, user):
+        """Admin can PATCH week_start for their organization."""
+        organization = OrganizationTestFactory.create_organization(name="Week Start Org")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+        admin_client = APIClient()
+        admin_client.force_authenticate(user=user)
+
+        url = reverse("api:Organizations-detail", kwargs={"pk": organization.pk})
+        response = admin_client.patch(
+            url,
+            {"week_start": WeekStart.SUNDAY.value},
+            format="json",
+        )
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert response.json()["week_start"] == WeekStart.SUNDAY.value
+        organization.refresh_from_db()
+        assert organization.week_start == WeekStart.SUNDAY.value
+
+    def test_update_organization_week_start_non_admin_denied(self, auth_client, user):
+        """Non-admin member cannot PATCH week_start — 403."""
+        organization = OrganizationTestFactory.create_organization(name="Week Start Org")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+
+        url = reverse("api:Organizations-detail", kwargs={"pk": organization.pk})
+        response = auth_client.patch(
+            url,
+            {"week_start": WeekStart.SUNDAY.value},
+            format="json",
+        )
+
+        # Non-admin member → 403 (IsOrganizationAdmin denies)
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+
+    def test_update_organization_week_start_invalid_choice(self, user):
+        """An out-of-range week_start value is rejected with 400."""
+        organization = OrganizationTestFactory.create_organization(name="Week Start Org")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+        admin_client = APIClient()
+        admin_client.force_authenticate(user=user)
+
+        url = reverse("api:Organizations-detail", kwargs={"pk": organization.pk})
+        response = admin_client.patch(url, {"week_start": "not_a_day"}, format="json")
 
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
 

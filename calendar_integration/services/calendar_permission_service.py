@@ -19,7 +19,9 @@ from calendar_integration.exceptions import (
     TokenRevokedError,
 )
 from calendar_integration.models import (
+    Calendar,
     CalendarGroup,
+    CalendarGroupSlot,
     CalendarGroupSlotMembership,
     CalendarManagementToken,
     CalendarOwnership,
@@ -469,17 +471,50 @@ class CalendarPermissionService:
 
         return False
 
-    def can_manage_calendar_group(self, user: User, group: CalendarGroup) -> bool:
-        """Return True if `user` may create/update/delete `group` and create
-        events against it.
+    def can_manage_group_scoped_calendar_config(
+        self, user: User, calendar: Calendar, group_slot: CalendarGroupSlot
+    ) -> bool:
+        """Return True if `user` may create/update/delete group-scoped
+        availability configuration (windows -- and, in later phases, blocks
+        and quota rules) for `calendar` within `group_slot`.
 
         Rules, in order:
-          1. Org admins in the group's organization can always manage it —
+          1. Org admins in ``group_slot``'s organization may always manage it.
+          2. Otherwise, `user` must own `calendar` directly (a
+             ``CalendarOwnership`` row) -- owning some *other* calendar in the
+             same group is not enough. Resource calendars with no owner are
+             therefore admin-only by construction.
+
+        Callers are responsible for having already resolved `calendar` as an
+        actual member of `group_slot` (e.g. via ``CalendarGroupSlotMembership``)
+        -- this method only decides whether `user` may act on `calendar`'s
+        config, not whether the (calendar, group_slot) pairing is real. Doing
+        the membership resolution first and raising the same not-found-shaped
+        error for both "no such membership" and "not authorized" is what keeps
+        a member from learning a group exists through the error shape alone.
+        """
+        if user.is_organization_admin(group_slot.organization_id):
+            return True
+        return (
+            CalendarOwnership.objects.filter_by_organization(group_slot.organization_id)
+            .filter(membership_user_id=user.id, calendar_fk=calendar)
+            .exists()
+        )
+
+    def can_view_calendar_group(self, user: User, group: CalendarGroup) -> bool:
+        """Return True if `user` may see that `group` exists (list/retrieve,
+        and act as a participant against it -- e.g. book a group event,
+        check availability).
+
+        Rules, in order:
+          1. Org admins in the group's organization can always see it —
              matches "admin-of-org can administer org-scoped resources" so
              schedulers/ops who don't personally own any pool calendar still
              work.
           2. Otherwise, the user must own at least one calendar inside the
-             group's slot pools (scoped to the group's organization).
+             group's slot pools (scoped to the group's organization) --
+             i.e. they participate in the group, even if that calendar
+             lives in a different slot than the one being inspected.
         """
         if user.is_organization_admin(group.organization_id):
             return True
@@ -491,6 +526,20 @@ class CalendarPermissionService:
             )
             .exists()
         )
+
+    def can_manage_calendar_group(self, user: User, group: CalendarGroup) -> bool:
+        """Return True if `user` may create/update/delete `group` itself
+        (mutate its name, slots, or roster).
+
+        Restricted to organization admins. Owning a calendar inside the
+        group's slot pools grants *visibility* (``can_view_calendar_group``)
+        and the ability to manage that calendar's own group-scoped
+        availability config (``can_manage_group_scoped_calendar_config``),
+        but not the right to mutate the group's structure -- a member should
+        not be able to add/remove slots, rename the group, or delete it just
+        because they happen to own one of its pool calendars.
+        """
+        return user.is_organization_admin(group.organization_id)
 
     def create_calendar_owner_token(
         self,

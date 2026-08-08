@@ -15,6 +15,7 @@ from calendar_integration.models import (
     CalendarEventGroupSelection,
     CalendarGroup,
     CalendarGroupSlot,
+    CalendarGroupSlotQuotaRule,
     CalendarOwnership,
     CalendarWebhookEvent,
     CalendarWebhookSubscription,
@@ -588,6 +589,135 @@ class UnavailableTimeWindowGraphQLType:
     end_time: datetime.datetime
     id: int  # noqa: A003
     reason: str
+
+
+@strawberry.type
+class GroupScopedAvailabilityWindowGraphQLType:
+    """Public API representation of one group-scoped availability window
+    (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 1d).
+
+    A raw window row -- one entry per recurring master or one-off window, not
+    an expanded occurrence -- mirroring the internal REST surface's
+    ``GroupScopedAvailabilityWindowSerializer`` (Phase 1c) field shape.
+    """
+
+    id: int  # noqa: A003
+    calendar_id: int
+    group_slot_id: int
+    start_time: datetime.datetime
+    end_time: datetime.datetime
+    timezone: str
+    rrule_string: str | None
+    is_recurring: bool
+    created: datetime.datetime
+    modified: datetime.datetime
+
+
+def group_scoped_availability_window_from_model(
+    window: AvailableTime,
+) -> GroupScopedAvailabilityWindowGraphQLType:
+    """Build a :class:`GroupScopedAvailabilityWindowGraphQLType` from an
+    ``AvailableTime`` row.
+
+    Callers should ``select_related("recurrence_rule")`` on the source
+    queryset to avoid N+1 when building a list.
+    """
+    return GroupScopedAvailabilityWindowGraphQLType(
+        id=window.id,  # type: ignore[arg-type]
+        calendar_id=window.calendar_fk_id,  # type: ignore[arg-type]
+        group_slot_id=window.group_slot_fk_id,  # type: ignore[arg-type]
+        start_time=window.start_time,
+        end_time=window.end_time,
+        timezone=window.timezone,
+        rrule_string=(window.recurrence_rule.to_rrule_string() if window.recurrence_rule else None),
+        is_recurring=window.is_recurring,
+        created=window.created,
+        modified=window.modified,
+    )
+
+
+@strawberry.type
+class GroupScopedBlockedTimeGraphQLType:
+    """Public API representation of one group-scoped blocked time
+    (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 2b).
+
+    A raw block row -- one entry per recurring master or one-off block, not
+    an expanded occurrence -- mirroring the internal REST surface's
+    ``GroupScopedBlockedTimeSerializer`` field shape.
+    """
+
+    id: int  # noqa: A003
+    calendar_id: int
+    group_slot_id: int
+    start_time: datetime.datetime
+    end_time: datetime.datetime
+    timezone: str
+    reason: str
+    rrule_string: str | None
+    is_recurring: bool
+    created: datetime.datetime
+    modified: datetime.datetime
+
+
+def group_scoped_blocked_time_from_model(
+    block: BlockedTime,
+) -> GroupScopedBlockedTimeGraphQLType:
+    """Build a :class:`GroupScopedBlockedTimeGraphQLType` from a
+    ``BlockedTime`` row.
+
+    Callers should ``select_related("recurrence_rule")`` on the source
+    queryset to avoid N+1 when building a list.
+    """
+    return GroupScopedBlockedTimeGraphQLType(
+        id=block.id,  # type: ignore[arg-type]
+        calendar_id=block.calendar_fk_id,  # type: ignore[arg-type]
+        group_slot_id=block.group_slot_fk_id,  # type: ignore[arg-type]
+        start_time=block.start_time,
+        end_time=block.end_time,
+        timezone=block.timezone,
+        reason=block.reason,
+        rrule_string=(block.recurrence_rule.to_rrule_string() if block.recurrence_rule else None),
+        is_recurring=block.is_recurring,
+        created=block.created,
+        modified=block.modified,
+    )
+
+
+@strawberry.type
+class GroupScopedQuotaRuleGraphQLType:
+    """Public API representation of one group-scoped quota rule
+    (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 3c).
+
+    Simpler than ``GroupScopedAvailabilityWindowGraphQLType``/
+    ``GroupScopedBlockedTimeGraphQLType``: quota rules are non-recurring (no
+    ``rruleString``, no ``timezone``, no time range) -- just the period and
+    the cap, mirroring the internal REST surface's
+    ``GroupScopedQuotaRuleSerializer`` field shape.
+    """
+
+    id: int  # noqa: A003
+    calendar_id: int
+    group_slot_id: int
+    period: str
+    cap: int
+    created: datetime.datetime
+    modified: datetime.datetime
+
+
+def group_scoped_quota_rule_from_model(
+    rule: CalendarGroupSlotQuotaRule,
+) -> GroupScopedQuotaRuleGraphQLType:
+    """Build a :class:`GroupScopedQuotaRuleGraphQLType` from a
+    ``CalendarGroupSlotQuotaRule`` row."""
+    return GroupScopedQuotaRuleGraphQLType(
+        id=rule.id,  # type: ignore[arg-type]
+        calendar_id=rule.calendar_fk_id,  # type: ignore[arg-type]
+        group_slot_id=rule.group_slot_fk_id,  # type: ignore[arg-type]
+        period=rule.period,
+        cap=rule.cap,
+        created=rule.created,
+        modified=rule.modified,
+    )
 
 
 @strawberry_django.type(CalendarWebhookSubscription)

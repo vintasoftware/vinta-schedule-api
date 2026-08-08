@@ -62,6 +62,30 @@ class PublicAPIResources(TextChoices):
     )
     BOOKING_POLICY = "booking_policy", "Booking Policy"
     BOOKABLE_SLOTS = "bookable_slots", "Bookable Slots"
+    GROUP_SCOPED_AVAILABILITY_WINDOWS = (
+        "group_scoped_availability_windows",
+        "Group-Scoped Availability Windows",
+    )
+    BATCH_UPSERT_GROUP_SCOPED_AVAILABILITY_WINDOWS = (
+        "batch_upsert_group_scoped_availability_windows",
+        "Batch Upsert Group-Scoped Availability Windows",
+    )
+    GROUP_SCOPED_BLOCKED_TIMES = (
+        "group_scoped_blocked_times",
+        "Group-Scoped Blocked Times",
+    )
+    BATCH_UPSERT_GROUP_SCOPED_BLOCKED_TIMES = (
+        "batch_upsert_group_scoped_blocked_times",
+        "Batch Upsert Group-Scoped Blocked Times",
+    )
+    GROUP_SCOPED_QUOTA_RULES = (
+        "group_scoped_quota_rules",
+        "Group-Scoped Quota Rules",
+    )
+    BATCH_UPSERT_GROUP_SCOPED_QUOTA_RULES = (
+        "batch_upsert_group_scoped_quota_rules",
+        "Batch Upsert Group-Scoped Quota Rules",
+    )
 
 
 PROVIDER_SCOPED_RESOURCES: frozenset[str] = frozenset(
@@ -79,5 +103,11 @@ PROVIDER_SCOPED_RESOURCES: frozenset[str] = frozenset(
         PublicAPIResources.UPDATE_AVAILABILITY_WINDOW,
         PublicAPIResources.DELETE_AVAILABILITY_WINDOW,
         PublicAPIResources.BATCH_UPDATE_AVAILABILITY_WINDOWS,
+        PublicAPIResources.GROUP_SCOPED_AVAILABILITY_WINDOWS,
+        PublicAPIResources.BATCH_UPSERT_GROUP_SCOPED_AVAILABILITY_WINDOWS,
+        PublicAPIResources.GROUP_SCOPED_BLOCKED_TIMES,
+        PublicAPIResources.BATCH_UPSERT_GROUP_SCOPED_BLOCKED_TIMES,
+        PublicAPIResources.GROUP_SCOPED_QUOTA_RULES,
+        PublicAPIResources.BATCH_UPSERT_GROUP_SCOPED_QUOTA_RULES,
     ]
 )

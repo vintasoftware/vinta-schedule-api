@@ -257,6 +257,7 @@ class TestNoPlanlessOrganization:
                 "name": "Reseller Org 2",
                 "should_sync_rooms": "",
                 "external_event_update_policy": "change_request",
+                "week_start": "monday",
                 "can_invite_organizations": "on",
             },
         )

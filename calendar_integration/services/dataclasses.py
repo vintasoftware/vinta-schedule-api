@@ -8,6 +8,7 @@ from calendar_integration.constants import (
     CalendarProvider,
 )
 from calendar_integration.models import (
+    AvailableTime,
     BlockedTime,
     CalendarEvent,
     EventAttendance,
@@ -364,6 +365,45 @@ class BookableSlotProposal:
 
     start_time: datetime.datetime
     end_time: datetime.datetime
+
+
+@dataclass
+class GroupScopedAvailabilityWriteResult:
+    """Result of a group-scoped availability window write (create/update/delete).
+
+    ``window`` is the saved ``AvailableTime`` row, or ``None`` after a delete.
+    ``orphaned_bookings`` lists confirmed future ``CalendarEvent`` bookings in
+    the window's group slot, for the window's calendar, that fall outside the
+    calendar's group-scoped configuration *after* the write is applied --
+    populated only by the update path (spec UC-6: "admin tightens a window
+    that orphans bookings"). Nothing about the orphaned bookings is modified;
+    this is a read-only report for the caller to act on.
+    """
+
+    window: AvailableTime | None
+    orphaned_bookings: list[CalendarEvent] = dataclass_field(default_factory=list)
+
+
+@dataclass
+class GroupScopedBlockWriteResult:
+    """Result of a group-scoped blocked-time write (create/update/delete)
+    (``CALENDAR_GROUP_SCOPED_AVAILABILITY`` Phase 2a).
+
+    ``block`` is the saved ``BlockedTime`` row, or ``None`` after a delete.
+    ``orphaned_bookings`` lists confirmed future ``CalendarEvent`` bookings in
+    the block's group slot, for the block's calendar, that fall INSIDE the
+    calendar's group-scoped blocked time *after* the write is applied (spec
+    UC-6's rule applied to blocks). Unlike a window write -- where only the
+    FIRST window flips the calendar from fall-through to narrowed, so only it
+    can orphan a booking -- a block always independently removes time, so
+    orphaned-booking detection runs on every create and every update, never
+    on delete (a delete only widens available time). Nothing about the
+    orphaned bookings is modified; this is a read-only report for the caller
+    to act on.
+    """
+
+    block: BlockedTime | None
+    orphaned_bookings: list[CalendarEvent] = dataclass_field(default_factory=list)
 
 
 @dataclass(frozen=True)

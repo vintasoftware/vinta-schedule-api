@@ -20,7 +20,13 @@ import pytest
 from model_bakery import baker
 
 from calendar_integration.constants import CalendarType
-from calendar_integration.models import AvailableTime, Calendar, CalendarGroup
+from calendar_integration.models import (
+    AvailableTime,
+    BlockedTime,
+    Calendar,
+    CalendarGroup,
+    CalendarGroupSlot,
+)
 from calendar_integration.services.calendar_group_service import CalendarGroupService
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.dataclasses import CalendarGroupInputData
@@ -282,6 +288,92 @@ class TestCreateAvailableTimeLimit:
             end_time=end,
             timezone="UTC",
             bypass_limits=True,
+        )
+
+        assert available_time.pk is not None
+
+
+@pytest.mark.django_db
+class TestBlockedTimeCountsTowardTheAvailabilityWindowLimit:
+    """Phase 2c: blocked time and availability windows share one
+    ``availability_windows`` ceiling. Blocked-time creation itself is not guarded
+    (unchanged by this phase -- see ``AvailabilityService.create_blocked_time``),
+    but existing blocked time now counts toward the same ceiling an availability
+    window creation is checked against, so an organization that has only ever
+    authored blocked time can already be at its ceiling the first time it tries to
+    create an availability window. It hits the *existing* over-limit path, not a
+    new one.
+    """
+
+    def test_existing_base_blocked_time_blocks_further_window_creation(self):
+        organization = _organization_with_limit(LimitedResource.AVAILABILITY_WINDOWS, 1)
+        calendar = _calendar_managing_windows(organization)
+        baker.make(BlockedTime, organization=organization, calendar=calendar, timezone="UTC")
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+
+        start = datetime.datetime(2026, 1, 1, 9, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 1, 1, 17, 0, tzinfo=datetime.UTC)
+
+        with pytest.raises(OverLimitError) as exc_info:
+            service.create_available_time(
+                calendar=calendar, start_time=start, end_time=end, timezone="UTC"
+            )
+
+        assert exc_info.value.resource_key == LimitedResource.AVAILABILITY_WINDOWS
+        assert exc_info.value.current_usage == 1
+        assert exc_info.value.limit == 1
+        assert not AvailableTime.objects.filter(
+            organization=organization, calendar=calendar
+        ).exists()
+
+    def test_existing_group_scoped_blocked_time_blocks_further_window_creation(self):
+        """Group-scoped blocks are invisible to ``BlockedTime.objects`` (the default
+        manager) but must still be counted -- the metering rule is "every time
+        window an organization authors", regardless of scope."""
+        organization = _organization_with_limit(LimitedResource.AVAILABILITY_WINDOWS, 1)
+        calendar = _calendar_managing_windows(organization)
+        group = baker.make(CalendarGroup, organization=organization)
+        slot = baker.make(CalendarGroupSlot, organization=organization, group=group)
+        baker.make(
+            BlockedTime,
+            organization=organization,
+            calendar=calendar,
+            timezone="UTC",
+            group_slot=slot,
+        )
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+
+        start = datetime.datetime(2026, 1, 1, 9, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 1, 1, 17, 0, tzinfo=datetime.UTC)
+
+        with pytest.raises(OverLimitError) as exc_info:
+            service.create_available_time(
+                calendar=calendar, start_time=start, end_time=end, timezone="UTC"
+            )
+
+        assert exc_info.value.resource_key == LimitedResource.AVAILABILITY_WINDOWS
+        assert exc_info.value.current_usage == 1
+        assert not AvailableTime.objects.filter(
+            organization=organization, calendar=calendar
+        ).exists()
+
+    def test_headroom_left_after_blocked_time_still_allows_a_window(self):
+        organization = _organization_with_limit(LimitedResource.AVAILABILITY_WINDOWS, 2)
+        calendar = _calendar_managing_windows(organization)
+        baker.make(BlockedTime, organization=organization, calendar=calendar, timezone="UTC")
+
+        service = CalendarService()
+        service.initialize_without_provider(organization=organization)
+
+        start = datetime.datetime(2026, 1, 1, 9, 0, tzinfo=datetime.UTC)
+        end = datetime.datetime(2026, 1, 1, 17, 0, tzinfo=datetime.UTC)
+
+        available_time = service.create_available_time(
+            calendar=calendar, start_time=start, end_time=end, timezone="UTC"
         )
 
         assert available_time.pk is not None

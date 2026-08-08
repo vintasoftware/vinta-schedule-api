@@ -85,6 +85,72 @@ class GetAvailableTimeOccurrencesJSON(Func):
         super().__init__(*_with_overlap(args, overlap), **kwargs)
 
 
+class GetCalendarGroupQuotaPeriodCountsJSON(Func):
+    """
+    Database function returning per-period LIVE booking counts for one calendar
+    inside one CalendarGroupSlot, as a JSON array (CALENDAR_GROUP_SCOPED_AVAILABILITY
+    Phase 3a). Only bookings made THROUGH that group slot (a
+    ``CalendarEventGroupSelection`` row for this exact slot+calendar pair) are
+    counted; events created directly on the calendar are not. Counts are derived
+    on read -- a cancelled booking (its ``CalendarEvent`` row deleted) frees
+    quota immediately, and a reschedule moves the count to whichever period its
+    new start_time falls into.
+
+    Usage:
+        from calendar_integration.database_functions import GetCalendarGroupQuotaPeriodCountsJSON
+
+        Calendar.objects.filter(id__in=calendar_ids).annotate(
+            quota_period_counts=GetCalendarGroupQuotaPeriodCountsJSON(
+                "id", group_slot_id, organization_id, period_type, week_start,
+                range_start, range_end,
+            )
+        )
+
+        # Access the buckets (already a list of dicts):
+        for calendar in calendars:
+            for bucket in calendar.quota_period_counts:
+                print(bucket["period_start"], bucket["period_end"], bucket["booking_count"])
+
+    ``period_type`` is one of ``calendar_integration.constants.QuotaPeriod``
+    ("day" / "week" / "month"); ``week_start`` is one of
+    ``organizations.models.WeekStart`` ("monday" / "sunday") and only affects
+    week-period bucketing.
+
+    ``period_type``/``week_start`` are always wrapped in ``Value(...)``
+    explicitly (never passed through raw): ``Func``'s own argument parsing
+    (``Func._parse_expressions``) turns any plain ``str`` positional argument
+    into ``F(that_string)`` -- a field reference, not a literal -- which is
+    exactly right for ``"id"`` above but would silently misinterpret
+    ``"day"``/``"monday"`` as column names instead of the literal values they
+    are.
+    """
+
+    function = "get_calendar_group_quota_period_counts_json"
+    output_field = ArrayField(JSONField())
+
+    def __init__(
+        self,
+        calendar_id,
+        group_slot_id,
+        organization_id,
+        period_type: str,
+        week_start: str,
+        range_start,
+        range_end,
+        **kwargs,
+    ):
+        super().__init__(
+            calendar_id,
+            group_slot_id,
+            organization_id,
+            Value(period_type),
+            Value(week_start),
+            range_start,
+            range_end,
+            **kwargs,
+        )
+
+
 class GetAvailableTimeOccurrencesWithBulkModificationsJSON(Func):
     """
     Enhanced Django database function to get available time occurrences including bulk modifications as JSON array.

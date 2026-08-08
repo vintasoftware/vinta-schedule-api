@@ -81,6 +81,7 @@ class OrganizationService:
         name: str,
         should_sync_rooms: bool = False,
         external_event_update_policy: str | None = None,
+        week_start: str | None = None,
     ) -> Organization:
         """
         Create a new calendar organization.
@@ -88,6 +89,8 @@ class OrganizationService:
         :param should_sync_rooms: Whether to sync rooms for this organization.
         :param external_event_update_policy: Policy for inbound external provider
             edits/deletions. When ``None`` the model's default is used.
+        :param week_start: Day of the week that starts the week for quota period boundaries.
+            When ``None`` the model's default is used.
         :return: Created Organization instance.
 
         Wrapped in its own transaction (rather than relying on the caller's) so the
@@ -103,6 +106,8 @@ class OrganizationService:
         }
         if external_event_update_policy is not None:
             create_kwargs["external_event_update_policy"] = external_event_update_policy
+        if week_start is not None:
+            create_kwargs["week_start"] = week_start
         self.organization = Organization.objects.create(**create_kwargs)
         # Every organization always has exactly one active plan, from creation —
         # there is no plan-less state.

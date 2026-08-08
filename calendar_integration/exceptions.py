@@ -1,5 +1,7 @@
 from django.core.exceptions import ImproperlyConfigured, PermissionDenied
 
+from calendar_integration.constants import GroupScopedRuleType
+
 
 # API Validation Errors
 class CalendarServiceNotInjectedError(ImproperlyConfigured):
@@ -333,6 +335,51 @@ class CalendarGroupHasFutureEventsError(CalendarGroupError):
     """Raised when a group cannot be deleted because it has future bookings."""
 
     default_message = "Cannot delete CalendarGroup because it has future bookings."
+
+
+class CalendarGroupSlotConfigNotFoundError(CalendarGroupError):
+    """Raised when a (calendar, group slot) target for group-scoped availability
+    configuration cannot be resolved.
+
+    Deliberately the SAME exception -- same type, same message -- whether the
+    membership genuinely does not exist or the acting user is simply not
+    authorized to manage it. A member must not be able to learn that a group
+    or roster entry exists by comparing error shapes (see the spec's
+    permission decision under CALENDAR_GROUP_SCOPED_AVAILABILITY): a plain
+    404-shaped error here is indistinguishable from a 403 in disguise.
+    """
+
+    default_message = "No group-scoped availability configuration found for this calendar and slot."
+
+
+class CalendarGroupScopedRuleViolationError(CalendarGroupError):
+    """Raised when a directly-named calendar violates a group-scoped
+    configuration rule for the requested booking/reschedule time.
+
+    Carries ``calendar_id`` and ``rule_type`` (see ``GroupScopedRuleType``) so
+    callers can build a structured error response -- never the configured
+    rule values themselves (spec Decisions -> Errors: enough for an admin to
+    act on, without leaking roster detail to external bookers on public
+    links). ``OUTSIDE_WINDOW`` is raised as of Phase 1b, ``INSIDE_BLOCK`` as
+    of Phase 2a, and ``QUOTA_CONSUMED`` as of Phase 3b -- naming only the
+    quota rule that was violated, never its configured cap or the calendar's
+    current count.
+    """
+
+    def __init__(
+        self,
+        calendar_id: int,
+        rule_type: str = GroupScopedRuleType.OUTSIDE_WINDOW,
+        message: str | None = None,
+    ) -> None:
+        self.calendar_id = calendar_id
+        self.rule_type = rule_type
+        if message is None:
+            message = (
+                f"Calendar {calendar_id} is not bookable for the requested time in "
+                f"this group ({rule_type})."
+            )
+        super().__init__(message)
 
 
 # Bookable Slots errors

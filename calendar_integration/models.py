@@ -19,6 +19,7 @@ from calendar_integration.constants import (
     ExternalEventChangeKind,
     ExternalEventChangeRequestStatus,
     IncomingWebhookProcessingStatus,
+    QuotaPeriod,
     RecurrenceFrequency,
     RecurrenceWeekday,
     RSVPStatus,
@@ -32,6 +33,7 @@ from calendar_integration.managers import (
     CalendarGroupManager,
     CalendarGroupSlotManager,
     CalendarGroupSlotMembershipManager,
+    CalendarGroupSlotQuotaRuleManager,
     CalendarManagementTokenManager,
     CalendarManager,
     CalendarSyncManager,
@@ -396,6 +398,80 @@ class CalendarGroupSlotMembership(OrganizationModel):
 
     def __str__(self):
         return f"{self.calendar_fk_id} in slot {self.slot_fk_id}"
+
+
+class CalendarGroupSlotQuotaRule(OrganizationModel):
+    """
+    Caps how many LIVE bookings made THROUGH one ``CalendarGroupSlot`` a
+    calendar may hold in a fixed period (day / week / month).
+
+    Only bookings made through the group count -- events created directly on
+    the calendar (outside any group) never consume group quota. "Made through
+    the group" means the booking has a ``CalendarEventGroupSelection`` row for
+    this exact (slot, calendar) pair; see
+    ``calculate_calendar_group_quota_period_counts`` (Postgres function under
+    ``calendar_integration/migrations/sql/functions/``) for how the count is
+    derived on read.
+
+    Multiple rules per (calendar, slot) are allowed and **all** must pass --
+    e.g. "at most 1 a day AND 3 a week" is two rows, one per period. At most
+    one rule per (calendar, slot, period) is enforced by the unique
+    constraint below.
+
+    Cascade: `on_delete=CASCADE` on both FKs handles slot/group/calendar
+    deletion. It does NOT handle a calendar being removed from a slot's
+    roster while the slot itself survives (``CalendarGroupSlotMembership``
+    deletion) -- ``CalendarGroupService._reconcile_slot`` explicitly deletes
+    orphaned quota rules for removed calendars, the same way it already does
+    for group-scoped availability windows and blocked time.
+    """
+
+    group_slot = OrganizationForeignKey(
+        CalendarGroupSlot,
+        on_delete=models.CASCADE,
+        related_name="quota_rules",
+    )
+    calendar = OrganizationForeignKey(
+        Calendar,
+        on_delete=models.CASCADE,
+        related_name="group_slot_quota_rules",
+    )
+    period = models.CharField(
+        max_length=10,
+        choices=QuotaPeriod,
+        help_text="Fixed calendar period the cap applies to (day, week, or month).",
+    )
+    cap = models.PositiveIntegerField(
+        help_text=(
+            "Maximum number of live bookings made through this group slot a "
+            "calendar may hold within one period. Must be at least 1."
+        ),
+    )
+
+    objects: CalendarGroupSlotQuotaRuleManager = CalendarGroupSlotQuotaRuleManager()
+
+    class Meta:
+        constraints = (
+            models.UniqueConstraint(
+                fields=("group_slot_fk", "calendar_fk", "period"),
+                name="calendargroupslotquotarule_unique_slot_calendar_period",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(cap__gt=0),
+                name="calendargroupslotquotarule_cap_positive",
+            ),
+        )
+        indexes = (
+            models.Index(
+                fields=["organization", "group_slot_fk"],
+                name="cgsquotarule_org_slot_idx",
+            ),
+        )
+
+    def __str__(self):
+        return (
+            f"calendar={self.calendar_fk_id} slot={self.group_slot_fk_id} {self.period}<={self.cap}"
+        )
 
 
 class ExternalAttendee(OrganizationModel):
@@ -832,9 +908,18 @@ class RecurringMixin(OrganizationModel):
                 .first()
             )
 
+        # For group-scoped recurring models, the exception-instance lookup must
+        # use _base_manager to find group-scoped exception rows. Otherwise, it
+        # goes through the default manager (which excludes group-scoped rows for
+        # AvailableTime/BlockedTime) and would silently miss exceptions.
+        if getattr(self, "group_slot_fk_id", None) is not None:
+            exception_manager = self.__class__._base_manager
+        else:
+            exception_manager = self.__class__.objects
+
         all_exception_blocked_times_by_id: dict[int, Self] = {
             e.pk: e
-            for e in self.__class__.objects.filter(
+            for e in exception_manager.filter(
                 organization_id=self.organization_id,
                 id__in=[
                     o[modified_instance_id_field_name]
@@ -1348,8 +1433,36 @@ class BlockedTime(RecurringMixin):
         help_text="If this is a continuation of a split series",
     )
 
+    # Group-scoped availability (Phase 0 of CALENDAR_GROUP_SCOPED_AVAILABILITY):
+    # NULL means a base row — today's behavior, visible on every read path. A
+    # non-null value scopes the row to that one CalendarGroupSlot; it is invisible
+    # to the default manager (`objects`) and only reachable through the explicit
+    # `for_group_slot` / `unscoped` accessors. `on_delete=CASCADE` so removing a
+    # calendar from a slot (or deleting the slot/group) deletes its group-scoped
+    # blocked time with it, matching the spec's cascade rule.
+    group_slot = OrganizationForeignKey(
+        CalendarGroupSlot,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="group_scoped_blocked_times",
+        help_text=(
+            "If set, this blocked time applies only when the calendar is "
+            "evaluated inside this group slot, and nowhere else. Null (the "
+            "default) means a base row that blocks time everywhere the "
+            "calendar is evaluated."
+        ),
+    )
+
     class Meta:
         unique_together = (("calendar_fk_id", "external_id"),)
+        indexes = (
+            models.Index(
+                fields=["organization", "group_slot_fk"],
+                condition=models.Q(group_slot_fk__isnull=False),
+                name="blockedtime_group_slot_idx",
+            ),
+        )
 
     def __str__(self):
         return f"Blocked from {self.start_time} to {self.end_time} ({self.reason})"
@@ -1421,6 +1534,36 @@ class AvailableTime(RecurringMixin):
         related_name="bulk_modifications",
         help_text="If this is a continuation of a split series",
     )
+
+    # Group-scoped availability (Phase 0 of CALENDAR_GROUP_SCOPED_AVAILABILITY):
+    # NULL means a base row — today's behavior, visible on every read path. A
+    # non-null value scopes the row to that one CalendarGroupSlot; it is invisible
+    # to the default manager (`objects`) and only reachable through the explicit
+    # `for_group_slot` / `unscoped` accessors. `on_delete=CASCADE` so removing a
+    # calendar from a slot (or deleting the slot/group) deletes its group-scoped
+    # availability windows with it, matching the spec's cascade rule.
+    group_slot = OrganizationForeignKey(
+        CalendarGroupSlot,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="group_scoped_available_times",
+        help_text=(
+            "If set, this available time applies only when the calendar is "
+            "evaluated inside this group slot, narrowing (never widening) base "
+            "availability there. Null (the default) means a base row that "
+            "applies everywhere the calendar is evaluated."
+        ),
+    )
+
+    class Meta:
+        indexes = (
+            models.Index(
+                fields=["organization", "group_slot_fk"],
+                condition=models.Q(group_slot_fk__isnull=False),
+                name="availabletime_group_slot_idx",
+            ),
+        )
 
     def __str__(self):
         return f"Available from {self.start_time} to {self.end_time}"
