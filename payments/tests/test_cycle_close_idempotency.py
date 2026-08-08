@@ -223,3 +223,54 @@ def test_rerunning_close_writes_no_second_statement(
     second_summary = BillingPeriodSummary.objects.get()
     assert second_summary.pk == first_summary.pk
     assert second_summary.overage_total == Decimal("1.5000")
+
+
+@pytest.mark.django_db
+def test_calling_persist_statement_twice_repairs_missing_resource_rows(
+    cycle_close_service: CycleCloseService,
+    subscription: Subscription,
+    organization: Organization,
+    payment_service: DedupingPaymentService,
+):
+    """T4: ``close_subscription``'s sweep guard means ``_persist_statement`` is
+    never actually re-entered for an already-closed period through the public
+    entry point, so ``get_or_create``'s ``created is False`` branch has zero
+    coverage there. Call ``_persist_statement`` directly a second time with the
+    same ``period_start`` instead: the summary must not duplicate, and
+    (SHOULD-FIX 2) resource rows missing because of a prior crash between the
+    two writes must be repaired, not left as a statement with an empty
+    ``resources`` list."""
+    _overage_rows(subscription, organization, 3)  # 3 x 0.50 = 1.50
+    period_start = subscription.current_period_start
+    period_end = subscription.current_period_end
+    report = cycle_close_service._metering_service.reconcile_period(subscription, period_start)
+
+    cycle_close_service._persist_statement(
+        subscription, period_start, period_end, Decimal("1.5000"), None, report
+    )
+    assert BillingPeriodSummary.objects.count() == 1
+    summary = BillingPeriodSummary.objects.get()
+    assert summary.resources.count() == 8
+
+    # Simulate a crash between the summary write and its resource children: a
+    # summary that already exists with zero resource rows must be repaired on
+    # the next call, not treated as a completed no-op.
+    summary.resources.all().delete()
+    assert summary.resources.count() == 0
+
+    cycle_close_service._persist_statement(
+        subscription, period_start, period_end, Decimal("1.5000"), None, report
+    )
+
+    assert BillingPeriodSummary.objects.count() == 1  # still no duplicate summary
+    summary.refresh_from_db()
+    assert summary.resources.count() == 8  # ...but the missing children were repaired
+
+    # A third call with the children already present is a pure no-op: the
+    # unique (summary, resource_key) constraint absorbs the re-computed rows via
+    # `ignore_conflicts=True` rather than raising.
+    cycle_close_service._persist_statement(
+        subscription, period_start, period_end, Decimal("1.5000"), None, report
+    )
+    assert BillingPeriodSummary.objects.count() == 1
+    assert summary.resources.count() == 8

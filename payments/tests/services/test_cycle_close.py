@@ -16,6 +16,8 @@ import datetime
 from decimal import Decimal
 from types import SimpleNamespace
 
+from django.db import IntegrityError
+
 import pytest
 from dateutil.relativedelta import relativedelta
 from model_bakery import baker
@@ -27,6 +29,7 @@ from payments.models import (
     BillingPeriodResourceUsage,
     BillingPeriodSummary,
     BillingPlan,
+    BillingProfile,
     MeteredOccurrence,
     Payment,
     PlanLimit,
@@ -48,11 +51,21 @@ class FakePaymentService:
 
     Returns a **real, persisted** ``Payment`` row (via ``baker.make``), not a bare
     stand-in: ``CycleCloseService._persist_statement`` (Phase 2) links the charge
-    onto ``BillingPeriodSummary.payment_id``, a genuine foreign key Postgres
+    onto ``BillingPeriodSummary.payment``, a genuine foreign key Postgres
     enforces referential integrity on regardless of what Django's ORM validated in
     Python — a dangling id would raise ``IntegrityError`` at ``check_constraints``
     (deferred-constraint checking on transaction-wrapped test teardown), not at the
     point of assignment, which is a confusing place to first discover it.
+
+    The ``Payment`` is built against ``organization``'s *own* ``BillingProfile``
+    -- reusing it if one already exists, creating one for that exact organization
+    otherwise -- rather than letting ``baker.make(Payment)`` auto-generate an
+    unrelated ``BillingProfile`` (which would auto-create a *different*
+    ``Organization``, and via conftest's autouse subscription-provisioning signal,
+    a whole extra ``Subscription``). Without this, ``Payment.organization`` would
+    resolve to a different tenant than the one the charge was actually issued
+    against, and a statement's ``payment`` would silently point at another
+    organization's billing profile.
     """
 
     def __init__(self) -> None:
@@ -83,8 +96,13 @@ class FakePaymentService:
                 "idempotency_key": idempotency_key,
             }
         )
+        try:
+            billing_profile = organization.billing_profile
+        except BillingProfile.DoesNotExist:
+            billing_profile = baker.make(BillingProfile, organization=organization)
         payment = baker.make(
             Payment,
+            billing_profile=billing_profile,
             currency=currency,
             value=amount,
             payment_provider=PaymentProviders.MERCADOPAGO,
@@ -576,6 +594,10 @@ class TestStatementPersistence:
         # `payment_id` links the pk of the real `Payment` row the fake payment
         # service created for the one charge this test issued.
         assert summary.payment_id == fake_payment_service.payments[0].pk
+        # T3: the linked payment must belong to the *same* organization the
+        # statement is for, not a different tenant the payment fixture happened
+        # to fabricate.
+        assert summary.payment.organization.pk == summary.organization_id
 
         resources = list(summary.resources.all())
         assert len(resources) == len(LimitedResource.values)
@@ -692,6 +714,49 @@ class TestStatementPersistence:
         assert persisted_breakdown == expected_breakdown
         assert members_row.total == sum(expected_breakdown.values())
 
+    def test_event_occurrences_total_matches_the_charge_when_pool_membership_changes_before_close(
+        self,
+        cycle_close_service: CycleCloseService,
+        subscription: Subscription,
+        organization: Organization,
+    ):
+        """Reviewer BLOCKER 1 scenario: rows are metered against the pool as it
+        existed *at meter time*, but pool membership can change before close (a
+        child is promoted to its own billing root). The statement's
+        ``event_occurrences`` total must equal the full, unfiltered row set
+        ``_charge_overage``/``reconcile_period`` read -- never a narrower,
+        close-time-pooled subset -- or the statement contradicts the invoice."""
+        organization.can_invite_organizations = True
+        organization.save(update_fields=["can_invite_organizations"])
+        child_a = Organization.objects.create(
+            name="Pool Child A", parent=organization, should_sync_rooms=False
+        )
+        child_b = Organization.objects.create(
+            name="Pool Child B", parent=organization, should_sync_rooms=False
+        )
+        _meter_row(subscription, child_a, event_id=1, within=True, price="0.0000")
+        _meter_row(subscription, child_a, event_id=2, within=True, price="0.0000")
+        _meter_row(subscription, child_b, event_id=3, within=True, price="0.0000")
+
+        # Between meter time and close time, child_b is promoted to its own
+        # billing root -- `_get_pooled_organization_ids(organization)` no longer
+        # returns it, even though its rows were metered under this subscription.
+        child_b.can_invite_organizations = True
+        child_b.save(update_fields=["can_invite_organizations"])
+
+        cycle_close_service.close_subscription(subscription, now=AFTER_PERIOD)
+
+        charged_count = MeteredOccurrence.objects.for_billing_period(
+            subscription.pk, PERIOD_START
+        ).count()
+        assert charged_count == 3  # the full, unfiltered row set `_charge_overage` reads
+
+        summary = BillingPeriodSummary.objects.get()
+        event_row = summary.resources.get(resource_key=LimitedResource.EVENT_OCCURRENCES)
+        assert sum(event_row.by_organization.values()) == charged_count
+        assert event_row.total == charged_count
+        assert set(event_row.by_organization.keys()) == {str(child_a.pk), str(child_b.pk)}
+
     def test_persistence_failure_does_not_roll_back_the_charge_or_block_the_roll(
         self,
         cycle_close_service: CycleCloseService,
@@ -709,10 +774,45 @@ class TestStatementPersistence:
         _set_allowance(subscription, 0, "0.2500")
         _meter_row(subscription, organization, event_id=1, within=False, price="0.2500")
 
-        def raising_get_usage_breakdown(self, organization, resource_key, **kwargs):
+        def raising_usage_breakdown(self, root, resource_key, subscription, **kwargs):
             raise RuntimeError("simulated persistence failure")
 
-        monkeypatch.setattr(EntitlementService, "get_usage_breakdown", raising_get_usage_breakdown)
+        monkeypatch.setattr(EntitlementService, "_usage_breakdown", raising_usage_breakdown)
+
+        closed = cycle_close_service.close_subscription(subscription, now=AFTER_PERIOD)
+
+        # The charge went through and the caller sees a normal, successful close --
+        # the persistence failure never propagates.
+        assert len(closed) == 1
+        assert closed[0].charged is True
+        assert len(fake_payment_service.charges) == 1
+        # No partial statement was left behind: the whole write is one savepoint.
+        assert BillingPeriodSummary.objects.count() == 0
+        assert BillingPeriodResourceUsage.objects.count() == 0
+        # The period still rolled forward.
+        subscription.refresh_from_db()
+        assert subscription.current_period_start == PERIOD_END
+
+    def test_persistence_failure_from_a_db_integrity_error_does_not_roll_back_the_charge(
+        self,
+        cycle_close_service: CycleCloseService,
+        subscription: Subscription,
+        organization: Organization,
+        fake_payment_service: FakePaymentService,
+        monkeypatch,
+    ):
+        """T2: the RuntimeError case above only proves Python-level unwinding out of
+        the savepoint. A real DB-level failure (``IntegrityError``) inside the same
+        savepoint is the case that actually matters -- Django's savepoint
+        rollback/release machinery behaves differently for a database error than
+        for an ordinary Python exception, so this must be exercised on its own."""
+        _set_allowance(subscription, 0, "0.2500")
+        _meter_row(subscription, organization, event_id=1, within=False, price="0.2500")
+
+        def raising_bulk_create(*args, **kwargs):
+            raise IntegrityError("simulated constraint violation")
+
+        monkeypatch.setattr(BillingPeriodResourceUsage.objects, "bulk_create", raising_bulk_create)
 
         closed = cycle_close_service.close_subscription(subscription, now=AFTER_PERIOD)
 
