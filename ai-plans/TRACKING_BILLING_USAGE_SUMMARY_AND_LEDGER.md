@@ -32,17 +32,32 @@ agent_models:                    # from .vinta-ai-workflows.yaml
 
 ## Completed phases
 
-_None yet._
+### Phase 0 — Add the billing period statement models ✅
+
+- **Branch**: `plan/billing-usage-summary-and-ledger/phase-0` (base: `main`) · **PR**: [#241](https://github.com/vintasoftware/vinta-schedule-api/pull/241)
+- **Models**: implementer Sonnet (Tier 2, stepped up from Haiku because the phase touches ~6 files) · reviewer Sonnet (Tier 3) · no fixer needed
+- **Commits**: `8a9f613` (models), `76f31b1` (plan touch-list correction)
+
+Added `BillingPeriodSummary` and `BillingPeriodResourceUsage` to `payments/models.py`, plus `BillingPeriodSummaryQuerySet.for_organizations`, `BillingPeriodSummaryManager`, migration `0016_billing_period_summary`, read-only admin for both models, and `payments/tests/test_billing_period_summary_model.py` (10 tests). Pure scaffolding — nothing reads or writes the tables yet.
+
+Verification: full repo suite 5168 passed; `makemigrations --check` clean; migration applies and reverses cleanly; `ruff` + `check --deploy` clean; `mypy` clean on all touched files (379 pre-existing errors elsewhere, unrelated, consistent with AGENTS.md noting mypy is not in CI).
+
+Review returned no BLOCKER and no SHOULD-FIX. One NIT on branch naming, which is the plan-runner's stacked-branch scheme rather than an implementer choice — matches the four pre-existing worktrees, so no action taken.
+
+Two things worth carrying forward:
+- The implementer caught a real inconsistency in the plan: the **Touch List** still listed a `payments/factories.py` that **Data Model Changes** and the Phase 0 **Changes** list had already ruled out. Corrected in commit `76f31b1`. This app builds test objects with `model_bakery`.
+- The migration-reversibility test drives `MigrationExecutor` directly, a new pattern for this repo (no `django_test_migrations` installed). The reviewer specifically re-ran the `payments/` suite under `pytest -n auto` to confirm it does not corrupt sibling xdist workers' databases. If a later phase adds migration tests, follow that file's `try/finally` restore-to-head structure.
 
 ## Current phase
 
-**Phase 0 — Add the billing period statement models** (implementer Tier 2, no review override).
+**Phase 1 — Per-organization breakdown in the usage counters** (implementer Tier 3, **reviewer Tier 4**).
+
+Branch `plan/billing-usage-summary-and-ledger/phase-1`, based on `phase-0`.
 
 ## Remaining phases
 
 | Phase | Title | Implementer | Review override |
 |---|---|---|---|
-| 1 | Per-organization breakdown in the usage counters | Tier 3 | reviewer Tier 4 |
 | 2 | Persist the statement at cycle close | Tier 3 | reviewer Tier 4 |
 | 3 | Enrich the current-usage summary | Tier 3 | — |
 | 4 | Closed-period statement endpoints | Tier 2 | — |

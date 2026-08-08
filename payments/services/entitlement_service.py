@@ -23,7 +23,8 @@ import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
-from django.db.models import Sum
+from django.db.models import Count, Sum
+from django.db.models.query import QuerySet
 
 from calendar_integration.constants import CalendarType
 from calendar_integration.models import AvailableTime, BlockedTime, Calendar, CalendarGroup
@@ -81,50 +82,90 @@ class UsageContext:
     """
 
 
-UsageCounter = Callable[["UsageContext"], int]
+UsageCounter = Callable[["UsageContext"], dict[int, int]]
 
 
-def _count_organization_members(context: UsageContext) -> int:
-    """Seats in use: active memberships plus still-open invitations.
+def _group_counts_by_organization(queryset: QuerySet) -> dict[int, int]:
+    """Turn any organization-scoped queryset into ``{organization_id: row_count}``.
+
+    Shared plumbing for every scalar counter below: ``GROUP BY organization_id``
+    never emits a row for an organization with zero matches, which is exactly the
+    "absent, not present with 0" contract ``UsageCounter`` promises — the caller
+    does not have to remember to strip zero entries, because SQL never produces
+    them here.
+    """
+    return {
+        row["organization_id"]: row["count"]
+        for row in queryset.values("organization_id").annotate(count=Count("pk"))
+    }
+
+
+def _merge_breakdowns(*breakdowns: dict[int, int]) -> dict[int, int]:
+    """Sum any number of ``{organization_id: count}`` maps key-wise into one.
+
+    For the two counters whose "one unit of usage" spans more than one table
+    (memberships + pending invitations; ``AvailableTime`` + ``BlockedTime``), the
+    same organization can legitimately appear in both source breakdowns, so the
+    maps must be added together rather than merged by last-write-wins.
+    """
+    merged: dict[int, int] = {}
+    for breakdown in breakdowns:
+        for organization_id, count in breakdown.items():
+            merged[organization_id] = merged.get(organization_id, 0) + count
+    return merged
+
+
+def _count_organization_members(context: UsageContext) -> dict[int, int]:
+    """Seats in use per organization: active memberships plus still-open invitations.
 
     Pending invitations count toward the ceiling deliberately — without that, an
     organization could hold unlimited outstanding invitations and blow past its
     seat limit the moment they are accepted. Expired and already-accepted
     invitations do not count: an expired one can never become a seat, and an
     accepted one is already counted as its membership.
+
+    Memberships and pending invitations are grouped separately, then merged
+    key-wise (``_merge_breakdowns``) rather than concatenated, so an organization
+    holding both kinds of seat is not double-keyed in the result.
     """
-    members = OrganizationMembership.objects.occupying_a_seat(context.organization_ids).count()
-    pending_invitations = OrganizationInvitation.objects.pending(
-        context.organization_ids, exclude_id=context.exclude_invitation_id
-    ).count()
-    return members + pending_invitations
+    members = _group_counts_by_organization(
+        OrganizationMembership.objects.occupying_a_seat(context.organization_ids)
+    )
+    pending_invitations = _group_counts_by_organization(
+        OrganizationInvitation.objects.pending(
+            context.organization_ids, exclude_id=context.exclude_invitation_id
+        )
+    )
+    return _merge_breakdowns(members, pending_invitations)
 
 
-def _count_resource_calendars(context: UsageContext) -> int:
-    """Resource/room calendars, excluding soft-deleted ones."""
-    return (
-        Calendar.objects.live_of_type(CalendarType.RESOURCE)
-        .filter(organization_id__in=context.organization_ids)
-        .count()
+def _count_resource_calendars(context: UsageContext) -> dict[int, int]:
+    """Resource/room calendars per organization, excluding soft-deleted ones."""
+    return _group_counts_by_organization(
+        Calendar.objects.live_of_type(CalendarType.RESOURCE).filter(
+            organization_id__in=context.organization_ids
+        )
     )
 
 
-def _count_bundle_calendars(context: UsageContext) -> int:
-    """Bundle calendars, excluding soft-deleted ones."""
-    return (
-        Calendar.objects.live_of_type(CalendarType.BUNDLE)
-        .filter(organization_id__in=context.organization_ids)
-        .count()
+def _count_bundle_calendars(context: UsageContext) -> dict[int, int]:
+    """Bundle calendars per organization, excluding soft-deleted ones."""
+    return _group_counts_by_organization(
+        Calendar.objects.live_of_type(CalendarType.BUNDLE).filter(
+            organization_id__in=context.organization_ids
+        )
     )
 
 
-def _count_calendar_groups(context: UsageContext) -> int:
-    return CalendarGroup.objects.filter(organization_id__in=context.organization_ids).count()
+def _count_calendar_groups(context: UsageContext) -> dict[int, int]:
+    return _group_counts_by_organization(
+        CalendarGroup.objects.filter(organization_id__in=context.organization_ids)
+    )
 
 
-def _count_availability_windows(context: UsageContext) -> int:
-    """Every time window the organization actually authored — availability
-    windows and blocked time alike, positive or negative.
+def _count_availability_windows(context: UsageContext) -> dict[int, int]:
+    """Every time window the organization actually authored, per organization —
+    availability windows and blocked time alike, positive or negative.
 
     Not every ``AvailableTime``/``BlockedTime`` row is a window somebody created:
     editing one occurrence of a recurring window, or splitting a series, *inserts*
@@ -145,28 +186,32 @@ def _count_availability_windows(context: UsageContext) -> int:
     time was not metered before this and now is, for every organization at once
     — see that phase's rollout note on why this is a billing-rule change made
     deliberately, not incidentally).
+
+    The two models are grouped separately, then merged key-wise
+    (``_merge_breakdowns``): an organization that authored both availability
+    windows and blocked time must have its counts added, not one shadowing the
+    other.
     """
     organization_filter = {"organization_id__in": context.organization_ids}
-    availability_windows = (
-        AvailableTime.objects.unscoped().only_user_authored().filter(**organization_filter).count()
+    availability_windows = _group_counts_by_organization(
+        AvailableTime.objects.unscoped().only_user_authored().filter(**organization_filter)
     )
-    blocked_times = (
-        BlockedTime.objects.unscoped().only_user_authored().filter(**organization_filter).count()
+    blocked_times = _group_counts_by_organization(
+        BlockedTime.objects.unscoped().only_user_authored().filter(**organization_filter)
     )
-    return availability_windows + blocked_times
+    return _merge_breakdowns(availability_windows, blocked_times)
 
 
-def _count_webhook_subscriptions(context: UsageContext) -> int:
-    """Webhook configurations, excluding soft-deleted ones (``deleted_at`` set)."""
-    return (
-        WebhookConfiguration.objects.live()
-        .filter(organization_id__in=context.organization_ids)
-        .count()
+def _count_webhook_subscriptions(context: UsageContext) -> dict[int, int]:
+    """Webhook configurations per organization, excluding soft-deleted ones
+    (``deleted_at`` set)."""
+    return _group_counts_by_organization(
+        WebhookConfiguration.objects.live().filter(organization_id__in=context.organization_ids)
     )
 
 
-def _count_public_api_system_users(context: UsageContext) -> int:
-    """Active, non-soft-deleted public-API system users.
+def _count_public_api_system_users(context: UsageContext) -> dict[int, int]:
+    """Active, non-soft-deleted public-API system users, per organization.
 
     ``SystemUser.organization`` is nullable, so a system user with no organization
     is invisible to this counter and consumes nobody's capacity. That is correct
@@ -174,11 +219,14 @@ def _count_public_api_system_users(context: UsageContext) -> int:
     entirely unmetered; whoever makes ``organization`` non-nullable should revisit
     this.
     """
-    return SystemUser.objects.live().filter(organization_id__in=context.organization_ids).count()
+    return _group_counts_by_organization(
+        SystemUser.objects.live().filter(organization_id__in=context.organization_ids)
+    )
 
 
-def _count_event_occurrences(context: UsageContext) -> int:
-    """Metered event occurrences in the subscription's current billing period.
+def _count_event_occurrences(context: UsageContext) -> dict[int, int]:
+    """Metered event occurrences in the subscription's current billing period, per
+    organization.
 
     Occurrences of a recurring series are computed, never stored, so this counts
     the ``MeteredOccurrence`` rows ``MeteringService`` wrote — **not** a second,
@@ -189,8 +237,8 @@ def _count_event_occurrences(context: UsageContext) -> int:
     Reads back through ``MeteredOccurrenceQuerySet.for_billing_period``, the same
     method the meter's own allowance arithmetic uses, so "in this period" means one
     thing. A subscription-less pool (a broken invariant, warned about elsewhere)
-    reports zero: this resource is post-paid, so under-reporting cannot block
-    anybody.
+    reports an empty breakdown: this resource is post-paid, so under-reporting
+    cannot block anybody.
 
     The period comes from ``current_billing_period_start`` — derived from
     ``timezone.now()`` — and **not** from ``Subscription.current_period_start``.
@@ -200,16 +248,19 @@ def _count_event_occurrences(context: UsageContext) -> int:
     the stored period elapsed the meter wrote one period while this counter asked for
     an earlier one and got zero permanently. Both sides now go through
     ``resolve_billing_period_start``.
+
+    Grouped over the **existing** ``for_billing_period(...).for_organizations(...)``
+    queryset — never a second, independently filtered query — so the period and
+    pool this counter groups by are provably the same ones the scalar count used to
+    read.
     """
     subscription = context.subscription
     if subscription is None:
-        return 0
-    return (
+        return {}
+    return _group_counts_by_organization(
         MeteredOccurrence.objects.for_billing_period(
             subscription.pk, current_billing_period_start(subscription)
-        )
-        .for_organizations(context.organization_ids)
-        .count()
+        ).for_organizations(context.organization_ids)
     )
 
 
@@ -357,6 +408,12 @@ class EntitlementService:
         the root itself plus all descendants, stopping at any nested billing root
         (which pays for its own subtree separately).
 
+        The total is not counted directly — it is ``sum(get_usage_breakdown(...))``,
+        by construction (see ``_count_usage``): there is exactly one definition of
+        "how much usage", and the per-organization breakdown and this scalar can
+        never disagree because the scalar is derived from the breakdown, not
+        computed alongside it.
+
         :param exclude_invitation_id: See ``UsageContext.exclude_invitation_id`` —
             the accept-invitation path is net zero and must not double-count. Only
             meaningful for ``organization_members``; passing it with another
@@ -371,6 +428,37 @@ class EntitlementService:
             exclude_invitation_id=exclude_invitation_id,
         )
 
+    def get_usage_breakdown(
+        self,
+        organization: Organization,
+        resource_key: str,
+        exclude_invitation_id: int | None = None,
+    ) -> dict[int, int]:
+        """Per-organization usage of ``resource_key`` across the whole pooled
+        subtree that ``organization`` belongs to.
+
+        ``get_current_usage``'s per-organization twin — same root resolution, same
+        subscription lookup, same ``exclude_invitation_id`` rule. Required by the
+        usage-reporting read surface (per-organization attribution across a pooled
+        reseller subtree); enforcement itself only ever needs the scalar.
+
+        An organization that contributed nothing to ``resource_key`` is **absent**
+        from the returned dict, never present with ``0`` — the read layer decides
+        whether a non-contributor is worth rendering.
+
+        :param exclude_invitation_id: See ``UsageContext.exclude_invitation_id``.
+            Same restriction as ``get_current_usage``: only meaningful for
+            ``organization_members``, raises for any other ``resource_key``.
+        """
+        _reject_inapplicable_invitation_exclusion(resource_key, exclude_invitation_id is not None)
+        root = resolve_billing_root(organization)
+        return self._usage_breakdown(
+            root,
+            resource_key,
+            self._get_subscription_for_root(root),
+            exclude_invitation_id=exclude_invitation_id,
+        )
+
     def _count_usage(
         self,
         root: Organization,
@@ -378,7 +466,26 @@ class EntitlementService:
         subscription: Subscription | None,
         exclude_invitation_id: int | None = None,
     ) -> int:
-        """``get_current_usage`` given an already-resolved root and subscription."""
+        """``get_current_usage`` given an already-resolved root and subscription.
+
+        Structurally ``sum(breakdown.values())`` — never a second, independent
+        count — so this scalar and ``_usage_breakdown``'s per-organization dict
+        are incapable of disagreeing about the total.
+        """
+        return sum(
+            self._usage_breakdown(
+                root, resource_key, subscription, exclude_invitation_id=exclude_invitation_id
+            ).values()
+        )
+
+    def _usage_breakdown(
+        self,
+        root: Organization,
+        resource_key: str,
+        subscription: Subscription | None,
+        exclude_invitation_id: int | None = None,
+    ) -> dict[int, int]:
+        """``get_usage_breakdown`` given an already-resolved root and subscription."""
         counter = USAGE_COUNTERS.get(resource_key)
         if counter is None:
             # Unreachable while USAGE_COUNTERS covers LimitedResource (asserted by
@@ -388,7 +495,7 @@ class EntitlementService:
                 "No usage counter registered for resource %s; reporting zero usage.",
                 resource_key,
             )
-            return 0
+            return {}
         return counter(
             UsageContext(
                 organization_ids=self._get_pooled_organization_ids(root),

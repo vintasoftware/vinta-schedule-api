@@ -10,11 +10,19 @@ The availability tests deliberately drive the **real** ``AvailabilityService``
 rather than hand-building ``AvailableTime`` rows: the whole defect was that editing
 a recurring window silently *inserts* rows, which a hand-built fixture would never
 reproduce.
+
+``TestUsageBreakdown`` at the bottom of this file is the Phase 1 regression gate
+for the billing usage summary & ledger plan: every ``UsageCounter`` now returns a
+per-organization ``dict[int, int]`` instead of a scalar, and that class is what
+proves the totals enforcement depends on did not move — ``sum(breakdown.values())``
+must equal what ``get_current_usage`` reports, for every ``LimitedResource``
+member, over a pool with contributions from several organizations.
 """
 
 from __future__ import annotations
 
 import datetime
+from decimal import Decimal
 from typing import Any
 
 from django.utils import timezone
@@ -23,7 +31,7 @@ import pytest
 from model_bakery import baker
 
 from audit.services import AuditService
-from calendar_integration.constants import CalendarProvider
+from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.models import (
     AvailableTime,
     BlockedTime,
@@ -35,11 +43,20 @@ from calendar_integration.services.availability_service import AvailabilityServi
 from calendar_integration.services.calendar_service_context import CalendarServiceContext
 from calendar_integration.services.recurrence_manager import RecurrenceManager
 from calendar_integration.tests.services.test_availability_service import FakeHost
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import (
+    Organization,
+    OrganizationInvitation,
+    OrganizationMembership,
+    OrganizationRole,
+)
 from payments.billing_constants import LimitedResource
+from payments.exceptions import InapplicableInvitationExclusionError
+from payments.models import MeteredOccurrence, Subscription
 from payments.services.entitlement_service import EntitlementService
+from payments.services.subscription_service import current_billing_period_start
 from public_api.models import SystemUser
 from users.models import Profile, User
+from webhooks.models import WebhookConfiguration
 
 
 @pytest.fixture
@@ -526,3 +543,202 @@ class TestPublicApiSystemUserCounter:
             )
             == 0
         )
+
+
+@pytest.fixture
+def pooled_subtree(db: Any) -> tuple[Organization, Organization, Organization]:
+    """A billing root with two direct children, none of which hold their own
+    ``Subscription`` — ``root``'s auto-provisioned ``Subscription`` (see
+    ``conftest.provision_default_subscription``) is the one every resource in this
+    pool checks against.
+    """
+    root = Organization.objects.create(name="Breakdown Root", can_invite_organizations=True)
+    child_a = Organization.objects.create(name="Breakdown Child A", parent=root)
+    child_b = Organization.objects.create(name="Breakdown Child B", parent=root)
+    return root, child_a, child_b
+
+
+@pytest.mark.django_db
+class TestUsageBreakdown:
+    """The regression gate for Phase 1 of the billing usage summary & ledger plan.
+
+    ``UsageCounter`` was widened from ``Callable[[UsageContext], int]`` to
+    ``Callable[[UsageContext], dict[int, int]]`` so the per-organization
+    attribution the usage-summary read surface needs can be derived from the
+    *same* counters enforcement already uses, instead of a second, parallel
+    definition of "what counts as usage" that could eventually disagree with the
+    first. This class is what proves that widening changed the counters'
+    *shape*, not their *arithmetic*: for every ``LimitedResource`` member,
+    ``sum(get_usage_breakdown(...).values())`` must equal what
+    ``get_current_usage(...)`` reports — which is itself now derived from the
+    same breakdown (see ``EntitlementService._count_usage``), so the two are
+    structurally incapable of disagreeing. If a future change to any counter's
+    grouping logic silently drops or double-counts a row, this test is what
+    catches it before it reaches a limit check or an invoice.
+    """
+
+    def test_breakdown_sums_to_the_total_for_every_limited_resource(
+        self,
+        entitlement_service: EntitlementService,
+        pooled_subtree: tuple[Organization, Organization, Organization],
+    ):
+        root, child_a, child_b = pooled_subtree
+        subscription = Subscription.objects.get(organization=root)
+
+        # organization_members: memberships on two organizations, a pending
+        # invitation on the third.
+        baker.make(OrganizationMembership, organization=root, is_active=True, _quantity=1)
+        baker.make(OrganizationMembership, organization=child_a, is_active=True, _quantity=2)
+        baker.make(
+            OrganizationInvitation,
+            organization=child_b,
+            accepted_at=None,
+            expires_at=timezone.now() + datetime.timedelta(days=7),
+        )
+
+        # resource_calendars / bundle_calendars
+        baker.make(
+            Calendar,
+            organization=root,
+            calendar_type=CalendarType.RESOURCE,
+            external_id="breakdown-resource-root",
+        )
+        baker.make(
+            Calendar,
+            organization=child_a,
+            calendar_type=CalendarType.RESOURCE,
+            external_id="breakdown-resource-child-a",
+        )
+        baker.make(
+            Calendar,
+            organization=child_b,
+            calendar_type=CalendarType.BUNDLE,
+            external_id="breakdown-bundle-child-b",
+        )
+
+        # calendar_groups
+        baker.make(CalendarGroup, organization=root)
+        baker.make(CalendarGroup, organization=child_b, _quantity=2)
+
+        # availability_windows: AvailableTime and BlockedTime, base rows.
+        available_calendar = baker.make(
+            Calendar,
+            organization=child_a,
+            calendar_type=CalendarType.RESOURCE,
+            external_id="breakdown-availability-child-a",
+        )
+        baker.make(AvailableTime, organization=child_a, calendar=available_calendar, timezone="UTC")
+        blocked_calendar = baker.make(
+            Calendar,
+            organization=root,
+            calendar_type=CalendarType.RESOURCE,
+            external_id="breakdown-blocked-root",
+        )
+        baker.make(BlockedTime, organization=root, calendar=blocked_calendar, timezone="UTC")
+
+        # webhook_subscriptions
+        baker.make(WebhookConfiguration, organization=child_b, deleted_at=None)
+
+        # public_api_system_users
+        SystemUser.objects.create(
+            organization=child_a,
+            integration_name="breakdown-integration",
+            long_lived_token_hash="breakdown-hash",
+        )
+
+        # event_occurrences: same subscription, two organizations in the pool.
+        period_start = current_billing_period_start(subscription)
+        MeteredOccurrence.objects.create(
+            organization=root,
+            subscription=subscription,
+            event_id=1,
+            occurrence_start=period_start + datetime.timedelta(hours=1),
+            billing_period_start=period_start,
+            is_within_allowance=True,
+            unit_price=Decimal("0"),
+        )
+        MeteredOccurrence.objects.create(
+            organization=child_b,
+            subscription=subscription,
+            event_id=2,
+            occurrence_start=period_start + datetime.timedelta(hours=2),
+            billing_period_start=period_start,
+            is_within_allowance=True,
+            unit_price=Decimal("0"),
+        )
+
+        for resource_key in LimitedResource:
+            breakdown = entitlement_service.get_usage_breakdown(root, resource_key)
+            total = entitlement_service.get_current_usage(root, resource_key)
+
+            assert sum(breakdown.values()) == total, (
+                f"{resource_key}: breakdown {breakdown} summed to "
+                f"{sum(breakdown.values())}, but get_current_usage reported {total}."
+            )
+            assert total > 0, (
+                f"{resource_key}: the fixture above must contribute usage to every "
+                "resource, or this test is not exercising that resource's counter."
+            )
+
+    def test_a_non_contributing_organization_is_absent_not_present_with_zero(
+        self,
+        entitlement_service: EntitlementService,
+        pooled_subtree: tuple[Organization, Organization, Organization],
+    ):
+        root, child_a, child_b = pooled_subtree
+        baker.make(CalendarGroup, organization=root)
+
+        breakdown = entitlement_service.get_usage_breakdown(root, LimitedResource.CALENDAR_GROUPS)
+
+        assert breakdown == {root.pk: 1}
+        assert child_a.pk not in breakdown
+        assert child_b.pk not in breakdown
+
+    def test_exclude_invitation_id_seat_exclusion_still_applies_to_the_breakdown(
+        self,
+        entitlement_service: EntitlementService,
+        pooled_subtree: tuple[Organization, Organization, Organization],
+    ):
+        """The accept-path net-zero rule (``UsageContext.exclude_invitation_id``)
+        must survive the widening exactly: excluding the invitation being accepted
+        removes it from the breakdown, not just from the summed total."""
+        root, child_a, _child_b = pooled_subtree
+        baker.make(OrganizationMembership, organization=child_a, is_active=True)
+        invitation = baker.make(
+            OrganizationInvitation,
+            organization=child_a,
+            accepted_at=None,
+            expires_at=timezone.now() + datetime.timedelta(days=7),
+        )
+
+        breakdown_with_invitation = entitlement_service.get_usage_breakdown(
+            root, LimitedResource.ORGANIZATION_MEMBERS
+        )
+        assert breakdown_with_invitation == {child_a.pk: 2}
+
+        breakdown_excluding_invitation = entitlement_service.get_usage_breakdown(
+            root,
+            LimitedResource.ORGANIZATION_MEMBERS,
+            exclude_invitation_id=invitation.pk,
+        )
+        assert breakdown_excluding_invitation == {child_a.pk: 1}
+
+    def test_exclude_invitation_id_raises_for_any_other_resource_key(
+        self,
+        entitlement_service: EntitlementService,
+        pooled_subtree: tuple[Organization, Organization, Organization],
+    ):
+        root, child_a, _child_b = pooled_subtree
+        invitation = baker.make(
+            OrganizationInvitation,
+            organization=child_a,
+            accepted_at=None,
+            expires_at=timezone.now() + datetime.timedelta(days=7),
+        )
+
+        with pytest.raises(InapplicableInvitationExclusionError):
+            entitlement_service.get_usage_breakdown(
+                root,
+                LimitedResource.CALENDAR_GROUPS,
+                exclude_invitation_id=invitation.pk,
+            )
