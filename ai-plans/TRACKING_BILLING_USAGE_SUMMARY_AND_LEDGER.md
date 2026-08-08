@@ -71,11 +71,33 @@ Two things a later phase should not undo:
 
 Carried into the plan's **Risk & Rollout Notes**: every usage count is now a hash aggregate rather than `COUNT(*)`, since `GROUP BY organization_id` cannot be satisfied from `metered_occ_sub_period_idx`. Bounded by pool size; noted rather than fixed.
 
+### Phase 2 — Persist the statement at cycle close ✅
+
+- **Branch**: `plan/billing-usage-summary-and-ledger/phase-2` (base: `phase-1`)
+- **Models**: implementer Sonnet (Tier 3) · reviewer Opus (**Tier 4** override, three rounds) · fixer Sonnet
+- **Commits**: `8e1250b`, `c1e73d5`, `6cb1600`, `1665ec5`, `0d351e2`
+
+`CycleCloseService._persist_statement` writes one `BillingPeriodSummary` plus one `BillingPeriodResourceUsage` per `LimitedResource` member, ordered `reconcile_period` → `_charge_overage` → **persist** → `_roll_period`. Idempotent via `get_or_create` on `(subscription, billing_period_start)`; failure-isolated in a savepoint so a statement bug degrades history, never revenue. Full suite **5182 passed, 0 failed**.
+
+**Three defects here would each have shipped silently. Two were caught only by the Tier 4 override.**
+
+1. **The statement contradicted the invoice it explains.** The grouping applied `.for_organizations(pool)` computed at *close* time, while `_charge_overage` and `reconcile_period` filter by period only. A child promoted to its own billing root mid-period leaves the pool, so its already-billed rows vanish from the statement while still appearing on the invoice. Reproduced as a red gate against the pre-fix code: `assert 2 == 3`. The fix is that the statement must read byte-identically to what the charge summed — never the reverse.
+2. **A dangling FK could have rolled back a completed charge.** `payment_id=payment.pk` assigns the raw column, and Django creates FK constraints on Postgres as `DEFERRABLE INITIALLY DEFERRED` — so the check lands at *outer commit*, after the savepoint closed and after the period rolled, taking the whole close with it including a charge the provider already took. Now assigns the instance. Note the guarantee is still not absolute: the descriptor validates type, not row existence; that case is unreachable today only because `_charge_overage` creates the row in the same transaction.
+3. **The implementer found a real defect unprompted**: `get_usage_breakdown` anchors `event_occurrences` on `timezone.now()`, which at close time is never the closing period, so every statement would have recorded zero metered occurrences. Confirmed real by the reviewer.
+
+Also fixed across review rounds: an `ERROR` log that told on-call the statement was recoverable by re-running close (it is not — the period has already rolled and the sweep guard never revisits it); a `not created` early return that left summaries with zero resource rows unrepairable; `overage_unit_price` picking an arbitrary lowest-pk price when a period has mixed stamped prices (now writes `None` plus a warning); `by_organization` int keys that changed type across a JSON round-trip; `total=0` where the contract requires `null`; and a test claiming to exercise a database `IntegrityError` that never issued SQL (now trips a real `CHECK (total >= 0)`).
+
+Two false invariants were corrected in **docstrings** rather than code, because no stamped source exists for them:
+- `limit_value` is as-of-close for **all eight** resources, including `event_occurrences`. Only `overage_unit_price` is stamped. `MeteredOccurrence` records `is_within_allowance` and `unit_price`, never the ceiling — a stamped ceiling would be a new column.
+- The savepoint swallow is not unconditional; if `savepoint_rollback()` itself fails, Django marks the outer atomic for rollback anyway.
+
+Known residual, accepted: `cycle_close_service` still imports module-private `_group_counts_by_organization` and `USAGE_COUNTERS` from `entitlement_service`. The two service methods it called privately were promoted to public pre-resolved entry points (`effective_limit_for_subscription`, `usage_breakdown_for_root`), which also let the pool resolve once per period instead of once per resource under the `SELECT ... FOR UPDATE`.
+
 ## Current phase
 
-**Phase 2 — Persist the statement at cycle close** (implementer Tier 3, **reviewer Tier 4**).
+**Phase 3 — Enrich the current-usage summary** (implementer Tier 3, no review override).
 
-Branch `plan/billing-usage-summary-and-ledger/phase-2`, based on `phase-1`.
+Branch `plan/billing-usage-summary-and-ledger/phase-3`, based on `phase-2`.
 
 ## Remaining phases
 
