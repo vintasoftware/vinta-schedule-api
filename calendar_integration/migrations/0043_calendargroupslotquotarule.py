@@ -10,7 +10,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ('calendar_integration', '0042_availabletime_blockedtime_group_slot'),
-        ('organizations', '0021_organization_week_start'),
+        ('organizations', '0022_organization_week_start'),
     ]
 
     operations = [
