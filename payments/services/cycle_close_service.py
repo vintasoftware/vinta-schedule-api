@@ -360,9 +360,16 @@ class CycleCloseService:
           from the statement while the charge still summed them, making the
           statement contradict the invoice it is supposed to explain. Its
           ``overage_unit_price`` is likewise read back from the *stamped* rows of
-          the period (the price actually charged), not from the live effective
-          limit — a later price change must not make the statement disagree with
-          its own ``overage_total``.
+          the period whenever the period actually had an overage row to stamp —
+          a later price change must not make the statement disagree with its own
+          ``overage_total``. A period with **zero** overage rows has no stamped
+          price to disagree with, so this falls back to the live effective
+          limit's price rather than writing ``None`` for a resource that does
+          carry one. A period whose overage rows stamped **more than one** price
+          (a mid-period price change) has no single stamped price that
+          reproduces ``overage_total`` either — that case writes ``None`` and
+          logs a warning naming the subscription and period, rather than
+          reporting one of the prices as if it were the only one charged.
         - The plan snapshot (``plan_slug``/``plan_name``/``billing_interval``/
           ``currency``) is read from ``subscription.plan``/``subscription.billing_interval``
           here, which is still the *outgoing* plan: ``_apply_pending_plan_change_if_due``
@@ -373,9 +380,11 @@ class CycleCloseService:
           did not apply to.
 
         A catch-up run that settles several elapsed periods in one pass writes one
-        statement per period, but every prepaid resource's snapshot is taken at the
-        same instant (after the loop's last period closes its charge, before that
-        period's roll) — so N catch-up statements record identical prepaid
+        statement per period, but each period's prepaid-resource snapshot is taken
+        during that period's own iteration (after its charge, before its roll) —
+        and because nothing about "now" changes between one iteration and the
+        next in the same call, those per-iteration snapshots come out identical
+        across the run, so N catch-up statements record identical prepaid
         ``total``/``by_organization`` figures. That is the point-in-time snapshot
         working as designed, not a bug: only ``event_occurrences`` (and the money
         columns derived from it) actually vary per period in a catch-up run.
@@ -388,17 +397,23 @@ class CycleCloseService:
         selects from ``MeteringService.subscriptions_to_sweep()``'s root ids — so
         that walk would terminate on its first step here regardless. Both the
         already-resolved ``root`` and ``subscription`` are threaded straight into
-        ``EntitlementService``'s private, pre-resolved-argument methods
-        (``_effective_limit_for_subscription``/``_usage_breakdown``) instead of
-        their public ``get_effective_limit``/``get_usage_breakdown`` wrappers, each
-        of which would otherwise re-resolve the billing root and re-fetch the
-        subscription from scratch, once per resource. All of this runs inside
-        ``close_subscription``'s ``SELECT ... FOR UPDATE`` on the subscription row,
-        so avoiding that duplicate work also shortens how long a catch-up run holds
-        that lock across other guarded creates for the same organization. The
-        pooled organization ids themselves are still resolved once per resource by
-        ``_usage_breakdown`` (it has no variant that accepts a pre-resolved pool);
-        only the root/subscription resolution is hoisted here.
+        ``EntitlementService``'s public, pre-resolved-argument entry points
+        (``effective_limit_for_subscription``/``usage_breakdown_for_root``)
+        instead of their ``get_effective_limit``/``get_usage_breakdown`` wrappers,
+        each of which would otherwise re-resolve the billing root and re-fetch the
+        subscription from scratch, once per resource. Calling these rather than
+        the module-private methods they wrap (``_effective_limit_for_subscription``/
+        ``_usage_breakdown``) means a signature change there is caught at this one
+        call site, not silently, the next time either private method's shape
+        changes. All of this runs inside ``close_subscription``'s
+        ``SELECT ... FOR UPDATE`` on the subscription row, so avoiding that
+        duplicate work also shortens how long a catch-up run holds that lock
+        across other guarded creates for the same organization. The pooled
+        organization ids are resolved **once** here, via
+        ``get_pooled_organization_ids(root)``, and passed to every
+        ``usage_breakdown_for_root`` call in the resource loop, rather than
+        re-walking the subtree BFS on each of the seven non-``event_occurrences``
+        resources.
 
         **Idempotency.** ``get_or_create`` on ``(subscription, billing_period_start)``
         — the same durability pattern ``MeteredOccurrence`` and
@@ -421,15 +436,21 @@ class CycleCloseService:
         is logged at ``ERROR`` and swallowed rather than re-raised. The overage
         charge has already happened by the time this runs; a bug here must degrade
         history, never roll back money that already moved or stop the period from
-        rolling. That guarantee depends on ``payment`` being assigned through the
-        ``payment`` descriptor, not the raw ``payment_id`` column: Django validates
-        a descriptor assignment immediately, inside this savepoint, where the
-        handler below can catch it, whereas the FK constraint Postgres generates
-        for a nullable ``ForeignKey`` is ``DEFERRABLE INITIALLY DEFERRED`` — a
-        dangling raw ``payment_id`` would not be checked until the *outer*
-        transaction commits, well after this method returned and outside its
+        rolling. ``payment`` is assigned through the ``payment`` descriptor, not
+        the raw ``payment_id`` column, but that only buys a **type** check inside
+        this savepoint: ``ForwardManyToOneDescriptor.__set__`` rejects a value
+        that is not a ``Payment`` instance immediately, where the handler below
+        can catch it — it does not verify the row exists. A genuine ``Payment``
+        instance whose row had been rolled back would still pass the descriptor,
+        insert fine, and only trip the FK at the *outer* commit: the FK constraint
+        Postgres generates for a nullable ``ForeignKey`` is
+        ``DEFERRABLE INITIALLY DEFERRED``, so a dangling reference is not checked
+        until then, well after this method returned and outside its
         ``try/except``, turning a statement-writing bug into a rollback of the
-        already-committed charge. A missing statement is **not** recoverable by
+        already-committed charge. That case is safe today only because
+        ``_charge_overage`` creates the ``Payment`` row in this same transaction
+        before ``payment`` is ever assigned here — not because of anything the
+        descriptor itself guarantees. A missing statement is **not** recoverable by
         re-running close: ``_roll_period`` runs immediately after this returns and
         commits before this failure is even logged, so ``current_period_end`` has
         already moved into the future and ``close_subscription``'s
@@ -477,13 +498,17 @@ class CycleCloseService:
                     )
 
                 root = subscription.organization
+                # Resolved once, not once per resource: every non-event_occurrences
+                # resource pools against the same subtree, and re-walking that BFS
+                # seven times over would be work spent while holding the
+                # subscription row's SELECT ... FOR UPDATE for no new information.
+                pooled_organization_ids = self._entitlement_service.get_pooled_organization_ids(
+                    root
+                )
                 resource_rows: list[BillingPeriodResourceUsage] = []
                 for resource_key in LimitedResource.values:
-                    effective_limit = self._entitlement_service._effective_limit_for_subscription(
-                        subscription,
-                        resource_key,
-                        root_pk=root.pk,
-                        asked_for_organization_pk=root.pk,
+                    effective_limit = self._entitlement_service.effective_limit_for_subscription(
+                        subscription, resource_key, root
                     )
                     if resource_key == LimitedResource.EVENT_OCCURRENCES:
                         # No `.for_organizations(...)` pool filter here — see the
@@ -495,14 +520,41 @@ class CycleCloseService:
                         )
                         usage_breakdown = _group_counts_by_organization(occurrence_queryset)
                         total: int | None = sum(usage_breakdown.values())
-                        overage_unit_price = (
+                        stamped_overage_prices = list(
                             occurrence_queryset.filter(is_within_allowance=False)
                             .values_list("unit_price", flat=True)
-                            .first()
+                            .distinct()
+                        )
+                        if len(stamped_overage_prices) > 1:
+                            logger.warning(
+                                "Cycle close: subscription %s period %s stamped more than one "
+                                "distinct overage unit_price across its MeteredOccurrence rows "
+                                "(%s); writing overage_unit_price=None instead of reporting one "
+                                "of them as if it were the only price charged.",
+                                subscription.pk,
+                                period_start.isoformat(),
+                                stamped_overage_prices,
+                            )
+                            stamped_overage_price = None
+                        else:
+                            stamped_overage_price = (
+                                stamped_overage_prices[0] if stamped_overage_prices else None
+                            )
+                        # No overage rows this period means no stamped price to
+                        # disagree with -- fall back to the live effective limit's
+                        # price rather than writing None for a resource that does
+                        # carry one (see the docstring above).
+                        overage_unit_price = (
+                            stamped_overage_price
+                            if stamped_overage_price is not None
+                            else effective_limit.overage_unit_price
                         )
                     else:
-                        usage_breakdown = self._entitlement_service._usage_breakdown(
-                            root, resource_key, subscription
+                        usage_breakdown = self._entitlement_service.usage_breakdown_for_root(
+                            root,
+                            resource_key,
+                            subscription,
+                            pooled_organization_ids=pooled_organization_ids,
                         )
                         # `{}` is ambiguous between "no counter registered for this
                         # resource" and "a real counter found zero usage"; only the

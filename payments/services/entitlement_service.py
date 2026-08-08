@@ -415,6 +415,22 @@ class EntitlementService:
             overage_unit_price=limit.overage_unit_price,
         )
 
+    def effective_limit_for_subscription(
+        self, subscription: Subscription | None, resource_key: str, root: Organization
+    ) -> EffectiveLimit:
+        """Public entry point onto ``_effective_limit_for_subscription`` for a
+        caller that already holds both ``root`` and ``subscription`` (e.g.
+        ``CycleCloseService``, which resolves both once under its own
+        ``SELECT ... FOR UPDATE`` and would otherwise have to import a
+        module-private method to reuse them). A thin wrapper so a future change
+        to the private method's signature is caught by its one call site here
+        rather than silently breaking an external caller with no type or lint
+        signal.
+        """
+        return self._effective_limit_for_subscription(
+            subscription, resource_key, root_pk=root.pk, asked_for_organization_pk=root.pk
+        )
+
     def get_current_usage(
         self,
         organization: Organization,
@@ -479,6 +495,32 @@ class EntitlementService:
             exclude_invitation_id=exclude_invitation_id,
         )
 
+    def usage_breakdown_for_root(
+        self,
+        root: Organization,
+        resource_key: str,
+        subscription: Subscription | None,
+        pooled_organization_ids: list[int] | None = None,
+    ) -> dict[int, int]:
+        """Public entry point onto ``_usage_breakdown`` for a caller that already
+        holds ``root`` and ``subscription``. Same rationale as
+        ``effective_limit_for_subscription``.
+
+        :param pooled_organization_ids: the subtree ``root`` pools with, when the
+            caller already resolved it (via ``get_pooled_organization_ids``) and
+            wants to reuse it across several resources instead of paying for the
+            subtree BFS again on every call -- the case ``CycleCloseService`` hits
+            once per ``LimitedResource`` member while holding the subscription
+            row's lock. Resolved fresh when omitted, exactly as every other caller
+            of this method already gets.
+        """
+        return self._usage_breakdown(
+            root,
+            resource_key,
+            subscription,
+            pooled_organization_ids=pooled_organization_ids,
+        )
+
     def _count_usage(
         self,
         root: Organization,
@@ -504,8 +546,15 @@ class EntitlementService:
         resource_key: str,
         subscription: Subscription | None,
         exclude_invitation_id: int | None = None,
+        pooled_organization_ids: list[int] | None = None,
     ) -> dict[int, int]:
-        """``get_usage_breakdown`` given an already-resolved root and subscription."""
+        """``get_usage_breakdown`` given an already-resolved root and subscription.
+
+        :param pooled_organization_ids: pre-resolved pool, when the caller already
+            has it (see ``usage_breakdown_for_root``). Resolved via
+            ``_get_pooled_organization_ids`` when omitted -- the behavior every
+            existing caller keeps unchanged.
+        """
         counter = USAGE_COUNTERS.get(resource_key)
         if counter is None:
             # Unreachable while USAGE_COUNTERS covers LimitedResource (asserted by
@@ -518,7 +567,11 @@ class EntitlementService:
             return {}
         return counter(
             UsageContext(
-                organization_ids=self._get_pooled_organization_ids(root),
+                organization_ids=(
+                    pooled_organization_ids
+                    if pooled_organization_ids is not None
+                    else self._get_pooled_organization_ids(root)
+                ),
                 subscription=subscription,
                 exclude_invitation_id=exclude_invitation_id,
             )

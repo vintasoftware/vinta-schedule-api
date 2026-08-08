@@ -16,8 +16,6 @@ import datetime
 from decimal import Decimal
 from types import SimpleNamespace
 
-from django.db import IntegrityError
-
 import pytest
 from dateutil.relativedelta import relativedelta
 from model_bakery import baker
@@ -802,17 +800,38 @@ class TestStatementPersistence:
         monkeypatch,
     ):
         """T2: the RuntimeError case above only proves Python-level unwinding out of
-        the savepoint. A real DB-level failure (``IntegrityError``) inside the same
-        savepoint is the case that actually matters -- Django's savepoint
-        rollback/release machinery behaves differently for a database error than
-        for an ordinary Python exception, so this must be exercised on its own."""
+        the savepoint -- Django's ``Atomic.__exit__`` branches on ``exc_type is
+        None`` / ``connection.needs_rollback``, not on the exception's class, so
+        that code path is byte-identical for any Python exception, ``IntegrityError``
+        included, as long as it is *raised in Python* without ever reaching
+        Postgres. What a genuine database-level failure adds, and what this test
+        exercises that the ``RuntimeError`` one cannot, is that Postgres itself
+        leaves the connection in ``InFailedSqlTransaction`` once it rejects a
+        statement, so ``SAVEPOINT ROLLBACK`` is genuinely required to make the
+        connection usable again -- not just plausible in theory. The post-rollback
+        ``subscription.refresh_from_db()`` below only succeeds if that recovery
+        actually happened.
+
+        Tripped via a real constraint: ``BillingPeriodResourceUsage.total`` is a
+        ``PositiveIntegerField``, for which Django emits a database-level
+        ``CHECK (total >= 0)`` on Postgres. One usage counter is monkeypatched to
+        report a negative count for a single resource, so ``bulk_create`` runs for
+        real (unmocked) and Postgres itself raises ``IntegrityError`` when it
+        evaluates that constraint. A duplicate-key violation can no longer serve
+        this purpose: ``bulk_create(..., ignore_conflicts=True)`` swallows those at
+        the database level, leaving the CHECK constraint as the one left to trip.
+        """
         _set_allowance(subscription, 0, "0.2500")
         _meter_row(subscription, organization, event_id=1, within=False, price="0.2500")
 
-        def raising_bulk_create(*args, **kwargs):
-            raise IntegrityError("simulated constraint violation")
+        def negative_total_usage_breakdown(self, root, resource_key, subscription, **kwargs):
+            # Only one resource goes negative -- enough to trip the CHECK
+            # constraint on `bulk_create` without contaminating every row.
+            if resource_key == LimitedResource.ORGANIZATION_MEMBERS:
+                return {organization.pk: -1}
+            return {}
 
-        monkeypatch.setattr(BillingPeriodResourceUsage.objects, "bulk_create", raising_bulk_create)
+        monkeypatch.setattr(EntitlementService, "_usage_breakdown", negative_total_usage_breakdown)
 
         closed = cycle_close_service.close_subscription(subscription, now=AFTER_PERIOD)
 
