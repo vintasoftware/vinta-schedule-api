@@ -42,7 +42,7 @@ _repoint_module = importlib.import_module(
     "payments.migrations.0018_repoint_subscription_payment_provider"
 )
 repoint_to_organization_provider = _repoint_module.repoint_to_organization_provider
-restore_hardcoded_mercadopago = _repoint_module.restore_hardcoded_mercadopago
+restore_previous_payment_provider = _repoint_module.restore_previous_payment_provider
 
 _payment_backfill_module = importlib.import_module(
     "payments.migrations.0019_backfill_subscription_payment_provider_on_payments"
@@ -123,10 +123,12 @@ class TestRepointSubscriptionPaymentProvider:
         assert unpinned.payment_provider == PaymentProviders.STRIPE
         assert profileless.payment_provider == PaymentProviders.STRIPE
 
-    def test_reverse_restores_the_pre_migration_hardcoded_value(self, plan, settings):
-        """Every pre-migration row said ``mercadopago`` -- the hardcode in
-        ``create_subscription_for_organization`` and ``payments.0009`` are the
-        only two writers there ever were -- so that is what a reverse restores."""
+    def test_reverse_restores_each_repointed_rows_own_pre_migration_value(self, plan, settings):
+        """Every pre-migration row this test builds said ``mercadopago`` -- the
+        hardcode in ``create_subscription_for_organization`` and
+        ``payments.0009`` are the only two writers there ever were -- so that is
+        what the reverse restores it to, per-row, via the ``meta`` stamp the
+        forward pass leaves behind (not a single hardcoded literal)."""
         settings.DEFAULT_PAYMENT_PROVIDER = PaymentProviders.STRIPE
         org = baker.make(Organization, parent=None)
         _billing_profile_for(org, PaymentProviders.STRIPE)
@@ -136,10 +138,42 @@ class TestRepointSubscriptionPaymentProvider:
         subscription.refresh_from_db()
         assert subscription.payment_provider == PaymentProviders.STRIPE
 
-        restore_hardcoded_mercadopago(apps, None)
+        restore_previous_payment_provider(apps, None)
 
         subscription.refresh_from_db()
         assert subscription.payment_provider == PaymentProviders.MERCADOPAGO
+
+    def test_reverse_leaves_a_row_the_forward_pass_did_not_touch_unchanged(self, plan, settings):
+        """Second-pass Tier 4 fix: the reverse must be scoped to the rows the
+        forward pass actually changed. Proof: a row created *after* the forward
+        pass ran (simulating a new organization under a changed
+        ``DEFAULT_PAYMENT_PROVIDER``, or one the forward pass left alone because
+        it already agreed) must survive the reverse untouched -- the bug this
+        fixes rewrote every ``Subscription`` in the table on reverse, which would
+        also destroy the plan's rollback runbook evidence (Risk & Rollout Notes:
+        "verify ... that no Stripe-provider Payment or Subscription rows were
+        created in the window")."""
+        settings.DEFAULT_PAYMENT_PROVIDER = PaymentProviders.STRIPE
+        repointed_org = baker.make(Organization, parent=None)
+        _billing_profile_for(repointed_org, PaymentProviders.STRIPE)
+        repointed = _subscription(repointed_org, plan, PaymentProviders.MERCADOPAGO)
+
+        repoint_to_organization_provider(apps, None)
+        repointed.refresh_from_db()
+        assert repointed.payment_provider == PaymentProviders.STRIPE
+
+        # Built *after* the forward pass ran, already correctly stamped --
+        # nothing for the forward pass to have touched.
+        untouched_org = baker.make(Organization, parent=None)
+        _billing_profile_for(untouched_org, PaymentProviders.STRIPE)
+        untouched = _subscription(untouched_org, plan, PaymentProviders.STRIPE)
+
+        restore_previous_payment_provider(apps, None)
+
+        repointed.refresh_from_db()
+        untouched.refresh_from_db()
+        assert repointed.payment_provider == PaymentProviders.MERCADOPAGO
+        assert untouched.payment_provider == PaymentProviders.STRIPE
 
     def test_is_idempotent(self, plan, settings):
         settings.DEFAULT_PAYMENT_PROVIDER = PaymentProviders.STRIPE
@@ -233,6 +267,42 @@ class TestBackfillSubscriptionPaymentProviderOnPayments:
 
         payment.refresh_from_db()
         assert payment.payment_provider == ""
+
+    def test_reverse_leaves_a_row_the_forward_pass_did_not_touch_unchanged(self, plan):
+        """Second-pass Tier 4 fix: the reverse must be scoped to the rows the
+        forward pass actually filled. Proof: a ``Payment`` that already carried a
+        provider before the forward pass ran (so the forward pass skipped it --
+        see ``test_rows_that_already_carry_a_provider_are_untouched``) must
+        survive the reverse untouched. The bug this fixes blanked
+        ``payment_provider`` on every subscription-linked ``Payment`` on
+        reverse -- combined with ``0018``'s (now-fixed) reverse, that would have
+        rewritten every Stripe-provider subscription charge to ``mercadopago``
+        on `migrate payments 0017`."""
+        org = baker.make(Organization, parent=None)
+        billing_profile = _billing_profile_for(org, PaymentProviders.MERCADOPAGO)
+        subscription = _subscription(org, plan, PaymentProviders.MERCADOPAGO)
+        filled = self._payment(billing_profile, subscription, "", "mp-sub-payment-1")
+
+        stripe_org = baker.make(Organization, parent=None)
+        stripe_billing_profile = _billing_profile_for(stripe_org, PaymentProviders.STRIPE)
+        stripe_subscription = _subscription(stripe_org, plan, PaymentProviders.STRIPE)
+        # Already carries a provider before the forward pass runs -- the forward
+        # pass's `payment_provider=""` filter skips it, so it is untouched by
+        # construction (not merely by coincidence of its final value).
+        already_stamped = self._payment(
+            stripe_billing_profile, stripe_subscription, PaymentProviders.STRIPE, "stripe-payment-1"
+        )
+
+        backfill_from_subscription(apps, None)
+        filled.refresh_from_db()
+        assert filled.payment_provider == PaymentProviders.MERCADOPAGO
+
+        unset_on_subscription_payments(apps, None)
+
+        filled.refresh_from_db()
+        already_stamped.refresh_from_db()
+        assert filled.payment_provider == ""
+        assert already_stamped.payment_provider == PaymentProviders.STRIPE
 
     def test_is_idempotent(self, plan):
         org = baker.make(Organization, parent=None)

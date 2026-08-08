@@ -30,10 +30,27 @@
 # setting is validated against the provider slug list at import
 # (`vinta_schedule_api/settings/base.py`), so it cannot be a bad value here.
 #
-# Reverse restores the pre-migration state exactly: every row back to
-# "mercadopago", which is what the hardcode and `0009` produced for all of them.
+# Reverse safety (second-pass Tier 4 fix): a blanket "every row back to
+# mercadopago" reverse -- what this migration originally did -- would also
+# rewrite `Subscription` rows created *after* this migration under
+# `DEFAULT_PAYMENT_PROVIDER=stripe`, destroying the exact evidence the plan's
+# rollback runbook (Risk & Rollout Notes) says to check before reversing:
+# "verify ... that no Stripe-provider Payment or Subscription rows were created
+# in the window". So the forward pass stamps the pre-repoint value onto each row
+# it actually changes (`meta[REPOINT_META_KEY]`, following the stamp-and-scope
+# precedent in `payments.0009_backfill_unlimited_subscriptions`), and the
+# reverse restores only rows carrying that stamp -- from the value stamped on
+# each one, not a single hardcoded literal -- leaving every other row (including
+# ones created after this migration ran) untouched.
 from django.conf import settings
 from django.db import migrations
+
+
+#: Meta key the forward pass stamps with a row's pre-repoint `payment_provider`,
+#: so the reverse can restore exactly the rows this migration changed -- and
+#: only those -- instead of every `Subscription` in the table. Mirrors
+#: `payments.0009_backfill_unlimited_subscriptions`'s `BACKFILL_META_KEY`.
+REPOINT_META_KEY = "repointed_by_0018_previous_payment_provider"
 
 
 def repoint_to_organization_provider(apps, schema_editor):
@@ -51,17 +68,27 @@ def repoint_to_organization_provider(apps, schema_editor):
     for subscription in Subscription.objects.all().iterator():
         provider = pins.get(subscription.organization_id, default_provider)
         if subscription.payment_provider != provider:
+            subscription.meta[REPOINT_META_KEY] = subscription.payment_provider
             subscription.payment_provider = provider
             updated.append(subscription)
     if updated:
-        Subscription.objects.bulk_update(updated, ["payment_provider"], batch_size=500)
+        Subscription.objects.bulk_update(updated, ["payment_provider", "meta"], batch_size=500)
 
 
-def restore_hardcoded_mercadopago(apps, schema_editor):
+def restore_previous_payment_provider(apps, schema_editor):
+    """Reverse: restore only the rows the forward pass touched, each to the
+    value it individually carried before -- not a blanket "mercadopago" write.
+    See the module docstring above for why."""
     Subscription = apps.get_model("payments", "Subscription")
-    Subscription.objects.exclude(payment_provider="mercadopago").update(
-        payment_provider="mercadopago"
-    )
+
+    updated = []
+    for subscription in Subscription.objects.filter(
+        **{"meta__has_key": REPOINT_META_KEY}
+    ).iterator():
+        subscription.payment_provider = subscription.meta.pop(REPOINT_META_KEY)
+        updated.append(subscription)
+    if updated:
+        Subscription.objects.bulk_update(updated, ["payment_provider", "meta"], batch_size=500)
 
 
 class Migration(migrations.Migration):
@@ -71,6 +98,6 @@ class Migration(migrations.Migration):
 
     operations = [
         migrations.RunPython(
-            repoint_to_organization_provider, reverse_code=restore_hardcoded_mercadopago
+            repoint_to_organization_provider, reverse_code=restore_previous_payment_provider
         ),
     ]

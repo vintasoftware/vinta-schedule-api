@@ -293,7 +293,7 @@ class MercadoPagoSubscriptionAdapter(BaseSubscriptionAdapter):
             external_id=payment_payload["response"]["id"],
             value=payment_payload["response"]["transaction_amount"],
             currency=payment_payload["response"]["currency_id"],
-            payment_provider="mercadopago",
+            payment_provider=PaymentProviders.MERCADOPAGO,
             status=payment_payload["response"]["status"],
             payment_method=payment_payload["response"]["payment_method_id"],
             description=payment_payload["response"]["description"],

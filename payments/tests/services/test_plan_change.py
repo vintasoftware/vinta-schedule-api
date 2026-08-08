@@ -235,12 +235,16 @@ class TestUpgrade:
         pro_plan = make_complete_plan(
             {LimitedResource.ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50")
         )
-        # Payment Provider Selection, Phase 4, Rule A: the organization's pin and
-        # the subscription's own stored provider are deliberately made to
-        # *disagree* here. Only a disagreement can tell the two resolution rules
-        # apart -- asserting `create_subscription_plan_providers ==
-        # [subscription.payment_provider]` is self-referential and passes under
-        # either rule whenever the fixtures happen to agree.
+        # Payment Provider Selection, Phase 4: the organization's pin and the
+        # subscription's own stored provider are deliberately made to *disagree*
+        # here. `external_id` is blank (no token has ever been attached), so
+        # there is no provider-side state for Rule A to protect -- `_initiate_upgrade`
+        # re-resolves from the organization and restamps the row before driving
+        # the first charge (the second-pass Tier 4 fix). Only a disagreement can
+        # tell the resolved-vs-stale value apart -- asserting
+        # `create_subscription_plan_providers == [subscription.payment_provider]`
+        # is self-referential and passes either way whenever the fixtures happen
+        # to agree.
         billing_profile.payment_provider = PaymentProviders.STRIPE
         billing_profile.save(update_fields=["payment_provider"])
         subscription = _subscription_for(organization, free_plan)
@@ -262,11 +266,42 @@ class TestUpgrade:
         # card via `process_subscription` (no existing external_id to move).
         assert fake_payment_service.calls == ["create_subscription_plan", "process_subscription"]
         assert result.external_id == fake_payment_service.subscription_external_id
-        # The subscription's own provider, stated as a literal -- not the
-        # organization's `stripe` pin, and not read back off the row.
+        # Re-resolved from the organization's pin (`stripe`), not the row's
+        # stale `mercadopago` value -- and the row itself is restamped to match.
+        assert fake_payment_service.create_subscription_plan_providers == [PaymentProviders.STRIPE]
+        assert result.payment_provider == PaymentProviders.STRIPE
+
+    def test_already_attached_row_keeps_its_own_provider_even_when_the_pin_disagrees(
+        self, service, fake_payment_service, organization, billing_profile
+    ):
+        """The converse of the test above: once `external_id` is non-empty, the
+        row carries live provider-side state (an attached instrument), so Rule A
+        applies unchanged -- the row's own stored provider drives the charge and
+        is never overwritten by the organization's current pin, even when the
+        two disagree."""
+        free_plan = make_complete_plan(
+            {LimitedResource.ORGANIZATION_MEMBERS: 3}, monthly_price=Decimal("0")
+        )
+        pro_plan = make_complete_plan(
+            {LimitedResource.ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50")
+        )
+        billing_profile.payment_provider = PaymentProviders.STRIPE
+        billing_profile.save(update_fields=["payment_provider"])
+        subscription = _subscription_for(organization, free_plan, external_id="already-on-file")
+        subscription.payment_provider = PaymentProviders.MERCADOPAGO
+        subscription.save(update_fields=["payment_provider"])
+
+        result = service.request_plan_change(subscription, pro_plan, BillingInterval.MONTHLY)
+
+        result.refresh_from_db()
+        assert fake_payment_service.calls == [
+            "create_subscription_plan",
+            "change_subscription_plan",
+        ]
         assert fake_payment_service.create_subscription_plan_providers == [
             PaymentProviders.MERCADOPAGO
         ]
+        assert result.payment_provider == PaymentProviders.MERCADOPAGO
 
     def test_upgrade_without_a_token_when_none_on_file_raises_and_writes_nothing(
         self, service, fake_payment_service, organization, billing_profile

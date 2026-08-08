@@ -81,7 +81,8 @@ class AppContainer(containers.DeclarativeContainer):
 
     #: Registered so the `payment_provider_registry`/`subscription_provider_registry`
     #: `provider` URL kwarg can select Stripe, and so the adapter conformance
-    #: suite can exercise it — no organization is routed onto Stripe yet.
+    #: suite can exercise it. `DEFAULT_PAYMENT_PROVIDER` is `stripe`, so every
+    #: unpinned organization routes onto this adapter as of Phase 4.
     stripe_payment_gateway = providers.Factory(
         StripePaymentAdapter,
         api_key=config.STRIPE_SECRET_KEY,

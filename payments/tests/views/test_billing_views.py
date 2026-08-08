@@ -215,8 +215,15 @@ def _no_live_stripe_calls(di_container):
     Autouse (rather than a fixture each test must remember to request) and
     module-wide, matching the treatment
     ``payments/tests/services/test_payment_services.py``'s ``payment_service``
-    fixture already gives both provider slots. No test asserts on these doubles;
-    a call reaching one is a bug the assertions on the MercadoPago doubles catch.
+    fixture already gives both provider slots.
+
+    Teardown asserts neither double received any call -- a call reaching one is
+    a wrong-provider routing regression, and a silent mock absorbing it would
+    make the guard structural in name only. ``TestUnconfiguredProviderMapsTo409``
+    deliberately overrides both DI slots again with a *different* double inside
+    its own fixture, which shadows these for the duration of that test (the
+    inner ``override`` context manager takes precedence), so these two remain
+    uncalled there too -- no test-specific exemption needed.
     """
     stripe_payment = MagicMock(spec=BasePaymentAdapter)
     stripe_payment.provider = PaymentProviders.STRIPE
@@ -227,6 +234,16 @@ def _no_live_stripe_calls(di_container):
         di_container.stripe_subscription_gateway.override(stripe_subscription),
     ):
         yield
+    assert stripe_payment.mock_calls == [], (
+        "A test in this module routed a call to the Stripe payment adapter -- "
+        "every organization here is pinned to MercadoPago (or deliberately "
+        "overrides this guard), so this is a wrong-provider routing regression, "
+        f"not a legitimate call: {stripe_payment.mock_calls!r}"
+    )
+    assert stripe_subscription.mock_calls == [], (
+        "A test in this module routed a call to the Stripe subscription adapter "
+        f"-- see the payment-adapter assertion above: {stripe_subscription.mock_calls!r}"
+    )
 
 
 @pytest.fixture

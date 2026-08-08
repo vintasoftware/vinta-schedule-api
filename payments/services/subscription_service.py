@@ -612,6 +612,27 @@ class SubscriptionService:
         # synchronously. `subscription.plan` alone grants nothing --
         # `EntitlementService` reads `SubscriptionPlanLimit`, not this FK.
 
+        # Rule A (existing-row resolution) only protects provider-side state
+        # that already exists. A subscription with a blank `external_id` has
+        # none -- nothing has ever been created at the provider its
+        # `payment_provider` column happens to name -- and this is exactly the
+        # row every *first* upgrade runs against, just below. Re-resolving here
+        # (pin -> default, via the same `PaymentProviderResolver` Rule B
+        # already uses) and restamping is what makes a staff repoint via
+        # `set_payment_provider`, or a `DEFAULT_PAYMENT_PROVIDER` change, reach
+        # a subscription that was stamped before any `BillingProfile` pin
+        # existed -- `create_subscription_for_organization` runs from the
+        # `Organization` post-save signal, before a `BillingProfile` can exist.
+        # Once `external_id` is non-empty, the row carries live provider state
+        # and must not move -- Rule A applies unchanged from here on.
+        if not subscription.external_id:
+            resolved_provider = self._require_payment_provider_resolver().resolve_for_organization(
+                subscription.organization
+            )
+            if resolved_provider != subscription.payment_provider:
+                subscription.payment_provider = resolved_provider
+                subscription.save(update_fields=["payment_provider"])
+
         payment_service = self._require_payment_service()
         created_plan = self._ensure_provider_plan(subscription, plan, billing_interval)
         if not subscription.external_id:

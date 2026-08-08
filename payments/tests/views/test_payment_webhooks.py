@@ -33,11 +33,6 @@ from payments.services.subscription_service import SubscriptionService
 
 WEBHOOK_SECRET = "test-webhook-secret"
 
-# This module builds its own Subscription rows (OneToOne with Organization) in the
-# provider-routing tests, so it opts out of conftest's autouse
-# `provision_default_subscription`.
-pytestmark = pytest.mark.no_auto_subscription
-
 
 def sign(data_id: str, request_id: str = "req-123", ts: str | None = None) -> dict[str, str]:
     """``ts`` defaults to "now" — the signature tolerance window rejects a stale
@@ -535,6 +530,7 @@ class TestSubscriptionPaymentUpdateWebhook:
             }
         }
 
+    @pytest.mark.no_auto_subscription
     def test_subscription_charge_payment_row_carries_a_provider(
         self, webhook_client, mercadopago_subscription_adapter, billing_profile
     ):
@@ -543,7 +539,11 @@ class TestSubscriptionPaymentUpdateWebhook:
         provider. Stamped `""` (as it was before this fix) it is unroutable for
         the rest of its life -- ``check_payment_status``/``create_refund``
         resolve their adapter from this column under Rule A and `""` raises
-        ``UnknownPaymentProviderError``."""
+        ``UnknownPaymentProviderError``.
+
+        Opts out of conftest's autouse ``provision_default_subscription``: this
+        test builds its own ``Subscription`` (``OneToOne`` with ``Organization``)
+        via ``create_subscription_for_organization`` below."""
         subscription = SubscriptionService().create_subscription_for_organization(
             billing_profile.organization
         )
@@ -568,6 +568,7 @@ class TestSubscriptionPaymentUpdateWebhook:
         assert payment.subscription_id == subscription.pk
         assert payment.payment_provider == PaymentProviders.MERCADOPAGO
 
+    @pytest.mark.no_auto_subscription
     def test_approved_charge_pins_the_subscriptions_own_provider_not_a_hardcoded_one(
         self, webhook_client, mercadopago_subscription_adapter, billing_profile
     ):
@@ -583,6 +584,10 @@ class TestSubscriptionPaymentUpdateWebhook:
         Driven here through a MercadoPago delivery against a subscription the
         service resolved onto MercadoPago, with the assertion stated as the
         subscription's provider being what lands in the pin.
+
+        Opts out of conftest's autouse ``provision_default_subscription``: this
+        test builds its own ``Subscription`` via
+        ``create_subscription_for_organization`` below.
         """
         assert billing_profile.payment_provider == ""
         billing_profile.organization.refresh_from_db()
@@ -610,13 +615,18 @@ class TestSubscriptionPaymentUpdateWebhook:
         assert billing_profile.payment_provider == subscription.payment_provider
         assert billing_profile.payment_provider == PaymentProviders.MERCADOPAGO
 
+    @pytest.mark.no_auto_subscription
     def test_stripe_default_org_is_not_pinned_to_mercadopago_by_its_first_charge(
         self, settings, di_container, billing_profile
     ):
         """The other half of the same regression, and the one that actually
         broke: an unpinned organization under ``DEFAULT_PAYMENT_PROVIDER=stripe``
         gets a ``stripe``-resolved subscription, so its first confirmed charge
-        pins it to ``stripe`` -- never to ``mercadopago``."""
+        pins it to ``stripe`` -- never to ``mercadopago``.
+
+        Opts out of conftest's autouse ``provision_default_subscription``: this
+        test builds its own ``Subscription`` via
+        ``create_subscription_for_organization`` below."""
         settings.DEFAULT_PAYMENT_PROVIDER = PaymentProviders.STRIPE
         assert billing_profile.payment_provider == ""
         subscription = SubscriptionService().create_subscription_for_organization(

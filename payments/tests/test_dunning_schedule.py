@@ -168,11 +168,13 @@ def mercadopago_subscription_adapter():
 
 @pytest.fixture
 def stripe_subscription_adapter():
-    """Structural guard, not a fixture any test here asserts on: every
-    ``Subscription`` this module builds resolves its provider from its
-    organization, so an organization that is *not* pinned to MercadoPago (a
-    second org built inline by a fan-out test, say) would otherwise drive the
-    real, unmocked ``StripeSubscriptionAdapter`` over the network."""
+    """Structural guard: every ``Subscription`` this module builds resolves its
+    provider from its organization, so an organization that is *not* pinned to
+    MercadoPago (a second org built inline by a fan-out test, say) would
+    otherwise drive the real, unmocked ``StripeSubscriptionAdapter`` over the
+    network. ``di_overrides`` below asserts at teardown that this double never
+    actually receives a call -- a call reaching it is a wrong-provider routing
+    regression, not a legitimate one."""
     adapter = MagicMock(spec=BaseSubscriptionAdapter)
     adapter.provider = PaymentProviders.STRIPE
     return adapter
@@ -202,6 +204,11 @@ def di_overrides(
         di_container.notification_service.override(mock_notification_service),
     ):
         yield
+    assert stripe_subscription_adapter.mock_calls == [], (
+        "A test in this module routed a dunning retry to the Stripe subscription "
+        "adapter -- every organization here is pinned to MercadoPago, so this is "
+        f"a wrong-provider routing regression: {stripe_subscription_adapter.mock_calls!r}"
+    )
 
 
 @pytest.fixture
