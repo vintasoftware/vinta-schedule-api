@@ -1958,8 +1958,9 @@ paths:
         this app.
 
         The "pull" half of "an organization can see where it stands". It reads
-        usage through the identical
-        ``EntitlementService.get_effective_limit`` / ``get_current_usage`` methods
+        usage through ``EntitlementService.effective_limit_from_resolved`` /
+        ``usage_breakdown_for_root`` -- pre-resolved entry points onto the
+        identical ``get_effective_limit`` / ``get_current_usage`` implementation
         ``check_limit`` / ``check_postpaid_allowance`` count against, and that
         ``payments.services.usage_warning_service.UsageWarningService`` (the
         "push" half -- proactive approaching-limit notifications) also reads its
@@ -2007,8 +2008,9 @@ paths:
         this app.
 
         The "pull" half of "an organization can see where it stands". It reads
-        usage through the identical
-        ``EntitlementService.get_effective_limit`` / ``get_current_usage`` methods
+        usage through ``EntitlementService.effective_limit_from_resolved`` /
+        ``usage_breakdown_for_root`` -- pre-resolved entry points onto the
+        identical ``get_effective_limit`` / ``get_current_usage`` implementation
         ``check_limit`` / ``check_postpaid_allowance`` count against, and that
         ``payments.services.usage_warning_service.UsageWarningService`` (the
         "push" half -- proactive approaching-limit notifications) also reads its
@@ -16615,7 +16617,7 @@ components:
             $ref: '#/components/schemas/UsageByOrganization'
           description: 'Per-organization attribution of current_usage across the caller''s
             pooled billing subtree. An organization that contributed nothing is omitted,
-            never present with usage: 0.'
+            never present with usage: 0. Ordered by organization_id ascending.'
       required:
       - add_on_quantity
       - by_organization

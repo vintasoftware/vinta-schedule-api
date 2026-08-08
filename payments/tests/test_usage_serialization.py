@@ -345,3 +345,44 @@ class TestPlanAddOnDecompositionInvariant:
         assert add_on_row["included_in_plan"] == 5
         assert add_on_row["add_on_quantity"] == 3
         assert add_on_row["limit_value"] == 8
+
+
+@pytest.mark.django_db
+class TestAddOnPurchasedOnUnlimitedPlan:
+    """An add-on purchased for a resource whose plan-limit row is explicitly
+    unlimited (``limit_value=None``) still reports what was purchased via
+    ``add_on_quantity`` -- it is informational and does not itself redefine an
+    unlimited ceiling -- while ``included_in_plan``/``limit_value`` both stay
+    ``None``, per the fail-open rule they follow."""
+
+    def test_add_on_quantity_is_reported_while_included_in_plan_stays_null(self, auth_client, user):
+        organization = baker.make(Organization, parent=None, can_invite_organizations=False)
+        baker.make(
+            OrganizationMembership,
+            organization=organization,
+            user=user,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+        plan = make_complete_plan({LimitedResource.CALENDAR_GROUPS: None})
+        subscription = SubscriptionService().create_subscription_for_organization(
+            organization, plan=plan
+        )
+        assert subscription is not None
+        baker.make(
+            SubscriptionAddOn,
+            subscription=subscription,
+            resource_key=LimitedResource.CALENDAR_GROUPS,
+            quantity=3,
+            is_recurring=True,
+            is_active=True,
+        )
+
+        response = auth_client.get(usage_url())
+
+        assert response.status_code == status.HTTP_200_OK
+        rows = {row["resource_key"]: row for row in response.data["limits"]}
+        row = rows[LimitedResource.CALENDAR_GROUPS]
+        assert row["limit_value"] is None
+        assert row["included_in_plan"] is None
+        assert row["add_on_quantity"] == 3

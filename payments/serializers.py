@@ -216,7 +216,7 @@ class EffectiveLimitUsageSerializer(serializers.Serializer):
         help_text=(
             "Per-organization attribution of current_usage across the caller's pooled "
             "billing subtree. An organization that contributed nothing is omitted, "
-            "never present with usage: 0."
+            "never present with usage: 0. Ordered by organization_id ascending."
         ),
     )
 

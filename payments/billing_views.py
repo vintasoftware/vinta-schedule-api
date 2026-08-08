@@ -25,6 +25,7 @@ from rest_framework import mixins, status
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.viewsets import GenericViewSet, ViewSet
@@ -97,8 +98,9 @@ class BillingUsageViewSet(TenantScopedViewMixin, ViewSet):
     this app.
 
     The "pull" half of "an organization can see where it stands". It reads
-    usage through the identical
-    ``EntitlementService.get_effective_limit`` / ``get_current_usage`` methods
+    usage through ``EntitlementService.effective_limit_from_resolved`` /
+    ``usage_breakdown_for_root`` -- pre-resolved entry points onto the
+    identical ``get_effective_limit`` / ``get_current_usage`` implementation
     ``check_limit`` / ``check_postpaid_allowance`` count against, and that
     ``payments.services.usage_warning_service.UsageWarningService`` (the
     "push" half -- proactive approaching-limit notifications) also reads its
@@ -130,7 +132,7 @@ class BillingUsageViewSet(TenantScopedViewMixin, ViewSet):
 
     @extend_schema(summary="Get current usage against effective limits", request=None)
     @action(methods=["get"], detail=False, url_path="", url_name="retrieve")
-    def retrieve_usage(self, request, *args, **kwargs):
+    def retrieve_usage(self, request: Request, *args: object, **kwargs: object) -> Response:
         # Resolves the billing root, the pooled subtree, and the subscription
         # **once** and threads all three through the per-resource loop below via
         # `EntitlementService`'s pre-resolved public entry points
@@ -180,9 +182,18 @@ class BillingUsageViewSet(TenantScopedViewMixin, ViewSet):
             }
             # Same underlying derivation `current_billing_period_start` uses
             # (`resolve_billing_period(subscription, timezone.now())[0]`) -- called
-            # directly here, once, so both bounds come from a single resolution
-            # rather than deriving the start and the end from two separate
-            # `timezone.now()` reads.
+            # directly here, once, so `billing_period`'s own start and end come
+            # from a single resolution rather than two separate `timezone.now()`
+            # reads. This does **not** close the boundary race end to end: the
+            # `event_occurrences` row below routes through `usage_breakdown_for_root`
+            # into `_count_event_occurrences`, which independently calls
+            # `current_billing_period_start(subscription)` -- a second, later
+            # `timezone.now()` read in the same request. A request that straddles
+            # a period boundary between the two reads can still see
+            # `estimated_overage_total` and the `event_occurrences` row disagree by
+            # one cycle. Closing that requires a way to inject a period override
+            # into the counter signature, which Phase 1's `UsageContext` does not
+            # support -- out of scope here.
             period_start, period_end = resolve_billing_period(subscription, timezone.now())
             billing_period = {"start": period_start, "end": period_end}
             estimated_overage_total = (
@@ -202,8 +213,14 @@ class BillingUsageViewSet(TenantScopedViewMixin, ViewSet):
 
         limits = []
         for resource_key in LimitedResource.values:
-            effective_limit = self.entitlement_service.effective_limit_for_subscription(
-                subscription, resource_key, root
+            plan_limit_row = plan_limit_by_resource.get(resource_key)
+            add_on_quantity_for_ceiling = add_on_quantity_by_resource.get(resource_key, 0)
+            # Pre-resolved entry point: `plan_limit_row`/`add_on_quantity_for_ceiling`
+            # were already fetched in bulk above, so this does not re-run the
+            # per-resource `SubscriptionPlanLimit` lookup and `Sum` aggregate
+            # `effective_limit_for_subscription` would otherwise repeat here.
+            effective_limit = self.entitlement_service.effective_limit_from_resolved(
+                resource_key, plan_limit_row, add_on_quantity_for_ceiling
             )
             usage_breakdown = self.entitlement_service.usage_breakdown_for_root(
                 root, resource_key, subscription, pooled_organization_ids=pooled_organization_ids
@@ -212,7 +229,6 @@ class BillingUsageViewSet(TenantScopedViewMixin, ViewSet):
             # breakdown just fetched rather than a second, independent count.
             current_usage = sum(usage_breakdown.values())
 
-            plan_limit_row = plan_limit_by_resource.get(resource_key)
             if plan_limit_row is None or plan_limit_row.limit_value is None:
                 # Mirrors `_effective_limit_for_subscription`'s own fail-open
                 # branches exactly: no plan-limit row, or an explicitly unlimited

@@ -385,6 +385,62 @@ class TestEstimatedOverageTotal:
         assert expected == Decimal("0.15")
         assert Decimal(response.data["estimated_overage_total"]) == expected
 
+    def test_pooled_subtree_overage_is_included_but_sibling_root_overage_is_not(
+        self, auth_client, user
+    ):
+        """Mirrors ``TestPooledAttributionOmitsNonContributors``'s tree shape:
+        overage metered against a child in the caller's own pooled subtree
+        contributes to the root's ``estimated_overage_total`` (the
+        ``.for_organizations(pool)`` scope), but overage metered against an
+        unrelated, sibling billing root's own subtree does not leak in."""
+        root = baker.make(Organization, parent=None, can_invite_organizations=True)
+        contributing_child = baker.make(Organization, parent=root, can_invite_organizations=False)
+        sibling_root = baker.make(Organization, parent=None, can_invite_organizations=True)
+        plan = make_complete_plan()
+        subscription = SubscriptionService().create_subscription_for_organization(root, plan=plan)
+        sibling_plan = make_complete_plan()
+        sibling_subscription = SubscriptionService().create_subscription_for_organization(
+            sibling_root, plan=sibling_plan
+        )
+        baker.make(
+            OrganizationMembership,
+            organization=contributing_child,
+            user=user,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+
+        billing_period_start = current_billing_period_start(subscription)
+        baker.make(
+            MeteredOccurrence,
+            organization=contributing_child,
+            subscription=subscription,
+            event_id=8000,
+            occurrence_start=timezone.now(),
+            billing_period_start=billing_period_start,
+            is_within_allowance=False,
+            unit_price=Decimal("0.05"),
+        )
+        sibling_billing_period_start = current_billing_period_start(sibling_subscription)
+        baker.make(
+            MeteredOccurrence,
+            organization=sibling_root,
+            subscription=sibling_subscription,
+            event_id=8001,
+            occurrence_start=timezone.now(),
+            billing_period_start=sibling_billing_period_start,
+            is_within_allowance=False,
+            unit_price=Decimal("0.05"),
+        )
+
+        response = auth_client.get(usage_url())
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["billing_root_organization_id"] == root.pk
+        # Only the contributing child's overage counts -- the sibling root's own
+        # subtree is a disjoint pool and must not be summed in here.
+        assert Decimal(response.data["estimated_overage_total"]) == Decimal("0.05")
+
 
 @pytest.mark.django_db
 class TestNoSubscriptionOrganization:
@@ -474,3 +530,12 @@ class TestRootResolutionAndSubtreeWalkHappenOnce:
             query for query in queries if '"organizations_organization"."id" = ' in query
         ]
         assert len(root_walk_queries) == 1
+
+        # Explicit ceiling so a future regression that reintroduces a
+        # per-resource duplicate (e.g. the `effective_limit_for_subscription`
+        # N+1 this gate was built for) fails here instead of drifting
+        # unnoticed. Measured at 37 queries before `effective_limit_from_resolved`
+        # (16 of them were the per-resource `SubscriptionPlanLimit` lookup +
+        # add-on `Sum` aggregate `effective_limit_for_subscription` re-ran on
+        # every resource despite the view already batching both), 21 after.
+        assert len(queries) <= 21

@@ -42,6 +42,7 @@ from payments.models import (
     PaymentMethod,
     Subscription,
     SubscriptionEntitlement,
+    SubscriptionPlanLimit,
 )
 from payments.services.billing_dataclasses import EffectiveLimit, LimitCheckResult
 from payments.services.subscription_service import (
@@ -429,6 +430,51 @@ class EntitlementService:
         """
         return self._effective_limit_for_subscription(
             subscription, resource_key, root_pk=root.pk, asked_for_organization_pk=root.pk
+        )
+
+    def effective_limit_from_resolved(
+        self,
+        resource_key: str,
+        plan_limit: SubscriptionPlanLimit | None,
+        add_on_quantity: int = 0,
+    ) -> EffectiveLimit:
+        """Public entry point onto the same ceiling arithmetic
+        ``_effective_limit_for_subscription`` performs, for a caller that has
+        already resolved the ``SubscriptionPlanLimit`` row and the active add-on
+        total for ``resource_key`` itself -- e.g.
+        ``BillingUsageViewSet.retrieve_usage``, which batches
+        ``plan_limit_by_resource``/``add_on_quantity_by_resource`` once for the
+        whole ``LimitedResource`` loop specifically to avoid a
+        ``SubscriptionPlanLimit`` lookup and a ``Sum`` aggregate per resource.
+        Calling ``effective_limit_for_subscription`` from that loop would throw
+        that batching away by re-running both queries per resource anyway.
+
+        Mirrors the three fail-open branches ``_effective_limit_for_subscription``
+        implements when it resolves a subscription itself: no row at all
+        (``plan_limit is None`` -- also what a caller reports when there is no
+        subscription in the first place) and an explicitly unlimited row
+        (``plan_limit.limit_value is None``) both resolve to ``limit_value=None``
+        without ever consulting ``add_on_quantity`` for the ceiling; only a
+        finite ``limit_value`` adds it in. Deliberately does not call
+        ``_effective_limit_for_subscription`` or touch its branches -- this is a
+        parallel path for a caller with pre-resolved inputs, not a caller of it.
+        """
+        if plan_limit is None:
+            return EffectiveLimit(
+                resource_key=resource_key, limit_value=None, kind=None, overage_unit_price=None
+            )
+        if plan_limit.limit_value is None:
+            return EffectiveLimit(
+                resource_key=resource_key,
+                limit_value=None,
+                kind=plan_limit.kind,
+                overage_unit_price=plan_limit.overage_unit_price,
+            )
+        return EffectiveLimit(
+            resource_key=resource_key,
+            limit_value=plan_limit.limit_value + add_on_quantity,
+            kind=plan_limit.kind,
+            overage_unit_price=plan_limit.overage_unit_price,
         )
 
     def get_current_usage(
