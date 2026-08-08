@@ -787,7 +787,23 @@ class BillingPeriodResourceUsage(BaseModel):
     ``by_organization`` maps ``organization_id -> count`` across the pooled
     subtree. A JSON blob rather than a third table because it is only ever read
     wholesale alongside its parent row; nothing filters or aggregates on it in
-    SQL.
+    SQL. Keys are written as **strings**
+    (``{str(organization_id): count, ...}``), not ``int``: ``JSONField``
+    serialises ``dict`` keys to strings on write regardless, so writing ``str``
+    up front keeps the in-memory value ``CycleCloseService._persist_statement``
+    builds identical to whatever a later read back from Postgres returns — a
+    reader must ``int()`` a key before comparing it to an ``organization_id``.
+
+    For the seven prepaid ``LimitedResource`` members,
+    ``limit_value``/``overage_unit_price`` are read at
+    **close time**, not stamped per-period — those resources have no period of
+    their own to stamp against (see the "Detail = post-paid ledger only"
+    decision above), so a plan change between period start and close is
+    reflected here even though nothing recorded it mid-period. ``event_occurrences``
+    is the one exception: both are read back from the *stamped*
+    ``MeteredOccurrence`` rows of the period being closed, so a later price
+    change cannot make this row disagree with the ``overage_total`` it was
+    charged at.
     """
 
     summary = models.ForeignKey(
@@ -800,7 +816,10 @@ class BillingPeriodResourceUsage(BaseModel):
     # explicitly classified as prepaid via an empty-string sentinel.
     kind = models.CharField(max_length=20, choices=LimitKind, null=True, blank=True)  # noqa: DJ001
     total = models.PositiveIntegerField(null=True, blank=True)
-    limit_value = models.PositiveIntegerField(null=True, blank=True)  # null == unlimited
+    # null == unlimited (event_occurrences) or, for the seven prepaid resources,
+    # the as-of-close ceiling rather than an as-of-period one -- see the class
+    # docstring.
+    limit_value = models.PositiveIntegerField(null=True, blank=True)
     overage_unit_price = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True)
     by_organization = models.JSONField(default=dict)
 
