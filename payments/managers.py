@@ -7,7 +7,11 @@ from typing import TYPE_CHECKING
 from django.db.models import Manager
 from django.utils import timezone
 
-from payments.querysets import MeteredOccurrenceQuerySet, ProviderWebhookEventQuerySet
+from payments.querysets import (
+    BillingPeriodSummaryQuerySet,
+    MeteredOccurrenceQuerySet,
+    ProviderWebhookEventQuerySet,
+)
 
 
 if TYPE_CHECKING:
@@ -91,6 +95,27 @@ class MeteredOccurrenceManager(Manager):
         return self.get_queryset().for_billing_period(subscription_id, billing_period_start)
 
     def for_organizations(self, organization_ids: Sequence[int]) -> MeteredOccurrenceQuerySet:
+        return self.get_queryset().for_organizations(organization_ids)
+
+
+class BillingPeriodSummaryManager(Manager):
+    """Manager for ``BillingPeriodSummary``, the closed-period statement ledger.
+
+    A plain ``Manager`` for the same reason as ``MeteredOccurrenceManager``:
+    ``BillingPeriodSummary`` is not an ``OrganizationModel``, because billing reads
+    legitimately cross organizations (a reseller root reading its whole subtree's
+    statement history). See the model docstring.
+
+    Uses an explicit ``get_queryset()`` override rather than
+    ``Manager.from_queryset(...)`` for the same django-stubs reason documented on
+    ``ProviderWebhookEventManager`` above: the dynamic base-class form is
+    unrecognized by the mypy plugin and does not allow adding further methods.
+    """
+
+    def get_queryset(self) -> BillingPeriodSummaryQuerySet:
+        return BillingPeriodSummaryQuerySet(self.model, using=self._db)
+
+    def for_organizations(self, organization_ids: Sequence[int]) -> BillingPeriodSummaryQuerySet:
         return self.get_queryset().for_organizations(organization_ids)
 
 

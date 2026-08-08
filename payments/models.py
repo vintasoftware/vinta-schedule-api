@@ -21,6 +21,7 @@ from payments.constants import (
     SubscriptionStatuses,
 )
 from payments.managers import (
+    BillingPeriodSummaryManager,
     LimitWarningNotificationManager,
     MeteredOccurrenceManager,
     ProviderWebhookEventManager,
@@ -692,3 +693,124 @@ class LimitWarningNotification(BaseModel):
 
     def __str__(self):
         return f"{self.subscription} - {self.resource_key} - {self.level} @ {self.billing_period_start.isoformat()}"
+
+
+class BillingPeriodSummary(BaseModel):
+    """One closed billing period, as a durable statement.
+
+    ``CycleCloseService`` returns a ``ClosedPeriod`` dataclass and discards it;
+    this is that value made durable. It exists because a closed period is the
+    only moment at which the plan in force, the prepaid counts, the accrued
+    overage, and the payment that settled it are all simultaneously knowable —
+    afterwards the subscription has rolled and the prepaid counts have moved on.
+
+    **The unique constraint is the correctness mechanism**, the same pattern
+    ``MeteredOccurrence`` and ``ProviderWebhookEvent`` use: cycle close is
+    idempotent on ``(subscription, period_start)`` and catch-up runs re-enter
+    it, so the write must be a no-op on re-run rather than something the caller
+    has to remember to check.
+
+    Not an ``OrganizationModel``, for the same reason ``MeteredOccurrence`` is
+    not: billing legitimately reads across a pooled subtree, and tenant-scoped
+    managers would force an ``original_manager`` escape at nearly every call
+    site. ``organization`` is always the resolved **billing root**.
+    """
+
+    subscription = models.ForeignKey(
+        Subscription, on_delete=models.CASCADE, related_name="period_summaries"
+    )
+    organization = models.ForeignKey(
+        "organizations.Organization",
+        on_delete=models.CASCADE,
+        related_name="billing_period_summaries",
+    )
+    billing_period_start = models.DateTimeField(db_index=True)
+    billing_period_end = models.DateTimeField()
+
+    # Plan snapshot: the plan in force for THIS period, not whatever the
+    # subscription points at now. A plan change after close must not rewrite
+    # history, exactly as MeteredOccurrence.unit_price is stamped at meter time.
+    plan_slug = models.CharField(max_length=100)
+    plan_name = models.CharField(max_length=255)
+    billing_interval = models.CharField(max_length=20, choices=BillingInterval)
+    currency = models.CharField(max_length=3)
+
+    overage_total = models.DecimalField(max_digits=12, decimal_places=4)
+    charged = models.BooleanField()
+    payment = models.ForeignKey(
+        Payment,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="period_summaries",
+    )
+
+    # Internal only — never serialized to a customer. Persisted so a disputed
+    # invoice can be investigated against what reconciliation saw at the time.
+    reconciliation_unmetered = models.PositiveIntegerField()
+    reconciliation_orphaned = models.PositiveIntegerField()
+
+    closed_at = models.DateTimeField()
+
+    resources: "RelatedManager[BillingPeriodResourceUsage]"
+
+    objects: ClassVar[BillingPeriodSummaryManager] = BillingPeriodSummaryManager()
+
+    class Meta(BaseModel.Meta):
+        constraints: ClassVar = [
+            UniqueConstraint(
+                fields=["subscription", "billing_period_start"],
+                name="uniq_billing_period_summary",
+            )
+        ]
+        indexes: ClassVar = [
+            models.Index(
+                fields=["organization", "-billing_period_start"],
+                name="billing_period_org_idx",
+            )
+        ]
+        ordering = ("-billing_period_start",)
+
+    def __str__(self):
+        return f"{self.organization_id}/{self.subscription_id} @ {self.billing_period_start.isoformat()}"
+
+
+class BillingPeriodResourceUsage(BaseModel):
+    """Per-resource usage as of one closed period.
+
+    ``total`` is nullable and ``null`` means **not recorded**, never zero — the
+    state of every prepaid resource for a period that closed before this feature
+    shipped, and of any ``LimitedResource`` member added after a period closed.
+    Rendering "not recorded" as 0 would tell a customer they used none of
+    something we simply never counted.
+
+    ``by_organization`` maps ``organization_id -> count`` across the pooled
+    subtree. A JSON blob rather than a third table because it is only ever read
+    wholesale alongside its parent row; nothing filters or aggregates on it in
+    SQL.
+    """
+
+    summary = models.ForeignKey(
+        BillingPeriodSummary, on_delete=models.CASCADE, related_name="resources"
+    )
+    resource_key = models.CharField(max_length=100, choices=LimitedResource)
+    # null=True (not "" as DJ001 would prefer): a resource whose limit could not be
+    # resolved at close time (see PlanLimit's own note that an omitted resource_key
+    # otherwise reads as unlimited) must not be indistinguishable from a resource
+    # explicitly classified as prepaid via an empty-string sentinel.
+    kind = models.CharField(max_length=20, choices=LimitKind, null=True, blank=True)  # noqa: DJ001
+    total = models.PositiveIntegerField(null=True, blank=True)
+    limit_value = models.PositiveIntegerField(null=True, blank=True)  # null == unlimited
+    overage_unit_price = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True)
+    by_organization = models.JSONField(default=dict)
+
+    class Meta(BaseModel.Meta):
+        constraints: ClassVar = [
+            UniqueConstraint(
+                fields=["summary", "resource_key"],
+                name="uniq_billing_period_resource_usage",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.summary_id} - {self.resource_key} - {self.total}"

@@ -11,6 +11,8 @@ from dependency_injector.wiring import Provide, inject
 from payments.billing_constants import LimitedResource
 from payments.models import (
     BillingAddress,
+    BillingPeriodResourceUsage,
+    BillingPeriodSummary,
     BillingPlan,
     BillingProfile,
     Payment,
@@ -385,3 +387,127 @@ class ProviderWebhookEventAdmin(admin.ModelAdmin):
     list_filter = ("provider", "route")
     search_fields = ("external_event_id",)
     readonly_fields = ("created", "modified", "provider", "route", "external_event_id", "payload")
+
+
+class BillingPeriodResourceUsageInline(admin.TabularInline):
+    """Read-only view of a statement's per-resource rows, alongside the statement
+    itself — this app has no other surface where these are visible at all
+    (see `BillingPeriodSummary`'s Phase 0 scaffolding note)."""
+
+    model = BillingPeriodResourceUsage
+    extra = 0
+    max_num = 0
+    can_delete = False
+    fields = (
+        "resource_key",
+        "kind",
+        "total",
+        "limit_value",
+        "overage_unit_price",
+        "by_organization",
+    )
+    readonly_fields = fields
+
+    def has_add_permission(self, request: HttpRequest, obj: Any = None) -> bool:
+        return False
+
+    def has_change_permission(self, request: HttpRequest, obj: Any = None) -> bool:
+        return False
+
+    def has_delete_permission(self, request: HttpRequest, obj: Any = None) -> bool:
+        return False
+
+
+@admin.register(BillingPeriodSummary)
+class BillingPeriodSummaryAdmin(admin.ModelAdmin):
+    """Read-only view of closed-period statements.
+
+    This is where reconciliation drift (`reconciliation_unmetered` /
+    `reconciliation_orphaned`) is surfaced — deliberately not in any API
+    response, per the plan's non-goal on exposing drift to customers. The
+    `payment` link is the statement's tie to the charge that settled it, not a
+    rendered invoice (`BillingPeriodSummary` is a statement, not an invoice).
+    """
+
+    list_display = (
+        "id",
+        "organization",
+        "subscription",
+        "billing_period_start",
+        "billing_period_end",
+        "plan_slug",
+        "overage_total",
+        "charged",
+        "payment",
+        "reconciliation_unmetered",
+        "reconciliation_orphaned",
+    )
+    list_filter = ("charged", "billing_interval", "currency")
+    search_fields = ("organization__name", "subscription__id", "plan_slug")
+    readonly_fields = (
+        "created",
+        "modified",
+        "subscription",
+        "organization",
+        "billing_period_start",
+        "billing_period_end",
+        "plan_slug",
+        "plan_name",
+        "billing_interval",
+        "currency",
+        "overage_total",
+        "charged",
+        "payment",
+        "reconciliation_unmetered",
+        "reconciliation_orphaned",
+        "closed_at",
+    )
+    inlines = (BillingPeriodResourceUsageInline,)
+
+    def has_add_permission(self, request: HttpRequest) -> bool:
+        return False
+
+    def has_change_permission(self, request: HttpRequest, obj: Any = None) -> bool:
+        return False
+
+    def has_delete_permission(self, request: HttpRequest, obj: Any = None) -> bool:
+        return False
+
+
+@admin.register(BillingPeriodResourceUsage)
+class BillingPeriodResourceUsageAdmin(admin.ModelAdmin):
+    """Read-only view of per-resource statement rows, independent of the inline
+    on `BillingPeriodSummaryAdmin` — useful for searching/filtering by
+    `resource_key` across every statement rather than drilling in one at a time."""
+
+    list_display = (
+        "id",
+        "summary",
+        "resource_key",
+        "kind",
+        "total",
+        "limit_value",
+        "overage_unit_price",
+    )
+    list_filter = ("resource_key", "kind")
+    search_fields = ("summary__organization__name",)
+    readonly_fields = (
+        "created",
+        "modified",
+        "summary",
+        "resource_key",
+        "kind",
+        "total",
+        "limit_value",
+        "overage_unit_price",
+        "by_organization",
+    )
+
+    def has_add_permission(self, request: HttpRequest) -> bool:
+        return False
+
+    def has_change_permission(self, request: HttpRequest, obj: Any = None) -> bool:
+        return False
+
+    def has_delete_permission(self, request: HttpRequest, obj: Any = None) -> bool:
+        return False
