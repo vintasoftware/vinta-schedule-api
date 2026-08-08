@@ -148,9 +148,15 @@ class FakePaymentService:
     #: Every idempotency key forwarded to a provider-driving call, in order, so
     #: tests can assert the client-supplied key actually reaches the provider.
     idempotency_keys: list[str] = field(default_factory=list)
+    #: Every `provider` argument `create_subscription_plan` was called with, in
+    #: order -- lets tests assert the caller (`_ensure_provider_plan`) resolves
+    #: it from the subscription's own stored provider (Payment Provider
+    #: Selection, Phase 4), not the organization's current pin.
+    create_subscription_plan_providers: list[str] = field(default_factory=list)
 
-    def create_subscription_plan(self, plan) -> CreatedPlan:
+    def create_subscription_plan(self, plan, provider: str = "") -> CreatedPlan:
         self.calls.append("create_subscription_plan")
+        self.create_subscription_plan_providers.append(provider)
         return CreatedPlan(
             id=plan.id,
             name=plan.name,
@@ -243,6 +249,12 @@ class TestUpgrade:
         # card via `process_subscription` (no existing external_id to move).
         assert fake_payment_service.calls == ["create_subscription_plan", "process_subscription"]
         assert result.external_id == fake_payment_service.subscription_external_id
+        # Payment Provider Selection, Phase 4: the provider-side plan is created
+        # against the *subscription's own* stored provider, not re-resolved from
+        # the organization's current pin.
+        assert fake_payment_service.create_subscription_plan_providers == [
+            subscription.payment_provider
+        ]
 
     def test_upgrade_without_a_token_when_none_on_file_raises_and_writes_nothing(
         self, service, fake_payment_service, organization, billing_profile

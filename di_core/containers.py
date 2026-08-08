@@ -114,11 +114,23 @@ class AppContainer(containers.DeclarativeContainer):
         BillingPlanFactory,
     )
 
+    #: Single source of the pin -> default provider resolution rule -- shared by the
+    #: provider-credentials endpoints (`payments.views.PaymentProviderViewSet`) and
+    #: `PaymentService`'s charge-routing (`create_payment`/`create_subscription`). No
+    #: adapter dependency, so it does not need the `payment_gateway`/`subscription_gateway`
+    #: providers above.
+    payment_provider_resolver = providers.Factory(
+        PaymentProviderResolver,
+    )
+
+    #: `PaymentService` resolves every adapter through the two registries above --
+    #: it no longer takes the singular `payment_gateway`/`subscription_gateway`
+    #: providers directly (Payment Provider Selection, Phase 4). Those providers stay
+    #: registered because the registries above are built from them.
     payment_service = providers.Factory(
         PaymentService,
         subscription_plan_factory=subscription_plan_factory,
-        payment_gateway=payment_gateway,
-        subscription_gateway=subscription_gateway,
+        payment_provider_resolver=payment_provider_resolver,
         payment_provider_registry=payment_provider_registry,
         subscription_provider_registry=subscription_provider_registry,
     )
@@ -127,14 +139,6 @@ class AppContainer(containers.DeclarativeContainer):
         SubscriptionService,
         payment_service=payment_service,
         audit_service=audit_service,
-    )
-
-    #: Single source of the pin -> default provider resolution rule -- shared by the
-    #: provider-credentials endpoints (`payments.views.PaymentProviderViewSet`) and, from
-    #: Phase 4 onward, `PaymentService`'s charge-routing. No adapter dependency, so it does
-    #: not need the `payment_gateway`/`subscription_gateway` providers above.
-    payment_provider_resolver = providers.Factory(
-        PaymentProviderResolver,
     )
 
     entitlement_service = providers.Factory(

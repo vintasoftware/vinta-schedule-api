@@ -14,7 +14,11 @@ from payments.constants import (
     RefundStatuses,
     SubscriptionStatuses,
 )
-from payments.exceptions import MissingBillingProfileError, UnknownPaymentProviderError
+from payments.exceptions import (
+    MissingBillingProfileError,
+    PaymentProviderNotConfiguredError,
+    UnknownPaymentProviderError,
+)
 from payments.models import BillingPlan, ProviderWebhookEvent
 from payments.models import Payment as PaymentModel
 from payments.models import Subscription as SubscriptionModel
@@ -90,6 +94,13 @@ def billing_address():
 
 @pytest.fixture
 def billing_profile(organization, billing_address):
+    """Unpinned by default -- several Phase 2 tests below assert on the
+    "never pinned" (``payment_provider == ""``) starting state. Tests that
+    exercise `create_payment`/`create_subscription` (Rule B: resolves the
+    provider from the organization) pin this explicitly to MercadoPago, to
+    match the mocked MercadoPago DI slot rather than resolving to
+    ``settings.DEFAULT_PAYMENT_PROVIDER`` and driving the real, unmocked
+    Stripe adapter."""
     return baker.make(
         "payments.BillingProfile",
         organization=organization,
@@ -97,6 +108,16 @@ def billing_profile(organization, billing_address):
         document_number="12345678900",
         billing_address=billing_address,
     )
+
+
+@pytest.fixture
+def mercadopago_pinned_billing_profile(billing_profile):
+    """`billing_profile`, pinned to MercadoPago -- for tests exercising Rule B
+    (`create_payment`/`create_subscription`) that need the resolved provider to
+    match the mocked MercadoPago DI slot."""
+    billing_profile.payment_provider = PaymentProviders.MERCADOPAGO
+    billing_profile.save(update_fields=["payment_provider"])
+    return billing_profile
 
 
 @pytest.fixture
@@ -119,15 +140,46 @@ def subscription_adapter():
 
 
 @pytest.fixture
+def stripe_payment_adapter():
+    """The Stripe payment DI slot, mocked the same way as ``payment_adapter``
+    -- used by the Rule A/Rule B routing tests below, which need a *second*,
+    independently assertable provider in the registry so a test can prove a
+    call reached one adapter and not the other."""
+    adapter = MagicMock(spec=BasePaymentAdapter)
+    adapter.provider = PaymentProviders.STRIPE
+    return adapter
+
+
+@pytest.fixture
+def stripe_subscription_adapter():
+    adapter = MagicMock(spec=BaseSubscriptionAdapter)
+    adapter.provider = PaymentProviders.STRIPE
+    return adapter
+
+
+@pytest.fixture
 def subscription_plan_factory():
     return MockSubscriptionPlanFactory()
 
 
 @pytest.fixture
-def payment_service(payment_adapter, subscription_adapter, subscription_plan_factory, di_container):
+def payment_service(
+    payment_adapter,
+    subscription_adapter,
+    stripe_payment_adapter,
+    stripe_subscription_adapter,
+    subscription_plan_factory,
+    di_container,
+):
+    """Both provider slots are mocked -- MercadoPago (what ``billing_profile``
+    is pinned to by default) and Stripe (used by the Rule A/Rule B routing
+    tests) -- so no test constructing this fixture can accidentally reach a
+    real, unconfigured adapter over the network."""
     with (
         di_container.payment_gateway.override(payment_adapter),
         di_container.subscription_gateway.override(subscription_adapter),
+        di_container.stripe_payment_gateway.override(stripe_payment_adapter),
+        di_container.stripe_subscription_gateway.override(stripe_subscription_adapter),
     ):
         return PaymentService(subscription_plan_factory=subscription_plan_factory)
 
@@ -141,9 +193,12 @@ def subscription_service():
 
 
 @pytest.mark.django_db
-def test_success_create_payment(payment_service, billing_profile):
+def test_success_create_payment(
+    payment_service, payment_adapter, mercadopago_pinned_billing_profile
+):
+    billing_profile = mercadopago_pinned_billing_profile
     # Create payment using service
-    payment_service.payment_gateway.process.return_value = "payment_12345"
+    payment_adapter.process.return_value = "payment_12345"
 
     created_payment = payment_service.create_payment(
         organization=billing_profile.organization,
@@ -477,7 +532,9 @@ def test_success_create_subscription_plan(payment_service, subscription_adapter)
     subscription_adapter.create_subscription_plan.return_value = external_plan_id
 
     # Create subscription plan
-    created_plan = payment_service.create_subscription_plan(plan)
+    created_plan = payment_service.create_subscription_plan(
+        plan, provider=PaymentProviders.MERCADOPAGO
+    )
 
     # Verify create_subscription_plan was called with the correct arguments
     subscription_adapter.create_subscription_plan.assert_called_once_with(plan)
@@ -508,7 +565,9 @@ def test_success_update_subscription_plan(payment_service, subscription_adapter)
     subscription_adapter.update_subscription_plan.return_value = external_id
 
     # Update subscription plan
-    updated_plan = payment_service.update_subscription_plan(external_id, plan)
+    updated_plan = payment_service.update_subscription_plan(
+        external_id, plan, provider=PaymentProviders.MERCADOPAGO
+    )
 
     # Verify update_subscription_plan was called with the correct arguments
     subscription_adapter.update_subscription_plan.assert_called_once_with(external_id, plan)
@@ -524,8 +583,9 @@ def test_success_update_subscription_plan(payment_service, subscription_adapter)
 
 @pytest.mark.django_db
 def test_success_create_subscription(
-    payment_service, subscription_adapter, billing_profile, billing_plan
+    payment_service, subscription_adapter, mercadopago_pinned_billing_profile, billing_plan
 ):
+    billing_profile = mercadopago_pinned_billing_profile
     # Create a subscription
     now = datetime.datetime.now(tz=datetime.UTC)
 
@@ -538,12 +598,14 @@ def test_success_create_subscription(
     )
     assert created_subscription.pk is not None
     assert created_subscription.status == SubscriptionStatuses.PENDING_SEND
+    assert created_subscription.payment_provider == PaymentProviders.MERCADOPAGO
 
 
 @pytest.mark.django_db
 def test_success_process_subscription(
-    payment_service, subscription_adapter, billing_profile, billing_plan
+    payment_service, subscription_adapter, mercadopago_pinned_billing_profile, billing_plan
 ):
+    billing_profile = mercadopago_pinned_billing_profile
     # Create a subscription
     now = datetime.datetime.now(tz=datetime.UTC)
 
@@ -766,6 +828,167 @@ def test_get_subscription_adapter_returns_registered_provider(
 def test_get_subscription_adapter_raises_for_unknown_provider(payment_service):
     with pytest.raises(UnknownPaymentProviderError):
         payment_service.get_subscription_adapter("some-unregistered-provider")
+
+
+# ---------------------------------------------------------------------------
+# Provider routing (Payment Provider Selection, Phase 4) -- two resolution
+# rules: existing-row operations resolve from the row's own stored provider
+# (Rule A); new-row operations resolve from the organization (Rule B).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_mercadopago_payment_is_refunded_and_status_checked_via_mercadopago_even_when_org_pin_is_stripe(
+    payment_service, payment_adapter, stripe_payment_adapter, billing_profile
+):
+    """The single most important assertion in this phase: a `Payment` row
+    stamped `mercadopago` must be refunded and status-checked through the
+    MercadoPago adapter even when its organization's *current* pin says
+    `stripe` (Rule A). Using the org's pin here would send a MercadoPago
+    external id to Stripe -- meaningless at best, a charge against the wrong
+    instrument at worst."""
+    billing_profile.payment_provider = PaymentProviders.STRIPE
+    billing_profile.save(update_fields=["payment_provider"])
+
+    payment = baker.make(
+        "payments.Payment",
+        billing_profile=billing_profile,
+        value=Decimal("100"),
+        currency="USD",
+        payment_provider=PaymentProviders.MERCADOPAGO,
+        status=PaymentStatuses.APPROVED,
+        payment_method="credit_card",
+        description="Test Payment",
+        external_id="ext_12345",
+    )
+
+    payment_adapter.check_status.return_value = PaymentStatusUpdateDataclass(
+        id=None, status="approved", description="ok", update_external_id="upd-1"
+    )
+    status_result = payment_service.check_payment_status(payment)
+    payment_adapter.check_status.assert_called_once_with(payment.external_id)
+    stripe_payment_adapter.check_status.assert_not_called()
+    assert status_result.status == "approved"
+
+    payment_adapter.refund.return_value = RefundResult(
+        external_id="refund_1", status=RefundStatuses.PENDING
+    )
+    created_refund = payment_service.create_refund(
+        payment_id=payment.pk, value=Decimal("100"), currency="USD"
+    )
+    payment_adapter.refund.assert_called_once()
+    stripe_payment_adapter.refund.assert_not_called()
+    assert created_refund.external_id == "refund_1"
+
+    payment_adapter.check_refund_status.return_value = RefundStatuses.APPROVED
+    payment_service.check_refund_status(created_refund)
+    payment_adapter.check_refund_status.assert_called_once()
+    stripe_payment_adapter.check_refund_status.assert_not_called()
+    created_refund.refresh_from_db()
+    assert created_refund.status == RefundStatuses.APPROVED
+
+
+@pytest.mark.django_db
+def test_create_payment_for_stripe_pinned_org_stamps_and_drives_stripe(
+    payment_service, stripe_payment_adapter, payment_adapter, billing_profile
+):
+    """Rule B: `create_payment` creates a *new* row, so it resolves from the
+    organization's pin, not any existing row."""
+    billing_profile.payment_provider = PaymentProviders.STRIPE
+    billing_profile.save(update_fields=["payment_provider"])
+    stripe_payment_adapter.process.return_value = "stripe_payment_1"
+
+    created_payment = payment_service.create_payment(
+        organization=billing_profile.organization,
+        currency="USD",
+        amount=Decimal("100"),
+        description="Test Payment",
+        payment_method="credit_card",
+        payment_token="tok_stripe",
+    )
+
+    assert created_payment.payment_provider == PaymentProviders.STRIPE
+    assert created_payment.external_id == "stripe_payment_1"
+    stripe_payment_adapter.process.assert_called_once()
+    payment_adapter.process.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_create_payment_for_unpinned_org_drives_default_payment_provider(
+    payment_service, stripe_payment_adapter, payment_adapter, billing_profile, settings
+):
+    """Rule B, unpinned case: an org with no pin at all resolves to
+    `settings.DEFAULT_PAYMENT_PROVIDER`, not to whatever adapter happens to be
+    mocked in this test suite."""
+    settings.DEFAULT_PAYMENT_PROVIDER = PaymentProviders.STRIPE
+    billing_profile.payment_provider = ""
+    billing_profile.save(update_fields=["payment_provider"])
+    stripe_payment_adapter.process.return_value = "stripe_payment_default"
+
+    created_payment = payment_service.create_payment(
+        organization=billing_profile.organization,
+        currency="USD",
+        amount=Decimal("50"),
+        description="Default Provider Payment",
+        payment_method="credit_card",
+        payment_token="tok_default",
+    )
+
+    assert created_payment.payment_provider == PaymentProviders.STRIPE
+    stripe_payment_adapter.process.assert_called_once()
+    payment_adapter.process.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_create_payment_for_org_pinned_to_unconfigured_provider_raises_and_creates_no_row(
+    payment_service, billing_profile, settings
+):
+    """An org pinned to a real, registered provider this deployment has no
+    usable public credentials for raises `PaymentProviderNotConfiguredError`
+    and leaves no `Payment` row behind -- never falls back to the default.
+    Deliberately does not rely on `stripe_payment_adapter`'s DI override: the
+    NotConfigured guard is driven by `settings.STRIPE_PUBLISHABLE_KEY` alone
+    (see `PaymentService.get_payment_adapter`), independent of which adapter
+    object the registry happens to resolve to."""
+    billing_profile.payment_provider = PaymentProviders.STRIPE
+    billing_profile.save(update_fields=["payment_provider"])
+    settings.STRIPE_PUBLISHABLE_KEY = ""
+
+    with pytest.raises(PaymentProviderNotConfiguredError):
+        payment_service.create_payment(
+            organization=billing_profile.organization,
+            currency="USD",
+            amount=Decimal("10"),
+            description="Should not be created",
+            payment_method="credit_card",
+            payment_token="tok_x",
+        )
+
+    assert not PaymentModel.objects.filter(description="Should not be created").exists()
+
+
+@pytest.mark.django_db
+def test_create_payment_for_org_pinned_to_slug_that_is_not_a_real_provider_raises_unknown(
+    payment_service, billing_profile
+):
+    """Proves the Unknown/NotConfigured distinction survives at the
+    `get_payment_adapter` boundary: a pin naming a slug that is not a provider
+    at all -- bad data in the pin column -- raises `UnknownPaymentProviderError`,
+    never `PaymentProviderNotConfiguredError`."""
+    billing_profile.payment_provider = "not_a_real_provider"
+    billing_profile.save(update_fields=["payment_provider"])
+
+    with pytest.raises(UnknownPaymentProviderError):
+        payment_service.create_payment(
+            organization=billing_profile.organization,
+            currency="USD",
+            amount=Decimal("10"),
+            description="Should not be created either",
+            payment_method="credit_card",
+            payment_token="tok_y",
+        )
+
+    assert not PaymentModel.objects.filter(description="Should not be created either").exists()
 
 
 @pytest.mark.django_db

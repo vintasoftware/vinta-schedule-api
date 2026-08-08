@@ -41,6 +41,8 @@ from payments.services.dataclasses import (
     Subscription,
 )
 from payments.services.payment_adapters.base import BasePaymentAdapter
+from payments.services.payment_provider_resolver import PaymentProviderResolver
+from payments.services.provider_credentials import resolve_public_credentials
 from payments.services.subscription_adapters.base import BaseSubscriptionAdapter
 from payments.services.subscription_plan_factory.base import BaseSubscriptionPlanFactory
 
@@ -57,8 +59,9 @@ class PaymentService[
     def __init__(
         self,
         subscription_plan_factory: SubscriptionPlanFactory,
-        payment_gateway: Annotated[PaymentAdapter, Provide["payment_gateway"]],
-        subscription_gateway: Annotated[SubscriptionAdapter, Provide["subscription_gateway"]],
+        payment_provider_resolver: Annotated[
+            PaymentProviderResolver, Provide["payment_provider_resolver"]
+        ],
         payment_provider_registry: Annotated[
             dict[str, PaymentAdapter], Provide["payment_provider_registry"]
         ],
@@ -66,25 +69,50 @@ class PaymentService[
             dict[str, SubscriptionAdapter], Provide["subscription_provider_registry"]
         ],
     ):
-        self.payment_gateway = payment_gateway
-        self.subscription_gateway = subscription_gateway
         self.subscription_plan_factory = subscription_plan_factory
+        self.payment_provider_resolver = payment_provider_resolver
         self.payment_provider_registry = payment_provider_registry
         self.subscription_provider_registry = subscription_provider_registry
 
     def get_payment_adapter(self, provider: str) -> PaymentAdapter:
-        """Resolve the payment adapter registered for *provider* (a URL kwarg slug)."""
+        """Resolve the payment adapter registered for *provider* -- a URL kwarg slug,
+        an existing row's ``payment_provider``, or an organization's resolved provider.
+
+        :raises UnknownPaymentProviderError: ``provider`` does not match any adapter
+            this deployment has registered at all (bad data in a pin/URL kwarg --
+            a routing/data error, not a deployment one).
+        :raises PaymentProviderNotConfiguredError: ``provider`` is a real, registered
+            provider this deployment has no usable credentials for. Determined via
+            ``payments.services.provider_credentials.resolve_public_credentials`` --
+            reused here on purpose rather than re-implemented, so "is this provider
+            configured" has exactly one definition shared with the provider-credentials
+            endpoints instead of two that can silently disagree. Safe to reuse here even
+            though that module collapses "unknown" and "not configured" into one error
+            for its own (read-only, browser-facing) purpose: by the time this call runs,
+            the registry lookup above has already proven ``provider`` is a real,
+            registered provider, so the "unknown slug" branch inside
+            ``resolve_public_credentials`` can never fire from this call site -- the
+            Unknown/NotConfigured split stays intact for every caller of this method.
+        """
         try:
-            return self.payment_provider_registry[provider]
+            adapter = self.payment_provider_registry[provider]
         except KeyError as e:
             raise UnknownPaymentProviderError(provider) from e
+        resolve_public_credentials(provider)
+        return adapter
 
     def get_subscription_adapter(self, provider: str) -> SubscriptionAdapter:
-        """Resolve the subscription adapter registered for *provider* (a URL kwarg slug)."""
+        """Resolve the subscription adapter registered for *provider*.
+
+        Same contract as ``get_payment_adapter`` -- see its docstring for the
+        ``UnknownPaymentProviderError``/``PaymentProviderNotConfiguredError`` split.
+        """
         try:
-            return self.subscription_provider_registry[provider]
+            adapter = self.subscription_provider_registry[provider]
         except KeyError as e:
             raise UnknownPaymentProviderError(provider) from e
+        resolve_public_credentials(provider)
+        return adapter
 
     def create_payment(
         self,
@@ -101,6 +129,14 @@ class PaymentService[
         except BillingProfileModel.DoesNotExist as e:
             raise ValueError("Organization does not have a billing profile") from e
 
+        # New row: resolve from the organization -- its pin when set, the system
+        # default otherwise -- never from any existing row. Resolved (and the
+        # adapter looked up) *before* the `Payment` row is created, so an org
+        # pinned to an unknown/unconfigured provider fails loudly with no row
+        # left behind, instead of a half-created `Payment` nothing can ever drive.
+        provider = self.payment_provider_resolver.resolve_for_organization(organization)
+        adapter = self.get_payment_adapter(provider)
+
         payment = PaymentModel.objects.create(
             billing_profile=billing_profile,
             currency=currency,
@@ -108,14 +144,14 @@ class PaymentService[
             description=description,
             payment_method=payment_method,
             status=PaymentStatuses.PENDING_SEND,
-            payment_provider=self.payment_gateway.provider,
+            payment_provider=provider,
         )
         # `idempotency_key` is threaded through to the provider (see
         # `BasePaymentAdapter.process`) so a retried charge after a rolled-back
         # transaction resolves to the same provider-side charge rather than a
         # second one -- the local `Payment` row above is re-created on retry and
         # so cannot itself dedupe across the rollback.
-        external_id = self.payment_gateway.process(
+        external_id = adapter.process(
             payment=self._serialize_payment(payment),
             payment_token=payment_token,
             idempotency_key=idempotency_key,
@@ -166,7 +202,7 @@ class PaymentService[
             currency=payment.currency,
             external_id=payment.external_id,
             status=payment.status,
-            payment_provider=self.payment_gateway.provider,
+            payment_provider=payment.payment_provider,
             status_updates=[
                 PaymentStatusUpdate(
                     id=status_update.id,
@@ -179,7 +215,11 @@ class PaymentService[
         )
 
     def process_payment(self, payment: PaymentModel, card_token: str) -> PaymentModel:
-        external_payment_id = self.payment_gateway.process(
+        # Existing row: resolve from `payment`'s own stored provider, never from
+        # the organization's current pin -- a charge made through one provider
+        # must be driven through that same provider for the rest of its life.
+        adapter = self.get_payment_adapter(payment.payment_provider)
+        external_payment_id = adapter.process(
             self._serialize_payment(payment),
             card_token,
         )
@@ -195,6 +235,14 @@ class PaymentService[
         value: Decimal,
         currency: str,
     ) -> RefundModel:
+        # Existing row: resolve from the payment being refunded's own stored
+        # provider, never the organization's current pin -- and resolve (and look
+        # up the adapter for) it *before* any `Refund` row exists, so an
+        # unknown/unconfigured provider fails loudly with nothing left behind,
+        # matching `create_payment`'s no-stray-row behavior.
+        payment = PaymentModel.objects.get(pk=payment_id)
+        adapter = self.get_payment_adapter(payment.payment_provider)
+
         refund = RefundModel.objects.create(
             payment_id=payment_id,
             value=value,
@@ -207,12 +255,12 @@ class PaymentService[
             description="Refund created in the database, will send to payment gateway",
         )
         try:
-            refund_result = self.payment_gateway.refund(
+            refund_result = adapter.refund(
                 Refund(
                     id=refund.id,
                     value=refund.value,
                     currency=refund.currency,
-                    payment=self._serialize_payment(refund.payment),
+                    payment=self._serialize_payment(payment),
                 )
             )
             refund.external_id = refund_result.external_id
@@ -240,10 +288,15 @@ class PaymentService[
         return refund
 
     def check_payment_status(self, payment: PaymentModel) -> PaymentStatusUpdate:
-        return self.payment_gateway.check_status(payment.external_id)
+        # Existing row: same reasoning as `process_payment`.
+        adapter = self.get_payment_adapter(payment.payment_provider)
+        return adapter.check_status(payment.external_id)
 
     def check_refund_status(self, refund: RefundModel) -> None:
-        refund.status = self.payment_gateway.check_refund_status(
+        # Existing row: resolve from the refunded payment's own stored provider,
+        # never the organization's current pin.
+        adapter = self.get_payment_adapter(refund.payment.payment_provider)
+        refund.status = adapter.check_refund_status(
             Refund(
                 id=refund.id,
                 value=refund.value,
@@ -447,12 +500,30 @@ class PaymentService[
             end_date=subscription.current_period_end.strftime("%Y-%m-%d"),
         )
 
-    def create_subscription_plan(self, plan: Plan) -> CreatedPlan:
-        external_id = self.subscription_gateway.create_subscription_plan(plan)
+    def create_subscription_plan(self, plan: Plan, provider: str) -> CreatedPlan:
+        """Create *plan*'s provider-side plan/price object at *provider*.
+
+        ``provider`` is explicit rather than resolved here: this method takes a
+        bare ``Plan`` dataclass with no organization or subscription attached, so
+        it has nothing of its own to resolve a provider from. Every caller
+        already has a ``Subscription`` in hand and passes its own
+        ``payment_provider`` -- an existing row's stored provider, the same rule
+        every other existing-row operation in this class follows.
+        """
+        adapter = self.get_subscription_adapter(provider)
+        external_id = adapter.create_subscription_plan(plan)
         return CreatedPlan(external_id=external_id, **asdict(plan))
 
-    def update_subscription_plan(self, external_id: str, new_plan_data: Plan) -> CreatedPlan:
-        external_id = self.subscription_gateway.update_subscription_plan(external_id, new_plan_data)
+    def update_subscription_plan(
+        self, external_id: str, new_plan_data: Plan, provider: str
+    ) -> CreatedPlan:
+        """Update the provider-side plan/price object at *provider*.
+
+        See ``create_subscription_plan`` -- same reasoning for the explicit
+        ``provider`` parameter.
+        """
+        adapter = self.get_subscription_adapter(provider)
+        external_id = adapter.update_subscription_plan(external_id, new_plan_data)
         return CreatedPlan(external_id=external_id, **asdict(new_plan_data))
 
     def create_subscription(
@@ -476,6 +547,13 @@ class PaymentService[
         if not BillingProfileModel.objects.filter(organization=organization).exists():
             raise MissingBillingProfileError
 
+        # New row: resolve from the organization, exactly like `create_payment` --
+        # and, same as there, resolve (and look up the adapter for) it *before*
+        # the `Subscription` row is created, so an org pinned to an
+        # unknown/unconfigured provider fails loudly with no row left behind.
+        provider = self.payment_provider_resolver.resolve_for_organization(organization)
+        self.get_subscription_adapter(provider)
+
         subscription = SubscriptionModel.objects.create(
             organization=organization,
             plan=plan,
@@ -483,7 +561,7 @@ class PaymentService[
             current_period_start=current_period_start,
             current_period_end=current_period_end,
             status=SubscriptionStatuses.PENDING_SEND,
-            payment_provider=self.subscription_gateway.provider,
+            payment_provider=provider,
         )
 
         SubscriptionStatusUpdate.objects.create(
@@ -500,7 +578,9 @@ class PaymentService[
         payment_token: str,
         idempotency_key: str = "",
     ) -> SubscriptionModel:
-        subscription.external_id = self.subscription_gateway.create_subscription(
+        # Existing row: resolve from `subscription`'s own stored provider.
+        adapter = self.get_subscription_adapter(subscription.payment_provider)
+        subscription.external_id = adapter.create_subscription(
             subscription=self._serialize_subscription(subscription),
             payment_token=payment_token,
             idempotency_key=idempotency_key,
@@ -524,13 +604,18 @@ class PaymentService[
         contract. Writes nothing locally: the outcome arrives later through the
         subscription-payment webhook. `idempotency_key` is forwarded so a retried
         drive prorates at most once.
+
+        Existing row: resolves from `subscription`'s own stored provider.
         """
-        self.subscription_gateway.change_subscription_plan(
+        adapter = self.get_subscription_adapter(subscription.payment_provider)
+        adapter.change_subscription_plan(
             self._serialize_subscription(subscription), new_plan, idempotency_key=idempotency_key
         )
 
     def cancel_subscription(self, subscription: SubscriptionModel) -> None:
-        self.subscription_gateway.cancel_subscription(self._serialize_subscription(subscription))
+        # Existing row: resolves from `subscription`'s own stored provider.
+        adapter = self.get_subscription_adapter(subscription.payment_provider)
+        adapter.cancel_subscription(self._serialize_subscription(subscription))
         SubscriptionStatusUpdate.objects.create(
             subscription=subscription,
             status=SubscriptionStatuses.CANCELLED,

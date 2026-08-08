@@ -99,6 +99,14 @@ def billing_profile(organization):
         document_type="CPF",
         document_number="12345678900",
         billing_address=billing_address,
+        # Pinned to MercadoPago -- matching `billing_client`/`webhook_client`'s
+        # `mercadopago_payment_adapter`/`mercadopago_subscription_adapter` DI
+        # overrides below. Add-on purchase (`purchase_add_on` ->
+        # `PaymentService.create_payment`) resolves the provider from this pin
+        # (Rule B, Payment Provider Selection Phase 4); leaving it unpinned would
+        # resolve to `settings.DEFAULT_PAYMENT_PROVIDER` (`stripe`) and drive the
+        # real, unmocked Stripe adapter over the network.
+        payment_provider=PaymentProviders.MERCADOPAGO,
     )
 
 

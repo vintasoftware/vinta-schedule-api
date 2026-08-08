@@ -602,6 +602,11 @@ class SubscriptionService:
         validate a caching scheme against in this environment. Correct, if not
         maximally efficient — a follow-up could add a
         provider-keyed external id to the catalog plan itself.
+
+        ``provider`` is resolved from ``subscription.payment_provider`` --
+        `subscription` already exists, so this is an existing-row operation, the
+        same rule ``process_subscription``/``change_subscription_plan``/
+        ``cancel_subscription`` follow on ``PaymentService``.
         """
         payment_service = self._require_payment_service()
         created = payment_service.create_subscription_plan(
@@ -612,7 +617,8 @@ class SubscriptionService:
                 currency=plan.currency,
                 billing_day=min(subscription.current_period_start.day, 28),
                 billing_interval=billing_interval,
-            )
+            ),
+            provider=subscription.payment_provider,
         )
         subscription.plan_external_id = created.external_id
         subscription.save(update_fields=["plan_external_id"])

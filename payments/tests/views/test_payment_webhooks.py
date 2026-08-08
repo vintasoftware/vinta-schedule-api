@@ -200,6 +200,46 @@ class TestPaymentUpdateWebhook:
         assert payment.status_updates.count() == 1
         assert payment.status_updates.get().status == PaymentStatuses.APPROVED
 
+    def test_webhook_resolves_off_the_payment_row_not_the_organizations_current_pin(
+        self, webhook_client, mercadopago_payment_adapter, payment, billing_profile
+    ):
+        """Payment Provider Selection, Phase 4, Rule A: a webhook delivery for a
+        payment made at MercadoPago must be processed through MercadoPago even
+        when the organization's *current* pin has since moved to Stripe. The
+        webhook route already resolves its adapter off the `provider` URL kwarg
+        (matching MercadoPago's own `notification_url`, not any pin), and
+        `PaymentService.handle_payment_webhook` -> `receive_payment_update` looks
+        the `Payment` row up by its own `external_id` -- neither step ever reads
+        `billing_profile.payment_provider`. This proves the whole path end to
+        end against a deliberately mismatched pin."""
+        billing_profile.payment_provider = PaymentProviders.STRIPE
+        billing_profile.save(update_fields=["payment_provider"])
+        assert payment.payment_provider == PaymentProviders.MERCADOPAGO
+
+        mercadopago_payment_adapter.sdk.payment().get.return_value = {
+            "response": {
+                "id": "mp-payment-456",
+                "status": "approved",
+                "status_detail": "accredited",
+            }
+        }
+        ts = str(int(time.time()))
+
+        response = webhook_client.post(
+            payment_update_url(provider=PaymentProviders.MERCADOPAGO),
+            data=self._payload(),
+            content_type="application/json",
+            **sign("mp-payment-456", ts=ts),
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        payment.refresh_from_db()
+        assert payment.status_updates.count() == 1
+        assert payment.status_updates.get().status == PaymentStatuses.APPROVED
+        # The payment row's own provider stays MercadoPago -- the webhook never
+        # repoints it to the org's current (Stripe) pin.
+        assert payment.payment_provider == PaymentProviders.MERCADOPAGO
+
     def test_duplicate_delivery_is_idempotent(
         self, webhook_client, mercadopago_payment_adapter, payment
     ):

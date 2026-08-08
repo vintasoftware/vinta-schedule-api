@@ -422,3 +422,34 @@ class TestProviderRegistryDIWiring:
         assert set(registry.keys()) == {PaymentProviders.MERCADOPAGO, PaymentProviders.STRIPE}
         assert isinstance(registry[PaymentProviders.MERCADOPAGO], MercadoPagoSubscriptionAdapter)
         assert isinstance(registry[PaymentProviders.STRIPE], StripeSubscriptionAdapter)
+
+    def test_payment_service_still_resolves_both_registries_without_singular_gateways(
+        self, di_container
+    ):
+        """Payment Provider Selection, Phase 4: ``PaymentService`` no longer takes
+        the singular ``payment_gateway``/``subscription_gateway`` DI providers --
+        the two registries are its only adapter source. Proves the DI wiring
+        still constructs a working ``PaymentService`` (auto-resolving
+        ``payment_provider_resolver``/``payment_provider_registry``/
+        ``subscription_provider_registry`` from the container) and that its
+        ``get_payment_adapter``/``get_subscription_adapter`` reach the exact same
+        registry-backed adapters the module-level tests above assert on."""
+        payment_service = di_container.payment_service()
+
+        assert not hasattr(payment_service, "payment_gateway")
+        assert not hasattr(payment_service, "subscription_gateway")
+        assert isinstance(
+            payment_service.get_payment_adapter(PaymentProviders.MERCADOPAGO),
+            MercadoPagoPaymentAdapter,
+        )
+        assert isinstance(
+            payment_service.get_payment_adapter(PaymentProviders.STRIPE), StripePaymentAdapter
+        )
+        assert isinstance(
+            payment_service.get_subscription_adapter(PaymentProviders.MERCADOPAGO),
+            MercadoPagoSubscriptionAdapter,
+        )
+        assert isinstance(
+            payment_service.get_subscription_adapter(PaymentProviders.STRIPE),
+            StripeSubscriptionAdapter,
+        )

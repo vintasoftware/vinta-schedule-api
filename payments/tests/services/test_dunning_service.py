@@ -179,9 +179,11 @@ class FakePaymentService:
     plan_external_id: str = "ext-plan-1"
     calls: list[str] = field(default_factory=list)
     idempotency_keys: list[str] = field(default_factory=list)
+    create_subscription_plan_providers: list[str] = field(default_factory=list)
 
-    def create_subscription_plan(self, plan) -> CreatedPlan:
+    def create_subscription_plan(self, plan, provider: str = "") -> CreatedPlan:
         self.calls.append("create_subscription_plan")
+        self.create_subscription_plan_providers.append(provider)
         return CreatedPlan(
             id=plan.id,
             name=plan.name,
