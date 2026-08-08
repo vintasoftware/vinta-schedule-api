@@ -542,8 +542,7 @@ Note the related standing hazard recorded in [reference: ATOMIC_REQUESTS trap] t
 - @payments/managers.py — add `BillingPeriodSummaryManager`
 - @payments/migrations/00XX_billing_period_summary.py — new
 - [admin.py](../payments/admin.py) — register both, read-only
-- [factories.py](../payments/factories.py) — two factories
-- @payments/tests/test_billing_period_summary_model.py — new
+- @payments/tests/test_billing_period_summary_model.py — new (test objects via `model_bakery`; this app has no `factories.py` and must not grow one)
 
 **Phase 1 — counter breakdown**
 - [entitlement_service.py:56-225](../payments/services/entitlement_service.py#L56-L225) — `UsageContext`, `UsageCounter`, all eight counters
