@@ -22,6 +22,7 @@ easy to break by accident:
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from django.db.models import Count, Sum
 from django.db.models.query import QuerySet
@@ -85,7 +86,7 @@ class UsageContext:
 UsageCounter = Callable[["UsageContext"], dict[int, int]]
 
 
-def _group_counts_by_organization(queryset: QuerySet) -> dict[int, int]:
+def _group_counts_by_organization(queryset: QuerySet[Any]) -> dict[int, int]:
     """Turn any organization-scoped queryset into ``{organization_id: row_count}``.
 
     Shared plumbing for every scalar counter below: ``GROUP BY organization_id``
@@ -94,9 +95,28 @@ def _group_counts_by_organization(queryset: QuerySet) -> dict[int, int]:
     does not have to remember to strip zero entries, because SQL never produces
     them here.
     """
+    # The leading ``.order_by()`` clears any ordering the caller's queryset may
+    # carry. It is load-bearing, not decoration: Django appends ``ORDER BY``
+    # columns to ``GROUP BY`` too, so an ordered queryset here would split one
+    # organization's rows into several groups keyed by whatever else it ordered
+    # on, and the dict comprehension below would silently keep only the last one.
+    # None of the eight call sites below currently orders (traced; no source
+    # model declares ``Meta.ordering`` either), so this is defensive today — but
+    # it means a later, unrelated ``Meta.ordering`` addition on any of those
+    # models can no longer mis-bill every customer through this path.
+    #
+    # ``Count("pk")``: on ``OrganizationMembership`` (composite primary key,
+    # ``SafeCompositePrimaryKey("user", "organization")``), Django 6 rewrites the
+    # ``ColPairs`` source to its first column, so this becomes ``COUNT(user_id)``
+    # — correct, but as a side effect of a Django internal, not a documented
+    # contract. The same rewrite raises ``ValueError("COUNT(DISTINCT) doesn't
+    # support composite primary keys")`` the moment ``distinct=True`` is added.
+    # Do not add ``distinct=True`` "defensively": no chain feeding this function
+    # has a row-multiplying join, so it is not needed, and it would turn this
+    # into a 500 on every seat check.
     return {
-        row["organization_id"]: row["count"]
-        for row in queryset.values("organization_id").annotate(count=Count("pk"))
+        row["organization_id"]: row["usage_count"]
+        for row in queryset.order_by().values("organization_id").annotate(usage_count=Count("pk"))
     }
 
 

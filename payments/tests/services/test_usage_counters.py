@@ -14,9 +14,11 @@ reproduce.
 ``TestUsageBreakdown`` at the bottom of this file is the Phase 1 regression gate
 for the billing usage summary & ledger plan: every ``UsageCounter`` now returns a
 per-organization ``dict[int, int]`` instead of a scalar, and that class is what
-proves the totals enforcement depends on did not move — ``sum(breakdown.values())``
-must equal what ``get_current_usage`` reports, for every ``LimitedResource``
-member, over a pool with contributions from several organizations.
+proves the grouping arithmetic behind both ``get_usage_breakdown`` and
+``get_current_usage`` is correct, for every ``LimitedResource`` member, over a
+pool with contributions from several organizations. It pins each resource's
+breakdown to hard-coded literals rather than comparing the breakdown to the
+total — see that class's docstring for why the latter would be vacuous.
 """
 
 from __future__ import annotations
@@ -567,14 +569,19 @@ class TestUsageBreakdown:
     attribution the usage-summary read surface needs can be derived from the
     *same* counters enforcement already uses, instead of a second, parallel
     definition of "what counts as usage" that could eventually disagree with the
-    first. This class is what proves that widening changed the counters'
-    *shape*, not their *arithmetic*: for every ``LimitedResource`` member,
-    ``sum(get_usage_breakdown(...).values())`` must equal what
-    ``get_current_usage(...)`` reports — which is itself now derived from the
-    same breakdown (see ``EntitlementService._count_usage``), so the two are
-    structurally incapable of disagreeing. If a future change to any counter's
-    grouping logic silently drops or double-counts a row, this test is what
-    catches it before it reaches a limit check or an invoice.
+    first.
+
+    ``test_breakdown_sums_to_the_total_for_every_limited_resource`` pins each
+    resource's breakdown to hard-coded literals (``EXPECTED_BREAKDOWNS`` in that
+    test), not to a value computed from the code under test. Asserting
+    ``sum(breakdown.values()) == total`` instead would be vacuous:
+    ``get_current_usage`` is *defined* as ``sum(get_usage_breakdown(...).values())``
+    (see ``EntitlementService._count_usage``), so both sides are the same
+    computation and can never disagree, no matter how ``_group_counts_by_organization``
+    is broken. A bug that drops every group but the first would shrink both sides
+    together and the assertion would stay green. Pinning to a literal is the only
+    way this test can fail when the grouping arithmetic is wrong — do not
+    "simplify" it back to a breakdown-vs-total comparison.
     """
 
     def test_breakdown_sums_to_the_total_for_every_limited_resource(
@@ -586,7 +593,10 @@ class TestUsageBreakdown:
         subscription = Subscription.objects.get(organization=root)
 
         # organization_members: memberships on two organizations, a pending
-        # invitation on the third.
+        # invitation on the third. child_a already carries >1 row, so this
+        # resource clears the "multi-row in one organization, across multiple
+        # organizations" bar (see the bundle_calendars/webhook_subscriptions/
+        # public_api_system_users comments below for why that bar matters).
         baker.make(OrganizationMembership, organization=root, is_active=True, _quantity=1)
         baker.make(OrganizationMembership, organization=child_a, is_active=True, _quantity=2)
         baker.make(
@@ -596,7 +606,10 @@ class TestUsageBreakdown:
             expires_at=timezone.now() + datetime.timedelta(days=7),
         )
 
-        # resource_calendars / bundle_calendars
+        # resource_calendars: root and child_a each end up with two RESOURCE
+        # calendars once the availability/blocked-time calendars further down are
+        # counted, so this resource also clears the multi-row/multi-organization
+        # bar without a dedicated fixture of its own.
         baker.make(
             Calendar,
             organization=root,
@@ -609,11 +622,30 @@ class TestUsageBreakdown:
             calendar_type=CalendarType.RESOURCE,
             external_id="breakdown-resource-child-a",
         )
+
+        # bundle_calendars: a single row on a single organization cannot tell a
+        # grouping bug from correct behavior -- nothing else in the repo asserts
+        # this resource at >=2 rows in one organization across >=2 organizations
+        # (reviewer finding, BLOCKER 2). root gets two more bundle calendars so
+        # one organization has >1 row and the resource still spans >1
+        # organization.
         baker.make(
             Calendar,
             organization=child_b,
             calendar_type=CalendarType.BUNDLE,
             external_id="breakdown-bundle-child-b",
+        )
+        baker.make(
+            Calendar,
+            organization=root,
+            calendar_type=CalendarType.BUNDLE,
+            external_id="breakdown-bundle-root-1",
+        )
+        baker.make(
+            Calendar,
+            organization=root,
+            calendar_type=CalendarType.BUNDLE,
+            external_id="breakdown-bundle-root-2",
         )
 
         # calendar_groups
@@ -621,6 +653,11 @@ class TestUsageBreakdown:
         baker.make(CalendarGroup, organization=child_b, _quantity=2)
 
         # availability_windows: AvailableTime and BlockedTime, base rows.
+        # child_a gets both an AvailableTime and a BlockedTime so the two source
+        # breakdowns actually share an organization key -- otherwise
+        # ``_merge_breakdowns`` degrading to last-write-wins (``merged[org] =
+        # count`` instead of ``+=``) would go uncaught, because no organization
+        # would ever appear on both sides to expose the difference.
         available_calendar = baker.make(
             Calendar,
             organization=child_a,
@@ -628,6 +665,7 @@ class TestUsageBreakdown:
             external_id="breakdown-availability-child-a",
         )
         baker.make(AvailableTime, organization=child_a, calendar=available_calendar, timezone="UTC")
+        baker.make(BlockedTime, organization=child_a, calendar=available_calendar, timezone="UTC")
         blocked_calendar = baker.make(
             Calendar,
             organization=root,
@@ -636,17 +674,33 @@ class TestUsageBreakdown:
         )
         baker.make(BlockedTime, organization=root, calendar=blocked_calendar, timezone="UTC")
 
-        # webhook_subscriptions
+        # webhook_subscriptions: same "single row, single organization" gap as
+        # bundle_calendars (BLOCKER 2). child_a gets two so one organization has
+        # >1 row and the resource still spans >1 organization.
         baker.make(WebhookConfiguration, organization=child_b, deleted_at=None)
+        baker.make(WebhookConfiguration, organization=child_a, deleted_at=None, _quantity=2)
 
-        # public_api_system_users
+        # public_api_system_users: same gap again (BLOCKER 2). child_b gets two
+        # so one organization has >1 row and the resource still spans >1
+        # organization.
         SystemUser.objects.create(
             organization=child_a,
             integration_name="breakdown-integration",
             long_lived_token_hash="breakdown-hash",
         )
+        SystemUser.objects.create(
+            organization=child_b,
+            integration_name="breakdown-integration-child-b-1",
+            long_lived_token_hash="breakdown-hash-child-b-1",
+        )
+        SystemUser.objects.create(
+            organization=child_b,
+            integration_name="breakdown-integration-child-b-2",
+            long_lived_token_hash="breakdown-hash-child-b-2",
+        )
 
         # event_occurrences: same subscription, two organizations in the pool.
+        # root gets two occurrences so one organization has >1 row.
         period_start = current_billing_period_start(subscription)
         MeteredOccurrence.objects.create(
             organization=root,
@@ -658,7 +712,7 @@ class TestUsageBreakdown:
             unit_price=Decimal("0"),
         )
         MeteredOccurrence.objects.create(
-            organization=child_b,
+            organization=root,
             subscription=subscription,
             event_id=2,
             occurrence_start=period_start + datetime.timedelta(hours=2),
@@ -666,18 +720,43 @@ class TestUsageBreakdown:
             is_within_allowance=True,
             unit_price=Decimal("0"),
         )
+        MeteredOccurrence.objects.create(
+            organization=child_b,
+            subscription=subscription,
+            event_id=3,
+            occurrence_start=period_start + datetime.timedelta(hours=3),
+            billing_period_start=period_start,
+            is_within_allowance=True,
+            unit_price=Decimal("0"),
+        )
+
+        # Pinned to literals, deliberately -- see the class docstring for why
+        # comparing the breakdown to the total instead would be vacuous. Every
+        # ``LimitedResource`` member must have an entry: the loop below fails
+        # loudly (``KeyError``) for a newly added resource with no pinned
+        # expectation yet, rather than silently skipping it.
+        expected_breakdowns: dict[str, dict[int, int]] = {
+            LimitedResource.ORGANIZATION_MEMBERS: {root.pk: 1, child_a.pk: 2, child_b.pk: 1},
+            LimitedResource.RESOURCE_CALENDARS: {root.pk: 2, child_a.pk: 2},
+            LimitedResource.CALENDAR_GROUPS: {root.pk: 1, child_b.pk: 2},
+            LimitedResource.BUNDLE_CALENDARS: {child_b.pk: 1, root.pk: 2},
+            LimitedResource.AVAILABILITY_WINDOWS: {child_a.pk: 2, root.pk: 1},
+            LimitedResource.WEBHOOK_SUBSCRIPTIONS: {child_b.pk: 1, child_a.pk: 2},
+            LimitedResource.PUBLIC_API_SYSTEM_USERS: {child_a.pk: 1, child_b.pk: 2},
+            LimitedResource.EVENT_OCCURRENCES: {root.pk: 2, child_b.pk: 1},
+        }
 
         for resource_key in LimitedResource:
+            expected = expected_breakdowns[resource_key]
             breakdown = entitlement_service.get_usage_breakdown(root, resource_key)
             total = entitlement_service.get_current_usage(root, resource_key)
 
-            assert sum(breakdown.values()) == total, (
-                f"{resource_key}: breakdown {breakdown} summed to "
-                f"{sum(breakdown.values())}, but get_current_usage reported {total}."
+            assert breakdown == expected, (
+                f"{resource_key}: expected breakdown {expected}, got {breakdown}."
             )
-            assert total > 0, (
-                f"{resource_key}: the fixture above must contribute usage to every "
-                "resource, or this test is not exercising that resource's counter."
+            assert total == sum(expected.values()), (
+                f"{resource_key}: get_current_usage reported {total}, expected "
+                f"{sum(expected.values())} (sum of the pinned breakdown)."
             )
 
     def test_a_non_contributing_organization_is_absent_not_present_with_zero(
