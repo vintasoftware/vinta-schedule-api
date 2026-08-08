@@ -87,6 +87,8 @@ MIDDLEWARE = [
     "csp.middleware.CSPMiddleware",
     "django_guid.middleware.guid_middleware",
     "allauth.account.middleware.AccountMiddleware",
+    # After AuthenticationMiddleware (needs request.user) -- see the class docstring.
+    "accounts.middlewares.PostAuthDestinationMiddleware",
 ]
 
 ROOT_URLCONF = "vinta_schedule_api.urls"
@@ -353,13 +355,21 @@ HEADLESS_FRONTEND_URLS = {
     "account_signup": "http://localhost:3000/account/signup",
     "socialaccount_login_error": "http://localhost:3000/account/provider/callback",
 }
-# The SPA's own base URL -- "our dashboard" for callers that need a stable, non
-# organization-specific fallback destination (e.g. accounts.views.ProviderCallbackAPIView,
-# which lands a just-authenticated user here when their organization has no configured
-# post-authentication redirect). staging.py/production.py override this with their real
-# frontend origin; this default matches the local dev frontend port used throughout
-# HEADLESS_FRONTEND_URLS above.
+# The frontend's origin -- the root of every URL above. staging.py/production.py
+# override it with their real frontend origin; this default matches the local dev
+# frontend port used throughout HEADLESS_FRONTEND_URLS above.
 FRONTEND_BASE_URL = config("FRONTEND_BASE_URL", default="http://localhost:3000").rstrip("/")
+# The signed-in app, relative to FRONTEND_BASE_URL. The origin's own root is the
+# public landing page, NOT the app, so a caller needing a stable
+# non-organization-specific destination for a just-authenticated user (see
+# accounts.post_auth_destination, which lands them here when their organization has
+# no configured post-authentication redirect) must carry this path. A plain
+# constant rather than an env var: it is a frontend route, identical in every
+# environment, and the origin it hangs off is the part that varies. Joined at use
+# time, never precomputed here -- staging.py/production.py reassign
+# FRONTEND_BASE_URL after this module is imported, so a derived constant would
+# silently keep the local dev origin there.
+FRONTEND_DASHBOARD_PATH = "/dashboard"
 MFA_SUPPORTED_TYPES = ["totp", "recovery_codes"]
 MFA_PASSKEY_LOGIN_ENABLED = False
 HEADLESS_SERVE_SPECIFICATION = True

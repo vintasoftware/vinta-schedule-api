@@ -33,6 +33,7 @@ class Command(BaseCommand):
 
         spec = get_schema()
         self._patch_refresh_token_meta(spec)
+        self._patch_post_auth_destination(spec)
         output = Path(options["output"])
         content = self._render(spec, output.suffix)
 
@@ -86,3 +87,53 @@ class Command(BaseCommand):
                 "type": "string",
             },
         )
+
+    @staticmethod
+    def _patch_post_auth_destination(spec: dict) -> None:
+        """Document the top-level ``destination`` on completed-authentication responses.
+
+        Same reason as ``_patch_refresh_token_meta``: allauth's static spec cannot
+        know about a field our own code adds at runtime. Here that field comes from
+        ``accounts.middlewares.PostAuthDestinationMiddleware``, which appends the
+        organization's server-resolved post-authentication destination to every
+        response reporting a completed authentication — login, signup, email and
+        phone verification alike. The SPA reads it instead of deciding where to
+        navigate itself, so it has to appear in the schema the frontend generates
+        its client from.
+
+        Every 200 authentication response in the spec resolves to the single
+        ``AuthenticatedResponse`` schema (the ``Authenticated``,
+        ``AuthenticatedByCode``, ``AuthenticatedByPassword`` and
+        ``AuthenticatedByPasswordAnd2FA`` response objects all ``$ref`` it), so one
+        property covers the whole surface — and it is marked **required** there,
+        because the middleware writes it on every such response and the resolution
+        always answers (an organization with no configured ``redirect_url``, or a
+        user with no organization at all, gets our dashboard). Responses that are
+        *not* a completed authentication never carry it, and they are typed by
+        different schemas: the 401 ``AuthenticationResponse`` (a pending
+        verification stage, a failed login) has no ``destination`` property at all,
+        which is exactly the distinction a client should branch on.
+        """
+        response_schema = spec.get("components", {}).get("schemas", {}).get("AuthenticatedResponse")
+        if not response_schema:
+            return
+        properties = response_schema.setdefault("properties", {})
+        properties.setdefault(
+            "destination",
+            {
+                "description": (
+                    "Absolute URL the client should navigate to now that the user is "
+                    "authenticated: the organization's configured `redirect_url`, or "
+                    "our dashboard when it has none. Resolved server-side from the "
+                    "organization's branding — never from a client-supplied "
+                    "`next`/`callback_url`. Always present on a completed "
+                    "authentication (this schema), and never present on the "
+                    "interim/failed `AuthenticationResponse`.\n"
+                ),
+                "example": "https://scheduling.acme.example.com/app",
+                "type": "string",
+            },
+        )
+        required = response_schema.setdefault("required", [])
+        if "destination" not in required:
+            required.append("destination")

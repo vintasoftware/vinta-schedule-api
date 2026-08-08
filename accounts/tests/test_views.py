@@ -187,7 +187,7 @@ class TestProviderCallbackDestinationResolution:
         response = self._complete_login(client, user)
 
         assert response.status_code == 200
-        assert response.json()["destination"] == settings.FRONTEND_BASE_URL
+        assert response.json()["destination"] == f"{settings.FRONTEND_BASE_URL}/dashboard"
 
     @pytest.mark.no_auto_subscription
     def test_unentitled_organization_with_branding_row_returns_dashboard(self, client):
@@ -216,7 +216,7 @@ class TestProviderCallbackDestinationResolution:
         response = self._complete_login(client, user)
 
         assert response.status_code == 200
-        assert response.json()["destination"] == settings.FRONTEND_BASE_URL
+        assert response.json()["destination"] == f"{settings.FRONTEND_BASE_URL}/dashboard"
 
     def test_entitled_organization_with_no_redirect_url_returns_dashboard(self, client):
         user = UserFactory().create_user()
@@ -227,7 +227,7 @@ class TestProviderCallbackDestinationResolution:
         response = self._complete_login(client, user)
 
         assert response.status_code == 200
-        assert response.json()["destination"] == settings.FRONTEND_BASE_URL
+        assert response.json()["destination"] == f"{settings.FRONTEND_BASE_URL}/dashboard"
 
     def test_reseller_child_membership_returns_reseller_destination(self, client):
         """Acceptance scenario 8 -- the redirect resolution applies to reseller
@@ -274,7 +274,7 @@ class TestProviderCallbackDestinationResolution:
         response = self._complete_login(client, user, next_url="https://evil.example/steal")
 
         assert response.status_code == 200
-        assert response.json()["destination"] == settings.FRONTEND_BASE_URL
+        assert response.json()["destination"] == f"{settings.FRONTEND_BASE_URL}/dashboard"
         assert response.json()["destination"] != "https://evil.example/steal"
 
 

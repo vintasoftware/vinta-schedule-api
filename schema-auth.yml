@@ -1152,6 +1152,15 @@ components:
       properties:
         data:
           $ref: '#/components/schemas/Authenticated'
+        destination:
+          description: "Absolute URL the client should navigate to now that the user\
+            \ is authenticated: the organization's configured `redirect_url`, or our\
+            \ dashboard when it has none. Resolved server-side from the organization's\
+            \ branding \u2014 never from a client-supplied `next`/`callback_url`.\
+            \ Always present on a completed authentication (this schema), and never\
+            \ present on the interim/failed `AuthenticationResponse`.\n"
+          example: https://scheduling.acme.example.com/app
+          type: string
         meta:
           $ref: '#/components/schemas/AuthenticationMeta'
         status:
@@ -1160,6 +1169,7 @@ components:
       - status
       - data
       - meta
+      - destination
       type: object
     AuthenticationMeta:
       allOf:
