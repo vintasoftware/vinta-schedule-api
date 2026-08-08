@@ -6,6 +6,8 @@ from urllib.parse import quote
 from decouple import Csv, config  # type: ignore
 from dj_database_url import parse as db_url
 
+from payments.provider_slugs import PAYMENT_PROVIDER_SLUGS
+
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -612,20 +614,16 @@ STRIPE_PUBLISHABLE_KEY = config("STRIPE_PUBLISHABLE_KEY", default="")
 # provider when set; otherwise, every new charge and subscription defaults to this.
 # Value must match a member of payments.constants.PaymentProviders. Validated at
 # import time so a typo fails the deploy rather than every checkout.
-_PAYMENT_PROVIDER_CHOICES = (
-    "stripe",
-    "mercadopago",
-)  # Source of truth: payments.constants.PaymentProviders
 _payment_provider = config("DEFAULT_PAYMENT_PROVIDER", default="stripe")
-if _payment_provider not in _PAYMENT_PROVIDER_CHOICES:
+if _payment_provider not in PAYMENT_PROVIDER_SLUGS:
     from django.core.exceptions import ImproperlyConfigured
 
     raise ImproperlyConfigured(
         f"DEFAULT_PAYMENT_PROVIDER={_payment_provider!r} is not a valid payment provider. "
-        f"Choose from: {', '.join(_PAYMENT_PROVIDER_CHOICES)}"
+        f"Choose from: {', '.join(PAYMENT_PROVIDER_SLUGS)}"
     )
 DEFAULT_PAYMENT_PROVIDER = _payment_provider
-del _payment_provider, _PAYMENT_PROVIDER_CHOICES
+del _payment_provider
 
 # How far a webhook's signed `ts` may drift from "now" before it is rejected as
 # stale (see payments.services.mercadopago_signature.verify_mercadopago_signature).

@@ -1,8 +1,13 @@
 """Tests for payment settings configuration."""
 
-from django.core.exceptions import ImproperlyConfigured
+import os
+import subprocess
+import sys
+
+from django.conf import settings
 
 from payments.constants import PaymentProviders
+from payments.provider_slugs import PAYMENT_PROVIDER_SLUGS
 
 
 class TestDefaultPaymentProviderSetting:
@@ -10,44 +15,44 @@ class TestDefaultPaymentProviderSetting:
 
     def test_default_payment_provider_is_valid(self) -> None:
         """DEFAULT_PAYMENT_PROVIDER must be a valid PaymentProviders member."""
-        from django.conf import settings
-
         assert settings.DEFAULT_PAYMENT_PROVIDER in PaymentProviders.values
 
     def test_default_payment_provider_is_stripe(self) -> None:
         """System default provider should be stripe."""
-        from django.conf import settings
-
         assert settings.DEFAULT_PAYMENT_PROVIDER == PaymentProviders.STRIPE
 
     def test_invalid_payment_provider_raises_improperly_configured(self) -> None:
-        """An invalid DEFAULT_PAYMENT_PROVIDER value raises ImproperlyConfigured.
+        """An invalid DEFAULT_PAYMENT_PROVIDER value fails `manage.py check --deploy`.
 
-        This test verifies that the validation happens at import time by
-        checking a hypothetically misconfigured value would fail. Since the
-        real settings are already loaded, we cannot directly test the import-time
-        failure; instead, we verify the error class exists and the setting
-        validation logic is sound.
+        Settings validation happens at import time and is process-global, so the only
+        way to actually exercise the failure is out-of-process: spawn `manage.py check
+        --deploy` with a bogus DEFAULT_PAYMENT_PROVIDER and assert it fails with
+        ImproperlyConfigured.
         """
-        # The actual import-time validation is tested via CI: when
-        # DEFAULT_PAYMENT_PROVIDER=nonsense is set, the deploy should fail
-        # with ImproperlyConfigured before any request is handled.
-        assert ImproperlyConfigured is not None
+        env = {
+            **os.environ,
+            "DJANGO_SETTINGS_MODULE": "vinta_schedule_api.settings.test",
+            "DEFAULT_PAYMENT_PROVIDER": "nonsense",
+        }
+        result = subprocess.run(  # noqa: S603
+            [sys.executable, "manage.py", "check", "--deploy"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        assert result.returncode != 0
+        assert "ImproperlyConfigured" in result.stderr
 
     def test_payment_providers_values_match_settings(self) -> None:
-        """Verify PaymentProviders.values matches the settings' literal tuple.
+        """PaymentProviders.values must match the real PAYMENT_PROVIDER_SLUGS tuple.
 
-        The settings use a literal tuple of provider slugs to validate
-        DEFAULT_PAYMENT_PROVIDER at import time (avoiding a potential import
-        cycle). This test ensures the tuple stays in sync with the actual
-        PaymentProviders enum.
+        settings/base.py validates DEFAULT_PAYMENT_PROVIDER against
+        payments.provider_slugs.PAYMENT_PROVIDER_SLUGS (a Django-import-free leaf
+        module, to avoid an import cycle -- see that module's docstring).
+        payments.constants.PaymentProviders binds its member values to the same
+        constants, so this test compares the two real objects directly rather than a
+        hand-copied literal.
         """
-        # The literal tuple in settings/base.py: ("stripe", "mercadopago")
-        literal_providers = {"stripe", "mercadopago"}
-        actual_providers = set(PaymentProviders.values)
-
-        assert literal_providers == actual_providers, (
-            f"Literal tuple in settings/base.py is out of sync with "
-            f"PaymentProviders enum. Literal: {literal_providers}, "
-            f"Actual: {actual_providers}"
-        )
+        assert set(PaymentProviders.values) == set(PAYMENT_PROVIDER_SLUGS)
