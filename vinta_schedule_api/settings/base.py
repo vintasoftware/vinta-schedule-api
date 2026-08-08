@@ -157,10 +157,13 @@ REST_FRAMEWORK = {
     # retry volume. `billing-write` covers the authenticated money-moving billing
     # write actions (change-plan, add-on purchase/cancel in payments/billing_views.py)
     # — each drives a real provider round trip, so it is rate-limited rather than
-    # left unbounded even behind auth.
+    # left unbounded even behind auth. `payment-provider` covers the unauthenticated
+    # provider-credentials read endpoint (Phase 3) — cheap, no outbound provider call,
+    # so a higher ceiling than the webhook scope.
     "DEFAULT_THROTTLE_RATES": {
         "payment-webhook": "60/min",
         "billing-write": "30/min",
+        "payment-provider": "120/min",
     },
 }
 
@@ -586,6 +589,10 @@ MERCADOPAGO_ACCESS_TOKEN = config("MERCADOPAGO_ACCESS_TOKEN", default="")
 # payments.services.mercadopago_signature.verify_mercadopago_signature) rather
 # than skip verification.
 MERCADOPAGO_WEBHOOK_SECRET = config("MERCADOPAGO_WEBHOOK_SECRET", default="")
+# Browser-safe public key used to initialize MercadoPago's payment form. Not a
+# secret — intentionally omitted from environment isolation. Served on unauthenticated
+# endpoints in Phase 3.
+MERCADOPAGO_PUBLIC_KEY = config("MERCADOPAGO_PUBLIC_KEY", default="")
 
 # Secret API key used to authenticate outbound calls to Stripe. No organization is
 # routed onto Stripe yet, so an empty default is safe in every environment until
@@ -596,6 +603,29 @@ STRIPE_SECRET_KEY = config("STRIPE_SECRET_KEY", default="")
 # payments.services.stripe_signature.verify_stripe_event) rather than skip
 # verification.
 STRIPE_WEBHOOK_SECRET = config("STRIPE_WEBHOOK_SECRET", default="")
+# Browser-safe public key used to initialize Stripe's payment form. Not a secret —
+# intentionally omitted from environment isolation. Served on unauthenticated
+# endpoints in Phase 3.
+STRIPE_PUBLISHABLE_KEY = config("STRIPE_PUBLISHABLE_KEY", default="")
+
+# System-wide default payment provider. Resolves to the organization's pinned
+# provider when set; otherwise, every new charge and subscription defaults to this.
+# Value must match a member of payments.constants.PaymentProviders. Validated at
+# import time so a typo fails the deploy rather than every checkout.
+_PAYMENT_PROVIDER_CHOICES = (
+    "stripe",
+    "mercadopago",
+)  # Source of truth: payments.constants.PaymentProviders
+_payment_provider = config("DEFAULT_PAYMENT_PROVIDER", default="stripe")
+if _payment_provider not in _PAYMENT_PROVIDER_CHOICES:
+    from django.core.exceptions import ImproperlyConfigured
+
+    raise ImproperlyConfigured(
+        f"DEFAULT_PAYMENT_PROVIDER={_payment_provider!r} is not a valid payment provider. "
+        f"Choose from: {', '.join(_PAYMENT_PROVIDER_CHOICES)}"
+    )
+DEFAULT_PAYMENT_PROVIDER = _payment_provider
+del _payment_provider, _PAYMENT_PROVIDER_CHOICES
 
 # How far a webhook's signed `ts` may drift from "now" before it is rejected as
 # stale (see payments.services.mercadopago_signature.verify_mercadopago_signature).
