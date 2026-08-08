@@ -176,12 +176,21 @@ envVarGroups:
       # Shared secret used to verify MercadoPago's `x-signature` webhook header.
       - key: MERCADOPAGO_WEBHOOK_SECRET
         sync: false
+      # Browser-safe public key for MercadoPago checkout form. Not a secret.
+      - key: MERCADOPAGO_PUBLIC_KEY
+        sync: false
       # Stripe secret API key. No organization is routed onto Stripe yet.
       - key: STRIPE_SECRET_KEY
         sync: false
       # Shared secret used to verify Stripe's `Stripe-Signature` webhook header.
       - key: STRIPE_WEBHOOK_SECRET
         sync: false
+      # Browser-safe public key for Stripe checkout form. Not a secret.
+      - key: STRIPE_PUBLISHABLE_KEY
+        sync: false
+      # System default payment provider (stripe or mercadopago).
+      - key: DEFAULT_PAYMENT_PROVIDER
+        value: stripe
       # Global fallback grace window (days) between a failed recurring charge and
       # an organization moving from GRACE to RESTRICTED, used when the
       # subscription's plan carries no grace_period_days of its own.

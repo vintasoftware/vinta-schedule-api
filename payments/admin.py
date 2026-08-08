@@ -1,10 +1,12 @@
-from typing import Any
+from typing import Annotated, Any
 
 from django import forms
 from django.contrib import admin
 from django.core.exceptions import ValidationError
 from django.forms.models import BaseInlineFormSet
 from django.http import HttpRequest
+
+from dependency_injector.wiring import Provide, inject
 
 from payments.billing_constants import LimitedResource
 from payments.models import (
@@ -25,6 +27,7 @@ from payments.models import (
     SubscriptionPlanLimit,
     SubscriptionStatusUpdate,
 )
+from payments.services.subscription_service import SubscriptionService
 
 
 class PlanLimitInlineFormSet(BaseInlineFormSet):
@@ -151,9 +154,67 @@ class BillingAddressAdmin(admin.ModelAdmin):
 
 @admin.register(BillingProfile)
 class BillingProfileAdmin(admin.ModelAdmin):
-    list_display = ("organization", "document_type", "document_number")
+    """Admin for the one-per-organization billing root.
+
+    ``payment_provider`` is editable here, but an edit to it is routed through
+    ``SubscriptionService.set_payment_provider`` (see ``save_model``) rather than
+    a bare model save, so a staff repoint is audited (``AuditService``) like the
+    plan's other billing business writes -- see the Payment Provider Selection
+    plan's Pin mutability guiding decision.
+    """
+
+    list_display = ("organization", "document_type", "document_number", "payment_provider")
+    list_filter = ("payment_provider",)
     search_fields = ("organization__name", "document_number")
     readonly_fields = ("created", "modified")
+
+    @inject
+    def save_model(
+        self,
+        request: HttpRequest,
+        obj: BillingProfile,
+        form: Any,
+        change: bool,
+        subscription_service: Annotated[
+            "SubscriptionService | None", Provide["subscription_service"]
+        ] = None,
+    ) -> None:
+        """Persist ``obj``, routing a ``payment_provider`` edit through
+        ``SubscriptionService.set_payment_provider`` so it lands in the audit
+        trail with the pre-repoint provider recorded.
+
+        Only takes this path on an edit to an *already-existing* profile:
+        ``set_payment_provider`` reads ``organization.billing_profile`` to find
+        the value it is overwriting, and that reverse relation does not resolve
+        yet for a profile being created for the first time in this same request.
+        Runs before ``super().save_model()`` so the "previous" value it reads
+        (and records in the audit diff) is still the one in the database, not the
+        new value this same save is about to write.
+
+        ``payment_provider`` is ``blank=True``, so clearing the field in the
+        admin's ``<select>`` is a legitimate action, not a validation error --
+        ``set_payment_provider`` treats an empty string as an explicit un-pin
+        (see its docstring) rather than raising ``UnknownPaymentProviderError``.
+
+        ``request.user`` is forwarded as ``actor`` so the audit entry names the
+        staff member who repointed the pin, not a generic system actor. Narrowed
+        via ``is_authenticated`` (``AbstractBaseUser | AnonymousUser`` ->
+        ``AbstractBaseUser`` for mypy, matching the pattern in
+        ``organizations.views``'s branding write gate) even though the admin
+        already refuses an unauthenticated request before ``save_model`` runs.
+        """
+        if change and "payment_provider" in form.changed_data:
+            if subscription_service is None:
+                raise RuntimeError(
+                    "BillingProfileAdmin.save_model: subscription_service not "
+                    "injected (DI not wired?) -- payment_provider edit for "
+                    f"BillingProfile {obj.pk} was not applied."
+                )
+            actor = request.user if request.user.is_authenticated else None
+            subscription_service.set_payment_provider(
+                obj.organization, obj.payment_provider, actor=actor
+            )
+        super().save_model(request, obj, form, change)
 
 
 class SubscriptionPlanLimitInline(admin.TabularInline):

@@ -1,10 +1,12 @@
 from django.db.models import TextChoices
 from django.utils.translation import gettext as _
 
+from payments.provider_slugs import MERCADOPAGO, STRIPE
+
 
 class PaymentProviders(TextChoices):
-    MERCADOPAGO = ("mercadopago", "MercadoPago")
-    STRIPE = ("stripe", "Stripe")
+    MERCADOPAGO = (MERCADOPAGO, "MercadoPago")
+    STRIPE = (STRIPE, "Stripe")
 
 
 class PaymentStatuses(TextChoices):
