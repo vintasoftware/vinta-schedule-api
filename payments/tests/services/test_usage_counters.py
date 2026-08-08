@@ -665,6 +665,7 @@ class TestUsageBreakdown:
             external_id="breakdown-availability-child-a",
         )
         baker.make(AvailableTime, organization=child_a, calendar=available_calendar, timezone="UTC")
+        baker.make(AvailableTime, organization=child_a, calendar=available_calendar, timezone="UTC")
         baker.make(BlockedTime, organization=child_a, calendar=available_calendar, timezone="UTC")
         blocked_calendar = baker.make(
             Calendar,
@@ -701,6 +702,9 @@ class TestUsageBreakdown:
 
         # event_occurrences: same subscription, two organizations in the pool.
         # root gets two occurrences so one organization has >1 row.
+        # event_id is a soft reference with no FK constraint; the per-organization
+        # ranges (root: 1-2, child_b: 3) are chosen only to satisfy the unique
+        # constraint on (organization, event_id, occurrence_start).
         period_start = current_billing_period_start(subscription)
         MeteredOccurrence.objects.create(
             organization=root,
@@ -740,7 +744,7 @@ class TestUsageBreakdown:
             LimitedResource.RESOURCE_CALENDARS: {root.pk: 2, child_a.pk: 2},
             LimitedResource.CALENDAR_GROUPS: {root.pk: 1, child_b.pk: 2},
             LimitedResource.BUNDLE_CALENDARS: {child_b.pk: 1, root.pk: 2},
-            LimitedResource.AVAILABILITY_WINDOWS: {child_a.pk: 2, root.pk: 1},
+            LimitedResource.AVAILABILITY_WINDOWS: {child_a.pk: 3, root.pk: 1},
             LimitedResource.WEBHOOK_SUBSCRIPTIONS: {child_b.pk: 1, child_a.pk: 2},
             LimitedResource.PUBLIC_API_SYSTEM_USERS: {child_a.pk: 1, child_b.pk: 2},
             LimitedResource.EVENT_OCCURRENCES: {root.pk: 2, child_b.pk: 1},
