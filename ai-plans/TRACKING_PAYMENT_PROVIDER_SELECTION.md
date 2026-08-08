@@ -86,13 +86,29 @@ Shipped both endpoints per the plan's **API Design**: `GET /billing/payment-prov
 
 **Gates**: ruff clean; `makemigrations --check` no changes; `check --deploy` exit 0; phase tests `21 passed`; full suite `5201 passed`; mypy zero new errors.
 
-## Current phase
+### Phase 4 — Route provider calls through the resolved provider ✅
 
-- **Phase 4 — Route provider calls through the resolved provider** — starting. The risky one: it rewires every money-moving path. Carries a `**Review models**: reviewer Tier 4` override from the plan.
+- **Branch**: `plan/payment-provider-selection/phase-4` — base `plan/payment-provider-selection/phase-3`
+- **Models**: implementer Tier 3 (Sonnet); reviewer **Tier 4 (Opus)** per the plan's `**Review models**` override, run **twice**; fixers Opus then Sonnet
+- **Commits**: `7c86e73` (implementation), `309b175` (five BLOCKER fixes), `97424c6` (second-pass fixes)
+
+`PaymentService` no longer takes the singular `payment_gateway` / `subscription_gateway`; the registries are the only adapter source. Rule A (existing row → its own stored provider) and Rule B (new row → `PaymentProviderResolver`) applied per call site. Two new migrations (`0018` repoint `Subscription.payment_provider`, `0019` backfill `Payment.payment_provider` on subscription charges).
+
+**The Tier 4 reviewer was worth its cost — first pass found five BLOCKERs:**
+
+1. **Adapter resolution broke the inbound webhook path.** Gating resolution on credentials made `verify_payment_webhook_signature` raise an uncaught 500 in any deployment without the (brand-new) public key — which is what both env examples ship. MercadoPago would have retried forever: no payment confirmations, no `record_payment_method`, no add-on activation, no dunning resolution. A path that works today, broken by this phase. Fixed by splitting resolution: `get_payment_adapter` / `get_subscription_adapter` are registry-only for the webhook path; `get_configured_*` variants assert credentials for outbound charge sites. **Do not merge these back together.**
+2. **"Configured" was gated on the wrong setting.** The check read the *publishable* keys while the adapters authenticate outbound calls with `STRIPE_SECRET_KEY` / `MERCADOPAGO_ACCESS_TOKEN`. Chosen originally because gating on secrets broke green tests — a test-environment argument driving a production rule. Fixed with an `is_configured` property on each adapter, reading the credential it actually uses, plus `MERCADOPAGO_ACCESS_TOKEN` added across all six env layers (it was in **zero** CI job blocks and neither env example).
+3. **A hardcoded `mercadopago` upstream made the pin inert on the whole subscription path.** `create_subscription_for_organization` stamped every org's only `Subscription` with a literal, so Rule A drove MercadoPago for every org including Stripe-pinned ones — sending a Stripe card token to MercadoPago while `create_payment` for the same org resolved Stripe. Two providers at once, which **Non-goals** forbids.
+4. **The subscription webhook poisoned the pin**, permanently stamping `mercadopago` onto any unpinned org's first confirmed charge.
+5. **Recurring subscription charges created `Payment` rows with no provider**, unroutable for later refund or status check.
+
+**Second Tier 4 pass** found no BLOCKERs and two findings worth fixing now: the staff repoint lever was structurally inert on the subscription path (a repoint updated `BillingProfile` but never `Subscription`, so the SPA would mint a token for one provider while the upgrade drove the other), fixed by re-resolving and restamping when `subscription.external_id` is empty — there is no provider-side state to protect then, and Rule A still wins once there is; and both migration reverses were lossy in a way that would have destroyed the very evidence the plan's **Risk & Rollout Notes** rollback step tells you to check, now scoped to only the rows each forward pass touched, following `0009`'s meta-stamp precedent.
+
+**Gates**: ruff clean; `makemigrations --check` no changes; `check --deploy` exit 0; payments suite `913 passed`; full suite **`5255 passed`** (independently re-run by the conductor at `5252` before the last fix commit); mypy zero new errors.
 
 ## Remaining phases
 
-_(none after Phase 4)_
+_(none — all four phases complete)_
 
 ## Deferred phases
 
