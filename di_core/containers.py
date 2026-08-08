@@ -37,6 +37,7 @@ from payments.services.entitlement_service import EntitlementService
 from payments.services.metering_service import MeteringService
 from payments.services.payment_adapters.mercadopago_payment_adapter import MercadoPagoPaymentAdapter
 from payments.services.payment_adapters.stripe_payment_adapter import StripePaymentAdapter
+from payments.services.payment_provider_resolver import PaymentProviderResolver
 from payments.services.payment_service import PaymentService
 from payments.services.subscription_adapters.mercadopago_subscription_adapter import (
     MercadoPagoSubscriptionAdapter,
@@ -126,6 +127,14 @@ class AppContainer(containers.DeclarativeContainer):
         SubscriptionService,
         payment_service=payment_service,
         audit_service=audit_service,
+    )
+
+    #: Single source of the pin -> default provider resolution rule -- shared by the
+    #: provider-credentials endpoints (`payments.views.PaymentProviderViewSet`) and, from
+    #: Phase 4 onward, `PaymentService`'s charge-routing. No adapter dependency, so it does
+    #: not need the `payment_gateway`/`subscription_gateway` providers above.
+    payment_provider_resolver = providers.Factory(
+        PaymentProviderResolver,
     )
 
     entitlement_service = providers.Factory(

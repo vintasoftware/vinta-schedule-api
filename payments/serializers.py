@@ -3,6 +3,7 @@ from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
 
 from payments.billing_constants import BillingInterval, LimitedResource
+from payments.constants import PaymentProviders
 from payments.models import (
     BillingAddress,
     BillingPlan,
@@ -12,6 +13,7 @@ from payments.models import (
     Subscription,
     SubscriptionAddOn,
 )
+from payments.services.provider_credentials import PublicProviderCredentials
 from payments.virtual_models import (
     BillingAddressVirtualModel,
     BillingPlanVirtualModel,
@@ -245,3 +247,51 @@ class BillingProfileSerializer(v.VirtualModelSerializer):
             setattr(instance, attr, value)
         instance.save()
         return instance
+
+
+class StripePublicCredentialsSerializer(serializers.Serializer):
+    """The browser-safe half of Stripe's credentials -- never the secret API key."""
+
+    publishable_key = serializers.CharField()
+
+
+class MercadoPagoPublicCredentialsSerializer(serializers.Serializer):
+    """The browser-safe half of MercadoPago's credentials -- never the secret access token."""
+
+    public_key = serializers.CharField()
+
+
+class PaymentProviderSerializer(serializers.Serializer):
+    """Response shape for ``GET /billing/payment-provider/`` and its unauthenticated
+    ``/default/`` sibling: the resolved provider slug plus that provider's public
+    credentials. Only the object matching ``provider`` is populated; the other is
+    ``null``, so a client never receives keys for a provider it did not resolve to.
+
+    Plain ``serializers.Serializer`` -- nothing here is DB-backed. Serializes a
+    ``payments.services.provider_credentials.PublicProviderCredentials`` instance, not a
+    model, hence the explicit ``to_representation`` rather than attribute-matching nested
+    serializers (the dataclass's flat ``stripe_publishable_key``/``mercadopago_public_key``
+    fields don't line up 1:1 with this serializer's nested ``stripe``/``mercadopago``
+    objects).
+    """
+
+    provider = serializers.ChoiceField(choices=PaymentProviders.choices)
+    stripe = StripePublicCredentialsSerializer(allow_null=True)
+    mercadopago = MercadoPagoPublicCredentialsSerializer(allow_null=True)
+
+    def to_representation(self, instance: PublicProviderCredentials) -> dict:
+        stripe = None
+        if instance.stripe_publishable_key is not None:
+            stripe = StripePublicCredentialsSerializer(
+                {"publishable_key": instance.stripe_publishable_key}
+            ).data
+        mercadopago = None
+        if instance.mercadopago_public_key is not None:
+            mercadopago = MercadoPagoPublicCredentialsSerializer(
+                {"public_key": instance.mercadopago_public_key}
+            ).data
+        return {
+            "provider": instance.provider,
+            "stripe": stripe,
+            "mercadopago": mercadopago,
+        }

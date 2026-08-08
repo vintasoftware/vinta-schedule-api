@@ -6,7 +6,7 @@ from .billing_views import (
     BillingUsageViewSet,
     SubscriptionViewSet,
 )
-from .views import BillingProfileViewSet, PaymentsViewSet
+from .views import BillingProfileViewSet, PaymentProviderViewSet, PaymentsViewSet
 
 
 routes: list[RouteDict] = [
@@ -15,6 +15,11 @@ routes: list[RouteDict] = [
         "regex": r"billing-profile",
         "viewset": BillingProfileViewSet,
         "basename": "BillingProfile",
+    },
+    {
+        "regex": r"billing/payment-provider",
+        "viewset": PaymentProviderViewSet,
+        "basename": "BillingPaymentProvider",
     },
     {
         "regex": r"billing/plans",

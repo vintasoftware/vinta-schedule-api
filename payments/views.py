@@ -16,16 +16,23 @@ from rest_framework.viewsets import GenericViewSet, ViewSet
 
 from common.utils.view_utils import TenantScopedViewMixin
 from organizations.permissions import IsOrganizationAdmin
+from payments.billing_views import _require_organization
 from payments.constants import PaymentStatuses
-from payments.exceptions import ProviderWebhookEventIdMissingError, UnknownPaymentProviderError
+from payments.exceptions import (
+    PaymentProviderNotConfiguredError,
+    ProviderWebhookEventIdMissingError,
+    UnknownPaymentProviderError,
+)
 from payments.models import BillingProfile, SubscriptionAddOn
 from payments.models import PaymentStatusUpdate as PaymentStatusUpdateModel
-from payments.serializers import BillingProfileSerializer
+from payments.serializers import BillingProfileSerializer, PaymentProviderSerializer
 from payments.services.dunning_service import FAILED_SUBSCRIPTION_PAYMENT_STATUSES
+from payments.services.provider_credentials import resolve_public_credentials
 
 
 if TYPE_CHECKING:
     from payments.services.dunning_service import DunningService
+    from payments.services.payment_provider_resolver import PaymentProviderResolver
     from payments.services.payment_service import PaymentService
     from payments.services.subscription_service import SubscriptionService
 
@@ -377,3 +384,145 @@ class BillingProfileViewSet(
         billing_profile = serializer.save()
 
         return Response(self.get_serializer(billing_profile).data)
+
+
+class PaymentProviderViewSet(TenantScopedViewMixin, ViewSet):
+    """``GET /billing/payment-provider/`` -- the active organization's payment provider
+    (its pin when set, ``settings.DEFAULT_PAYMENT_PROVIDER`` otherwise -- resolved through
+    ``PaymentProviderResolver``, the one place both this endpoint and Phase 4's charge
+    routing implement that rule) plus that provider's browser-safe public credentials.
+
+    ``GET /billing/payment-provider/default/`` -- the system default provider's public
+    credentials, unauthenticated (mirrors ``PaymentsViewSet``'s pattern above): a frontend
+    needs this to render *a* payment form before, or entirely without, a session.
+
+    Both actions return the identical ``PaymentProviderSerializer`` shape; only the object
+    matching ``provider`` is populated, the other is ``null``.
+    """
+
+    serializer_class = PaymentProviderSerializer
+    permission_classes = (IsAuthenticated,)
+    #: Only the unauthenticated ``default`` action is throttled -- see ``get_throttles`` --
+    #: with the shared ``payment-provider`` scope (``settings.DEFAULT_THROTTLE_RATES``).
+    throttle_scope = "payment-provider"
+
+    @inject
+    def __init__(
+        self,
+        *args,
+        payment_provider_resolver: Annotated[
+            "PaymentProviderResolver", Provide["payment_provider_resolver"]
+        ],
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.payment_provider_resolver = payment_provider_resolver
+
+    def _action_for_current_request(self) -> str | None:
+        """``self.action`` looked up early, off ``self.action_map`` and the raw request.
+
+        DRF resolves ``self.action`` (``ViewSetMixin.initialize_request``) by calling
+        ``super().initialize_request()`` -- which is what builds the ``Request`` object
+        using ``self.get_authenticators()`` -- **before** setting ``self.action`` on the
+        instance. So ``get_authenticators()`` cannot read ``self.action`` directly; this
+        replicates the same ``request.method -> action`` lookup
+        (``self.action_map``, populated by ``ViewSetMixin.as_view()`` before ``dispatch()``
+        runs) against ``self.request``, which -- at this point in the request lifecycle --
+        is still the raw Django request set by the ``view()`` closure, not yet the wrapped
+        DRF ``Request``. Falls back to ``None`` outside a real request/response cycle (e.g.
+        schema generation), so authenticator resolution there is unaffected.
+        """
+        request = getattr(self, "request", None)
+        action_map = getattr(self, "action_map", None)
+        if request is None or action_map is None:
+            return None
+        return action_map.get(request.method.lower())
+
+    def get_authenticators(self):
+        if self._action_for_current_request() == "default":
+            return []
+        return super().get_authenticators()
+
+    def get_permissions(self):
+        if self.action == "default":
+            return [AllowAny()]
+        return super().get_permissions()
+
+    def get_throttles(self):
+        if self.action == "default":
+            return [ScopedRateThrottle()]
+        return super().get_throttles()
+
+    @extend_schema(
+        summary="Get the active organization's payment provider",
+        description=(
+            "Returns the payment provider the active organization is pinned to (or the "
+            "system default when unpinned) plus its browser-safe public credentials."
+        ),
+        responses={
+            200: PaymentProviderSerializer,
+            403: {"description": "No active organization."},
+            409: {
+                "description": (
+                    "The resolved provider is unknown or has no public credentials "
+                    "configured in this deployment."
+                )
+            },
+        },
+    )
+    def list(self, request, *args, **kwargs):
+        """``GET /billing/payment-provider/``.
+
+        Named ``list`` (rather than a custom ``@action``) deliberately: DRF's router
+        maps the collection-root ``GET /{prefix}/`` to a plain ``list`` method via its
+        static route table, with no path segment appended. A dynamic ``@action`` route
+        cannot produce that bare URL here -- ``@action``'s ``url_path`` falls back to
+        the method name whenever it is falsy (``url_path=""`` included, since DRF checks
+        truthiness, not ``is None``), which is why ``BillingUsageViewSet.retrieve_usage``
+        actually resolves to ``/billing/usage/retrieve_usage/`` rather than
+        ``/billing/usage/`` despite passing ``url_path=""``. Using the router's native
+        ``list`` action avoids repeating that trap for this endpoint.
+        """
+        organization = _require_organization(request)
+        provider = self.payment_provider_resolver.resolve_for_organization(organization)
+        try:
+            credentials = resolve_public_credentials(provider)
+        except PaymentProviderNotConfiguredError:
+            return Response(
+                {
+                    "detail": (
+                        f"Payment provider {provider!r} is not configured in this deployment."
+                    )
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        return Response(PaymentProviderSerializer(credentials).data)
+
+    @extend_schema(
+        summary="Get the system default payment provider",
+        description=(
+            "Unauthenticated -- the system default provider's browser-safe public "
+            "credentials, so a frontend can render a payment form before (or without) a "
+            "session."
+        ),
+        responses={
+            200: PaymentProviderSerializer,
+            503: {"description": "The default provider has no public credentials configured."},
+            429: {"description": "Throttled."},
+        },
+    )
+    @action(methods=["get"], detail=False, url_path="default", url_name="default")
+    def default(self, request, *args, **kwargs):
+        provider = self.payment_provider_resolver.resolve_default()
+        try:
+            credentials = resolve_public_credentials(provider)
+        except PaymentProviderNotConfiguredError:
+            return Response(
+                {
+                    "detail": (
+                        f"Payment provider {provider!r} is not configured in this deployment."
+                    )
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        return Response(PaymentProviderSerializer(credentials).data)
