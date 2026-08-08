@@ -190,15 +190,30 @@ class BillingProfileAdmin(admin.ModelAdmin):
         Runs before ``super().save_model()`` so the "previous" value it reads
         (and records in the audit diff) is still the one in the database, not the
         new value this same save is about to write.
+
+        ``payment_provider`` is ``blank=True``, so clearing the field in the
+        admin's ``<select>`` is a legitimate action, not a validation error --
+        ``set_payment_provider`` treats an empty string as an explicit un-pin
+        (see its docstring) rather than raising ``UnknownPaymentProviderError``.
+
+        ``request.user`` is forwarded as ``actor`` so the audit entry names the
+        staff member who repointed the pin, not a generic system actor. Narrowed
+        via ``is_authenticated`` (``AbstractBaseUser | AnonymousUser`` ->
+        ``AbstractBaseUser`` for mypy, matching the pattern in
+        ``organizations.views``'s branding write gate) even though the admin
+        already refuses an unauthenticated request before ``save_model`` runs.
         """
         if change and "payment_provider" in form.changed_data:
             if subscription_service is None:
                 raise RuntimeError(
                     "BillingProfileAdmin.save_model: subscription_service not "
-                    f"injected (DI not wired?) -- payment_provider edit for "
+                    "injected (DI not wired?) -- payment_provider edit for "
                     f"BillingProfile {obj.pk} was not applied."
                 )
-            subscription_service.set_payment_provider(obj.organization, obj.payment_provider)
+            actor = request.user if request.user.is_authenticated else None
+            subscription_service.set_payment_provider(
+                obj.organization, obj.payment_provider, actor=actor
+            )
         super().save_model(request, obj, form, change)
 
 

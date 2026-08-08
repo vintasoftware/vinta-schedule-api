@@ -1008,6 +1008,59 @@ def test_record_payment_method_second_call_different_provider_leaves_pin_unchang
 
 
 @pytest.mark.django_db
+def test_record_payment_method_pin_write_is_a_conditional_update_not_read_then_write(
+    subscription_service, billing_profile, caplog
+):
+    """The pin write must be a single conditional ``UPDATE ... WHERE
+    payment_provider = ''``, not a Python-level "is it empty" branch followed by
+    an unconditional ``save()``. Two concurrent ``record_payment_method`` calls
+    for the same organization at different providers, each inside its own
+    transaction, would otherwise both observe an empty pin in memory and both
+    write -- the second silently overwriting the first with no warning, because
+    its own in-memory check also saw an empty pin.
+
+    Proven structurally rather than by outcome: re-running the sequential case
+    (see ``test_record_payment_method_second_call_different_provider_leaves_pin_unchanged_and_logs``)
+    cannot tell an atomic conditional write apart from a read-then-write that
+    happens to run sequentially in a single-threaded test -- both produce the
+    same final state. This spies on ``QuerySet.update`` to assert the write is
+    actually issued as a conditional ``UPDATE`` against ``BillingProfile``, that
+    it reports zero affected rows once the row is already pinned to a different
+    provider, and that the zero-row result is what drives the warning -- exactly
+    the observable a real race would produce for the losing caller.
+    """
+    from django.db.models.query import QuerySet
+
+    from payments.models import BillingProfile as BillingProfileModel
+
+    billing_profile.payment_provider = PaymentProviders.MERCADOPAGO
+    billing_profile.save(update_fields=["payment_provider"])
+
+    calls: list[tuple[dict, int]] = []
+    original_update = QuerySet.update
+
+    def spying_update(self, **kwargs):
+        result = original_update(self, **kwargs)
+        if self.model is BillingProfileModel:
+            calls.append((kwargs, result))
+        return result
+
+    with patch.object(QuerySet, "update", spying_update):
+        with caplog.at_level("WARNING", logger="payments.services.subscription_service"):
+            subscription_service.record_payment_method(
+                billing_profile.organization, PaymentProviders.STRIPE, "instrument_2"
+            )
+
+    assert calls, "record_payment_method must pin via a QuerySet.update() call, not save()"
+    kwargs, affected_rows = calls[-1]
+    assert kwargs == {"payment_provider": PaymentProviders.STRIPE}
+    assert affected_rows == 0
+    assert "already pinned" in caplog.text
+    billing_profile.refresh_from_db()
+    assert billing_profile.payment_provider == PaymentProviders.MERCADOPAGO
+
+
+@pytest.mark.django_db
 def test_set_payment_provider_rejects_unknown_slug(subscription_service, organization):
     with pytest.raises(UnknownPaymentProviderError):
         subscription_service.set_payment_provider(organization, "not_a_real_provider")
@@ -1085,3 +1138,49 @@ def test_set_payment_provider_succeeds_with_active_subscription_at_old_provider(
     assert result.payment_provider == PaymentProviders.STRIPE
     billing_profile.refresh_from_db()
     assert billing_profile.payment_provider == PaymentProviders.STRIPE
+
+
+@pytest.mark.django_db
+def test_set_payment_provider_records_actor_from_user(
+    subscription_service, billing_profile, django_capture_on_commit_callbacks
+):
+    """Passing ``actor`` (as ``BillingProfileAdmin.save_model`` does with
+    ``request.user``) must name that staff member in the audit entry as a
+    MEMBERSHIP actor, not the generic SYSTEM actor every other caller gets."""
+    from audit.constants import AuditActorType
+    from organizations.models import OrganizationMembership, OrganizationRole
+
+    staff_user = baker.make("users.User")
+    membership = OrganizationMembership.objects.create(
+        user=staff_user,
+        organization=billing_profile.organization,
+        role=OrganizationRole.ADMIN,
+    )
+
+    with patch("audit.services.persist_audit_record") as mock_task:
+        with django_capture_on_commit_callbacks(execute=True):
+            subscription_service.set_payment_provider(
+                billing_profile.organization, PaymentProviders.STRIPE, actor=staff_user
+            )
+
+    assert mock_task.delay.call_count == 1
+    payload = mock_task.delay.call_args_list[0].args[0]
+    assert payload["actor"]["actor_type"] == AuditActorType.MEMBERSHIP
+    assert payload["actor"]["actor_id"] == membership.user_id
+    assert payload["actor"]["actor_role"] == OrganizationRole.ADMIN
+
+
+@pytest.mark.django_db
+def test_set_payment_provider_empty_string_unpins_without_raising(
+    subscription_service, billing_profile
+):
+    """``provider=""`` is a legitimate un-pin (the admin's cleared ``<select>``
+    submits it), not a slug ``UnknownPaymentProviderError`` should reject."""
+    billing_profile.payment_provider = PaymentProviders.MERCADOPAGO
+    billing_profile.save(update_fields=["payment_provider"])
+
+    result = subscription_service.set_payment_provider(billing_profile.organization, "")
+
+    assert result.payment_provider == ""
+    billing_profile.refresh_from_db()
+    assert billing_profile.payment_provider == ""

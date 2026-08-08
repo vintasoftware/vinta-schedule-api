@@ -43,6 +43,7 @@ from payments.services.dataclasses import CreatedPlan, Plan
 if TYPE_CHECKING:
     from audit.services import AuditService
     from payments.services.payment_service import PaymentService
+    from users.models import User
 
 
 logger = logging.getLogger(__name__)
@@ -975,6 +976,16 @@ class SubscriptionService:
         instrument at a *second*, different provider keeps its original pin (see
         the **Pin mutability** guiding decision) -- the discrepancy is logged at
         ``warning`` so it surfaces rather than silently repointing future charges.
+
+        The pin write is a single conditional ``UPDATE ... WHERE payment_provider
+        = ''``, not a read-then-write. Two concurrent calls for the same
+        organization at *different* providers, each inside its own
+        ``transaction.atomic()``, cannot both observe an empty pin in Python and
+        both issue an unconditional ``save()`` -- only one row-matching ``UPDATE``
+        can win at the database. The loser's zero-affected-rows result is what
+        drives the "already pinned" warning below, so the discrepancy still
+        surfaces even under real concurrency, not just when calls happen to run
+        sequentially.
         """
         if not external_id:
             logger.warning(
@@ -1006,20 +1017,28 @@ class SubscriptionService:
                     provider,
                 )
             else:
-                if not billing_profile.payment_provider:
-                    billing_profile.payment_provider = provider
-                    billing_profile.save(update_fields=["payment_provider"])
-                elif billing_profile.payment_provider != provider:
-                    logger.warning(
-                        "Organization %s confirmed a payment method at provider %s but "
-                        "is already pinned to %s; leaving the existing pin in place.",
-                        organization.pk,
-                        provider,
-                        billing_profile.payment_provider,
-                    )
+                # Conditional UPDATE, not a Python-level "is it empty" branch --
+                # see the docstring above. Only a row that is *still* unpinned at
+                # the moment the UPDATE runs matches the WHERE clause, so exactly
+                # one of two concurrent callers can ever win the pin.
+                pinned = BillingProfile.objects.filter(
+                    organization=organization, payment_provider=""
+                ).update(payment_provider=provider)
+                if not pinned:
+                    billing_profile.refresh_from_db(fields=["payment_provider"])
+                    if billing_profile.payment_provider != provider:
+                        logger.warning(
+                            "Organization %s confirmed a payment method at provider %s but "
+                            "is already pinned to %s; leaving the existing pin in place.",
+                            organization.pk,
+                            provider,
+                            billing_profile.payment_provider,
+                        )
         return payment_method
 
-    def set_payment_provider(self, organization: Organization, provider: str) -> BillingProfile:
+    def set_payment_provider(
+        self, organization: Organization, provider: str, actor: "User | None" = None
+    ) -> BillingProfile:
         """Staff repoint lever: pin ``organization``'s ``BillingProfile`` to
         ``provider``, overwriting whatever it was pinned to before (including a
         never-pinned, empty profile).
@@ -1031,6 +1050,13 @@ class SubscriptionService:
         hand; there is no end-user-facing API surface for it (see the plan's
         **Pin mutability** guiding decision).
 
+        ``provider=""`` is a legitimate un-pin, not an error: an empty string is
+        what the admin's ``<select>`` submits when a staff member clears the
+        field, and the plan's **Pin mutability** decision treats a staff repoint
+        (including back to "unset") as a deliberate action, not a slug to
+        validate against the provider registry. Any other value must still name
+        a real, configured provider.
+
         Deliberately carries **no active-subscription guard**: this succeeds
         even when the organization holds a live ``Subscription`` at the old
         provider. That is a knowingly accepted tradeoff, not an oversight --
@@ -1040,19 +1066,27 @@ class SubscriptionService:
         operator's manual responsibility; the audit entry below records the
         pre-repoint provider so that stranded state stays traceable.
 
-        :raises UnknownPaymentProviderError: when ``provider`` is not a member
-            of ``PaymentProviders``, or is absent from the payment adapter
-            registry (``PaymentService.get_payment_adapter``) -- either way,
-            there is nothing this deployment can drive that provider with.
+        :param actor: The staff member driving this repoint, when called from a
+            request context (e.g. ``BillingProfileAdmin.save_model``). Resolved
+            to a ``MEMBERSHIP`` actor via ``AuditService.actor_from_user`` so the
+            audit entry names who repointed the pin, not just what changed.
+            Defaults to ``None``, which records a ``SYSTEM`` actor -- unchanged
+            behavior for every caller that has no request-scoped user (an
+            operator running this by hand, or a script).
+        :raises UnknownPaymentProviderError: when a non-empty ``provider`` is not
+            a member of ``PaymentProviders``, or is absent from the payment
+            adapter registry (``PaymentService.get_payment_adapter``) -- either
+            way, there is nothing this deployment can drive that provider with.
         :raises MissingBillingProfileError: when ``organization`` has no
             ``BillingProfile`` to pin.
         """
-        if provider not in PaymentProviders.values:
-            raise UnknownPaymentProviderError(provider)
-        # Also confirms the slug resolves to a real, registered adapter -- the
-        # same registry every charge path resolves an adapter from, so a
-        # provider this deployment cannot actually drive is refused here too.
-        self._require_payment_service().get_payment_adapter(provider)
+        if provider:
+            if provider not in PaymentProviders.values:
+                raise UnknownPaymentProviderError(provider)
+            # Also confirms the slug resolves to a real, registered adapter --
+            # the same registry every charge path resolves an adapter from, so a
+            # provider this deployment cannot actually drive is refused here too.
+            self._require_payment_service().get_payment_adapter(provider)
 
         try:
             billing_profile = organization.billing_profile
@@ -1064,10 +1098,15 @@ class SubscriptionService:
         billing_profile.save(update_fields=["payment_provider"])
 
         audit_service = self._require_audit_service()
+        actor_snapshot = (
+            audit_service.actor_from_user(actor, organization.pk)
+            if actor is not None
+            else audit_service.system_actor()
+        )
         audit_service.record(
             organization_id=organization.pk,
             action=AuditAction.UPDATE,
-            actor=audit_service.system_actor(),
+            actor=actor_snapshot,
             subject=audit_service.subject_from_instance(billing_profile),
             diff={"payment_provider": {"old": previous_provider, "new": provider}},
         )
