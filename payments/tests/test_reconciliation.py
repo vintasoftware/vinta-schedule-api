@@ -15,16 +15,16 @@ one charge the close issues so the test can compare it against the metered total
 
 import datetime
 from decimal import Decimal
-from types import SimpleNamespace
 
 import pytest
+from model_bakery import baker
 
 from calendar_integration.constants import CalendarProvider, RecurrenceFrequency
 from calendar_integration.factories import CalendarEventFactory
 from calendar_integration.models import Calendar, CalendarEvent
 from organizations.models import Organization
 from payments.billing_constants import LimitedResource
-from payments.models import MeteredOccurrence, Subscription
+from payments.models import MeteredOccurrence, Payment, Subscription
 from payments.services.cycle_close_service import CycleCloseService
 
 
@@ -35,12 +35,18 @@ AFTER_PERIOD = datetime.datetime(2025, 7, 2, 0, 0, tzinfo=datetime.UTC)
 
 
 class DedupingPaymentService:
+    """Returns a real, persisted ``Payment`` row: ``_persist_statement`` (Phase 2)
+    links the charge onto ``BillingPeriodSummary.payment_id``, a genuine foreign
+    key, so a bare stand-in with a made-up ``pk`` would violate referential
+    integrity (see ``payments/tests/services/test_cycle_close.py``'s
+    ``FakePaymentService`` for the fuller explanation)."""
+
     def __init__(self) -> None:
         self.charges: list[dict] = []
 
-    def create_payment(self, *, idempotency_key: str = "", **kwargs) -> SimpleNamespace:
+    def create_payment(self, *, idempotency_key: str = "", **kwargs) -> Payment:
         self.charges.append({"idempotency_key": idempotency_key, **kwargs})
-        return SimpleNamespace(pk=len(self.charges))
+        return baker.make(Payment, external_id=idempotency_key)
 
 
 @pytest.fixture

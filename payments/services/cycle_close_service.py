@@ -47,6 +47,17 @@ Five properties carry that weight:
    declined charge, a provider error) must not abort the sweep for the rest — the
    beat task fans out one Celery task per subscription, each catching and logging
    its own failure (``payments.tasks.close_subscription_billing_period``).
+
+6. **Persisting the closed-period statement can never undo a committed charge or
+   block the roll.** ``_close_one_period`` writes a durable ``BillingPeriodSummary``
+   (+ its ``BillingPeriodResourceUsage`` children) after ``reconcile_period`` and
+   ``_charge_overage`` and before ``_roll_period`` — the only point at which the
+   plan in force, the prepaid counts, and the outcome of the charge are all
+   simultaneously in hand for the period being closed, not the one it is about to
+   roll into. That write runs inside its own nested ``transaction.atomic()``
+   (a savepoint) and any failure there is logged and swallowed rather than
+   propagated, so a bug in statement-writing can degrade history, never revenue.
+   See ``_persist_statement``.
 """
 
 import datetime
@@ -54,11 +65,18 @@ import logging
 from decimal import Decimal
 
 from django.db import transaction
+from django.db.models import Count
 from django.utils import timezone
 
 from payments.billing_constants import BillingState, LimitedResource
 from payments.exceptions import IllegalBillingStateTransitionError
-from payments.models import MeteredOccurrence, Payment, Subscription
+from payments.models import (
+    BillingPeriodResourceUsage,
+    BillingPeriodSummary,
+    MeteredOccurrence,
+    Payment,
+    Subscription,
+)
 from payments.services.billing_dataclasses import ClosedPeriod, ReconciliationReport
 from payments.services.billing_state_machine import transition_billing_state
 from payments.services.entitlement_service import EntitlementService
@@ -200,6 +218,15 @@ class CycleCloseService:
 
         overage_total, payment = self._charge_overage(subscription, period_start)
 
+        # Ordered after the charge and before the roll: `subscription.plan` is
+        # still the outgoing plan (`_apply_pending_plan_change_if_due` only runs
+        # once, after every period in this pass has closed — see
+        # `close_subscription`) and `subscription.current_period_start` still
+        # names the period this statement is about. See `_persist_statement`.
+        self._persist_statement(
+            subscription, period_start, period_end, overage_total, payment, report
+        )
+
         self._roll_period(subscription, period_end)
 
         return ClosedPeriod(
@@ -274,6 +301,191 @@ class CycleCloseService:
             payment.pk,
         )
         return overage_total, payment
+
+    # ------------------------------------------------------------------
+    # Statement persistence
+    # ------------------------------------------------------------------
+
+    def _persist_statement(
+        self,
+        subscription: Subscription,
+        period_start: datetime.datetime,
+        period_end: datetime.datetime,
+        overage_total: Decimal,
+        payment: Payment | None,
+        report: ReconciliationReport,
+    ) -> None:
+        """Write the durable ``BillingPeriodSummary`` (+ one ``BillingPeriodResourceUsage``
+        per ``LimitedResource`` member) for the period just settled.
+
+        **Ordering is the whole point of where this is called from**
+        (``_close_one_period``, after ``reconcile_period``/``_charge_overage`` and
+        before ``_roll_period``):
+
+        - ``EntitlementService.get_usage_breakdown`` snapshots each **prepaid**
+          resource's count as of *right now*, so this must run before the roll
+          purely for the plan-snapshot reason below — those seven resources have
+          no period of their own (see ``BillingPeriodResourceUsage``'s "Detail =
+          post-paid ledger only" decision), so "now" is the only meaningful
+          instant to record them at, and it is also the earliest instant at which
+          the charge, the plan, and the reconciliation report for *this* period
+          are all simultaneously in hand.
+        - ``event_occurrences`` — the one **postpaid**, period-scoped resource —
+          is deliberately **not** read through ``get_usage_breakdown``:
+          ``EntitlementService``'s counter for it answers for the cycle in
+          progress *right now* (``current_billing_period_start``, derived from
+          ``timezone.now()`` — built for live enforcement, not history), which by
+          the time cycle close runs is never the period being closed (that
+          mismatch is *why* the period needs closing). Its breakdown is grouped
+          straight off ``MeteredOccurrence.objects.for_billing_period(subscription.pk,
+          period_start)`` instead — the same rows ``_charge_overage`` and
+          ``reconcile_period`` already read from, so this is a fourth reader of
+          the one definition of "this period's occurrences", not a second one.
+        - The plan snapshot (``plan_slug``/``plan_name``/``billing_interval``/
+          ``currency``) is read from ``subscription.plan``/``subscription.billing_interval``
+          here, which is still the *outgoing* plan: ``_apply_pending_plan_change_if_due``
+          (the deferred flip onto a scheduled downgrade) is only called once, in
+          ``close_subscription``, after every period in the current catch-up pass has
+          already closed — never from inside this method's caller. A pending change
+          effective at this exact boundary therefore cannot leak onto the period it
+          did not apply to.
+
+        ``subscription.organization`` is used directly as the billing root rather
+        than re-resolving it through ``resolve_billing_root``: every ``Subscription``
+        belongs to a billing root by construction
+        (``SubscriptionService.create_subscription_for_organization`` refuses to
+        create one for a reseller child) and ``subscriptions_to_close`` only ever
+        selects from ``MeteringService.subscriptions_to_sweep()``'s root ids — so
+        that walk would terminate on its first step here regardless. The pooled
+        organization ids are resolved **once** for the whole set
+        (``get_pooled_organization_ids``), not per resource — used directly for
+        the ``event_occurrences`` grouping above, and implicitly re-derived (from
+        the same already-root organization, so still a no-query walk) inside each
+        ``get_usage_breakdown``/``get_effective_limit`` call for the other seven.
+
+        **Idempotency.** ``get_or_create`` on ``(subscription, billing_period_start)``
+        — the same durability pattern ``MeteredOccurrence`` and
+        ``ProviderWebhookEvent`` use elsewhere in this app: the unique constraint is
+        the correctness mechanism, not the code path. In practice
+        ``_close_one_period`` is never invoked twice for the same period (the
+        ``current_period_end <= now`` sweep guard in ``close_subscription`` already
+        prevents that once a period has rolled), so the ``created is False`` branch
+        below is belt-and-braces rather than the primary defense — exactly like the
+        two models above.
+
+        **Failure isolation.** The whole write is wrapped in its own
+        ``transaction.atomic()`` — a *savepoint*, since ``close_subscription``
+        already holds the outer transaction open — and any exception raised inside
+        is logged at ``ERROR`` and swallowed rather than re-raised. The overage
+        charge has already happened by the time this runs; a bug here must degrade
+        history, never roll back money that already moved or stop the period from
+        rolling. A missing statement is recoverable by re-running close, which the
+        unique constraint makes safe.
+
+        This method's failure-isolation behavior is exercised under **test**
+        settings only. ``ATOMIC_REQUESTS`` itself does not gate this specific path
+        — ``close_subscription`` opens its own explicit ``transaction.atomic()``
+        regardless of that setting, because it runs from a Celery task, never a
+        request — but the covering test still only proves Django's nested-atomic /
+        savepoint rollback semantics under pytest-django's own transaction
+        wrapping, not against a live worker process under production settings. Do
+        not read that test as independent proof of production charge/commit
+        ordering; see the project's ``ATOMIC_REQUESTS`` trap note.
+        """
+        try:
+            with transaction.atomic():
+                summary, created = BillingPeriodSummary.objects.get_or_create(
+                    subscription=subscription,
+                    billing_period_start=period_start,
+                    defaults={
+                        "organization": subscription.organization,
+                        "billing_period_end": period_end,
+                        "plan_slug": subscription.plan.slug,
+                        "plan_name": subscription.plan.name,
+                        "billing_interval": subscription.billing_interval,
+                        "currency": subscription.plan.currency,
+                        "overage_total": overage_total,
+                        "charged": payment is not None,
+                        # `payment_id` (the raw FK column), not `payment` (the
+                        # forward descriptor): the latter validates its assigned
+                        # value is a `Payment` *instance*, which would reject the
+                        # duck-typed payment stand-in ``_payment_service`` may
+                        # legitimately return (see ``ClosedPeriod.payment_id``,
+                        # which reads the same `.pk` for the identical reason).
+                        "payment_id": payment.pk if payment is not None else None,
+                        "reconciliation_unmetered": len(report.unmetered),
+                        "reconciliation_orphaned": len(report.orphaned),
+                        "closed_at": timezone.now(),
+                    },
+                )
+                if not created:
+                    logger.info(
+                        "Cycle close: statement for subscription %s period %s already exists "
+                        "(id=%s); re-run is a no-op.",
+                        subscription.pk,
+                        period_start.isoformat(),
+                        summary.pk,
+                    )
+                    return
+
+                pooled_organization_ids = self._entitlement_service.get_pooled_organization_ids(
+                    subscription.organization
+                )
+                resource_rows: list[BillingPeriodResourceUsage] = []
+                for resource_key in LimitedResource.values:
+                    effective_limit = self._entitlement_service.get_effective_limit(
+                        subscription.organization, resource_key
+                    )
+                    if resource_key == LimitedResource.EVENT_OCCURRENCES:
+                        usage_breakdown = {
+                            row["organization_id"]: row["usage_count"]
+                            for row in (
+                                MeteredOccurrence.objects.for_billing_period(
+                                    subscription.pk, period_start
+                                )
+                                .for_organizations(pooled_organization_ids)
+                                .order_by()
+                                .values("organization_id")
+                                .annotate(usage_count=Count("pk"))
+                            )
+                        }
+                    else:
+                        usage_breakdown = self._entitlement_service.get_usage_breakdown(
+                            subscription.organization, resource_key
+                        )
+                    resource_rows.append(
+                        BillingPeriodResourceUsage(
+                            summary=summary,
+                            resource_key=resource_key,
+                            kind=effective_limit.kind,
+                            total=sum(usage_breakdown.values()),
+                            limit_value=effective_limit.limit_value,
+                            overage_unit_price=effective_limit.overage_unit_price,
+                            by_organization=usage_breakdown,
+                        )
+                    )
+                BillingPeriodResourceUsage.objects.bulk_create(resource_rows)
+        except Exception:
+            logger.exception(
+                "Cycle close: failed to persist the billing period statement for "
+                "subscription %s period %s. The overage charge already committed and the "
+                "period will still roll; this failure is swallowed so it cannot undo "
+                "either. History for this period is lost unless close is re-run (safe: the "
+                "(subscription, billing_period_start) unique constraint makes a retry a "
+                "no-op).",
+                subscription.pk,
+                period_start.isoformat(),
+            )
+            return
+
+        logger.info(
+            "Cycle close: wrote billing period statement for subscription %s period %s "
+            "(overage_total=%s, drift=%s).",
+            subscription.pk,
+            period_start.isoformat(),
+            overage_total,
+            report.drift,
+        )
 
     @staticmethod
     def _roll_period(subscription: Subscription, period_end: datetime.datetime) -> None:

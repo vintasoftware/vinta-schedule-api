@@ -28,7 +28,6 @@ import datetime
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
-from types import SimpleNamespace
 
 from django.db import connection
 
@@ -38,7 +37,13 @@ from model_bakery import baker
 
 from organizations.models import Organization
 from payments.billing_constants import BillingInterval, BillingState, LimitedResource, LimitKind
-from payments.models import BillingPlan, MeteredOccurrence, Subscription, SubscriptionPlanLimit
+from payments.models import (
+    BillingPlan,
+    MeteredOccurrence,
+    Payment,
+    Subscription,
+    SubscriptionPlanLimit,
+)
 from payments.services.cycle_close_service import CycleCloseService, overage_idempotency_key
 
 
@@ -60,9 +65,15 @@ RACE_WINDOW_SECONDS = 0.5
 
 
 class DedupingPaymentService:
-    """Models the provider: a repeated idempotency key resolves to the same charge.
-    ``calls`` counts every ``create_payment`` invocation; ``settled_keys`` the
-    *distinct* charges the provider actually took.
+    """Models the provider: a repeated idempotency key resolves to the same charge
+    *at the provider*. ``calls`` counts every ``create_payment`` invocation;
+    ``settled_keys`` the *distinct* charges the provider actually took.
+
+    Returns a fresh, real ``Payment`` row on every call regardless of the key --
+    exactly like the real ``PaymentService.create_payment`` (the local row is not
+    what dedups; the provider is) -- rather than a stable stand-in, because Phase
+    2's ``BillingPeriodSummary.payment_id`` is a genuine foreign key and needs
+    something Postgres can actually reference.
 
     ``create_payment`` sleeps ``race_window_seconds`` before recording, so the thread
     that wins the row lock holds it across the sleep — widening the window the losing
@@ -72,20 +83,19 @@ class DedupingPaymentService:
         self._race_window = race_window_seconds
         self._lock = threading.Lock()
         self.calls: list[str] = []
-        self._by_key: dict[str, SimpleNamespace] = {}
+        self._distinct_keys: set[str] = set()
 
-    def create_payment(self, *, idempotency_key: str = "", **kwargs) -> SimpleNamespace:
+    def create_payment(self, *, idempotency_key: str = "", **kwargs) -> Payment:
         if self._race_window:
             threading.Event().wait(self._race_window)
         with self._lock:
             self.calls.append(idempotency_key)
-            if idempotency_key not in self._by_key:
-                self._by_key[idempotency_key] = SimpleNamespace(pk=len(self._by_key) + 1)
-            return self._by_key[idempotency_key]
+            self._distinct_keys.add(idempotency_key)
+            return baker.make(Payment, external_id=idempotency_key)
 
     @property
     def settled_keys(self) -> set[str]:
-        return set(self._by_key)
+        return set(self._distinct_keys)
 
 
 @pytest.fixture

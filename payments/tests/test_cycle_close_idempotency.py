@@ -15,14 +15,14 @@ each has a test:
 
 import datetime
 from decimal import Decimal
-from types import SimpleNamespace
 
 import pytest
 from dateutil.relativedelta import relativedelta
+from model_bakery import baker
 
 from organizations.models import Organization
 from payments.billing_constants import LimitedResource
-from payments.models import MeteredOccurrence, Subscription
+from payments.models import BillingPeriodSummary, MeteredOccurrence, Payment, Subscription
 from payments.services.cycle_close_service import CycleCloseService
 
 
@@ -32,22 +32,30 @@ AFTER_PERIOD = datetime.datetime(2025, 7, 2, 0, 0, tzinfo=datetime.UTC)
 
 
 class DedupingPaymentService:
-    """Models the provider: a repeated idempotency key resolves to the same charge,
-    so ``settled_keys`` counts *distinct* charges the provider actually took."""
+    """Models the provider: a repeated idempotency key resolves to the same charge
+    *at the provider* -- ``settled_keys`` counts those distinct provider-side
+    charges. The **local** ``Payment`` row is a different story: exactly like the
+    real ``PaymentService.create_payment`` (see its docstring), a fresh row is
+    created on every call regardless of the key, because the local row cannot
+    itself dedupe across a rolled-back transaction -- only the provider can. Phase
+    2's ``BillingPeriodSummary.payment_id`` is a genuine foreign key, so returning
+    a stable Python stand-in across calls (as an earlier version of this fake did)
+    would link a statement to a ``Payment`` row a rolled-back attempt never
+    actually persisted.
+    """
 
     def __init__(self) -> None:
         self.calls: list[str] = []
-        self._by_key: dict[str, SimpleNamespace] = {}
+        self._distinct_keys: set[str] = set()
 
-    def create_payment(self, *, idempotency_key: str = "", **kwargs) -> SimpleNamespace:
+    def create_payment(self, *, idempotency_key: str = "", **kwargs) -> Payment:
         self.calls.append(idempotency_key)
-        if idempotency_key not in self._by_key:
-            self._by_key[idempotency_key] = SimpleNamespace(pk=len(self._by_key) + 1)
-        return self._by_key[idempotency_key]
+        self._distinct_keys.add(idempotency_key)
+        return baker.make(Payment, external_id=idempotency_key)
 
     @property
     def settled_keys(self) -> set[str]:
-        return set(self._by_key)
+        return set(self._distinct_keys)
 
 
 @pytest.fixture
@@ -188,3 +196,30 @@ def test_period_roll_and_counter_reset_are_idempotent(
     assert subscription.current_period_start == rolled_start == PERIOD_END
     assert subscription.current_period_end == rolled_end == PERIOD_END + relativedelta(months=1)
     assert len(payment_service.settled_keys) == 1
+
+
+@pytest.mark.django_db
+def test_rerunning_close_writes_no_second_statement(
+    cycle_close_service: CycleCloseService,
+    subscription: Subscription,
+    organization: Organization,
+    payment_service: DedupingPaymentService,
+):
+    """Phase 2: the ``BillingPeriodSummary`` statement is exactly as idempotent as
+    the charge it is written alongside. A second ``close_subscription`` pass over
+    an already-closed period is a no-op at the sweep-guard level (the rolled
+    period is never re-entered), so it writes no second statement and raises
+    nothing -- proving the same "exactly once" property this file's other tests
+    prove for the charge also holds for the durable record of it."""
+    _overage_rows(subscription, organization, 3)  # 3 x 0.50 = 1.50
+
+    cycle_close_service.close_subscription(subscription, now=AFTER_PERIOD)
+    assert BillingPeriodSummary.objects.count() == 1
+    first_summary = BillingPeriodSummary.objects.get()
+
+    cycle_close_service.close_subscription(subscription, now=AFTER_PERIOD)
+
+    assert BillingPeriodSummary.objects.count() == 1
+    second_summary = BillingPeriodSummary.objects.get()
+    assert second_summary.pk == first_summary.pk
+    assert second_summary.overage_total == Decimal("1.5000")
