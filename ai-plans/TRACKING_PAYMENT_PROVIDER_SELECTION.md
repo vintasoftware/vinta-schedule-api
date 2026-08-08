@@ -48,13 +48,31 @@ Added `STRIPE_PUBLISHABLE_KEY`, `MERCADOPAGO_PUBLIC_KEY`, and `DEFAULT_PAYMENT_P
 
 **Gates**: ruff check + format clean; `makemigrations --check` no changes; `check --deploy` exit 0 (pre-existing dev warnings only); full suite `5162 passed`; mypy — zero new errors (pre-existing errors confirmed unchanged via stash/unstash).
 
+### Phase 2 — Pin the provider on the BillingProfile ✅
+
+- **Branch**: `plan/payment-provider-selection/phase-2` — base `plan/payment-provider-selection/phase-1`
+- **Models**: implementer Tier 2→Sonnet; reviewer Tier 3 (claude-sonnet-5); fixer Tier 2→Sonnet
+- **Commits**: `<impl>` (implementation), `8d37db7` (review fixes)
+
+Added `BillingProfile.payment_provider` (`CharField(choices=PaymentProviders, blank=True, default="")`) plus migrations `0016` (AddField) and `0017` (backfill every existing row to `stripe`, reversible, idempotent). `record_payment_method` pins on the first confirmed instrument; `set_payment_provider` is the audited staff repoint lever, surfaced on `BillingProfileAdmin.save_model`. `PaymentProviderNotConfiguredError` added to `payments/exceptions.py` — **defined but deliberately unused until Phases 3 and 4 raise it**. `di_core/containers.py` now injects `audit_service` into `subscription_service`.
+
+**Decisions made during Phase 2 that Phases 3 and 4 must honor:**
+
+1. **The pin write is a conditional UPDATE, not read-then-write.** `BillingProfile.objects.filter(organization=..., payment_provider="").update(...)` — only a row still unpinned when the UPDATE runs matches, so exactly one of two concurrent callers can win. Chosen over `select_for_update()` because its correctness is structural rather than dependent on transaction settings (relevant given the project's `ATOMIC_REQUESTS` trap). **Do not regress this to an attribute assignment + `save()`**; a test asserts the `update()` call and its zero-row result specifically.
+2. **`payment_provider == ""` has two meanings, both resolving identically.** "Never paid" *and* "explicitly un-pinned by staff" — `set_payment_provider(org, "")` is a legitimate un-pin (the admin's empty select option), not an error. Phases 3 and 4 must treat empty as "fall back to `settings.DEFAULT_PAYMENT_PROVIDER`" without distinguishing the two.
+3. **`set_payment_provider` takes an optional `actor`**, defaulting to the audit system actor; the admin passes `request.user` so the audit entry names the staff member who repointed. Non-admin callers are unaffected.
+4. **No active-subscription guard**, per the user's decision — with a test asserting its absence against a genuinely `ACTIVE` subscription at the old provider.
+
+**Review**: four SHOULD-FIX, all resolved — (a) the write-once pin was racy (two concurrent confirmations at different providers could both see an empty pin and the second would silently overwrite, with the discrepancy warning never firing); (b) clearing the admin field 500'd via an uncaught `UnknownPaymentProviderError`; (c) the admin surface shipped with zero test coverage; (d) the audit entry attributed every repoint to the system actor even when a staff user was right there. One reported BLOCKER — migration `0016` failing `ruff format` — was **rejected as a false positive**: `pyproject.toml` excludes `**/migrations/**`, and pre-existing migrations have byte-identical style.
+
+**Gates**: ruff clean; `makemigrations --check` no changes; `check --deploy` exit 0; payments suite `838 passed`; full suite `5180 passed`; mypy zero new errors (379 pre-existing, verified unchanged via stash).
+
 ## Current phase
 
-- **Phase 2 — Pin the provider on the BillingProfile** — starting.
+- **Phase 3 — Provider credentials endpoints** — starting.
 
 ## Remaining phases
 
-- Phase 3 — Provider credentials endpoints
 - Phase 4 — Route provider calls through the resolved provider
 
 ## Deferred phases
