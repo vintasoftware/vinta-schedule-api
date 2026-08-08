@@ -1,5 +1,7 @@
 import datetime
+import importlib
 
+from django.apps import apps
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 
@@ -82,6 +84,92 @@ class TestBillingProfile:
 
     def test_billing_address_organization_property(self, billing_profile):
         assert billing_profile.billing_address.organization == billing_profile.organization
+
+
+backfill_payment_provider_migration = importlib.import_module(
+    "payments.migrations.0017_backfill_billingprofile_payment_provider"
+)
+
+
+@pytest.mark.django_db
+class TestBackfillBillingProfilePaymentProviderMigration:
+    """Verifies the ``0017_backfill_billingprofile_payment_provider`` data
+    migration's end state directly, the same live-``apps``-registry precedent
+    ``test_backfill_migration.py`` establishes for ``0009``: safe here because
+    the migration's own function is a plain ``filter().update()`` against
+    ``BillingProfile.payment_provider``, whose shape has not changed since."""
+
+    def test_every_preexisting_profile_ends_up_pinned_to_stripe(
+        self, organization, billing_address
+    ):
+        profile = baker.make(
+            BillingProfile,
+            organization=organization,
+            billing_address=billing_address,
+            payment_provider="",
+        )
+
+        backfill_payment_provider_migration.backfill_payment_provider(apps, None)
+
+        profile.refresh_from_db()
+        assert profile.payment_provider == PaymentProviders.STRIPE
+
+    def test_an_already_pinned_profile_is_left_untouched(self, organization, billing_address):
+        profile = baker.make(
+            BillingProfile,
+            organization=organization,
+            billing_address=billing_address,
+            payment_provider=PaymentProviders.MERCADOPAGO,
+        )
+
+        backfill_payment_provider_migration.backfill_payment_provider(apps, None)
+
+        profile.refresh_from_db()
+        assert profile.payment_provider == PaymentProviders.MERCADOPAGO
+
+    def test_idempotent_rerun_matches_nothing(self, organization, billing_address):
+        profile = baker.make(
+            BillingProfile,
+            organization=organization,
+            billing_address=billing_address,
+            payment_provider="",
+        )
+
+        backfill_payment_provider_migration.backfill_payment_provider(apps, None)
+        backfill_payment_provider_migration.backfill_payment_provider(apps, None)
+
+        profile.refresh_from_db()
+        assert profile.payment_provider == PaymentProviders.STRIPE
+
+    def test_reverse_sets_stripe_rows_back_to_blank(self, organization, billing_address):
+        profile = baker.make(
+            BillingProfile,
+            organization=organization,
+            billing_address=billing_address,
+            payment_provider="",
+        )
+
+        backfill_payment_provider_migration.backfill_payment_provider(apps, None)
+        backfill_payment_provider_migration.unset_payment_provider(apps, None)
+
+        profile.refresh_from_db()
+        assert profile.payment_provider == ""
+
+    def test_reverse_leaves_a_non_stripe_pin_untouched(self, organization, billing_address):
+        """The reverse only targets rows it (or the forward step) could plausibly
+        have written -- a profile independently pinned to a different provider
+        is not blanked out by reversing this migration."""
+        profile = baker.make(
+            BillingProfile,
+            organization=organization,
+            billing_address=billing_address,
+            payment_provider=PaymentProviders.MERCADOPAGO,
+        )
+
+        backfill_payment_provider_migration.unset_payment_provider(apps, None)
+
+        profile.refresh_from_db()
+        assert profile.payment_provider == PaymentProviders.MERCADOPAGO
 
 
 @pytest.mark.django_db

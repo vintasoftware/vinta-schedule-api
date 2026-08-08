@@ -11,6 +11,7 @@ from django.utils import timezone
 from dateutil.relativedelta import relativedelta
 from dependency_injector.wiring import Provide, inject
 
+from audit.constants import AuditAction
 from organizations.models import Organization
 from payments.billing_constants import BillingInterval, BillingState
 from payments.constants import PaymentProviders
@@ -20,12 +21,15 @@ from payments.exceptions import (
     BillingRootCycleError,
     IllegalBillingStateTransitionError,
     IncompleteBillingPlanError,
+    MissingBillingProfileError,
     NoDefaultBillingPlanError,
     PaymentTokenRequiredError,
     UnconfirmedPlanChangeError,
+    UnknownPaymentProviderError,
 )
 from payments.models import (
     BillingPlan,
+    BillingProfile,
     PaymentMethod,
     Subscription,
     SubscriptionAddOn,
@@ -37,7 +41,9 @@ from payments.services.dataclasses import CreatedPlan, Plan
 
 
 if TYPE_CHECKING:
+    from audit.services import AuditService
     from payments.services.payment_service import PaymentService
+    from users.models import User
 
 
 logger = logging.getLogger(__name__)
@@ -294,6 +300,7 @@ class SubscriptionService:
     def __init__(
         self,
         payment_service: Annotated["PaymentService | None", Provide["payment_service"]] = None,
+        audit_service: Annotated["AuditService | None", Provide["audit_service"]] = None,
     ) -> None:
         """``payment_service`` drives the provider round-trips the plan-change
         and add-on purchase flows need (creating/updating the provider-side plan,
@@ -304,14 +311,19 @@ class SubscriptionService:
         which would make the two circular. The webhook views orchestrate calling
         into both instead (see ``PaymentsViewSet``).
 
-        Defaults to ``None`` so every existing bare ``SubscriptionService()``
+        ``audit_service`` records the billing business writes that need an audit
+        trail — currently just ``set_payment_provider``'s staff repoint.
+
+        Both default to ``None`` so every existing bare ``SubscriptionService()``
         call across the codebase and test suite keeps working — ``@inject``
-        resolves ``Provide["payment_service"]`` from the wired container
-        automatically once Django has started (``payments`` is in
-        ``INTERNAL_INSTALLED_APPS``, which ``DICoreConfig.ready()`` wires), the
-        same pattern ``CalendarService.__init__`` uses.
+        resolves ``Provide["payment_service"]`` / ``Provide["audit_service"]``
+        from the wired container automatically once Django has started
+        (``payments`` is in ``INTERNAL_INSTALLED_APPS``, which
+        ``DICoreConfig.ready()`` wires), the same pattern ``CalendarService.__init__``
+        uses.
         """
         self.payment_service = payment_service
+        self.audit_service = audit_service
 
     def _require_payment_service(self) -> "PaymentService":
         if self.payment_service is None:
@@ -321,6 +333,15 @@ class SubscriptionService:
                 "the provider."
             )
         return self.payment_service
+
+    def _require_audit_service(self) -> "AuditService":
+        if self.audit_service is None:
+            raise RuntimeError(
+                "SubscriptionService.audit_service is not set -- construct via "
+                "the DI container (or pass audit_service=...) before writing an "
+                "audited business change."
+            )
+        return self.audit_service
 
     def create_subscription_for_organization(
         self, organization: Organization, plan: BillingPlan | None = None
@@ -947,6 +968,24 @@ class SubscriptionService:
         instrument behind it is real and chargeable. A blank id means there is
         nothing to record (should not happen for a confirmed charge; logged and
         skipped rather than writing a meaningless row).
+
+        Also pins ``organization``'s ``BillingProfile.payment_provider`` to
+        ``provider``, in the same transaction as the ``PaymentMethod``
+        ``get_or_create`` -- but only the first time: an already-pinned profile
+        is left untouched. An organization that somehow gets a confirmed
+        instrument at a *second*, different provider keeps its original pin (see
+        the **Pin mutability** guiding decision) -- the discrepancy is logged at
+        ``warning`` so it surfaces rather than silently repointing future charges.
+
+        The pin write is a single conditional ``UPDATE ... WHERE payment_provider
+        = ''``, not a read-then-write. Two concurrent calls for the same
+        organization at *different* providers, each inside its own
+        ``transaction.atomic()``, cannot both observe an empty pin in Python and
+        both issue an unconditional ``save()`` -- only one row-matching ``UPDATE``
+        can win at the database. The loser's zero-affected-rows result is what
+        drives the "already pinned" warning below, so the discrepancy still
+        surfaces even under real concurrency, not just when calls happen to run
+        sequentially.
         """
         if not external_id:
             logger.warning(
@@ -956,16 +995,122 @@ class SubscriptionService:
                 provider,
             )
             return None
-        payment_method, _created = PaymentMethod.objects.get_or_create(
-            organization=organization,
-            provider=provider,
-            external_id=external_id,
-            defaults={"is_active": True},
-        )
-        if not payment_method.is_active:
-            payment_method.is_active = True
-            payment_method.save(update_fields=["is_active"])
+        with transaction.atomic():
+            payment_method, _created = PaymentMethod.objects.get_or_create(
+                organization=organization,
+                provider=provider,
+                external_id=external_id,
+                defaults={"is_active": True},
+            )
+            if not payment_method.is_active:
+                payment_method.is_active = True
+                payment_method.save(update_fields=["is_active"])
+
+            try:
+                billing_profile = organization.billing_profile
+            except BillingProfile.DoesNotExist:
+                logger.warning(
+                    "record_payment_method confirmed a payment method for organization "
+                    "%s at provider %s, but the organization has no BillingProfile to "
+                    "pin; nothing pinned.",
+                    organization.pk,
+                    provider,
+                )
+            else:
+                # Conditional UPDATE, not a Python-level "is it empty" branch --
+                # see the docstring above. Only a row that is *still* unpinned at
+                # the moment the UPDATE runs matches the WHERE clause, so exactly
+                # one of two concurrent callers can ever win the pin.
+                pinned = BillingProfile.objects.filter(
+                    organization=organization, payment_provider=""
+                ).update(payment_provider=provider)
+                if not pinned:
+                    billing_profile.refresh_from_db(fields=["payment_provider"])
+                    if billing_profile.payment_provider != provider:
+                        logger.warning(
+                            "Organization %s confirmed a payment method at provider %s but "
+                            "is already pinned to %s; leaving the existing pin in place.",
+                            organization.pk,
+                            provider,
+                            billing_profile.payment_provider,
+                        )
         return payment_method
+
+    def set_payment_provider(
+        self, organization: Organization, provider: str, actor: "User | None" = None
+    ) -> BillingProfile:
+        """Staff repoint lever: pin ``organization``'s ``BillingProfile`` to
+        ``provider``, overwriting whatever it was pinned to before (including a
+        never-pinned, empty profile).
+
+        Unlike ``record_payment_method``'s write-once pin, this always writes --
+        it is the explicit escape hatch for moving an organization's *future*
+        charges onto a different provider. Callers are Django admin (see
+        ``payments.admin.BillingProfileAdmin``) or an operator running this by
+        hand; there is no end-user-facing API surface for it (see the plan's
+        **Pin mutability** guiding decision).
+
+        ``provider=""`` is a legitimate un-pin, not an error: an empty string is
+        what the admin's ``<select>`` submits when a staff member clears the
+        field, and the plan's **Pin mutability** decision treats a staff repoint
+        (including back to "unset") as a deliberate action, not a slug to
+        validate against the provider registry. Any other value must still name
+        a real, configured provider.
+
+        Deliberately carries **no active-subscription guard**: this succeeds
+        even when the organization holds a live ``Subscription`` at the old
+        provider. That is a knowingly accepted tradeoff, not an oversight --
+        the lever exists precisely for the migrate-a-customer-off-a-provider
+        case, and a guard would block it in exactly that scenario. Unwinding
+        the stranded provider-side subscription this leaves behind is the
+        operator's manual responsibility; the audit entry below records the
+        pre-repoint provider so that stranded state stays traceable.
+
+        :param actor: The staff member driving this repoint, when called from a
+            request context (e.g. ``BillingProfileAdmin.save_model``). Resolved
+            to a ``MEMBERSHIP`` actor via ``AuditService.actor_from_user`` so the
+            audit entry names who repointed the pin, not just what changed.
+            Defaults to ``None``, which records a ``SYSTEM`` actor -- unchanged
+            behavior for every caller that has no request-scoped user (an
+            operator running this by hand, or a script).
+        :raises UnknownPaymentProviderError: when a non-empty ``provider`` is not
+            a member of ``PaymentProviders``, or is absent from the payment
+            adapter registry (``PaymentService.get_payment_adapter``) -- either
+            way, there is nothing this deployment can drive that provider with.
+        :raises MissingBillingProfileError: when ``organization`` has no
+            ``BillingProfile`` to pin.
+        """
+        if provider:
+            if provider not in PaymentProviders.values:
+                raise UnknownPaymentProviderError(provider)
+            # Also confirms the slug resolves to a real, registered adapter --
+            # the same registry every charge path resolves an adapter from, so a
+            # provider this deployment cannot actually drive is refused here too.
+            self._require_payment_service().get_payment_adapter(provider)
+
+        try:
+            billing_profile = organization.billing_profile
+        except BillingProfile.DoesNotExist as e:
+            raise MissingBillingProfileError from e
+
+        previous_provider = billing_profile.payment_provider
+        billing_profile.payment_provider = provider
+        billing_profile.save(update_fields=["payment_provider"])
+
+        audit_service = self._require_audit_service()
+        actor_snapshot = (
+            audit_service.actor_from_user(actor, organization.pk)
+            if actor is not None
+            else audit_service.system_actor()
+        )
+        audit_service.record(
+            organization_id=organization.pk,
+            action=AuditAction.UPDATE,
+            actor=actor_snapshot,
+            subject=audit_service.subject_from_instance(billing_profile),
+            diff={"payment_provider": {"old": previous_provider, "new": provider}},
+        )
+        return billing_profile
 
     def _period_end(self, start: datetime.datetime, billing_interval: str) -> datetime.datetime:
         """One cycle after ``start``.

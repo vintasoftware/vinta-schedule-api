@@ -5,6 +5,8 @@ A wrong answer here stamps every row on save and effectively freezes the whole
 subscription against future plan changes.
 """
 
+from unittest.mock import patch
+
 from django.contrib.admin.sites import AdminSite
 from django.contrib.auth import get_user_model
 
@@ -14,13 +16,15 @@ from model_bakery import baker
 from organizations.models import Organization
 from payments.admin import (
     BillingPlanAdminForm,
+    BillingProfileAdmin,
     PlanLimitInline,
     SubscriptionAdmin,
     SubscriptionEntitlementInline,
     SubscriptionPlanLimitInline,
 )
 from payments.billing_constants import Entitlement, LimitedResource, LimitKind
-from payments.models import BillingPlan, PlanLimit, Subscription
+from payments.constants import PaymentProviders
+from payments.models import BillingPlan, BillingProfile, PlanLimit, Subscription
 from payments.services.subscription_service import SubscriptionService
 
 
@@ -377,3 +381,125 @@ class TestBillingPlanAdminLimitCoverage:
         formset = formset_class(data, instance=plan, prefix="limits")
 
         assert not formset.is_valid()
+
+
+class FakeChangedDataForm:
+    """Stand-in for a Django ``ModelForm`` in a ``save_model`` test -- the
+    admin's ``save_model`` reads only ``form.changed_data``, so a real
+    ``ModelForm`` (with its field cleaning, widgets, etc.) is unnecessary
+    ceremony here."""
+
+    def __init__(self, changed_data):
+        self.changed_data = changed_data
+
+
+@pytest.mark.django_db
+class TestBillingProfileAdminSaveModel:
+    """``BillingProfileAdmin.save_model`` -- verifies each of its documented
+    branches: an audited edit to ``payment_provider``, a no-op for edits that
+    don't touch it, the create path (no audited route), and clearing the field
+    back to "" (a legitimate un-pin, not a 500 -- see the Finding 2 fix in the
+    Payment Provider Selection Phase 2 review).
+    """
+
+    @pytest.fixture
+    def billing_profile(self):
+        organization = baker.make(Organization, parent=None)
+        billing_address = baker.make("payments.BillingAddress")
+        return baker.make(
+            BillingProfile,
+            organization=organization,
+            document_type="CPF",
+            document_number="12345678900",
+            billing_address=billing_address,
+            payment_provider=PaymentProviders.MERCADOPAGO,
+        )
+
+    def test_editing_payment_provider_routes_through_set_payment_provider(
+        self, rf, superuser, billing_profile
+    ):
+        admin_instance = BillingProfileAdmin(BillingProfile, AdminSite())
+        request = rf.post(f"/admin/payments/billingprofile/{billing_profile.pk}/change/")
+        request.user = superuser
+        billing_profile.payment_provider = PaymentProviders.STRIPE
+        form = FakeChangedDataForm(changed_data=["payment_provider"])
+
+        with patch.object(
+            SubscriptionService, "set_payment_provider", autospec=True
+        ) as mock_set_payment_provider:
+            mock_set_payment_provider.return_value = billing_profile
+            admin_instance.save_model(request, billing_profile, form, change=True)
+
+        mock_set_payment_provider.assert_called_once()
+        call_args = mock_set_payment_provider.call_args
+        assert call_args.args[1] == billing_profile.organization
+        assert call_args.args[2] == PaymentProviders.STRIPE
+        assert call_args.kwargs["actor"] == superuser
+
+    def test_editing_an_unrelated_field_does_not_call_set_payment_provider(
+        self, rf, superuser, billing_profile
+    ):
+        admin_instance = BillingProfileAdmin(BillingProfile, AdminSite())
+        request = rf.post(f"/admin/payments/billingprofile/{billing_profile.pk}/change/")
+        request.user = superuser
+        billing_profile.document_number = "99988877766"
+        form = FakeChangedDataForm(changed_data=["document_number"])
+
+        with patch.object(
+            SubscriptionService, "set_payment_provider", autospec=True
+        ) as mock_set_payment_provider:
+            admin_instance.save_model(request, billing_profile, form, change=True)
+
+        mock_set_payment_provider.assert_not_called()
+        billing_profile.refresh_from_db()
+        assert billing_profile.document_number == "99988877766"
+        # The pin is untouched -- the plain `super().save_model()` path ran instead.
+        assert billing_profile.payment_provider == PaymentProviders.MERCADOPAGO
+
+    def test_creating_a_profile_with_a_provider_persists_without_the_audited_path(
+        self, rf, superuser
+    ):
+        organization = baker.make(Organization, parent=None)
+        billing_address = baker.make("payments.BillingAddress")
+        new_profile = BillingProfile(
+            organization=organization,
+            contact_first_name="Ada",
+            contact_email="ada@example.com",
+            document_type="CPF",
+            document_number="12345678900",
+            billing_address=billing_address,
+            payment_provider=PaymentProviders.STRIPE,
+        )
+        admin_instance = BillingProfileAdmin(BillingProfile, AdminSite())
+        request = rf.post("/admin/payments/billingprofile/add/")
+        request.user = superuser
+        form = FakeChangedDataForm(changed_data=["organization", "payment_provider"])
+
+        with patch.object(
+            SubscriptionService, "set_payment_provider", autospec=True
+        ) as mock_set_payment_provider:
+            admin_instance.save_model(request, new_profile, form, change=False)
+
+        mock_set_payment_provider.assert_not_called()
+        persisted = BillingProfile.objects.get(pk=organization.pk)
+        assert persisted.payment_provider == PaymentProviders.STRIPE
+
+    def test_clearing_payment_provider_unpins_instead_of_500ing(
+        self, rf, superuser, billing_profile, django_capture_on_commit_callbacks
+    ):
+        """A cleared ``<select>`` submits ``payment_provider=""``. Before the
+        Finding 2 fix this reached ``set_payment_provider("")``, which raised
+        ``UnknownPaymentProviderError`` (uncaught -> HTTP 500) because "" is not
+        a member of ``PaymentProviders``. It must instead un-pin the profile."""
+        admin_instance = BillingProfileAdmin(BillingProfile, AdminSite())
+        request = rf.post(f"/admin/payments/billingprofile/{billing_profile.pk}/change/")
+        request.user = superuser
+        billing_profile.payment_provider = ""
+        form = FakeChangedDataForm(changed_data=["payment_provider"])
+
+        with patch("audit.services.persist_audit_record"):
+            with django_capture_on_commit_callbacks(execute=True):
+                admin_instance.save_model(request, billing_profile, form, change=True)
+
+        billing_profile.refresh_from_db()
+        assert billing_profile.payment_provider == ""

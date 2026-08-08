@@ -62,6 +62,25 @@ class UnknownPaymentProviderError(PaymentError):
         self.provider = provider
 
 
+class PaymentProviderNotConfiguredError(PaymentError):
+    """Raised when a ``provider`` slug is a real, registered provider that this
+    deployment has no usable credentials for.
+
+    Distinct from ``UnknownPaymentProviderError``: that one means the slug is
+    not a provider at all (a routing/configuration error, surfaced as a 404 at
+    the webhook views). This one means the slug names a provider the payment
+    registry knows how to build an adapter for, but the environment is missing
+    the secret/public key it needs to actually work -- a deployment error, not
+    a client error. Callers resolving credentials or an adapter for a provider
+    must raise this rather than let a missing setting surface as a confusing
+    downstream failure (e.g. an adapter call with an empty API key).
+    """
+
+    def __init__(self, provider: str):
+        super().__init__(f"Payment provider {provider!r} is not configured in this deployment")
+        self.provider = provider
+
+
 class MissingBillingProfileError(PaymentError):
     def __init__(self, message="User does not have a billing profile"):
         super().__init__(message)
