@@ -209,6 +209,7 @@ TWILIO_AUTH_TOKEN
 TWILIO_NUMBER
 TWILIO_DEFAULT_BROADCAST_NUMBERS
 ACCOUNT_PHONE_VERIFICATION_ENABLED
+MERCADOPAGO_ACCESS_TOKEN
 MERCADOPAGO_WEBHOOK_SECRET
 MERCADOPAGO_PUBLIC_KEY
 STRIPE_SECRET_KEY
@@ -218,9 +219,10 @@ DEFAULT_PAYMENT_PROVIDER
 ```
 
 - `ACCOUNT_PHONE_VERIFICATION_ENABLED` (bool, default `False`) — per-environment rollout gate for SMS phone verification. Stays off until Twilio approves the messaging profile for that environment; an operator flips it in the environment (Render dashboard / `.env`) with no code change.
+- `MERCADOPAGO_ACCESS_TOKEN` (str, default `""`) — MercadoPago secret API key, used by `MercadoPagoPaymentAdapter`/`MercadoPagoSubscriptionAdapter` to authenticate every **outbound** call. This — not `MERCADOPAGO_PUBLIC_KEY` — is what `BasePaymentAdapter.is_configured` reports on, and therefore what decides whether a charge through MercadoPago is attempted or refused with `PaymentProviderNotConfiguredError` (HTTP 409).
 - `MERCADOPAGO_WEBHOOK_SECRET` (str, default `""`) — shared secret used to verify MercadoPago's `x-signature` webhook header (`payments/services/mercadopago_signature.py`). An empty secret makes signature verification fail closed rather than skip the check.
 - `MERCADOPAGO_PUBLIC_KEY` (str, default `""`) — browser-safe public key used to initialize MercadoPago's payment form. Not a secret; intentionally served on unauthenticated endpoints.
-- `STRIPE_SECRET_KEY` (str, default `""`) — Stripe API key used by `StripePaymentAdapter`/`StripeSubscriptionAdapter`. No organization is routed onto Stripe yet, so this is currently unused in practice.
+- `STRIPE_SECRET_KEY` (str, default `""`) — Stripe API key used by `StripePaymentAdapter`/`StripeSubscriptionAdapter` to authenticate every **outbound** call. Stripe's half of the `is_configured` contract described under `MERCADOPAGO_ACCESS_TOKEN`; it is `DEFAULT_PAYMENT_PROVIDER`'s credential, so an empty value refuses charges for every unpinned organization.
 - `STRIPE_WEBHOOK_SECRET` (str, default `""`) — shared secret used to verify Stripe's `Stripe-Signature` webhook header (`payments/services/stripe_signature.py`). Same fail-closed convention as `MERCADOPAGO_WEBHOOK_SECRET`.
 - `STRIPE_PUBLISHABLE_KEY` (str, default `""`) — browser-safe public key used to initialize Stripe's payment form. Not a secret; intentionally served on unauthenticated endpoints.
 - `DEFAULT_PAYMENT_PROVIDER` (str, default `"stripe"`) — system-wide default payment provider slug. Must be one of the valid providers in `payments.constants.PaymentProviders`. Read at import time to fail fast on misconfiguration.

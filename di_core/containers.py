@@ -135,10 +135,16 @@ class AppContainer(containers.DeclarativeContainer):
         subscription_provider_registry=subscription_provider_registry,
     )
 
+    #: `payment_provider_resolver` is injected here too (not only into
+    #: `PaymentService`): `create_subscription_for_organization` stamps the
+    #: organization's resolved provider onto the one `Subscription` it will ever
+    #: have, which is the row every later subscription operation resolves its
+    #: adapter from.
     subscription_service = providers.Factory(
         SubscriptionService,
         payment_service=payment_service,
         audit_service=audit_service,
+        payment_provider_resolver=payment_provider_resolver,
     )
 
     entitlement_service = providers.Factory(

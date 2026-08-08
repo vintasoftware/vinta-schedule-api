@@ -67,8 +67,18 @@ class MercadoPagoPaymentAdapter(BasePaymentAdapter):
     verifies_full_body = False
 
     def __init__(self, access_token: str, webhook_secret: str = ""):
+        # Retained (not only handed to the SDK) so `is_configured` can answer off
+        # the credential itself -- `mercadopago.SDK` accepts an empty token
+        # happily and only fails much later, mid-charge, with a 401.
+        self.access_token = access_token
         self.sdk = mercadopago.SDK(access_token)
         self.webhook_secret = webhook_secret
+
+    @property
+    def is_configured(self) -> bool:
+        """See ``BasePaymentAdapter.is_configured``. ``MERCADOPAGO_ACCESS_TOKEN``
+        is the credential every outbound MercadoPago call authenticates with."""
+        return bool(self.access_token)
 
     def process(self, payment: Payment, payment_token: str, idempotency_key: str = "") -> str:
         request_options = mercadopago.config.RequestOptions()

@@ -9,7 +9,7 @@ exercised through real HTTP requests.
 import datetime
 import json
 from decimal import Decimal
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.urls import reverse
 
@@ -31,11 +31,17 @@ from payments.models import (
     SubscriptionAddOn,
 )
 from payments.services.entitlement_service import EntitlementService
+from payments.services.payment_adapters.base import BasePaymentAdapter
 from payments.services.payment_adapters.mercadopago_payment_adapter import (
     MercadoPagoPaymentAdapter,
 )
+from payments.services.payment_adapters.stripe_payment_adapter import StripePaymentAdapter
+from payments.services.subscription_adapters.base import BaseSubscriptionAdapter
 from payments.services.subscription_adapters.mercadopago_subscription_adapter import (
     MercadoPagoSubscriptionAdapter,
+)
+from payments.services.subscription_adapters.stripe_subscription_adapter import (
+    StripeSubscriptionAdapter,
 )
 from payments.services.subscription_service import SubscriptionService
 from payments.tests.views.test_payment_webhooks import sign as sign_webhook
@@ -192,6 +198,35 @@ def mercadopago_subscription_adapter():
         adapter.sdk.preapproval().create.return_value = {"response": {"id": "mp-sub-1"}}
         adapter.sdk.preapproval().get.return_value = {"response": {}}
         yield adapter
+
+
+@pytest.fixture(autouse=True)
+def _no_live_stripe_calls(di_container):
+    """Structural guard for the whole module: every ``Subscription``/``Payment``
+    here resolves its provider from the organization (Rule B) or its own row
+    (Rule A), so *any* organization this module builds without an explicit
+    MercadoPago pin resolves to ``settings.DEFAULT_PAYMENT_PROVIDER``
+    (``stripe``) and would drive the real, unmocked Stripe adapters over the
+    network.
+
+    ``billing_client``/``webhook_client`` below only override the two MercadoPago
+    slots; before this fixture existed the plan-change tests were green purely
+    because ``create_subscription_for_organization`` hardcoded ``mercadopago``.
+    Autouse (rather than a fixture each test must remember to request) and
+    module-wide, matching the treatment
+    ``payments/tests/services/test_payment_services.py``'s ``payment_service``
+    fixture already gives both provider slots. No test asserts on these doubles;
+    a call reaching one is a bug the assertions on the MercadoPago doubles catch.
+    """
+    stripe_payment = MagicMock(spec=BasePaymentAdapter)
+    stripe_payment.provider = PaymentProviders.STRIPE
+    stripe_subscription = MagicMock(spec=BaseSubscriptionAdapter)
+    stripe_subscription.provider = PaymentProviders.STRIPE
+    with (
+        di_container.stripe_payment_gateway.override(stripe_payment),
+        di_container.stripe_subscription_gateway.override(stripe_subscription),
+    ):
+        yield
 
 
 @pytest.fixture
@@ -676,3 +711,96 @@ class TestAcceptanceScenario:
         subscription.refresh_from_db()
         assert subscription.billing_state == BillingState.ACTIVE
         assert PaymentMethod.objects.filter(organization=organization, is_active=True).exists()
+
+
+@pytest.mark.django_db
+class TestUnconfiguredProviderMapsTo409:
+    """Payment Provider Selection: the plan's **Guiding Decisions** commit to
+    HTTP 409 for ``PaymentProviderNotConfiguredError``, and Phase 4 is what makes
+    it reachable from these actions. Mapped centrally in
+    ``common.exception_handlers.vinta_exception_handler`` (with ``set_rollback()``)
+    rather than per-action, so a new billing write cannot forget it and 500 on a
+    money path.
+
+    Each test repoints the organization onto Stripe *and* swaps the Stripe DI
+    slot for a real adapter built with an empty secret -- exactly what the
+    container produces when ``STRIPE_SECRET_KEY`` is unset. No network call is
+    reachable: resolution raises before any adapter method runs.
+
+    The **transactional** half of the mapping (``set_rollback()``, without which
+    the swallowed exception would commit everything written before the raise
+    under production's ``ATOMIC_REQUESTS``) is asserted in
+    ``payments/tests/test_over_limit_rollback.py`` -- deliberately not here.
+    ``ATOMIC_REQUESTS`` is a production-only setting, so a "nothing was written"
+    assertion in this module would pass identically with or without
+    ``set_rollback()`` and prove nothing.
+    """
+
+    @pytest.fixture
+    def unconfigured_stripe_client(self, di_container, billing_profile, auth_client):
+        billing_profile.payment_provider = PaymentProviders.STRIPE
+        billing_profile.save(update_fields=["payment_provider"])
+        with (
+            di_container.stripe_payment_gateway.override(
+                StripePaymentAdapter(api_key="", webhook_secret="")
+            ),
+            di_container.stripe_subscription_gateway.override(
+                StripeSubscriptionAdapter(api_key="", webhook_secret="")
+            ),
+        ):
+            yield auth_client
+
+    def _stripe_subscription(self, subscription, *, external_id: str = ""):
+        subscription.payment_provider = PaymentProviders.STRIPE
+        subscription.external_id = external_id
+        subscription.save(update_fields=["payment_provider", "external_id"])
+        return subscription
+
+    def test_change_plan_returns_409(
+        self, unconfigured_stripe_client, admin_membership, subscription, pro_plan
+    ):
+        self._stripe_subscription(subscription)
+
+        response = unconfigured_stripe_client.post(
+            change_plan_url(),
+            {
+                "plan_slug": pro_plan.slug,
+                "billing_interval": BillingInterval.MONTHLY,
+                "idempotency_key": "idem-409-1",
+                "payment_token": "tok-1",
+            },
+            format="json",
+        )
+
+        assert response.status_code == status.HTTP_409_CONFLICT
+        assert "stripe" in response.data["detail"]
+
+    def test_cancel_returns_409(self, unconfigured_stripe_client, admin_membership, subscription):
+        # `SubscriptionService.cancel_subscription` skips the provider round trip
+        # entirely for a subscription that never attached an instrument, so an
+        # `external_id` is required for this path to reach adapter resolution at
+        # all -- without it the request legitimately 200s.
+        self._stripe_subscription(subscription, external_id="stripe-sub-ext-1")
+
+        response = unconfigured_stripe_client.post(cancel_url())
+
+        assert response.status_code == status.HTTP_409_CONFLICT
+        assert "stripe" in response.data["detail"]
+
+    def test_add_on_create_returns_409(
+        self, unconfigured_stripe_client, admin_membership, subscription, billing_profile
+    ):
+        response = unconfigured_stripe_client.post(
+            add_ons_url(),
+            {
+                "resource_key": LimitedResource.RESOURCE_CALENDARS,
+                "quantity": 1,
+                "is_recurring": False,
+                "idempotency_key": "idem-409-3",
+                "payment_token": "tok-1",
+            },
+            format="json",
+        )
+
+        assert response.status_code == status.HTTP_409_CONFLICT
+        assert "stripe" in response.data["detail"]

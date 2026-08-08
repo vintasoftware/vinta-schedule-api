@@ -154,7 +154,10 @@ class FakePaymentService:
     #: Selection, Phase 4), not the organization's current pin.
     create_subscription_plan_providers: list[str] = field(default_factory=list)
 
-    def create_subscription_plan(self, plan, provider: str = "") -> CreatedPlan:
+    # `provider` is required, matching `PaymentService.create_subscription_plan`'s
+    # real signature -- a default here would let a caller that forgot to pass it
+    # silently record `""` and still pass the assertions below.
+    def create_subscription_plan(self, plan, provider: str) -> CreatedPlan:
         self.calls.append("create_subscription_plan")
         self.create_subscription_plan_providers.append(provider)
         return CreatedPlan(
@@ -232,7 +235,17 @@ class TestUpgrade:
         pro_plan = make_complete_plan(
             {LimitedResource.ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50")
         )
+        # Payment Provider Selection, Phase 4, Rule A: the organization's pin and
+        # the subscription's own stored provider are deliberately made to
+        # *disagree* here. Only a disagreement can tell the two resolution rules
+        # apart -- asserting `create_subscription_plan_providers ==
+        # [subscription.payment_provider]` is self-referential and passes under
+        # either rule whenever the fixtures happen to agree.
+        billing_profile.payment_provider = PaymentProviders.STRIPE
+        billing_profile.save(update_fields=["payment_provider"])
         subscription = _subscription_for(organization, free_plan)
+        subscription.payment_provider = PaymentProviders.MERCADOPAGO
+        subscription.save(update_fields=["payment_provider"])
 
         result = service.request_plan_change(
             subscription, pro_plan, BillingInterval.MONTHLY, payment_token="tok-1"
@@ -249,11 +262,10 @@ class TestUpgrade:
         # card via `process_subscription` (no existing external_id to move).
         assert fake_payment_service.calls == ["create_subscription_plan", "process_subscription"]
         assert result.external_id == fake_payment_service.subscription_external_id
-        # Payment Provider Selection, Phase 4: the provider-side plan is created
-        # against the *subscription's own* stored provider, not re-resolved from
-        # the organization's current pin.
+        # The subscription's own provider, stated as a literal -- not the
+        # organization's `stripe` pin, and not read back off the row.
         assert fake_payment_service.create_subscription_plan_providers == [
-            subscription.payment_provider
+            PaymentProviders.MERCADOPAGO
         ]
 
     def test_upgrade_without_a_token_when_none_on_file_raises_and_writes_nothing(

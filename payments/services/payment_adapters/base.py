@@ -33,6 +33,33 @@ class BasePaymentAdapter:
     class Meta:
         abstract = True
 
+    @property
+    @abstractmethod
+    def is_configured(self) -> bool:
+        """Whether this deployment holds the **outbound** credential this adapter
+        authenticates its provider API calls with (``MERCADOPAGO_ACCESS_TOKEN`` /
+        ``STRIPE_SECRET_KEY``) — the only thing that decides whether
+        ``process``/``refund``/``check_status`` can actually reach the provider.
+
+        Deliberately **not** derived from the browser-safe publishable/public key
+        (``payments.services.provider_credentials``): that key is what a *frontend*
+        needs to build a payment form, it is never sent on an outbound call from
+        this process, and a deployment can legitimately hold one without the other.
+        Gating "can this provider be charged?" on it would both refuse a provider
+        that works and declare one usable whose API key is empty.
+
+        Lives here, next to the credential it describes, rather than in a central
+        provider->setting table, so a new adapter cannot be registered without
+        answering the question — the conformance suite
+        (``payments/tests/services/test_provider_registry.py``) asserts every
+        registered adapter overrides this rather than inheriting the base.
+
+        Read by ``PaymentService.get_configured_payment_adapter`` — see that
+        method for why only the *outbound* call sites consult it and the inbound
+        webhook path must not.
+        """
+        raise NotImplementedError
+
     @abstractmethod
     def process(self, payment: Payment, payment_token: str, idempotency_key: str = "") -> str:
         """

@@ -68,8 +68,17 @@ class MercadoPagoSubscriptionAdapter(BaseSubscriptionAdapter):
     verifies_full_body = False
 
     def __init__(self, access_token: str, webhook_secret: str = ""):
+        # See `MercadoPagoPaymentAdapter.__init__` -- retained so `is_configured`
+        # can answer off the credential rather than off the SDK object.
+        self.access_token = access_token
         self.sdk = mercadopago.SDK(access_token)
         self.webhook_secret = webhook_secret
+
+    @property
+    def is_configured(self) -> bool:
+        """See ``BaseSubscriptionAdapter.is_configured``. ``MERCADOPAGO_ACCESS_TOKEN``
+        is the credential every outbound MercadoPago call authenticates with."""
+        return bool(self.access_token)
 
     def create_subscription_plan(self, plan: Plan) -> str:
         frequency, frequency_type = _auto_recurring_frequency(plan.billing_interval)

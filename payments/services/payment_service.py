@@ -19,6 +19,7 @@ from payments.constants import (
 from payments.exceptions import (
     BillingProfileContactEmailMissingError,
     MissingBillingProfileError,
+    PaymentProviderNotConfiguredError,
     UnknownPaymentProviderError,
 )
 from payments.models import BillingAddress as BillingAddressModel
@@ -42,7 +43,6 @@ from payments.services.dataclasses import (
 )
 from payments.services.payment_adapters.base import BasePaymentAdapter
 from payments.services.payment_provider_resolver import PaymentProviderResolver
-from payments.services.provider_credentials import resolve_public_credentials
 from payments.services.subscription_adapters.base import BaseSubscriptionAdapter
 from payments.services.subscription_plan_factory.base import BaseSubscriptionPlanFactory
 
@@ -74,45 +74,121 @@ class PaymentService[
         self.payment_provider_registry = payment_provider_registry
         self.subscription_provider_registry = subscription_provider_registry
 
+    # ------------------------------------------------------------------
+    # Adapter resolution -- two variants, deliberately.
+    #
+    # `get_*_adapter` is **registry-only**. `get_configured_*_adapter` is
+    # registry + a credential assertion. The split is load-bearing and must not
+    # be collapsed back into one method:
+    #
+    # * The **inbound webhook** path (`verify_*_webhook_signature`,
+    #   `handle_*_webhook`, `receive_*_update`) is *receiving* a notification the
+    #   provider pushed at us. It authenticates the delivery with a webhook
+    #   secret, not with the outbound API credential, and it must keep working in
+    #   a deployment that has no outbound credential for that provider at all --
+    #   otherwise every delivery 500s, the provider retries forever, and payment
+    #   confirmations / `record_payment_method` / add-on activation / dunning
+    #   resolution all silently stop. So it resolves through the registry alone
+    #   and the only error it can raise is `UnknownPaymentProviderError`, which
+    #   `payments.views.PaymentsViewSet` already renders as a 404.
+    # * The **outbound** path (charges, refunds, status polls, subscription
+    #   operations) is about to authenticate a real API call with the provider's
+    #   secret. An empty credential there is a deployment error worth failing
+    #   loudly and early on, before a `Payment`/`Subscription` row exists -- so it
+    #   goes through `get_configured_*_adapter`.
+    # * Registry membership is also all a *validation* caller wants (e.g.
+    #   `SubscriptionService.set_payment_provider`'s staff repoint, which is
+    #   legitimately allowed to point an organization at a provider whose
+    #   credentials this environment has not been given yet).
+    # ------------------------------------------------------------------
+
     def get_payment_adapter(self, provider: str) -> PaymentAdapter:
         """Resolve the payment adapter registered for *provider* -- a URL kwarg slug,
         an existing row's ``payment_provider``, or an organization's resolved provider.
 
+        Registry lookup **only**: this answers "is ``provider`` a provider this
+        deployment knows how to build an adapter for?", never "does this
+        deployment hold the credential to drive it?". Callers about to make an
+        outbound provider call want ``get_configured_payment_adapter`` instead --
+        see the comment block above for why the two are separate.
+
         :raises UnknownPaymentProviderError: ``provider`` does not match any adapter
             this deployment has registered at all (bad data in a pin/URL kwarg --
-            a routing/data error, not a deployment one).
-        :raises PaymentProviderNotConfiguredError: ``provider`` is a real, registered
-            provider this deployment has no usable credentials for. Determined via
-            ``payments.services.provider_credentials.resolve_public_credentials`` --
-            reused here on purpose rather than re-implemented, so "is this provider
-            configured" has exactly one definition shared with the provider-credentials
-            endpoints instead of two that can silently disagree. Safe to reuse here even
-            though that module collapses "unknown" and "not configured" into one error
-            for its own (read-only, browser-facing) purpose: by the time this call runs,
-            the registry lookup above has already proven ``provider`` is a real,
-            registered provider, so the "unknown slug" branch inside
-            ``resolve_public_credentials`` can never fire from this call site -- the
-            Unknown/NotConfigured split stays intact for every caller of this method.
+            a routing/data error, not a deployment one). The only exception this
+            can raise, which is what keeps the inbound webhook views' existing
+            ``except UnknownPaymentProviderError`` handling exhaustive.
         """
         try:
-            adapter = self.payment_provider_registry[provider]
+            return self.payment_provider_registry[provider]
         except KeyError as e:
             raise UnknownPaymentProviderError(provider) from e
-        resolve_public_credentials(provider)
-        return adapter
 
     def get_subscription_adapter(self, provider: str) -> SubscriptionAdapter:
         """Resolve the subscription adapter registered for *provider*.
 
-        Same contract as ``get_payment_adapter`` -- see its docstring for the
-        ``UnknownPaymentProviderError``/``PaymentProviderNotConfiguredError`` split.
+        Same contract as ``get_payment_adapter`` -- registry lookup only. See its
+        docstring and the comment block above.
         """
         try:
-            adapter = self.subscription_provider_registry[provider]
+            return self.subscription_provider_registry[provider]
         except KeyError as e:
             raise UnknownPaymentProviderError(provider) from e
-        resolve_public_credentials(provider)
+
+    def get_configured_payment_adapter(self, provider: str) -> PaymentAdapter:
+        """``get_payment_adapter``, plus an assertion that this deployment actually
+        holds the **outbound** credential the adapter authenticates provider API
+        calls with. For every call site that is about to spend (or move, or poll)
+        real money.
+
+        "Configured" is asked of the adapter itself (``BasePaymentAdapter.is_configured``)
+        rather than derived from a settings table here: the adapter is where the
+        credential lives, so the answer cannot drift from what an outbound call
+        would actually do, and a newly registered provider cannot forget to declare
+        it (the conformance suite enforces the override).
+
+        Explicitly **not** derived from
+        ``payments.services.provider_credentials.resolve_public_credentials``. That
+        module reads the *browser-safe publishable* key, which is never sent on an
+        outbound call -- gating charges on it both refuses a provider whose secret
+        key works and green-lights one whose secret key is empty. It also
+        deliberately collapses "unknown slug" and "unconfigured" into a single
+        error for its own read-only purpose (Phase 3 tracking decision #3), a
+        collapse that must not reach adapter resolution, where the
+        Unknown-vs-NotConfigured distinction is what tells "bad data in the pin
+        column" apart from "this environment has no credentials for that provider".
+
+        :raises UnknownPaymentProviderError: see ``get_payment_adapter``.
+        :raises PaymentProviderNotConfiguredError: ``provider`` is a real, registered
+            provider whose outbound credential is empty in this deployment.
+        """
+        adapter = self.get_payment_adapter(provider)
+        if not adapter.is_configured:
+            raise PaymentProviderNotConfiguredError(provider)
         return adapter
+
+    def get_configured_subscription_adapter(self, provider: str) -> SubscriptionAdapter:
+        """``get_subscription_adapter``, plus the same outbound-credential assertion
+        ``get_configured_payment_adapter`` makes -- see its docstring.
+        """
+        adapter = self.get_subscription_adapter(provider)
+        if not adapter.is_configured:
+            raise PaymentProviderNotConfiguredError(provider)
+        return adapter
+
+    def assert_subscription_provider_configured(self, provider: str) -> None:
+        """Raise unless *provider* is a registered subscription provider this
+        deployment holds the outbound credential for.
+
+        An explicit assertion rather than a discarded
+        ``get_configured_subscription_adapter(...)`` return value, so a call site
+        that only wants the check (``create_subscription``, which must fail before
+        it writes a row it could never drive) does not read like a mistake.
+
+        :raises UnknownPaymentProviderError: see ``get_subscription_adapter``.
+        :raises PaymentProviderNotConfiguredError: see
+            ``get_configured_subscription_adapter``.
+        """
+        self.get_configured_subscription_adapter(provider)
 
     def create_payment(
         self,
@@ -135,7 +211,7 @@ class PaymentService[
         # pinned to an unknown/unconfigured provider fails loudly with no row
         # left behind, instead of a half-created `Payment` nothing can ever drive.
         provider = self.payment_provider_resolver.resolve_for_organization(organization)
-        adapter = self.get_payment_adapter(provider)
+        adapter = self.get_configured_payment_adapter(provider)
 
         payment = PaymentModel.objects.create(
             billing_profile=billing_profile,
@@ -218,7 +294,7 @@ class PaymentService[
         # Existing row: resolve from `payment`'s own stored provider, never from
         # the organization's current pin -- a charge made through one provider
         # must be driven through that same provider for the rest of its life.
-        adapter = self.get_payment_adapter(payment.payment_provider)
+        adapter = self.get_configured_payment_adapter(payment.payment_provider)
         external_payment_id = adapter.process(
             self._serialize_payment(payment),
             card_token,
@@ -241,7 +317,15 @@ class PaymentService[
         # unknown/unconfigured provider fails loudly with nothing left behind,
         # matching `create_payment`'s no-stray-row behavior.
         payment = PaymentModel.objects.get(pk=payment_id)
-        adapter = self.get_payment_adapter(payment.payment_provider)
+        adapter = self.get_configured_payment_adapter(payment.payment_provider)
+        # Serialized *before* the `Refund` row exists, and before the `try` below,
+        # for the same reason the adapter is resolved up here: `_serialize_payment`
+        # raises `BillingProfileContactEmailMissingError` on a profile with no
+        # billing contact, which is a local data problem, not a provider decline.
+        # Inside the `try`, the broad `except Exception` would swallow it and
+        # record a FAILED refund status update reading "Failed to process refund"
+        # -- mislabelling a never-attempted refund as a provider-rejected one.
+        serialized_payment = self._serialize_payment(payment)
 
         refund = RefundModel.objects.create(
             payment_id=payment_id,
@@ -260,7 +344,7 @@ class PaymentService[
                     id=refund.id,
                     value=refund.value,
                     currency=refund.currency,
-                    payment=self._serialize_payment(payment),
+                    payment=serialized_payment,
                 )
             )
             refund.external_id = refund_result.external_id
@@ -288,14 +372,15 @@ class PaymentService[
         return refund
 
     def check_payment_status(self, payment: PaymentModel) -> PaymentStatusUpdate:
-        # Existing row: same reasoning as `process_payment`.
-        adapter = self.get_payment_adapter(payment.payment_provider)
+        # Existing row: same reasoning as `process_payment`. Outbound provider
+        # call, so the credential-asserting variant.
+        adapter = self.get_configured_payment_adapter(payment.payment_provider)
         return adapter.check_status(payment.external_id)
 
     def check_refund_status(self, refund: RefundModel) -> None:
         # Existing row: resolve from the refunded payment's own stored provider,
         # never the organization's current pin.
-        adapter = self.get_payment_adapter(refund.payment.payment_provider)
+        adapter = self.get_configured_payment_adapter(refund.payment.payment_provider)
         refund.status = adapter.check_refund_status(
             Refund(
                 id=refund.id,
@@ -372,6 +457,17 @@ class PaymentService[
                 description=subscription_payment_data.description,
                 payment_method=subscription_payment_data.payment_method,
                 subscription=subscription,
+                # Every recurring subscription charge lands a `Payment` row here.
+                # It must carry a provider or it is unroutable for the rest of its
+                # life: `check_payment_status`/`create_refund` resolve their
+                # adapter from this column (Rule A), and an empty one raises
+                # `UnknownPaymentProviderError`. Both subscription adapters stamp
+                # `payment_provider` onto the `SubscriptionPayment` dataclass they
+                # return; `provider` (the delivering provider, off the webhook's
+                # own URL kwarg) is the fallback for an adapter that ever leaves
+                # it blank -- the two can never legitimately disagree, since a
+                # provider only notifies about charges it made itself.
+                payment_provider=subscription_payment_data.payment_provider or provider,
             )
 
         return PaymentStatusUpdateModel.objects.create(
@@ -510,7 +606,7 @@ class PaymentService[
         ``payment_provider`` -- an existing row's stored provider, the same rule
         every other existing-row operation in this class follows.
         """
-        adapter = self.get_subscription_adapter(provider)
+        adapter = self.get_configured_subscription_adapter(provider)
         external_id = adapter.create_subscription_plan(plan)
         return CreatedPlan(external_id=external_id, **asdict(plan))
 
@@ -521,8 +617,18 @@ class PaymentService[
 
         See ``create_subscription_plan`` -- same reasoning for the explicit
         ``provider`` parameter.
+
+        **No production caller.** ``_ensure_provider_plan`` deliberately creates a
+        fresh provider-side plan every time rather than updating one (see its
+        docstring), so this exists only as the adapter-level counterpart of
+        ``create_subscription_plan`` and is exercised by tests. Left in place
+        rather than deleted because both adapters implement
+        ``update_subscription_plan`` and the conformance suite requires the
+        interface to stay symmetric; do not build a new flow on it without
+        revisiting the per-catalog-plan caching question ``_ensure_provider_plan``
+        raises.
         """
-        adapter = self.get_subscription_adapter(provider)
+        adapter = self.get_configured_subscription_adapter(provider)
         external_id = adapter.update_subscription_plan(external_id, new_plan_data)
         return CreatedPlan(external_id=external_id, **asdict(new_plan_data))
 
@@ -552,7 +658,7 @@ class PaymentService[
         # the `Subscription` row is created, so an org pinned to an
         # unknown/unconfigured provider fails loudly with no row left behind.
         provider = self.payment_provider_resolver.resolve_for_organization(organization)
-        self.get_subscription_adapter(provider)
+        self.assert_subscription_provider_configured(provider)
 
         subscription = SubscriptionModel.objects.create(
             organization=organization,
@@ -579,7 +685,7 @@ class PaymentService[
         idempotency_key: str = "",
     ) -> SubscriptionModel:
         # Existing row: resolve from `subscription`'s own stored provider.
-        adapter = self.get_subscription_adapter(subscription.payment_provider)
+        adapter = self.get_configured_subscription_adapter(subscription.payment_provider)
         subscription.external_id = adapter.create_subscription(
             subscription=self._serialize_subscription(subscription),
             payment_token=payment_token,
@@ -607,14 +713,14 @@ class PaymentService[
 
         Existing row: resolves from `subscription`'s own stored provider.
         """
-        adapter = self.get_subscription_adapter(subscription.payment_provider)
+        adapter = self.get_configured_subscription_adapter(subscription.payment_provider)
         adapter.change_subscription_plan(
             self._serialize_subscription(subscription), new_plan, idempotency_key=idempotency_key
         )
 
     def cancel_subscription(self, subscription: SubscriptionModel) -> None:
         # Existing row: resolves from `subscription`'s own stored provider.
-        adapter = self.get_subscription_adapter(subscription.payment_provider)
+        adapter = self.get_configured_subscription_adapter(subscription.payment_provider)
         adapter.cancel_subscription(self._serialize_subscription(subscription))
         SubscriptionStatusUpdate.objects.create(
             subscription=subscription,

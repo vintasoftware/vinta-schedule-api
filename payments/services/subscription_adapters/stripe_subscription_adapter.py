@@ -110,6 +110,12 @@ class StripeSubscriptionAdapter(BaseSubscriptionAdapter):
         self.api_key = api_key
         self.webhook_secret = webhook_secret
 
+    @property
+    def is_configured(self) -> bool:
+        """See ``BaseSubscriptionAdapter.is_configured``. ``STRIPE_SECRET_KEY`` is
+        the credential every outbound Stripe call is made with (``api_key=``)."""
+        return bool(self.api_key)
+
     def create_subscription_plan(self, plan: Plan) -> str:
         """
         Stripe has no single "plan" resource for a new integration to target (the

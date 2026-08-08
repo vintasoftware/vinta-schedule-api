@@ -48,9 +48,13 @@ from payments.services.dataclasses import (
     Subscription as SubscriptionDataclass,
 )
 from payments.services.payment_adapters.base import BasePaymentAdapter
+from payments.services.payment_adapters.stripe_payment_adapter import StripePaymentAdapter
 from payments.services.payment_service import PaymentService
 from payments.services.subscription_adapters.base import (
     BaseSubscriptionAdapter,
+)
+from payments.services.subscription_adapters.stripe_subscription_adapter import (
+    StripeSubscriptionAdapter,
 )
 from payments.services.subscription_plan_factory.base import BaseSubscriptionPlanFactory
 from payments.services.subscription_service import SubscriptionService
@@ -941,30 +945,70 @@ def test_create_payment_for_unpinned_org_drives_default_payment_provider(
 
 @pytest.mark.django_db
 def test_create_payment_for_org_pinned_to_unconfigured_provider_raises_and_creates_no_row(
-    payment_service, billing_profile, settings
+    subscription_plan_factory, payment_adapter, subscription_adapter, billing_profile, di_container
 ):
-    """An org pinned to a real, registered provider this deployment has no
-    usable public credentials for raises `PaymentProviderNotConfiguredError`
-    and leaves no `Payment` row behind -- never falls back to the default.
-    Deliberately does not rely on `stripe_payment_adapter`'s DI override: the
-    NotConfigured guard is driven by `settings.STRIPE_PUBLISHABLE_KEY` alone
-    (see `PaymentService.get_payment_adapter`), independent of which adapter
-    object the registry happens to resolve to."""
+    """An org pinned to a real, registered provider this deployment holds no
+    **outbound** credential for raises `PaymentProviderNotConfiguredError` and
+    leaves no `Payment` row behind -- never falls back to the default.
+
+    Drives a *real* `StripePaymentAdapter` built with an empty `api_key`, which
+    is exactly what the DI container produces when `STRIPE_SECRET_KEY` is unset
+    -- rather than asserting against a settings flag the adapter never reads.
+    "Configured" is defined by the credential the adapter authenticates its
+    outbound calls with (`BasePaymentAdapter.is_configured`), not by the
+    browser-safe publishable key: a deployment can legitimately hold one without
+    the other, and gating charges on the publishable key both refuses a provider
+    whose secret works and green-lights one whose secret is empty. No network
+    call is reachable here -- resolution raises before `process` is called."""
     billing_profile.payment_provider = PaymentProviders.STRIPE
     billing_profile.save(update_fields=["payment_provider"])
-    settings.STRIPE_PUBLISHABLE_KEY = ""
+    unconfigured_stripe = StripePaymentAdapter(api_key="", webhook_secret="whsec_x")
+    assert unconfigured_stripe.is_configured is False
 
-    with pytest.raises(PaymentProviderNotConfiguredError):
-        payment_service.create_payment(
-            organization=billing_profile.organization,
-            currency="USD",
-            amount=Decimal("10"),
-            description="Should not be created",
-            payment_method="credit_card",
-            payment_token="tok_x",
-        )
+    with (
+        di_container.payment_gateway.override(payment_adapter),
+        di_container.subscription_gateway.override(subscription_adapter),
+        di_container.stripe_payment_gateway.override(unconfigured_stripe),
+    ):
+        payment_service = PaymentService(subscription_plan_factory=subscription_plan_factory)
+
+        with pytest.raises(PaymentProviderNotConfiguredError):
+            payment_service.create_payment(
+                organization=billing_profile.organization,
+                currency="USD",
+                amount=Decimal("10"),
+                description="Should not be created",
+                payment_method="credit_card",
+                payment_token="tok_x",
+            )
 
     assert not PaymentModel.objects.filter(description="Should not be created").exists()
+
+
+@pytest.mark.django_db
+def test_configured_check_reads_the_outbound_credential_not_the_publishable_key(
+    payment_service, stripe_payment_adapter, billing_profile, settings
+):
+    """The counterpart of the test above, and the reason it exists: an empty
+    *publishable* key must not stop a charge through a provider whose secret key
+    is present. `STRIPE_PUBLISHABLE_KEY` is what a browser needs to build a form;
+    it is never sent on an outbound call from this process."""
+    settings.STRIPE_PUBLISHABLE_KEY = ""
+    billing_profile.payment_provider = PaymentProviders.STRIPE
+    billing_profile.save(update_fields=["payment_provider"])
+    stripe_payment_adapter.process.return_value = "stripe_payment_no_pubkey"
+
+    created_payment = payment_service.create_payment(
+        organization=billing_profile.organization,
+        currency="USD",
+        amount=Decimal("10"),
+        description="Charged with no publishable key",
+        payment_method="credit_card",
+        payment_token="tok_x",
+    )
+
+    assert created_payment.payment_provider == PaymentProviders.STRIPE
+    stripe_payment_adapter.process.assert_called_once()
 
 
 @pytest.mark.django_db
@@ -1407,3 +1451,252 @@ def test_set_payment_provider_empty_string_unpins_without_raising(
     assert result.payment_provider == ""
     billing_profile.refresh_from_db()
     assert billing_profile.payment_provider == ""
+
+
+# ---------------------------------------------------------------------------
+# Rule A across every existing-row operation.
+#
+# `test_mercadopago_payment_is_refunded_and_status_checked_via_mercadopago_even_when_org_pin_is_stripe`
+# above covers `create_refund`/`check_refund_status`/`check_payment_status`.
+# These cover the four that had no disagreeing-provider coverage:
+# `process_payment`, `process_subscription`, `change_subscription_plan`,
+# `cancel_subscription` -- which is precisely where the hardcoded
+# `payment_provider=mercadopago` in `create_subscription_for_organization` hid.
+# Every one of them pins the organization to `stripe` and the row to
+# `mercadopago`, and asserts the Stripe adapter is never touched.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def stripe_pinned_billing_profile(billing_profile):
+    billing_profile.payment_provider = PaymentProviders.STRIPE
+    billing_profile.save(update_fields=["payment_provider"])
+    return billing_profile
+
+
+def _mercadopago_subscription_for(billing_profile, billing_plan) -> SubscriptionModel:
+    """A ``Subscription`` row stamped ``mercadopago`` -- built directly rather
+    than through ``SubscriptionService`` so the stamped provider is unambiguously
+    the test's own choice, not whatever the service resolved."""
+    return baker.make(
+        SubscriptionModel,
+        organization=billing_profile.organization,
+        plan=billing_plan,
+        status=SubscriptionStatuses.ACTIVE,
+        external_id="mp-sub-1",
+        payment_provider=PaymentProviders.MERCADOPAGO,
+        current_period_start=datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC),
+        current_period_end=datetime.datetime(2026, 2, 1, tzinfo=datetime.UTC),
+    )
+
+
+@pytest.mark.django_db
+def test_process_payment_drives_the_payment_rows_provider_not_the_org_pin(
+    payment_service, payment_adapter, stripe_payment_adapter, stripe_pinned_billing_profile
+):
+    payment = baker.make(
+        "payments.Payment",
+        billing_profile=stripe_pinned_billing_profile,
+        value=Decimal("100"),
+        currency="USD",
+        payment_provider=PaymentProviders.MERCADOPAGO,
+        status=PaymentStatuses.PENDING_SEND,
+        payment_method="credit_card",
+        description="Test Payment",
+    )
+    payment_adapter.process.return_value = "mp-payment-processed"
+
+    result = payment_service.process_payment(payment, "card_token_1")
+
+    assert result.external_id == "mp-payment-processed"
+    payment_adapter.process.assert_called_once()
+    stripe_payment_adapter.process.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_process_subscription_drives_the_subscription_rows_provider_not_the_org_pin(
+    payment_service,
+    subscription_adapter,
+    stripe_subscription_adapter,
+    stripe_pinned_billing_profile,
+    billing_plan,
+):
+    subscription = _mercadopago_subscription_for(stripe_pinned_billing_profile, billing_plan)
+    subscription_adapter.create_subscription.return_value = "mp-sub-created"
+
+    result = payment_service.process_subscription(subscription, "card_token_1")
+
+    assert result.external_id == "mp-sub-created"
+    subscription_adapter.create_subscription.assert_called_once()
+    stripe_subscription_adapter.create_subscription.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_change_subscription_plan_drives_the_subscription_rows_provider_not_the_org_pin(
+    payment_service,
+    subscription_adapter,
+    stripe_subscription_adapter,
+    stripe_pinned_billing_profile,
+    billing_plan,
+):
+    subscription = _mercadopago_subscription_for(stripe_pinned_billing_profile, billing_plan)
+    new_plan = CreatedPlan(
+        id=1,
+        name="Pro",
+        value=Decimal("50"),
+        currency="USD",
+        billing_day=1,
+        billing_interval=BillingInterval.MONTHLY,
+        external_id="mp-plan-1",
+    )
+
+    payment_service.change_subscription_plan(subscription, new_plan, idempotency_key="idem-1")
+
+    subscription_adapter.change_subscription_plan.assert_called_once()
+    stripe_subscription_adapter.change_subscription_plan.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_cancel_subscription_drives_the_subscription_rows_provider_not_the_org_pin(
+    payment_service,
+    subscription_adapter,
+    stripe_subscription_adapter,
+    stripe_pinned_billing_profile,
+    billing_plan,
+):
+    subscription = _mercadopago_subscription_for(stripe_pinned_billing_profile, billing_plan)
+
+    payment_service.cancel_subscription(subscription)
+
+    subscription_adapter.cancel_subscription.assert_called_once()
+    stripe_subscription_adapter.cancel_subscription.assert_not_called()
+    subscription.refresh_from_db()
+    assert subscription.status == SubscriptionStatuses.CANCELLED
+
+
+@pytest.mark.django_db
+def test_create_subscription_plan_drives_the_provider_it_is_given_not_the_org_pin(
+    payment_service,
+    subscription_adapter,
+    stripe_subscription_adapter,
+    stripe_pinned_billing_profile,
+):
+    """``_ensure_provider_plan`` passes ``subscription.payment_provider``; this
+    asserts ``PaymentService`` honors that argument rather than re-resolving."""
+    subscription_adapter.create_subscription_plan.return_value = "mp-plan-1"
+
+    created = payment_service.create_subscription_plan(
+        PlanDataclass(
+            id=1,
+            name="Pro",
+            value=Decimal("50"),
+            currency="USD",
+            billing_day=1,
+            billing_interval=BillingInterval.MONTHLY,
+        ),
+        provider=PaymentProviders.MERCADOPAGO,
+    )
+
+    assert created.external_id == "mp-plan-1"
+    subscription_adapter.create_subscription_plan.assert_called_once()
+    stripe_subscription_adapter.create_subscription_plan.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Adapter-resolution split: registry-only vs. credential-asserting.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_get_payment_adapter_ignores_the_outbound_credential(
+    subscription_plan_factory, payment_adapter, subscription_adapter, di_container
+):
+    """The registry-only variant is what the inbound webhook path calls. It must
+    resolve a registered provider whose outbound credential is empty, or every
+    webhook delivery for that provider 500s and the provider retries forever."""
+    unconfigured_stripe = StripePaymentAdapter(api_key="", webhook_secret="whsec_x")
+    with (
+        di_container.payment_gateway.override(payment_adapter),
+        di_container.subscription_gateway.override(subscription_adapter),
+        di_container.stripe_payment_gateway.override(unconfigured_stripe),
+    ):
+        payment_service = PaymentService(subscription_plan_factory=subscription_plan_factory)
+
+        assert payment_service.get_payment_adapter(PaymentProviders.STRIPE) is unconfigured_stripe
+        with pytest.raises(PaymentProviderNotConfiguredError):
+            payment_service.get_configured_payment_adapter(PaymentProviders.STRIPE)
+
+
+@pytest.mark.django_db
+def test_get_subscription_adapter_ignores_the_outbound_credential(
+    subscription_plan_factory, payment_adapter, subscription_adapter, di_container
+):
+    """Subscription-side counterpart of the test above."""
+    unconfigured_stripe = StripeSubscriptionAdapter(api_key="", webhook_secret="whsec_x")
+    with (
+        di_container.payment_gateway.override(payment_adapter),
+        di_container.subscription_gateway.override(subscription_adapter),
+        di_container.stripe_subscription_gateway.override(unconfigured_stripe),
+    ):
+        payment_service = PaymentService(subscription_plan_factory=subscription_plan_factory)
+
+        assert (
+            payment_service.get_subscription_adapter(PaymentProviders.STRIPE) is unconfigured_stripe
+        )
+        with pytest.raises(PaymentProviderNotConfiguredError):
+            payment_service.get_configured_subscription_adapter(PaymentProviders.STRIPE)
+        with pytest.raises(PaymentProviderNotConfiguredError):
+            payment_service.assert_subscription_provider_configured(PaymentProviders.STRIPE)
+
+
+@pytest.mark.django_db
+def test_configured_adapter_raises_unknown_before_not_configured(payment_service):
+    """The Unknown/NotConfigured distinction survives the credential assertion: a
+    slug that is not a provider at all is a data error, not a deployment one."""
+    with pytest.raises(UnknownPaymentProviderError):
+        payment_service.get_configured_payment_adapter("not_a_real_provider")
+    with pytest.raises(UnknownPaymentProviderError):
+        payment_service.get_configured_subscription_adapter("not_a_real_provider")
+
+
+@pytest.mark.django_db
+def test_create_refund_does_not_mislabel_a_local_data_error_as_a_provider_decline(
+    payment_service, payment_adapter, organization, billing_address
+):
+    """``_serialize_payment`` raises ``BillingProfileContactEmailMissingError``
+    for a profile with no billing contact -- a local data problem, not a refund
+    the provider rejected. Serialized above ``create_refund``'s broad
+    ``except Exception``, so it propagates instead of being recorded as a
+    provider-declined ``FAILED`` refund (the exact mislabelling the pre-fetch of
+    the adapter was added to avoid)."""
+    from payments.exceptions import BillingProfileContactEmailMissingError
+    from payments.models import BillingProfile as BillingProfileModel
+    from payments.models import Refund as RefundModelForTest
+
+    billing_profile = BillingProfileModel.objects.create(
+        organization=organization,
+        contact_first_name="Ada",
+        contact_email="",
+        document_type="CPF",
+        document_number="12345678900",
+        billing_address=billing_address,
+        payment_provider=PaymentProviders.MERCADOPAGO,
+    )
+    payment = baker.make(
+        "payments.Payment",
+        billing_profile=billing_profile,
+        value=Decimal("100"),
+        currency="USD",
+        payment_provider=PaymentProviders.MERCADOPAGO,
+        status=PaymentStatuses.APPROVED,
+        payment_method="credit_card",
+        external_id="ext-1",
+    )
+
+    with pytest.raises(BillingProfileContactEmailMissingError):
+        payment_service.create_refund(payment_id=payment.pk, value=Decimal("100"), currency="USD")
+
+    payment_adapter.refund.assert_not_called()
+    assert not RefundModelForTest.objects.filter(
+        payment=payment, status=RefundStatuses.FAILED
+    ).exists()

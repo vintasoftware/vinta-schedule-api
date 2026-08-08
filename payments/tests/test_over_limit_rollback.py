@@ -30,7 +30,7 @@ from rest_framework.views import APIView
 from calendar_integration.models import CalendarGroup
 from organizations.models import Organization
 from payments.billing_constants import LimitedResource, LimitRemedy
-from payments.exceptions import OverLimitError
+from payments.exceptions import OverLimitError, PaymentProviderNotConfiguredError
 
 
 #: The organization the two views below write against.
@@ -85,9 +85,31 @@ class WriteOnlyView(APIView):
         return Response({"ok": True}, status=status.HTTP_201_CREATED)
 
 
+class WriteThenUnconfiguredProviderView(APIView):
+    """Stands in for a billing write that resolves an adapter *after* writing.
+
+    Mirrors the real ordering on the money paths Phase 4 makes this reachable
+    from: ``purchase_add_on`` creates the ``SubscriptionAddOn`` row and
+    ``request_plan_change`` moves ``Subscription.plan`` before either drives the
+    provider, so both have already written by the time adapter resolution can
+    raise ``PaymentProviderNotConfiguredError``.
+    """
+
+    authentication_classes = ()
+    permission_classes = ()
+
+    def post(self, request, *args, **kwargs):
+        CalendarGroup.objects.create(
+            organization_id=current_organization_id.get(),
+            name="written-before-the-provider-call",
+        )
+        raise PaymentProviderNotConfiguredError("stripe")
+
+
 urlpatterns = [
     path("over-limit/", WriteThenExceedLimitView.as_view()),
     path("write-only/", WriteOnlyView.as_view()),
+    path("unconfigured-provider/", WriteThenUnconfiguredProviderView.as_view()),
 ]
 
 
@@ -168,4 +190,43 @@ class TestOverLimitErrorRollsBackTheRequestTransaction:
             "current_usage": 1,
             "limit": 1,
             "remedy": "purchase_add_on",
+        }
+
+
+@pytest.mark.django_db
+@pytest.mark.usefixtures("test_urlconf", "atomic_requests")
+class TestUnconfiguredProviderRollsBackTheRequestTransaction:
+    """Payment Provider Selection, Phase 4: the same ``set_rollback()`` contract,
+    for the 409 branch added alongside the 402 one.
+
+    It matters more here, not less: the paths that raise this write local rows
+    representing *paid* state -- a ``SubscriptionAddOn`` recording capacity, a
+    ``Subscription.plan`` move onto a tier nobody was charged for, a ``Refund``
+    and its status update. Committing any of those while telling the client the
+    provider could not be reached is how an organization ends up with capacity it
+    never paid for.
+    """
+
+    def test_nothing_written_before_the_provider_call_survives_the_409(
+        self, anonymous_client, organization
+    ):
+        response = anonymous_client.post("/unconfigured-provider/")
+
+        assert response.status_code == status.HTTP_409_CONFLICT
+        assert (
+            CalendarGroup.objects.filter(
+                organization_id=organization.pk, name="written-before-the-provider-call"
+            ).count()
+            == 0
+        ), (
+            "The row written before the provider call was committed. The exception "
+            "handler swallowed PaymentProviderNotConfiguredError without calling "
+            "set_rollback(), so ATOMIC_REQUESTS committed the request transaction."
+        )
+
+    def test_the_409_body_carries_the_errors_message(self, anonymous_client, organization):
+        response = anonymous_client.post("/unconfigured-provider/")
+
+        assert response.json() == {
+            "detail": "Payment provider 'stripe' is not configured in this deployment"
         }

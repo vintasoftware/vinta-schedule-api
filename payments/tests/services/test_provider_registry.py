@@ -150,6 +150,42 @@ class TestPaymentAdapterConformance:
         assert MercadoPagoPaymentAdapter.verifies_full_body is False
         assert StripePaymentAdapter.verifies_full_body is True
 
+    @pytest.mark.parametrize("adapter_class", PAYMENT_ADAPTER_CLASSES, ids=lambda c: c.__name__)
+    def test_declares_is_configured_itself(self, adapter_class: type[BasePaymentAdapter]) -> None:
+        """``is_configured`` is a ``property``, so it is invisible to
+        ``_abstract_method_names``/``_public_method_names`` above (both filter on
+        ``inspect.isfunction``) -- asserted explicitly here instead, mirroring
+        ``test_declares_verifies_full_body_explicitly``.
+
+        This is what makes ``BasePaymentAdapter.is_configured``'s "a new provider
+        cannot forget it" claim real: an adapter registered without overriding it
+        inherits the base's ``raise NotImplementedError``, which would blow up at
+        the first charge rather than at registration time.
+        """
+        assert "is_configured" in adapter_class.__dict__, (
+            f"{adapter_class.__name__} does not declare `is_configured` -- it must "
+            "answer, off its own outbound credential, whether this deployment can "
+            "actually drive it."
+        )
+
+    @pytest.mark.parametrize(
+        "adapter_class,credential_kwarg",
+        [
+            (MercadoPagoPaymentAdapter, "access_token"),
+            (StripePaymentAdapter, "api_key"),
+        ],
+        ids=lambda c: getattr(c, "__name__", c),
+    )
+    def test_is_configured_tracks_the_outbound_credential(
+        self, adapter_class: type[BasePaymentAdapter], credential_kwarg: str
+    ) -> None:
+        """The behavioral half: an empty outbound credential reports
+        unconfigured, a non-empty one reports configured. Nothing about the
+        *publishable* key participates -- see ``BasePaymentAdapter.is_configured``.
+        """
+        assert adapter_class(**{credential_kwarg: ""}).is_configured is False
+        assert adapter_class(**{credential_kwarg: "a-real-looking-secret"}).is_configured is True
+
     def test_verifies_full_body_false_forces_get_event_id_override(self) -> None:
         """``verifies_full_body`` is load-bearing, not decorative: a payment
         adapter that declares ``verifies_full_body = False`` and does not
@@ -226,6 +262,33 @@ class TestSubscriptionAdapterConformance:
         self, adapter_class: type[BaseSubscriptionAdapter]
     ) -> None:
         assert isinstance(adapter_class.verifies_full_body, bool)
+
+    @pytest.mark.parametrize(
+        "adapter_class", SUBSCRIPTION_ADAPTER_CLASSES, ids=lambda c: c.__name__
+    )
+    def test_declares_is_configured_itself(
+        self, adapter_class: type[BaseSubscriptionAdapter]
+    ) -> None:
+        """See ``TestPaymentAdapterConformance``'s equivalent."""
+        assert "is_configured" in adapter_class.__dict__, (
+            f"{adapter_class.__name__} does not declare `is_configured` -- it must "
+            "answer, off its own outbound credential, whether this deployment can "
+            "actually drive it."
+        )
+
+    @pytest.mark.parametrize(
+        "adapter_class,credential_kwarg",
+        [
+            (MercadoPagoSubscriptionAdapter, "access_token"),
+            (StripeSubscriptionAdapter, "api_key"),
+        ],
+        ids=lambda c: getattr(c, "__name__", c),
+    )
+    def test_is_configured_tracks_the_outbound_credential(
+        self, adapter_class: type[BaseSubscriptionAdapter], credential_kwarg: str
+    ) -> None:
+        assert adapter_class(**{credential_kwarg: ""}).is_configured is False
+        assert adapter_class(**{credential_kwarg: "a-real-looking-secret"}).is_configured is True
 
     def test_verifies_full_body_false_forces_get_event_id_override(self) -> None:
         """See ``TestPaymentAdapterConformance``'s equivalent — same enforcement,
