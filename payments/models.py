@@ -203,6 +203,17 @@ class BillingProfile(BaseModel):
     billing_address = models.OneToOneField(
         BillingAddress, on_delete=models.CASCADE, related_name="billing_profile"
     )
+    #: The payment provider this organization is pinned to, written once by
+    #: ``SubscriptionService.record_payment_method`` when the organization's
+    #: first payment instrument is confirmed. Null means "never paid" and
+    #: resolves to ``settings.DEFAULT_PAYMENT_PROVIDER``. Once set, every new
+    #: charge and subscription for this organization goes through this
+    #: provider -- the instrument on file lives there and nowhere else.
+    #: Repointing is a staff action (``SubscriptionService.set_payment_provider``),
+    #: not something any API surface exposes.
+    payment_provider = models.CharField(
+        max_length=50, choices=PaymentProviders, blank=True, default=""
+    )
 
     def __str__(self):
         return f"{self.pk} {self.organization} - {self.document_type} - {self.document_number}"

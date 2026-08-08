@@ -1,21 +1,23 @@
 import datetime
 from decimal import Decimal
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from model_bakery import baker
 
+from audit.constants import AuditAction
 from organizations.models import Organization
-from payments.billing_constants import BillingInterval
+from payments.billing_constants import BillingInterval, BillingState
 from payments.constants import (
     PaymentProviders,
     PaymentStatuses,
     RefundStatuses,
     SubscriptionStatuses,
 )
-from payments.exceptions import UnknownPaymentProviderError
+from payments.exceptions import MissingBillingProfileError, UnknownPaymentProviderError
 from payments.models import BillingPlan, ProviderWebhookEvent
 from payments.models import Payment as PaymentModel
+from payments.models import Subscription as SubscriptionModel
 from payments.services.dataclasses import (
     BillingAddress as BillingAddressDataclass,
 )
@@ -47,6 +49,7 @@ from payments.services.subscription_adapters.base import (
     BaseSubscriptionAdapter,
 )
 from payments.services.subscription_plan_factory.base import BaseSubscriptionPlanFactory
+from payments.services.subscription_service import SubscriptionService
 
 
 # This module builds its own Subscription rows (OneToOne with Organization), so it
@@ -127,6 +130,14 @@ def payment_service(payment_adapter, subscription_adapter, subscription_plan_fac
         di_container.subscription_gateway.override(subscription_adapter),
     ):
         return PaymentService(subscription_plan_factory=subscription_plan_factory)
+
+
+@pytest.fixture
+def subscription_service():
+    """Bare ``SubscriptionService()`` — ``payment_service``/``audit_service`` are
+    auto-resolved from the wired container, the same pattern every other bare
+    ``SubscriptionService()`` construction in this test suite relies on."""
+    return SubscriptionService()
 
 
 @pytest.mark.django_db
@@ -950,3 +961,127 @@ def test_handle_subscription_payment_webhook_none_result_does_not_burn_the_deliv
     # Not marked processed either time — still retriable, not call-count-limited.
     assert subscription_adapter.receive_payment_update.call_count == 2
     assert ProviderWebhookEvent.objects.count() == 1
+
+
+# ---------------------------------------------------------------------------
+# BillingProfile.payment_provider pin — SubscriptionService.record_payment_method
+# / SubscriptionService.set_payment_provider (Payment Provider Selection, Phase 2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_record_payment_method_sets_pin_on_first_call(subscription_service, billing_profile):
+    """The first confirmed instrument for an organization pins its BillingProfile
+    to the provider that confirmed it."""
+    assert billing_profile.payment_provider == ""
+
+    subscription_service.record_payment_method(
+        billing_profile.organization, PaymentProviders.MERCADOPAGO, "instrument_1"
+    )
+
+    billing_profile.refresh_from_db()
+    assert billing_profile.payment_provider == PaymentProviders.MERCADOPAGO
+
+
+@pytest.mark.django_db
+def test_record_payment_method_second_call_different_provider_leaves_pin_unchanged_and_logs(
+    subscription_service, billing_profile, caplog
+):
+    """A second confirmed instrument at a *different* provider must not repoint
+    the organization's pin -- the discrepancy is logged instead so it surfaces
+    rather than silently moving future charges onto a provider the org never
+    explicitly settled on."""
+    subscription_service.record_payment_method(
+        billing_profile.organization, PaymentProviders.MERCADOPAGO, "instrument_1"
+    )
+    billing_profile.refresh_from_db()
+    assert billing_profile.payment_provider == PaymentProviders.MERCADOPAGO
+
+    with caplog.at_level("WARNING", logger="payments.services.subscription_service"):
+        subscription_service.record_payment_method(
+            billing_profile.organization, PaymentProviders.STRIPE, "instrument_2"
+        )
+
+    billing_profile.refresh_from_db()
+    assert billing_profile.payment_provider == PaymentProviders.MERCADOPAGO
+    assert "already pinned" in caplog.text
+
+
+@pytest.mark.django_db
+def test_set_payment_provider_rejects_unknown_slug(subscription_service, organization):
+    with pytest.raises(UnknownPaymentProviderError):
+        subscription_service.set_payment_provider(organization, "not_a_real_provider")
+
+
+@pytest.mark.django_db
+def test_set_payment_provider_requires_billing_profile(subscription_service, organization):
+    with pytest.raises(MissingBillingProfileError):
+        subscription_service.set_payment_provider(organization, PaymentProviders.STRIPE)
+
+
+@pytest.mark.django_db
+def test_set_payment_provider_writes_audit_entry_naming_previous_provider(
+    subscription_service, billing_profile, django_capture_on_commit_callbacks
+):
+    billing_profile.payment_provider = PaymentProviders.MERCADOPAGO
+    billing_profile.save(update_fields=["payment_provider"])
+
+    with patch("audit.services.persist_audit_record") as mock_task:
+        with django_capture_on_commit_callbacks(execute=True):
+            subscription_service.set_payment_provider(
+                billing_profile.organization, PaymentProviders.STRIPE
+            )
+
+    billing_profile.refresh_from_db()
+    assert billing_profile.payment_provider == PaymentProviders.STRIPE
+
+    assert mock_task.delay.call_count == 1
+    payload = mock_task.delay.call_args_list[0].args[0]
+    assert payload["organization_id"] == billing_profile.organization_id
+    assert payload["action"] == AuditAction.UPDATE
+    assert payload["subject"]["subject_type"] == "payments.BillingProfile"
+    assert payload["subject"]["subject_id"] == str(billing_profile.pk)
+    assert payload["diff"] == {
+        "payment_provider": {
+            "old": PaymentProviders.MERCADOPAGO,
+            "new": PaymentProviders.STRIPE,
+        }
+    }
+
+
+@pytest.mark.django_db
+def test_set_payment_provider_succeeds_with_active_subscription_at_old_provider(
+    subscription_service, billing_profile, billing_plan
+):
+    """Deliberate absence of an active-subscription guard.
+
+    ``set_payment_provider`` must repoint an organization's BillingProfile even
+    while it holds a live Subscription at the provider being replaced. This is
+    not an oversight -- it is the plan's explicit **Pin mutability** guiding
+    decision (see the Payment Provider Selection implementation plan and the
+    resolved "no guard" entry in its Open Questions table): the lever exists
+    precisely for the migrate-a-customer-off-a-provider case, and a guard would
+    block it in exactly that scenario. A future reviewer must not reinstate a
+    guard here without revisiting that decision first.
+    """
+    billing_profile.payment_provider = PaymentProviders.MERCADOPAGO
+    billing_profile.save(update_fields=["payment_provider"])
+    now = datetime.datetime.now(tz=datetime.UTC)
+    subscription = baker.make(
+        SubscriptionModel,
+        organization=billing_profile.organization,
+        plan=billing_plan,
+        billing_state=BillingState.ACTIVE,
+        payment_provider=PaymentProviders.MERCADOPAGO,
+        current_period_start=now,
+        current_period_end=now + datetime.timedelta(days=30),
+    )
+    assert subscription.billing_state == BillingState.ACTIVE
+
+    result = subscription_service.set_payment_provider(
+        billing_profile.organization, PaymentProviders.STRIPE
+    )
+
+    assert result.payment_provider == PaymentProviders.STRIPE
+    billing_profile.refresh_from_db()
+    assert billing_profile.payment_provider == PaymentProviders.STRIPE
