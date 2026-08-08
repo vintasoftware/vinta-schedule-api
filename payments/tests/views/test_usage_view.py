@@ -20,6 +20,8 @@ resources, ``check_postpaid_allowance`` for the one postpaid resource
 import datetime
 from decimal import Decimal
 
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
 
@@ -30,7 +32,7 @@ from rest_framework import status
 from calendar_integration.constants import CalendarType
 from calendar_integration.models import AvailableTime, Calendar, CalendarGroup
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
-from payments.billing_constants import LimitedResource, LimitKind
+from payments.billing_constants import BillingState, LimitedResource, LimitKind
 from payments.models import BillingPlan, MeteredOccurrence, PlanLimit
 from payments.services.entitlement_service import EntitlementService
 from payments.services.subscription_service import (
@@ -249,3 +251,226 @@ class TestUsageMatchesEnforcement:
         resource_keys = [row["resource_key"] for row in response.data["limits"]]
         assert sorted(resource_keys) == sorted(LimitedResource.values)
         assert len(resource_keys) == len(set(resource_keys))
+
+
+@pytest.mark.django_db
+class TestBackwardsCompatibility:
+    """**Acceptance criterion for Phase 3.** Every key ``GET /billing/usage/``
+    returned *before* this phase must still be present, with the same type and
+    the same value, against a fixture that predates the change (this module's
+    own auto-seeded ``_seed_every_resource`` fixture, untouched by this phase).
+
+    A failure here means an existing caller of the pre-Phase-3 response shape
+    would observe something different -- which is exactly what this phase
+    promises never happens. Do not edit this test to make it pass; if it
+    fails, the view change is wrong.
+    """
+
+    def test_every_pre_phase_3_key_is_present_and_unchanged(
+        self, auth_client, admin_membership, organization, subscription
+    ):
+        entitlement_service = EntitlementService()
+
+        response = auth_client.get(usage_url())
+
+        assert response.status_code == status.HTTP_200_OK
+        # The two top-level keys the endpoint has always returned.
+        assert response.data["billing_state"] == subscription.billing_state
+        assert isinstance(response.data["limits"], list)
+
+        rows = {row["resource_key"]: row for row in response.data["limits"]}
+        assert sorted(rows) == sorted(LimitedResource.values)
+
+        for resource_key in LimitedResource.values:
+            row = rows[resource_key]
+            # Every key this row carried before Phase 3 is still present.
+            assert {
+                "resource_key",
+                "kind",
+                "limit_value",
+                "current_usage",
+                "overage_unit_price",
+            } <= set(row)
+
+            effective_limit = entitlement_service.get_effective_limit(organization, resource_key)
+            if resource_key == LimitedResource.EVENT_OCCURRENCES:
+                enforcement_result = entitlement_service.check_postpaid_allowance(
+                    organization, delta=0
+                )
+            else:
+                enforcement_result = entitlement_service.check_limit(
+                    organization, resource_key, delta=0
+                )
+
+            assert row["resource_key"] == resource_key
+            assert row["kind"] == effective_limit.kind
+            assert row["limit_value"] == enforcement_result.ceiling
+            assert row["limit_value"] is None or isinstance(row["limit_value"], int)
+            assert row["current_usage"] == enforcement_result.current_usage
+            assert isinstance(row["current_usage"], int)
+            if effective_limit.overage_unit_price is None:
+                assert row["overage_unit_price"] is None
+            else:
+                assert Decimal(row["overage_unit_price"]) == effective_limit.overage_unit_price
+
+
+@pytest.mark.django_db
+class TestPooledAttributionOmitsNonContributors:
+    def test_reseller_subtree_attributes_usage_to_the_right_children(self, auth_client, user):
+        root = baker.make(Organization, parent=None, can_invite_organizations=True)
+        contributing_child = baker.make(Organization, parent=root, can_invite_organizations=False)
+        silent_child = baker.make(Organization, parent=root, can_invite_organizations=False)
+        plan = make_complete_plan()
+        SubscriptionService().create_subscription_for_organization(root, plan=plan)
+        baker.make(
+            OrganizationMembership,
+            organization=contributing_child,
+            user=user,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+        for i in range(2):
+            baker.make(
+                Calendar,
+                organization=contributing_child,
+                calendar_type=CalendarType.RESOURCE,
+                external_id=f"attribution-{i}",
+            )
+
+        response = auth_client.get(usage_url())
+
+        assert response.status_code == status.HTTP_200_OK
+        rows = {row["resource_key"]: row for row in response.data["limits"]}
+        by_organization = {
+            entry["organization_id"]: entry
+            for entry in rows[LimitedResource.RESOURCE_CALENDARS]["by_organization"]
+        }
+        assert by_organization[contributing_child.pk] == {
+            "organization_id": contributing_child.pk,
+            "name": contributing_child.name,
+            "usage": 2,
+        }
+        # Neither the root nor the silent child contributed any resource
+        # calendars -- both are omitted, never present with usage: 0.
+        assert root.pk not in by_organization
+        assert silent_child.pk not in by_organization
+
+
+@pytest.mark.django_db
+class TestEstimatedOverageTotal:
+    def test_matches_overage_total_over_the_current_period(
+        self, auth_client, admin_membership, organization, subscription
+    ):
+        billing_period_start = current_billing_period_start(subscription)
+        for i in range(3):
+            baker.make(
+                MeteredOccurrence,
+                organization=organization,
+                subscription=subscription,
+                event_id=6000 + i,
+                occurrence_start=timezone.now() + datetime.timedelta(hours=i),
+                billing_period_start=billing_period_start,
+                is_within_allowance=False,
+                unit_price=Decimal("0.05"),
+            )
+
+        response = auth_client.get(usage_url())
+
+        assert response.status_code == status.HTTP_200_OK
+        expected = (
+            MeteredOccurrence.objects.for_billing_period(subscription.pk, billing_period_start)
+            .for_organizations([organization.pk])
+            .overage_total()
+        )
+        assert expected == Decimal("0.15")
+        assert Decimal(response.data["estimated_overage_total"]) == expected
+
+
+@pytest.mark.django_db
+class TestNoSubscriptionOrganization:
+    def test_free_organization_gets_200_with_null_plan_and_period(self, auth_client, user):
+        free_organization = baker.make(Organization, parent=None, can_invite_organizations=False)
+        baker.make(
+            OrganizationMembership,
+            organization=free_organization,
+            user=user,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+
+        response = auth_client.get(usage_url())
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["billing_state"] == BillingState.FREE
+        assert response.data["plan"] is None
+        assert response.data["billing_period"] is None
+        assert response.data["estimated_overage_total"] == "0.0000"
+        assert response.data["billing_root_organization_id"] == free_organization.pk
+
+
+@pytest.mark.django_db
+class TestRestrictedOrganizationCanStillReadEnrichedUsage:
+    """The read-never-blocks rule in the viewset docstring extends to every
+    additive Phase 3 field, not just the pre-existing ones -- a RESTRICTED
+    organization needs the plan/period/overage figures to resolve billing at
+    least as much as an ACTIVE one does."""
+
+    def test_restricted_org_still_gets_plan_period_and_overage(
+        self, auth_client, admin_membership, organization, subscription
+    ):
+        subscription.billing_state = BillingState.RESTRICTED
+        subscription.save(update_fields=["billing_state"])
+
+        response = auth_client.get(usage_url())
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["billing_state"] == BillingState.RESTRICTED
+        assert response.data["plan"] is not None
+        assert response.data["billing_period"] is not None
+        assert response.data["estimated_overage_total"] is not None
+
+
+@pytest.mark.django_db
+class TestRootResolutionAndSubtreeWalkHappenOnce:
+    """Query-count regression gate for the N+1 fix: before Phase 3, the loop
+    over ``LimitedResource`` called ``get_effective_limit``/``get_current_usage``
+    per resource, each independently re-walking the ``parent`` chain and
+    re-running the subtree BFS -- sixteen root resolutions and eight subtree
+    walks for eight resources. Both must now happen exactly once per request,
+    regardless of how many resources exist.
+    """
+
+    def test_query_count_does_not_scale_with_the_number_of_resources(self, auth_client, user):
+        root = baker.make(Organization, parent=None, can_invite_organizations=True)
+        child = baker.make(Organization, parent=root, can_invite_organizations=False)
+        plan = make_complete_plan()
+        SubscriptionService().create_subscription_for_organization(root, plan=plan)
+        baker.make(
+            OrganizationMembership,
+            organization=child,
+            user=user,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+
+        with CaptureQueriesContext(connection) as captured:
+            response = auth_client.get(usage_url())
+
+        assert response.status_code == status.HTTP_200_OK
+        queries = [query["sql"] for query in captured.captured_queries]
+
+        # `_get_pooled_organization_ids`'s subtree BFS issues one query per
+        # level of the pool's tree -- two for this two-level tree, never one
+        # per LimitedResource member (eight).
+        subtree_walk_queries = [
+            query for query in queries if '"organizations_organization"."parent_id" IN' in query
+        ]
+        assert 0 < len(subtree_walk_queries) < len(LimitedResource.values)
+
+        # `resolve_billing_root`'s parent-chain walk issues one single-row
+        # lookup per level walked -- exactly one here (child -> root), not
+        # once per resource and not sixteen times across the whole response.
+        root_walk_queries = [
+            query for query in queries if '"organizations_organization"."id" = ' in query
+        ]
+        assert len(root_walk_queries) == 1

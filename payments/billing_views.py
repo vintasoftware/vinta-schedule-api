@@ -12,9 +12,11 @@ permission's docstring).
 """
 
 import logging
+from decimal import Decimal
 from typing import TYPE_CHECKING, Annotated
 
-from django.db.models import QuerySet
+from django.db.models import QuerySet, Sum
+from django.utils import timezone
 
 from dependency_injector.wiring import Provide, inject
 from django_virtual_models.generic_views import GenericVirtualModelViewMixin
@@ -37,7 +39,13 @@ from payments.exceptions import (
     UnconfirmedPlanChangeError,
 )
 from payments.filtersets import BillingPlanFilterSet, SubscriptionAddOnFilterSet
-from payments.models import BillingPlan, Subscription, SubscriptionAddOn
+from payments.models import (
+    BillingPlan,
+    MeteredOccurrence,
+    Subscription,
+    SubscriptionAddOn,
+    SubscriptionPlanLimit,
+)
 from payments.serializers import (
     AddOnPurchaseRequestSerializer,
     BillingPlanSerializer,
@@ -46,7 +54,7 @@ from payments.serializers import (
     SubscriptionSerializer,
     UsageResponseSerializer,
 )
-from payments.services.subscription_service import resolve_billing_root
+from payments.services.subscription_service import resolve_billing_period, resolve_billing_root
 
 
 if TYPE_CHECKING:
@@ -82,8 +90,11 @@ class BillingPlanViewSet(mixins.ListModelMixin, GenericVirtualModelViewMixin, Ge
 
 class BillingUsageViewSet(TenantScopedViewMixin, ViewSet):
     """``GET /billing/usage/`` -- current usage against effective limits, per
-    resource, plus ``billing_state``. Resolved at the billing root, same as
-    every other read in this app.
+    resource, plus ``billing_state``, the plan snapshot, the current billing
+    period's bounds, the plan/add-on split of each ceiling, per-organization
+    attribution across the caller's pooled subtree, and the overage accrued so
+    far this cycle. Resolved at the billing root, same as every other read in
+    this app.
 
     The "pull" half of "an organization can see where it stands". It reads
     usage through the identical
@@ -120,19 +131,115 @@ class BillingUsageViewSet(TenantScopedViewMixin, ViewSet):
     @extend_schema(summary="Get current usage against effective limits", request=None)
     @action(methods=["get"], detail=False, url_path="", url_name="retrieve")
     def retrieve_usage(self, request, *args, **kwargs):
+        # Resolves the billing root, the pooled subtree, and the subscription
+        # **once** and threads all three through the per-resource loop below via
+        # `EntitlementService`'s pre-resolved public entry points
+        # (`effective_limit_for_subscription` / `usage_breakdown_for_root`) --
+        # exactly the pattern `CycleCloseService._persist_statement` already
+        # established for the same reason. Before this, the loop called
+        # `get_effective_limit`/`get_current_usage` per resource, each of which
+        # independently re-walked the `parent` chain and re-ran the subtree BFS:
+        # sixteen root resolutions and eight subtree walks for eight resources.
+        # Now it is one of each, regardless of how many `LimitedResource` members
+        # exist. Not a docstring -- this is an implementation note for the next
+        # reader of this method, not customer-facing API documentation, and
+        # drf-spectacular would otherwise pull it into the schema in place of the
+        # class docstring above.
         organization = _require_organization(request)
         root = resolve_billing_root(organization)
-        subscription = Subscription.objects.filter(organization=root).first()
+        # `select_related("plan")` folds the plan-snapshot lookup into this one
+        # query instead of a second round trip when a subscription exists.
+        subscription = Subscription.objects.select_related("plan").filter(organization=root).first()
         billing_state = (
             subscription.billing_state if subscription is not None else BillingState.FREE
         )
 
+        # `root` is already a billing root by construction, so resolving the pool
+        # from it (rather than from `organization`) costs `resolve_billing_root`
+        # nothing further -- `is_billing_root(root)` short-circuits before any
+        # `parent` access -- and this is the pool's *only* resolution for the
+        # whole response.
+        pooled_organization_ids = self.entitlement_service.get_pooled_organization_ids(root)
+        organization_names = dict(
+            Organization.objects.filter(pk__in=pooled_organization_ids).values_list("pk", "name")
+        )
+
+        plan: dict[str, str] | None = None
+        billing_period: dict[str, object] | None = None
+        estimated_overage_total = Decimal("0.0000")
+        # Batched once for the whole loop, not once per resource: the plan-limit
+        # row and the active add-on total behind `included_in_plan`/
+        # `add_on_quantity` below.
+        plan_limit_by_resource: dict[str, SubscriptionPlanLimit] = {}
+        add_on_quantity_by_resource: dict[str, int] = {}
+        if subscription is not None:
+            plan = {
+                "slug": subscription.plan.slug,
+                "name": subscription.plan.name,
+                "currency": subscription.plan.currency,
+            }
+            # Same underlying derivation `current_billing_period_start` uses
+            # (`resolve_billing_period(subscription, timezone.now())[0]`) -- called
+            # directly here, once, so both bounds come from a single resolution
+            # rather than deriving the start and the end from two separate
+            # `timezone.now()` reads.
+            period_start, period_end = resolve_billing_period(subscription, timezone.now())
+            billing_period = {"start": period_start, "end": period_end}
+            estimated_overage_total = (
+                MeteredOccurrence.objects.for_billing_period(subscription.pk, period_start)
+                .for_organizations(pooled_organization_ids)
+                .overage_total()
+            )
+            plan_limit_by_resource = {
+                limit.resource_key: limit for limit in subscription.limits.all()
+            }
+            add_on_quantity_by_resource = dict(
+                subscription.add_ons.filter(is_active=True)
+                .values("resource_key")
+                .annotate(total=Sum("quantity"))
+                .values_list("resource_key", "total")
+            )
+
         limits = []
         for resource_key in LimitedResource.values:
-            effective_limit = self.entitlement_service.get_effective_limit(
-                organization, resource_key
+            effective_limit = self.entitlement_service.effective_limit_for_subscription(
+                subscription, resource_key, root
             )
-            current_usage = self.entitlement_service.get_current_usage(organization, resource_key)
+            usage_breakdown = self.entitlement_service.usage_breakdown_for_root(
+                root, resource_key, subscription, pooled_organization_ids=pooled_organization_ids
+            )
+            # Structurally the same sum `_count_usage` performs -- derived from the
+            # breakdown just fetched rather than a second, independent count.
+            current_usage = sum(usage_breakdown.values())
+
+            plan_limit_row = plan_limit_by_resource.get(resource_key)
+            if plan_limit_row is None or plan_limit_row.limit_value is None:
+                # Mirrors `_effective_limit_for_subscription`'s own fail-open
+                # branches exactly: no plan-limit row, or an explicitly unlimited
+                # one, both resolve `limit_value` to `None` without ever
+                # consulting add-ons for the *ceiling*. `add_on_quantity` still
+                # reports what was actually purchased when a (unlimited) row
+                # exists, since it is informational and does not change the
+                # ceiling either way.
+                included_in_plan = None
+                add_on_quantity = (
+                    add_on_quantity_by_resource.get(resource_key, 0)
+                    if plan_limit_row is not None
+                    else 0
+                )
+            else:
+                included_in_plan = plan_limit_row.limit_value
+                add_on_quantity = add_on_quantity_by_resource.get(resource_key, 0)
+
+            by_organization = [
+                {
+                    "organization_id": organization_id,
+                    "name": organization_names.get(organization_id, ""),
+                    "usage": usage,
+                }
+                for organization_id, usage in sorted(usage_breakdown.items())
+            ]
+
             limits.append(
                 {
                     "resource_key": resource_key,
@@ -140,10 +247,22 @@ class BillingUsageViewSet(TenantScopedViewMixin, ViewSet):
                     "limit_value": effective_limit.limit_value,
                     "current_usage": current_usage,
                     "overage_unit_price": effective_limit.overage_unit_price,
+                    "included_in_plan": included_in_plan,
+                    "add_on_quantity": add_on_quantity,
+                    "by_organization": by_organization,
                 }
             )
 
-        serializer = UsageResponseSerializer({"billing_state": billing_state, "limits": limits})
+        serializer = UsageResponseSerializer(
+            {
+                "billing_state": billing_state,
+                "billing_root_organization_id": root.pk,
+                "plan": plan,
+                "billing_period": billing_period,
+                "estimated_overage_total": estimated_overage_total,
+                "limits": limits,
+            }
+        )
         return Response(serializer.data)
 
 

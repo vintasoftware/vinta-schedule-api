@@ -1951,8 +1951,11 @@ paths:
       operationId: billing_usage_retrieve_usage_retrieve
       description: |-
         ``GET /billing/usage/`` -- current usage against effective limits, per
-        resource, plus ``billing_state``. Resolved at the billing root, same as
-        every other read in this app.
+        resource, plus ``billing_state``, the plan snapshot, the current billing
+        period's bounds, the plan/add-on split of each ceiling, per-organization
+        attribution across the caller's pooled subtree, and the overage accrued so
+        far this cycle. Resolved at the billing root, same as every other read in
+        this app.
 
         The "pull" half of "an organization can see where it stands". It reads
         usage through the identical
@@ -1997,8 +2000,11 @@ paths:
       operationId: billing_usage_retrieve_usage_formatted_retrieve
       description: |-
         ``GET /billing/usage/`` -- current usage against effective limits, per
-        resource, plus ``billing_state``. Resolved at the billing root, same as
-        every other read in this app.
+        resource, plus ``billing_state``, the plan snapshot, the current billing
+        period's bounds, the plan/add-on split of each ceiling, per-organization
+        attribution across the caller's pooled subtree, and the overage accrued so
+        far this cycle. Resolved at the billing root, same as every other read in
+        this app.
 
         The "pull" half of "an organization can see where it stands". It reads
         usage through the identical
@@ -15595,6 +15601,26 @@ components:
       - street_name
       - street_number
       - zip_code
+    BillingPeriodBounds:
+      type: object
+      description: |-
+        The ``[start, end)`` bounds of the cycle in progress right now, resolved
+        through the same anchor (``resolve_billing_period`` /
+        ``current_billing_period_start``) the meter and the usage counters use --
+        never read off ``Subscription.current_period_start`` directly, which goes
+        stale the moment one cycle elapses. ``null`` when there is no subscription.
+      properties:
+        start:
+          type: string
+          format: date-time
+          description: Inclusive start of the current billing period.
+        end:
+          type: string
+          format: date-time
+          description: Exclusive end of the current billing period.
+      required:
+      - end
+      - start
     BillingPlan:
       type: object
       description: |-
@@ -15656,6 +15682,26 @@ components:
       - is_default_for_new_organizations
       - limits
       - monthly_price
+      - name
+      - slug
+    BillingPlanSnapshot:
+      type: object
+      description: |-
+        The plan in force for the current billing cycle, as reported by ``GET
+        /billing/usage/``. ``null`` when the caller's billing root has no
+        ``Subscription`` (``billing_state: "free"``).
+      properties:
+        slug:
+          type: string
+          description: The billing plan's slug.
+        name:
+          type: string
+          description: The billing plan's display name.
+        currency:
+          type: string
+          description: The billing plan's currency, e.g. "USD".
+      required:
+      - currency
       - name
       - slug
     BillingProfile:
@@ -16550,8 +16596,31 @@ components:
           format: decimal
           pattern: ^-?\d{0,6}(?:\.\d{0,4})?$
           nullable: true
+        included_in_plan:
+          type: integer
+          nullable: true
+          description: 'The plan-only portion of limit_value (SubscriptionPlanLimit.limit_value),
+            before any add-on capacity. null under the same fail-open rule limit_value
+            follows: no subscription, no plan-limit row for this resource, or an explicitly
+            unlimited row.'
+        add_on_quantity:
+          type: integer
+          description: The sum of every active SubscriptionAddOn's quantity for this
+            resource. included_in_plan + add_on_quantity == limit_value whenever limit_value
+            is non-null -- these two fields decompose limit_value, they do not redefine
+            it.
+        by_organization:
+          type: array
+          items:
+            $ref: '#/components/schemas/UsageByOrganization'
+          description: 'Per-organization attribution of current_usage across the caller''s
+            pooled billing subtree. An organization that contributed nothing is omitted,
+            never present with usage: 0.'
       required:
+      - add_on_quantity
+      - by_organization
       - current_usage
+      - included_in_plan
       - kind
       - limit_value
       - overage_unit_price
@@ -19583,18 +19652,69 @@ components:
           $ref: '#/components/schemas/RoleEnum'
       required:
       - role
+    UsageByOrganization:
+      type: object
+      description: |-
+        One organization's contribution to a pooled ``GET /billing/usage/`` figure.
+
+        Sourced from ``EntitlementService.get_usage_breakdown`` / the ``usage_breakdown_for_root``
+        entry point it shares with ``CycleCloseService``. An organization in the pool
+        that contributed **nothing** to this resource is **omitted from the list
+        entirely** -- never present with ``usage: 0`` -- matching that breakdown's
+        absent-not-zero contract.
+      properties:
+        organization_id:
+          type: integer
+          description: pk of the contributing organization, within the caller's pooled
+            billing subtree.
+        name:
+          type: string
+          description: The contributing organization's name.
+        usage:
+          type: integer
+          description: This organization's share of the resource's usage.
+      required:
+      - name
+      - organization_id
+      - usage
     UsageResponse:
       type: object
       properties:
         billing_state:
           type: string
+        billing_root_organization_id:
+          type: integer
+          description: pk of the billing root this response was resolved against.
+        plan:
+          allOf:
+          - $ref: '#/components/schemas/BillingPlanSnapshot'
+          nullable: true
+          description: The plan in force this cycle. null when there is no subscription.
+        billing_period:
+          allOf:
+          - $ref: '#/components/schemas/BillingPeriodBounds'
+          nullable: true
+          description: Bounds of the cycle in progress now. null when there is no
+            subscription.
+        estimated_overage_total:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,4})?$
+          description: Overage money accrued so far in the current, open billing period
+            -- MeteredOccurrenceQuerySet.overage_total() over the caller's pooled
+            subtree. Accrued-to-date, never a projection of the whole cycle. "0.0000"
+            when there is no subscription.
         limits:
           type: array
           items:
             $ref: '#/components/schemas/EffectiveLimitUsage'
       required:
+      - billing_period
+      - billing_root_organization_id
       - billing_state
+      - estimated_overage_total
       - limits
+      - plan
     UserConsent:
       type: object
       description: |-
