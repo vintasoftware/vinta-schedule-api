@@ -25,6 +25,7 @@ import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
+from allauth.account.models import EmailAddress
 from allauth.socialaccount.models import SocialLogin
 from model_bakery import baker
 
@@ -45,13 +46,30 @@ from users.models import Profile, User
 # ---------------------------------------------------------------------------
 
 
-def _social_save_user(email: str) -> User:
+def _record_provider_email(user: User, verified: bool) -> None:
+    """Stand in for allauth's ``setup_user_email``, which the real
+    ``super().save_user()`` runs (via ``sociallogin.save``) before our adapter
+    code gets control.
+
+    ``verified`` is the provider's word on the address — True for
+    Google/Microsoft, False for a provider that does not vouch for it — and is
+    what ``accounts.account_adapters.is_verified_for_provisioning`` reads
+    before letting an invitation be accepted.
+    """
+    EmailAddress.objects.get_or_create(
+        user=user,
+        email=user.email,
+        defaults={"verified": verified, "primary": True},
+    )
+
+
+def _social_save_user(email: str, email_verified: bool = True) -> User:
     """Simulate the allauth social save_user path for *email*.
 
     Mirrors the helper in test_social_gated_onboarding.py: the super() call is
-    replaced by a minimal stub that persists the user, then the real
-    SocialAccountAdapter.save_user() runs so that profile creation and
-    provisioning logic execute exactly as in production.
+    replaced by a minimal stub that persists the user and records the provider's
+    email address, then the real SocialAccountAdapter.save_user() runs so that
+    profile creation and provisioning logic execute exactly as in production.
     """
     adapter = SocialAccountAdapter()
     new_user = User(email=email)
@@ -63,6 +81,7 @@ def _social_save_user(email: str) -> User:
 
     def _super_save(request, sociallogin, form=None):
         sociallogin.user.save()
+        _record_provider_email(sociallogin.user, email_verified)
         return sociallogin.user
 
     with patch.object(SocialAccountAdapter.__bases__[0], "save_user", side_effect=_super_save):
@@ -136,6 +155,31 @@ class TestSocialInviteAutojoin:
         assert invitation.accepted_at is not None, "invitation.accepted_at must be set"
         assert invitation.membership is not None, "invitation.membership FK must be linked"
         assert invitation.membership_user_id == membership.user_id
+
+    # ------------------------------------------------------------------
+    # Scenario 1b — provider did not verify the email → nothing is accepted yet
+    # ------------------------------------------------------------------
+
+    def test_unverified_provider_email_defers_the_invitation(self):
+        """A provider that does not vouch for the address must not get the
+        invitation accepted at save_user time.
+
+        The user is left gated and the invitation stays pending; allauth sends
+        its own confirmation email, and ``AccountAdapter.confirm_email`` does
+        the provisioning once the address is actually proven.
+        """
+        inviter = UserFactory().create_user(email="admin@unverified.example.com")
+        org = baker.make(Organization, name="Unverified Provider Org")
+        invited_email = "invited@unverified.example.com"
+
+        invitation = _pending_invitation(org, inviter, invited_email)
+
+        user = _social_save_user(invited_email, email_verified=False)
+
+        assert not OrganizationMembership.objects.filter(user=user).exists()
+        invitation.refresh_from_db()
+        assert invitation.accepted_at is None
+        assert invitation.membership_user_id is None
 
     # ------------------------------------------------------------------
     # Scenario 2 — uninvited social signup stays gated
@@ -225,6 +269,7 @@ class TestSocialInviteAutojoin:
 
         def _super_save_second(request, sl, form=None):
             # User is already persisted; just return it.
+            _record_provider_email(sl.user, verified=True)
             return sl.user
 
         with patch.object(
@@ -306,6 +351,7 @@ class TestSocialInviteAutojoin:
         sociallogin.account = MagicMock(extra_data={})
 
         def _super_save_reentry(request, sl, form=None):
+            _record_provider_email(sl.user, verified=True)
             return sl.user
 
         with patch.object(

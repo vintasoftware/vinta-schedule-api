@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 from django.contrib.auth import get_user_model
 
 import pytest
+from allauth.account.models import EmailAddress
 from allauth.socialaccount.models import SocialLogin
 from model_bakery import baker
 from rest_framework.test import APIClient
@@ -13,6 +14,7 @@ from rest_framework.test import APIClient
 from accounts.account_adapters import SocialAccountAdapter
 from organizations.models import (
     Organization,
+    OrganizationBranding,
     OrganizationInvitation,
     OrganizationMembership,
     OrganizationRole,
@@ -242,13 +244,16 @@ class TestCreateOrganizationProvisioning:
 # ---------------------------------------------------------------------------
 
 
-def _social_save_user(email: str) -> User:
+def _social_save_user(email: str, email_verified: bool = True) -> User:
     """Simulate the allauth social save_user path for *email*.
 
     Mirrors the helper in test_social_invite_autojoin.py: the super() call is
-    replaced by a minimal stub that persists the user, then the real
-    SocialAccountAdapter.save_user runs so that profile-creation and invite
-    auto-join logic execute exactly as in production.
+    replaced by a minimal stub that persists the user and records the provider's
+    email address (as allauth's ``setup_user_email`` does inside the real
+    ``super().save_user()``), then the real SocialAccountAdapter.save_user runs
+    so that profile-creation and invite auto-join logic execute exactly as in
+    production. The recorded address must be verified for the auto-join to
+    happen -- see ``accounts.account_adapters.is_verified_for_provisioning``.
     """
     adapter = SocialAccountAdapter()
     new_user = User(email=email)
@@ -259,6 +264,11 @@ def _social_save_user(email: str) -> User:
 
     def _super_save(request, sociallogin, form=None):
         sociallogin.user.save()
+        EmailAddress.objects.get_or_create(
+            user=sociallogin.user,
+            email=sociallogin.user.email,
+            defaults={"verified": email_verified, "primary": True},
+        )
         return sociallogin.user
 
     with patch.object(SocialAccountAdapter.__bases__[0], "save_user", side_effect=_super_save):
@@ -501,6 +511,66 @@ class TestCreateInvitationProvisioning:
         # Invitation is now accepted
         invitation.refresh_from_db()
         assert invitation.accepted_at is not None
+
+    def test_send_email_false_invite_url_carries_the_reseller_ancestor_slug(self, settings):
+        """Organization Auth-Area Branding plan, Phase 5 amendment (2026-08-06): the
+        inviteUrl the sendEmail=false path returns must be keyed on the branding
+        root's slug -- the reseller's, not the invited child org's (which has none)
+        -- exactly like the branded invitation email built by the same-org REST/
+        service path. Otherwise the SPA has no way to resolve the reseller's
+        branding for this invitation before the invitee authenticates."""
+        settings.HEADLESS_FRONTEND_URLS = {
+            "account_accept_invitation": "https://app.example.com/auth/accept-invite/?token={token}",
+            "account_accept_invitation_branded": (
+                "https://app.example.com/o/{org_slug}/auth/accept-invite/?token={token}"
+            ),
+        }
+
+        reseller_org = baker.make(
+            Organization, name="Reseller", can_invite_organizations=True, slug="reselco"
+        )
+        baker.make(OrganizationBranding, organization=reseller_org, app_name="ResellCo")
+        auth_service = PublicAPIAuthService()
+        system_user, token = auth_service.create_system_user(
+            integration_name="test_integration", organization=reseller_org
+        )
+        baker.make(ResourceAccess, system_user=system_user, resource_name="invitation")
+
+        child_org = baker.make(Organization, name="Child Org", parent=reseller_org)
+
+        create_invitation_mutation = """
+        mutation CreateInvitation($input: CreateInvitationInput!) {
+            createInvitation(input: $input) {
+                inviteUrl
+            }
+        }
+        """
+
+        from di_core.containers import container
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": create_invitation_mutation,
+                    "variables": {
+                        "input": {
+                            "userEmail": "branded_child_invite@example.com",
+                            "organizationId": str(child_org.id),
+                            "sendEmail": False,
+                        }
+                    },
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        invite_url = data["data"]["createInvitation"]["inviteUrl"]
+        assert invite_url.startswith("https://app.example.com/o/reselco/auth/accept-invite/?token=")
 
     def test_send_email_false_no_email_sent(self):
         """sendEmail=false suppresses the invitation email entirely.

@@ -19,12 +19,17 @@ from urllib.parse import unquote, urlparse
 from django.conf import settings
 from django.urls import reverse
 
+import boto3
+from botocore.config import Config as BotoConfig
 from s3direct.utils import get_aws_credentials, get_key
 
 from organizations.exceptions import BrandingLogoUploadRejectedError
+from s3direct_overrides.utils import get_signed_url
 
 
 if TYPE_CHECKING:
+    from django.db.models.fields.files import FieldFile
+
     from organizations.models import Organization, OrganizationBranding
 
 
@@ -59,7 +64,7 @@ DEFAULT_LOGO_ETAG_IDENTITY = "vinta-schedule-default-logo"
 # `f"{dest}/{unique_file_name}"` -- i.e. `uploads/branding_logos/<file>`.
 #
 # Both writers of the ``logo`` field (``organizations.serializers.
-# BrandingLogoURLField.to_internal_value`` and
+# BrandingLogoField.to_internal_value`` and
 # ``public_api.mutations.Mutation.update_branding``) reject any normalized key
 # that does not start with this prefix -- see ``validate_branding_logo_key``.
 # The delivery route (``organizations.views.OrganizationLogoDeliveryView.
@@ -141,6 +146,59 @@ def build_logo_delivery_url(organization: Organization | None, request=None) -> 
     return f"{settings.DEFAULT_PROTOCOL}://{settings.API_DOMAIN}{path}"
 
 
+def signed_logo_url(logo: FieldFile | str | None) -> str | None:
+    """Time-limited signed S3 URL for a branding row's stored logo, or ``None``
+    when no logo is set.
+
+    ``logo`` is the model's ``FieldFile`` (or a bare key string). The signature
+    is minted by ``s3direct_overrides.utils.get_signed_url``, the same helper
+    every other S3-backed field's serializer uses, so a re-uploaded logo is a
+    different URL and no cache -- browser, CDN, or SPA -- can pin the replaced
+    image. That is why the API surfaces sign the key instead of handing out the
+    delivery route's stable per-slug URL.
+
+    Returns ``None`` (never a signed URL) for a key outside
+    ``BRANDING_LOGO_KEY_PREFIX``. Both writers of the ``logo`` field already
+    reject such a key (``normalize_uploaded_logo_key``), so this only matters
+    for a row written around them -- e.g. a direct DB insert. It mirrors the
+    delivery route's own prefix guard
+    (``organizations.views.OrganizationLogoDeliveryView._resolve_logo_key``):
+    a key pointing at another destination's prefix in the shared media bucket
+    (``providers_documents/``, ``healthcare_entities_documents/``) must never
+    become a readable URL, signed or otherwise.
+    """
+    key = logo if isinstance(logo, str) else (getattr(logo, "name", "") or "")
+    if not key or not key.startswith(BRANDING_LOGO_KEY_PREFIX):
+        return None
+    return get_signed_url(key)
+
+
+def build_logo_display_url(branding: OrganizationBranding | None, request=None) -> str:
+    """Absolute, always-renderable logo URL for an API read surface.
+
+    A signed S3 URL when ``branding`` has a usable logo (see
+    ``signed_logo_url``), otherwise the delivery route's default-logo URL --
+    so callers keep the "never empty, always renders" contract they had when
+    every read went through the route.
+
+    The fallback is deliberately keyed by the reserved ``default`` sentinel
+    slug rather than the organization's own slug: an organization with no logo
+    resolves through the route to the same bundled default anyway, and keying
+    it by the sentinel keeps a branded-but-logoless organization's response
+    byte-for-byte identical to an unknown one -- the no-enumeration-oracle
+    contract ``public_api.queries.branding_for_tenant`` is built on.
+
+    Not used by the invitation email (``organizations.notification_contexts``):
+    a signed URL expires, and an email opened days later must still render its
+    logo, so that caller keeps ``build_logo_delivery_url``.
+    """
+    if branding is not None:
+        signed = signed_logo_url(branding.logo)
+        if signed:
+            return signed
+    return build_logo_delivery_url(None, request=request)
+
+
 def compute_logo_etag(identity: str) -> str:
     """A quoted ETag derived from ``identity`` (the stored S3 key for a real logo,
     or ``DEFAULT_LOGO_ETAG_IDENTITY`` for the bundled default).
@@ -183,53 +241,58 @@ def guess_logo_content_type(key: str) -> str:
 
 class SignedBrandingLogoUpload(TypedDict):
     object_key: str
-    access_key_id: str | None
-    session_token: str | None
-    region: str | None
-    bucket: str | None
-    endpoint: str | None
-    acl: str
+    upload_url: str
+    expires_in: int
+
+
+# Long enough for a slow connection to finish a logo upload, short enough that a
+# leaked URL is not a lasting write grant on the bucket. Mirrors
+# `users.views.PROFILE_PICTURE_UPLOAD_URL_EXPIRY_SECONDS`.
+BRANDING_LOGO_UPLOAD_URL_EXPIRY_SECONDS = 900
 
 
 def sign_branding_logo_upload(
     file_name: str, file_type: str, file_size: int
 ) -> SignedBrandingLogoUpload:
-    """Build the same signed-upload payload the shipped s3direct signing view
-    (``POST /s3direct/get_upload_params/``) returns for the ``branding_logos``
-    destination, for GraphQL/partner-API callers that cannot reach that
-    session-scoped Django endpoint directly.
+    """Mint a presigned S3 PUT URL for the ``branding_logos`` destination, for
+    REST/GraphQL/partner-API callers that cannot reach the session-scoped
+    ``POST /s3direct/get_upload_params/`` Django endpoint directly.
 
     Re-checks the destination's own content constraints (content-type allowlist,
     size range) -- these apply no matter who is asking, so they are re-verified
     here rather than trusted to the caller. Authorization (is this caller
-    allowed to upload a logo at all) is the GraphQL mutation's job, not this
-    function's -- see ``public_api.mutations.Mutation.create_branding_logo_upload``.
+    allowed to upload a logo at all) is the REST view's/GraphQL mutation's job,
+    not this function's -- see ``organizations.views.
+    OrganizationBrandingLogoUploadParamsView`` and ``public_api.mutations.
+    Mutation.create_branding_logo_upload``.
 
-    **Known residual limitation -- these checks are advisory, not enforced by S3
-    itself.** This project's ``s3direct`` signing mechanism (``s3direct.utils.
-    get_aws_credentials`` / ``s3direct.views.get_upload_params``, mirrored here)
-    hands the browser a bare AWS access key (and, when using an assumed role,
-    a session token) that the client then uses to sign a direct ``PUT`` with its
-    own SigV4 implementation -- it does not issue an S3 presigned-POST policy
-    document, so there is no ``conditions`` list (``content-length-range``,
-    ``Content-Type`` starts-with) for S3 to enforce server-side. A caller with
-    valid credentials could technically PUT a larger or differently-typed object
-    than what it declared here. Re-architecting the signing flow onto presigned
-    POST (a shared surface used by every other ``S3DIRECT_DESTINATIONS`` entry,
-    not just this one) is out of scope for this phase. The actual mitigation is
-    downstream, not at upload time: ``BRANDING_LOGO_KEY_PREFIX`` constrains every
-    written ``logo`` key to this destination's own prefix (see
-    ``normalize_uploaded_logo_key``), and the delivery route
-    (``organizations.views.OrganizationLogoDeliveryView``) treats every streamed
-    object's bytes and extension as untrusted regardless of what was declared at
-    upload time (allowlisted Content-Type via ``guess_logo_content_type`` +
-    ``X-Content-Type-Options: nosniff`` on every response) -- so an oversized or
-    mistyped object that slips past this advisory check still cannot be used for
-    stored XSS or to serve another tenant's object.
+    Unlike the shipped ``s3direct`` signing view, no AWS credentials ever reach
+    the caller -- the returned ``upload_url`` is a complete SigV4 presigned PUT
+    URL; the caller just PUTs the file body to it with a matching Content-Type
+    and no other headers. No ACL is signed either: the media bucket sets Object
+    Ownership to BucketOwnerEnforced, which rejects any upload carrying an
+    ``x-amz-acl`` header -- objects stay private through the bucket's
+    public-access block and are only ever served through the delivery route.
+
+    Content-Type is a signed header, so a caller cannot swap it after the URL is
+    issued (a mismatched ``Content-Type`` on the PUT invalidates the signature).
+    File size is **not** enforced by S3 itself -- a presigned PUT URL (unlike a
+    presigned POST policy) carries no ``content-length-range`` condition, so the
+    size check below is advisory only. The actual mitigation for an
+    oversized/mistyped object that slips past it is downstream, not at upload
+    time: ``BRANDING_LOGO_KEY_PREFIX`` constrains every written ``logo`` key to
+    this destination's own prefix (see ``normalize_uploaded_logo_key``), and the
+    delivery route (``organizations.views.OrganizationLogoDeliveryView``) treats
+    every streamed object's bytes and extension as untrusted regardless of what
+    was declared at upload time (allowlisted Content-Type via
+    ``guess_logo_content_type`` + ``X-Content-Type-Options: nosniff`` on every
+    response) -- so it still cannot be used for stored XSS or to serve another
+    tenant's object.
 
     Raises:
-        BrandingLogoUploadRejectedError: content type not in the allowlist, or
-            size outside the configured range, naming the specific rule broken.
+        BrandingLogoUploadRejectedError: content type not in the allowlist, size
+            outside the configured range, or the destination's S3 configuration
+            (bucket/region/endpoint) is incomplete.
     """
     # `S3DIRECT_DESTINATIONS` mixes value types (callables, strings, lists) across
     # its destinations, which collapses mypy's inferred value type to `object`
@@ -251,18 +314,41 @@ def sign_branding_logo_upload(
             f"Invalid file size (must be between {cl_range[0]} and {cl_range[1]} bytes)."
         )
 
-    key = dest.get("key")
-    object_key = get_key(key, file_name, dest)
+    bucket = dest.get("bucket") or getattr(settings, "AWS_STORAGE_BUCKET_NAME", None)
+    region = dest.get("region") or getattr(settings, "AWS_S3_REGION_NAME", None)
+    endpoint = dest.get("endpoint") or getattr(settings, "AWS_S3_ENDPOINT_URL", None)
+    if not bucket or not region or not endpoint:
+        raise BrandingLogoUploadRejectedError("S3 configuration is incomplete.")
+
+    object_key = get_key(dest.get("key"), file_name, dest)
     aws_credentials = get_aws_credentials()
+
+    s3_client = boto3.client(
+        "s3",
+        region_name=region,
+        endpoint_url=endpoint,
+        aws_access_key_id=aws_credentials.access_key,
+        aws_secret_access_key=aws_credentials.secret_key,
+        aws_session_token=aws_credentials.token,
+        config=BotoConfig(
+            signature_version="s3v4",
+            # Floci (local) only answers path-style; on AWS "auto" picks
+            # virtual-hosted. Mirrors what django-storages reads for the same call.
+            s3={"addressing_style": getattr(settings, "AWS_S3_ADDRESSING_STYLE", "auto")},
+        ),
+    )
+
+    upload_url = s3_client.generate_presigned_url(
+        "put_object",
+        Params={"Bucket": bucket, "Key": object_key, "ContentType": file_type},
+        ExpiresIn=BRANDING_LOGO_UPLOAD_URL_EXPIRY_SECONDS,
+        HttpMethod="PUT",
+    )
 
     return {
         "object_key": object_key,
-        "access_key_id": aws_credentials.access_key,
-        "session_token": aws_credentials.token,
-        "region": dest.get("region") or getattr(settings, "AWS_S3_REGION_NAME", None),
-        "bucket": dest.get("bucket") or getattr(settings, "AWS_STORAGE_BUCKET_NAME", None),
-        "endpoint": dest.get("endpoint") or getattr(settings, "AWS_S3_ENDPOINT_URL", None),
-        "acl": dest.get("acl") or "public-read",
+        "upload_url": upload_url,
+        "expires_in": BRANDING_LOGO_UPLOAD_URL_EXPIRY_SECONDS,
     }
 
 

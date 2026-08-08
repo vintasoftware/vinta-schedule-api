@@ -54,7 +54,7 @@ from calendar_integration.models import (
     ExternalEventChangeRequest,
 )
 from calendar_integration.services.ics_service import CalendarEventICSService
-from organizations.branding_logo import build_logo_delivery_url
+from organizations.branding_logo import build_logo_display_url
 from organizations.models import (
     Organization,
     OrganizationMembership,
@@ -177,12 +177,12 @@ def _vinta_default_branding(request=None) -> PublicBrandingResult:
     organizations, ensuring the response is identical for unknown vs unbranded
     to prevent enumeration attacks. ``logo_url`` is the logo delivery route's
     URL keyed by its reserved "default" sentinel slug (see
-    ``organizations.branding_logo.build_logo_delivery_url``), never empty --
+    ``organizations.branding_logo.build_logo_display_url``), never empty --
     the route always streams something, even our own default logo.
     """
     return PublicBrandingResult(
         app_name="Vinta Schedule",
-        logo_url=build_logo_delivery_url(None, request=request),
+        logo_url=build_logo_display_url(None, request=request),
         primary_color="",
         secondary_color="",
     )
@@ -1604,14 +1604,14 @@ class Query:
             # Unbranded subtree returns the vinta default
             return _vinta_default_branding(request=request)
 
-        # Return the resolved branding (no secrets exposed). logo_url is keyed by the
-        # resolved branding ROOT's slug (branding.organization -- the reseller ancestor
-        # for a child `org`, or `org` itself), never by `org`'s own slug: a child usually
-        # has none, and the delivery route must resolve to the reseller's real logo, not
-        # silently fall back to the default.
+        # Return the resolved branding (no secrets exposed). logo_url is a signed URL
+        # for the RESOLVED row's own stored logo (`branding` -- the reseller ancestor's
+        # row for a child `org`, or `org`'s own), so a child organization renders its
+        # reseller's real logo. A row with no logo falls back to the default-logo
+        # delivery URL, identical to the unknown-tenant response above.
         return PublicBrandingResult(
             app_name=branding.app_name,
-            logo_url=build_logo_delivery_url(branding.organization, request=request),
+            logo_url=build_logo_display_url(branding, request=request),
             primary_color=branding.primary_color,
             secondary_color=branding.secondary_color,
         )

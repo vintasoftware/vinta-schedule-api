@@ -528,11 +528,13 @@ class OrganizationBranding(models.Model):
         blank=True,
         null=True,
         help_text=(
-            "S3 key of the reseller's uploaded logo image (PNG/JPEG/WebP; SVG rejected -- "
-            "see vinta_schedule_api.settings.base.S3DIRECT_DESTINATIONS['branding_logos']). "
+            "S3 key of the organization's uploaded logo image (PNG/JPEG/WebP; SVG rejected "
+            "-- see vinta_schedule_api.settings.base.S3DIRECT_DESTINATIONS['branding_logos']). "
             "Replaces the old logo_url: the upload goes straight from the browser to our "
-            "storage, and nothing renders it as a raw or signed URL -- every read goes "
-            "through organizations.branding_logo.build_logo_delivery_url instead."
+            "storage and only the key is stored. API reads sign the key on the way out "
+            "(organizations.branding_logo.signed_logo_url); the invitation email, whose "
+            "URLs must outlive a signature, reads through the delivery route instead "
+            "(organizations.branding_logo.build_logo_delivery_url)."
         ),
     )
     primary_color = models.CharField(

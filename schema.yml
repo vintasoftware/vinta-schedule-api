@@ -17300,9 +17300,10 @@ components:
         - redirect_url: HTTPS scheme, no wildcard character, no path-prefix pattern
           (organizations.redirect_url_validation).
 
-        ``logo_url`` round-trips through ``organizations.branding_logo``: reads
-        return the logo delivery route's URL (never a raw or signed S3 URL), writes
-        accept the uploaded S3 key from the ``branding_logos`` S3Direct destination.
+        ``logo_url`` round-trips through ``BrandingLogoField``: reads return a
+        time-limited signed URL for the stored object (``None`` when no logo is
+        set), writes accept the uploaded S3 key from the ``branding_logos``
+        S3Direct destination.
       properties:
         app_name:
           type: string
@@ -17310,6 +17311,7 @@ components:
           maxLength: 120
         logo_url:
           type: string
+          nullable: true
         primary_color:
           type: string
           description: 'Primary color as hex code: #RRGGBB or #RRGGBBAA.'
@@ -17341,34 +17343,23 @@ components:
         Response body for ``OrganizationBrandingLogoUploadParamsView`` — the same
         shape ``organizations.branding_logo.sign_branding_logo_upload`` and the
         GraphQL ``create_branding_logo_upload`` mutation return.
+
+        ``upload_url`` is a complete SigV4 presigned PUT URL. The client uploads by
+        PUTting the file body straight to it with a matching Content-Type and no
+        other headers — no AWS credentials reach the browser and nothing has to be
+        signed client-side. Mirrors ``users.serializers.ProfilePictureUploadParamsSerializer``.
       properties:
         object_key:
           type: string
-        access_key_id:
+        upload_url:
           type: string
-          nullable: true
-        session_token:
-          type: string
-          nullable: true
-        region:
-          type: string
-          nullable: true
-        bucket:
-          type: string
-          nullable: true
-        endpoint:
-          type: string
-          nullable: true
-        acl:
-          type: string
+          format: uri
+        expires_in:
+          type: integer
       required:
-      - access_key_id
-      - acl
-      - bucket
-      - endpoint
+      - expires_in
       - object_key
-      - region
-      - session_token
+      - upload_url
     OrganizationBrandingLogoUploadParamsRequest:
       type: object
       description: |-
@@ -18584,9 +18575,10 @@ components:
         - redirect_url: HTTPS scheme, no wildcard character, no path-prefix pattern
           (organizations.redirect_url_validation).
 
-        ``logo_url`` round-trips through ``organizations.branding_logo``: reads
-        return the logo delivery route's URL (never a raw or signed S3 URL), writes
-        accept the uploaded S3 key from the ``branding_logos`` S3Direct destination.
+        ``logo_url`` round-trips through ``BrandingLogoField``: reads return a
+        time-limited signed URL for the stored object (``None`` when no logo is
+        set), writes accept the uploaded S3 key from the ``branding_logos``
+        S3Direct destination.
       properties:
         app_name:
           type: string
@@ -18594,6 +18586,7 @@ components:
           maxLength: 120
         logo_url:
           type: string
+          nullable: true
         primary_color:
           type: string
           description: 'Primary color as hex code: #RRGGBB or #RRGGBBAA.'

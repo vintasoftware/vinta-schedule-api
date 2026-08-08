@@ -8,7 +8,7 @@ from rest_framework import serializers
 
 from calendar_integration.models import GoogleCalendarServiceAccount
 from common.utils.serializer_utils import VirtualModelSerializer
-from organizations.branding_logo import build_logo_delivery_url, normalize_uploaded_logo_key
+from organizations.branding_logo import normalize_uploaded_logo_key, signed_logo_url
 from organizations.exceptions import BrandingLogoUploadRejectedError
 from organizations.models import (
     Organization,
@@ -30,6 +30,7 @@ from organizations.virtual_models import (
     OrganizationInvitationVirtualModel,
     OrganizationVirtualModel,
 )
+from s3direct_overrides.serializer_fields import S3DirectField
 
 
 class GoogleServiceAccountWriteSerializer(serializers.Serializer):
@@ -481,25 +482,46 @@ def _validate_hex_color(value: str) -> str:
     return value
 
 
-class BrandingLogoURLField(serializers.CharField):
-    """Read: the logo delivery route's absolute URL for the branding row's
-    organization. Write: the uploaded S3 key (accepts a bare key or a full
-    signed/public URL, normalized to a key).
+class BrandingLogoField(S3DirectField):
+    """The project's standard S3-direct field, narrowed to the branding-logo
+    upload destination.
 
-    ``source="logo"`` binds this field to the model's ``logo``
-    (``S3DirectImageField``) column while keeping the serializer's field name
-    ``logo_url`` stable — the SPA's read path is unchanged, only what it points
-    at differs (the delivery route, never a raw or signed S3 URL).
+    Read and write behavior both come from ``s3direct_overrides.serializer_fields.
+    S3DirectField``, the same field every other S3-backed column serializes
+    through: reads return a **time-limited signed URL** for the stored key,
+    writes accept either a bare key or a full signed/public URL and persist only
+    the key. Signing is what keeps a re-uploaded logo from being pinned in a
+    browser/CDN cache — the URL changes with the key — which the delivery
+    route's stable per-slug URL could not do.
 
-    The read side ignores the raw field ``value`` entirely: the delivery URL is
-    a pure function of the branding row's *organization* (its slug), not of
-    whether a logo happens to be set — a missing logo resolves through the same
-    route to our default logo, so there is nothing to distinguish here.
+    ``source="logo"`` binds this to the model's ``logo`` (``S3DirectImageField``)
+    column while keeping the serializer's field name ``logo_url`` stable.
+
+    The two overrides below are the branding-specific narrowing, and are the
+    reason this is a subclass rather than a bare ``S3DirectField``:
+
+    - writes run the normalized key through ``normalize_uploaded_logo_key``,
+      which rejects anything outside ``BRANDING_LOGO_KEY_PREFIX`` — without it
+      an admin could point ``logo`` at another destination's object in the
+      shared media bucket (``providers_documents/``, which holds PHI) and read
+      back a signed URL for it;
+    - reads go through ``signed_logo_url``, which applies the same prefix guard
+      on the way out for a row written around this serializer.
+
+    Unlike the delivery route, this field does **not** substitute our default
+    logo for a missing one: ``None`` is the honest answer for "this organization
+    has not uploaded a logo", and it is what lets the SPA's branding settings
+    form render an empty upload widget. The public read surfaces that must
+    always render something use ``branding_logo.build_logo_display_url``.
     """
 
     def __init__(self, *args, **kwargs):
         kwargs.setdefault("required", False)
         kwargs.setdefault("allow_blank", True)
+        # Reads return null for a logoless row, so the published schema has to
+        # say so. It also gives clients a second way to clear the logo (null,
+        # alongside ""), which the model's ``null=True`` column stores as-is.
+        kwargs.setdefault("allow_null", True)
         super().__init__(*args, **kwargs)
 
     def to_internal_value(self, data: str) -> str:
@@ -509,23 +531,12 @@ class BrandingLogoURLField(serializers.CharField):
         except BrandingLogoUploadRejectedError as e:
             raise serializers.ValidationError(str(e)) from e
 
-    def get_attribute(self, instance):
-        """Bypass DRF's default ``source``-based lookup (``instance.logo``).
-
-        ``Serializer.to_representation`` short-circuits to ``None`` (never
-        calling ``to_representation`` at all) whenever ``get_attribute``
-        returns ``None`` — which is exactly the common case here, since
-        ``logo`` is nullable. This field's representation is a pure function
-        of the branding row's *organization*, not of whether a logo happens
-        to be set, so return the branding row itself (never ``None`` for a
-        real row) and do the real work in ``to_representation``.
-        """
-        return instance
-
-    def to_representation(self, value) -> str:
-        organization = getattr(value, "organization", None)
-        request = self.context.get("request")
-        return build_logo_delivery_url(organization, request=request)
+    # ``CharField.to_representation`` is stubbed as returning ``str``, but DRF
+    # serializes a ``None`` return as JSON null perfectly well -- which is the
+    # honest representation of a row with no logo, and what the published schema
+    # declares (``nullable: true``).
+    def to_representation(self, value) -> str | None:  # type: ignore[override]
+        return signed_logo_url(value)
 
 
 class OrganizationBrandingSerializer(serializers.ModelSerializer):
@@ -540,12 +551,13 @@ class OrganizationBrandingSerializer(serializers.ModelSerializer):
     - redirect_url: HTTPS scheme, no wildcard character, no path-prefix pattern
       (organizations.redirect_url_validation).
 
-    ``logo_url`` round-trips through ``organizations.branding_logo``: reads
-    return the logo delivery route's URL (never a raw or signed S3 URL), writes
-    accept the uploaded S3 key from the ``branding_logos`` S3Direct destination.
+    ``logo_url`` round-trips through ``BrandingLogoField``: reads return a
+    time-limited signed URL for the stored object (``None`` when no logo is
+    set), writes accept the uploaded S3 key from the ``branding_logos``
+    S3Direct destination.
     """
 
-    logo_url = BrandingLogoURLField(source="logo")
+    logo_url = BrandingLogoField(source="logo")
 
     class Meta:
         model = OrganizationBranding
@@ -587,12 +599,14 @@ class OrganizationBrandingLogoUploadParamsRequestSerializer(serializers.Serializ
 class OrganizationBrandingLogoUploadParamsSerializer(serializers.Serializer):
     """Response body for ``OrganizationBrandingLogoUploadParamsView`` — the same
     shape ``organizations.branding_logo.sign_branding_logo_upload`` and the
-    GraphQL ``create_branding_logo_upload`` mutation return."""
+    GraphQL ``create_branding_logo_upload`` mutation return.
+
+    ``upload_url`` is a complete SigV4 presigned PUT URL. The client uploads by
+    PUTting the file body straight to it with a matching Content-Type and no
+    other headers — no AWS credentials reach the browser and nothing has to be
+    signed client-side. Mirrors ``users.serializers.ProfilePictureUploadParamsSerializer``.
+    """
 
     object_key = serializers.CharField()
-    access_key_id = serializers.CharField(allow_null=True)
-    session_token = serializers.CharField(allow_null=True)
-    region = serializers.CharField(allow_null=True)
-    bucket = serializers.CharField(allow_null=True)
-    endpoint = serializers.CharField(allow_null=True)
-    acl = serializers.CharField()
+    upload_url = serializers.URLField()
+    expires_in = serializers.IntegerField()

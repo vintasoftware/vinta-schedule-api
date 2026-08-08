@@ -34,6 +34,7 @@ from unittest.mock import MagicMock, patch
 from django.urls import reverse
 
 import pytest
+from allauth.account.models import EmailAddress
 from allauth.socialaccount.models import SocialLogin
 from rest_framework import status
 from rest_framework.test import APIClient
@@ -53,14 +54,31 @@ from users.models import Profile, User
 # ---------------------------------------------------------------------------
 
 
-def _social_save_user(email: str) -> User:
+def _record_provider_email(user: User, verified: bool) -> None:
+    """Stand in for allauth's ``setup_user_email``, which the real
+    ``super().save_user()`` runs (via ``sociallogin.save``) before our adapter
+    code gets control.
+
+    The ``verified`` flag is the provider's word on the address — True for
+    Google/Microsoft, False for a provider that does not vouch for it. It is
+    what ``accounts.account_adapters.is_verified_for_provisioning`` reads, so
+    the stub has to create the row for the gate to behave as in production.
+    """
+    EmailAddress.objects.get_or_create(
+        user=user,
+        email=user.email,
+        defaults={"verified": verified, "primary": True},
+    )
+
+
+def _social_save_user(email: str, email_verified: bool = True) -> User:
     """
     Simulate the allauth social save_user path for an uninvited user.
 
     Mirrors the stub used in test_account_adapters.py: replace the super()
-    call with a minimal version that saves the user, then invoke the real
-    SocialAccountAdapter.save_user() so profile creation logic runs exactly
-    as it does in production.
+    call with a minimal version that saves the user and records the provider's
+    email address, then invoke the real SocialAccountAdapter.save_user() so
+    profile creation and provisioning logic run exactly as in production.
     """
     adapter = SocialAccountAdapter()
     new_user = User(email=email)
@@ -72,6 +90,7 @@ def _social_save_user(email: str) -> User:
 
     def _super_save(request, sociallogin, form=None):
         sociallogin.user.save()
+        _record_provider_email(sociallogin.user, email_verified)
         return sociallogin.user
 
     with patch.object(SocialAccountAdapter.__bases__[0], "save_user", side_effect=_super_save):
@@ -271,6 +290,7 @@ class TestSocialSignupCrossOrgInviteAccept:
 
         def _super_save(request, sociallogin, form=None):
             # User is already saved; just return it.
+            _record_provider_email(sociallogin.user, verified=True)
             return sociallogin.user
 
         with patch.object(SocialAccountAdapter.__bases__[0], "save_user", side_effect=_super_save):
