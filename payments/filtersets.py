@@ -1,6 +1,6 @@
 from django_filters import rest_framework as filters
 
-from payments.models import BillingPlan, SubscriptionAddOn
+from payments.models import BillingPeriodSummary, BillingPlan, SubscriptionAddOn
 
 
 class BillingPlanFilterSet(filters.FilterSet):
@@ -24,3 +24,26 @@ class SubscriptionAddOnFilterSet(filters.FilterSet):
     class Meta:
         model = SubscriptionAddOn
         fields = ("resource_key", "is_active")
+
+
+class BillingPeriodSummaryFilterSet(filters.FilterSet):
+    """FilterSet for ``GET /billing/usage/periods/`` -- the closed-period
+    statement list."""
+
+    billing_period_start_after = filters.DateTimeFilter(
+        field_name="billing_period_start",
+        lookup_expr="gte",
+        label="Only periods starting on or after this instant",
+    )
+    billing_period_start_before = filters.DateTimeFilter(
+        field_name="billing_period_start",
+        lookup_expr="lte",
+        label="Only periods starting on or before this instant",
+    )
+    charged = filters.BooleanFilter(
+        field_name="charged", label="Filter by whether the period's overage was charged"
+    )
+
+    class Meta:
+        model = BillingPeriodSummary
+        fields = ("billing_period_start_after", "billing_period_start_before", "charged")
