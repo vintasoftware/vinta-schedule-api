@@ -77,3 +77,17 @@ class MeteredOccurrenceQuerySet(QuerySet):
         fact cannot change a closed period's bill.
         """
         return self.overage().aggregate(total=Sum("unit_price"))["total"] or Decimal("0")
+
+
+class BillingPeriodSummaryQuerySet(QuerySet):
+    """QuerySet for ``BillingPeriodSummary``, the closed-period statement ledger."""
+
+    def for_organizations(self, organization_ids: Sequence[int]) -> BillingPeriodSummaryQuerySet:
+        """Restrict to a pooled billing subtree.
+
+        ``BillingPeriodSummary`` is not an ``OrganizationModel`` (see the model
+        docstring), so this is an ordinary filter — but every read is still
+        organization-scoped, and going through a named method keeps that visible at
+        the call site. Mirrors ``MeteredOccurrenceQuerySet.for_organizations``.
+        """
+        return self.filter(organization_id__in=organization_ids)
