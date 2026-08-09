@@ -7,6 +7,7 @@ from .billing_views import (
     BillingPeriodViewSet,
     BillingPlanViewSet,
     BillingUsageViewSet,
+    MeteredOccurrenceViewSet,
     SubscriptionViewSet,
 )
 from .views import (
@@ -38,6 +39,11 @@ routes: list[RouteDict] = [
         "regex": r"billing/usage/periods",
         "viewset": BillingPeriodViewSet,
         "basename": "BillingUsagePeriod",
+    },
+    {
+        "regex": r"billing/usage/occurrences",
+        "viewset": MeteredOccurrenceViewSet,
+        "basename": "BillingUsageOccurrence",
     },
     {
         "regex": r"billing/subscription",

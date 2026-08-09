@@ -1946,6 +1946,231 @@ paths:
               schema:
                 $ref: '#/components/schemas/Subscription'
           description: ''
+  /billing/usage/occurrences/:
+    get:
+      operationId: billing_usage_occurrences_list
+      description: |-
+        ``GET /billing/usage/occurrences/`` -- the line-item ledger behind
+        post-paid charges: every ``MeteredOccurrence`` row in the caller's pooled
+        billing subtree, paginated and filterable by period, allowance side,
+        organization, and occurrence-start range, so a customer disputing an
+        invoice can tie every unit of money to a specific occurrence.
+
+        **Stricter than every other read in this module.** ``BillingUsageViewSet``
+        and ``BillingPeriodViewSet`` stay open to any authenticated member
+        (``IsAuthenticated`` alone); this one additionally requires
+        ``IsBillingOwnerOrAdmin``. A ledger row carries an ``event_id`` and an exact
+        ``occurrence_start`` -- that is calendar content, and it spans every
+        calendar in the caller's pooled subtree, including ones the caller has no
+        membership scope on. A count is not. See the plan's Guiding Decisions.
+
+        ``check_object_permissions`` is called explicitly in ``list()`` against the
+        resolved billing root -- the same two-step dance
+        ``SubscriptionViewSet.get_subscription`` and ``AddOnViewSet.create`` already
+        perform, and for the same reason their comments document:
+        ``has_permission`` cannot know *which* organization this read is for,
+        because ``request.organization`` is not resolved yet at that point in
+        ``TenantScopedViewMixin.initial()``'s ordering (see
+        ``IsBillingOwnerOrAdmin``'s docstring).
+      summary: List metered occurrences behind post-paid charges
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: query
+        name: billing_period_start
+        schema:
+          type: string
+          format: date-time
+        description: Only rows billed to this exact period. Defaults to the current,
+          open billing period when omitted.
+      - in: query
+        name: is_within_allowance
+        schema:
+          type: boolean
+        description: Filter by whether the occurrence fell inside the included allowance
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - in: query
+        name: occurrence_start_after
+        schema:
+          type: string
+          format: date-time
+        description: Only occurrences starting on or after this instant (inclusive).
+      - in: query
+        name: occurrence_start_before
+        schema:
+          type: string
+          format: date-time
+        description: Only occurrences starting on or before this instant (inclusive).
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: ordering
+        schema:
+          type: array
+          items:
+            type: string
+            enum:
+            - -occurrence_start
+            - occurrence_start
+        description: |-
+          Order by occurrence_start. Prefix with '-' for descending. Defaults to -occurrence_start (newest first).
+
+          * `occurrence_start` - Occurrence start
+          * `-occurrence_start` - Occurrence start (descending)
+        explode: false
+        style: form
+      - in: query
+        name: organization
+        schema:
+          type: integer
+        description: Only rows attributed to this organization. Must be inside the
+          caller's pooled billing subtree -- an id outside it is a validation error,
+          not an empty result.
+      tags:
+      - billing
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedMeteredOccurrenceList'
+          description: ''
+  /billing/usage/occurrences{format}:
+    get:
+      operationId: billing_usage_occurrences_formatted_list
+      description: |-
+        ``GET /billing/usage/occurrences/`` -- the line-item ledger behind
+        post-paid charges: every ``MeteredOccurrence`` row in the caller's pooled
+        billing subtree, paginated and filterable by period, allowance side,
+        organization, and occurrence-start range, so a customer disputing an
+        invoice can tie every unit of money to a specific occurrence.
+
+        **Stricter than every other read in this module.** ``BillingUsageViewSet``
+        and ``BillingPeriodViewSet`` stay open to any authenticated member
+        (``IsAuthenticated`` alone); this one additionally requires
+        ``IsBillingOwnerOrAdmin``. A ledger row carries an ``event_id`` and an exact
+        ``occurrence_start`` -- that is calendar content, and it spans every
+        calendar in the caller's pooled subtree, including ones the caller has no
+        membership scope on. A count is not. See the plan's Guiding Decisions.
+
+        ``check_object_permissions`` is called explicitly in ``list()`` against the
+        resolved billing root -- the same two-step dance
+        ``SubscriptionViewSet.get_subscription`` and ``AddOnViewSet.create`` already
+        perform, and for the same reason their comments document:
+        ``has_permission`` cannot know *which* organization this read is for,
+        because ``request.organization`` is not resolved yet at that point in
+        ``TenantScopedViewMixin.initial()``'s ordering (see
+        ``IsBillingOwnerOrAdmin``'s docstring).
+      summary: List metered occurrences behind post-paid charges
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: query
+        name: billing_period_start
+        schema:
+          type: string
+          format: date-time
+        description: Only rows billed to this exact period. Defaults to the current,
+          open billing period when omitted.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: query
+        name: is_within_allowance
+        schema:
+          type: boolean
+        description: Filter by whether the occurrence fell inside the included allowance
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - in: query
+        name: occurrence_start_after
+        schema:
+          type: string
+          format: date-time
+        description: Only occurrences starting on or after this instant (inclusive).
+      - in: query
+        name: occurrence_start_before
+        schema:
+          type: string
+          format: date-time
+        description: Only occurrences starting on or before this instant (inclusive).
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: query
+        name: ordering
+        schema:
+          type: array
+          items:
+            type: string
+            enum:
+            - -occurrence_start
+            - occurrence_start
+        description: |-
+          Order by occurrence_start. Prefix with '-' for descending. Defaults to -occurrence_start (newest first).
+
+          * `occurrence_start` - Occurrence start
+          * `-occurrence_start` - Occurrence start (descending)
+        explode: false
+        style: form
+      - in: query
+        name: organization
+        schema:
+          type: integer
+        description: Only rows attributed to this organization. Must be inside the
+          caller's pooled billing subtree -- an id outside it is a validation error,
+          not an empty result.
+      tags:
+      - billing
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedMeteredOccurrenceList'
+          description: ''
   /billing/usage/periods/:
     get:
       operationId: billing_usage_periods_list
@@ -17795,6 +18020,73 @@ components:
       - calendar
       - cap
       - period
+    LedgerCalendar:
+      type: object
+      description: |-
+        The calendar a ledger row's event lives on -- nested under
+        ``LedgerEventSerializer``.
+      properties:
+        id:
+          type: integer
+          description: pk of the calendar.
+        name:
+          type: string
+          description: The calendar's display name.
+      required:
+      - id
+      - name
+    LedgerEvent:
+      type: object
+      description: |-
+        The event a ``GET /billing/usage/occurrences/`` row was metered
+        against. Resolved by the view in one batched query per page --
+        ``MeteredOccurrence.event_id`` is a soft reference (``BigIntegerField``,
+        not a ``ForeignKey``) precisely so the billing record outlives the event
+        (see the ``MeteredOccurrence`` model docstring); this can never become a
+        per-row lookup.
+      properties:
+        id:
+          type: integer
+          description: pk of the event.
+        title:
+          type: string
+          description: The series root's title, not the individual occurrence's own.
+            event_id stores the series root -- following bulk_modification_parent
+            back through any splits -- so a modified occurrence's row shows the master's
+            title rather than its own current one.
+        calendar:
+          allOf:
+          - $ref: '#/components/schemas/LedgerCalendar'
+          nullable: true
+          description: The calendar this event lives on.
+        owners:
+          type: array
+          items:
+            $ref: '#/components/schemas/LedgerEventOwner'
+          description: Owners of the event's calendar (CalendarOwnership). CalendarEvent
+            carries no organizer field of its own -- ownership is calendar-level,
+            and a calendar can have several owners.
+      required:
+      - calendar
+      - id
+      - owners
+      - title
+    LedgerEventOwner:
+      type: object
+      description: |-
+        One owner of a ledger row's event's calendar (``CalendarOwnership``).
+        ``CalendarEvent`` has no organizer field of its own -- ownership is
+        calendar-level, and a calendar can have several owners.
+      properties:
+        user_id:
+          type: integer
+          description: pk of the owning membership's user.
+        name:
+          type: string
+          description: The owning user's display name.
+      required:
+      - name
+      - user_id
     MercadoPagoPublicCredentials:
       type: object
       description: The browser-safe half of MercadoPago's credentials -- never the
@@ -17804,6 +18096,75 @@ components:
           type: string
       required:
       - public_key
+    MeteredOccurrence:
+      type: object
+      description: |-
+        One row of ``GET /billing/usage/occurrences/`` -- the post-paid ledger
+        behind an overage charge, so a customer disputing an invoice can tie every
+        unit of money to a specific occurrence.
+
+        ``event``/``organization`` are not model relations on ``MeteredOccurrence``
+        (``event_id`` is a soft reference; ``organization`` has no name of its own
+        here) -- both are built in ``to_representation`` from maps the view
+        resolves once per page and threads through ``context`` (``event_map``,
+        ``organization_names``), never a per-row query.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        organization:
+          allOf:
+          - $ref: '#/components/schemas/MeteredOccurrenceOrganization'
+          description: The organization this occurrence is attributed to.
+        event:
+          allOf:
+          - $ref: '#/components/schemas/LedgerEvent'
+          nullable: true
+          description: null when the referenced event no longer exists -- an expected
+            state (a MeteredOccurrence outlives its event by design, see the model
+            docstring), not an error. The charge still stands; unit_price is unaffected
+            either way.
+        occurrence_start:
+          type: string
+          format: date-time
+          readOnly: true
+        billing_period_start:
+          type: string
+          format: date-time
+          readOnly: true
+        is_within_allowance:
+          type: boolean
+          readOnly: true
+        unit_price:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,4})?$
+          readOnly: true
+      required:
+      - billing_period_start
+      - event
+      - id
+      - is_within_allowance
+      - occurrence_start
+      - organization
+      - unit_price
+    MeteredOccurrenceOrganization:
+      type: object
+      description: |-
+        The organization a ledger row is attributed to -- ``GET
+        /billing/usage/occurrences/``'s ``organization`` field. Names are batch
+        resolved by the view (``MeteredOccurrenceViewSet``) once per page, the
+        same pattern ``UsageByOrganizationSerializer`` uses.
+      properties:
+        id:
+          type: integer
+          description: pk of the attributed organization.
+        name:
+          type: string
+          description: The attributed organization's name.
+      required:
+      - id
+      - name
     MyMembership:
       type: object
       description: |-
@@ -18563,6 +18924,29 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/GroupScopedQuotaRule'
+    PaginatedMeteredOccurrenceList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=400&limit=100
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=200&limit=100
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/MeteredOccurrence'
     PaginatedOrganizationInvitationList:
       type: object
       required:

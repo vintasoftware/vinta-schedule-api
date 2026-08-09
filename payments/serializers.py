@@ -1,3 +1,5 @@
+from typing import TYPE_CHECKING
+
 import django_virtual_models as v
 from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
@@ -10,6 +12,7 @@ from payments.models import (
     BillingPeriodSummary,
     BillingPlan,
     BillingProfile,
+    MeteredOccurrence,
     PlanEntitlement,
     PlanLimit,
     Subscription,
@@ -22,6 +25,10 @@ from payments.virtual_models import (
     BillingProfileVirtualModel,
     SubscriptionVirtualModel,
 )
+
+
+if TYPE_CHECKING:
+    from calendar_integration.models import CalendarEvent
 
 
 class PlanLimitSerializer(serializers.ModelSerializer):
@@ -564,3 +571,139 @@ class PaymentProviderSerializer(serializers.Serializer):
             "stripe": stripe,
             "mercadopago": mercadopago,
         }
+
+
+class MeteredOccurrenceOrganizationSerializer(serializers.Serializer):
+    """The organization a ledger row is attributed to -- ``GET
+    /billing/usage/occurrences/``'s ``organization`` field. Names are batch
+    resolved by the view (``MeteredOccurrenceViewSet``) once per page, the
+    same pattern ``UsageByOrganizationSerializer`` uses."""
+
+    id = serializers.IntegerField(help_text="pk of the attributed organization.")  # noqa: A003
+    name = serializers.CharField(help_text="The attributed organization's name.")
+
+
+class LedgerCalendarSerializer(serializers.Serializer):
+    """The calendar a ledger row's event lives on -- nested under
+    ``LedgerEventSerializer``."""
+
+    id = serializers.IntegerField(help_text="pk of the calendar.")  # noqa: A003
+    name = serializers.CharField(help_text="The calendar's display name.")
+
+
+class LedgerEventOwnerSerializer(serializers.Serializer):
+    """One owner of a ledger row's event's calendar (``CalendarOwnership``).
+    ``CalendarEvent`` has no organizer field of its own -- ownership is
+    calendar-level, and a calendar can have several owners."""
+
+    user_id = serializers.IntegerField(help_text="pk of the owning membership's user.")
+    name = serializers.CharField(help_text="The owning user's display name.")
+
+
+class LedgerEventSerializer(serializers.Serializer):
+    """The event a ``GET /billing/usage/occurrences/`` row was metered
+    against. Resolved by the view in one batched query per page --
+    ``MeteredOccurrence.event_id`` is a soft reference (``BigIntegerField``,
+    not a ``ForeignKey``) precisely so the billing record outlives the event
+    (see the ``MeteredOccurrence`` model docstring); this can never become a
+    per-row lookup.
+    """
+
+    id = serializers.IntegerField(help_text="pk of the event.")  # noqa: A003
+    title = serializers.CharField(
+        help_text=(
+            "The series root's title, not the individual occurrence's own. "
+            "event_id stores the series root -- following bulk_modification_parent "
+            "back through any splits -- so a modified occurrence's row shows the "
+            "master's title rather than its own current one."
+        )
+    )
+    calendar = LedgerCalendarSerializer(
+        allow_null=True, help_text="The calendar this event lives on."
+    )
+    owners = LedgerEventOwnerSerializer(
+        many=True,
+        help_text=(
+            "Owners of the event's calendar (CalendarOwnership). CalendarEvent "
+            "carries no organizer field of its own -- ownership is calendar-level, "
+            "and a calendar can have several owners."
+        ),
+    )
+
+
+class MeteredOccurrenceSerializer(serializers.ModelSerializer):
+    """One row of ``GET /billing/usage/occurrences/`` -- the post-paid ledger
+    behind an overage charge, so a customer disputing an invoice can tie every
+    unit of money to a specific occurrence.
+
+    ``event``/``organization`` are not model relations on ``MeteredOccurrence``
+    (``event_id`` is a soft reference; ``organization`` has no name of its own
+    here) -- both are built in ``to_representation`` from maps the view
+    resolves once per page and threads through ``context`` (``event_map``,
+    ``organization_names``), never a per-row query.
+    """
+
+    organization = MeteredOccurrenceOrganizationSerializer(
+        source="_organization_row",
+        help_text="The organization this occurrence is attributed to.",
+    )
+    event = LedgerEventSerializer(
+        source="_event_row",
+        allow_null=True,
+        help_text=(
+            "null when the referenced event no longer exists -- an expected state "
+            "(a MeteredOccurrence outlives its event by design, see the model "
+            "docstring), not an error. The charge still stands; unit_price is "
+            "unaffected either way."
+        ),
+    )
+
+    class Meta:
+        model = MeteredOccurrence
+        fields = (
+            "id",
+            "organization",
+            "event",
+            "occurrence_start",
+            "billing_period_start",
+            "is_within_allowance",
+            "unit_price",
+        )
+        read_only_fields = fields
+
+    def to_representation(self, instance: MeteredOccurrence):
+        organization_names: dict[int, str] = self.context.get("organization_names", {})
+        event_map: dict[int, CalendarEvent] = self.context.get("event_map", {})
+
+        instance._organization_row = {  # type: ignore[attr-defined]
+            "id": instance.organization_id,
+            "name": organization_names.get(instance.organization_id, ""),
+        }
+
+        event = event_map.get(instance.event_id)
+        event_row = None
+        if event is not None:
+            calendar = event.calendar
+            owners = (
+                [
+                    {
+                        "user_id": ownership.membership_user_id,
+                        "name": ownership.membership.user.get_full_name(),
+                    }
+                    for ownership in calendar.ownerships.all()
+                    if ownership.membership_user_id is not None
+                ]
+                if calendar is not None
+                else []
+            )
+            event_row = {
+                "id": event.pk,
+                "title": event.title,
+                "calendar": (
+                    {"id": calendar.pk, "name": calendar.name} if calendar is not None else None
+                ),
+                "owners": owners,
+            }
+        instance._event_row = event_row  # type: ignore[attr-defined]
+
+        return super().to_representation(instance)
