@@ -147,7 +147,7 @@ class TestPermissions:
 
         assert response.status_code == status.HTTP_200_OK
 
-    def test_acting_reseller_root_sees_a_descendants_ledger(
+    def test_root_admin_sees_a_pooled_descendants_rows(
         self, auth_client, admin_membership, root, child, subscription
     ):
         """The caller is ADMIN of the *reseller root* itself (``root``, which
@@ -157,7 +157,9 @@ class TestPermissions:
         page through spans a descendant (``child``) it does not hold a direct
         membership in -- an "acting reseller root manages a descendant's
         ledger" outcome, driven by pooling rather than the caller ever setting
-        ``X-Organization-Id`` to the descendant itself."""
+        ``X-Organization-Id`` to the descendant itself. Note: the
+        ``_acting_reseller_root_permits`` permission branch is not what grants
+        this access; pooling is the sole mechanism."""
         billing_period_start = current_billing_period_start(subscription)
         make_occurrence(
             organization=child,

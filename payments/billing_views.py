@@ -439,6 +439,7 @@ class MeteredOccurrenceViewSet(TenantScopedViewMixin, mixins.ListModelMixin, Gen
     def get_queryset(self) -> QuerySet[MeteredOccurrence]:
         organization = _require_organization(self.request)
         root = resolve_billing_root(organization)
+        # The call below re-resolves root internally; passing the already-resolved root is a deliberate no-op.
         pooled_organization_ids = self.entitlement_service.get_pooled_organization_ids(root)
         # Stashed on the request so `MeteredOccurrenceFilterSet.filter_organization`
         # can validate the `organization` filter value against the caller's pool
