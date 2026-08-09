@@ -787,7 +787,33 @@ class BillingPeriodResourceUsage(BaseModel):
     ``by_organization`` maps ``organization_id -> count`` across the pooled
     subtree. A JSON blob rather than a third table because it is only ever read
     wholesale alongside its parent row; nothing filters or aggregates on it in
-    SQL.
+    SQL. Keys are written as **strings**
+    (``{str(organization_id): count, ...}``), not ``int``: ``JSONField``
+    serialises ``dict`` keys to strings on write regardless, so writing ``str``
+    up front keeps the in-memory value ``CycleCloseService._persist_statement``
+    builds identical to whatever a later read back from Postgres returns — a
+    reader must ``int()`` a key before comparing it to an ``organization_id``.
+
+    ``limit_value`` is read at **close time** for **all eight**
+    ``LimitedResource`` members, including ``event_occurrences`` — there is no
+    stamped source for a period's *allowance*: ``MeteredOccurrence`` records
+    ``is_within_allowance`` and ``unit_price`` per row, not the ceiling it was
+    measured against, and stamping a ceiling would need a new column that is
+    out of scope here. A plan or add-on change between period start and close
+    is therefore reflected in every row, ``event_occurrences`` included, even
+    though nothing recorded the limit mid-period.
+
+    ``overage_unit_price`` is the one field with a stamped source, and only for
+    ``event_occurrences``: when the period had at least one overage row, it is
+    read back from those *stamped* ``MeteredOccurrence`` rows rather than the
+    live effective limit, so a later price change cannot make this row
+    disagree with the ``overage_total`` it was charged at. For the other seven
+    (prepaid) resources, ``overage_unit_price`` is the as-of-close live price,
+    same as ``limit_value`` — those resources have no period of their own to
+    stamp against (see the "Detail = post-paid ledger only" decision above).
+    See ``BillingPeriodResourceUsage.overage_unit_price`` for what a period
+    with zero, or more than one, stamped price writes for
+    ``event_occurrences``.
     """
 
     summary = models.ForeignKey(
@@ -800,7 +826,17 @@ class BillingPeriodResourceUsage(BaseModel):
     # explicitly classified as prepaid via an empty-string sentinel.
     kind = models.CharField(max_length=20, choices=LimitKind, null=True, blank=True)  # noqa: DJ001
     total = models.PositiveIntegerField(null=True, blank=True)
-    limit_value = models.PositiveIntegerField(null=True, blank=True)  # null == unlimited
+    # null == unlimited (event_occurrences) or, for the seven prepaid resources,
+    # the as-of-close ceiling rather than an as-of-period one -- see the class
+    # docstring.
+    limit_value = models.PositiveIntegerField(null=True, blank=True)
+    # null means one of: a prepaid resource, which has no overage concept; a
+    # postpaid resource (event_occurrences) whose live effective limit carries no
+    # price; or a postpaid resource whose period stamped more than one distinct
+    # overage unit_price (a mid-period price change) and so has no single stamped
+    # value that reproduces overage_total -- see the class docstring. It never
+    # means "had a price but no overage this period": that case falls back to the
+    # live effective limit's price instead of writing null.
     overage_unit_price = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True)
     by_organization = models.JSONField(default=dict)
 
