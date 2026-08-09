@@ -1514,6 +1514,78 @@ paths:
               schema:
                 $ref: '#/components/schemas/SubscriptionAddOn'
           description: ''
+  /billing/payment-provider/:
+    get:
+      operationId: billing_payment_provider_retrieve
+      description: Returns the payment provider the active organization is pinned
+        to (or the system default when unpinned) plus its browser-safe public credentials.
+      summary: Get the active organization's payment provider
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      tags:
+      - billing
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentProvider'
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                description: No active organization.
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                description: The resolved provider is unknown or has no public credentials
+                  configured in this deployment.
+          description: ''
+  /billing/payment-provider/default/:
+    get:
+      operationId: billing_payment_provider_default_retrieve
+      description: Unauthenticated -- the system default provider's browser-safe public
+        credentials, so a frontend can render a payment form before (or without) a
+        session.
+      summary: Get the system default payment provider
+      tags:
+      - billing
+      security:
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentProvider'
+          description: ''
+        '503':
+          content:
+            application/json:
+              schema:
+                description: The default provider has no public credentials configured.
+          description: ''
+        '429':
+          content:
+            application/json:
+              schema:
+                description: Throttled.
+          description: ''
   /billing/plans/:
     get:
       operationId: billing_plans_list
@@ -17105,6 +17177,15 @@ components:
       - calendar
       - cap
       - period
+    MercadoPagoPublicCredentials:
+      type: object
+      description: The browser-safe half of MercadoPago's credentials -- never the
+        secret access token.
+      properties:
+        public_key:
+          type: string
+      required:
+      - public_key
     MyMembership:
       type: object
       description: |-
@@ -18679,6 +18760,35 @@ components:
           format: uri
           maxLength: 2000
         headers: {}
+    PaymentProvider:
+      type: object
+      description: |-
+        Response shape for ``GET /billing/payment-provider/`` and its unauthenticated
+        ``/default/`` sibling: the resolved provider slug plus that provider's public
+        credentials. Only the object matching ``provider`` is populated; the other is
+        ``null``, so a client never receives keys for a provider it did not resolve to.
+
+        Plain ``serializers.Serializer`` -- nothing here is DB-backed. Serializes a
+        ``payments.services.provider_credentials.PublicProviderCredentials`` instance, not a
+        model, hence the explicit ``to_representation`` rather than attribute-matching nested
+        serializers (the dataclass's flat ``stripe_publishable_key``/``mercadopago_public_key``
+        fields don't line up 1:1 with this serializer's nested ``stripe``/``mercadopago``
+        objects).
+      properties:
+        provider:
+          $ref: '#/components/schemas/PaymentProviderEnum'
+        stripe:
+          allOf:
+          - $ref: '#/components/schemas/StripePublicCredentials'
+          nullable: true
+        mercadopago:
+          allOf:
+          - $ref: '#/components/schemas/MercadoPagoPublicCredentials'
+          nullable: true
+      required:
+      - mercadopago
+      - provider
+      - stripe
     PaymentProviderEnum:
       enum:
       - mercadopago
@@ -19132,6 +19242,15 @@ components:
         * `signup_form` - Signup Form
         * `oauth_step` - OAuth Consent Step
         * `api` - API
+    StripePublicCredentials:
+      type: object
+      description: The browser-safe half of Stripe's credentials -- never the secret
+        API key.
+      properties:
+        publishable_key:
+          type: string
+      required:
+      - publishable_key
     Subscription:
       type: object
       description: Serializer for Subscription virtual model.

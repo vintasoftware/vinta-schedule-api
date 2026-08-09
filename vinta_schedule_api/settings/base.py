@@ -410,6 +410,18 @@ SPECTACULAR_SETTINGS = {
         # drf-spectacular creates a second, redundant enum name for the same
         # value set.
         "PendingBillingIntervalEnum": "payments.billing_constants.BillingInterval.choices",
+        # `PaymentProviderSerializer.provider` (payments/serializers.py) is a plain
+        # `ChoiceField`, not a model field, so it has no field name to inherit a
+        # canonical enum name from the way `Payment.payment_provider` etc. do --
+        # pin it to the same enum name those fields already resolve to.
+        "PaymentProviderEnum": "payments.constants.PaymentProviders.choices",
+        # `calendar_integration`'s model field literally named `provider` (a
+        # different, unrelated choice set: internal/google/microsoft/apple/ics) is
+        # the other contender for the auto-derived "ProviderEnum" name that
+        # `PaymentProviderSerializer.provider` above would otherwise also compete
+        # for -- pin it explicitly so neither side falls back to an unstable
+        # hash-suffixed name (e.g. "Provider331Enum").
+        "ProviderEnum": "calendar_integration.constants.CalendarProvider.choices",
     },
 }
 

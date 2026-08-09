@@ -67,13 +67,32 @@ Added `BillingProfile.payment_provider` (`CharField(choices=PaymentProviders, bl
 
 **Gates**: ruff clean; `makemigrations --check` no changes; `check --deploy` exit 0; payments suite `838 passed`; full suite `5180 passed`; mypy zero new errors (379 pre-existing, verified unchanged via stash).
 
+### Phase 3 — Provider credentials endpoints ✅
+
+- **Branch**: `plan/payment-provider-selection/phase-3` — base `plan/payment-provider-selection/phase-2`
+- **Models**: implementer Tier 2→Sonnet; reviewer Tier 3; fixer Tier 2→Sonnet
+
+Shipped both endpoints per the plan's **API Design**: `GET /billing/payment-provider/` (authenticated, tenant-scoped) and `GET /billing/payment-provider/default/` (unauthenticated, throttled at `payment-provider` 120/min). New `payments/services/provider_credentials.py` (settings-only, no adapter import path), new `payments/services/payment_provider_resolver.py`, three serializers, and a regenerated `schema.yml`.
+
+**Decisions Phase 4 must honor:**
+
+1. **`PaymentProviderResolver` lives in its own module** (`payments/services/payment_provider_resolver.py`), not on `PaymentService` — deliberately, so Phase 3 didn't touch the class Phase 4 rewires. **Phase 4 must call this resolver for new-charge routing rather than reimplementing pin → default.** It is the single home of that rule.
+2. **The two endpoints are mounted via `extra_patterns` + plain `path()`, not the DRF router.** Necessary: the router's static list-route hardcodes `mapping={'get': 'list'}`, which forces `self.action == "list"`, which makes drf-spectacular document the response as an **array** regardless of an explicit `responses=` override. Side effect: no `{format}`-suffix routes for these two endpoints, consistent with how `organizations`' `extra_patterns` already behave. Don't "restore" them to the router.
+3. **`provider_credentials.py` collapses "unknown slug" and "configured-but-empty key" into `PaymentProviderNotConfiguredError`.** Sanctioned by the plan for this read-only module. **Phase 4 must NOT copy that collapsing into adapter resolution** — in `get_payment_adapter` / `get_subscription_adapter` the Unknown-vs-NotConfigured distinction is load-bearing for routing correctness ("bad data in the pin column" vs "provider unconfigured in this environment").
+
+**Review**: one significant SHOULD-FIX — naming the org action `list` (to get the bare URL) made drf-spectacular document a single-object response as `type: array`, so generated SPA clients would have typed it `PaymentProvider[]` and broken on first use, defeating the plan's stated reason for typed per-provider fields. Fixed by splitting the unauthenticated endpoint into its own `APIView` and mounting both outside the router — which also removed a hand-rolled duplication of DRF's `action_map` internals in `get_authenticators()`. Also added the missing integration test for a pin naming a provider absent from the registry (409, and asserted **no** fallback to the default's credentials). Schema diff verified pure addition; `components:` untouched.
+
+**Secret-leak check**: `TestNoSecretLeak` sets distinctive sentinels for `STRIPE_SECRET_KEY`, `MERCADOPAGO_ACCESS_TOKEN`, and both webhook secrets, and asserts none appear in either endpoint's body. The reviewer independently traced the path end to end rather than trusting the test.
+
+**Gates**: ruff clean; `makemigrations --check` no changes; `check --deploy` exit 0; phase tests `21 passed`; full suite `5201 passed`; mypy zero new errors.
+
 ## Current phase
 
-- **Phase 3 — Provider credentials endpoints** — starting.
+- **Phase 4 — Route provider calls through the resolved provider** — starting. The risky one: it rewires every money-moving path. Carries a `**Review models**: reviewer Tier 4` override from the plan.
 
 ## Remaining phases
 
-- Phase 4 — Route provider calls through the resolved provider
+_(none after Phase 4)_
 
 ## Deferred phases
 
