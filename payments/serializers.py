@@ -6,6 +6,8 @@ from payments.billing_constants import BillingInterval, LimitedResource
 from payments.constants import PaymentProviders
 from payments.models import (
     BillingAddress,
+    BillingPeriodResourceUsage,
+    BillingPeriodSummary,
     BillingPlan,
     BillingProfile,
     PlanEntitlement,
@@ -245,6 +247,189 @@ class UsageResponseSerializer(serializers.Serializer):
         ),
     )
     limits = EffectiveLimitUsageSerializer(many=True)
+
+
+class BillingPeriodResourceUsageSerializer(serializers.ModelSerializer):
+    """One resource's snapshot as of a closed billing period
+    (``BillingPeriodResourceUsage``), nested under ``GET
+    /billing/usage/periods/{id}/``'s ``resources`` key.
+
+    ``reconciliation_unmetered``/``reconciliation_orphaned`` live on the parent
+    ``BillingPeriodSummary`` row, not here, and neither is serialized anywhere
+    in this module -- internal investigation data, surfaced only in Django
+    admin (see the plan's Non-goals).
+    """
+
+    resource_key = serializers.CharField(
+        help_text="The LimitedResource member this row reports on."
+    )
+    kind = serializers.CharField(
+        allow_null=True,
+        help_text=(
+            "prepaid or postpaid, as classified at close time. null when this "
+            "resource's limit could not be resolved at close."
+        ),
+    )
+    total = serializers.IntegerField(
+        allow_null=True,
+        help_text=(
+            "This resource's usage as counted at close, summed across the pooled "
+            "subtree. null means the count was **not recorded** -- a period that "
+            "closed before this feature shipped, or a LimitedResource member added "
+            "after this period closed -- and must never be displayed as 0. A "
+            "recorded usage of zero serializes as the integer 0, distinct from null."
+        ),
+    )
+    limit_value = serializers.IntegerField(
+        allow_null=True,
+        help_text=(
+            "The effective ceiling in force at close time. null means "
+            "**unlimited** -- a different null than total's; a client must not "
+            "collapse the two into the same meaning."
+        ),
+    )
+    overage_unit_price = serializers.DecimalField(
+        max_digits=10,
+        decimal_places=4,
+        allow_null=True,
+        help_text=(
+            "Price per unit of overage. For event_occurrences with at least one "
+            "overage row this period, stamped from those MeteredOccurrence rows "
+            "rather than the live effective limit, so a later price change cannot "
+            "make this row disagree with overage_total. null for a prepaid "
+            "resource, or when no single stamped price applies to this period."
+        ),
+    )
+    by_organization = UsageByOrganizationSerializer(
+        many=True,
+        source="_by_organization_rows",
+        help_text=(
+            "Per-organization contribution to total, across the pooled subtree at "
+            "close time. An organization that contributed nothing is omitted, "
+            "never present with usage: 0. Ordered by organization_id ascending -- "
+            "the identical shape GET /billing/usage/'s by_organization uses. "
+            "Names are resolved at **read time** against the organizations table, "
+            "so they reflect each organization's current name, not its name as of "
+            "when this period closed -- this row has no name snapshot. An "
+            'organization that no longer exists renders with name: "" rather '
+            "than being dropped from the list; its count still counts toward total."
+        ),
+    )
+
+    class Meta:
+        model = BillingPeriodResourceUsage
+        fields = (
+            "resource_key",
+            "kind",
+            "total",
+            "limit_value",
+            "overage_unit_price",
+            "by_organization",
+        )
+        read_only_fields = fields
+
+    def to_representation(self, instance):
+        """Build the ``UsageByOrganizationSerializer``-shaped rows from the
+        model's persisted ``{str(organization_id): count}`` blob plus the
+        ``organization_names`` map the view resolves once per request and
+        threads through ``context`` -- see ``BillingPeriodViewSet.retrieve``.
+        """
+        organization_names: dict[int, str] = self.context.get("organization_names", {})
+        instance._by_organization_rows = [
+            {
+                "organization_id": organization_id,
+                "name": organization_names.get(organization_id, ""),
+                "usage": usage,
+            }
+            for organization_id, usage in sorted(
+                (int(pk), usage) for pk, usage in instance.by_organization.items()
+            )
+        ]
+        return super().to_representation(instance)
+
+
+class BillingPeriodSummarySerializer(serializers.ModelSerializer):
+    """One closed billing period, as a durable statement -- one row of ``GET
+    /billing/usage/periods/``. See ``BillingPeriodSummaryDetailSerializer`` for
+    the ``resources`` breakdown the detail action adds.
+
+    ``reconciliation_unmetered``/``reconciliation_orphaned`` are deliberately
+    absent from every field below -- internal investigation data, surfaced only
+    in Django admin (see the plan's Non-goals).
+    """
+
+    id = serializers.IntegerField(help_text="pk of this statement.")  # noqa: A003
+    billing_period_start = serializers.DateTimeField(
+        help_text="Inclusive start of the closed period."
+    )
+    billing_period_end = serializers.DateTimeField(help_text="Exclusive end of the closed period.")
+    plan_slug = serializers.CharField(
+        help_text=(
+            "The billing plan in force for this period, snapshotted at close time "
+            "-- a later plan change does not rewrite this."
+        )
+    )
+    plan_name = serializers.CharField(
+        help_text="Display name of the plan in force for this period."
+    )
+    billing_interval = serializers.CharField(
+        help_text="The subscription's billing interval for this period."
+    )
+    currency = serializers.CharField(help_text='The plan\'s currency for this period, e.g. "USD".')
+    overage_total = serializers.DecimalField(
+        max_digits=12, decimal_places=4, help_text="Overage money charged for this period."
+    )
+    charged = serializers.BooleanField(
+        help_text="Whether an overage charge was actually made for this period."
+    )
+    payment_id = serializers.IntegerField(
+        allow_null=True,
+        help_text=(
+            "pk of the Payment that settled this period's overage. null when charged is false."
+        ),
+    )
+    closed_at = serializers.DateTimeField(help_text="When CycleCloseService wrote this statement.")
+
+    class Meta:
+        model = BillingPeriodSummary
+        # Explicitly widened to `tuple[str, ...]` (rather than the narrower
+        # fixed-length literal type mypy would otherwise infer) so
+        # `BillingPeriodSummaryDetailSerializer.Meta` can extend it with
+        # `"resources"` without a tuple-length mismatch.
+        fields: tuple[str, ...] = (
+            "id",
+            "billing_period_start",
+            "billing_period_end",
+            "plan_slug",
+            "plan_name",
+            "billing_interval",
+            "currency",
+            "overage_total",
+            "charged",
+            "payment_id",
+            "closed_at",
+        )
+        read_only_fields = fields
+
+
+class BillingPeriodSummaryDetailSerializer(BillingPeriodSummarySerializer):
+    """``GET /billing/usage/periods/{id}/`` -- one statement's full detail,
+    adding its per-resource breakdown to every field
+    ``BillingPeriodSummarySerializer`` already reports."""
+
+    resources = BillingPeriodResourceUsageSerializer(
+        many=True,
+        read_only=True,
+        help_text=(
+            "Every LimitedResource member recorded for this period. Prefetched, "
+            "so retrieving one statement is a bounded number of queries "
+            "regardless of how many resources exist."
+        ),
+    )
+
+    class Meta(BillingPeriodSummarySerializer.Meta):
+        fields = (*BillingPeriodSummarySerializer.Meta.fields, "resources")
+        read_only_fields = fields
 
 
 class BillingAddressSerializer(v.VirtualModelSerializer):

@@ -27,6 +27,7 @@ from rest_framework.exceptions import NotFound, PermissionDenied, ValidationErro
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
+from rest_framework.serializers import BaseSerializer
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.viewsets import GenericViewSet, ViewSet
 
@@ -39,8 +40,13 @@ from payments.exceptions import (
     PaymentTokenRequiredError,
     UnconfirmedPlanChangeError,
 )
-from payments.filtersets import BillingPlanFilterSet, SubscriptionAddOnFilterSet
+from payments.filtersets import (
+    BillingPeriodSummaryFilterSet,
+    BillingPlanFilterSet,
+    SubscriptionAddOnFilterSet,
+)
 from payments.models import (
+    BillingPeriodSummary,
     BillingPlan,
     MeteredOccurrence,
     Subscription,
@@ -49,6 +55,8 @@ from payments.models import (
 )
 from payments.serializers import (
     AddOnPurchaseRequestSerializer,
+    BillingPeriodSummaryDetailSerializer,
+    BillingPeriodSummarySerializer,
     BillingPlanSerializer,
     ChangePlanRequestSerializer,
     SubscriptionAddOnSerializer,
@@ -279,6 +287,102 @@ class BillingUsageViewSet(TenantScopedViewMixin, ViewSet):
                 "limits": limits,
             }
         )
+        return Response(serializer.data)
+
+
+class BillingPeriodViewSet(
+    TenantScopedViewMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin, GenericViewSet
+):
+    """``GET /billing/usage/periods/`` and ``GET /billing/usage/periods/{id}/``
+    -- the durable statements ``CycleCloseService`` writes at cycle close (see
+    ``BillingPeriodSummary``'s docstring). List and detail are bundled
+    deliberately: they share a queryset, a permission, and a serializer tree
+    (see the plan's "Bundled phase granularity" decision) rather than shipping
+    as two PRs whose second one is fifty lines.
+
+    Scoped to the caller's resolved pool exactly like ``BillingUsageViewSet``:
+    ``resolve_billing_root`` then ``get_pooled_organization_ids``, both
+    resolved once in ``get_queryset()``. A pk outside that pool is filtered out
+    of the queryset before ``get_object()`` ever runs, so it 404s -- never
+    403 -- and this endpoint never confirms the existence of another tenant's
+    statement.
+
+    ``IsAuthenticated`` only, matching ``GET /billing/usage/``'s
+    read-never-blocks rule: a closed statement is exactly the kind of read an
+    organization needs in order to resolve billing, including while
+    ``RESTRICTED``.
+
+    History is forward-only (see the plan's Non-goals / Risk & Rollout Notes):
+    an organization with no closed periods yet gets ``200`` with an empty list,
+    never a ``404`` -- there is nothing wrong with that organization, cycle
+    close simply has not run for it yet. A caller with **no active
+    organization** (``request.organization is None``) is a different state --
+    there is no pool to resolve a billing root against at all -- and gets
+    ``403``, matching ``GET /billing/usage/``'s ``_require_organization`` rule
+    rather than the empty-list state above.
+    """
+
+    queryset = BillingPeriodSummary.objects.all()
+    filterset_class = BillingPeriodSummaryFilterSet
+    permission_classes = (IsAuthenticated,)
+
+    @inject
+    def __init__(
+        self,
+        *args,
+        entitlement_service: Annotated["EntitlementService", Provide["entitlement_service"]],
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.entitlement_service = entitlement_service
+
+    def get_serializer_class(self) -> type[BaseSerializer]:
+        if self.action == "retrieve":
+            return BillingPeriodSummaryDetailSerializer
+        return BillingPeriodSummarySerializer
+
+    def get_queryset(self) -> QuerySet[BillingPeriodSummary]:
+        organization = _require_organization(self.request)
+        root = resolve_billing_root(organization)
+        pooled_organization_ids = self.entitlement_service.get_pooled_organization_ids(root)
+        queryset = BillingPeriodSummary.objects.for_organizations(pooled_organization_ids)
+        if self.action == "retrieve":
+            # Bounded query count for the detail action: one query for the
+            # statement plus one for its resources, not one per resource row.
+            queryset = queryset.prefetch_related("resources")
+        return queryset
+
+    @extend_schema(
+        summary="List closed billing period statements",
+        responses={200: BillingPeriodSummarySerializer},
+    )
+    def list(self, request, *args, **kwargs):
+        return super().list(request, *args, **kwargs)
+
+    @extend_schema(
+        summary="Retrieve one closed billing period statement",
+        responses={200: BillingPeriodSummaryDetailSerializer},
+    )
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        # `instance.resources` is already prefetched by `get_queryset()` for
+        # the retrieve action, so this walks the prefetch cache rather than
+        # issuing a query per resource row. Bounded by pool size, not by
+        # resource-row count: one extra query total, resolving every
+        # organization pk referenced across all resource rows in one batch --
+        # the same pattern `BillingUsageViewSet.retrieve_usage` already uses
+        # for `organization_names`.
+        organization_ids = {
+            int(organization_id)
+            for resource in instance.resources.all()
+            for organization_id in resource.by_organization
+        }
+        organization_names = dict(
+            Organization.objects.filter(pk__in=organization_ids).values_list("pk", "name")
+        )
+        context = self.get_serializer_context()
+        context["organization_names"] = organization_names
+        serializer = self.get_serializer(instance, context=context)
         return Response(serializer.data)
 
 

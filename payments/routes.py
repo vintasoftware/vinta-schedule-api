@@ -4,6 +4,7 @@ from common.types import RouteDict
 
 from .billing_views import (
     AddOnViewSet,
+    BillingPeriodViewSet,
     BillingPlanViewSet,
     BillingUsageViewSet,
     SubscriptionViewSet,
@@ -32,6 +33,11 @@ routes: list[RouteDict] = [
         "regex": r"billing/usage",
         "viewset": BillingUsageViewSet,
         "basename": "BillingUsage",
+    },
+    {
+        "regex": r"billing/usage/periods",
+        "viewset": BillingPeriodViewSet,
+        "basename": "BillingUsagePeriod",
     },
     {
         "regex": r"billing/subscription",

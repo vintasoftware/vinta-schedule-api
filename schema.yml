@@ -1946,6 +1946,308 @@ paths:
               schema:
                 $ref: '#/components/schemas/Subscription'
           description: ''
+  /billing/usage/periods/:
+    get:
+      operationId: billing_usage_periods_list
+      description: |-
+        ``GET /billing/usage/periods/`` and ``GET /billing/usage/periods/{id}/``
+        -- the durable statements ``CycleCloseService`` writes at cycle close (see
+        ``BillingPeriodSummary``'s docstring). List and detail are bundled
+        deliberately: they share a queryset, a permission, and a serializer tree
+        (see the plan's "Bundled phase granularity" decision) rather than shipping
+        as two PRs whose second one is fifty lines.
+
+        Scoped to the caller's resolved pool exactly like ``BillingUsageViewSet``:
+        ``resolve_billing_root`` then ``get_pooled_organization_ids``, both
+        resolved once in ``get_queryset()``. A pk outside that pool is filtered out
+        of the queryset before ``get_object()`` ever runs, so it 404s -- never
+        403 -- and this endpoint never confirms the existence of another tenant's
+        statement.
+
+        ``IsAuthenticated`` only, matching ``GET /billing/usage/``'s
+        read-never-blocks rule: a closed statement is exactly the kind of read an
+        organization needs in order to resolve billing, including while
+        ``RESTRICTED``.
+
+        History is forward-only (see the plan's Non-goals / Risk & Rollout Notes):
+        an organization with no closed periods yet gets ``200`` with an empty list,
+        never a ``404`` -- there is nothing wrong with that organization, cycle
+        close simply has not run for it yet. A caller with **no active
+        organization** (``request.organization is None``) is a different state --
+        there is no pool to resolve a billing root against at all -- and gets
+        ``403``, matching ``GET /billing/usage/``'s ``_require_organization`` rule
+        rather than the empty-list state above.
+      summary: List closed billing period statements
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: query
+        name: billing_period_start_after
+        schema:
+          type: string
+          format: date-time
+        description: Only periods starting on or after this instant (inclusive).
+      - in: query
+        name: billing_period_start_before
+        schema:
+          type: string
+          format: date-time
+        description: Only periods starting on or before this instant (inclusive).
+      - in: query
+        name: charged
+        schema:
+          type: boolean
+        description: Filter by whether the period's overage was charged
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - billing
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedBillingPeriodSummaryList'
+          description: ''
+  /billing/usage/periods{format}:
+    get:
+      operationId: billing_usage_periods_formatted_list
+      description: |-
+        ``GET /billing/usage/periods/`` and ``GET /billing/usage/periods/{id}/``
+        -- the durable statements ``CycleCloseService`` writes at cycle close (see
+        ``BillingPeriodSummary``'s docstring). List and detail are bundled
+        deliberately: they share a queryset, a permission, and a serializer tree
+        (see the plan's "Bundled phase granularity" decision) rather than shipping
+        as two PRs whose second one is fifty lines.
+
+        Scoped to the caller's resolved pool exactly like ``BillingUsageViewSet``:
+        ``resolve_billing_root`` then ``get_pooled_organization_ids``, both
+        resolved once in ``get_queryset()``. A pk outside that pool is filtered out
+        of the queryset before ``get_object()`` ever runs, so it 404s -- never
+        403 -- and this endpoint never confirms the existence of another tenant's
+        statement.
+
+        ``IsAuthenticated`` only, matching ``GET /billing/usage/``'s
+        read-never-blocks rule: a closed statement is exactly the kind of read an
+        organization needs in order to resolve billing, including while
+        ``RESTRICTED``.
+
+        History is forward-only (see the plan's Non-goals / Risk & Rollout Notes):
+        an organization with no closed periods yet gets ``200`` with an empty list,
+        never a ``404`` -- there is nothing wrong with that organization, cycle
+        close simply has not run for it yet. A caller with **no active
+        organization** (``request.organization is None``) is a different state --
+        there is no pool to resolve a billing root against at all -- and gets
+        ``403``, matching ``GET /billing/usage/``'s ``_require_organization`` rule
+        rather than the empty-list state above.
+      summary: List closed billing period statements
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: query
+        name: billing_period_start_after
+        schema:
+          type: string
+          format: date-time
+        description: Only periods starting on or after this instant (inclusive).
+      - in: query
+        name: billing_period_start_before
+        schema:
+          type: string
+          format: date-time
+        description: Only periods starting on or before this instant (inclusive).
+      - in: query
+        name: charged
+        schema:
+          type: boolean
+        description: Filter by whether the period's overage was charged
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - billing
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedBillingPeriodSummaryList'
+          description: ''
+  /billing/usage/periods/{id}/:
+    get:
+      operationId: billing_usage_periods_retrieve
+      description: |-
+        ``GET /billing/usage/periods/`` and ``GET /billing/usage/periods/{id}/``
+        -- the durable statements ``CycleCloseService`` writes at cycle close (see
+        ``BillingPeriodSummary``'s docstring). List and detail are bundled
+        deliberately: they share a queryset, a permission, and a serializer tree
+        (see the plan's "Bundled phase granularity" decision) rather than shipping
+        as two PRs whose second one is fifty lines.
+
+        Scoped to the caller's resolved pool exactly like ``BillingUsageViewSet``:
+        ``resolve_billing_root`` then ``get_pooled_organization_ids``, both
+        resolved once in ``get_queryset()``. A pk outside that pool is filtered out
+        of the queryset before ``get_object()`` ever runs, so it 404s -- never
+        403 -- and this endpoint never confirms the existence of another tenant's
+        statement.
+
+        ``IsAuthenticated`` only, matching ``GET /billing/usage/``'s
+        read-never-blocks rule: a closed statement is exactly the kind of read an
+        organization needs in order to resolve billing, including while
+        ``RESTRICTED``.
+
+        History is forward-only (see the plan's Non-goals / Risk & Rollout Notes):
+        an organization with no closed periods yet gets ``200`` with an empty list,
+        never a ``404`` -- there is nothing wrong with that organization, cycle
+        close simply has not run for it yet. A caller with **no active
+        organization** (``request.organization is None``) is a different state --
+        there is no pool to resolve a billing root against at all -- and gets
+        ``403``, matching ``GET /billing/usage/``'s ``_require_organization`` rule
+        rather than the empty-list state above.
+      summary: Retrieve one closed billing period statement
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - billing
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingPeriodSummaryDetail'
+          description: ''
+  /billing/usage/periods/{id}{format}:
+    get:
+      operationId: billing_usage_periods_formatted_retrieve
+      description: |-
+        ``GET /billing/usage/periods/`` and ``GET /billing/usage/periods/{id}/``
+        -- the durable statements ``CycleCloseService`` writes at cycle close (see
+        ``BillingPeriodSummary``'s docstring). List and detail are bundled
+        deliberately: they share a queryset, a permission, and a serializer tree
+        (see the plan's "Bundled phase granularity" decision) rather than shipping
+        as two PRs whose second one is fifty lines.
+
+        Scoped to the caller's resolved pool exactly like ``BillingUsageViewSet``:
+        ``resolve_billing_root`` then ``get_pooled_organization_ids``, both
+        resolved once in ``get_queryset()``. A pk outside that pool is filtered out
+        of the queryset before ``get_object()`` ever runs, so it 404s -- never
+        403 -- and this endpoint never confirms the existence of another tenant's
+        statement.
+
+        ``IsAuthenticated`` only, matching ``GET /billing/usage/``'s
+        read-never-blocks rule: a closed statement is exactly the kind of read an
+        organization needs in order to resolve billing, including while
+        ``RESTRICTED``.
+
+        History is forward-only (see the plan's Non-goals / Risk & Rollout Notes):
+        an organization with no closed periods yet gets ``200`` with an empty list,
+        never a ``404`` -- there is nothing wrong with that organization, cycle
+        close simply has not run for it yet. A caller with **no active
+        organization** (``request.organization is None``) is a different state --
+        there is no pool to resolve a billing root against at all -- and gets
+        ``403``, matching ``GET /billing/usage/``'s ``_require_organization`` rule
+        rather than the empty-list state above.
+      summary: Retrieve one closed billing period statement
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - billing
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingPeriodSummaryDetail'
+          description: ''
   /billing/usage/retrieve_usage/:
     get:
       operationId: billing_usage_retrieve_usage_retrieve
@@ -15623,6 +15925,203 @@ components:
       required:
       - end
       - start
+    BillingPeriodResourceUsage:
+      type: object
+      description: |-
+        One resource's snapshot as of a closed billing period
+        (``BillingPeriodResourceUsage``), nested under ``GET
+        /billing/usage/periods/{id}/``'s ``resources`` key.
+
+        ``reconciliation_unmetered``/``reconciliation_orphaned`` live on the parent
+        ``BillingPeriodSummary`` row, not here, and neither is serialized anywhere
+        in this module -- internal investigation data, surfaced only in Django
+        admin (see the plan's Non-goals).
+      properties:
+        resource_key:
+          type: string
+          description: The LimitedResource member this row reports on.
+        kind:
+          type: string
+          nullable: true
+          description: prepaid or postpaid, as classified at close time. null when
+            this resource's limit could not be resolved at close.
+        total:
+          type: integer
+          nullable: true
+          description: This resource's usage as counted at close, summed across the
+            pooled subtree. null means the count was **not recorded** -- a period
+            that closed before this feature shipped, or a LimitedResource member added
+            after this period closed -- and must never be displayed as 0. A recorded
+            usage of zero serializes as the integer 0, distinct from null.
+        limit_value:
+          type: integer
+          nullable: true
+          description: The effective ceiling in force at close time. null means **unlimited**
+            -- a different null than total's; a client must not collapse the two into
+            the same meaning.
+        overage_unit_price:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,4})?$
+          nullable: true
+          description: Price per unit of overage. For event_occurrences with at least
+            one overage row this period, stamped from those MeteredOccurrence rows
+            rather than the live effective limit, so a later price change cannot make
+            this row disagree with overage_total. null for a prepaid resource, or
+            when no single stamped price applies to this period.
+        by_organization:
+          type: array
+          items:
+            $ref: '#/components/schemas/UsageByOrganization'
+          description: 'Per-organization contribution to total, across the pooled
+            subtree at close time. An organization that contributed nothing is omitted,
+            never present with usage: 0. Ordered by organization_id ascending -- the
+            identical shape GET /billing/usage/''s by_organization uses. Names are
+            resolved at **read time** against the organizations table, so they reflect
+            each organization''s current name, not its name as of when this period
+            closed -- this row has no name snapshot. An organization that no longer
+            exists renders with name: "" rather than being dropped from the list;
+            its count still counts toward total.'
+      required:
+      - by_organization
+      - kind
+      - limit_value
+      - overage_unit_price
+      - resource_key
+      - total
+    BillingPeriodSummary:
+      type: object
+      description: |-
+        One closed billing period, as a durable statement -- one row of ``GET
+        /billing/usage/periods/``. See ``BillingPeriodSummaryDetailSerializer`` for
+        the ``resources`` breakdown the detail action adds.
+
+        ``reconciliation_unmetered``/``reconciliation_orphaned`` are deliberately
+        absent from every field below -- internal investigation data, surfaced only
+        in Django admin (see the plan's Non-goals).
+      properties:
+        id:
+          type: integer
+          description: pk of this statement.
+        billing_period_start:
+          type: string
+          format: date-time
+          description: Inclusive start of the closed period.
+        billing_period_end:
+          type: string
+          format: date-time
+          description: Exclusive end of the closed period.
+        plan_slug:
+          type: string
+          description: The billing plan in force for this period, snapshotted at close
+            time -- a later plan change does not rewrite this.
+        plan_name:
+          type: string
+          description: Display name of the plan in force for this period.
+        billing_interval:
+          type: string
+          description: The subscription's billing interval for this period.
+        currency:
+          type: string
+          description: The plan's currency for this period, e.g. "USD".
+        overage_total:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,4})?$
+          description: Overage money charged for this period.
+        charged:
+          type: boolean
+          description: Whether an overage charge was actually made for this period.
+        payment_id:
+          type: integer
+          nullable: true
+          description: pk of the Payment that settled this period's overage. null
+            when charged is false.
+        closed_at:
+          type: string
+          format: date-time
+          description: When CycleCloseService wrote this statement.
+      required:
+      - billing_interval
+      - billing_period_end
+      - billing_period_start
+      - charged
+      - closed_at
+      - currency
+      - id
+      - overage_total
+      - payment_id
+      - plan_name
+      - plan_slug
+    BillingPeriodSummaryDetail:
+      type: object
+      description: |-
+        ``GET /billing/usage/periods/{id}/`` -- one statement's full detail,
+        adding its per-resource breakdown to every field
+        ``BillingPeriodSummarySerializer`` already reports.
+      properties:
+        id:
+          type: integer
+          description: pk of this statement.
+        billing_period_start:
+          type: string
+          format: date-time
+          description: Inclusive start of the closed period.
+        billing_period_end:
+          type: string
+          format: date-time
+          description: Exclusive end of the closed period.
+        plan_slug:
+          type: string
+          description: The billing plan in force for this period, snapshotted at close
+            time -- a later plan change does not rewrite this.
+        plan_name:
+          type: string
+          description: Display name of the plan in force for this period.
+        billing_interval:
+          type: string
+          description: The subscription's billing interval for this period.
+        currency:
+          type: string
+          description: The plan's currency for this period, e.g. "USD".
+        overage_total:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,4})?$
+          description: Overage money charged for this period.
+        charged:
+          type: boolean
+          description: Whether an overage charge was actually made for this period.
+        payment_id:
+          type: integer
+          nullable: true
+          description: pk of the Payment that settled this period's overage. null
+            when charged is false.
+        closed_at:
+          type: string
+          format: date-time
+          description: When CycleCloseService wrote this statement.
+        resources:
+          type: array
+          items:
+            $ref: '#/components/schemas/BillingPeriodResourceUsage'
+          readOnly: true
+          description: Every LimitedResource member recorded for this period. Prefetched,
+            so retrieving one statement is a bounded number of queries regardless
+            of how many resources exist.
+      required:
+      - billing_interval
+      - billing_period_end
+      - billing_period_start
+      - charged
+      - closed_at
+      - currency
+      - id
+      - overage_total
+      - payment_id
+      - plan_name
+      - plan_slug
+      - resources
     BillingPlan:
       type: object
       description: |-
@@ -17765,6 +18264,29 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/AvailableTime'
+    PaginatedBillingPeriodSummaryList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=400&limit=100
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=200&limit=100
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/BillingPeriodSummary'
     PaginatedBillingPlanList:
       type: object
       required:
