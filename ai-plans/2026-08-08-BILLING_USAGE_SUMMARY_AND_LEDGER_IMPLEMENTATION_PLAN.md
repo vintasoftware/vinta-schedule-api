@@ -481,7 +481,9 @@ Changes:
 Spec use-case: **Use-case 8, Organization inspects its usage** — sub-step 1 taken to line-item granularity, so a customer can audit rather than only observe.
 
 Tests:
-- **Integration**: @payments/tests/views/test_occurrence_ledger_view.py — a plain member gets `403`; a billing owner and an admin get `200`; an acting reseller root gets `200` for a descendant's ledger.
+- **Integration**: @payments/tests/views/test_occurrence_ledger_view.py — a plain member gets `403`; a billing owner and an admin get `200`; an admin of a reseller root gets `200` covering a descendant's rows.
+
+  **Correction, from Phase 5's review**: that last case is granted by **pooling**, not by `IsBillingOwnerOrAdmin._acting_reseller_root_permits`. That branch turns out to be unreachable from every call site in the repo — see **Open Questions**. The test's name and docstring should say "pooling", not "acting reseller root", so nobody reads it as coverage of a branch it does not touch.
 - **Integration**: same file — with no period filter the response covers exactly the current billing period; with an explicit `billing_period_start` it covers that closed period.
 - **Integration**: same file — `is_within_allowance=false` returns exactly the rows whose `unit_price` sums to the period's `overage_total`. This is the assertion that ties the ledger to the money.
 - **Integration**: same file — an `organization` filter outside the caller's pool is a validation error, not an empty `200`.
@@ -528,7 +530,9 @@ Note the related standing hazard recorded in [reference: ATOMIC_REQUESTS trap] t
 
 **Rollback.** No feature flag exists to flip. Phases 3–5 are revert-and-deploy — no data is written by them. Phase 2 is revert-and-deploy plus, optionally, leaving already-written statements in place (they are read-only records and harmless). Phase 0's migration reverses cleanly. Phase 1 is a plain code revert.
 
-**Client handoff.** Phases 3, 4, and 5 each change `schema.yml`. Run the `handoff-to-client` skill before merging the last of them so the web SPA team gets one coherent document covering the additive fields on `/billing/usage/` and the three new routes, rather than three partial ones.
+**Client handoff.** Phases 3, 4, and 5 each change `schema.yml`. Run the `handoff-to-client` skill before merging the last of them so the web SPA team gets one coherent document covering the additive fields on `/billing/usage/` and the three new routes, rather than three partial ones. **Not yet done** — the phases are implemented and their PRs are open, but no handoff document has been generated.
+
+**One shape decision the SPA team needs to know about.** `by_organization` is the same `UsageByOrganization` shape on both the live endpoint and the closed-period statement — deliberately, so a client rendering current and historical usage handles one type, not two. On the statement, organization **names are resolved at read time**, so they show the organization's current name rather than its name as of the period close, and an organization that no longer exists renders `name: ""` rather than being dropped (dropping it would break the invariant that the entries sum to `total`).
 
 **Observability.** Phase 2 should log at `INFO` on each statement written (subscription, period, overage total, drift) and at `ERROR` on a swallowed persistence failure — the latter is the signal that history is being lost, and it is otherwise invisible. Adoption of the new endpoints is measurable from request logs by route; no new metric infrastructure is introduced.
 
@@ -544,6 +548,7 @@ Note the related standing hazard recorded in [reference: ATOMIC_REQUESTS trap] t
 | Should a reseller root be able to filter the summary *down* to one child, rather than only seeing attribution? | **Not in v1.** Attribution in `by_organization` answers the question; a scoping parameter changes what "your usage" means and deserves its own decision. | Product |
 | Should `estimated_overage_total` appear for a `RESTRICTED` organization? | **Yes.** The endpoint's existing rule is that a read never blocks, precisely so an organization can see what it must resolve. Hiding the number it needs would invert that. | Product |
 | Does the web SPA need the closed-period endpoints at launch, or is the enriched current summary enough for the first release? | **Ship all of it** — the phases are independently mergeable, so this is a sequencing question, not a scope one. If the SPA is not ready, Phases 4 and 5 can merge and sit unconsumed. | Frontend |
+| **`IsBillingOwnerOrAdmin._acting_reseller_root_permits` appears to be unreachable repo-wide.** Found during Phase 5's review and verified independently against the org-tree code, not inferred. All three call sites (`SubscriptionViewSet.get_subscription`, `AddOnViewSet.create`, `MeteredOccurrenceViewSet.list`) pass `obj = resolve_billing_root(request.organization)`, which only ever walks *upward* to an ancestor-or-self. The branch requires the target to be a *descendant* of the caller's membership organization, so the two can coincide only when equal — a case branch 1 already grants. No test using header-based org resolution can exercise it either, since a caller cannot set `X-Organization-Id` to an organization they lack membership in. | **Follow-up ticket, not a change here.** It is pre-existing dead code that this plan inherited rather than introduced, and deleting a documented permission branch deserves its own review. Either give it a genuine call site (an endpoint where `obj` can be a descendant distinct from the resolved billing root) or remove it along with its docstring. | Backend / whoever owns `organizations/permissions.py` |
 
 ## 8. Touch List
 

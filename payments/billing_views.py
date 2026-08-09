@@ -12,10 +12,11 @@ permission's docstring).
 """
 
 import logging
+from collections.abc import Sequence
 from decimal import Decimal
 from typing import TYPE_CHECKING, Annotated
 
-from django.db.models import QuerySet, Sum
+from django.db.models import Prefetch, QuerySet, Sum
 from django.utils import timezone
 
 from dependency_injector.wiring import Provide, inject
@@ -31,6 +32,7 @@ from rest_framework.serializers import BaseSerializer
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.viewsets import GenericViewSet, ViewSet
 
+from calendar_integration.models import CalendarEvent, CalendarOwnership
 from common.utils.view_utils import TenantScopedViewMixin
 from organizations.models import Organization
 from organizations.permissions import IsBillingOwnerOrAdmin
@@ -43,6 +45,7 @@ from payments.exceptions import (
 from payments.filtersets import (
     BillingPeriodSummaryFilterSet,
     BillingPlanFilterSet,
+    MeteredOccurrenceFilterSet,
     SubscriptionAddOnFilterSet,
 )
 from payments.models import (
@@ -53,17 +56,23 @@ from payments.models import (
     SubscriptionAddOn,
     SubscriptionPlanLimit,
 )
+from payments.pagination import LargeLimitOffsetPagination
 from payments.serializers import (
     AddOnPurchaseRequestSerializer,
     BillingPeriodSummaryDetailSerializer,
     BillingPeriodSummarySerializer,
     BillingPlanSerializer,
     ChangePlanRequestSerializer,
+    MeteredOccurrenceSerializer,
     SubscriptionAddOnSerializer,
     SubscriptionSerializer,
     UsageResponseSerializer,
 )
-from payments.services.subscription_service import resolve_billing_period, resolve_billing_root
+from payments.services.subscription_service import (
+    current_billing_period_start,
+    resolve_billing_period,
+    resolve_billing_root,
+)
 
 
 if TYPE_CHECKING:
@@ -384,6 +393,153 @@ class BillingPeriodViewSet(
         context["organization_names"] = organization_names
         serializer = self.get_serializer(instance, context=context)
         return Response(serializer.data)
+
+
+class MeteredOccurrenceViewSet(TenantScopedViewMixin, mixins.ListModelMixin, GenericViewSet):
+    """``GET /billing/usage/occurrences/`` -- the line-item ledger behind
+    post-paid charges: every ``MeteredOccurrence`` row in the caller's pooled
+    billing subtree, paginated and filterable by period, allowance side,
+    organization, and occurrence-start range, so a customer disputing an
+    invoice can tie every unit of money to a specific occurrence.
+
+    **Stricter than every other read in this module.** ``BillingUsageViewSet``
+    and ``BillingPeriodViewSet`` stay open to any authenticated member
+    (``IsAuthenticated`` alone); this one additionally requires
+    ``IsBillingOwnerOrAdmin``. A ledger row carries an ``event_id`` and an exact
+    ``occurrence_start`` -- that is calendar content, and it spans every
+    calendar in the caller's pooled subtree, including ones the caller has no
+    membership scope on. A count is not. See the plan's Guiding Decisions.
+
+    ``check_object_permissions`` is called explicitly in ``list()`` against the
+    resolved billing root -- the same two-step dance
+    ``SubscriptionViewSet.get_subscription`` and ``AddOnViewSet.create`` already
+    perform, and for the same reason their comments document:
+    ``has_permission`` cannot know *which* organization this read is for,
+    because ``request.organization`` is not resolved yet at that point in
+    ``TenantScopedViewMixin.initial()``'s ordering (see
+    ``IsBillingOwnerOrAdmin``'s docstring).
+    """
+
+    serializer_class = MeteredOccurrenceSerializer
+    queryset = MeteredOccurrence.objects.none()
+    filterset_class = MeteredOccurrenceFilterSet
+    permission_classes = (IsAuthenticated, IsBillingOwnerOrAdmin)
+    pagination_class = LargeLimitOffsetPagination
+
+    @inject
+    def __init__(
+        self,
+        *args,
+        entitlement_service: Annotated["EntitlementService", Provide["entitlement_service"]],
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.entitlement_service = entitlement_service
+
+    def get_queryset(self) -> QuerySet[MeteredOccurrence]:
+        organization = _require_organization(self.request)
+        root = resolve_billing_root(organization)
+        # The call below re-resolves root internally; passing the already-resolved root is a deliberate no-op.
+        pooled_organization_ids = self.entitlement_service.get_pooled_organization_ids(root)
+        # Stashed on the request so `MeteredOccurrenceFilterSet.filter_organization`
+        # can validate the `organization` filter value against the caller's pool
+        # without re-resolving it or reaching into DI itself.
+        self.request.pooled_organization_ids = pooled_organization_ids  # type: ignore[attr-defined]
+
+        queryset = MeteredOccurrence.objects.for_organizations(pooled_organization_ids).order_by(
+            "-occurrence_start"
+        )
+        if "billing_period_start" in self.request.query_params:
+            # An explicit period filter is coming; let `MeteredOccurrenceFilterSet`
+            # narrow it below rather than also constraining by the current period.
+            return queryset
+
+        subscription = Subscription.objects.filter(organization=root).first()
+        if subscription is None:
+            return queryset.none()
+        period_start = current_billing_period_start(subscription)
+        return queryset.for_billing_period(subscription.pk, period_start)
+
+    @extend_schema(
+        summary="List metered occurrences behind post-paid charges",
+        responses={200: MeteredOccurrenceSerializer},
+    )
+    def list(self, request: Request, *args: object, **kwargs: object) -> Response:
+        organization = _require_organization(request)
+        root = resolve_billing_root(organization)
+        # The real, object-level gate -- see the class docstring and
+        # `IsBillingOwnerOrAdmin`'s docstring for why this cannot live in
+        # `has_permission`.
+        self.check_object_permissions(request, root)
+
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        occurrences = page if page is not None else list(queryset)
+
+        # Batched once per page/response, never once per row: organization
+        # names (mirrors `BillingUsageViewSet`/`BillingPeriodViewSet`'s
+        # `organization_names` pattern) and event/calendar/owner enrichment
+        # (see `_resolve_events`). Stashed on `self` rather than passed as an
+        # explicit `context=` kwarg to `get_serializer` below, because
+        # `GenericAPIView.get_serializer` builds its own `context` via
+        # `get_serializer_context()` and passing both raises a duplicate-kwarg
+        # `TypeError`.
+        organization_ids = {occurrence.organization_id for occurrence in occurrences}
+        self._organization_names = dict(
+            Organization.objects.filter(pk__in=organization_ids).values_list("pk", "name")
+        )
+        self._event_map = self._resolve_events(occurrences)
+
+        serializer = self.get_serializer(occurrences, many=True)
+        if page is not None:
+            return self.get_paginated_response(serializer.data)
+        return Response(serializer.data)
+
+    def get_serializer_context(self) -> dict[str, object]:
+        # `GenericAPIView.get_serializer_context` is typed `Mapping[str, Any]`
+        # (read-only) -- copy into a plain `dict` before adding keys.
+        context: dict[str, object] = dict(super().get_serializer_context())
+        context["organization_names"] = getattr(self, "_organization_names", {})
+        context["event_map"] = getattr(self, "_event_map", {})
+        return context
+
+    def _resolve_events(self, occurrences: Sequence[MeteredOccurrence]) -> dict[int, CalendarEvent]:
+        """Batched, per-page event enrichment: one query for the events (with
+        their calendars, via ``select_related``) and one for the calendars'
+        ownerships (with each owner's membership/user/profile joined in that
+        same query, via a ``Prefetch`` queryset) -- never a per-row lookup.
+
+        ``event_id`` is a soft reference (``BigIntegerField``, not a
+        ``ForeignKey`` -- see the ``MeteredOccurrence`` model docstring), so
+        this can never be a ``select_related`` off ``MeteredOccurrence``
+        itself; it is always this second, explicit, batched query. Missing
+        event ids (a deleted event) are simply absent from the returned map --
+        the serializer renders ``event: null`` for those rows.
+        """
+        event_ids = {occurrence.event_id for occurrence in occurrences}
+        if not event_ids:
+            return {}
+
+        # Scoped to the same pool `get_queryset()` already resolved for this
+        # request (stashed there) -- an event enriching a row this endpoint is
+        # already allowed to show can only belong to an organization in that
+        # same pool.
+        pooled_organization_ids = getattr(self.request, "pooled_organization_ids", ())
+        events = (
+            CalendarEvent.objects.filter(
+                pk__in=event_ids, organization_id__in=pooled_organization_ids
+            )
+            .select_related("calendar")
+            .prefetch_related(
+                Prefetch(
+                    "calendar__ownerships",
+                    queryset=CalendarOwnership.objects.filter(
+                        organization_id__in=pooled_organization_ids
+                    ).select_related("membership__user__profile"),
+                )
+            )
+        )
+        return {event.pk: event for event in events}
 
 
 class SubscriptionViewSet(TenantScopedViewMixin, GenericVirtualModelViewMixin, GenericViewSet):
