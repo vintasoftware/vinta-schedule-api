@@ -110,11 +110,28 @@ Worth carrying forward:
 - **The ceiling arithmetic nearly got a second implementation.** The N+1 fix introduced `effective_limit_from_resolved`, which reproduced `_effective_limit_for_subscription`'s three fail-open branches line for line — the same hazard the plan's **Guiding Decisions** rejected for the usage counters in Phase 1. Refactored so `_effective_limit_for_subscription` delegates to it: one arithmetic, two ways to supply inputs. The lazy skip of the add-on aggregate on an unlimited limit is preserved and now has its own query-capture test.
 - The `event_occurrences` counter still derives its own period from `timezone.now()`, so it and the view's period can straddle a boundary in a rare race. Out of scope to fix (Phase 1 counter signature); the comment says so honestly rather than claiming the race is closed.
 
+### Phase 4 — Closed-period statement endpoints ✅
+
+- **Branch**: `plan/billing-usage-summary-and-ledger/phase-4` (base: `phase-3`)
+- **Models**: implementer Sonnet (Tier 2, stepped up — the phase touches 6 files) · reviewer Sonnet (Tier 3 default) · fixer Sonnet
+- **Commits**: `d5178c4`, `6a0323c`
+
+`GET /billing/usage/periods/` (list) and `/{id}/` (detail) — the first readers of the tables Phase 0 created and Phase 2 writes. New `BillingPeriodViewSet`, three serializers, `BillingPeriodSummaryFilterSet`, one route. Full suite **5209 passed, 0 failed**.
+
+**One BLOCKER: the same concept had two incompatible shapes across sibling endpoints.** The detail endpoint serialized `by_organization` as the raw stored `{"12": 14}` blob while the live `GET /billing/usage/` returns `[{organization_id, name, usage}]`. Codegen produced `Record<string, number>` for one and `Array<{...}>` for the other, in the same `billing/usage` namespace. The implementer's reason for diverging — that resolving names needs a per-row lookup — did not hold: names batch in **one** query bounded by pool size, exactly as Phase 3 already does. Both endpoints now `$ref` the same `UsageByOrganization` component (`schema.yml:15855` and `:16996`); detail went 6 → 7 queries with a test proving it does not scale with resource rows or organizations.
+
+Decisions worth keeping:
+- **Organization names on a statement are resolved at read time**, so they show the *current* name, not the name as of close. There is no name snapshot on the Phase 0 model and adding one was out of scope. Documented in the field description.
+- **An organization that no longer exists renders `name: ""` and is never dropped** — dropping it would silently break the invariant that `by_organization` sums to `total`. There is a test for exactly that.
+- **A pk outside the caller's pool returns `404`, not `403`**, so the endpoint cannot confirm another tenant's statement exists. Achieved by the scoped queryset being the only lookup path, so `get_object_or_404` does it naturally with no permission class that could leak existence first.
+- **No active organization now returns `403`**, matching `GET /billing/usage/`. It previously returned `200` with an empty list — indistinguishable from this phase's expected day-one state, which is empty for everyone.
+- `reconciliation_unmetered` / `reconciliation_orphaned` appear in neither response, asserted against the full raw body rather than a field list.
+
 ## Current phase
 
-**Phase 4 — Closed-period statement endpoints** (implementer Tier 2, no review override).
+**Phase 5 — The occurrence ledger endpoint** (implementer Tier 3, **reviewer Tier 3** override).
 
-Branch `plan/billing-usage-summary-and-ledger/phase-4`, based on `phase-3`. Bundled per the chosen granularity: list + detail share a queryset, permission, and serializer tree.
+Branch `plan/billing-usage-summary-and-ledger/phase-5`, based on `phase-4`. The last phase — no flag-removal phase exists, since the plan declares no feature flag.
 
 ## Remaining phases
 
