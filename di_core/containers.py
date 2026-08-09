@@ -81,7 +81,8 @@ class AppContainer(containers.DeclarativeContainer):
 
     #: Registered so the `payment_provider_registry`/`subscription_provider_registry`
     #: `provider` URL kwarg can select Stripe, and so the adapter conformance
-    #: suite can exercise it — no organization is routed onto Stripe yet.
+    #: suite can exercise it. `DEFAULT_PAYMENT_PROVIDER` is `stripe`, so every
+    #: unpinned organization routes onto this adapter as of Phase 4.
     stripe_payment_gateway = providers.Factory(
         StripePaymentAdapter,
         api_key=config.STRIPE_SECRET_KEY,
@@ -114,27 +115,37 @@ class AppContainer(containers.DeclarativeContainer):
         BillingPlanFactory,
     )
 
+    #: Single source of the pin -> default provider resolution rule -- shared by the
+    #: provider-credentials endpoints (`payments.views.PaymentProviderViewSet`) and
+    #: `PaymentService`'s charge-routing (`create_payment`/`create_subscription`). No
+    #: adapter dependency, so it does not need the `payment_gateway`/`subscription_gateway`
+    #: providers above.
+    payment_provider_resolver = providers.Factory(
+        PaymentProviderResolver,
+    )
+
+    #: `PaymentService` resolves every adapter through the two registries above --
+    #: it no longer takes the singular `payment_gateway`/`subscription_gateway`
+    #: providers directly (Payment Provider Selection, Phase 4). Those providers stay
+    #: registered because the registries above are built from them.
     payment_service = providers.Factory(
         PaymentService,
         subscription_plan_factory=subscription_plan_factory,
-        payment_gateway=payment_gateway,
-        subscription_gateway=subscription_gateway,
+        payment_provider_resolver=payment_provider_resolver,
         payment_provider_registry=payment_provider_registry,
         subscription_provider_registry=subscription_provider_registry,
     )
 
+    #: `payment_provider_resolver` is injected here too (not only into
+    #: `PaymentService`): `create_subscription_for_organization` stamps the
+    #: organization's resolved provider onto the one `Subscription` it will ever
+    #: have, which is the row every later subscription operation resolves its
+    #: adapter from.
     subscription_service = providers.Factory(
         SubscriptionService,
         payment_service=payment_service,
         audit_service=audit_service,
-    )
-
-    #: Single source of the pin -> default provider resolution rule -- shared by the
-    #: provider-credentials endpoints (`payments.views.PaymentProviderViewSet`) and, from
-    #: Phase 4 onward, `PaymentService`'s charge-routing. No adapter dependency, so it does
-    #: not need the `payment_gateway`/`subscription_gateway` providers above.
-    payment_provider_resolver = providers.Factory(
-        PaymentProviderResolver,
+        payment_provider_resolver=payment_provider_resolver,
     )
 
     entitlement_service = providers.Factory(

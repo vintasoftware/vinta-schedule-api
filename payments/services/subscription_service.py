@@ -42,6 +42,7 @@ from payments.services.dataclasses import CreatedPlan, Plan
 
 if TYPE_CHECKING:
     from audit.services import AuditService
+    from payments.services.payment_provider_resolver import PaymentProviderResolver
     from payments.services.payment_service import PaymentService
     from users.models import User
 
@@ -301,6 +302,9 @@ class SubscriptionService:
         self,
         payment_service: Annotated["PaymentService | None", Provide["payment_service"]] = None,
         audit_service: Annotated["AuditService | None", Provide["audit_service"]] = None,
+        payment_provider_resolver: Annotated[
+            "PaymentProviderResolver | None", Provide["payment_provider_resolver"]
+        ] = None,
     ) -> None:
         """``payment_service`` drives the provider round-trips the plan-change
         and add-on purchase flows need (creating/updating the provider-side plan,
@@ -314,9 +318,18 @@ class SubscriptionService:
         ``audit_service`` records the billing business writes that need an audit
         trail — currently just ``set_payment_provider``'s staff repoint.
 
-        Both default to ``None`` so every existing bare ``SubscriptionService()``
+        ``payment_provider_resolver`` is the single home of the pin -> default
+        provider rule (see ``payments.services.payment_provider_resolver``).
+        ``create_subscription_for_organization`` stamps its result onto the new
+        ``Subscription.payment_provider`` -- that column is the sole input to
+        every later existing-row provider resolution for the subscription (Rule A),
+        so hardcoding it here would make the organization's pin inert on the whole
+        subscription path.
+
+        All three default to ``None`` so every existing bare ``SubscriptionService()``
         call across the codebase and test suite keeps working — ``@inject``
-        resolves ``Provide["payment_service"]`` / ``Provide["audit_service"]``
+        resolves ``Provide["payment_service"]`` / ``Provide["audit_service"]`` /
+        ``Provide["payment_provider_resolver"]``
         from the wired container automatically once Django has started
         (``payments`` is in ``INTERNAL_INSTALLED_APPS``, which
         ``DICoreConfig.ready()`` wires), the same pattern ``CalendarService.__init__``
@@ -324,6 +337,7 @@ class SubscriptionService:
         """
         self.payment_service = payment_service
         self.audit_service = audit_service
+        self.payment_provider_resolver = payment_provider_resolver
 
     def _require_payment_service(self) -> "PaymentService":
         if self.payment_service is None:
@@ -333,6 +347,16 @@ class SubscriptionService:
                 "the provider."
             )
         return self.payment_service
+
+    def _require_payment_provider_resolver(self) -> "PaymentProviderResolver":
+        if self.payment_provider_resolver is None:
+            raise RuntimeError(
+                "SubscriptionService.payment_provider_resolver is not set -- "
+                "construct via the DI container (or pass "
+                "payment_provider_resolver=...) before resolving an "
+                "organization's payment provider."
+            )
+        return self.payment_provider_resolver
 
     def _require_audit_service(self) -> "AuditService":
         if self.audit_service is None:
@@ -379,6 +403,22 @@ class SubscriptionService:
 
         now = timezone.now()
         period_end = self._period_end(now, BillingInterval.MONTHLY)
+        # Rule B (new row): resolve from the organization -- its
+        # `BillingProfile.payment_provider` pin when set, `DEFAULT_PAYMENT_PROVIDER`
+        # otherwise -- through the one resolver that owns that rule.
+        #
+        # This column is *not* a placeholder even though the subscription created
+        # here starts on a $0 plan that never touches a gateway: `Subscription` is
+        # a `OneToOneField` on organization, so this is the only row the
+        # organization will ever have, and it is the row every later paid operation
+        # (`process_subscription`, `change_subscription_plan`, `cancel_subscription`,
+        # `_ensure_provider_plan`) resolves its adapter from under Rule A. It is
+        # also what `PaymentsViewSet._apply_subscription_payment_side_effects`
+        # hands to `record_payment_method`, i.e. what gets written into the
+        # organization's write-once pin on its first confirmed subscription charge.
+        # A hardcoded value here would send a Stripe-pinned organization's card
+        # token to MercadoPago and then permanently pin it there.
+        provider = self._require_payment_provider_resolver().resolve_for_organization(organization)
 
         with transaction.atomic():
             subscription, created = Subscription.objects.get_or_create(
@@ -389,11 +429,7 @@ class SubscriptionService:
                     "billing_interval": BillingInterval.MONTHLY,
                     "current_period_start": now,
                     "current_period_end": period_end,
-                    # Placeholder: this subscription never touches a payment gateway
-                    # (unlimited/free plans are $0). A real paid subscription will set
-                    # this per the organization's chosen provider instead of
-                    # hardcoding it here.
-                    "payment_provider": PaymentProviders.MERCADOPAGO,
+                    "payment_provider": provider,
                 },
             )
             # Also sync when an existing Subscription has no limit/entitlement
@@ -576,6 +612,27 @@ class SubscriptionService:
         # synchronously. `subscription.plan` alone grants nothing --
         # `EntitlementService` reads `SubscriptionPlanLimit`, not this FK.
 
+        # Rule A (existing-row resolution) only protects provider-side state
+        # that already exists. A subscription with a blank `external_id` has
+        # none -- nothing has ever been created at the provider its
+        # `payment_provider` column happens to name -- and this is exactly the
+        # row every *first* upgrade runs against, just below. Re-resolving here
+        # (pin -> default, via the same `PaymentProviderResolver` Rule B
+        # already uses) and restamping is what makes a staff repoint via
+        # `set_payment_provider`, or a `DEFAULT_PAYMENT_PROVIDER` change, reach
+        # a subscription that was stamped before any `BillingProfile` pin
+        # existed -- `create_subscription_for_organization` runs from the
+        # `Organization` post-save signal, before a `BillingProfile` can exist.
+        # Once `external_id` is non-empty, the row carries live provider state
+        # and must not move -- Rule A applies unchanged from here on.
+        if not subscription.external_id:
+            resolved_provider = self._require_payment_provider_resolver().resolve_for_organization(
+                subscription.organization
+            )
+            if resolved_provider != subscription.payment_provider:
+                subscription.payment_provider = resolved_provider
+                subscription.save(update_fields=["payment_provider"])
+
         payment_service = self._require_payment_service()
         created_plan = self._ensure_provider_plan(subscription, plan, billing_interval)
         if not subscription.external_id:
@@ -602,6 +659,11 @@ class SubscriptionService:
         validate a caching scheme against in this environment. Correct, if not
         maximally efficient — a follow-up could add a
         provider-keyed external id to the catalog plan itself.
+
+        ``provider`` is resolved from ``subscription.payment_provider`` --
+        `subscription` already exists, so this is an existing-row operation, the
+        same rule ``process_subscription``/``change_subscription_plan``/
+        ``cancel_subscription`` follow on ``PaymentService``.
         """
         payment_service = self._require_payment_service()
         created = payment_service.create_subscription_plan(
@@ -612,7 +674,8 @@ class SubscriptionService:
                 currency=plan.currency,
                 billing_day=min(subscription.current_period_start.day, 28),
                 billing_interval=billing_interval,
-            )
+            ),
+            provider=subscription.payment_provider,
         )
         subscription.plan_external_id = created.external_id
         subscription.save(update_fields=["plan_external_id"])
@@ -1073,19 +1136,31 @@ class SubscriptionService:
             Defaults to ``None``, which records a ``SYSTEM`` actor -- unchanged
             behavior for every caller that has no request-scoped user (an
             operator running this by hand, or a script).
+        Validates **registry membership only**, deliberately: it does not require
+        the deployment to already hold that provider's outbound credential
+        (``PaymentService.get_configured_payment_adapter``). Repointing an
+        organization onto a provider whose secret is not in this environment yet
+        is a legitimate staff action -- the ordering "flip the pin, then add the
+        key" is normal, the pin only governs *future* charges, and refusing it
+        here would surface as an uncaught 500 in the Django admin (see
+        ``payments.admin.BillingProfileAdmin.save_model``, which catches nothing).
+        The credential is asserted later, at the charge call sites that actually
+        need it.
+
         :raises UnknownPaymentProviderError: when a non-empty ``provider`` is not
             a member of ``PaymentProviders``, or is absent from the payment
             adapter registry (``PaymentService.get_payment_adapter``) -- either
-            way, there is nothing this deployment can drive that provider with.
+            way, there is no adapter this deployment could ever drive that
+            provider with. The only exception this method raises for a bad slug.
         :raises MissingBillingProfileError: when ``organization`` has no
             ``BillingProfile`` to pin.
         """
         if provider:
             if provider not in PaymentProviders.values:
                 raise UnknownPaymentProviderError(provider)
-            # Also confirms the slug resolves to a real, registered adapter --
-            # the same registry every charge path resolves an adapter from, so a
-            # provider this deployment cannot actually drive is refused here too.
+            # Registry membership only -- see the docstring above. Raises
+            # `UnknownPaymentProviderError` for a slug with no registered adapter
+            # and nothing else.
             self._require_payment_service().get_payment_adapter(provider)
 
         try:

@@ -29,6 +29,16 @@ class BaseSubscriptionAdapter:
     class Meta:
         abstract = True
 
+    @property
+    @abstractmethod
+    def is_configured(self) -> bool:
+        """See ``BasePaymentAdapter.is_configured`` — same contract, same
+        reasoning, same outbound credential (``MERCADOPAGO_ACCESS_TOKEN`` /
+        ``STRIPE_SECRET_KEY``). Declared independently of the payment adapter's
+        rather than assumed to match, exactly like ``verifies_full_body``.
+        """
+        raise NotImplementedError
+
     @abstractmethod
     def create_subscription_plan(self, plan: Plan) -> str:
         raise NotImplementedError

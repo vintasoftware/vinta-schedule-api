@@ -179,9 +179,13 @@ class FakePaymentService:
     plan_external_id: str = "ext-plan-1"
     calls: list[str] = field(default_factory=list)
     idempotency_keys: list[str] = field(default_factory=list)
+    create_subscription_plan_providers: list[str] = field(default_factory=list)
 
-    def create_subscription_plan(self, plan) -> CreatedPlan:
+    # `provider` is required, matching `PaymentService.create_subscription_plan`'s
+    # real signature -- see `test_plan_change.py`'s double.
+    def create_subscription_plan(self, plan, provider: str) -> CreatedPlan:
         self.calls.append("create_subscription_plan")
+        self.create_subscription_plan_providers.append(provider)
         return CreatedPlan(
             id=plan.id,
             name=plan.name,
@@ -762,6 +766,43 @@ class TestProcessSubscriptionDispatch:
         # A charge retry was driven -- proof this reached `_process_grace`.
         assert "change_subscription_plan" in fake_payment_service.calls
         assert subscription.last_dunning_attempt_at is not None
+        # Payment Provider Selection, Phase 4, Rule A: the retry re-creates the
+        # provider-side plan against the *subscription's own* stored provider.
+        # `billing_profile` above is unpinned, so `create_subscription_for_organization`
+        # resolved this subscription onto `settings.DEFAULT_PAYMENT_PROVIDER`
+        # (`stripe`) -- asserted as the literal rather than by reading the column
+        # back, which would pass against any value the routing happened to use.
+        assert settings.DEFAULT_PAYMENT_PROVIDER == PaymentProviders.STRIPE
+        assert subscription.payment_provider == PaymentProviders.STRIPE
+        assert fake_payment_service.create_subscription_plan_providers == [PaymentProviders.STRIPE]
+
+    def test_retry_drives_the_subscriptions_own_provider_not_the_organizations_pin(
+        self, dunning_service, fake_payment_service, organization, billing_profile
+    ):
+        """Rule A, discriminating case: a subscription stamped ``mercadopago``
+        under an organization pinned to ``stripe`` must retry through
+        MercadoPago. Reading the provider back off the subscription (as the
+        assertion above necessarily does for the agreeing case) cannot tell the
+        two rules apart; deliberately disagreeing them can."""
+        billing_profile.payment_provider = PaymentProviders.STRIPE
+        billing_profile.save(update_fields=["payment_provider"])
+        plan = make_complete_plan()
+        subscription = _subscription_for(
+            organization,
+            plan,
+            billing_state=BillingState.GRACE,
+            grace_period_ends_at=timezone.now() + datetime.timedelta(days=5),
+        )
+        subscription.payment_provider = PaymentProviders.MERCADOPAGO
+        subscription.save(update_fields=["payment_provider"])
+        _seed_members(organization, 6)
+
+        with _patch_on_commit():
+            dunning_service.process_subscription(subscription)
+
+        assert fake_payment_service.create_subscription_plan_providers == [
+            PaymentProviders.MERCADOPAGO
+        ]
 
     def test_dispatches_restricted_to_the_free_fallback_check_only(
         self, dunning_service, fake_payment_service, organization, billing_profile

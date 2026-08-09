@@ -24,7 +24,9 @@ from payments.admin import (
 )
 from payments.billing_constants import Entitlement, LimitedResource, LimitKind
 from payments.constants import PaymentProviders
+from payments.exceptions import UnknownPaymentProviderError
 from payments.models import BillingPlan, BillingProfile, PlanLimit, Subscription
+from payments.services.payment_adapters.stripe_payment_adapter import StripePaymentAdapter
 from payments.services.subscription_service import SubscriptionService
 
 
@@ -503,3 +505,48 @@ class TestBillingProfileAdminSaveModel:
 
         billing_profile.refresh_from_db()
         assert billing_profile.payment_provider == ""
+
+    def test_repointing_to_a_provider_with_no_outbound_credential_does_not_500(
+        self, rf, superuser, billing_profile, django_capture_on_commit_callbacks, di_container
+    ):
+        """Payment Provider Selection, Phase 4: ``set_payment_provider`` validates
+        **registry membership only**. A staff repoint onto a provider whose secret
+        key this environment has not been given yet is legitimate -- the pin only
+        governs *future* charges, and "flip the pin, then add the key" is a normal
+        ordering. Asserting the credential here would raise
+        ``PaymentProviderNotConfiguredError``, which
+        ``BillingProfileAdmin.save_model`` does not catch (HTTP 500 in admin).
+
+        Drives a real ``StripePaymentAdapter`` built with an empty ``api_key`` --
+        exactly what the DI container produces when ``STRIPE_SECRET_KEY`` is unset.
+        """
+        unconfigured_stripe = StripePaymentAdapter(api_key="", webhook_secret="")
+        assert unconfigured_stripe.is_configured is False
+        admin_instance = BillingProfileAdmin(BillingProfile, AdminSite())
+        request = rf.post(f"/admin/payments/billingprofile/{billing_profile.pk}/change/")
+        request.user = superuser
+        billing_profile.payment_provider = PaymentProviders.STRIPE
+        form = FakeChangedDataForm(changed_data=["payment_provider"])
+
+        with di_container.stripe_payment_gateway.override(unconfigured_stripe):
+            with patch("audit.services.persist_audit_record"):
+                with django_capture_on_commit_callbacks(execute=True):
+                    admin_instance.save_model(request, billing_profile, form, change=True)
+
+        billing_profile.refresh_from_db()
+        assert billing_profile.payment_provider == PaymentProviders.STRIPE
+
+    def test_repointing_to_a_slug_that_is_not_a_provider_still_raises(
+        self, rf, superuser, billing_profile
+    ):
+        """The other side of the same line: registry membership *is* enforced. A
+        slug no adapter is registered for is bad data, not a deploy-ordering
+        question, and must not be silently pinned."""
+        admin_instance = BillingProfileAdmin(BillingProfile, AdminSite())
+        request = rf.post(f"/admin/payments/billingprofile/{billing_profile.pk}/change/")
+        request.user = superuser
+        billing_profile.payment_provider = "not_a_real_provider"
+        form = FakeChangedDataForm(changed_data=["payment_provider"])
+
+        with pytest.raises(UnknownPaymentProviderError):
+            admin_instance.save_model(request, billing_profile, form, change=True)

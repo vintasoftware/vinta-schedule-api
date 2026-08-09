@@ -173,6 +173,11 @@ envVarGroups:
       # environment's messaging profile.
       - key: ACCOUNT_PHONE_VERIFICATION_ENABLED
         value: false
+      # MercadoPago secret API key. Authenticates every outbound MercadoPago
+      # call; an empty value makes the provider unchargeable (409 at the view
+      # boundary) rather than silently failing mid-charge.
+      - key: MERCADOPAGO_ACCESS_TOKEN
+        sync: false
       # Shared secret used to verify MercadoPago's `x-signature` webhook header.
       - key: MERCADOPAGO_WEBHOOK_SECRET
         sync: false

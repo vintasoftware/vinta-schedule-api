@@ -17,7 +17,7 @@ from rest_framework.response import Response
 from rest_framework.views import exception_handler as drf_exception_handler
 from rest_framework.views import set_rollback
 
-from payments.exceptions import OverLimitError
+from payments.exceptions import OverLimitError, PaymentProviderNotConfiguredError
 
 
 def vinta_exception_handler(exc: Exception, context: dict) -> Response | None:
@@ -29,6 +29,19 @@ def vinta_exception_handler(exc: Exception, context: dict) -> Response | None:
     over-limit contract (``OverLimitError.as_error_body``) — the GraphQL surface
     renders the same dict through its own error extension, so the two surfaces
     stay byte-identical without either restating the shape.
+
+    ``PaymentProviderNotConfiguredError`` is rendered as **HTTP 409 Conflict**,
+    the status the payment-provider-selection plan's **Guiding Decisions** commits
+    to for "the provider this organization resolves to cannot be driven by this
+    deployment". Handled centrally rather than per-action because Phase 4 makes it
+    reachable from every billing write that touches a provider
+    (``SubscriptionViewSet.change_plan`` / ``cancel``, ``AddOnViewSet.create``,
+    and anything added later), and a per-action ``except`` would have to be
+    remembered at each new one — the failure mode of forgetting is a 500 on a
+    money path. ``payments.views``'s two provider-credentials endpoints catch it
+    themselves first (409 on the org endpoint, 503 on the unauthenticated default
+    one, which is a deployment error rather than a request conflict), so they are
+    unaffected by this branch.
     """
     if isinstance(exc, OverLimitError):
         # Mandatory before returning a Response: swallowing the exception here
@@ -38,4 +51,12 @@ def vinta_exception_handler(exc: Exception, context: dict) -> Response | None:
         # client is told 402.
         set_rollback()
         return Response(exc.as_error_body(), status=status.HTTP_402_PAYMENT_REQUIRED)
+    if isinstance(exc, PaymentProviderNotConfiguredError):
+        # Same mandatory rollback as above, and it matters more here: the charge
+        # paths that raise this write local rows (a `Refund` + its status update,
+        # a `SubscriptionAddOn`, a `Subscription.plan` move) before or around the
+        # provider call, and committing those while telling the client 409 would
+        # leave capacity or a refund recorded that no provider ever saw.
+        set_rollback()
+        return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
     return drf_exception_handler(exc, context)

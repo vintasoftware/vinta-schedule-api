@@ -21,13 +21,14 @@ from rest_framework.test import APIClient
 
 from organizations.models import Organization
 from payments.constants import PaymentProviders, PaymentStatuses
-from payments.models import ProviderWebhookEvent
+from payments.models import Payment, ProviderWebhookEvent
 from payments.services.payment_adapters.mercadopago_payment_adapter import (
     MercadoPagoPaymentAdapter,
 )
 from payments.services.subscription_adapters.mercadopago_subscription_adapter import (
     MercadoPagoSubscriptionAdapter,
 )
+from payments.services.subscription_service import SubscriptionService
 
 
 WEBHOOK_SECRET = "test-webhook-secret"
@@ -199,6 +200,86 @@ class TestPaymentUpdateWebhook:
         payment.refresh_from_db()
         assert payment.status_updates.count() == 1
         assert payment.status_updates.get().status == PaymentStatuses.APPROVED
+
+    def test_processes_with_no_public_key_configured(
+        self, settings, webhook_client, mercadopago_payment_adapter, payment
+    ):
+        """Regression: the inbound webhook path must not be gated on any
+        *outbound* or browser-facing credential.
+
+        A delivery is a notification the provider pushed at us, authenticated by
+        the webhook secret. Resolving its adapter through a check on
+        ``MERCADOPAGO_PUBLIC_KEY`` (which ships empty in both env examples and is
+        ``sync: false`` on Render) raised ``PaymentProviderNotConfiguredError``
+        from ``verify_payment_webhook_signature`` -- an *uncaught* 500, since
+        ``PaymentsViewSet.payment_update`` catches only
+        ``UnknownPaymentProviderError``. MercadoPago would then retry forever
+        while every payment confirmation, ``record_payment_method`` write, add-on
+        activation, and dunning resolution silently stopped. See
+        ``PaymentService.get_payment_adapter`` vs
+        ``get_configured_payment_adapter``.
+        """
+        settings.MERCADOPAGO_PUBLIC_KEY = ""
+        mercadopago_payment_adapter.sdk.payment().get.return_value = {
+            "response": {
+                "id": "mp-payment-456",
+                "status": "approved",
+                "status_detail": "accredited",
+            }
+        }
+
+        response = webhook_client.post(
+            payment_update_url(),
+            data=self._payload(),
+            content_type="application/json",
+            **sign("mp-payment-456"),
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert ProviderWebhookEvent.objects.count() == 1
+        assert ProviderWebhookEvent.objects.get().processed_at is not None
+        payment.refresh_from_db()
+        assert payment.status_updates.get().status == PaymentStatuses.APPROVED
+
+    def test_webhook_resolves_off_the_payment_row_not_the_organizations_current_pin(
+        self, webhook_client, mercadopago_payment_adapter, payment, billing_profile
+    ):
+        """Payment Provider Selection, Phase 4, Rule A: a webhook delivery for a
+        payment made at MercadoPago must be processed through MercadoPago even
+        when the organization's *current* pin has since moved to Stripe. The
+        webhook route already resolves its adapter off the `provider` URL kwarg
+        (matching MercadoPago's own `notification_url`, not any pin), and
+        `PaymentService.handle_payment_webhook` -> `receive_payment_update` looks
+        the `Payment` row up by its own `external_id` -- neither step ever reads
+        `billing_profile.payment_provider`. This proves the whole path end to
+        end against a deliberately mismatched pin."""
+        billing_profile.payment_provider = PaymentProviders.STRIPE
+        billing_profile.save(update_fields=["payment_provider"])
+        assert payment.payment_provider == PaymentProviders.MERCADOPAGO
+
+        mercadopago_payment_adapter.sdk.payment().get.return_value = {
+            "response": {
+                "id": "mp-payment-456",
+                "status": "approved",
+                "status_detail": "accredited",
+            }
+        }
+        ts = str(int(time.time()))
+
+        response = webhook_client.post(
+            payment_update_url(provider=PaymentProviders.MERCADOPAGO),
+            data=self._payload(),
+            content_type="application/json",
+            **sign("mp-payment-456", ts=ts),
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        payment.refresh_from_db()
+        assert payment.status_updates.count() == 1
+        assert payment.status_updates.get().status == PaymentStatuses.APPROVED
+        # The payment row's own provider stays MercadoPago -- the webhook never
+        # repoints it to the org's current (Stripe) pin.
+        assert payment.payment_provider == PaymentProviders.MERCADOPAGO
 
     def test_duplicate_delivery_is_idempotent(
         self, webhook_client, mercadopago_payment_adapter, payment
@@ -417,3 +498,146 @@ class TestSubscriptionPaymentUpdateWebhook:
 
         assert response.status_code == status.HTTP_403_FORBIDDEN
         assert ProviderWebhookEvent.objects.count() == 0
+
+    def _preapproval_response(self, payment_id: str = "mp-sub-payment-1") -> dict:
+        return {"response": {"last_payment_id": payment_id}}
+
+    def _payment_response(self, payment_id: str = "mp-sub-payment-1") -> dict:
+        return {
+            "response": {
+                "id": payment_id,
+                "status": "approved",
+                "status_detail": "accredited",
+                "transaction_amount": "50.00",
+                "currency_id": "BRL",
+                "payment_method_id": "visa",
+                "description": "Subscription charge",
+                "payer": {
+                    "email": "billing@example.com",
+                    "first_name": "Test",
+                    "last_name": "Payer",
+                    "identification": {"type": "CPF", "number": "12345678900"},
+                    "address": {
+                        "street_name": "Test Street",
+                        "street_number": "123",
+                        "neighborhood": "Centro",
+                        "city": "Test City",
+                        "federal_unit": "TS",
+                        "country": "BR",
+                        "zip_code": "12345",
+                    },
+                },
+            }
+        }
+
+    @pytest.mark.no_auto_subscription
+    def test_subscription_charge_payment_row_carries_a_provider(
+        self, webhook_client, mercadopago_subscription_adapter, billing_profile
+    ):
+        """Payment Provider Selection, Phase 4: every recurring subscription
+        charge creates a ``Payment`` row here, and that row must carry a
+        provider. Stamped `""` (as it was before this fix) it is unroutable for
+        the rest of its life -- ``check_payment_status``/``create_refund``
+        resolve their adapter from this column under Rule A and `""` raises
+        ``UnknownPaymentProviderError``.
+
+        Opts out of conftest's autouse ``provision_default_subscription``: this
+        test builds its own ``Subscription`` (``OneToOne`` with ``Organization``)
+        via ``create_subscription_for_organization`` below."""
+        subscription = SubscriptionService().create_subscription_for_organization(
+            billing_profile.organization
+        )
+        assert subscription is not None
+        subscription.external_id = "sub-123"
+        subscription.payment_provider = PaymentProviders.MERCADOPAGO
+        subscription.save(update_fields=["external_id", "payment_provider"])
+        mercadopago_subscription_adapter.sdk.preapproval().get.return_value = (
+            self._preapproval_response()
+        )
+        mercadopago_subscription_adapter.sdk.payment().get.return_value = self._payment_response()
+
+        response = webhook_client.post(
+            subscription_payment_update_url(),
+            data=self._payload(),
+            content_type="application/json",
+            **sign("sub-123"),
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        payment = Payment.objects.get(external_id="mp-sub-payment-1")
+        assert payment.subscription_id == subscription.pk
+        assert payment.payment_provider == PaymentProviders.MERCADOPAGO
+
+    @pytest.mark.no_auto_subscription
+    def test_approved_charge_pins_the_subscriptions_own_provider_not_a_hardcoded_one(
+        self, webhook_client, mercadopago_subscription_adapter, billing_profile
+    ):
+        """Payment Provider Selection, Phase 4 (the BLOCKER-4 regression): the pin
+        written on an organization's first confirmed subscription charge comes
+        from ``Subscription.payment_provider``, which
+        ``create_subscription_for_organization`` now resolves from the
+        organization (Rule B). While that column was hardcoded ``mercadopago``,
+        this write permanently stamped ``mercadopago`` onto every previously
+        unpinned organization -- making ``DEFAULT_PAYMENT_PROVIDER=stripe``
+        unreachable for anyone who ever paid.
+
+        Driven here through a MercadoPago delivery against a subscription the
+        service resolved onto MercadoPago, with the assertion stated as the
+        subscription's provider being what lands in the pin.
+
+        Opts out of conftest's autouse ``provision_default_subscription``: this
+        test builds its own ``Subscription`` via
+        ``create_subscription_for_organization`` below.
+        """
+        assert billing_profile.payment_provider == ""
+        billing_profile.organization.refresh_from_db()
+        subscription = SubscriptionService().create_subscription_for_organization(
+            billing_profile.organization
+        )
+        assert subscription is not None
+        subscription.payment_provider = PaymentProviders.MERCADOPAGO
+        subscription.external_id = "sub-123"
+        subscription.save(update_fields=["payment_provider", "external_id"])
+        mercadopago_subscription_adapter.sdk.preapproval().get.return_value = (
+            self._preapproval_response()
+        )
+        mercadopago_subscription_adapter.sdk.payment().get.return_value = self._payment_response()
+
+        response = webhook_client.post(
+            subscription_payment_update_url(),
+            data=self._payload(),
+            content_type="application/json",
+            **sign("sub-123"),
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        billing_profile.refresh_from_db()
+        assert billing_profile.payment_provider == subscription.payment_provider
+        assert billing_profile.payment_provider == PaymentProviders.MERCADOPAGO
+
+    @pytest.mark.no_auto_subscription
+    def test_stripe_default_org_is_not_pinned_to_mercadopago_by_its_first_charge(
+        self, settings, di_container, billing_profile
+    ):
+        """The other half of the same regression, and the one that actually
+        broke: an unpinned organization under ``DEFAULT_PAYMENT_PROVIDER=stripe``
+        gets a ``stripe``-resolved subscription, so its first confirmed charge
+        pins it to ``stripe`` -- never to ``mercadopago``.
+
+        Opts out of conftest's autouse ``provision_default_subscription``: this
+        test builds its own ``Subscription`` via
+        ``create_subscription_for_organization`` below."""
+        settings.DEFAULT_PAYMENT_PROVIDER = PaymentProviders.STRIPE
+        assert billing_profile.payment_provider == ""
+        subscription = SubscriptionService().create_subscription_for_organization(
+            billing_profile.organization
+        )
+        assert subscription is not None
+        assert subscription.payment_provider == PaymentProviders.STRIPE
+
+        SubscriptionService().record_payment_method(
+            billing_profile.organization, subscription.payment_provider, "stripe-sub-ext-1"
+        )
+
+        billing_profile.refresh_from_db()
+        assert billing_profile.payment_provider == PaymentProviders.STRIPE

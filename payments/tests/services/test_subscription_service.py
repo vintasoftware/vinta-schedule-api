@@ -12,6 +12,7 @@ from model_bakery import baker
 
 from organizations.models import Organization
 from payments.billing_constants import BillingState, Entitlement, LimitedResource, LimitKind
+from payments.constants import PaymentProviders
 from payments.exceptions import (
     BillingRootCycleError,
     IncompleteBillingPlanError,
@@ -241,6 +242,86 @@ class TestCreateSubscriptionForOrganization:
         assert second is not None
         assert first.pk == second.pk
         assert Subscription.objects.filter(organization=org).count() == 1
+
+
+@pytest.mark.django_db
+class TestCreateSubscriptionResolvesTheProvider:
+    """Payment Provider Selection, Phase 4, Rule B: the one ``Subscription`` an
+    organization ever gets (``Subscription.organization`` is a ``OneToOneField``,
+    and this is the only production path that creates one) must be stamped with
+    the provider the *organization* resolves to.
+
+    That column is the sole input to Rule A for every later subscription
+    operation, and it is what
+    ``PaymentsViewSet._apply_subscription_payment_side_effects`` feeds to
+    ``record_payment_method`` -- i.e. what gets written into the organization's
+    write-once pin on its first confirmed charge. A hardcoded value here (as
+    shipped before this fix) makes the pin inert on the whole subscription path
+    and would send a Stripe-pinned organization's card token to MercadoPago.
+    """
+
+    def _billing_profile_for(self, org: Organization, provider: str):
+        return baker.make(
+            "payments.BillingProfile",
+            organization=org,
+            contact_email="billing@example.com",
+            document_type="CPF",
+            document_number="12345678900",
+            billing_address=baker.make(
+                "payments.BillingAddress",
+                street_name="Test Street",
+                street_number="123",
+                city="Test City",
+                state="Test State",
+                country="Test Country",
+                zip_code="12345",
+            ),
+            payment_provider=provider,
+        )
+
+    def test_stripe_pinned_org_gets_a_stripe_stamped_subscription(self, service, plan):
+        org = baker.make(Organization, parent=None)
+        self._billing_profile_for(org, PaymentProviders.STRIPE)
+
+        subscription = service.create_subscription_for_organization(org, plan=plan)
+
+        assert subscription is not None
+        assert subscription.payment_provider == PaymentProviders.STRIPE
+
+    def test_mercadopago_pinned_org_gets_a_mercadopago_stamped_subscription(self, service, plan):
+        """The discriminating half: the same code path must produce a *different*
+        value for a differently-pinned organization, which is what proves the
+        provider is resolved rather than constant."""
+        org = baker.make(Organization, parent=None)
+        self._billing_profile_for(org, PaymentProviders.MERCADOPAGO)
+
+        subscription = service.create_subscription_for_organization(org, plan=plan)
+
+        assert subscription is not None
+        assert subscription.payment_provider == PaymentProviders.MERCADOPAGO
+
+    def test_unpinned_org_falls_back_to_the_system_default(self, service, plan, settings):
+        settings.DEFAULT_PAYMENT_PROVIDER = PaymentProviders.STRIPE
+        org = baker.make(Organization, parent=None)
+        self._billing_profile_for(org, "")
+
+        subscription = service.create_subscription_for_organization(org, plan=plan)
+
+        assert subscription is not None
+        assert subscription.payment_provider == PaymentProviders.STRIPE
+
+    def test_org_without_a_billing_profile_falls_back_to_the_system_default(
+        self, service, plan, settings
+    ):
+        """The common case at organization creation: the ``Subscription`` is
+        created before any ``BillingProfile`` exists."""
+        settings.DEFAULT_PAYMENT_PROVIDER = PaymentProviders.STRIPE
+        org = baker.make(Organization, parent=None)
+
+        subscription = service.create_subscription_for_organization(org, plan=plan)
+
+        assert subscription is not None
+        assert subscription.payment_provider == PaymentProviders.STRIPE
 
 
 @pytest.mark.django_db

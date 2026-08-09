@@ -85,6 +85,12 @@ class StripePaymentAdapter(BasePaymentAdapter):
         self.api_key = api_key
         self.webhook_secret = webhook_secret
 
+    @property
+    def is_configured(self) -> bool:
+        """See ``BasePaymentAdapter.is_configured``. ``STRIPE_SECRET_KEY`` is the
+        credential every outbound Stripe call is made with (``api_key=``)."""
+        return bool(self.api_key)
+
     def process(self, payment: Payment, payment_token: str, idempotency_key: str = "") -> str:
         """
         `payment_token` is a Stripe `PaymentMethod` id (e.g. from Stripe.js /

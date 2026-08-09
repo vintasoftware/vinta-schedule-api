@@ -217,7 +217,17 @@ class SubscriptionViewSet(TenantScopedViewMixin, GenericVirtualModelViewMixin, G
     @extend_schema(
         summary="Upgrade or downgrade the org's plan",
         request=ChangePlanRequestSerializer,
-        responses={200: SubscriptionSerializer},
+        responses={
+            200: SubscriptionSerializer,
+            409: {
+                "description": (
+                    "Either another plan change is already awaiting payment confirmation, "
+                    "or the provider this organization resolves to is not configured in "
+                    "this deployment (`PaymentProviderNotConfiguredError`, mapped centrally "
+                    "in `common.exception_handlers.vinta_exception_handler`)."
+                )
+            },
+        },
     )
     @action(methods=["post"], detail=False, url_path="change-plan", url_name="change-plan")
     def change_plan(self, request, *args, **kwargs):
@@ -254,7 +264,15 @@ class SubscriptionViewSet(TenantScopedViewMixin, GenericVirtualModelViewMixin, G
     @extend_schema(
         summary="Cancel the org's subscription",
         request=None,
-        responses={200: SubscriptionSerializer},
+        responses={
+            200: SubscriptionSerializer,
+            409: {
+                "description": (
+                    "The provider this subscription is stamped with is not configured in "
+                    "this deployment, so the provider-side cancellation cannot be driven."
+                )
+            },
+        },
     )
     @action(methods=["post"], detail=False, url_path="cancel", url_name="cancel")
     def cancel(self, request, *args, **kwargs):
@@ -316,7 +334,15 @@ class AddOnViewSet(TenantScopedViewMixin, GenericViewSet):
     @extend_schema(
         summary="Purchase additional capacity",
         request=AddOnPurchaseRequestSerializer,
-        responses={201: SubscriptionAddOnSerializer},
+        responses={
+            201: SubscriptionAddOnSerializer,
+            409: {
+                "description": (
+                    "The provider this organization resolves to is not configured in this "
+                    "deployment, so the one-time charge cannot be driven."
+                )
+            },
+        },
     )
     def create(self, request, *args, **kwargs):
         organization = _require_organization(request)

@@ -55,6 +55,16 @@ CELERY_TASK_EAGER_PROPAGATES = True
 SITE_DOMAIN = "test-schedule.vinta.com.br"
 SALT_KEY = "123467890asdfghjkl"
 
+# Pinned to fake non-empty values, like SECRET_KEY/SALT_KEY above -- so
+# `BasePaymentAdapter.is_configured` (and therefore whether a charge is
+# attempted or refused with `PaymentProviderNotConfiguredError`) answers the
+# same way regardless of the developer's own `.env`. Every charge-path test
+# already overrides the DI adapter slot directly, so this only matters for a
+# test that forgets to -- which must fail (or pass) identically on every
+# machine, not depending on whether STRIPE_SECRET_KEY happens to be set locally.
+STRIPE_SECRET_KEY = "sk_test_fake-not-for-production-use-only"  # nosec
+MERCADOPAGO_ACCESS_TOKEN = "test-fake-mercadopago-access-token-not-for-production-use"  # nosec
+
 # Disable rate limiting for tests
 PUBLIC_API_REQUESTS_PER_SECOND_LIMIT = 0
 PUBLIC_API_REQUESTS_PER_MINUTE_LIMIT = 0

@@ -19,7 +19,9 @@ from model_bakery import baker
 
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
 from payments.billing_constants import BillingState, LimitedResource, LimitKind
+from payments.constants import PaymentProviders
 from payments.models import BillingPlan, PlanLimit, Subscription
+from payments.services.subscription_adapters.base import BaseSubscriptionAdapter
 from payments.services.subscription_adapters.mercadopago_subscription_adapter import (
     MercadoPagoSubscriptionAdapter,
 )
@@ -142,6 +144,14 @@ def billing_profile(organization):
         document_type="CPF",
         document_number="12345678900",
         billing_address=billing_address,
+        # Pinned to MercadoPago to match the SDK-mocked
+        # ``mercadopago_subscription_adapter`` slot below:
+        # ``create_subscription_for_organization`` stamps the organization's
+        # resolved provider onto the ``Subscription`` (Rule B, Payment Provider
+        # Selection Phase 4), and that column is what every dunning retry
+        # resolves its adapter from. Leaving it unpinned would resolve to
+        # ``settings.DEFAULT_PAYMENT_PROVIDER`` (``stripe``).
+        payment_provider=PaymentProviders.MERCADOPAGO,
     )
 
 
@@ -157,22 +167,48 @@ def mercadopago_subscription_adapter():
 
 
 @pytest.fixture
+def stripe_subscription_adapter():
+    """Structural guard: every ``Subscription`` this module builds resolves its
+    provider from its organization, so an organization that is *not* pinned to
+    MercadoPago (a second org built inline by a fan-out test, say) would
+    otherwise drive the real, unmocked ``StripeSubscriptionAdapter`` over the
+    network. ``di_overrides`` below asserts at teardown that this double never
+    actually receives a call -- a call reaching it is a wrong-provider routing
+    regression, not a legitimate one."""
+    adapter = MagicMock(spec=BaseSubscriptionAdapter)
+    adapter.provider = PaymentProviders.STRIPE
+    return adapter
+
+
+@pytest.fixture
 def mock_notification_service():
     return MagicMock()
 
 
 @pytest.fixture(autouse=True)
-def di_overrides(di_container, mercadopago_subscription_adapter, mock_notification_service):
+def di_overrides(
+    di_container,
+    mercadopago_subscription_adapter,
+    stripe_subscription_adapter,
+    mock_notification_service,
+):
     """Real ``DunningService``/``SubscriptionService`` from the wired container,
-    with only the provider SDK and the notification service swapped out --
+    with only the provider SDKs and the notification service swapped out --
     proves ``@inject`` on the Celery tasks actually resolves a working service,
     the same concern ``test_metering_tasks.py`` documents for the metering
-    tasks."""
+    tasks. **Both** subscription provider slots are overridden -- see
+    ``stripe_subscription_adapter``."""
     with (
         di_container.subscription_gateway.override(mercadopago_subscription_adapter),
+        di_container.stripe_subscription_gateway.override(stripe_subscription_adapter),
         di_container.notification_service.override(mock_notification_service),
     ):
         yield
+    assert stripe_subscription_adapter.mock_calls == [], (
+        "A test in this module routed a dunning retry to the Stripe subscription "
+        "adapter -- every organization here is pinned to MercadoPago, so this is "
+        f"a wrong-provider routing regression: {stripe_subscription_adapter.mock_calls!r}"
+    )
 
 
 @pytest.fixture

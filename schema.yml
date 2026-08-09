@@ -1373,6 +1373,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/SubscriptionAddOn'
           description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                description: The provider this organization resolves to is not configured
+                  in this deployment, so the one-time charge cannot be driven.
+          description: ''
   /billing/add-ons{format}:
     post:
       operationId: billing_add_ons_formatted_create
@@ -1426,6 +1433,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SubscriptionAddOn'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                description: The provider this organization resolves to is not configured
+                  in this deployment, so the one-time charge cannot be driven.
           description: ''
   /billing/add-ons/{id}/:
     delete:
@@ -1703,6 +1717,14 @@ paths:
               schema:
                 $ref: '#/components/schemas/Subscription'
           description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                description: The provider this subscription is stamped with is not
+                  configured in this deployment, so the provider-side cancellation
+                  cannot be driven.
+          description: ''
   /billing/subscription/cancel{format}:
     post:
       operationId: billing_subscription_cancel_formatted_create
@@ -1739,6 +1761,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Subscription'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                description: The provider this subscription is stamped with is not
+                  configured in this deployment, so the provider-side cancellation
+                  cannot be driven.
           description: ''
   /billing/subscription/change-plan/:
     post:
@@ -1781,6 +1811,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Subscription'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                description: Either another plan change is already awaiting payment
+                  confirmation, or the provider this organization resolves to is not
+                  configured in this deployment (`PaymentProviderNotConfiguredError`,
+                  mapped centrally in `common.exception_handlers.vinta_exception_handler`).
           description: ''
   /billing/subscription/change-plan{format}:
     post:
@@ -1830,6 +1869,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Subscription'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                description: Either another plan change is already awaiting payment
+                  confirmation, or the provider this organization resolves to is not
+                  configured in this deployment (`PaymentProviderNotConfiguredError`,
+                  mapped centrally in `common.exception_handlers.vinta_exception_handler`).
           description: ''
   /billing/subscription/retrieve_subscription/:
     get:
