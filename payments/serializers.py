@@ -145,6 +145,45 @@ class AddOnPurchaseRequestSerializer(serializers.Serializer):
     payment_token = serializers.CharField(max_length=255, required=False, allow_blank=True)
 
 
+class UsageByOrganizationSerializer(serializers.Serializer):
+    """One organization's contribution to a pooled ``GET /billing/usage/`` figure.
+
+    Sourced from ``EntitlementService.get_usage_breakdown`` / the ``usage_breakdown_for_root``
+    entry point it shares with ``CycleCloseService``. An organization in the pool
+    that contributed **nothing** to this resource is **omitted from the list
+    entirely** -- never present with ``usage: 0`` -- matching that breakdown's
+    absent-not-zero contract.
+    """
+
+    organization_id = serializers.IntegerField(
+        help_text="pk of the contributing organization, within the caller's pooled billing subtree."
+    )
+    name = serializers.CharField(help_text="The contributing organization's name.")
+    usage = serializers.IntegerField(help_text="This organization's share of the resource's usage.")
+
+
+class BillingPlanSnapshotSerializer(serializers.Serializer):
+    """The plan in force for the current billing cycle, as reported by ``GET
+    /billing/usage/``. ``null`` when the caller's billing root has no
+    ``Subscription`` (``billing_state: "free"``)."""
+
+    slug = serializers.CharField(help_text="The billing plan's slug.")
+    name = serializers.CharField(help_text="The billing plan's display name.")
+    currency = serializers.CharField(help_text='The billing plan\'s currency, e.g. "USD".')
+
+
+class BillingPeriodBoundsSerializer(serializers.Serializer):
+    """The ``[start, end)`` bounds of the cycle in progress right now, resolved
+    through the same anchor (``resolve_billing_period`` /
+    ``current_billing_period_start``) the meter and the usage counters use --
+    never read off ``Subscription.current_period_start`` directly, which goes
+    stale the moment one cycle elapses. ``null`` when there is no subscription.
+    """
+
+    start = serializers.DateTimeField(help_text="Inclusive start of the current billing period.")
+    end = serializers.DateTimeField(help_text="Exclusive end of the current billing period.")
+
+
 class EffectiveLimitUsageSerializer(serializers.Serializer):
     """One row of ``GET /billing/usage/`` -- an ``EffectiveLimit`` paired with the
     ``current_usage`` ``EntitlementService.check_limit`` would compare it
@@ -156,10 +195,55 @@ class EffectiveLimitUsageSerializer(serializers.Serializer):
     limit_value = serializers.IntegerField(allow_null=True)
     current_usage = serializers.IntegerField(allow_null=True)
     overage_unit_price = serializers.DecimalField(max_digits=10, decimal_places=4, allow_null=True)
+    included_in_plan = serializers.IntegerField(
+        allow_null=True,
+        help_text=(
+            "The plan-only portion of limit_value (SubscriptionPlanLimit.limit_value), "
+            "before any add-on capacity. null under the same fail-open rule limit_value "
+            "follows: no subscription, no plan-limit row for this resource, or an "
+            "explicitly unlimited row."
+        ),
+    )
+    add_on_quantity = serializers.IntegerField(
+        help_text=(
+            "The sum of every active SubscriptionAddOn's quantity for this resource. "
+            "included_in_plan + add_on_quantity == limit_value whenever limit_value is "
+            "non-null -- these two fields decompose limit_value, they do not redefine it."
+        )
+    )
+    by_organization = UsageByOrganizationSerializer(
+        many=True,
+        help_text=(
+            "Per-organization attribution of current_usage across the caller's pooled "
+            "billing subtree. An organization that contributed nothing is omitted, "
+            "never present with usage: 0. Ordered by organization_id ascending."
+        ),
+    )
 
 
 class UsageResponseSerializer(serializers.Serializer):
     billing_state = serializers.CharField()
+    billing_root_organization_id = serializers.IntegerField(
+        help_text="pk of the billing root this response was resolved against."
+    )
+    plan = BillingPlanSnapshotSerializer(
+        allow_null=True,
+        help_text="The plan in force this cycle. null when there is no subscription.",
+    )
+    billing_period = BillingPeriodBoundsSerializer(
+        allow_null=True,
+        help_text="Bounds of the cycle in progress now. null when there is no subscription.",
+    )
+    estimated_overage_total = serializers.DecimalField(
+        max_digits=12,
+        decimal_places=4,
+        help_text=(
+            "Overage money accrued so far in the current, open billing period -- "
+            "MeteredOccurrenceQuerySet.overage_total() over the caller's pooled subtree. "
+            'Accrued-to-date, never a projection of the whole cycle. "0.0000" when there '
+            "is no subscription."
+        ),
+    )
     limits = EffectiveLimitUsageSerializer(many=True)
 
 

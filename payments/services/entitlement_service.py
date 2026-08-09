@@ -42,6 +42,7 @@ from payments.models import (
     PaymentMethod,
     Subscription,
     SubscriptionEntitlement,
+    SubscriptionPlanLimit,
 )
 from payments.services.billing_dataclasses import EffectiveLimit, LimitCheckResult
 from payments.services.subscription_service import (
@@ -351,6 +352,13 @@ class EntitlementService:
         chain (one query per level) and re-fetching the subscription for the
         ceiling lookup, the usage count, and the remedy.
 
+        Resolves the ``SubscriptionPlanLimit`` row (and, when it carries a finite
+        ceiling, the active add-on total) and hands both to
+        ``effective_limit_from_resolved``, which is the one place the ceiling
+        arithmetic itself lives. This method's own job stops at resolving those
+        inputs and logging the two fail-open cases it alone can see: no
+        subscription at all, and no limit row for the resource.
+
         :param root_pk: The **billing root**'s pk — always the root, never the
             organization that was asked about, so the warning below means one thing
             regardless of which entry point produced it. The subscription that is
@@ -370,9 +378,7 @@ class EntitlementService:
                 resource_key,
                 asked_for_organization_pk if asked_for_organization_pk is not None else root_pk,
             )
-            return EffectiveLimit(
-                resource_key=resource_key, limit_value=None, kind=None, overage_unit_price=None
-            )
+            return self.effective_limit_from_resolved(resource_key, plan_limit=None)
 
         limit = subscription.limits.filter(resource_key=resource_key).first()
         if limit is None:
@@ -382,19 +388,15 @@ class EntitlementService:
                 subscription.pk,
                 resource_key,
             )
-            return EffectiveLimit(
-                resource_key=resource_key, limit_value=None, kind=None, overage_unit_price=None
-            )
+            return self.effective_limit_from_resolved(resource_key, plan_limit=None)
 
         if limit.limit_value is None:
             # Unlimited plus any amount of purchased capacity is still unlimited;
-            # skip the add-on aggregate entirely rather than adding to NULL.
-            return EffectiveLimit(
-                resource_key=resource_key,
-                limit_value=None,
-                kind=limit.kind,
-                overage_unit_price=limit.overage_unit_price,
-            )
+            # skip the add-on aggregate entirely rather than adding to NULL. Passed
+            # through without ever computing ``add_on_quantity`` — the delegate
+            # never looks at it when ``plan_limit.limit_value is None`` either, but
+            # the point is that the aggregate query itself must not run.
+            return self.effective_limit_from_resolved(resource_key, plan_limit=limit)
 
         # NOTE: no period/expiry filter. `is_active` is the only check, so a
         # one-time (`is_recurring=False`) add-on raises the ceiling forever rather
@@ -408,12 +410,7 @@ class EntitlementService:
             )["total"]
             or 0
         )
-        return EffectiveLimit(
-            resource_key=resource_key,
-            limit_value=limit.limit_value + add_on_quantity,
-            kind=limit.kind,
-            overage_unit_price=limit.overage_unit_price,
-        )
+        return self.effective_limit_from_resolved(resource_key, limit, add_on_quantity)
 
     def effective_limit_for_subscription(
         self, subscription: Subscription | None, resource_key: str, root: Organization
@@ -429,6 +426,57 @@ class EntitlementService:
         """
         return self._effective_limit_for_subscription(
             subscription, resource_key, root_pk=root.pk, asked_for_organization_pk=root.pk
+        )
+
+    def effective_limit_from_resolved(
+        self,
+        resource_key: str,
+        plan_limit: SubscriptionPlanLimit | None,
+        add_on_quantity: int = 0,
+    ) -> EffectiveLimit:
+        """The one implementation of the ceiling arithmetic -- the three fail-open
+        branches described below -- reached through two paths: this method, for a
+        caller that has already resolved the ``SubscriptionPlanLimit`` row and the
+        active add-on total for ``resource_key`` itself, and
+        ``_effective_limit_for_subscription``, which resolves those same inputs
+        from a ``Subscription`` and then delegates here rather than re-implementing
+        the branches.
+
+        Direct callers of this entry point resolve their own inputs to avoid
+        redundant queries -- e.g. ``BillingUsageViewSet.retrieve_usage``, which
+        batches ``plan_limit_by_resource``/``add_on_quantity_by_resource`` once for
+        the whole ``LimitedResource`` loop specifically to avoid a
+        ``SubscriptionPlanLimit`` lookup and a ``Sum`` aggregate per resource.
+        Calling ``effective_limit_for_subscription`` from that loop would throw
+        that batching away by re-running both queries per resource anyway.
+
+        No row at all (``plan_limit is None`` -- also what
+        ``_effective_limit_for_subscription`` passes when there is no subscription
+        in the first place, or no ``SubscriptionPlanLimit`` row for the resource)
+        and an explicitly unlimited row (``plan_limit.limit_value is None``) both
+        resolve to ``limit_value=None`` without ever consulting ``add_on_quantity``
+        for the ceiling; only a finite ``limit_value`` adds it in. Callers that
+        resolve ``plan_limit`` themselves must not compute an add-on aggregate
+        before knowing which branch applies -- see
+        ``_effective_limit_for_subscription``'s own comment on why the aggregate
+        must not run in the unlimited case.
+        """
+        if plan_limit is None:
+            return EffectiveLimit(
+                resource_key=resource_key, limit_value=None, kind=None, overage_unit_price=None
+            )
+        if plan_limit.limit_value is None:
+            return EffectiveLimit(
+                resource_key=resource_key,
+                limit_value=None,
+                kind=plan_limit.kind,
+                overage_unit_price=plan_limit.overage_unit_price,
+            )
+        return EffectiveLimit(
+            resource_key=resource_key,
+            limit_value=plan_limit.limit_value + add_on_quantity,
+            kind=plan_limit.kind,
+            overage_unit_price=plan_limit.overage_unit_price,
         )
 
     def get_current_usage(

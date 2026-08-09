@@ -93,11 +93,28 @@ Two false invariants were corrected in **docstrings** rather than code, because 
 
 Known residual, accepted: `cycle_close_service` still imports module-private `_group_counts_by_organization` and `USAGE_COUNTERS` from `entitlement_service`. The two service methods it called privately were promoted to public pre-resolved entry points (`effective_limit_for_subscription`, `usage_breakdown_for_root`), which also let the pool resolve once per period instead of once per resource under the `SELECT ... FOR UPDATE`.
 
+### Phase 3 — Enrich the current-usage summary ✅
+
+- **Branch**: `plan/billing-usage-summary-and-ledger/phase-3` (base: `phase-2`)
+- **Models**: implementer Sonnet (Tier 3) · reviewer Sonnet (Tier 3 default) · fixer Sonnet
+- **Commits**: `2e2b71b`, `28b0c6e`, `89dc631`
+
+`GET /billing/usage/` enriched additively with `billing_root_organization_id`, `plan`, `billing_period`, `estimated_overage_total`, and per-row `included_in_plan` / `add_on_quantity` / `by_organization`. Full suite **5194 passed, 0 failed**. No BLOCKERs in review.
+
+**Query count went 63 → 21.** The endpoint previously resolved the billing root sixteen times and walked the subtree eight times per request. The first pass got it to 37; the review then found that 16 of those remaining 37 were duplicate `SubscriptionPlanLimit` / add-on lookups redoing per resource what the view had just batched two lines earlier. The query-count test now pins a ceiling, not just two SQL substrings, so the number cannot silently drift back.
+
+Worth carrying forward:
+
+- **Do not put a docstring on the `retrieve_usage` action.** drf-spectacular uses an action's docstring as the OpenAPI `description` in preference to the class's, which would silently drop the RESTRICTED / read-never-blocks documentation from the public schema. Implementation notes there stay regular comments. The implementer hit this and caught it before committing.
+- **`estimated_overage_total` applies `.for_organizations(pool)` and Phase 2's statement deliberately does not.** These look inconsistent and are not: this is a live read scoped to the asking organization's current pool, while the closed-period statement must reproduce exactly what the charge summed, pool filter and all. Do not "align" them.
+- **The ceiling arithmetic nearly got a second implementation.** The N+1 fix introduced `effective_limit_from_resolved`, which reproduced `_effective_limit_for_subscription`'s three fail-open branches line for line — the same hazard the plan's **Guiding Decisions** rejected for the usage counters in Phase 1. Refactored so `_effective_limit_for_subscription` delegates to it: one arithmetic, two ways to supply inputs. The lazy skip of the add-on aggregate on an unlimited limit is preserved and now has its own query-capture test.
+- The `event_occurrences` counter still derives its own period from `timezone.now()`, so it and the view's period can straddle a boundary in a rare race. Out of scope to fix (Phase 1 counter signature); the comment says so honestly rather than claiming the race is closed.
+
 ## Current phase
 
-**Phase 3 — Enrich the current-usage summary** (implementer Tier 3, no review override).
+**Phase 4 — Closed-period statement endpoints** (implementer Tier 2, no review override).
 
-Branch `plan/billing-usage-summary-and-ledger/phase-3`, based on `phase-2`.
+Branch `plan/billing-usage-summary-and-ledger/phase-4`, based on `phase-3`. Bundled per the chosen granularity: list + detail share a queryset, permission, and serializer tree.
 
 ## Remaining phases
 

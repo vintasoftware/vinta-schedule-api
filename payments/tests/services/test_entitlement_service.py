@@ -144,6 +144,29 @@ class TestGetEffectiveLimit:
 
         assert result.limit_value is None
 
+    def test_unlimited_plan_limit_never_runs_the_add_on_aggregate(
+        self, service, organization, subscription
+    ):
+        """The unlimited branch must skip the add-on ``Sum`` query entirely rather
+        than run it and add to ``None`` -- the ordering detail the delegation onto
+        ``effective_limit_from_resolved`` must preserve.
+        """
+        make_limit(subscription, LimitedResource.ORGANIZATION_MEMBERS, None)
+        make_add_on(subscription, LimitedResource.ORGANIZATION_MEMBERS, 3)
+
+        with CaptureQueriesContext(connection) as captured:
+            result = service.get_effective_limit(organization, LimitedResource.ORGANIZATION_MEMBERS)
+
+        assert result.limit_value is None
+        assert not [
+            query
+            for query in captured.captured_queries
+            if "payments_subscriptionaddon" in query["sql"]
+        ], (
+            "The unlimited branch ran the add-on aggregate query. Queries seen: "
+            f"{[query['sql'] for query in captured.captured_queries]}"
+        )
+
     def test_missing_limit_row_is_unlimited_not_zero(self, service, organization, subscription):
         """Fail-open: a resource the subscription has no row for is uncapped.
 
