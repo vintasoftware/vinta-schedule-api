@@ -34,11 +34,18 @@ class BillingPeriodSummaryFilterSet(filters.FilterSet):
         field_name="billing_period_start",
         lookup_expr="gte",
         label="Only periods starting on or after this instant",
+        # drf-spectacular prefers `help_text` over `label` when building the
+        # OpenAPI parameter `description` (see
+        # `DjangoFilterExtension._get_field_description`) -- set explicitly so
+        # the inclusive (`gte`) bound reaches the generated client docs rather
+        # than depending on that fallback to the browsable-API `label`.
+        help_text="Only periods starting on or after this instant (inclusive).",
     )
     billing_period_start_before = filters.DateTimeFilter(
         field_name="billing_period_start",
         lookup_expr="lte",
         label="Only periods starting on or before this instant",
+        help_text="Only periods starting on or before this instant (inclusive).",
     )
     charged = filters.BooleanFilter(
         field_name="charged", label="Filter by whether the period's overage was charged"

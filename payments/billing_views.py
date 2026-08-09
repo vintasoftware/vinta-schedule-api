@@ -27,6 +27,7 @@ from rest_framework.exceptions import NotFound, PermissionDenied, ValidationErro
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
+from rest_framework.serializers import BaseSerializer
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.viewsets import GenericViewSet, ViewSet
 
@@ -314,7 +315,11 @@ class BillingPeriodViewSet(
     History is forward-only (see the plan's Non-goals / Risk & Rollout Notes):
     an organization with no closed periods yet gets ``200`` with an empty list,
     never a ``404`` -- there is nothing wrong with that organization, cycle
-    close simply has not run for it yet.
+    close simply has not run for it yet. A caller with **no active
+    organization** (``request.organization is None``) is a different state --
+    there is no pool to resolve a billing root against at all -- and gets
+    ``403``, matching ``GET /billing/usage/``'s ``_require_organization`` rule
+    rather than the empty-list state above.
     """
 
     queryset = BillingPeriodSummary.objects.all()
@@ -331,15 +336,13 @@ class BillingPeriodViewSet(
         super().__init__(*args, **kwargs)
         self.entitlement_service = entitlement_service
 
-    def get_serializer_class(self):
+    def get_serializer_class(self) -> type[BaseSerializer]:
         if self.action == "retrieve":
             return BillingPeriodSummaryDetailSerializer
         return BillingPeriodSummarySerializer
 
     def get_queryset(self) -> QuerySet[BillingPeriodSummary]:
-        organization = getattr(self.request, "organization", None)
-        if organization is None:
-            return BillingPeriodSummary.objects.none()
+        organization = _require_organization(self.request)
         root = resolve_billing_root(organization)
         pooled_organization_ids = self.entitlement_service.get_pooled_organization_ids(root)
         queryset = BillingPeriodSummary.objects.for_organizations(pooled_organization_ids)
@@ -361,7 +364,26 @@ class BillingPeriodViewSet(
         responses={200: BillingPeriodSummaryDetailSerializer},
     )
     def retrieve(self, request, *args, **kwargs):
-        return super().retrieve(request, *args, **kwargs)
+        instance = self.get_object()
+        # `instance.resources` is already prefetched by `get_queryset()` for
+        # the retrieve action, so this walks the prefetch cache rather than
+        # issuing a query per resource row. Bounded by pool size, not by
+        # resource-row count: one extra query total, resolving every
+        # organization pk referenced across all resource rows in one batch --
+        # the same pattern `BillingUsageViewSet.retrieve_usage` already uses
+        # for `organization_names`.
+        organization_ids = {
+            int(organization_id)
+            for resource in instance.resources.all()
+            for organization_id in resource.by_organization
+        }
+        organization_names = dict(
+            Organization.objects.filter(pk__in=organization_ids).values_list("pk", "name")
+        )
+        context = self.get_serializer_context()
+        context["organization_names"] = organization_names
+        serializer = self.get_serializer(instance, context=context)
+        return Response(serializer.data)
 
 
 class SubscriptionViewSet(TenantScopedViewMixin, GenericVirtualModelViewMixin, GenericViewSet):

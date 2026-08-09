@@ -163,6 +163,25 @@ class TestListReturnsCallersPooledStatements:
 
 
 @pytest.mark.django_db
+class TestNoActiveOrganizationIsForbidden:
+    """A caller with zero active memberships gets ``403``, not ``200`` with an
+    empty list -- that ambiguity would otherwise be indistinguishable from
+    this phase's expected day-one state (an organization with no closed
+    periods yet), matching ``GET /billing/usage/``'s ``_require_organization``
+    contract."""
+
+    def test_list_is_403_without_an_active_organization(self, auth_client):
+        response = auth_client.get(periods_list_url())
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    def test_retrieve_is_403_without_an_active_organization(self, auth_client):
+        response = auth_client.get(period_detail_url(999_999))
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+
+@pytest.mark.django_db
 class TestListFilters:
     def test_billing_period_start_after_and_before_narrow_the_list(
         self, auth_client, child_admin_membership, root, subscription
@@ -262,7 +281,9 @@ class TestDetailReturnsResourcesAndDistinguishesNulls:
         assert members_row["total"] == 14
         assert members_row["limit_value"] == 25
         assert members_row["overage_unit_price"] is None
-        assert members_row["by_organization"] == {str(root.pk): 14}
+        assert members_row["by_organization"] == [
+            {"organization_id": root.pk, "name": root.name, "usage": 14}
+        ]
 
         occurrences_row = resources_by_key["event_occurrences"]
         assert Decimal(occurrences_row["overage_unit_price"]) == Decimal("0.0100")
@@ -399,3 +420,128 @@ class TestDetailPrefetchesResources:
         # Exactly one query fetches every resource row -- the prefetch -- not
         # one per row (which would scale with `len(resource_keys)`).
         assert len(resource_usage_queries) == 1
+
+
+@pytest.mark.django_db
+class TestDetailByOrganizationAttribution:
+    """``by_organization`` on the detail action mirrors ``GET
+    /billing/usage/``'s ``UsageByOrganizationSerializer`` shape -- a list of
+    ``{organization_id, name, usage}``, names batch-resolved in one extra
+    query regardless of how many organizations or resource rows contributed.
+    """
+
+    def test_query_count_does_not_scale_with_resource_rows_or_organizations(
+        self, auth_client, child_admin_membership, root, child, subscription
+    ):
+        # `AS "pk"` + `AS "name"` together uniquely identify the batched
+        # `Organization.objects.filter(pk__in=...).values_list("pk", "name")`
+        # lookup -- distinct from the (several) other organization-table
+        # queries `TenantScopedViewMixin`/pool resolution already issue for
+        # every request in this module, which this test must not conflate
+        # with the fix's added query.
+        def organization_name_lookup_queries(captured):
+            return [
+                query
+                for query in captured.captured_queries
+                if 'AS "pk"' in query["sql"] and 'AS "name"' in query["sql"]
+            ]
+
+        summary = make_summary(
+            organization=root,
+            subscription=subscription,
+            billing_period_start=datetime.datetime(2026, 8, 1, tzinfo=datetime.UTC),
+        )
+        baker.make(
+            BillingPeriodResourceUsage,
+            summary=summary,
+            resource_key="organization_members",
+            total=2,
+            by_organization={str(root.pk): 2},
+        )
+
+        with CaptureQueriesContext(connection) as captured_one_row_one_org:
+            small_response = auth_client.get(period_detail_url(summary.pk))
+
+        assert small_response.status_code == status.HTTP_200_OK
+        small_queries = organization_name_lookup_queries(captured_one_row_one_org)
+        assert len(small_queries) == 1
+
+        resource_keys = [
+            "resource_calendars",
+            "calendar_groups",
+            "bundle_calendars",
+            "availability_windows",
+            "webhook_subscriptions",
+            "public_api_system_users",
+            "event_occurrences",
+        ]
+        # Every additional resource row attributes usage across both pooled
+        # organizations -- the organization-pk union spans the whole pool on
+        # every row, not just one row's worth.
+        for resource_key in resource_keys:
+            baker.make(
+                BillingPeriodResourceUsage,
+                summary=summary,
+                resource_key=resource_key,
+                total=3,
+                by_organization={str(root.pk): 2, str(child.pk): 1},
+            )
+
+        with CaptureQueriesContext(connection) as captured_eight_rows_two_orgs:
+            large_response = auth_client.get(period_detail_url(summary.pk))
+
+        assert large_response.status_code == status.HTTP_200_OK
+        assert len(large_response.data["resources"]) == 1 + len(resource_keys)
+        large_queries = organization_name_lookup_queries(captured_eight_rows_two_orgs)
+        # Exactly one query resolves organization names for the whole
+        # response, in both cases -- the batched `pk__in=...` lookup -- not
+        # one per resource row (1 -> 8) and not one per organization
+        # referenced (1 -> 2).
+        assert len(large_queries) == 1
+        assert len(large_queries) == len(small_queries)
+        # Total query count is identical between the two requests: the
+        # per-resource-row/per-organization growth is purely in the payload,
+        # never in query count.
+        assert len(captured_eight_rows_two_orgs.captured_queries) == len(
+            captured_one_row_one_org.captured_queries
+        )
+
+    def test_unknown_organization_renders_blank_name_and_still_counts_toward_total(
+        self, auth_client, child_admin_membership, root, subscription
+    ):
+        deleted_organization_pk = 999_999
+        summary = make_summary(
+            organization=root,
+            subscription=subscription,
+            billing_period_start=datetime.datetime(2026, 8, 1, tzinfo=datetime.UTC),
+        )
+        baker.make(
+            BillingPeriodResourceUsage,
+            summary=summary,
+            resource_key="organization_members",
+            total=6,
+            by_organization={str(root.pk): 4, str(deleted_organization_pk): 2},
+        )
+
+        response = auth_client.get(period_detail_url(summary.pk))
+
+        assert response.status_code == status.HTTP_200_OK
+        row = next(
+            row
+            for row in response.data["resources"]
+            if row["resource_key"] == "organization_members"
+        )
+        by_organization = {entry["organization_id"]: entry for entry in row["by_organization"]}
+        assert by_organization[root.pk] == {
+            "organization_id": root.pk,
+            "name": root.name,
+            "usage": 4,
+        }
+        # The no-longer-existing organization is not dropped -- its count
+        # still counts toward `total` -- it just has no resolvable name.
+        assert by_organization[deleted_organization_pk] == {
+            "organization_id": deleted_organization_pk,
+            "name": "",
+            "usage": 2,
+        }
+        assert row["total"] == sum(entry["usage"] for entry in row["by_organization"])

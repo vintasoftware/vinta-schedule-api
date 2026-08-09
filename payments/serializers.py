@@ -300,14 +300,19 @@ class BillingPeriodResourceUsageSerializer(serializers.ModelSerializer):
             "resource, or when no single stamped price applies to this period."
         ),
     )
-    by_organization = serializers.DictField(
-        child=serializers.IntegerField(),
+    by_organization = UsageByOrganizationSerializer(
+        many=True,
+        source="_by_organization_rows",
         help_text=(
             "Per-organization contribution to total, across the pooled subtree at "
-            "close time. Keys are organization pks written and read back as "
-            "**strings** (JSONField round-trips dict keys to strings on write; "
-            "this mirrors that persisted shape exactly rather than coercing it) "
-            "mapping to that organization's count for this resource this period."
+            "close time. An organization that contributed nothing is omitted, "
+            "never present with usage: 0. Ordered by organization_id ascending -- "
+            "the identical shape GET /billing/usage/'s by_organization uses. "
+            "Names are resolved at **read time** against the organizations table, "
+            "so they reflect each organization's current name, not its name as of "
+            "when this period closed -- this row has no name snapshot. An "
+            'organization that no longer exists renders with name: "" rather '
+            "than being dropped from the list; its count still counts toward total."
         ),
     )
 
@@ -322,6 +327,25 @@ class BillingPeriodResourceUsageSerializer(serializers.ModelSerializer):
             "by_organization",
         )
         read_only_fields = fields
+
+    def to_representation(self, instance):
+        """Build the ``UsageByOrganizationSerializer``-shaped rows from the
+        model's persisted ``{str(organization_id): count}`` blob plus the
+        ``organization_names`` map the view resolves once per request and
+        threads through ``context`` -- see ``BillingPeriodViewSet.retrieve``.
+        """
+        organization_names: dict[int, str] = self.context.get("organization_names", {})
+        instance._by_organization_rows = [
+            {
+                "organization_id": organization_id,
+                "name": organization_names.get(organization_id, ""),
+                "usage": usage,
+            }
+            for organization_id, usage in sorted(
+                (int(pk), usage) for pk, usage in instance.by_organization.items()
+            )
+        ]
+        return super().to_representation(instance)
 
 
 class BillingPeriodSummarySerializer(serializers.ModelSerializer):

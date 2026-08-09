@@ -1972,7 +1972,11 @@ paths:
         History is forward-only (see the plan's Non-goals / Risk & Rollout Notes):
         an organization with no closed periods yet gets ``200`` with an empty list,
         never a ``404`` -- there is nothing wrong with that organization, cycle
-        close simply has not run for it yet.
+        close simply has not run for it yet. A caller with **no active
+        organization** (``request.organization is None``) is a different state --
+        there is no pool to resolve a billing root against at all -- and gets
+        ``403``, matching ``GET /billing/usage/``'s ``_require_organization`` rule
+        rather than the empty-list state above.
       summary: List closed billing period statements
       parameters:
       - in: header
@@ -1990,13 +1994,13 @@ paths:
         schema:
           type: string
           format: date-time
-        description: Only periods starting on or after this instant
+        description: Only periods starting on or after this instant (inclusive).
       - in: query
         name: billing_period_start_before
         schema:
           type: string
           format: date-time
-        description: Only periods starting on or before this instant
+        description: Only periods starting on or before this instant (inclusive).
       - in: query
         name: charged
         schema:
@@ -2052,7 +2056,11 @@ paths:
         History is forward-only (see the plan's Non-goals / Risk & Rollout Notes):
         an organization with no closed periods yet gets ``200`` with an empty list,
         never a ``404`` -- there is nothing wrong with that organization, cycle
-        close simply has not run for it yet.
+        close simply has not run for it yet. A caller with **no active
+        organization** (``request.organization is None``) is a different state --
+        there is no pool to resolve a billing root against at all -- and gets
+        ``403``, matching ``GET /billing/usage/``'s ``_require_organization`` rule
+        rather than the empty-list state above.
       summary: List closed billing period statements
       parameters:
       - in: header
@@ -2070,13 +2078,13 @@ paths:
         schema:
           type: string
           format: date-time
-        description: Only periods starting on or after this instant
+        description: Only periods starting on or after this instant (inclusive).
       - in: query
         name: billing_period_start_before
         schema:
           type: string
           format: date-time
-        description: Only periods starting on or before this instant
+        description: Only periods starting on or before this instant (inclusive).
       - in: query
         name: charged
         schema:
@@ -2139,7 +2147,11 @@ paths:
         History is forward-only (see the plan's Non-goals / Risk & Rollout Notes):
         an organization with no closed periods yet gets ``200`` with an empty list,
         never a ``404`` -- there is nothing wrong with that organization, cycle
-        close simply has not run for it yet.
+        close simply has not run for it yet. A caller with **no active
+        organization** (``request.organization is None``) is a different state --
+        there is no pool to resolve a billing root against at all -- and gets
+        ``403``, matching ``GET /billing/usage/``'s ``_require_organization`` rule
+        rather than the empty-list state above.
       summary: Retrieve one closed billing period statement
       parameters:
       - in: header
@@ -2195,7 +2207,11 @@ paths:
         History is forward-only (see the plan's Non-goals / Risk & Rollout Notes):
         an organization with no closed periods yet gets ``200`` with an empty list,
         never a ``404`` -- there is nothing wrong with that organization, cycle
-        close simply has not run for it yet.
+        close simply has not run for it yet. A caller with **no active
+        organization** (``request.organization is None``) is a different state --
+        there is no pool to resolve a billing root against at all -- and gets
+        ``403``, matching ``GET /billing/usage/``'s ``_require_organization`` rule
+        rather than the empty-list state above.
       summary: Retrieve one closed billing period statement
       parameters:
       - in: header
@@ -15954,14 +15970,18 @@ components:
             this row disagree with overage_total. null for a prepaid resource, or
             when no single stamped price applies to this period.
         by_organization:
-          type: object
-          additionalProperties:
-            type: integer
-          description: Per-organization contribution to total, across the pooled subtree
-            at close time. Keys are organization pks written and read back as **strings**
-            (JSONField round-trips dict keys to strings on write; this mirrors that
-            persisted shape exactly rather than coercing it) mapping to that organization's
-            count for this resource this period.
+          type: array
+          items:
+            $ref: '#/components/schemas/UsageByOrganization'
+          description: 'Per-organization contribution to total, across the pooled
+            subtree at close time. An organization that contributed nothing is omitted,
+            never present with usage: 0. Ordered by organization_id ascending -- the
+            identical shape GET /billing/usage/''s by_organization uses. Names are
+            resolved at **read time** against the organizations table, so they reflect
+            each organization''s current name, not its name as of when this period
+            closed -- this row has no name snapshot. An organization that no longer
+            exists renders with name: "" rather than being dropped from the list;
+            its count still counts toward total.'
       required:
       - by_organization
       - kind
