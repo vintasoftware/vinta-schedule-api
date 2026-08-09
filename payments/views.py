@@ -12,20 +12,28 @@ from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
+from rest_framework.views import APIView
 from rest_framework.viewsets import GenericViewSet, ViewSet
 
 from common.utils.view_utils import TenantScopedViewMixin
 from organizations.permissions import IsOrganizationAdmin
+from payments.billing_views import _require_organization
 from payments.constants import PaymentStatuses
-from payments.exceptions import ProviderWebhookEventIdMissingError, UnknownPaymentProviderError
+from payments.exceptions import (
+    PaymentProviderNotConfiguredError,
+    ProviderWebhookEventIdMissingError,
+    UnknownPaymentProviderError,
+)
 from payments.models import BillingProfile, SubscriptionAddOn
 from payments.models import PaymentStatusUpdate as PaymentStatusUpdateModel
-from payments.serializers import BillingProfileSerializer
+from payments.serializers import BillingProfileSerializer, PaymentProviderSerializer
 from payments.services.dunning_service import FAILED_SUBSCRIPTION_PAYMENT_STATUSES
+from payments.services.provider_credentials import resolve_public_credentials
 
 
 if TYPE_CHECKING:
     from payments.services.dunning_service import DunningService
+    from payments.services.payment_provider_resolver import PaymentProviderResolver
     from payments.services.payment_service import PaymentService
     from payments.services.subscription_service import SubscriptionService
 
@@ -377,3 +385,142 @@ class BillingProfileViewSet(
         billing_profile = serializer.save()
 
         return Response(self.get_serializer(billing_profile).data)
+
+
+class PaymentProviderViewSet(TenantScopedViewMixin, ViewSet):
+    """``GET /billing/payment-provider/`` -- the active organization's payment provider
+    (its pin when set, ``settings.DEFAULT_PAYMENT_PROVIDER`` otherwise -- resolved through
+    ``PaymentProviderResolver``, the one place both this endpoint and Phase 4's charge
+    routing implement that rule) plus that provider's browser-safe public credentials.
+
+    Split from the unauthenticated system-default endpoint (see
+    ``DefaultPaymentProviderView`` below): the two have different auth, throttle, and
+    cardinality semantics, and previously sharing one ``ViewSet`` required hand-rolling
+    DRF's authenticator resolution (``get_authenticators`` /
+    ``_action_for_current_request``) so ``authentication_classes = ()`` applied to only
+    one action.
+
+    Mounted directly via ``path()`` in ``payments/routes.py``'s ``extra_patterns``
+    (``PaymentProviderViewSet.as_view({"get": "retrieve_provider"})``), bypassing the
+    shared DRF router, so the bare ``/billing/payment-provider/`` path does not depend on
+    the router's static list-route -- which always binds ``GET`` to an action literally
+    named ``list`` (``rest_framework.routers.SimpleRouter.routes``). That fixed binding
+    would force ``self.action == "list"`` regardless of the Python method name, which
+    makes drf-spectacular's ``AutoSchema._is_list_view()`` document this endpoint as an
+    array (``type: array, items: $ref PaymentProvider``) even with the explicit
+    ``responses={200: PaymentProviderSerializer}`` override below, since
+    ``_is_list_view()`` checks ``view.action == "list"`` before consulting the override.
+    Binding the action name as ``retrieve_provider`` instead means ``self.action`` is
+    never ``"list"``, so the override is honored and the schema documents a single
+    object, matching the actual response.
+    """
+
+    serializer_class = PaymentProviderSerializer
+    permission_classes = (IsAuthenticated,)
+
+    @inject
+    def __init__(
+        self,
+        *args,
+        payment_provider_resolver: Annotated[
+            "PaymentProviderResolver", Provide["payment_provider_resolver"]
+        ],
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.payment_provider_resolver = payment_provider_resolver
+
+    @extend_schema(
+        summary="Get the active organization's payment provider",
+        description=(
+            "Returns the payment provider the active organization is pinned to (or the "
+            "system default when unpinned) plus its browser-safe public credentials."
+        ),
+        responses={
+            200: PaymentProviderSerializer,
+            403: {"description": "No active organization."},
+            409: {
+                "description": (
+                    "The resolved provider is unknown or has no public credentials "
+                    "configured in this deployment."
+                )
+            },
+        },
+    )
+    def retrieve_provider(self, request, *args, **kwargs):
+        """``GET /billing/payment-provider/``. See the class docstring for why this is
+        not named ``list``."""
+        organization = _require_organization(request)
+        provider = self.payment_provider_resolver.resolve_for_organization(organization)
+        try:
+            credentials = resolve_public_credentials(provider)
+        except PaymentProviderNotConfiguredError:
+            return Response(
+                {
+                    "detail": (
+                        f"Payment provider {provider!r} is not configured in this deployment."
+                    )
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        return Response(PaymentProviderSerializer(credentials).data)
+
+
+class DefaultPaymentProviderView(APIView):
+    """``GET /billing/payment-provider/default/`` -- the system default provider's public
+    credentials, unauthenticated (mirrors ``PaymentsViewSet``'s pattern above): a frontend
+    needs this to render *a* payment form before, or entirely without, a session.
+
+    A standalone ``APIView`` rather than a shared action on ``PaymentProviderViewSet`` --
+    see that class's docstring for why the two are split. ``authentication_classes`` /
+    ``permission_classes`` / ``throttle_classes`` are set once here, at class level, with
+    no per-action switching.
+    """
+
+    serializer_class = PaymentProviderSerializer
+    authentication_classes = ()
+    permission_classes = (AllowAny,)
+    #: Unauthenticated -- bound with the shared ``payment-provider`` scope
+    #: (``settings.DEFAULT_THROTTLE_RATES``).
+    throttle_classes = (ScopedRateThrottle,)
+    throttle_scope = "payment-provider"
+
+    @inject
+    def __init__(
+        self,
+        *args,
+        payment_provider_resolver: Annotated[
+            "PaymentProviderResolver", Provide["payment_provider_resolver"]
+        ],
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.payment_provider_resolver = payment_provider_resolver
+
+    @extend_schema(
+        summary="Get the system default payment provider",
+        description=(
+            "Unauthenticated -- the system default provider's browser-safe public "
+            "credentials, so a frontend can render a payment form before (or without) a "
+            "session."
+        ),
+        responses={
+            200: PaymentProviderSerializer,
+            503: {"description": "The default provider has no public credentials configured."},
+            429: {"description": "Throttled."},
+        },
+    )
+    def get(self, request, *args, **kwargs):
+        provider = self.payment_provider_resolver.resolve_default()
+        try:
+            credentials = resolve_public_credentials(provider)
+        except PaymentProviderNotConfiguredError:
+            return Response(
+                {
+                    "detail": (
+                        f"Payment provider {provider!r} is not configured in this deployment."
+                    )
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        return Response(PaymentProviderSerializer(credentials).data)

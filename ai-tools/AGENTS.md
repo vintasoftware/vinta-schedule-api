@@ -210,14 +210,20 @@ TWILIO_NUMBER
 TWILIO_DEFAULT_BROADCAST_NUMBERS
 ACCOUNT_PHONE_VERIFICATION_ENABLED
 MERCADOPAGO_WEBHOOK_SECRET
+MERCADOPAGO_PUBLIC_KEY
 STRIPE_SECRET_KEY
 STRIPE_WEBHOOK_SECRET
+STRIPE_PUBLISHABLE_KEY
+DEFAULT_PAYMENT_PROVIDER
 ```
 
 - `ACCOUNT_PHONE_VERIFICATION_ENABLED` (bool, default `False`) — per-environment rollout gate for SMS phone verification. Stays off until Twilio approves the messaging profile for that environment; an operator flips it in the environment (Render dashboard / `.env`) with no code change.
 - `MERCADOPAGO_WEBHOOK_SECRET` (str, default `""`) — shared secret used to verify MercadoPago's `x-signature` webhook header (`payments/services/mercadopago_signature.py`). An empty secret makes signature verification fail closed rather than skip the check.
+- `MERCADOPAGO_PUBLIC_KEY` (str, default `""`) — browser-safe public key used to initialize MercadoPago's payment form. Not a secret; intentionally served on unauthenticated endpoints.
 - `STRIPE_SECRET_KEY` (str, default `""`) — Stripe API key used by `StripePaymentAdapter`/`StripeSubscriptionAdapter`. No organization is routed onto Stripe yet, so this is currently unused in practice.
 - `STRIPE_WEBHOOK_SECRET` (str, default `""`) — shared secret used to verify Stripe's `Stripe-Signature` webhook header (`payments/services/stripe_signature.py`). Same fail-closed convention as `MERCADOPAGO_WEBHOOK_SECRET`.
+- `STRIPE_PUBLISHABLE_KEY` (str, default `""`) — browser-safe public key used to initialize Stripe's payment form. Not a secret; intentionally served on unauthenticated endpoints.
+- `DEFAULT_PAYMENT_PROVIDER` (str, default `"stripe"`) — system-wide default payment provider slug. Must be one of the valid providers in `payments.constants.PaymentProviders`. Read at import time to fail fast on misconfiguration.
 
 Production-only vars (set via Render `envVarGroups`): `SECRET_KEY`, `SENTRY_DSN`, `SMTP_HOST`/`USERNAME`/`PASSWORD`, `ALLOWED_HOSTS`, `SITE_DOMAIN`, `API_DOMAIN`, `DEFAULT_BCC_EMAILS`, AWS bucket / CloudFront settings, `ENABLE_DJANGO_COLLECTSTATIC`, `AUTO_MIGRATE`. Adding a new env var requires updates to both example files and `render.yaml` envVarGroups — see the `add-env-var` skill.
 
