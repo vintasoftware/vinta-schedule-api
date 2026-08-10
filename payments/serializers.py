@@ -121,16 +121,14 @@ class SubscriptionSerializer(v.VirtualModelSerializer):
 class ChangePlanRequestSerializer(serializers.Serializer):
     """Body of ``POST /billing/subscription/change-plan/``.
 
-    ``payment_token`` is not part of the documented request body (only
-    ``plan_slug``/``billing_interval``/``idempotency_key``) but is required in
-    practice the *first* time a billing root ever attaches a payment instrument
-    -- there is otherwise no provider-facing card/token to create the
-    provider-side subscription against. Optional here (blank by default) because
-    it is only actually required when ``Subscription.external_id`` is still
-    blank; see ``SubscriptionService._initiate_upgrade`` for the exact condition
-    and ``PaymentTokenRequiredError`` for the 400 a caller gets if it omits the
-    token when one was needed. This is a deliberate deviation from the
-    documented request shape.
+    ``payment_token`` is required in practice the *first* time a billing root
+    ever attaches a payment instrument -- there is otherwise no provider-facing
+    card/token to create the provider-side subscription against. Optional here
+    (blank by default) because it is only actually required when
+    ``Subscription.external_id`` is still blank; see
+    ``SubscriptionService._initiate_upgrade`` for the exact condition and
+    ``PaymentTokenRequiredError`` for the 400 a caller gets if it omits the
+    token when one was needed.
     """
 
     plan_slug = serializers.SlugField()
@@ -143,9 +141,9 @@ class ChangePlanRequestSerializer(serializers.Serializer):
 
 class AddOnPurchaseRequestSerializer(serializers.Serializer):
     """Body of ``POST /billing/add-ons/``. See ``ChangePlanRequestSerializer``
-    for why ``payment_token`` is present despite not being in the documented
-    request shape -- an add-on purchase is a one-time charge and needs
-    an instrument to charge, exactly like a first-ever plan upgrade does."""
+    for why ``payment_token`` is required in practice despite being optional
+    here -- an add-on purchase is a one-time charge and needs an instrument to
+    charge, exactly like a first-ever plan upgrade does."""
 
     resource_key = serializers.ChoiceField(choices=LimitedResource.choices)
     quantity = serializers.IntegerField(min_value=1)

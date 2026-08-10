@@ -1373,13 +1373,22 @@ paths:
               schema:
                 $ref: '#/components/schemas/SubscriptionAddOn'
           description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingErrorBody'
+          description: 'The resource''s current plan limit carries no `overage_unit_price`,
+            so it has no catalog-derived price to purchase as an add-on (`code: "add_on_not_purchasable"`,
+            `AddOnNotPurchasableError`).'
         '409':
           content:
             application/json:
               schema:
-                description: The provider this organization resolves to is not configured
-                  in this deployment, so the one-time charge cannot be driven.
-          description: ''
+                $ref: '#/components/schemas/BillingErrorBody'
+          description: 'The provider this organization resolves to is not configured
+            in this deployment, so the one-time charge cannot be driven (`code: "payment_provider_not_configured"`,
+            `PaymentProviderNotConfiguredError`).'
   /billing/add-ons{format}:
     post:
       operationId: billing_add_ons_formatted_create
@@ -1434,13 +1443,22 @@ paths:
               schema:
                 $ref: '#/components/schemas/SubscriptionAddOn'
           description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingErrorBody'
+          description: 'The resource''s current plan limit carries no `overage_unit_price`,
+            so it has no catalog-derived price to purchase as an add-on (`code: "add_on_not_purchasable"`,
+            `AddOnNotPurchasableError`).'
         '409':
           content:
             application/json:
               schema:
-                description: The provider this organization resolves to is not configured
-                  in this deployment, so the one-time charge cannot be driven.
-          description: ''
+                $ref: '#/components/schemas/BillingErrorBody'
+          description: 'The provider this organization resolves to is not configured
+            in this deployment, so the one-time charge cannot be driven (`code: "payment_provider_not_configured"`,
+            `PaymentProviderNotConfiguredError`).'
   /billing/add-ons/{id}/:
     delete:
       operationId: billing_add_ons_destroy
@@ -1812,15 +1830,23 @@ paths:
               schema:
                 $ref: '#/components/schemas/Subscription'
           description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingErrorBody'
+          description: 'No `payment_token` was supplied and this billing root has
+            no payment method on file yet (`code: "payment_token_required"`, `PaymentTokenRequiredError`).'
         '409':
           content:
             application/json:
               schema:
-                description: Either another plan change is already awaiting payment
-                  confirmation, or the provider this organization resolves to is not
-                  configured in this deployment (`PaymentProviderNotConfiguredError`,
-                  mapped centrally in `common.exception_handlers.vinta_exception_handler`).
-          description: ''
+                $ref: '#/components/schemas/BillingErrorBody'
+          description: 'Either another plan change is already awaiting payment confirmation
+            (`code: "unconfirmed_plan_change"`, `UnconfirmedPlanChangeError`), or
+            the provider this organization resolves to is not configured in this deployment
+            (`code: "payment_provider_not_configured"`, `PaymentProviderNotConfiguredError`).
+            Both are mapped centrally in `common.exception_handlers.vinta_exception_handler`.'
   /billing/subscription/change-plan{format}:
     post:
       operationId: billing_subscription_change_plan_formatted_create
@@ -1870,15 +1896,23 @@ paths:
               schema:
                 $ref: '#/components/schemas/Subscription'
           description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingErrorBody'
+          description: 'No `payment_token` was supplied and this billing root has
+            no payment method on file yet (`code: "payment_token_required"`, `PaymentTokenRequiredError`).'
         '409':
           content:
             application/json:
               schema:
-                description: Either another plan change is already awaiting payment
-                  confirmation, or the provider this organization resolves to is not
-                  configured in this deployment (`PaymentProviderNotConfiguredError`,
-                  mapped centrally in `common.exception_handlers.vinta_exception_handler`).
-          description: ''
+                $ref: '#/components/schemas/BillingErrorBody'
+          description: 'Either another plan change is already awaiting payment confirmation
+            (`code: "unconfirmed_plan_change"`, `UnconfirmedPlanChangeError`), or
+            the provider this organization resolves to is not configured in this deployment
+            (`code: "payment_provider_not_configured"`, `PaymentProviderNotConfiguredError`).
+            Both are mapped centrally in `common.exception_handlers.vinta_exception_handler`.'
   /billing/subscription/retrieve_subscription/:
     get:
       operationId: billing_subscription_retrieve_subscription_retrieve
@@ -15787,9 +15821,9 @@ components:
       type: object
       description: |-
         Body of ``POST /billing/add-ons/``. See ``ChangePlanRequestSerializer``
-        for why ``payment_token`` is present despite not being in the documented
-        request shape -- an add-on purchase is a one-time charge and needs
-        an instrument to charge, exactly like a first-ever plan upgrade does.
+        for why ``payment_token`` is required in practice despite being optional
+        here -- an add-on purchase is a one-time charge and needs an instrument to
+        charge, exactly like a first-ever plan upgrade does.
       properties:
         resource_key:
           $ref: '#/components/schemas/ResourceKeyEnum'
@@ -16130,6 +16164,16 @@ components:
       - street_name
       - street_number
       - zip_code
+    BillingErrorBody:
+      type: object
+      properties:
+        code:
+          type: string
+        detail:
+          type: string
+      required:
+      - code
+      - detail
     BillingPeriodBounds:
       type: object
       description: |-
@@ -17162,16 +17206,14 @@ components:
       description: |-
         Body of ``POST /billing/subscription/change-plan/``.
 
-        ``payment_token`` is not part of the documented request body (only
-        ``plan_slug``/``billing_interval``/``idempotency_key``) but is required in
-        practice the *first* time a billing root ever attaches a payment instrument
-        -- there is otherwise no provider-facing card/token to create the
-        provider-side subscription against. Optional here (blank by default) because
-        it is only actually required when ``Subscription.external_id`` is still
-        blank; see ``SubscriptionService._initiate_upgrade`` for the exact condition
-        and ``PaymentTokenRequiredError`` for the 400 a caller gets if it omits the
-        token when one was needed. This is a deliberate deviation from the
-        documented request shape.
+        ``payment_token`` is required in practice the *first* time a billing root
+        ever attaches a payment instrument -- there is otherwise no provider-facing
+        card/token to create the provider-side subscription against. Optional here
+        (blank by default) because it is only actually required when
+        ``Subscription.external_id`` is still blank; see
+        ``SubscriptionService._initiate_upgrade`` for the exact condition and
+        ``PaymentTokenRequiredError`` for the 400 a caller gets if it omits the
+        token when one was needed.
       properties:
         plan_slug:
           type: string

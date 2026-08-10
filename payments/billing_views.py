@@ -21,10 +21,10 @@ from django.utils import timezone
 
 from dependency_injector.wiring import Provide, inject
 from django_virtual_models.generic_views import GenericVirtualModelViewMixin
-from drf_spectacular.utils import extend_schema
-from rest_framework import mixins, status
+from drf_spectacular.utils import OpenApiResponse, extend_schema, inline_serializer
+from rest_framework import mixins, serializers, status
 from rest_framework.decorators import action
-from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
+from rest_framework.exceptions import NotFound, PermissionDenied
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -37,11 +37,6 @@ from common.utils.view_utils import TenantScopedViewMixin
 from organizations.models import Organization
 from organizations.permissions import IsBillingOwnerOrAdmin
 from payments.billing_constants import BillingState, LimitedResource
-from payments.exceptions import (
-    AddOnNotPurchasableError,
-    PaymentTokenRequiredError,
-    UnconfirmedPlanChangeError,
-)
 from payments.filtersets import (
     BillingPeriodSummaryFilterSet,
     BillingPlanFilterSet,
@@ -81,6 +76,19 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+#: The shared contract body every ``BillingError`` renders through
+#: ``common.exception_handlers.vinta_exception_handler`` (``payments.exceptions
+#: .BillingError.as_error_body``) -- documented once here and reused across every
+#: ``extend_schema`` response that surfaces a billing error, rather than each
+#: action inlining the same two fields.
+BILLING_ERROR_BODY_SERIALIZER = inline_serializer(
+    name="BillingErrorBody",
+    fields={
+        "code": serializers.CharField(),
+        "detail": serializers.CharField(),
+    },
+)
 
 
 def _require_organization(request) -> Organization:
@@ -614,14 +622,25 @@ class SubscriptionViewSet(TenantScopedViewMixin, GenericVirtualModelViewMixin, G
         request=ChangePlanRequestSerializer,
         responses={
             200: SubscriptionSerializer,
-            409: {
-                "description": (
-                    "Either another plan change is already awaiting payment confirmation, "
-                    "or the provider this organization resolves to is not configured in "
-                    "this deployment (`PaymentProviderNotConfiguredError`, mapped centrally "
-                    "in `common.exception_handlers.vinta_exception_handler`)."
-                )
-            },
+            400: OpenApiResponse(
+                response=BILLING_ERROR_BODY_SERIALIZER,
+                description=(
+                    "No `payment_token` was supplied and this billing root has no payment "
+                    'method on file yet (`code: "payment_token_required"`, '
+                    "`PaymentTokenRequiredError`)."
+                ),
+            ),
+            409: OpenApiResponse(
+                response=BILLING_ERROR_BODY_SERIALIZER,
+                description=(
+                    "Either another plan change is already awaiting payment confirmation "
+                    '(`code: "unconfirmed_plan_change"`, `UnconfirmedPlanChangeError`), or '
+                    "the provider this organization resolves to is not configured in this "
+                    'deployment (`code: "payment_provider_not_configured"`, '
+                    "`PaymentProviderNotConfiguredError`). Both are mapped centrally in "
+                    "`common.exception_handlers.vinta_exception_handler`."
+                ),
+            ),
         },
     )
     @action(methods=["post"], detail=False, url_path="change-plan", url_name="change-plan")
@@ -635,20 +654,16 @@ class SubscriptionViewSet(TenantScopedViewMixin, GenericVirtualModelViewMixin, G
         if plan is None:
             raise NotFound(f"No active billing plan with slug {data['plan_slug']!r}.")
 
-        try:
-            self.subscription_service.request_plan_change(
-                subscription,
-                plan,
-                data["billing_interval"],
-                payment_token=data.get("payment_token", ""),
-                idempotency_key=data["idempotency_key"],
-            )
-        except PaymentTokenRequiredError as error:
-            raise ValidationError({"payment_token": str(error)}) from error
-        except UnconfirmedPlanChangeError as error:
-            # A different plan change is already in flight and unconfirmed --
-            # 409 Conflict rather than a validation error on any one field.
-            return Response({"detail": str(error)}, status=status.HTTP_409_CONFLICT)
+        # `PaymentTokenRequiredError` (400) and `UnconfirmedPlanChangeError` (409)
+        # are rendered centrally by `common.exception_handlers.vinta_exception_handler`
+        # -- no local try/except needed here.
+        self.subscription_service.request_plan_change(
+            subscription,
+            plan,
+            data["billing_interval"],
+            payment_token=data.get("payment_token", ""),
+            idempotency_key=data["idempotency_key"],
+        )
 
         # Re-fetched through the virtual-model-optimized queryset rather than
         # serializing the plain instance `request_plan_change` returns --
@@ -731,12 +746,23 @@ class AddOnViewSet(TenantScopedViewMixin, GenericViewSet):
         request=AddOnPurchaseRequestSerializer,
         responses={
             201: SubscriptionAddOnSerializer,
-            409: {
-                "description": (
+            400: OpenApiResponse(
+                response=BILLING_ERROR_BODY_SERIALIZER,
+                description=(
+                    "The resource's current plan limit carries no `overage_unit_price`, so "
+                    "it has no catalog-derived price to purchase as an add-on "
+                    '(`code: "add_on_not_purchasable"`, `AddOnNotPurchasableError`).'
+                ),
+            ),
+            409: OpenApiResponse(
+                response=BILLING_ERROR_BODY_SERIALIZER,
+                description=(
                     "The provider this organization resolves to is not configured in this "
-                    "deployment, so the one-time charge cannot be driven."
-                )
-            },
+                    "deployment, so the one-time charge cannot be driven "
+                    '(`code: "payment_provider_not_configured"`, '
+                    "`PaymentProviderNotConfiguredError`)."
+                ),
+            ),
         },
     )
     def create(self, request, *args, **kwargs):
@@ -754,17 +780,17 @@ class AddOnViewSet(TenantScopedViewMixin, GenericViewSet):
         request_serializer.is_valid(raise_exception=True)
         data = request_serializer.validated_data
 
-        try:
-            add_on = self.subscription_service.purchase_add_on(
-                subscription,
-                data["resource_key"],
-                data["quantity"],
-                data["is_recurring"],
-                data["idempotency_key"],
-                data.get("payment_token", ""),
-            )
-        except AddOnNotPurchasableError as error:
-            raise ValidationError({"resource_key": str(error)}) from error
+        # `AddOnNotPurchasableError` (400) is rendered centrally by
+        # `common.exception_handlers.vinta_exception_handler` -- no local
+        # try/except needed here.
+        add_on = self.subscription_service.purchase_add_on(
+            subscription,
+            data["resource_key"],
+            data["quantity"],
+            data["is_recurring"],
+            data["idempotency_key"],
+            data.get("payment_token", ""),
+        )
 
         return Response(self.get_serializer(add_on).data, status=status.HTTP_201_CREATED)
 

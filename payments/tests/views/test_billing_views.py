@@ -821,3 +821,87 @@ class TestUnconfiguredProviderMapsTo409:
 
         assert response.status_code == status.HTTP_409_CONFLICT
         assert "stripe" in response.data["detail"]
+
+
+@pytest.mark.django_db
+class TestBillingErrorCodes:
+    """Billing API Contract Hardening, Phase 1: every billing error rendered by
+    ``common.exception_handlers.vinta_exception_handler`` now carries a stable,
+    machine-readable ``code`` a client can branch on instead of matching on
+    ``detail``'s message string.
+    """
+
+    def test_change_plan_without_a_required_payment_token_returns_400_with_its_code(
+        self, billing_client, admin_membership, subscription, pro_plan
+    ):
+        """``subscription`` (the ``free_plan`` fixture) has no provider-side
+        instrument yet (``external_id`` is blank) -- upgrading to a paid plan
+        without a ``payment_token`` cannot attach one."""
+        response = billing_client.post(
+            change_plan_url(),
+            {
+                "plan_slug": pro_plan.slug,
+                "billing_interval": BillingInterval.MONTHLY,
+                "idempotency_key": "idem-no-token-1",
+            },
+            format="json",
+        )
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert response.data["code"] == "payment_token_required"
+        assert "detail" in response.data
+
+    def test_add_on_purchase_of_an_unpriced_resource_returns_400_with_its_code(
+        self, billing_client, admin_membership, subscription, billing_profile
+    ):
+        """``free_plan`` (the ``subscription`` fixture's plan) carries no
+        ``overage_unit_price`` for ``CALENDAR_GROUPS`` -- there is no
+        catalog-derived price to charge for it as an add-on."""
+        response = billing_client.post(
+            add_ons_url(),
+            {
+                "resource_key": LimitedResource.CALENDAR_GROUPS,
+                "quantity": 1,
+                "is_recurring": False,
+                "idempotency_key": "idem-unpriced-1",
+                "payment_token": "tok-1",
+            },
+            format="json",
+        )
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert response.data["code"] == "add_on_not_purchasable"
+        assert "detail" in response.data
+
+    def test_second_in_flight_plan_change_returns_409_with_its_code(
+        self, billing_client, admin_membership, subscription, pro_plan
+    ):
+        premium_plan = make_complete_plan(
+            {LimitedResource.ORGANIZATION_MEMBERS: 200}, monthly_price=Decimal("200")
+        )
+        first_change = billing_client.post(
+            change_plan_url(),
+            {
+                "plan_slug": pro_plan.slug,
+                "billing_interval": BillingInterval.MONTHLY,
+                "idempotency_key": "idem-in-flight-1",
+                "payment_token": "tok-1",
+            },
+            format="json",
+        )
+        assert first_change.status_code == status.HTTP_200_OK
+
+        second_change = billing_client.post(
+            change_plan_url(),
+            {
+                "plan_slug": premium_plan.slug,
+                "billing_interval": BillingInterval.MONTHLY,
+                "idempotency_key": "idem-in-flight-2",
+                "payment_token": "tok-1",
+            },
+            format="json",
+        )
+
+        assert second_change.status_code == status.HTTP_409_CONFLICT
+        assert second_change.data["code"] == "unconfirmed_plan_change"
+        assert "detail" in second_change.data

@@ -21,6 +21,15 @@ class BillingError(Exception):
     with those existing handlers; new structured errors should not.
     """
 
+    #: Stable, machine-readable discriminator in the rendered error body.
+    #: Snake_case, never reworded once shipped -- clients branch on it.
+    #: Subclasses rendered by ``vinta_exception_handler`` must override it.
+    code: str = "billing_error"
+
+    def as_error_body(self) -> dict:
+        """The shared contract body every rendering surface emits."""
+        return {"code": self.code, "detail": str(self)}
+
 
 class PaymentError(BillingError, ValueError):
     """Payment-gateway and billing-data errors.
@@ -75,6 +84,8 @@ class PaymentProviderNotConfiguredError(PaymentError):
     must raise this rather than let a missing setting surface as a confusing
     downstream failure (e.g. an adapter call with an empty API key).
     """
+
+    code = "payment_provider_not_configured"
 
     def __init__(self, provider: str):
         super().__init__(f"Payment provider {provider!r} is not configured in this deployment")
@@ -418,6 +429,8 @@ class PaymentTokenRequiredError(PaymentError):
     token.
     """
 
+    code = "payment_token_required"
+
     def __init__(self, organization_id: int):
         super().__init__(
             f"Organization {organization_id} has no payment method on file with the "
@@ -438,6 +451,8 @@ class UnconfirmedPlanChangeError(PaymentError):
     requesting another. Re-requesting the *same* plan/interval is still a no-op
     rather than an error (it never reaches this check).
     """
+
+    code = "unconfirmed_plan_change"
 
     def __init__(self, organization_id: int):
         super().__init__(
@@ -476,6 +491,8 @@ class AddOnNotPurchasableError(PaymentError):
     there is no catalog-derived price to charge, and inventing one here would be
     exactly the "bespoke pricing" this billing model deliberately does not support.
     """
+
+    code = "add_on_not_purchasable"
 
     def __init__(self, resource_key: str):
         super().__init__(
