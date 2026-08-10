@@ -17,7 +17,13 @@ from rest_framework.response import Response
 from rest_framework.views import exception_handler as drf_exception_handler
 from rest_framework.views import set_rollback
 
-from payments.exceptions import OverLimitError, PaymentProviderNotConfiguredError
+from payments.exceptions import (
+    AddOnNotPurchasableError,
+    OverLimitError,
+    PaymentProviderNotConfiguredError,
+    PaymentTokenRequiredError,
+    UnconfirmedPlanChangeError,
+)
 
 
 def vinta_exception_handler(exc: Exception, context: dict) -> Response | None:
@@ -42,6 +48,17 @@ def vinta_exception_handler(exc: Exception, context: dict) -> Response | None:
     themselves first (409 on the org endpoint, 503 on the unauthenticated default
     one, which is a deployment error rather than a request conflict), so they are
     unaffected by this branch.
+
+    ``PaymentTokenRequiredError`` / ``AddOnNotPurchasableError`` (400) and
+    ``UnconfirmedPlanChangeError`` (409) are the billing API contract hardening
+    plan's Phase 1: every ``BillingError`` subclass now carries a stable ``code``
+    (see ``payments.exceptions.BillingError``), and these three render it through
+    the shared ``as_error_body()`` contract instead of each view improvising its
+    own ad hoc body (a field-keyed ``ValidationError`` for the first two, a plain
+    ``{"detail": ...}`` 409 for the third). Handled centrally for the same reason
+    as ``PaymentProviderNotConfiguredError`` above — a per-action ``except`` is
+    something every new billing write has to remember, the handler is something
+    it inherits for free.
     """
     if isinstance(exc, OverLimitError):
         # Mandatory before returning a Response: swallowing the exception here
@@ -58,5 +75,14 @@ def vinta_exception_handler(exc: Exception, context: dict) -> Response | None:
         # provider call, and committing those while telling the client 409 would
         # leave capacity or a refund recorded that no provider ever saw.
         set_rollback()
-        return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
+        return Response(exc.as_error_body(), status=status.HTTP_409_CONFLICT)
+    if isinstance(exc, PaymentTokenRequiredError | AddOnNotPurchasableError):
+        # Same mandatory rollback discipline as the branches above.
+        set_rollback()
+        return Response(exc.as_error_body(), status=status.HTTP_400_BAD_REQUEST)
+    if isinstance(exc, UnconfirmedPlanChangeError):
+        # A different plan change is already in flight and unconfirmed -- 409
+        # Conflict rather than a validation error on any one field.
+        set_rollback()
+        return Response(exc.as_error_body(), status=status.HTTP_409_CONFLICT)
     return drf_exception_handler(exc, context)

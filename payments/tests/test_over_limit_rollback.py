@@ -225,8 +225,12 @@ class TestUnconfiguredProviderRollsBackTheRequestTransaction:
         )
 
     def test_the_409_body_carries_the_errors_message(self, anonymous_client, organization):
+        """Billing API Contract Hardening, Phase 1: ``PaymentProviderNotConfiguredError``
+        now renders through the shared ``BillingError.as_error_body()`` contract, so
+        the body gains a stable ``code`` alongside the existing ``detail`` message."""
         response = anonymous_client.post("/unconfigured-provider/")
 
         assert response.json() == {
-            "detail": "Payment provider 'stripe' is not configured in this deployment"
+            "code": "payment_provider_not_configured",
+            "detail": "Payment provider 'stripe' is not configured in this deployment",
         }

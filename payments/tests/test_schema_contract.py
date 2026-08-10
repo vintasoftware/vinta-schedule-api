@@ -1,0 +1,81 @@
+"""Billing API Contract Hardening, Phase 1: the *documented* contract is the
+point of this phase, not merely the runtime body -- a client generating a
+typed SDK off ``schema.yml`` needs ``code`` in the schema, not just in what the
+server happens to return.
+
+Generates the OpenAPI schema in-process (mirroring
+``common/tests/test_openapi.py``'s ``SchemaGenerator`` pattern) rather than
+reading the checked-in ``schema.yml`` off disk, so this stays correct whether
+or not the file on disk has been regenerated in the working tree -- it always
+reflects what ``manage.py spectacular`` would produce right now.
+"""
+
+import pytest
+from drf_spectacular.generators import SchemaGenerator
+
+
+def _get_schema() -> dict:
+    generator = SchemaGenerator()
+    return generator.get_schema(request=None, public=True)  # type: ignore[arg-type]
+
+
+@pytest.fixture(scope="module")
+def openapi_schema() -> dict:
+    return _get_schema()
+
+
+def _resolve_response_schema(
+    openapi_schema: dict, path: str, method: str, status_code: str
+) -> dict:
+    """The ``$ref``-resolved schema dict for one operation's response body."""
+    operation = openapi_schema["paths"][path][method]
+    response_schema = operation["responses"][status_code]["content"]["application/json"]["schema"]
+    ref = response_schema["$ref"]
+    component_name = ref.rsplit("/", 1)[-1]
+    return openapi_schema["components"]["schemas"][component_name]
+
+
+class TestBillingErrorBodyIsDocumented:
+    """``code`` must be a documented property of the 400 bodies this phase adds
+    -- ``change-plan``'s ``payment_token_required`` and add-on purchase's
+    ``add_on_not_purchasable``."""
+
+    def test_change_plan_400_documents_code(self, openapi_schema: dict) -> None:
+        schema = _resolve_response_schema(
+            openapi_schema, "/billing/subscription/change-plan/", "post", "400"
+        )
+
+        assert "code" in schema["properties"]
+        assert "code" in schema.get("required", [])
+
+    def test_add_on_create_400_documents_code(self, openapi_schema: dict) -> None:
+        schema = _resolve_response_schema(openapi_schema, "/billing/add-ons/", "post", "400")
+
+        assert "code" in schema["properties"]
+        assert "code" in schema.get("required", [])
+
+    def test_change_plan_409_documents_code(self, openapi_schema: dict) -> None:
+        """``UnconfirmedPlanChangeError`` / ``PaymentProviderNotConfiguredError``
+        share the same 409 body -- documented once, not by accident."""
+        schema = _resolve_response_schema(
+            openapi_schema, "/billing/subscription/change-plan/", "post", "409"
+        )
+
+        assert "code" in schema["properties"]
+
+    def test_add_on_create_409_documents_code(self, openapi_schema: dict) -> None:
+        schema = _resolve_response_schema(openapi_schema, "/billing/add-ons/", "post", "409")
+
+        assert "code" in schema["properties"]
+
+    def test_change_plan_request_documents_payment_token(self, openapi_schema: dict) -> None:
+        """The contract gap this phase also closes: ``payment_token`` finally
+        appears on the documented request body, not only the response."""
+        operation = openapi_schema["paths"]["/billing/subscription/change-plan/"]["post"]
+        request_schema_ref = operation["requestBody"]["content"]["application/json"]["schema"][
+            "$ref"
+        ]
+        component_name = request_schema_ref.rsplit("/", 1)[-1]
+        request_schema = openapi_schema["components"]["schemas"][component_name]
+
+        assert "payment_token" in request_schema["properties"]
