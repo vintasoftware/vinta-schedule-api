@@ -222,6 +222,98 @@ Tests:
 
 Acceptance: a GRACE subscription with an expired card recovers to ACTIVE through `POST /billing/subscription/retry-payment/` with a new token followed by the approved webhook, and the charge reaches the provider under a key distinct from the dunning ladder's.
 
+---
+
+### Phase 4 — Collect the outstanding balance on retry
+
+**Added after Phase 3 shipped**, on evidence rather than suspicion. Phase 3's **Risk &
+Rollout Notes** flagged that `retry_failed_charge` might be a "move onto a plan"
+operation rather than a "collect the balance" one, and asked for verification against a
+real provider account. That verification was run against Stripe test mode, driving the
+real adapter methods with a Test Clock to produce a genuine renewal failure. Result:
+
+| | before retry | after retry |
+|---|---|---|
+| $49 renewal invoice | `open` | **still `open`** |
+| collected | $49.00 (first period) | $49.00 — **$0.00 from the retry** |
+| Stripe subscription status | `past_due` | **`active`** |
+
+The mechanism is exactly the predicted one: `_ensure_provider_plan` mints a *fresh*
+Stripe Price at the *same* amount, so `Subscription.modify(proration_behavior=
+"always_invoice")` produces offsetting proration line items (`-42.47` / `+42.47`) that
+net to zero. Stripe raises a **$0.00 invoice**, finalizes it, marks it paid, and flips
+the subscription to `active`. The past-due invoice is never touched.
+
+Worse than a no-op: that $0.00 invoice emits `invoice.paid`, and
+`RELEVANT_SUBSCRIPTION_PAYMENT_EVENT_TYPES` in the Stripe subscription adapter contains
+`invoice.paid` — so the event reaches the subscription-payment path. Whether it
+resolves the dunning state (a **false recovery**: payer marked ACTIVE, nothing
+collected, balance outstanding forever) or errors out because a $0 invoice has no
+PaymentIntent was not established, and this phase must make the question moot rather
+than answer it.
+
+**Goal**: `retry-payment` actually collects the outstanding balance, and no
+zero-amount invoice can ever resolve a dunning state.
+
+**Feature flag**: none — `retry-payment` has no frontend caller yet (Phase 3 shipped
+behind that fact deliberately), so this corrects an endpoint nobody has pointed at.
+
+Changes:
+
+1. @payments/services/subscription_adapters/base.py: new abstract
+   `pay_outstanding_invoice(subscription, idempotency_key) -> None` — "collect the
+   balance that put this subscription into dunning, now". Distinct from
+   `change_subscription_plan`, which moves a subscriber onto a plan and only charges a
+   proration as a side effect.
+2. @payments/services/subscription_adapters/stripe_subscription_adapter.py: implement
+   it — locate the subscription's open/unpaid invoice and `stripe.Invoice.pay(...)`,
+   forwarding `idempotency_key`. This is Stripe's actual "collect now" operation.
+3. @payments/services/subscription_adapters/mercadopago_subscription_adapter.py:
+   implement it as an explicit, documented **refusal** (`PaymentAdapterError`).
+   MercadoPago has no invoice to pay: `preapproval.update(status="authorized")`
+   re-authorizes the series and lets MP charge on its own schedule, so it is very
+   likely to have the same defect — but that is *unverified*, no MercadoPago test
+   credentials were available, and no organization is routed to MercadoPago today. A
+   loud failure beats shipping a second silent no-op on a money path. The docstring
+   carries the probe recipe so whoever enables MercadoPago verifies it first.
+4. @payments/services/payment_service.py: `pay_outstanding_invoice` wrapper resolving
+   the adapter by the subscription's own `payment_provider` (Rule A), matching the
+   `update_subscription_payment_token` wrapper Phase 3 added.
+5. @payments/services/subscription_service.py: `retry_payment` calls
+   `pay_outstanding_invoice` instead of `retry_failed_charge`. **`retry_failed_charge`
+   itself is unchanged** — it keeps its current meaning for the dunning ladder, whose
+   semantics are out of scope here.
+6. @payments/exceptions.py: `NoOutstandingBalanceError` (`code =
+   "no_outstanding_balance"`), 409 via the Phase 1 handler — a subscription in
+   GRACE/RESTRICTED with nothing actually owed at the provider.
+7. Zero-amount guard: a `$0` invoice payment must never resolve a dunning state.
+   Defense in depth — even with Phase 4's fix, a $0 `invoice.paid` can arise from any
+   proration and must not clear GRACE.
+
+Spec use-case: closes the verification item Phase 3's **Risk & Rollout Notes** left open.
+
+Tests:
+- **Unit** — Stripe adapter pays the open invoice with the namespaced idempotency key;
+  raises when there is no open invoice; MercadoPago's refusal is explicit and typed.
+- **Integration** — `retry_payment` on a GRACE subscription drives
+  `update_subscription_payment_token` **then** `pay_outstanding_invoice`, in that
+  order, and never `change_subscription_plan`.
+- **Integration** — a zero-amount subscription payment does **not** resolve dunning;
+  the subscription stays GRACE. This is the regression that makes the false-recovery
+  question moot.
+- **Regression** — `retry_failed_charge` and the dunning ladder are untouched.
+
+**Suggested AI model**: Tier 3. Adapter work on a money path with an established
+pattern to follow, plus a webhook-path guard.
+
+**Review models**: reviewer Tier 4 — same rationale as Phase 3, strengthened by
+evidence: the first attempt at this endpoint shipped something that looked correct,
+passed a full suite, and collected nothing. Reading the diff is not sufficient here.
+
+Acceptance: re-running the Stripe probe shows the past-due invoice `paid` and the
+retry collecting the outstanding amount; a zero-amount invoice payment leaves a GRACE
+subscription in GRACE.
+
 ## 6. Risk & Rollout Notes
 
 **No feature flag** — deliberate, justified in **Guiding Decisions**. There is therefore no flag-removal phase. Rollback is a deploy revert for Phases 1 and 3; Phase 2 additionally reverses a `choices`-only migration that touches no data.
