@@ -11,7 +11,10 @@ import mercadopago.config
 
 from payments.billing_constants import BillingInterval
 from payments.constants import PaymentProviders, PaymentStatuses
-from payments.exceptions import ProviderWebhookEventIdMissingError
+from payments.exceptions import (
+    CollectionNotSupportedError,
+    ProviderWebhookEventIdMissingError,
+)
 from payments.services.dataclasses import (
     BillingAddress,
     BillingProfile,
@@ -243,6 +246,63 @@ class MercadoPagoSubscriptionAdapter(BaseSubscriptionAdapter):
                 "card_token_id": payment_token,
                 "status": "authorized",
             },
+        )
+
+    def pay_outstanding_invoice(
+        self, subscription: Subscription, payment_token: str, idempotency_key: str = ""
+    ) -> None:
+        """
+        Explicit, documented **refusal** -- MercadoPago has no invoice object to
+        pay. Unlike Stripe, a MercadoPago ``preapproval`` (the subscription
+        resource) has no separate "unpaid invoice" this adapter can look up and
+        collect against; the closest available primitive is re-authorizing the
+        series (``preapproval().update(status="authorized")``, the exact call
+        ``change_subscription_plan``/``update_subscription_payment_token`` above
+        already make), which lets MercadoPago resume charging *on its own
+        schedule* rather than collecting the specific missed amount right now.
+
+        That is very likely the same defect this phase exists to fix on
+        Stripe -- re-authorizing does not obviously charge the missed period,
+        so it may just as easily reactivate the subscription while collecting
+        nothing, the exact false-recovery shape the Phase 4 probe caught. But
+        it is **unverified**: no MercadoPago test credentials were available to
+        run an equivalent probe (real sandbox account + a genuine renewal
+        failure via a declined test card + inspecting whether the reauthorized
+        preapproval's next charge actually recovers the missed amount or only
+        the next period's). No organization is routed to MercadoPago today
+        (see the payment-provider-selection plan), so shipping a second,
+        unverified "looks like it works" no-op on a money path is strictly
+        worse than refusing loudly here until someone can actually check.
+
+        **Probe recipe for whoever enables MercadoPago and needs to verify
+        this before removing the refusal:**
+
+        1. Create a MercadoPago sandbox ``preapproval`` (subscription) with a
+           test card known to be declined on renewal (MercadoPago's sandbox
+           documents specific test card numbers for this).
+        2. Let/force a renewal charge to fail so the preapproval's associated
+           payment is ``rejected`` and dunning would begin.
+        3. Call ``preapproval().update(subscription_id, {"status":
+           "authorized", "card_token_id": <a working test card token>})``
+           directly (bypassing this refusal) and inspect whether MercadoPago
+           immediately creates+charges a payment for the *missed* period, or
+           merely resumes billing from the *next* scheduled cycle.
+        4. Only replace this ``raise`` with the real call once step 3 confirms
+           the missed amount is actually collected -- not merely that the
+           preapproval's status flips back to ``authorized``, which is exactly
+           the false signal the Stripe probe caught.
+
+        :raises CollectionNotSupportedError: always -- this operation is not
+            implemented for MercadoPago.
+        """
+        raise CollectionNotSupportedError(
+            subscription.id,
+            f"MercadoPagoSubscriptionAdapter.pay_outstanding_invoice is not "
+            f"implemented for subscription {subscription.id}: MercadoPago has no "
+            "invoice to pay directly, and re-authorizing the preapproval is "
+            "unverified as an actual balance-collection primitive (see this "
+            "method's docstring for the probe recipe). Refusing loudly rather "
+            "than risking a second silent no-op on a money path.",
         )
 
     def update_plan(self, plan: CreatedPlan) -> CreatedPlan:

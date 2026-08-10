@@ -1,20 +1,29 @@
 """Integration tests for grace/restricted recovery via
 ``SubscriptionService.retry_payment`` -- the service behind
 ``POST /billing/subscription/retry-payment/`` (Billing API Contract Hardening,
-Phase 3).
+Phase 3, updated for Phase 4).
 
-The headline test proves three things in one flow:
+The headline test proves four things in one flow:
 
 1. **Ordering** -- the adapter receives ``update_subscription_payment_token``
-   strictly before the retried charge. Attaching after charging would charge
-   the dead instrument one more time, which is exactly what a payer submitting
-   a new card is trying to avoid.
-2. **Idempotency namespacing** -- the key that actually reaches the provider is
+   strictly before ``pay_outstanding_invoice``. Attaching after charging would
+   charge the dead instrument one more time, which is exactly what a payer
+   submitting a new card is trying to avoid.
+2. **The right primitive** -- ``retry_payment`` drives ``pay_outstanding_invoice``
+   and *never* ``change_subscription_plan``. Phase 3 drove the latter (via
+   ``retry_failed_charge``), which collected $0.00 against a real past-due
+   Stripe invoice in production-mode testing -- see
+   ``SubscriptionService.retry_payment``'s docstring for the probe numbers.
+   This module's ``FakePaymentService`` still implements
+   ``change_subscription_plan`` (it is still ``retry_failed_charge``'s own
+   primitive, used unchanged by the dunning ladder) specifically so this
+   suite can assert it is never reached from ``retry_payment``.
+3. **Idempotency namespacing** -- the key that actually reaches the provider is
    ``retry-payment-{pk}-{client_key}``, structurally distinct from the dunning
    ladder's own ``dunning-retry-{pk}-{ordinal}``. A payer paying with a new
    card must never be deduplicated by the provider against the scheduled
    attempt that just failed on the old card.
-3. **Webhook-driven recovery** -- the endpoint returns before the charge is
+4. **Webhook-driven recovery** -- the endpoint returns before the charge is
    confirmed (the subscription is still GRACE/RESTRICTED right after
    ``retry_payment`` returns); only once the subscription-payment webhook's
    side effects run does the subscription reach ACTIVE, with its dunning
@@ -154,13 +163,19 @@ class FakePaymentService:
     """Hand-written double over the ``PaymentService`` API ``retry_payment``
     drives, precise about *when* each call happens and with what arguments --
     exactly what this module's assertions need.
+
+    Implements ``change_subscription_plan`` too, even though ``retry_payment``
+    must never reach it (Phase 4) -- ``retry_failed_charge`` (the dunning
+    ladder's own primitive, unchanged by this phase) still calls it, and
+    ``TestRetryFailedChargeDunningCallerUnchanged`` below needs the same double
+    to support both call paths.
     """
 
     plan_external_id: str = "ext-plan-1"
     #: Every provider-facing call, in the order it happened -- the ordering
     #: assertion (token attached before the charge) reads this list's indices.
     calls: list[str] = field(default_factory=list)
-    #: Every idempotency key forwarded to `change_subscription_plan`, in order.
+    #: Every idempotency key forwarded to `pay_outstanding_invoice`, in order.
     idempotency_keys: list[str] = field(default_factory=list)
     #: Every `payment_token` forwarded to `update_subscription_payment_token`.
     payment_tokens: list[str] = field(default_factory=list)
@@ -183,6 +198,11 @@ class FakePaymentService:
 
     def change_subscription_plan(self, subscription, new_plan, idempotency_key: str = "") -> None:
         self.calls.append("change_subscription_plan")
+
+    def pay_outstanding_invoice(
+        self, subscription, payment_token: str, idempotency_key: str = ""
+    ) -> None:
+        self.calls.append("pay_outstanding_invoice")
         self.idempotency_keys.append(idempotency_key)
 
 
@@ -251,10 +271,13 @@ class TestRetryPaymentGraceRecovery:
         )
 
         # 1. Ordering: the new instrument is attached strictly before the
-        # retried charge is driven.
+        # outstanding balance is collected -- and `change_subscription_plan`
+        # (Phase 3's mistaken primitive, still on the double for
+        # `retry_failed_charge`'s benefit) is never reached at all.
         assert fake_payment_service.calls.index(
             "update_subscription_payment_token"
-        ) < fake_payment_service.calls.index("change_subscription_plan")
+        ) < fake_payment_service.calls.index("pay_outstanding_invoice")
+        assert "change_subscription_plan" not in fake_payment_service.calls
         assert fake_payment_service.payment_tokens == ["tok-new-card"]
 
         # 2. Idempotency namespacing: the exact key that reached the provider,
@@ -313,7 +336,8 @@ class TestRetryPaymentGraceRecovery:
 
         assert fake_payment_service.calls.index(
             "update_subscription_payment_token"
-        ) < fake_payment_service.calls.index("change_subscription_plan")
+        ) < fake_payment_service.calls.index("pay_outstanding_invoice")
+        assert "change_subscription_plan" not in fake_payment_service.calls
         expected_key = retry_payment_idempotency_key(subscription.pk, "client-key-2")
         assert fake_payment_service.idempotency_keys == [expected_key]
 

@@ -742,6 +742,35 @@ class PaymentService[
             self._serialize_subscription(subscription), payment_token
         )
 
+    def pay_outstanding_invoice(
+        self, subscription: SubscriptionModel, payment_token: str, idempotency_key: str = ""
+    ) -> None:
+        """Collect the balance that put `subscription` into dunning, right now.
+
+        Thin wrapper over `BaseSubscriptionAdapter.pay_outstanding_invoice`,
+        exactly like `update_subscription_payment_token`/`change_subscription_plan`
+        above -- see that base method's docstring for the full contract and why
+        it is not `change_subscription_plan` (Billing API Contract Hardening,
+        Phase 4). Existing row: resolves from `subscription`'s own stored
+        provider (Rule A) -- a subscription with live provider-side state must
+        be driven at the provider holding it, never the organization's current
+        pin.
+
+        `SubscriptionService.retry_payment` is this method's only caller,
+        called *after* `update_subscription_payment_token` so the collection
+        attempt runs against the newly attached instrument, not whichever one
+        was already on file. `payment_token` is forwarded through unchanged so
+        the adapter can pass it to the provider explicitly (e.g. Stripe's
+        `Invoice.pay(..., payment_method=payment_token)`) rather than relying
+        on whichever instrument the provider considers "the" default.
+        """
+        adapter = self.get_configured_subscription_adapter(subscription.payment_provider)
+        adapter.pay_outstanding_invoice(
+            self._serialize_subscription(subscription),
+            payment_token,
+            idempotency_key=idempotency_key,
+        )
+
     def cancel_subscription(self, subscription: SubscriptionModel) -> None:
         # Existing row: resolves from `subscription`'s own stored provider.
         adapter = self.get_configured_subscription_adapter(subscription.payment_provider)

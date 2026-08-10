@@ -693,28 +693,34 @@ class SubscriptionViewSet(TenantScopedViewMixin, GenericVirtualModelViewMixin, G
         return Response(self.get_serializer(self.get_subscription()).data)
 
     @extend_schema(
-        summary="Grace recovery: attach a new payment instrument and retry the failed charge",
+        summary="Grace recovery: attach a new payment instrument and collect the outstanding balance",
         request=RetryPaymentRequestSerializer,
         responses={
             200: OpenApiResponse(
                 response=SubscriptionSerializer,
                 description=(
-                    "The new instrument was attached and a fresh charge was submitted to the "
-                    "provider. Recovery is webhook-driven -- the subscription in this response "
-                    'is still `"grace"`/`"restricted"`; it moves to `"active"` only once the '
-                    "subscription-payment webhook confirms the charge."
+                    "The new instrument was attached and the outstanding balance was submitted "
+                    "for collection at the provider. Recovery is webhook-driven -- the "
+                    'subscription in this response is still `"grace"`/`"restricted"`; it moves '
+                    'to `"active"` only once the subscription-payment webhook confirms the '
+                    "charge."
                 ),
             ),
             400: OpenApiResponse(description="`payment_token` or `idempotency_key` is missing."),
             409: OpenApiResponse(
                 response=BILLING_ERROR_BODY_SERIALIZER,
                 description=(
-                    "Either the subscription is not currently GRACE/RESTRICTED "
-                    '(`code: "retry_payment_not_applicable"`, `RetryPaymentNotApplicableError`), '
-                    "or it has never attached a payment instrument at the provider "
-                    '(`code: "subscription_not_attached"`, `SubscriptionNotAttachedError`) -- '
-                    "such an organization has never paid and belongs on `change-plan`'s "
-                    "first-upgrade path instead."
+                    "One of four conflicts: the subscription is not currently "
+                    'GRACE/RESTRICTED (`code: "retry_payment_not_applicable"`, '
+                    "`RetryPaymentNotApplicableError`); it has never attached a payment "
+                    'instrument at the provider (`code: "subscription_not_attached"`, '
+                    "`SubscriptionNotAttachedError` -- such an organization has never paid and "
+                    "belongs on `change-plan`'s first-upgrade path instead); the provider "
+                    "reports nothing actually owed for this subscription right now "
+                    '(`code: "no_outstanding_balance"`, `NoOutstandingBalanceError`); or the '
+                    "resolved provider has no verified balance-collection primitive to drive "
+                    '(`code: "collection_not_supported"`, `CollectionNotSupportedError` -- '
+                    "MercadoPago, as of this writing)."
                 ),
             ),
         },
@@ -726,9 +732,11 @@ class SubscriptionViewSet(TenantScopedViewMixin, GenericVirtualModelViewMixin, G
         request_serializer.is_valid(raise_exception=True)
         data = request_serializer.validated_data
 
-        # `RetryPaymentNotApplicableError` (409) and `SubscriptionNotAttachedError`
-        # (409) are rendered centrally by `common.exception_handlers
-        # .vinta_exception_handler` -- no local try/except needed here.
+        # `RetryPaymentNotApplicableError`, `SubscriptionNotAttachedError`,
+        # `NoOutstandingBalanceError`, and `CollectionNotSupportedError` (all
+        # 409) are rendered centrally by
+        # `common.exception_handlers.vinta_exception_handler` -- no local
+        # try/except needed here.
         self.subscription_service.retry_payment(
             subscription,
             payment_token=data["payment_token"],

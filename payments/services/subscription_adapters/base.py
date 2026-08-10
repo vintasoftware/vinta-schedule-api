@@ -109,6 +109,59 @@ class BaseSubscriptionAdapter:
         raise NotImplementedError
 
     @abstractmethod
+    def pay_outstanding_invoice(
+        self, subscription: Subscription, payment_token: str, idempotency_key: str = ""
+    ) -> None:
+        """
+        Collect the balance that put ``subscription`` into dunning, right now.
+
+        **Not the same operation as ``change_subscription_plan``.** That method
+        moves a subscriber onto a (possibly unchanged) plan and only charges a
+        proration as a *side effect* of the move -- it was Phase 3's mistaken
+        stand-in for this method, and driving it against ``retry_payment``'s own
+        plan/price is exactly what produced the Billing API Contract Hardening
+        plan's Phase 4 probe evidence: a real Stripe past-due renewal invoice
+        left `open` after "retry", $0.00 collected, because a fresh
+        same-amount Price made the proration net to zero. This method instead
+        targets the actual unpaid balance sitting at the provider -- the one
+        thing dunning exists to collect -- and asks the provider to attempt to
+        charge exactly that, with no plan/price/proration math involved at all.
+
+        Called by ``SubscriptionService.retry_payment`` *after*
+        ``update_subscription_payment_token``, so the collection attempt runs
+        against the payment instrument the caller just attached, not whichever
+        one was already on file (which is exactly the dead-card case
+        ``retry_payment`` exists to recover from).
+
+        Writes nothing locally and returns nothing: like every other charge in
+        this codebase, the outcome (paid vs. still failing) arrives later
+        through the subscription-payment webhook.
+
+        :param subscription: The subscription whose outstanding balance should
+            be collected. Must have ``external_id`` set -- there is no
+            provider-side subscription to look a balance up against otherwise.
+        :param payment_token: The payment instrument to charge -- the same one
+            ``update_subscription_payment_token`` just attached, forwarded
+            explicitly rather than relying on whatever the provider considers
+            "the" default instrument (see ``StripeSubscriptionAdapter
+            .pay_outstanding_invoice``'s docstring for why that precedence is
+            not safe to rely on implicitly).
+        :param idempotency_key: When set, forwarded to the provider as its own
+            idempotency key so a retried collection attempt resolves to the
+            same provider-side charge rather than a second one.
+        :raises PaymentAdapterError: ``subscription.external_id`` is blank.
+        :raises CollectionNotSupportedError: the provider (MercadoPago, as of
+            this writing -- see ``MercadoPagoSubscriptionAdapter
+            .pay_outstanding_invoice``) has no verified "collect the
+            outstanding balance" primitive to drive.
+        :raises NoOutstandingBalanceError: the provider reports nothing owed
+            for ``subscription`` right now -- there is no outstanding invoice
+            to collect (e.g. a GRACE/RESTRICTED subscription whose balance was
+            already resolved through some other channel).
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def get_subscription_external_id_from_update(self, update_payload: dict) -> str | None:
         """
         Get the external ID from a payment status update payload.

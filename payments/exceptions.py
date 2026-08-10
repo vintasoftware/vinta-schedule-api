@@ -531,6 +531,54 @@ class SubscriptionNotAttachedError(PaymentError):
         self.organization_id = organization_id
 
 
+class NoOutstandingBalanceError(PaymentError):
+    """Raised by ``BaseSubscriptionAdapter.pay_outstanding_invoice`` (Stripe's
+    implementation, as of this writing) when the provider reports nothing
+    owed for the subscription right now -- there is no open/unpaid invoice to
+    collect, even though ``SubscriptionService.retry_payment`` only reaches
+    this call for a subscription that is GRACE or RESTRICTED.
+
+    Billing API Contract Hardening, Phase 4: this is the error that makes the
+    "collect the balance" primitive fail loudly instead of silently -- see
+    ``BaseSubscriptionAdapter.pay_outstanding_invoice``'s docstring for the
+    probe evidence of what used to happen instead (a $0.00 proration invoice
+    quietly flipping the subscription back to ACTIVE with the real balance
+    left uncollected).
+    """
+
+    code = "no_outstanding_balance"
+
+    def __init__(self, subscription_id: int):
+        super().__init__(
+            f"Subscription {subscription_id} has no outstanding balance to collect "
+            "at the provider right now."
+        )
+        self.subscription_id = subscription_id
+
+
+class CollectionNotSupportedError(PaymentAdapterError):
+    """Raised by ``BaseSubscriptionAdapter.pay_outstanding_invoice`` when the
+    provider has no verified "collect the outstanding balance" primitive to
+    drive right now (MercadoPago, as of this writing -- see
+    ``MercadoPagoSubscriptionAdapter.pay_outstanding_invoice``'s docstring for
+    why it refuses loudly rather than driving an unverified reauthorization).
+
+    Distinct from the plain ``PaymentAdapterError`` this replaced: that class
+    carries the base ``BillingError``/``ValueError`` lineage but had no
+    ``common.exception_handlers.vinta_exception_handler`` branch, so it reached
+    ``SubscriptionViewSet.retry_payment`` callers as an *unhandled* 500 rather
+    than a typed response (Billing API Contract Hardening, Phase 4 reviewer
+    finding SHOULD-FIX 7). This subclass exists so the handler can special-case
+    it without also changing how every other ``PaymentAdapterError`` renders.
+    """
+
+    code = "collection_not_supported"
+
+    def __init__(self, subscription_id: int, message: str):
+        super().__init__(message)
+        self.subscription_id = subscription_id
+
+
 class AddOnNotPurchasableError(PaymentError):
     """Raised when ``purchase_add_on`` is asked to sell capacity for a resource
     whose current ``SubscriptionPlanLimit`` carries no ``overage_unit_price`` —

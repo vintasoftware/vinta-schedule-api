@@ -18,6 +18,8 @@ Two things matter here:
 from payments.exceptions import (
     AddOnNotPurchasableError,
     BillingError,
+    CollectionNotSupportedError,
+    NoOutstandingBalanceError,
     OverLimitError,
     PaymentProviderNotConfiguredError,
     PaymentTokenRequiredError,
@@ -81,6 +83,18 @@ class TestEverySubclassRenderedByTheHandlerHasANonDefaultCode:
         assert error.code == "limit_exceeded"
         assert error.code != BillingError.code
 
+    def test_no_outstanding_balance_error(self):
+        error = NoOutstandingBalanceError(subscription_id=1)
+
+        assert error.code == "no_outstanding_balance"
+        assert error.code != BillingError.code
+
+    def test_collection_not_supported_error(self):
+        error = CollectionNotSupportedError(subscription_id=1, message="not supported")
+
+        assert error.code == "collection_not_supported"
+        assert error.code != BillingError.code
+
 
 class TestNewSubclassesInheritTheBaseErrorBody:
     """A subclass with no ``as_error_body()`` override -- everything except
@@ -115,6 +129,22 @@ class TestNewSubclassesInheritTheBaseErrorBody:
 
         assert error.as_error_body() == {
             "code": "payment_provider_not_configured",
+            "detail": str(error),
+        }
+
+    def test_no_outstanding_balance_error_renders_the_shared_two_key_body(self):
+        error = NoOutstandingBalanceError(subscription_id=42)
+
+        assert error.as_error_body() == {
+            "code": "no_outstanding_balance",
+            "detail": str(error),
+        }
+
+    def test_collection_not_supported_error_renders_the_shared_two_key_body(self):
+        error = CollectionNotSupportedError(subscription_id=42, message="not supported")
+
+        assert error.as_error_body() == {
+            "code": "collection_not_supported",
             "detail": str(error),
         }
 
