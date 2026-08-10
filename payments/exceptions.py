@@ -485,6 +485,52 @@ class IllegalBillingStateTransitionError(BillingError):
         self.to_state = to_state
 
 
+class RetryPaymentNotApplicableError(PaymentError):
+    """Raised by ``SubscriptionService.retry_payment`` when ``subscription`` is
+    not currently ``GRACE``/``RESTRICTED`` -- there is no failed charge to
+    retry against a new instrument.
+
+    Kept distinct from ``SubscriptionNotAttachedError`` deliberately (see the
+    billing API contract hardening plan's **Open Questions**): this means "your
+    subscription is not in a failed-payment state right now", which calls for
+    different frontend copy than "you have never paid, start a plan instead".
+    """
+
+    code = "retry_payment_not_applicable"
+
+    def __init__(self, organization_id: int):
+        super().__init__(
+            f"Organization {organization_id}'s subscription is not GRACE or "
+            "RESTRICTED -- there is no failed charge for retry-payment to retry."
+        )
+        self.organization_id = organization_id
+
+
+class SubscriptionNotAttachedError(PaymentError):
+    """Raised by ``SubscriptionService.retry_payment`` when ``subscription.external_id``
+    is blank -- there is no provider-side instrument to attach a new payment
+    token to, or charge to retry.
+
+    ``retry_failed_charge`` (the dunning ladder's own caller) tolerates this by
+    logging and returning unchanged -- correct for a background beat tick with
+    no one waiting on the result. This endpoint is a user-facing request that
+    would otherwise report a misleading 200 success having done nothing, so it
+    raises instead. Such an organization has never completed a first payment;
+    it belongs on ``change-plan``'s first-upgrade path, not here.
+    """
+
+    code = "subscription_not_attached"
+
+    def __init__(self, organization_id: int):
+        super().__init__(
+            f"Organization {organization_id}'s subscription has no provider-side "
+            "instrument attached yet -- there is nothing to attach a new payment "
+            "token to or retry a charge against. Use change-plan to make a first "
+            "payment instead."
+        )
+        self.organization_id = organization_id
+
+
 class AddOnNotPurchasableError(PaymentError):
     """Raised when ``purchase_add_on`` is asked to sell capacity for a resource
     whose current ``SubscriptionPlanLimit`` carries no ``overage_unit_price`` —

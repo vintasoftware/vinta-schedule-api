@@ -58,7 +58,7 @@ logger = logging.getLogger(__name__)
 #: consecutive intervals of this length, counting from the moment grace began,
 #: and at most one real retry charge is attempted per bucket. This single
 #: quantity is what both the retry throttle *and* the charge's idempotency key
-#: derive from (``_retry_attempt_ordinal``), so the gate that decides *whether*
+#: derive from (``retry_attempt_ordinal``), so the gate that decides *whether*
 #: to retry and the key that decides *which* charge it is can never disagree --
 #: the earlier design quantized those two decisions independently (a 20h
 #: rolling gate vs. a calendar-day key) and, for a first attempt landing between
@@ -106,6 +106,103 @@ FAILED_SUBSCRIPTION_PAYMENT_STATUSES: frozenset[str] = frozenset(
 #: reference in this codebase, e.g. ``payments.migrations.0009``'s own
 #: ``UNLIMITED_PLAN_SLUG``).
 FREE_PLAN_SLUG = "free"
+
+
+def grace_period_days(subscription: Subscription) -> int:
+    """The grace window length for ``subscription``'s plan, falling back to
+    ``BILLING_DEFAULT_GRACE_PERIOD_DAYS`` when the plan leaves it unset.
+
+    Module-level (not a ``DunningService`` method): ``retry_attempt_ordinal``,
+    itself a module-level function so it stays directly importable without a
+    ``DunningService`` instance (``payments/tests/services/test_grace_recovery
+    .py`` calls it to prove the two idempotency-key namespaces never collide),
+    calls this as a plain function rather than through ``self``.
+    """
+    grace_days = subscription.plan.grace_period_days
+    if grace_days is None:
+        grace_days = settings.BILLING_DEFAULT_GRACE_PERIOD_DAYS
+    return grace_days
+
+
+def retry_attempt_ordinal(subscription: Subscription, at: datetime.datetime) -> int:
+    """Which retry bucket ``at`` falls in, counting from the start of this
+    grace episode in ``MIN_DUNNING_RETRY_INTERVAL`` steps.
+
+    The episode's anchor is ``grace_period_ends_at`` (stamped once when
+    grace begins, cleared only when the subscription leaves GRACE, so it is
+    fixed for the whole episode) minus the plan's grace window -- i.e. the
+    moment grace began. Bucket ``floor((at - grace_start) / interval)`` is
+    the single shared quantity ``DunningService``'s own throttle gate and
+    idempotency key both read (see ``DunningService._retry_charge_and_notify``).
+
+    Module-level, and kept importable without a ``DunningService`` instance,
+    because ``payments/tests/services/test_grace_recovery.py`` calls this
+    directly (never re-derives a bucket number) to prove
+    ``SubscriptionService.retry_payment``'s own idempotency-key namespace
+    (``retry-payment-{pk}-{client_key}``) can never collide with any bucket
+    key the ladder could be sitting on -- see
+    ``dunning_retry_idempotency_key``'s docstring. ``retry_payment`` itself no
+    longer reads this function: it does not self-throttle on the dunning
+    bucket (see its docstring for why).
+    """
+    grace_ends_at = subscription.grace_period_ends_at
+    if grace_ends_at is None:
+        return 0
+    grace_start = grace_ends_at - datetime.timedelta(days=grace_period_days(subscription))
+    return (at - grace_start) // MIN_DUNNING_RETRY_INTERVAL
+
+
+def dunning_retry_idempotency_key(subscription_pk: int, attempt_ordinal: int) -> str:
+    """The idempotency key ``_retry_charge_and_notify`` forwards to the provider
+    for one dunning-ladder retry attempt: ``dunning-retry-{pk}-{ordinal}``.
+
+    Named and module-level so this format has exactly one definition. In
+    particular, ``payments/tests/services/test_grace_recovery.py`` calls this
+    directly (never re-derives the string) to prove ``retry_payment``'s own
+    ``retry-payment-{pk}-{client_key}`` namespace (see
+    ``SubscriptionService.retry_payment_idempotency_key``) can never collide
+    with it -- a test asserting against a second, independently-written copy
+    of this format could never catch the format drifting.
+    """
+    return f"dunning-retry-{subscription_pk}-{attempt_ordinal}"
+
+
+def is_downgrade_grace(subscription: Subscription) -> bool:
+    """True when this GRACE/RESTRICTED episode originated from a scheduled
+    downgrade (``SubscriptionService._schedule_downgrade``) rather than a
+    failed recurring charge (``DunningService.enter_grace``).
+
+    Inferred from ``pending_plan_id`` being set -- only ``_schedule_downgrade``
+    stamps it; ``enter_grace`` never touches it. It is cleared once a later
+    upgrade supersedes the scheduled downgrade (``_initiate_upgrade`` clears
+    ``pending_plan``) or, once cycle close ships, once the downgrade is
+    applied at the boundary.
+
+    Module-level, not a ``DunningService`` method: ``SubscriptionService
+    .retry_payment`` needs this exact predicate too, to refuse a
+    downgrade-originated episode -- there is no failed charge to retry there,
+    and driving one anyway would charge the still-active, higher plan
+    (``retry_failed_charge`` bills ``subscription.plan``) while the later
+    approved-payment webhook syncs the pending, *lower* plan's limits
+    (``SubscriptionService.confirm_plan_change``) -- the payer would pay the
+    high price and receive the low plan. The two call sites must not be able
+    to drift apart, so this lives in exactly one place.
+
+    **Known limitation**, accepted as out of scope here: an
+    organization with a downgrade already scheduled whose *currently active*
+    (still higher, pre-boundary) plan then also fails a renewal charge reads
+    as a downgrade-grace here too, and the genuinely failed charge does not
+    get retried by the dunning ladder (nor, since Phase 3, by
+    ``retry_payment`` -- see its docstring). Disambiguating the two reasons
+    unambiguously would need a dedicated reason field on ``Subscription`` -- a
+    larger schema change than the dead-edge gap this function exists to close
+    warrants. The compound case is rare (a renewal charge landing inside a
+    downgrade's typically much-shorter grace window) and, either way, the
+    organization still lands on a state the sweep inspects and can expire --
+    it no longer sits forever on an unswept row, which is the gap this
+    function closes.
+    """
+    return subscription.pending_plan_id is not None
 
 
 class DunningService:
@@ -163,7 +260,7 @@ class DunningService:
 
         with transaction.atomic():
             transition_billing_state(subscription, BillingState.GRACE)
-            grace_days = self._grace_period_days(subscription)
+            grace_days = grace_period_days(subscription)
             subscription.grace_period_ends_at = timezone.now() + datetime.timedelta(days=grace_days)
             subscription.last_dunning_attempt_at = None
             update_fields = ["grace_period_ends_at", "last_dunning_attempt_at"]
@@ -284,7 +381,7 @@ class DunningService:
         no reason field to make mid-window, so the only safe place to collapse
         it is at expiry).
 
-        A **downgrade-originated** grace episode (``_is_downgrade_grace``)
+        A **downgrade-originated** grace episode (``is_downgrade_grace``)
         skips the charge-retry-and-notify step entirely, every tick,
         not only past expiry: unlike a payment-failure grace there is no failed
         charge to retry -- ``SubscriptionService._schedule_downgrade`` already
@@ -294,7 +391,7 @@ class DunningService:
         to a payment-failure grace.
 
         The retry throttle and the charge's idempotency key are two views of
-        the same ``_retry_attempt_ordinal`` -- the tick fires a real charge only
+        the same ``retry_attempt_ordinal`` -- the tick fires a real charge only
         when ``now`` falls in a *later* retry bucket than the last attempt did,
         and the charge carries that bucket's number as its key -- so the gate
         and the key can never disagree about whether this is a new attempt.
@@ -306,41 +403,16 @@ class DunningService:
         ):
             self.expire_grace(subscription)
             return
-        if self._is_downgrade_grace(subscription):
+        if is_downgrade_grace(subscription):
             return
-        current_ordinal = self._retry_attempt_ordinal(subscription, now)
+        current_ordinal = retry_attempt_ordinal(subscription, now)
         last_attempt = subscription.last_dunning_attempt_at
         if (
             last_attempt is not None
-            and self._retry_attempt_ordinal(subscription, last_attempt) >= current_ordinal
+            and retry_attempt_ordinal(subscription, last_attempt) >= current_ordinal
         ):
             return
         self._retry_charge_and_notify(subscription, now, current_ordinal)
-
-    def _retry_attempt_ordinal(self, subscription: Subscription, at: datetime.datetime) -> int:
-        """Which retry bucket ``at`` falls in, counting from the start of this
-        grace episode in ``MIN_DUNNING_RETRY_INTERVAL`` steps.
-
-        The episode's anchor is ``grace_period_ends_at`` (stamped once when
-        grace begins, cleared only when the subscription leaves GRACE, so it is
-        fixed for the whole episode) minus the plan's grace window -- i.e. the
-        moment grace began. Bucket ``floor((at - grace_start) / interval)`` is
-        the single shared quantity the throttle gate and the idempotency key
-        both read: two attempts in different buckets are two distinct charges
-        with two distinct keys; a redelivery of the same attempt lands in the
-        same bucket and reuses its key.
-        """
-        grace_ends_at = subscription.grace_period_ends_at
-        if grace_ends_at is None:
-            return 0
-        grace_start = grace_ends_at - datetime.timedelta(days=self._grace_period_days(subscription))
-        return (at - grace_start) // MIN_DUNNING_RETRY_INTERVAL
-
-    def _grace_period_days(self, subscription: Subscription) -> int:
-        grace_days = subscription.plan.grace_period_days
-        if grace_days is None:
-            grace_days = settings.BILLING_DEFAULT_GRACE_PERIOD_DAYS
-        return grace_days
 
     def _retry_charge_and_notify(
         self, subscription: Subscription, now: datetime.datetime, attempt_ordinal: int
@@ -348,14 +420,14 @@ class DunningService:
         """Retry the failed charge and send that rung of the ladder's email.
 
         ``idempotency_key`` is derived from ``(subscription, attempt_ordinal)``
-        -- the retry bucket ``now`` falls in (``_retry_attempt_ordinal``). It is
+        -- the retry bucket ``now`` falls in (``retry_attempt_ordinal``). It is
         stable across a ``CELERY_TASK_ACKS_LATE`` redelivery of the same logical
         attempt (a redelivery lands in the same bucket, so the provider itself
         refuses a second charge for it, through the provider's own idempotency
         key) and distinct from the previous and next bucket's attempt, so a
         genuinely new retry is never mistaken for a redelivery of the last one.
         """
-        idempotency_key = f"dunning-retry-{subscription.pk}-{attempt_ordinal}"
+        idempotency_key = dunning_retry_idempotency_key(subscription.pk, attempt_ordinal)
         urgency = self._ladder_urgency(subscription, now)
         with transaction.atomic():
             subscription.last_dunning_attempt_at = now
@@ -382,7 +454,7 @@ class DunningService:
         course, so collapsing to the cheaper of the two terminal states is the
         right call.
 
-        A **downgrade-originated** grace episode (``_is_downgrade_grace``)
+        A **downgrade-originated** grace episode (``is_downgrade_grace``)
         resolves differently: ``_expire_downgrade_grace`` checks against the
         limits ``SubscriptionService._schedule_downgrade`` already applied (the
         pending, lower plan's), not the catalog ``free`` plan -- the org may have
@@ -395,7 +467,7 @@ class DunningService:
         if subscription.billing_state != BillingState.GRACE:
             return subscription
 
-        if self._is_downgrade_grace(subscription):
+        if is_downgrade_grace(subscription):
             return self._expire_downgrade_grace(subscription)
 
         if self.check_free_fallback(subscription):
@@ -440,32 +512,6 @@ class DunningService:
             transition_billing_state(subscription, BillingState.RESTRICTED)
             transaction.on_commit(lambda: self._notify_restricted(subscription))
         return subscription
-
-    @staticmethod
-    def _is_downgrade_grace(subscription: Subscription) -> bool:
-        """True when this GRACE episode originated from a scheduled downgrade
-        (``SubscriptionService._schedule_downgrade``) rather than a failed
-        recurring charge (``enter_grace``).
-
-        Inferred from ``pending_plan_id`` being set -- only ``_schedule_downgrade``
-        stamps it; ``enter_grace`` never touches it. It is cleared once a later
-        upgrade supersedes the scheduled downgrade (``_initiate_upgrade`` clears
-        ``pending_plan``) or, once cycle close ships, once the downgrade is
-        applied at the boundary.
-
-        **Known limitation**, accepted as out of scope here: an
-        organization with a downgrade already scheduled whose *currently active*
-        (still higher, pre-boundary) plan then also fails a renewal charge reads
-        as a downgrade-grace here too, and the genuinely failed charge does not
-        get retried. Disambiguating the two reasons unambiguously would need a
-        dedicated reason field on ``Subscription`` -- a larger schema change than
-        the dead-edge gap this method exists to close warrants. The compound case
-        is rare (a renewal charge landing inside a downgrade's typically
-        much-shorter grace window) and, either way, the organization still lands
-        on a state the sweep inspects and can expire -- it no longer sits
-        forever on an unswept row, which is the gap this method closes.
-        """
-        return subscription.pending_plan_id is not None
 
     def _fits_under_current_limits(self, subscription: Subscription) -> bool:
         """Does current usage already fit under ``subscription``'s **currently

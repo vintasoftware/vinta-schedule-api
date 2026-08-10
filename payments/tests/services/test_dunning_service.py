@@ -525,7 +525,7 @@ class TestDowngradeOriginatedGrace:
     (rather than a failed charge) resolves differently. There is no charge to
     retry, and expiry checks the just-applied (lower) limits rather than the
     catalog ``free`` plan. ``pending_plan`` being set is what marks a
-    subscription this way (``DunningService._is_downgrade_grace``). These tests
+    subscription this way (``is_downgrade_grace``). These tests
     set it directly rather than driving the full ``request_plan_change`` flow,
     which ``test_plan_change.py``'s ``TestDowngradeDrivesGraceForTheSweep``
     already covers end to end.

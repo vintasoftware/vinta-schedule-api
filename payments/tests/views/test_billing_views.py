@@ -43,7 +43,10 @@ from payments.services.subscription_adapters.mercadopago_subscription_adapter im
 from payments.services.subscription_adapters.stripe_subscription_adapter import (
     StripeSubscriptionAdapter,
 )
-from payments.services.subscription_service import SubscriptionService
+from payments.services.subscription_service import (
+    SubscriptionService,
+    retry_payment_idempotency_key,
+)
 from payments.tests.views.test_payment_webhooks import sign as sign_webhook
 
 
@@ -274,6 +277,10 @@ def change_plan_url() -> str:
     return reverse("api:BillingSubscription-change-plan")
 
 
+def retry_payment_url() -> str:
+    return reverse("api:BillingSubscription-retry-payment")
+
+
 def cancel_url() -> str:
     return reverse("api:BillingSubscription-cancel")
 
@@ -409,6 +416,17 @@ class TestPermissions:
         self, auth_client, plain_member_membership, subscription
     ):
         response = auth_client.post(cancel_url())
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    def test_plain_member_is_forbidden_from_retrying_payment(
+        self, auth_client, plain_member_membership, subscription
+    ):
+        response = auth_client.post(
+            retry_payment_url(),
+            {"payment_token": "tok-1", "idempotency_key": "idem-1"},
+            format="json",
+        )
 
         assert response.status_code == status.HTTP_403_FORBIDDEN
 
@@ -905,3 +923,186 @@ class TestBillingErrorCodes:
         assert second_change.status_code == status.HTTP_409_CONFLICT
         assert second_change.data["code"] == "unconfirmed_plan_change"
         assert "detail" in second_change.data
+
+
+@pytest.mark.django_db
+class TestRetryPaymentEndpoint:
+    """``POST /billing/subscription/retry-payment/`` -- Billing API Contract
+    Hardening, Phase 3. Mostly exercises the error/shape contract through the
+    endpoint here; permissions have their own dedicated case
+    (``TestPermissions.test_plain_member_is_forbidden_from_retrying_payment``,
+    since ``retry_payment`` is on the same ``write_actions`` gate as the other
+    billing writes there); the ordering/idempotency-namespacing/webhook-recovery
+    behavior against a hand-written double is ``test_grace_recovery.py``'s job.
+    """
+
+    def _make_grace_subscription(
+        self,
+        subscription: Subscription,
+        *,
+        billing_state: str = BillingState.GRACE,
+        external_id: str = "already-on-file",
+    ) -> Subscription:
+        subscription.billing_state = billing_state
+        subscription.external_id = external_id
+        subscription.grace_period_ends_at = datetime.datetime.now(
+            tz=datetime.UTC
+        ) + datetime.timedelta(days=5)
+        subscription.save(update_fields=["billing_state", "external_id", "grace_period_ends_at"])
+        return subscription
+
+    def test_returns_409_retry_payment_not_applicable_from_active(
+        self, billing_client, admin_membership, subscription
+    ):
+        subscription.billing_state = BillingState.ACTIVE
+        subscription.external_id = "already-on-file"
+        subscription.save(update_fields=["billing_state", "external_id"])
+
+        response = billing_client.post(
+            retry_payment_url(),
+            {"payment_token": "tok-new-card", "idempotency_key": "idem-retry-1"},
+            format="json",
+        )
+
+        assert response.status_code == status.HTTP_409_CONFLICT
+        assert response.data["code"] == "retry_payment_not_applicable"
+        assert "detail" in response.data
+
+    def test_returns_409_retry_payment_not_applicable_from_free(
+        self, billing_client, admin_membership, subscription
+    ):
+        # `subscription` (the `free_plan` fixture) is already FREE -- the
+        # subscription-just-created state, never having entered a
+        # failed-payment episode.
+        response = billing_client.post(
+            retry_payment_url(),
+            {"payment_token": "tok-new-card", "idempotency_key": "idem-retry-2"},
+            format="json",
+        )
+
+        assert response.status_code == status.HTTP_409_CONFLICT
+        assert response.data["code"] == "retry_payment_not_applicable"
+
+    def test_returns_409_subscription_not_attached_when_external_id_is_blank(
+        self, billing_client, admin_membership, subscription
+    ):
+        self._make_grace_subscription(subscription, external_id="")
+
+        response = billing_client.post(
+            retry_payment_url(),
+            {"payment_token": "tok-new-card", "idempotency_key": "idem-retry-3"},
+            format="json",
+        )
+
+        assert response.status_code == status.HTTP_409_CONFLICT
+        assert response.data["code"] == "subscription_not_attached"
+        assert "detail" in response.data
+
+    def test_returns_400_when_payment_token_is_missing(
+        self, billing_client, admin_membership, subscription
+    ):
+        self._make_grace_subscription(subscription)
+
+        response = billing_client.post(
+            retry_payment_url(),
+            {"idempotency_key": "idem-retry-4"},
+            format="json",
+        )
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "payment_token" in response.data
+
+    def test_returns_400_when_payment_token_is_blank(
+        self, billing_client, admin_membership, subscription
+    ):
+        self._make_grace_subscription(subscription)
+
+        response = billing_client.post(
+            retry_payment_url(),
+            {"payment_token": "", "idempotency_key": "idem-retry-5"},
+            format="json",
+        )
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "payment_token" in response.data
+
+    @pytest.mark.parametrize("billing_state", [BillingState.GRACE, BillingState.RESTRICTED])
+    def test_200_body_still_reports_grace_recovery_is_webhook_driven(
+        self,
+        billing_client,
+        mercadopago_subscription_adapter,
+        admin_membership,
+        subscription,
+        billing_state,
+    ):
+        """Recovery to ACTIVE only happens once the subscription-payment
+        webhook confirms the charge -- asserting ACTIVE here would assert a
+        lie. See ``test_grace_recovery.py`` for the confirmed-recovery flow.
+
+        Parametrized over GRACE and RESTRICTED: RESTRICTED is where
+        write-blocks/sync-pauses are in force, so whether a RESTRICTED org can
+        even reach this endpoint is exactly what is worth pinning here, not
+        only the GRACE case.
+
+        Also pins that the idempotency key and the new card token reach the
+        real ``MercadoPagoSubscriptionAdapter`` -> SDK boundary -- unlike
+        ``test_grace_recovery.py``, which only exercises a hand-written
+        ``FakePaymentService`` double that stands in for ``PaymentService``
+        wholesale and never reaches the adapter.
+        """
+        self._make_grace_subscription(subscription, billing_state=billing_state)
+
+        response = billing_client.post(
+            retry_payment_url(),
+            {"payment_token": "tok-new-card", "idempotency_key": "idem-retry-6"},
+            format="json",
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["billing_state"] == billing_state
+
+        # The `card_token_id` attach call, then the keyed charge call --
+        # both real `sdk.preapproval().update(...)` invocations, in order.
+        update_calls = mercadopago_subscription_adapter.sdk.preapproval().update.call_args_list
+        assert len(update_calls) == 2
+
+        attach_args, _attach_kwargs = update_calls[0]
+        assert attach_args[0] == subscription.external_id
+        assert attach_args[1]["card_token_id"] == "tok-new-card"
+
+        charge_args, _charge_kwargs = update_calls[1]
+        assert charge_args[0] == subscription.external_id
+        charge_options = charge_args[2]
+        expected_key = retry_payment_idempotency_key(subscription.pk, "idem-retry-6")
+        assert charge_options.custom_headers == {"x-idempotency-key": expected_key}
+
+
+@pytest.mark.django_db
+class TestChangePlanReaffirmingSettledPlanStaysANoOp:
+    """Regression pin for the billing API contract hardening plan's explicit
+    non-goal: ``change-plan`` re-requesting the plan/interval the subscription
+    is *already* settled on stays a silent 200 no-op -- its ``already_settled``
+    guard is load-bearing for the concurrent-first-upgrade story (see
+    ``SubscriptionService.request_plan_change``'s docstring) and this plan does
+    not touch it. ``retry-payment`` (``TestRetryPaymentEndpoint`` above), not a
+    ``change-plan`` fix, is the supported way to recover a GRACE/RESTRICTED
+    subscription -- see the plan's **Risk & Rollout Notes**, "What this plan
+    does not fix"."""
+
+    def test_reaffirming_the_settled_plan_is_still_a_200_no_op(
+        self, billing_client, admin_membership, subscription, free_plan
+    ):
+        response = billing_client.post(
+            change_plan_url(),
+            {
+                "plan_slug": free_plan.slug,
+                "billing_interval": BillingInterval.MONTHLY,
+                "idempotency_key": "idem-reaffirm-1",
+                "payment_token": "tok-1",
+            },
+            format="json",
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["plan"]["slug"] == free_plan.slug
+        assert response.data["billing_state"] == BillingState.FREE

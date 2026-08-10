@@ -24,6 +24,8 @@ from payments.exceptions import (
     MissingBillingProfileError,
     NoDefaultBillingPlanError,
     PaymentTokenRequiredError,
+    RetryPaymentNotApplicableError,
+    SubscriptionNotAttachedError,
     UnconfirmedPlanChangeError,
     UnknownPaymentProviderError,
 )
@@ -38,6 +40,7 @@ from payments.models import (
 )
 from payments.services.billing_state_machine import transition_billing_state
 from payments.services.dataclasses import CreatedPlan, Plan
+from payments.services.dunning_service import is_downgrade_grace
 
 
 if TYPE_CHECKING:
@@ -286,6 +289,21 @@ def assert_plan_is_complete(plan: BillingPlan) -> None:
     missing = plan.get_missing_limited_resource_keys()
     if missing:
         raise IncompleteBillingPlanError(plan.slug, missing)
+
+
+def retry_payment_idempotency_key(subscription_pk: int, client_idempotency_key: str) -> str:
+    """The idempotency key ``SubscriptionService.retry_payment`` forwards to
+    the provider: ``retry-payment-{pk}-{client_key}``.
+
+    Named and module-level, mirroring
+    ``dunning_service.dunning_retry_idempotency_key``, so this format has
+    exactly one definition -- structurally distinct from the dunning ladder's
+    own ``dunning-retry-{pk}-{ordinal}`` namespace (see
+    ``SubscriptionService.retry_payment``'s docstring for why the two must
+    never collide). A test asserting the key reaching the provider should call
+    this function directly, never re-derive the string.
+    """
+    return f"retry-payment-{subscription_pk}-{client_idempotency_key}"
 
 
 class SubscriptionService:
@@ -723,6 +741,120 @@ class SubscriptionService:
         )
         return subscription
 
+    def retry_payment(
+        self, subscription: Subscription, payment_token: str, idempotency_key: str
+    ) -> Subscription:
+        """Grace recovery: attach a *new* payment instrument to ``subscription``
+        and drive a fresh charge against it -- the single entry point behind
+        ``POST /billing/subscription/retry-payment/``.
+
+        This is **not** ``retry_failed_charge``. That method re-drives whichever
+        instrument is already on file, which is useless for the most common
+        grace cause (an expired card): there would be nothing new to charge.
+        This method attaches ``payment_token`` first
+        (``PaymentService.update_subscription_payment_token`` ->
+        ``BaseSubscriptionAdapter.update_subscription_payment_token``), *then*
+        retries the charge against it -- order matters, since attaching after
+        charging would charge the dead instrument one more time.
+
+        **Serialized by a row lock; deduplicated by the caller's idempotency
+        key -- not by this method.** These are two separate claims, and only
+        the first is this method's job. The subscription row is re-read
+        ``SELECT ... FOR UPDATE`` inside ``transaction.atomic()``, exactly like
+        ``request_plan_change``, so two concurrent calls for the same
+        subscription cannot interleave mid-flight -- the second blocks until
+        the first commits. That lock buys ordering, not dedup: an earlier
+        version of this method additionally stamped ``last_dunning_attempt_at``
+        under the lock and refused a second call landing in the same
+        ``retry_attempt_ordinal`` bucket as the dunning ladder's own throttle.
+        That gate was removed -- ``last_dunning_attempt_at`` is also stamped by
+        the dunning ladder (``DunningService._retry_charge_and_notify``), and
+        ``MIN_DUNNING_RETRY_INTERVAL`` is 20 hours, so gating this endpoint on
+        that field meant: the ladder ticks on the payer's dead card, stamps the
+        bucket, the payer gets the "update your card" notification, submits a
+        new card five minutes later -- and is refused with 409 for up to 20
+        hours, on the one endpoint that exists to let them fix exactly this.
+        Worse, if that new card is itself declined, the payer cannot try a
+        *different* card for up to 20 hours either. The field cannot tell "a
+        duplicate submission" apart from "the ladder ran" or "a different card
+        was already tried", so gating on it blocked the cases that must work.
+        Do not restore that gate.
+
+        Deduplication is instead the caller's ``idempotency_key`` -- namespaced
+        below into ``retry-payment-{subscription.pk}-{idempotency_key}`` and
+        forwarded to the provider as ``x-idempotency-key``. A repeat submission
+        of the *same* user intent (a double-click, a client retrying a slow
+        response without regenerating its key) carries the *same* client key,
+        so the provider collapses it into a single charge -- this method drives
+        the attach + charge call again, but the second charge never lands. A
+        *different* client key is a deliberately different attempt and is
+        deliberately allowed to reach the provider: it is indistinguishable
+        from "my first new card was declined, here is another one", and must
+        not be refused.
+
+        **Idempotency key is namespaced** ``retry-payment-{subscription.pk}-{idempotency_key}``,
+        structurally distinct from the dunning ladder's own
+        ``dunning-retry-{pk}-{ordinal}`` (see ``DunningService._retry_charge_and_notify``).
+        This is the load-bearing detail of grace recovery: a payer retrying with
+        a *new* card must never be deduplicated by the provider against the
+        *scheduled* dunning attempt that just failed on the *old* card -- if the
+        two shared a bucket, the provider would treat the user's new-card charge
+        as a repeat of the already-failed old-card one and swallow it, and every
+        surface (user, API, dashboard) would report success while no money
+        moved.
+
+        Writes nothing about the *outcome* locally, exactly like
+        ``retry_failed_charge`` -- success arrives later through the
+        subscription-payment webhook (``DunningService.resolve_payment_success``
+        -> ``ACTIVE``), never synchronously from this call. The 200 this drives
+        from the view does **not** mean "you are now active".
+
+        :raises RetryPaymentNotApplicableError: ``subscription.billing_state``
+            is not ``GRACE`` or ``RESTRICTED``; or the episode is
+            downgrade-originated (``is_downgrade_grace``) rather than a failed
+            charge -- see below. There is no failed charge to retry right now.
+        :raises SubscriptionNotAttachedError: ``subscription.external_id`` is
+            blank -- there is no provider-side instrument to attach a new token
+            to or a charge to retry. Unlike ``retry_failed_charge``'s existing
+            dunning-ladder caller (which logs and returns unchanged -- fine for
+            a background beat tick nobody is waiting on), a user-facing request
+            must not report success having silently done nothing.
+
+        Not every GRACE/RESTRICTED episode means "a payment failed" --
+        ``_schedule_downgrade`` also puts a subscription into GRACE, with
+        ``pending_plan`` set, when an org is over its *new, lower* limits, with
+        no charge ever having failed. ``is_downgrade_grace`` (module-level in
+        ``dunning_service``, shared with ``DunningService._process_grace`` -- see
+        its docstring; the two call sites must not drift apart) is checked and
+        refused before
+        anything is driven: charging here would bill
+        ``retry_failed_charge`` -> ``_ensure_provider_plan(subscription,
+        subscription.plan, ...)`` at the still-active, *higher* plan, while
+        the approved-payment webhook's ``confirm_plan_change`` takes the
+        pending-downgrade branch and syncs the *lower* plan's limits -- the
+        payer would pay the high price and receive the low plan.
+        """
+        with transaction.atomic():
+            # Re-read under a row lock, same discipline as `request_plan_change`
+            # -- see this method's docstring for what the lock does and does
+            # not buy: it serializes concurrent calls, it does not deduplicate
+            # them.
+            subscription = Subscription.objects.select_for_update().get(pk=subscription.pk)
+            if subscription.billing_state not in (BillingState.GRACE, BillingState.RESTRICTED):
+                raise RetryPaymentNotApplicableError(subscription.organization_id)
+            if is_downgrade_grace(subscription):
+                raise RetryPaymentNotApplicableError(subscription.organization_id)
+            if not subscription.external_id:
+                raise SubscriptionNotAttachedError(subscription.organization_id)
+
+            payment_service = self._require_payment_service()
+            payment_service.update_subscription_payment_token(subscription, payment_token)
+            namespaced_idempotency_key = retry_payment_idempotency_key(
+                subscription.pk, idempotency_key
+            )
+            self.retry_failed_charge(subscription, namespaced_idempotency_key)
+        return subscription
+
     def _schedule_downgrade(
         self, subscription: Subscription, plan: BillingPlan, billing_interval: str
     ) -> Subscription:
@@ -744,7 +876,7 @@ class SubscriptionService:
         through ``transition_billing_state`` like every other ``billing_state``
         change puts it on the one path the sweep already watches:
         ``DunningService`` tells a downgrade-originated grace episode apart from a
-        payment-failure one (``DunningService._is_downgrade_grace``) only to skip
+        payment-failure one (``is_downgrade_grace``) only to skip
         the charge-retry ladder -- there is no charge to retry for a downgrade --
         and to resolve it against the just-applied (lower) limits rather than the
         catalog ``free`` plan at expiry (``DunningService._expire_downgrade_grace``).

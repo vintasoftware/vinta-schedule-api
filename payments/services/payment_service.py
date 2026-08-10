@@ -718,6 +718,30 @@ class PaymentService[
             self._serialize_subscription(subscription), new_plan, idempotency_key=idempotency_key
         )
 
+    def update_subscription_payment_token(
+        self, subscription: SubscriptionModel, payment_token: str
+    ) -> None:
+        """Attach a new payment instrument to `subscription`'s already-active
+        provider-side subscription, without disrupting its current billing
+        cycle -- e.g. the payer's card expired and they submitted a new one.
+
+        Thin wrapper over `BaseSubscriptionAdapter.update_subscription_payment_token`,
+        exactly like `change_subscription_plan`/`cancel_subscription` above.
+        Existing row: resolves from `subscription`'s own stored provider (Rule
+        A) -- a subscription with live provider-side state must be driven at
+        the provider holding it, never the organization's current pin.
+
+        `SubscriptionService.retry_payment` is this method's first (and, as of
+        this writing, only) caller: it calls this *before* `retry_failed_charge`
+        so the retried charge is driven against the newly attached instrument,
+        not whichever one was already on file (which is exactly the dead-card
+        case retry-payment exists to recover from).
+        """
+        adapter = self.get_configured_subscription_adapter(subscription.payment_provider)
+        adapter.update_subscription_payment_token(
+            self._serialize_subscription(subscription), payment_token
+        )
+
     def cancel_subscription(self, subscription: SubscriptionModel) -> None:
         # Existing row: resolves from `subscription`'s own stored provider.
         adapter = self.get_configured_subscription_adapter(subscription.payment_provider)

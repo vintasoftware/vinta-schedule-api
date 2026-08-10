@@ -59,6 +59,7 @@ from payments.serializers import (
     BillingPlanSerializer,
     ChangePlanRequestSerializer,
     MeteredOccurrenceSerializer,
+    RetryPaymentRequestSerializer,
     SubscriptionAddOnSerializer,
     SubscriptionSerializer,
     UsageResponseSerializer,
@@ -552,7 +553,7 @@ class MeteredOccurrenceViewSet(TenantScopedViewMixin, mixins.ListModelMixin, Gen
 
 class SubscriptionViewSet(TenantScopedViewMixin, GenericVirtualModelViewMixin, GenericViewSet):
     """``GET /billing/subscription/``, ``POST .../change-plan/``,
-    ``POST .../cancel/``."""
+    ``POST .../cancel/``, ``POST .../retry-payment/``."""
 
     serializer_class = SubscriptionSerializer
     queryset = Subscription.objects.all()
@@ -560,10 +561,11 @@ class SubscriptionViewSet(TenantScopedViewMixin, GenericVirtualModelViewMixin, G
 
     #: Purchase/change actions require billing-owner-or-admin; plain reads stay
     #: open to any authenticated member.
-    write_actions = ("change_plan", "cancel")
-    #: The write actions drive real provider round trips (``change_plan`` a
-    #: charge); throttle them per the same ``ScopedRateThrottle`` bound-abuse
-    #: rationale as the inbound webhook endpoints, while leaving reads unthrottled.
+    write_actions = ("change_plan", "cancel", "retry_payment")
+    #: The write actions drive real provider round trips (``change_plan`` and
+    #: ``retry_payment`` a charge); throttle them per the same
+    #: ``ScopedRateThrottle`` bound-abuse rationale as the inbound webhook
+    #: endpoints, while leaving reads unthrottled.
     throttle_scope = "billing-write"
 
     @inject
@@ -688,6 +690,54 @@ class SubscriptionViewSet(TenantScopedViewMixin, GenericVirtualModelViewMixin, G
     def cancel(self, request, *args, **kwargs):
         subscription = self.get_subscription(check_object_perms=True)
         self.subscription_service.cancel_subscription(subscription)
+        return Response(self.get_serializer(self.get_subscription()).data)
+
+    @extend_schema(
+        summary="Grace recovery: attach a new payment instrument and retry the failed charge",
+        request=RetryPaymentRequestSerializer,
+        responses={
+            200: OpenApiResponse(
+                response=SubscriptionSerializer,
+                description=(
+                    "The new instrument was attached and a fresh charge was submitted to the "
+                    "provider. Recovery is webhook-driven -- the subscription in this response "
+                    'is still `"grace"`/`"restricted"`; it moves to `"active"` only once the '
+                    "subscription-payment webhook confirms the charge."
+                ),
+            ),
+            400: OpenApiResponse(description="`payment_token` or `idempotency_key` is missing."),
+            409: OpenApiResponse(
+                response=BILLING_ERROR_BODY_SERIALIZER,
+                description=(
+                    "Either the subscription is not currently GRACE/RESTRICTED "
+                    '(`code: "retry_payment_not_applicable"`, `RetryPaymentNotApplicableError`), '
+                    "or it has never attached a payment instrument at the provider "
+                    '(`code: "subscription_not_attached"`, `SubscriptionNotAttachedError`) -- '
+                    "such an organization has never paid and belongs on `change-plan`'s "
+                    "first-upgrade path instead."
+                ),
+            ),
+        },
+    )
+    @action(methods=["post"], detail=False, url_path="retry-payment", url_name="retry-payment")
+    def retry_payment(self, request, *args, **kwargs):
+        subscription = self.get_subscription(check_object_perms=True)
+        request_serializer = RetryPaymentRequestSerializer(data=request.data)
+        request_serializer.is_valid(raise_exception=True)
+        data = request_serializer.validated_data
+
+        # `RetryPaymentNotApplicableError` (409) and `SubscriptionNotAttachedError`
+        # (409) are rendered centrally by `common.exception_handlers
+        # .vinta_exception_handler` -- no local try/except needed here.
+        self.subscription_service.retry_payment(
+            subscription,
+            payment_token=data["payment_token"],
+            idempotency_key=data["idempotency_key"],
+        )
+
+        # Re-fetched through the virtual-model-optimized queryset, same reason
+        # as `change_plan` above -- and still GRACE/RESTRICTED here, since
+        # recovery is webhook-driven; see the `200` response description.
         return Response(self.get_serializer(self.get_subscription()).data)
 
 

@@ -22,6 +22,8 @@ from payments.exceptions import (
     OverLimitError,
     PaymentProviderNotConfiguredError,
     PaymentTokenRequiredError,
+    RetryPaymentNotApplicableError,
+    SubscriptionNotAttachedError,
     UnconfirmedPlanChangeError,
 )
 
@@ -59,6 +61,13 @@ def vinta_exception_handler(exc: Exception, context: dict) -> Response | None:
     as ``PaymentProviderNotConfiguredError`` above — a per-action ``except`` is
     something every new billing write has to remember, the handler is something
     it inherits for free.
+
+    ``RetryPaymentNotApplicableError`` / ``SubscriptionNotAttachedError`` (409)
+    are Phase 3's grace-recovery errors, raised by
+    ``SubscriptionService.retry_payment``. Both 409 Conflict, same status as
+    ``UnconfirmedPlanChangeError`` above -- the request is well-formed, but the
+    subscription's current state (not GRACE/RESTRICTED, or never attached at
+    the provider) conflicts with what retry-payment needs to be true.
     """
     if isinstance(exc, OverLimitError):
         # Mandatory before returning a Response: swallowing the exception here
@@ -83,6 +92,15 @@ def vinta_exception_handler(exc: Exception, context: dict) -> Response | None:
     if isinstance(exc, UnconfirmedPlanChangeError):
         # A different plan change is already in flight and unconfirmed -- 409
         # Conflict rather than a validation error on any one field.
+        set_rollback()
+        return Response(exc.as_error_body(), status=status.HTTP_409_CONFLICT)
+    if isinstance(exc, RetryPaymentNotApplicableError | SubscriptionNotAttachedError):
+        # Same mandatory rollback discipline as the branches above --
+        # `retry_payment` re-reads the subscription under a row lock inside its
+        # own `transaction.atomic()` before either check can raise, so there is
+        # nothing written yet by the time either of these fires in practice, but
+        # the discipline is applied uniformly rather than reasoned about per call
+        # site.
         set_rollback()
         return Response(exc.as_error_body(), status=status.HTTP_409_CONFLICT)
     return drf_exception_handler(exc, context)
