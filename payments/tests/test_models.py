@@ -9,6 +9,7 @@ import pytest
 from model_bakery import baker
 
 from organizations.models import Organization
+from payments.billing_constants import DocumentTypes
 from payments.constants import PaymentProviders, PaymentStatuses, RefundStatuses
 from payments.models import (
     BillingAddress,
@@ -18,6 +19,9 @@ from payments.models import (
     Refund,
     RefundStatusUpdate,
     Subscription,
+)
+from payments.services.payment_adapters.mercadopago_payment_adapter import (
+    DOCUMENT_TYPES_MAPPING,
 )
 
 
@@ -84,6 +88,24 @@ class TestBillingProfile:
 
     def test_billing_address_organization_property(self, billing_profile):
         assert billing_profile.billing_address.organization == billing_profile.organization
+
+    def test_document_types_and_mercadopago_mapping_agree(self):
+        """`DOCUMENT_TYPES_MAPPING` must translate every member the API accepts --
+        a member added to `DocumentTypes` without a corresponding mapping entry
+        would silently forward an untranslated value to MercadoPago, and a
+        mapping entry for a retired member would be dead code. Real set
+        comparisons in both directions, not a subset check either way."""
+        document_type_values = set(DocumentTypes.values)
+        mapping_keys = set(DOCUMENT_TYPES_MAPPING.keys())
+
+        assert document_type_values - mapping_keys == set(), (
+            "DocumentTypes member(s) missing from DOCUMENT_TYPES_MAPPING: "
+            f"{document_type_values - mapping_keys}"
+        )
+        assert mapping_keys - document_type_values == set(), (
+            "DOCUMENT_TYPES_MAPPING key(s) not in DocumentTypes: "
+            f"{mapping_keys - document_type_values}"
+        )
 
 
 backfill_payment_provider_migration = importlib.import_module(

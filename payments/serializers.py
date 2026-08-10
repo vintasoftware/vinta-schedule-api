@@ -4,7 +4,7 @@ import django_virtual_models as v
 from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
 
-from payments.billing_constants import BillingInterval, LimitedResource
+from payments.billing_constants import BillingInterval, DocumentTypes, LimitedResource
 from payments.constants import PaymentProviders
 from payments.models import (
     BillingAddress,
@@ -466,6 +466,7 @@ class BillingProfileSerializer(v.VirtualModelSerializer):
 
     id = serializers.IntegerField(source="organization_id", read_only=True)  # noqa: A003
     billing_address = BillingAddressSerializer()
+    document_type = serializers.ChoiceField(choices=DocumentTypes.choices)
 
     class Meta:
         model = BillingProfile

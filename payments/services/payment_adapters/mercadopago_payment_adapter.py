@@ -32,12 +32,24 @@ PAYMENT_METHODS_MAPPING: dict[str, str] = {
     "pix": "pix",
     "boleto": "bolbradesco",
 }
+# Per-provider translation seam from `DocumentTypes` (the enum the API accepts)
+# to whatever value MercadoPago's `payer.identification.type` expects. Kept as an
+# explicit mapping, not an identity pass-through, because a member valid in
+# `DocumentTypes` -- e.g. `SSN`, `EIN`, `PASSPORT` -- may still be refused by
+# MercadoPago itself; the mapping's job is only to make that translation
+# decision in one place. `test_models.py` asserts this dict's keys match
+# `DocumentTypes.values` exactly, so an enum member added without a
+# corresponding entry here fails loudly instead of silently forwarding an
+# untranslated value to the provider.
 DOCUMENT_TYPES_MAPPING: dict[str, str] = {
     "CPF": "CPF",
     "CNPJ": "CNPJ",
     "DNI": "DNI",
     "CI": "CI",
     "RUT": "RUT",
+    "SSN": "SSN",
+    "EIN": "EIN",
+    "PASSPORT": "PASSPORT",
     "OTHER": "OTHER",
 }
 # MercadoPago payment statuses: https://www.mercadopago.com/developers/en/docs/checkout-api/payment-management/status

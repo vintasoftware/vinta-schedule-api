@@ -422,6 +422,12 @@ SPECTACULAR_SETTINGS = {
         # for -- pin it explicitly so neither side falls back to an unstable
         # hash-suffixed name (e.g. "Provider331Enum").
         "ProviderEnum": "calendar_integration.constants.CalendarProvider.choices",
+        # `legal.models.PolicyDocumentType` owns the published schema component
+        # `DocumentTypeEnum`. The new `BillingProfile.document_type` enum (Phase 2)
+        # would otherwise contest this name on a hash basis, risking a renamed
+        # collision (e.g., "PolicyDocumentTypeEnum"). Pin `legal`'s existing,
+        # already-published name so the legal app's client contract is not broken.
+        "DocumentTypeEnum": "legal.models.PolicyDocumentType.choices",
     },
 }
 

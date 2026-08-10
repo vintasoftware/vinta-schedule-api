@@ -8,6 +8,7 @@ from common.models import BaseModel
 from payments.billing_constants import (
     BillingInterval,
     BillingState,
+    DocumentTypes,
     Entitlement,
     LimitedResource,
     LimitKind,
@@ -199,7 +200,7 @@ class BillingProfile(BaseModel):
     contact_last_name = models.CharField(max_length=255, blank=True)
     contact_email = models.EmailField()
     contact_phone = models.CharField(max_length=50, blank=True)
-    document_type = models.CharField(max_length=50)
+    document_type = models.CharField(max_length=50, choices=DocumentTypes)
     document_number = models.CharField(max_length=50)
     billing_address = models.OneToOneField(
         BillingAddress, on_delete=models.CASCADE, related_name="billing_profile"
