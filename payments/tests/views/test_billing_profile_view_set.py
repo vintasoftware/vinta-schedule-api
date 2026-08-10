@@ -70,6 +70,43 @@ class TestBillingProfileViewSet:
         assert response.data["billing_address"]["street_name"] == "Main Street"
         assert response.data["billing_address"]["city"] == "New York"
 
+    def test_retrieve_billing_profile_with_legacy_out_of_set_document_type(
+        self, auth_client, membership, organization
+    ):
+        """`choices` on `document_type` is not a DB constraint: a pre-existing row
+        holding a value outside `DocumentTypes` (written before this enum existed,
+        or before it was widened) must still read back cleanly through the API.
+
+        The row is created with `Model.objects.create(...)`, bypassing
+        `BillingProfileSerializer`'s `ChoiceField` entirely, so the out-of-set
+        value genuinely reaches the database -- this is not the serializer
+        silently accepting it.
+        """
+        billing_address = BillingAddress.objects.create(
+            street_name="Main Street",
+            street_number="123",
+            city="New York",
+            state="NY",
+            country="US",
+            zip_code="10001",
+        )
+        billing_profile = BillingProfile.objects.create(
+            organization=organization,
+            contact_first_name="Ada",
+            contact_email="billing@example.com",
+            document_type="LEGACY_TAX_ID",
+            document_number="123456789",
+            billing_address=billing_address,
+        )
+        assert billing_profile.document_type == "LEGACY_TAX_ID"
+
+        url = reverse("api:BillingProfile-retrieve")
+        response = auth_client.get(url)
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["document_type"] == "LEGACY_TAX_ID"
+        assert response.data["document_number"] == "123456789"
+
     def test_retrieve_billing_profile_not_found(self, auth_client, membership):
         """Test retrieving billing profile when it doesn't exist."""
         url = reverse("api:BillingProfile-retrieve")
@@ -312,6 +349,56 @@ class TestBillingProfileViewSet:
         response = auth_client.post(url, data, format="json")
 
         assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+    def test_create_billing_profile_rejects_out_of_set_document_type(self, auth_client, membership):
+        """A `document_type` outside the `DocumentTypes` enum is rejected at the
+        serializer -- no provider can be handed a value it has no mapping for."""
+        url = reverse("api:BillingProfile-create")
+        data = {
+            "contact_first_name": "Ada",
+            "contact_email": "billing@example.com",
+            "document_type": "NOT_A_TYPE",
+            "document_number": "123456789",
+            "billing_address": {
+                "street_name": "Main Street",
+                "street_number": "123",
+                "city": "New York",
+                "state": "NY",
+                "country": "US",
+                "zip_code": "10001",
+            },
+        }
+
+        response = auth_client.post(url, data, format="json")
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "document_type" in response.data
+
+    def test_update_billing_profile_rejects_out_of_set_document_type(
+        self, auth_client, membership, organization
+    ):
+        """Same rejection on the update path -- writes are constrained
+        regardless of whether the row is new or pre-existing."""
+        baker.make(BillingProfile, organization=organization, document_type="CPF")
+
+        url = reverse("api:BillingProfile-update")
+        data = {
+            "document_type": "NOT_A_TYPE",
+            "document_number": "123456789",
+            "billing_address": {
+                "street_name": "Main Street",
+                "street_number": "123",
+                "city": "New York",
+                "state": "NY",
+                "country": "US",
+                "zip_code": "10001",
+            },
+        }
+
+        response = auth_client.put(url, data, format="json")
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "document_type" in response.data
 
     def test_create_billing_profile_unauthenticated(self, anonymous_client):
         """Test creating billing profile without authentication."""
@@ -594,7 +681,7 @@ class TestBillingProfileViewSet:
         data = {
             "contact_first_name": "Ada",
             "contact_email": "billing@example.com",
-            "document_type": "ID",
+            "document_type": "PASSPORT",
             "document_number": "987654321",
             "billing_address": {
                 "street_name": "Simple St",

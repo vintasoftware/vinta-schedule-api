@@ -16495,8 +16495,7 @@ components:
           type: string
           maxLength: 50
         document_type:
-          type: string
-          maxLength: 50
+          $ref: '#/components/schemas/BillingProfileDocumentTypeEnum'
         document_number:
           type: string
           maxLength: 50
@@ -16519,6 +16518,28 @@ components:
       - document_type
       - id
       - modified
+    BillingProfileDocumentTypeEnum:
+      enum:
+      - CPF
+      - CNPJ
+      - DNI
+      - CI
+      - RUT
+      - SSN
+      - EIN
+      - PASSPORT
+      - OTHER
+      type: string
+      description: |-
+        * `CPF` - CPF
+        * `CNPJ` - CNPJ
+        * `DNI` - DNI
+        * `CI` - CI
+        * `RUT` - RUT
+        * `SSN` - SSN
+        * `EIN` - EIN
+        * `PASSPORT` - Passport
+        * `OTHER` - Other
     BillingStateEnum:
       enum:
       - free
@@ -19267,8 +19288,7 @@ components:
           type: string
           maxLength: 50
         document_type:
-          type: string
-          maxLength: 50
+          $ref: '#/components/schemas/BillingProfileDocumentTypeEnum'
         document_number:
           type: string
           maxLength: 50

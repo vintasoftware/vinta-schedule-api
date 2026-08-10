@@ -23,6 +23,27 @@ class BillingInterval(TextChoices):
     ANNUAL = ("annual", _("Annual"))
 
 
+class DocumentTypes(TextChoices):
+    """Kind of tax/identity document on a ``BillingProfile``.
+
+    Sent to MercadoPago as ``payer.identification.type`` (see
+    ``DOCUMENT_TYPES_MAPPING``); ignored by Stripe, which takes no document type.
+    Not every member is accepted by every provider -- this enum is the set the
+    API accepts, and ``DOCUMENT_TYPES_MAPPING`` is the per-provider translation
+    seam. A member valid here can still be refused by a specific provider.
+    """
+
+    CPF = ("CPF", _("CPF"))
+    CNPJ = ("CNPJ", _("CNPJ"))
+    DNI = ("DNI", _("DNI"))
+    CI = ("CI", _("CI"))
+    RUT = ("RUT", _("RUT"))
+    SSN = ("SSN", _("SSN"))
+    EIN = ("EIN", _("EIN"))
+    PASSPORT = ("PASSPORT", _("Passport"))
+    OTHER = ("OTHER", _("Other"))
+
+
 class ProviderWebhookRoute(TextChoices):
     """Which inbound webhook endpoint received a ``ProviderWebhookEvent``.
 

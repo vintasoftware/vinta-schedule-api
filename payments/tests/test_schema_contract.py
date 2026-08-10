@@ -79,3 +79,29 @@ class TestBillingErrorBodyIsDocumented:
         request_schema = openapi_schema["components"]["schemas"][component_name]
 
         assert "payment_token" in request_schema["properties"]
+
+
+class TestDocumentTypeIsDocumentedAsAnEnum:
+    """Billing API Contract Hardening, Phase 2: the generated client must see
+    ``document_type`` as an enum, not a free string, and the enum must carry
+    every member the API accepts."""
+
+    def test_billing_profile_document_type_is_a_nine_member_enum(
+        self, openapi_schema: dict
+    ) -> None:
+        billing_profile_schema = openapi_schema["components"]["schemas"]["BillingProfile"]
+        document_type_ref = billing_profile_schema["properties"]["document_type"]["$ref"]
+        component_name = document_type_ref.rsplit("/", 1)[-1]
+        enum_schema = openapi_schema["components"]["schemas"][component_name]
+
+        assert set(enum_schema["enum"]) == {
+            "CPF",
+            "CNPJ",
+            "DNI",
+            "CI",
+            "RUT",
+            "SSN",
+            "EIN",
+            "PASSPORT",
+            "OTHER",
+        }
