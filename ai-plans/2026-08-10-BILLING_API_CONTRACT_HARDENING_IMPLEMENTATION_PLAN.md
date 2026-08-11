@@ -314,6 +314,87 @@ Acceptance: re-running the Stripe probe shows the past-due invoice `paid` and th
 retry collecting the outstanding amount; a zero-amount invoice payment leaves a GRACE
 subscription in GRACE.
 
+---
+
+### Phase 5 — Make the dunning ladder collect
+
+**Added after Phase 4 merged.** Phase 4 fixed `retry-payment` but deliberately left
+`retry_failed_charge` — the *automatic* dunning ladder's charge — pointing at
+`change_subscription_plan`, which the Stripe probe proved collects **$0.00**. Phase 4's
+zero-amount guard then correctly stopped that $0 from faking a recovery. Net effect on
+`main` today: **the Stripe ladder can no longer recover anyone.** Before this work a $0
+invoice falsely restored payers for free (a revenue leak); now every grace episode runs
+to RESTRICTED unless the payer manually uses `retry-payment`, which has no frontend
+caller yet.
+
+**Goal**: the automatic ladder collects the outstanding balance, so recovery does not
+depend on the frontend shipping `retry-payment`.
+
+**Feature flag**: none.
+
+**This is not a one-line swap.** Two things block it:
+
+1. **The ladder has no `payment_token`.** Phase 4 made `pay_outstanding_invoice` take a
+   **required** token and, on Stripe, do `PaymentMethod.attach` → `Customer.modify` →
+   `Invoice.pay(payment_method=...)`. The ladder re-drives the instrument *already on
+   file* — it has no new token to attach.
+2. **MercadoPago now raises** `CollectionNotSupportedError` from that method. A naive
+   swap would make every MercadoPago dunning tick raise, breaking MP's ladder outright.
+   MP's current `preapproval.update(status="authorized")` may well be its genuine retry
+   mechanism; that is unverified, and Phase 5 must not regress it on a guess.
+
+Changes:
+
+1. @payments/services/subscription_adapters/base.py: `payment_token` becomes
+   **optional** (default `""`) on `pay_outstanding_invoice`. Document the semantics
+   precisely: a token means "attach this new instrument, then collect"; an empty token
+   means "collect using the instrument already on file". The two callers are exactly
+   these two cases.
+2. @payments/services/subscription_adapters/stripe_subscription_adapter.py: when the
+   token is empty, skip `PaymentMethod.attach` and the customer-default update, and
+   call `Invoice.pay` **without** `payment_method` so Stripe uses the subscription's
+   existing default. Everything else (open + uncollectible, oldest-first, per-invoice
+   idempotency keys) is unchanged.
+3. @payments/services/payment_service.py: thread the optional token through.
+4. @payments/services/subscription_service.py: `retry_failed_charge` calls
+   `pay_outstanding_invoice(subscription, payment_token="", idempotency_key=...)`.
+   **Preserve its existing blank-`external_id` log-and-return** — the ladder is a
+   background beat and must not raise.
+5. **MercadoPago fallback.** `retry_failed_charge` catches `CollectionNotSupportedError`
+   and falls back to the existing `_ensure_provider_plan` + `change_subscription_plan`
+   path, logging that it did so. This keeps MercadoPago's ladder **byte-identical to
+   today** while Stripe gets the real collection. The fallback is explicitly temporary
+   and must name what would retire it (a verified MercadoPago collection primitive).
+6. **`NoOutstandingBalanceError` must not break the beat.** If a tick finds nothing
+   owed, `retry_failed_charge` logs and returns unchanged rather than propagating — a
+   Celery task raising on a legitimate "nothing to do" would poison the ladder. Note
+   this is the opposite of `retry_payment`'s behavior, deliberately: a user-facing
+   request must report the 409, a background tick must not.
+
+Tests:
+- **Unit** — Stripe `pay_outstanding_invoice` with an empty token omits
+  `payment_method` from `Invoice.pay` and makes no `attach`/`Customer.modify` call;
+  with a token, behaves exactly as Phase 4 (regression).
+- **Integration** — a dunning tick on a Stripe subscription drives
+  `pay_outstanding_invoice`, not `change_subscription_plan`, under the ladder's
+  `dunning-retry-{pk}-{ordinal}` key.
+- **Integration** — a dunning tick on a **MercadoPago** subscription still drives
+  `change_subscription_plan` exactly as today, via the fallback.
+- **Integration** — a tick with nothing owed, and a tick with a blank `external_id`,
+  both return unchanged without raising.
+- **Live probe** — re-run the Stripe grace probe against the *ladder* path (empty
+  token) and confirm the outstanding balance is collected.
+
+**Suggested AI model**: Tier 3.
+
+**Review models**: reviewer Tier 4 — this changes what the automatic ladder does to
+every payer in dunning, and the two prior phases each shipped a money bug that a full
+green suite did not catch.
+
+Acceptance: a Stripe dunning tick collects the outstanding balance (verified live), a
+MercadoPago tick behaves exactly as before, and neither an empty balance nor a blank
+`external_id` raises out of the beat.
+
 ## 6. Risk & Rollout Notes
 
 **No feature flag** — deliberate, justified in **Guiding Decisions**. There is therefore no flag-removal phase. Rollback is a deploy revert for Phases 1 and 3; Phase 2 additionally reverses a `choices`-only migration that touches no data.

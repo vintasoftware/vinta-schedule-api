@@ -19,6 +19,7 @@ from rest_framework.views import set_rollback
 
 from payments.exceptions import (
     AddOnNotPurchasableError,
+    ChargeDeclinedError,
     CollectionNotSupportedError,
     NoOutstandingBalanceError,
     OverLimitError,
@@ -86,6 +87,24 @@ def vinta_exception_handler(exc: Exception, context: dict) -> Response | None:
     ``PaymentAdapterError`` it replaced is a ``BillingError``/``ValueError``,
     not a DRF ``APIException``, and had no branch here (reviewer finding
     SHOULD-FIX 7).
+
+    ``ChargeDeclinedError`` (**402 Payment Required**) is Phase 5's -- raised by
+    ``StripeSubscriptionAdapter.pay_outstanding_invoice`` (via
+    ``SubscriptionService.retry_payment``) when the provider either attempts
+    the charge and the card is declined, or refuses to attempt it at all
+    (e.g. no default payment method on file) -- see ``ChargeDeclinedError``'s
+    own docstring for the full translation. 402 rather than 409: this is not
+    "the subscription's state conflicts with the request" (the 409 group
+    above) but the literal, semantically exact "payment is required and this
+    attempt did not provide it" -- the same status ``OverLimitError`` renders
+    for a different reason. ``code`` (``"charge_declined"`` vs.
+    ``OverLimitError``'s ``"limit_exceeded"``) is what a client branches on to
+    tell the two 402s apart. Before this class and branch existed, a declined
+    card reached ``retry_payment``'s caller as an unhandled 500 -- the
+    user-facing half of the same live-probe BLOCKER that made the automatic
+    dunning ladder's own retry (``SubscriptionService.retry_failed_charge``)
+    redeliver forever against a still-dead card (see ``ChargeDeclinedError``'s
+    own docstring).
     """
     if isinstance(exc, OverLimitError):
         # Mandatory before returning a Response: swallowing the exception here
@@ -137,4 +156,14 @@ def vinta_exception_handler(exc: Exception, context: dict) -> Response | None:
         # call site, same as every branch above.
         set_rollback()
         return Response(exc.as_error_body(), status=status.HTTP_409_CONFLICT)
+    if isinstance(exc, ChargeDeclinedError):
+        # Same mandatory rollback discipline as every branch above -- raised
+        # after `update_subscription_payment_token` has already run inside
+        # `retry_payment`'s row lock, which writes nothing locally either.
+        # `ATOMIC_REQUESTS` is production-only, so this branch is unreachable
+        # under test settings without corrupting anything -- the discipline is
+        # applied uniformly rather than reasoned about per call site, same as
+        # every branch above.
+        set_rollback()
+        return Response(exc.as_error_body(), status=status.HTTP_402_PAYMENT_REQUIRED)
     return drf_exception_handler(exc, context)

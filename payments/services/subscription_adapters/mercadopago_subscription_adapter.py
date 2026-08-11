@@ -249,7 +249,7 @@ class MercadoPagoSubscriptionAdapter(BaseSubscriptionAdapter):
         )
 
     def pay_outstanding_invoice(
-        self, subscription: Subscription, payment_token: str, idempotency_key: str = ""
+        self, subscription: Subscription, payment_token: str = "", idempotency_key: str = ""
     ) -> None:
         """
         Explicit, documented **refusal** -- MercadoPago has no invoice object to

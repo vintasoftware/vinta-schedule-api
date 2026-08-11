@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 from django.urls import reverse
 
 import pytest
+import stripe
 from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
@@ -1237,6 +1238,81 @@ class TestRetryPaymentEndpoint:
         assert response.data["code"] == "no_outstanding_balance"
         assert "detail" in response.data
         mock_invoice.pay.assert_not_called()
+
+    @pytest.mark.parametrize("billing_state", [BillingState.GRACE, BillingState.RESTRICTED])
+    def test_stripe_declined_card_returns_402_not_500(
+        self,
+        di_container,
+        auth_client,
+        admin_membership,
+        subscription,
+        billing_state,
+    ):
+        """Billing API Contract Hardening, Phase 5: the user-facing half of the
+        live-probe BLOCKER shares the dunning ladder's root cause --
+        ``retry_payment`` drives the same ``pay_outstanding_invoice`` call, so
+        a payer submitting a card the provider declines must get a clean typed
+        402 (``code: "charge_declined"``), never an unhandled 500. Driven
+        through the real HTTP path -> real (SDK-mocked) adapter boundary, same
+        pattern as ``test_stripe_attaches_the_token_then_pays_the_open_invoice``
+        above.
+        """
+        self._make_grace_subscription(
+            subscription, billing_state=billing_state, external_id="sub_stripe_declined"
+        )
+        subscription.payment_provider = PaymentProviders.STRIPE
+        subscription.save(update_fields=["payment_provider"])
+
+        stripe_adapter = StripeSubscriptionAdapter(api_key="sk_test_123", webhook_secret="whsec")
+        with (
+            patch(
+                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe"
+                ".Subscription"
+            ) as mock_subscription_resource,
+            patch(
+                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe"
+                ".PaymentMethod"
+            ),
+            patch(
+                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe"
+                ".Customer"
+            ),
+            patch(
+                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice"
+            ) as mock_invoice,
+            di_container.stripe_subscription_gateway.override(stripe_adapter),
+        ):
+            mock_subscription_resource.retrieve.return_value = MagicMock(
+                customer="cus_stripe_declined"
+            )
+            mock_invoice.list.side_effect = [
+                MagicMock(data=[MagicMock(id="in_open_1", created=1000)]),
+                MagicMock(data=[]),
+            ]
+            mock_invoice.pay.side_effect = stripe.CardError(
+                message="Your card was declined.", param=None, code="card_declined"
+            )
+
+            response = auth_client.post(
+                retry_payment_url(),
+                {"payment_token": "tok-declined-card", "idempotency_key": "idem-retry-9"},
+                format="json",
+            )
+
+        assert response.status_code == status.HTTP_402_PAYMENT_REQUIRED
+        assert response.data["code"] == "charge_declined"
+        assert "detail" in response.data
+        # The new instrument was attached before the declined charge attempt
+        # -- ordering still holds even though the collection step failed.
+        mock_subscription_resource.modify.assert_called_once_with(
+            "sub_stripe_declined", default_payment_method="tok-declined-card", api_key="sk_test_123"
+        )
+
+        # The failed request must not commit -- re-fetching shows the
+        # subscription is unchanged (still whichever GRACE/RESTRICTED state it
+        # started in), not silently flipped by a half-applied write.
+        subscription.refresh_from_db()
+        assert subscription.billing_state == billing_state
 
 
 @pytest.mark.django_db

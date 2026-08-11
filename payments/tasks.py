@@ -160,6 +160,19 @@ def process_dunning_for_subscription(
     rather than raising -- a raising task is redelivered and fails identically
     forever, turning a benign race into a permanent stream of alerts (same
     reasoning as ``meter_subscription_event_occurrences``, above).
+
+    ``dunning_service.process_subscription`` itself is wrapped in the same
+    best-effort ``except Exception`` guard ``close_subscription_billing_period``
+    (below) already carries, for the same reason: a provider fault the
+    adapter layer does not translate into a typed, expected outcome (a
+    genuine Stripe integration/transport error, or -- Billing API Contract
+    Hardening, Phase 5 BLOCKER -- a translated error type this call site does
+    not yet know to catch) must not be allowed to raise out of this task. An
+    uncaught raise here is not a one-off failure -- per this task's own
+    docstring above, it is redelivered and fails identically forever, so one
+    subscription's provider fault would silently stop that subscription's
+    entire ladder (no further retry, no reminder, no final-warning email)
+    while looking, from the outside, like nothing is wrong.
     """
     subscription = Subscription.objects.filter(pk=subscription_id).first()
     if subscription is None:
@@ -168,7 +181,15 @@ def process_dunning_for_subscription(
             subscription_id,
         )
         return
-    dunning_service.process_subscription(subscription)
+    try:
+        dunning_service.process_subscription(subscription)
+    except Exception:  # noqa: BLE001 - best-effort: never let one tick poison the ladder
+        logger.exception(
+            "Dunning tick failed for subscription %s; the ladder's own bookkeeping "
+            "(last_dunning_attempt_at, the retry throttle bucket) is unaffected, so "
+            "the next beat tick retries.",
+            subscription_id,
+        )
 
 
 @app.task

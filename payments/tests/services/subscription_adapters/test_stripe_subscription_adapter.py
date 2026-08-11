@@ -6,10 +6,12 @@ from decimal import Decimal
 from unittest.mock import Mock, patch
 
 import pytest
+import stripe
 
 from payments.billing_constants import BillingInterval
 from payments.constants import PaymentProviders, PaymentStatuses
 from payments.exceptions import (
+    ChargeDeclinedError,
     NoOutstandingBalanceError,
     PaymentAdapterError,
     ProviderWebhookEventIdMissingError,
@@ -468,6 +470,166 @@ def test_pay_outstanding_invoice_without_external_id(adapter, mock_subscription)
 
     with pytest.raises(PaymentAdapterError):
         adapter.pay_outstanding_invoice(mock_subscription, "pm_new_token")
+
+
+@patch("payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice")
+@patch("payments.services.subscription_adapters.stripe_subscription_adapter.stripe.PaymentMethod")
+@patch("payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Customer")
+def test_pay_outstanding_invoice_with_empty_token_omits_payment_method(
+    mock_customer, mock_payment_method, mock_invoice, adapter, mock_subscription
+):
+    """Billing API Contract Hardening, Phase 5: the dunning ladder calls this
+    with `payment_token=""` -- it has no new instrument to attach, only the
+    one already on file. `Invoice.pay` must be called with no `payment_method`
+    key at all (not `payment_method=""`, which Stripe would reject) so Stripe
+    falls back to its own default-payment-method precedence. Critically, this
+    must not attach or repoint anything: `PaymentMethod.attach` and
+    `Customer.modify` are asserted *not* called -- this method must not do
+    what only `update_subscription_payment_token` is allowed to do."""
+    mock_invoice.list.side_effect = [
+        Mock(data=[Mock(id="in_open_1", created=1000)]),
+        Mock(data=[]),
+    ]
+
+    adapter.pay_outstanding_invoice(mock_subscription, "")
+
+    mock_invoice.pay.assert_called_once_with("in_open_1", api_key="sk_test_123")
+    assert "payment_method" not in mock_invoice.pay.call_args.kwargs
+    mock_payment_method.attach.assert_not_called()
+    mock_customer.modify.assert_not_called()
+
+
+@patch("payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice")
+def test_pay_outstanding_invoice_with_empty_token_still_namespaces_idempotency_key(
+    mock_invoice, adapter, mock_subscription
+):
+    """The per-invoice idempotency-key namespacing (SHOULD-FIX from Phase 4)
+    is unaffected by whether a token is passed."""
+    mock_invoice.list.side_effect = [
+        Mock(data=[Mock(id="in_a", created=1000)]),
+        Mock(data=[]),
+    ]
+
+    adapter.pay_outstanding_invoice(mock_subscription, "", idempotency_key="dunning-retry-42-3")
+
+    assert mock_invoice.pay.call_args.kwargs["idempotency_key"] == "dunning-retry-42-3-in_a"
+    assert "payment_method" not in mock_invoice.pay.call_args.kwargs
+
+
+@patch("payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice")
+def test_pay_outstanding_invoice_default_token_is_empty(mock_invoice, adapter, mock_subscription):
+    """`payment_token` is optional -- calling with no token at all (the
+    ladder's actual call shape, `pay_outstanding_invoice(subscription,
+    idempotency_key=...)`) must behave exactly like passing `""` explicitly."""
+    mock_invoice.list.side_effect = [
+        Mock(data=[Mock(id="in_open_1", created=1000)]),
+        Mock(data=[]),
+    ]
+
+    adapter.pay_outstanding_invoice(mock_subscription)
+
+    mock_invoice.pay.assert_called_once_with("in_open_1", api_key="sk_test_123")
+    assert "payment_method" not in mock_invoice.pay.call_args.kwargs
+
+
+@patch("payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice")
+def test_pay_outstanding_invoice_translates_card_error_into_charge_declined(
+    mock_invoice, adapter, mock_subscription
+):
+    """Billing API Contract Hardening, Phase 5 live-probe BLOCKER: a real
+    Stripe test-mode probe of this exact call, against a card still dead (the
+    *common* dunning-tick outcome), raised an uncaught `stripe.CardError`.
+    Left untranslated, that would reach `SubscriptionService` as a raw
+    provider exception -- the adapter abstraction this codebase maintains
+    everywhere else forbids that. This must translate into the typed
+    `ChargeDeclinedError`, carrying the provider's own message."""
+    mock_invoice.list.side_effect = [
+        Mock(data=[Mock(id="in_open_1", created=1000)]),
+        Mock(data=[]),
+    ]
+    mock_invoice.pay.side_effect = stripe.CardError(
+        message="Your card was declined.", param=None, code="card_declined"
+    )
+
+    with pytest.raises(ChargeDeclinedError) as exc_info:
+        adapter.pay_outstanding_invoice(mock_subscription, "pm_new_token")
+
+    assert exc_info.value.subscription_id == mock_subscription.id
+    assert "Your card was declined." in exc_info.value.provider_message
+
+
+@patch("payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice")
+def test_pay_outstanding_invoice_does_not_swallow_non_charge_stripe_errors(
+    mock_invoice, adapter, mock_subscription
+):
+    """Only `stripe.CardError`/`stripe.InvalidRequestError` (a declined or
+    unattemptable charge) are translated -- a sibling `stripe.StripeError`
+    like `AuthenticationError` (bad API key) is a real integration bug, not an
+    expected dunning-tick outcome, and must keep propagating as-is rather than
+    being folded into `ChargeDeclinedError` (which both `retry_failed_charge`
+    and `retry_payment` treat as non-fatal/expected)."""
+    mock_invoice.list.side_effect = [
+        Mock(data=[Mock(id="in_open_1", created=1000)]),
+        Mock(data=[]),
+    ]
+    mock_invoice.pay.side_effect = stripe.AuthenticationError("Invalid API key provided.")
+
+    with pytest.raises(stripe.AuthenticationError):
+        adapter.pay_outstanding_invoice(mock_subscription, "pm_new_token")
+
+
+@patch("payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice")
+def test_pay_outstanding_invoice_translates_invalid_request_error_into_charge_declined(
+    mock_invoice, adapter, mock_subscription
+):
+    """Billing API Contract Hardening, Phase 5 Tier 4 reviewer BLOCKER: a
+    customer with no default payment method at all (the payer detached their
+    card in the billing portal -- also a canonical dunning population) makes
+    `Invoice.pay` raise `stripe.InvalidRequestError`, not `CardError`. Left
+    untranslated, that reached `process_dunning_for_subscription` unhandled
+    and, per that task's own docstring, redelivered identically forever. This
+    must translate into the same typed `ChargeDeclinedError` as a `CardError`
+    decline (see that exception's docstring for why the two are folded
+    together)."""
+    mock_invoice.list.side_effect = [
+        Mock(data=[Mock(id="in_open_1", created=1000)]),
+        Mock(data=[]),
+    ]
+    mock_invoice.pay.side_effect = stripe.InvalidRequestError(
+        "This customer has no attached payment source or default payment method.",
+        param=None,
+    )
+
+    with pytest.raises(ChargeDeclinedError) as exc_info:
+        adapter.pay_outstanding_invoice(mock_subscription, "pm_new_token")
+
+    assert exc_info.value.subscription_id == mock_subscription.id
+    assert "no attached payment source" in exc_info.value.provider_message
+    assert exc_info.value.invoices_paid == 0
+
+
+@patch("payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice")
+def test_pay_outstanding_invoice_charge_declined_carries_the_partial_collection_count(
+    mock_invoice, adapter, mock_subscription
+):
+    """SHOULD-FIX 4: a subscription can carry more than one outstanding
+    invoice; if an earlier one is paid before a later one raises, money
+    already moved and the caller must be told, not left assuming a pure
+    decline (`ChargeDeclinedError.invoices_paid`)."""
+    mock_invoice.list.side_effect = [
+        Mock(data=[Mock(id="in_a", created=1000), Mock(id="in_b", created=2000)]),
+        Mock(data=[]),
+    ]
+    mock_invoice.pay.side_effect = [
+        None,
+        stripe.CardError(message="Your card was declined.", param=None, code="card_declined"),
+    ]
+
+    with pytest.raises(ChargeDeclinedError) as exc_info:
+        adapter.pay_outstanding_invoice(mock_subscription, "pm_new_token")
+
+    assert mock_invoice.pay.call_count == 2
+    assert exc_info.value.invoices_paid == 1
 
 
 def test_get_subscription_external_id_from_update_subscription_event(adapter):

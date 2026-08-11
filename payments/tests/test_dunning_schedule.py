@@ -14,6 +14,7 @@ from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
 import pytest
+import stripe
 from freezegun import freeze_time
 from model_bakery import baker
 
@@ -24,6 +25,9 @@ from payments.models import BillingPlan, PlanLimit, Subscription
 from payments.services.subscription_adapters.base import BaseSubscriptionAdapter
 from payments.services.subscription_adapters.mercadopago_subscription_adapter import (
     MercadoPagoSubscriptionAdapter,
+)
+from payments.services.subscription_adapters.stripe_subscription_adapter import (
+    StripeSubscriptionAdapter,
 )
 from payments.tasks import process_dunning, process_dunning_for_subscription
 from users.models import User
@@ -576,3 +580,186 @@ class TestDunningLadderFreeFallback:
         subscription.refresh_from_db()
         assert subscription.billing_state == BillingState.FREE
         assert mercadopago_subscription_adapter.sdk.plan().create.call_count == 1
+
+
+@pytest.mark.django_db
+class TestDunningTickToleratesADeclinedStripeCharge:
+    """Billing API Contract Hardening, Phase 5 live-probe BLOCKER: a live
+    Stripe test-mode probe of the exact call ``retry_failed_charge`` makes
+    (``pay_outstanding_invoice(subscription, payment_token="")``), against a
+    card still dead on file -- the *common* dunning-tick outcome, since a dead
+    card is why the subscription is in dunning at all -- raised an uncaught
+    ``stripe.CardError``.
+
+    A Tier 4 reviewer then proved, with a second runnable probe
+    (``test_not_attemptable_charge_tick_returns_without_raising``, below),
+    that a customer with **no** default payment method at all -- also a
+    canonical dunning population -- raises ``stripe.InvalidRequestError``
+    instead, which the original ``CardError``-only translation did not catch.
+
+    Left uncaught, either would reach ``process_dunning_for_subscription``
+    itself: per that task's own docstring, a raising task "is redelivered and
+    fails identically forever, turning a benign race into a permanent stream
+    of alerts". These are the blocker's regression tests, driven through the
+    real Celery task entry point (not a hand-written double) with the real
+    ``StripeSubscriptionAdapter`` and only the Stripe SDK call mocked.
+
+    Beyond "must not raise", both tests pin the two properties the swallow
+    exists to preserve -- a prior version of this test asserted only that,
+    which would still pass if the swallow were moved one frame outward (e.g.
+    around ``DunningService._retry_charge_and_notify``'s whole
+    ``transaction.atomic()`` block) and the ladder stopped escalating
+    entirely: ``last_dunning_attempt_at`` is stamped, and the ladder's own
+    reminder notification is sent -- proving the swallow sits exactly where
+    ``retry_failed_charge`` is called, inside the same atomic block that
+    stamps the bucket and queues the reminder, not around it.
+    """
+
+    def test_declined_charge_tick_returns_without_raising(
+        self,
+        di_container,
+        subscription_service,
+        mercadopago_subscription_adapter,
+        mock_notification_service,
+        organization,
+        billing_profile,
+    ):
+        _add_admin_membership(organization)
+        _seed_members(organization, 6)  # stay out of the free plan's reach
+        plan = make_complete_plan(grace_period_days=3)
+
+        with freeze_time(FREEZE_START):
+            subscription = _subscription_for(
+                subscription_service,
+                organization,
+                plan,
+                billing_state=BillingState.GRACE,
+                grace_period_ends_at=FREEZE_START + datetime.timedelta(days=3),
+            )
+        # Built on MercadoPago by this module's fixtures (see `billing_profile`)
+        # -- repointed onto Stripe directly, same pattern
+        # ``TestRetryPaymentEndpoint.test_stripe_attaches_the_token_then_pays_the_open_invoice``
+        # (``payments/tests/views/test_billing_views.py``) uses.
+        subscription.payment_provider = PaymentProviders.STRIPE
+        subscription.external_id = "sub_stripe_declined_1"
+        subscription.save(update_fields=["payment_provider", "external_id"])
+
+        stripe_adapter = StripeSubscriptionAdapter(api_key="sk_test_123", webhook_secret="whsec")
+        with (
+            patch(
+                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice"
+            ) as mock_invoice,
+            di_container.stripe_subscription_gateway.override(stripe_adapter),
+        ):
+            mock_invoice.list.side_effect = [
+                MagicMock(data=[MagicMock(id="in_open_1", created=1000)]),
+                MagicMock(data=[]),
+            ]
+            mock_invoice.pay.side_effect = stripe.CardError(
+                message="Your card was declined.", param=None, code="card_declined"
+            )
+
+            with freeze_time(FREEZE_START):
+                # The assertion: this call must not raise. An uncaught
+                # exception here is exactly what would poison the Celery task
+                # under `CELERY_TASK_ACKS_LATE` redelivery -- see this class's
+                # docstring. If it raises, pytest fails this test with the
+                # propagated exception; nothing further below would run.
+                process_dunning_for_subscription(subscription.pk)
+
+        # `pay_outstanding_invoice` writes nothing locally on any branch --
+        # the ladder's *own* bookkeeping still happens, though (see this
+        # class's docstring for why this must be pinned, not just "did not
+        # raise"): `_retry_charge_and_notify` stamps `last_dunning_attempt_at`
+        # and queues the reminder in the same `transaction.atomic()` block
+        # that calls `retry_failed_charge`, so a swallow anywhere other than
+        # exactly around the provider call would roll both back.
+        subscription.refresh_from_db()
+        assert subscription.billing_state == BillingState.GRACE
+        assert subscription.last_dunning_attempt_at == FREEZE_START
+        mock_notification_service.create_notification.assert_called_once()
+        assert (
+            mock_notification_service.create_notification.call_args.kwargs["context_kwargs"][
+                "urgency"
+            ]
+            == "reminder"
+        )
+        # The real adapter received the ladder's own per-invoice idempotency
+        # key (`dunning_retry_idempotency_key`, ordinal 0 for the first
+        # attempt of this episode) and no `payment_method` -- proving the
+        # empty-token + key contract end-to-end through the real
+        # `PaymentService`, not only a hand-written double.
+        mock_invoice.pay.assert_called_once_with(
+            "in_open_1",
+            api_key="sk_test_123",
+            idempotency_key=f"dunning-retry-{subscription.pk}-0-in_open_1",
+        )
+        assert "payment_method" not in mock_invoice.pay.call_args.kwargs
+        # No fallback to MercadoPago's `preapproval().update()` -- a declined
+        # charge is a real attempt that failed, not "the provider has no
+        # collection primitive" (`CollectionNotSupportedError`'s branch).
+        mercadopago_subscription_adapter.sdk.preapproval().update.assert_not_called()
+
+    def test_not_attemptable_charge_tick_returns_without_raising(
+        self,
+        di_container,
+        subscription_service,
+        mercadopago_subscription_adapter,
+        mock_notification_service,
+        organization,
+        billing_profile,
+    ):
+        """Tier 4 reviewer's own runnable probe: a customer with no default
+        payment method on file at all (the payer detached their card in the
+        billing portal) raises `stripe.InvalidRequestError` from
+        `Invoice.pay`, not `CardError`. Against the pre-fix adapter this
+        propagated out of the Celery task exactly like the `CardError` case
+        above -- reproduced here with only `stripe.Invoice` mocked, driving
+        the real adapter, the real DI-wired `DunningService`, and the real
+        `process_dunning_for_subscription` task."""
+        _add_admin_membership(organization)
+        _seed_members(organization, 6)
+        plan = make_complete_plan(grace_period_days=3)
+
+        with freeze_time(FREEZE_START):
+            subscription = _subscription_for(
+                subscription_service,
+                organization,
+                plan,
+                billing_state=BillingState.GRACE,
+                grace_period_ends_at=FREEZE_START + datetime.timedelta(days=3),
+            )
+        subscription.payment_provider = PaymentProviders.STRIPE
+        subscription.external_id = "sub_stripe_no_default_pm"
+        subscription.save(update_fields=["payment_provider", "external_id"])
+
+        stripe_adapter = StripeSubscriptionAdapter(api_key="sk_test_123", webhook_secret="whsec")
+        with (
+            patch(
+                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice"
+            ) as mock_invoice,
+            di_container.stripe_subscription_gateway.override(stripe_adapter),
+        ):
+            mock_invoice.list.side_effect = [
+                MagicMock(data=[MagicMock(id="in_open_1", created=1000)]),
+                MagicMock(data=[]),
+            ]
+            mock_invoice.pay.side_effect = stripe.InvalidRequestError(
+                "This customer has no attached payment source or default payment method.",
+                param=None,
+            )
+
+            with freeze_time(FREEZE_START):
+                # Reviewer's exact assertion: must not raise.
+                process_dunning_for_subscription(subscription.pk)
+
+        subscription.refresh_from_db()
+        assert subscription.billing_state == BillingState.GRACE
+        # The reviewer's probe proved these two specifically failed on the
+        # pre-fix code (`last_dunning_attempt_at` stayed `None`, no
+        # notification was ever sent) because the uncaught
+        # `InvalidRequestError` rolled back `_retry_charge_and_notify`'s
+        # whole `transaction.atomic()` block.
+        assert subscription.last_dunning_attempt_at == FREEZE_START
+        mock_notification_service.create_notification.assert_called_once()
+        mercadopago_subscription_adapter.sdk.preapproval().update.assert_not_called()
