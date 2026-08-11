@@ -153,7 +153,7 @@ def process_dunning_for_subscription(
     Idempotent under ``CELERY_TASK_ACKS_LATE`` redelivery:
     ``DunningService``'s own retry-bucket gate (``Subscription.last_dunning_attempt_at``)
     and the retry charge's bucket-derived ``idempotency_key`` -- both views of
-    one ``_retry_attempt_ordinal`` -- are what make a redelivered tick harmless,
+    one ``retry_attempt_ordinal`` -- are what make a redelivered tick harmless,
     not anything here.
 
     A subscription deleted between fan-out and execution is logged and skipped

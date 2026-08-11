@@ -139,6 +139,20 @@ class ChangePlanRequestSerializer(serializers.Serializer):
     payment_token = serializers.CharField(max_length=255, required=False, allow_blank=True)
 
 
+class RetryPaymentRequestSerializer(serializers.Serializer):
+    """Body of ``POST /billing/subscription/retry-payment/``.
+
+    Unlike ``ChangePlanRequestSerializer``/``AddOnPurchaseRequestSerializer``,
+    ``payment_token`` is **required and non-blank** here rather than optional --
+    this endpoint exists precisely to attach a *new* instrument (see
+    ``SubscriptionService.retry_payment``), so there is no legitimate call with
+    no token to attach.
+    """
+
+    idempotency_key = serializers.CharField(max_length=255)
+    payment_token = serializers.CharField(max_length=255)
+
+
 class AddOnPurchaseRequestSerializer(serializers.Serializer):
     """Body of ``POST /billing/add-ons/``. See ``ChangePlanRequestSerializer``
     for why ``payment_token`` is required in practice despite being optional

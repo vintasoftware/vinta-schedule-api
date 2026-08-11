@@ -51,7 +51,7 @@ LEGAL_BILLING_STATE_TRANSITIONS: frozenset[tuple[str, str]] = frozenset(
         # grace_period_ends_at and drive billing_state through this same
         # transition, so process_dunning's GRACE/RESTRICTED sweep (payments/tasks.py)
         # sees either kind of grace episode identically; DunningService
-        # distinguishes them internally (see DunningService._is_downgrade_grace)
+        # distinguishes them internally (see dunning_service.is_downgrade_grace)
         # only to decide whether there is a charge to retry, never to change which
         # edges are legal.
         (BillingState.ACTIVE, BillingState.GRACE),
