@@ -5,14 +5,16 @@ service layer: signature verification, idempotency (`ProviderWebhookEvent`), and
 the resulting `PaymentStatusUpdate`.
 """
 
+import datetime
 import hashlib
 import hmac
 import json
 import time
 from decimal import Decimal
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.urls import reverse
+from django.utils import timezone
 
 import pytest
 from model_bakery import baker
@@ -20,6 +22,7 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from organizations.models import Organization
+from payments.billing_constants import BillingState
 from payments.constants import PaymentProviders, PaymentStatuses
 from payments.models import Payment, ProviderWebhookEvent
 from payments.services.payment_adapters.mercadopago_payment_adapter import (
@@ -28,7 +31,13 @@ from payments.services.payment_adapters.mercadopago_payment_adapter import (
 from payments.services.subscription_adapters.mercadopago_subscription_adapter import (
     MercadoPagoSubscriptionAdapter,
 )
+from payments.services.subscription_adapters.stripe_subscription_adapter import (
+    StripeSubscriptionAdapter,
+)
 from payments.services.subscription_service import SubscriptionService
+from payments.tests.services.subscription_adapters.test_stripe_subscription_adapter import (
+    build_signed_request,
+)
 
 
 WEBHOOK_SECRET = "test-webhook-secret"
@@ -641,3 +650,301 @@ class TestSubscriptionPaymentUpdateWebhook:
 
         billing_profile.refresh_from_db()
         assert billing_profile.payment_provider == PaymentProviders.STRIPE
+
+
+@pytest.mark.django_db
+class TestZeroAmountSubscriptionPaymentDoesNotResolveDunning:
+    """Billing API Contract Hardening, Phase 4's zero-amount guard.
+
+    Driven through the real inbound webhook path -- signature verification,
+    ``ProviderWebhookEvent`` idempotency, ``PaymentsViewSet
+    ._apply_subscription_payment_side_effects`` -- rather than by calling
+    ``DunningService.resolve_payment_success`` (or the guard) directly. Calling
+    the guard directly would only prove the guard's own logic is correct, not
+    that it actually sits on the path a real webhook delivery takes; the
+    defect this phase closes (a $0.00 proration invoice's `invoice.paid`
+    reaching `resolve_payment_success` on Stripe -- see
+    ``SubscriptionService.retry_payment``'s docstring for the probe numbers)
+    is specifically about what happens *at that path*.
+
+    Uses the MercadoPago webhook fixtures already wired in this module --
+    the guard is provider-agnostic (it reads ``PaymentStatuses.APPROVED`` +
+    ``payment.value``, never anything provider-specific), so exercising it
+    through MercadoPago's webhook shape is sufficient; nothing here depends on
+    Stripe's payload format.
+    """
+
+    def _payload(self, notification_id: str = "notif-1", data_id: str = "sub-123") -> bytes:
+        return json.dumps(
+            {
+                "type": "subscription_authorized_payment",
+                "id": notification_id,
+                "data": {"id": data_id},
+            }
+        ).encode()
+
+    def _preapproval_response(self, payment_id: str = "mp-sub-payment-1") -> dict:
+        return {"response": {"last_payment_id": payment_id}}
+
+    def _payment_response(self, transaction_amount: str, payment_id: str = "mp-sub-payment-1"):
+        return {
+            "response": {
+                "id": payment_id,
+                "status": "approved",
+                "status_detail": "accredited",
+                "transaction_amount": transaction_amount,
+                "currency_id": "BRL",
+                "payment_method_id": "visa",
+                "description": "Subscription charge",
+                "payer": {
+                    "email": "billing@example.com",
+                    "first_name": "Test",
+                    "last_name": "Payer",
+                    "identification": {"type": "CPF", "number": "12345678900"},
+                    "address": {
+                        "street_name": "Test Street",
+                        "street_number": "123",
+                        "neighborhood": "Centro",
+                        "city": "Test City",
+                        "federal_unit": "TS",
+                        "country": "BR",
+                        "zip_code": "12345",
+                    },
+                },
+            }
+        }
+
+    def _grace_subscription(self, billing_profile):
+        subscription = SubscriptionService().create_subscription_for_organization(
+            billing_profile.organization
+        )
+        assert subscription is not None
+        subscription.payment_provider = PaymentProviders.MERCADOPAGO
+        subscription.external_id = "sub-123"
+        subscription.billing_state = BillingState.GRACE
+        subscription.grace_period_ends_at = timezone.now() + datetime.timedelta(days=5)
+        subscription.save(
+            update_fields=[
+                "payment_provider",
+                "external_id",
+                "billing_state",
+                "grace_period_ends_at",
+            ]
+        )
+        return subscription
+
+    @pytest.mark.no_auto_subscription
+    def test_zero_amount_approved_payment_leaves_grace_subscription_in_grace(
+        self, webhook_client, mercadopago_subscription_adapter, billing_profile
+    ):
+        """The regression this phase closes: a $0 approved subscription
+        payment (e.g. an offsetting-proration invoice) must never flip a
+        GRACE subscription to ACTIVE -- that would be a false recovery, the
+        payer marked healthy with the real balance still uncollected.
+
+        Also pins reviewer finding SHOULD-FIX 8: `record_payment_method` must
+        not fire either -- a $0 approved payment is not proof the instrument
+        is actually chargeable, and that call both grants `has_payment_method`
+        (which gates overage accrual) and permanently pins
+        `BillingProfile.payment_provider`.
+        """
+        subscription = self._grace_subscription(billing_profile)
+        mercadopago_subscription_adapter.sdk.preapproval().get.return_value = (
+            self._preapproval_response()
+        )
+        mercadopago_subscription_adapter.sdk.payment().get.return_value = self._payment_response(
+            "0.00"
+        )
+        assert billing_profile.payment_provider == ""
+
+        response = webhook_client.post(
+            subscription_payment_update_url(),
+            data=self._payload(),
+            content_type="application/json",
+            **sign("sub-123"),
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        subscription.refresh_from_db()
+        assert subscription.billing_state == BillingState.GRACE
+        assert subscription.grace_period_ends_at is not None
+        billing_profile.refresh_from_db()
+        assert billing_profile.payment_provider == ""
+
+    @pytest.mark.no_auto_subscription
+    def test_nonzero_amount_approved_payment_resolves_grace_to_active(
+        self, webhook_client, mercadopago_subscription_adapter, billing_profile
+    ):
+        """Control for the test above: the guard must not simply block every
+        recovery -- a genuine, non-zero approved payment still resolves GRACE
+        to ACTIVE through this exact same webhook path."""
+        subscription = self._grace_subscription(billing_profile)
+        mercadopago_subscription_adapter.sdk.preapproval().get.return_value = (
+            self._preapproval_response()
+        )
+        mercadopago_subscription_adapter.sdk.payment().get.return_value = self._payment_response(
+            "50.00"
+        )
+
+        response = webhook_client.post(
+            subscription_payment_update_url(),
+            data=self._payload(),
+            content_type="application/json",
+            **sign("sub-123"),
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        subscription.refresh_from_db()
+        assert subscription.billing_state == BillingState.ACTIVE
+        assert subscription.grace_period_ends_at is None
+
+
+@pytest.mark.django_db
+class TestStripeInvoicePaidResolvesOffTheEventsOwnInvoice:
+    """Billing API Contract Hardening, Phase 4 reviewer finding BLOCKER 1.
+
+    Before the fix, `receive_payment_update` resolved the payment off
+    `Subscription.latest_invoice` for *every* `invoice.*` event, regardless of
+    which invoice the event was actually about. The dunning ladder mints a
+    fresh $0 proration invoice on every grace tick, so by the time a payer
+    recovers through `retry-payment`, `latest_invoice` is that $0 invoice --
+    which has no PaymentIntent, so this webhook silently no-oped even though
+    `Invoice.pay` had genuinely collected the real balance on the invoice the
+    event actually named. GRACE never resolved to ACTIVE: $49 moved, no
+    `Payment` row, no `PaymentStatusUpdate`, the subscription rode GRACE
+    straight to RESTRICTED.
+
+    Driven through the real HTTP webhook path -- signature verification,
+    `ProviderWebhookEvent` idempotency, and
+    `PaymentsViewSet._apply_subscription_payment_side_effects` -- so the
+    assertion is "the subscription actually reaches ACTIVE", not merely that
+    the adapter method returns the right tuple in isolation (that unit-level
+    proof lives in `test_stripe_subscription_adapter.py`). `stripe.Invoice`/
+    `stripe.PaymentIntent` are mocked at the adapter module's own boundary,
+    same pattern as `test_billing_views.py`'s Stripe override; `stripe
+    .Subscription` is deliberately left unmocked -- the fixed code must never
+    call `Subscription.retrieve` for an `invoice.*` event at all.
+    """
+
+    STRIPE_WEBHOOK_SECRET = "whsec_test_secret"
+
+    def _grace_subscription(self, billing_profile, external_id: str = "sub_stripe_1"):
+        subscription = SubscriptionService().create_subscription_for_organization(
+            billing_profile.organization
+        )
+        assert subscription is not None
+        subscription.payment_provider = PaymentProviders.STRIPE
+        subscription.external_id = external_id
+        subscription.billing_state = BillingState.GRACE
+        subscription.grace_period_ends_at = timezone.now() + datetime.timedelta(days=5)
+        subscription.save(
+            update_fields=[
+                "payment_provider",
+                "external_id",
+                "billing_state",
+                "grace_period_ends_at",
+            ]
+        )
+        return subscription
+
+    def _invoice_paid_event(self, invoice_id: str, subscription_external_id: str):
+        object_payload = {
+            "id": invoice_id,
+            "object": "invoice",
+            "parent": {
+                "type": "subscription_details",
+                "subscription_details": {"subscription": subscription_external_id},
+            },
+        }
+        return build_signed_request(
+            event_id="evt_invoice_paid_1",
+            event_type="invoice.paid",
+            object_payload=object_payload,
+            secret=self.STRIPE_WEBHOOK_SECRET,
+        )
+
+    @pytest.mark.no_auto_subscription
+    def test_invoice_paid_for_a_non_latest_invoice_resolves_grace_to_active(
+        self, di_container, billing_profile
+    ):
+        subscription = self._grace_subscription(billing_profile)
+        stripe_adapter = StripeSubscriptionAdapter(
+            api_key="sk_test_123", webhook_secret=self.STRIPE_WEBHOOK_SECRET
+        )
+        raw_body, headers = self._invoice_paid_event("in_past_due_49", "sub_stripe_1")
+
+        with (
+            patch(
+                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice"
+            ) as mock_invoice,
+            patch(
+                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe"
+                ".PaymentIntent"
+            ) as mock_payment_intent,
+            di_container.stripe_subscription_gateway.override(stripe_adapter),
+        ):
+            # The invoice the event fired for carries both the dead card's
+            # failed attempt (status "open") and the new card's successful
+            # one (status "paid") -- never `latest_invoice`, the unrelated $0
+            # proration invoice the last dunning tick minted, which the fixed
+            # code never even retrieves for an `invoice.*` event.
+            mock_invoice.retrieve.return_value = MagicMock(
+                to_dict=lambda: {
+                    "id": "in_past_due_49",
+                    "payments": {
+                        "object": "list",
+                        "data": [
+                            {
+                                "id": "inpay_failed",
+                                "status": "open",
+                                "created": 1000,
+                                "payment": {
+                                    "type": "payment_intent",
+                                    "payment_intent": "pi_dead_card_failed",
+                                },
+                            },
+                            {
+                                "id": "inpay_success",
+                                "status": "paid",
+                                "created": 2000,
+                                "payment": {
+                                    "type": "payment_intent",
+                                    "payment_intent": "pi_new_card_success",
+                                },
+                            },
+                        ],
+                    },
+                }
+            )
+            mock_payment_intent.retrieve.return_value = MagicMock(
+                to_dict=lambda: {
+                    "id": "pi_new_card_success",
+                    "amount": 4900,
+                    "currency": "usd",
+                    "status": "succeeded",
+                    "payment_method_types": ["card"],
+                    "description": "Past-due renewal",
+                }
+            )
+
+            response = APIClient().post(
+                subscription_payment_update_url(
+                    pk="sub_stripe_1", provider=PaymentProviders.STRIPE
+                ),
+                data=raw_body,
+                content_type="application/json",
+                HTTP_STRIPE_SIGNATURE=headers["stripe-signature"],
+            )
+
+        assert response.status_code == status.HTTP_200_OK
+        mock_invoice.retrieve.assert_called_once_with(
+            "in_past_due_49", expand=["payments"], api_key="sk_test_123"
+        )
+        mock_payment_intent.retrieve.assert_called_once_with(
+            "pi_new_card_success", api_key="sk_test_123"
+        )
+        payment = Payment.objects.get(external_id="pi_new_card_success")
+        assert payment.subscription_id == subscription.pk
+        subscription.refresh_from_db()
+        assert subscription.billing_state == BillingState.ACTIVE
+        assert subscription.grace_period_ends_at is None

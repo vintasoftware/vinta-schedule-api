@@ -1,4 +1,5 @@
 import logging
+from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Annotated
 
 from django.db.models import QuerySet
@@ -39,6 +40,33 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+def _coerce_payment_value(value: object) -> Decimal:
+    """Best-effort ``Decimal`` coercion for ``Payment.value``, defensive
+    against an untyped provider payload -- not a claim about any one
+    provider's actual shape. ``payment`` here is the exact in-memory instance
+    ``PaymentService.receive_subscription_payment_update`` just built via
+    ``PaymentModel.objects.create(...)``, so Django's ``DecimalField``
+    coercion (which only runs on save/load from the database) has not
+    happened yet, and an adapter could in principle hand back ``value`` as a
+    raw JSON number, string, or something malformed.
+
+    Fails **closed**: ``Decimal(None)`` raises ``TypeError`` and
+    ``Decimal("")`` raises ``InvalidOperation`` -- either would otherwise 500
+    the webhook, and a provider retries a failed delivery forever, so an
+    unparseable value must never crash this path. Treating it as ``0`` instead
+    routes it through the ordinary "nothing collected yet" branch: dunning is
+    never resolved on an amount this code could not actually parse.
+    """
+    try:
+        return Decimal(value)  # type: ignore[arg-type]
+    except (TypeError, InvalidOperation):
+        logger.error(
+            "Could not coerce subscription payment value to Decimal; treating as 0. value=%r",
+            value,
+        )
+        return Decimal(0)
 
 
 class PaymentsViewSet(ViewSet):
@@ -230,17 +258,47 @@ class PaymentsViewSet(ViewSet):
     ) -> None:
         """React to a subscription charge's outcome.
 
-        - **Approved**: grants the capacity for whichever plan the subscription
-          is currently on (``SubscriptionService.confirm_plan_change``), records
-          a confirmed payment method, and -- **first** -- resolves any
-          GRACE/RESTRICTED dunning state back to ACTIVE
-          (``DunningService.resolve_payment_success``). Runs on every approved
-          charge, not only the first one after an upgrade or a dunning retry;
-          every call here is idempotent, so a routine renewal simply re-affirms
-          state that was already correct. ``resolve_payment_success`` runs
-          *before* ``confirm_plan_change`` so the latter's own (idempotent)
-          ``billing_state`` write is a same-state no-op by the time it runs --
-          the two never disagree about which write actually happened.
+        - **Approved, and the payment actually collected money**: grants the
+          capacity for whichever plan the subscription is currently on
+          (``SubscriptionService.confirm_plan_change``), records a confirmed
+          payment method, and -- **first** -- resolves any GRACE/RESTRICTED
+          dunning state back to ACTIVE (``DunningService.resolve_payment_success``).
+          Runs on every approved, non-zero charge, not only the first one after
+          an upgrade or a dunning retry; every call here is idempotent, so a
+          routine renewal simply re-affirms state that was already correct.
+          ``resolve_payment_success`` runs *before* ``confirm_plan_change`` so
+          the latter's own (idempotent) ``billing_state`` write is a same-state
+          no-op by the time it runs -- the two never disagree about which write
+          actually happened.
+        - **Approved, but $0 collected** (Billing API Contract Hardening,
+          Phase 4's zero-amount guard): neither ``resolve_payment_success``,
+          ``confirm_plan_change``, nor ``record_payment_method`` runs. This is
+          **defense in depth against a provider that does emit** a $0
+          approved subscription-payment update (e.g. two offsetting proration
+          line items netting to zero) -- not a claim that Stripe itself
+          currently routes one here: as of BLOCKER 1's fix, a genuinely $0
+          Stripe invoice has no PaymentIntent, so `receive_payment_update`
+          resolves to `None` before this method is ever called for it. The
+          guard stays regardless, because a $0 approved status is not proof
+          the payer's outstanding balance was collected on any provider that
+          *does* reach this method with one, and treating it as recovery
+          would flip a GRACE/RESTRICTED subscription to ACTIVE while the real
+          balance stays unpaid forever (the exact false-recovery this phase's
+          Stripe probe caught -- see `SubscriptionService.retry_payment`'s
+          docstring for the numbers). **``confirm_plan_change`` must be
+          skipped too, not only ``resolve_payment_success``**: `confirm_plan_change`
+          drives its *own* unconditional ``transition_billing_state(..., ACTIVE)``
+          call, documented on that method as "a same-state no-op" only under
+          the assumption that `resolve_payment_success` already moved GRACE/
+          RESTRICTED to ACTIVE first -- an assumption this guard deliberately
+          breaks, so calling `confirm_plan_change` anyway would silently
+          re-open the exact hole this guard exists to close.
+          **``record_payment_method`` is skipped too**: a $0 approved payment
+          is not proof the instrument is actually chargeable, and this call
+          grants `has_payment_method` (which gates overage accrual) and
+          permanently pins `BillingProfile.payment_provider` -- the same
+          reasoning the amount guard above already applies, just not
+          previously applied to this call too.
         - **Failed** (``FAILED_SUBSCRIPTION_PAYMENT_STATUSES``): moves the
           subscription into GRACE (``DunningService.enter_grace``) -- the
           dunning ladder owns everything from here (retry schedule, escalating
@@ -254,11 +312,25 @@ class PaymentsViewSet(ViewSet):
         if subscription is None:
             return
         if status_update.status == PaymentStatuses.APPROVED:
-            self.dunning_service.resolve_payment_success(subscription)
-            self.subscription_service.confirm_plan_change(subscription)
-            self.subscription_service.record_payment_method(
-                subscription.organization, subscription.payment_provider, subscription.external_id
-            )
+            # `payment.value` is coerced through `_coerce_payment_value` rather
+            # than compared directly: `payment` here is the exact in-memory
+            # instance `PaymentService.receive_subscription_payment_update`
+            # just built via `PaymentModel.objects.create(...)`, so Django's
+            # `DecimalField` coercion (save/load from the database) has not
+            # run yet, and this is defensive against any adapter handing back
+            # an untyped value -- not a claim about one specific provider's
+            # actual shape. Coercing (rather than comparing the raw value)
+            # also fails closed: an absent or unparseable value becomes `0`,
+            # never a 500 that would otherwise leave dunning unresolved and
+            # have the provider retry the delivery forever.
+            if _coerce_payment_value(payment.value) > 0:
+                self.dunning_service.resolve_payment_success(subscription)
+                self.subscription_service.confirm_plan_change(subscription)
+                self.subscription_service.record_payment_method(
+                    subscription.organization,
+                    subscription.payment_provider,
+                    subscription.external_id,
+                )
         elif status_update.status in FAILED_SUBSCRIPTION_PAYMENT_STATUSES:
             self.dunning_service.enter_grace(subscription)
 

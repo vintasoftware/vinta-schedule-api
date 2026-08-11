@@ -19,6 +19,8 @@ from rest_framework.views import set_rollback
 
 from payments.exceptions import (
     AddOnNotPurchasableError,
+    CollectionNotSupportedError,
+    NoOutstandingBalanceError,
     OverLimitError,
     PaymentProviderNotConfiguredError,
     PaymentTokenRequiredError,
@@ -68,6 +70,22 @@ def vinta_exception_handler(exc: Exception, context: dict) -> Response | None:
     ``UnconfirmedPlanChangeError`` above -- the request is well-formed, but the
     subscription's current state (not GRACE/RESTRICTED, or never attached at
     the provider) conflicts with what retry-payment needs to be true.
+
+    ``NoOutstandingBalanceError`` (409) is Phase 4's -- raised by
+    ``BaseSubscriptionAdapter.pay_outstanding_invoice`` (via
+    ``SubscriptionService.retry_payment``) when the provider reports nothing
+    actually owed for a GRACE/RESTRICTED subscription. Same status as the two
+    above, for the same reason: a well-formed request whose target state does
+    not hold.
+
+    ``CollectionNotSupportedError`` (409) is also Phase 4's -- raised by
+    ``BaseSubscriptionAdapter.pay_outstanding_invoice`` when the resolved
+    provider (MercadoPago, as of this writing) has no verified "collect the
+    outstanding balance" primitive to drive. Before this class and branch
+    existed, this reached the client as an unhandled 500: the plain
+    ``PaymentAdapterError`` it replaced is a ``BillingError``/``ValueError``,
+    not a DRF ``APIException``, and had no branch here (reviewer finding
+    SHOULD-FIX 7).
     """
     if isinstance(exc, OverLimitError):
         # Mandatory before returning a Response: swallowing the exception here
@@ -101,6 +119,22 @@ def vinta_exception_handler(exc: Exception, context: dict) -> Response | None:
         # nothing written yet by the time either of these fires in practice, but
         # the discipline is applied uniformly rather than reasoned about per call
         # site.
+        set_rollback()
+        return Response(exc.as_error_body(), status=status.HTTP_409_CONFLICT)
+    if isinstance(exc, NoOutstandingBalanceError):
+        # Same mandatory rollback discipline as the branches above. Raised
+        # *after* `update_subscription_payment_token` has already run inside
+        # `retry_payment`'s row lock -- that provider call writes nothing
+        # locally either, but `set_rollback()` is applied uniformly rather
+        # than reasoned about per call site, same as every branch above.
+        set_rollback()
+        return Response(exc.as_error_body(), status=status.HTTP_409_CONFLICT)
+    if isinstance(exc, CollectionNotSupportedError):
+        # Same mandatory rollback discipline as the branches above -- raised
+        # after `update_subscription_payment_token` has already run inside
+        # `retry_payment`'s row lock, which writes nothing locally either, but
+        # the discipline is applied uniformly rather than reasoned about per
+        # call site, same as every branch above.
         set_rollback()
         return Response(exc.as_error_body(), status=status.HTTP_409_CONFLICT)
     return drf_exception_handler(exc, context)

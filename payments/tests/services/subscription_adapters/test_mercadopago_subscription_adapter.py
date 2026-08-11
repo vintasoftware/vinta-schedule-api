@@ -12,7 +12,7 @@ import pytest
 
 from payments.billing_constants import BillingInterval
 from payments.constants import PaymentProviders, PaymentStatuses
-from payments.exceptions import ProviderWebhookEventIdMissingError
+from payments.exceptions import CollectionNotSupportedError, ProviderWebhookEventIdMissingError
 from payments.services.dataclasses import (
     BillingAddress,
     BillingProfile,
@@ -346,6 +346,32 @@ def test_update_subscription_payment_token_missing_site_domain(adapter, mock_sub
     """Test update payment token raises error when SITE_DOMAIN is not configured."""
     with pytest.raises(ImproperlyConfigured, match="MercadoPagoAdapter requires SITE_DOMAIN"):
         adapter.update_subscription_payment_token(mock_subscription, "new-token")
+
+
+def test_pay_outstanding_invoice_refuses_explicitly(adapter, mock_subscription):
+    """MercadoPago has no invoice object to pay -- re-authorizing the
+    preapproval as an actual "collect the missed amount" primitive is
+    unverified (no MercadoPago test credentials were available; see the
+    method's docstring for the probe recipe to run before ever removing this
+    refusal). A loud, typed failure beats shipping a second silent no-op on a
+    money path. `CollectionNotSupportedError` (not the plain
+    `PaymentAdapterError` this replaced) so `vinta_exception_handler` can
+    render it as a 409 instead of an unhandled 500 (Billing API Contract
+    Hardening, Phase 4 reviewer finding SHOULD-FIX 7)."""
+    with pytest.raises(CollectionNotSupportedError):
+        adapter.pay_outstanding_invoice(mock_subscription, "tok-new-card")
+
+    # The refusal fires before any SDK call is attempted.
+    adapter.sdk.preapproval().update.assert_not_called()
+
+
+def test_pay_outstanding_invoice_refuses_even_with_an_idempotency_key(adapter, mock_subscription):
+    """The refusal does not depend on whether the caller supplied a key --
+    there is no code path here that would ever use one."""
+    with pytest.raises(CollectionNotSupportedError):
+        adapter.pay_outstanding_invoice(
+            mock_subscription, "tok-new-card", idempotency_key="retry-payment-1-key"
+        )
 
 
 def test_update_plan(adapter, mock_created_plan):

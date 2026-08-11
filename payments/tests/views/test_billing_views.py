@@ -1027,7 +1027,7 @@ class TestRetryPaymentEndpoint:
         assert "payment_token" in response.data
 
     @pytest.mark.parametrize("billing_state", [BillingState.GRACE, BillingState.RESTRICTED])
-    def test_200_body_still_reports_grace_recovery_is_webhook_driven(
+    def test_mercadopago_attaches_the_token_then_refuses_to_collect(
         self,
         billing_client,
         mercadopago_subscription_adapter,
@@ -1035,20 +1035,24 @@ class TestRetryPaymentEndpoint:
         subscription,
         billing_state,
     ):
-        """Recovery to ACTIVE only happens once the subscription-payment
-        webhook confirms the charge -- asserting ACTIVE here would assert a
-        lie. See ``test_grace_recovery.py`` for the confirmed-recovery flow.
+        """Billing API Contract Hardening, Phase 4: MercadoPago's
+        ``pay_outstanding_invoice`` is an explicit, typed refusal (see
+        ``MercadoPagoSubscriptionAdapter.pay_outstanding_invoice`` -- unverified
+        against a real account, and no organization is routed to MercadoPago
+        today). Driven through the real HTTP path -> real (SDK-mocked) adapter
+        boundary, this proves the endpoint no longer *silently* reports success
+        for a provider it cannot actually collect through -- it fails loudly
+        instead, which is the whole point of this phase.
+
+        Before Phase 4, this exact setup returned 200 having collected $0.00
+        (Phase 3's ``change_subscription_plan``-based retry) -- see
+        ``TestRetryPaymentEndpoint`` module's Stripe-based sibling test below for
+        the provider retry-payment actually recovers money through today.
 
         Parametrized over GRACE and RESTRICTED: RESTRICTED is where
         write-blocks/sync-pauses are in force, so whether a RESTRICTED org can
-        even reach this endpoint is exactly what is worth pinning here, not
-        only the GRACE case.
-
-        Also pins that the idempotency key and the new card token reach the
-        real ``MercadoPagoSubscriptionAdapter`` -> SDK boundary -- unlike
-        ``test_grace_recovery.py``, which only exercises a hand-written
-        ``FakePaymentService`` double that stands in for ``PaymentService``
-        wholesale and never reaches the adapter.
+        even reach this endpoint (up to the point of the refusal) is worth
+        pinning here too.
         """
         self._make_grace_subscription(subscription, billing_state=billing_state)
 
@@ -1058,23 +1062,181 @@ class TestRetryPaymentEndpoint:
             format="json",
         )
 
-        assert response.status_code == status.HTTP_200_OK
-        assert response.data["billing_state"] == billing_state
+        # Billing API Contract Hardening, Phase 4 reviewer finding SHOULD-FIX
+        # 7: the refusal must reach the client as a typed 409, not an
+        # unhandled 500 -- `CollectionNotSupportedError` is a `BillingError`
+        # subclass with a `common.exception_handlers.vinta_exception_handler`
+        # branch, unlike the plain `PaymentAdapterError` this replaced.
+        assert response.status_code == status.HTTP_409_CONFLICT
+        assert response.data["code"] == "collection_not_supported"
+        assert "detail" in response.data
 
-        # The `card_token_id` attach call, then the keyed charge call --
-        # both real `sdk.preapproval().update(...)` invocations, in order.
+        # The token was attached (real `sdk.preapproval().update(...)` call)
+        # before the refusal fired -- ordering still holds even though the
+        # second step is a refusal rather than a charge.
         update_calls = mercadopago_subscription_adapter.sdk.preapproval().update.call_args_list
-        assert len(update_calls) == 2
-
+        assert len(update_calls) == 1
         attach_args, _attach_kwargs = update_calls[0]
         assert attach_args[0] == subscription.external_id
         assert attach_args[1]["card_token_id"] == "tok-new-card"
 
-        charge_args, _charge_kwargs = update_calls[1]
-        assert charge_args[0] == subscription.external_id
-        charge_options = charge_args[2]
-        expected_key = retry_payment_idempotency_key(subscription.pk, "idem-retry-6")
-        assert charge_options.custom_headers == {"x-idempotency-key": expected_key}
+    @pytest.mark.parametrize("billing_state", [BillingState.GRACE, BillingState.RESTRICTED])
+    def test_stripe_attaches_the_token_then_pays_the_open_invoice(
+        self,
+        di_container,
+        auth_client,
+        admin_membership,
+        subscription,
+        billing_state,
+    ):
+        """Billing API Contract Hardening, Phase 4's headline fix, proven
+        through the real HTTP path: unlike MercadoPago's refusal above,
+        Stripe's ``pay_outstanding_invoice`` actually locates the
+        subscription's open invoice and pays it -- ``stripe.Invoice.pay``, not
+        a proration on a freshly-minted price (``change_subscription_plan``,
+        Phase 3's mistaken primitive). Stripe SDK calls are mocked at the
+        adapter module's own boundary, same pattern as
+        ``test_stripe_subscription_adapter.py``.
+
+        Repoints ``subscription`` (built on MercadoPago by this module's
+        fixtures) onto Stripe directly and swaps in a real
+        ``StripeSubscriptionAdapter`` for the duration of the request --
+        mirrors ``TestUnconfiguredProviderMapsTo409.unconfigured_stripe_client``'s
+        established pattern for shadowing the module's ``_no_live_stripe_calls``
+        guard for one test.
+        """
+        self._make_grace_subscription(
+            subscription, billing_state=billing_state, external_id="sub_stripe_1"
+        )
+        subscription.payment_provider = PaymentProviders.STRIPE
+        subscription.save(update_fields=["payment_provider"])
+
+        stripe_adapter = StripeSubscriptionAdapter(api_key="sk_test_123", webhook_secret="whsec")
+        with (
+            patch(
+                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe"
+                ".Subscription"
+            ) as mock_subscription_resource,
+            patch(
+                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe"
+                ".PaymentMethod"
+            ) as mock_payment_method,
+            patch(
+                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe"
+                ".Customer"
+            ) as mock_customer,
+            patch(
+                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice"
+            ) as mock_invoice,
+            di_container.stripe_subscription_gateway.override(stripe_adapter),
+        ):
+            mock_subscription_resource.retrieve.return_value = MagicMock(customer="cus_stripe_1")
+            mock_invoice.list.side_effect = [
+                MagicMock(data=[MagicMock(id="in_open_1", created=1000)]),
+                MagicMock(data=[]),
+            ]
+
+            response = auth_client.post(
+                retry_payment_url(),
+                {"payment_token": "tok-new-card", "idempotency_key": "idem-retry-7"},
+                format="json",
+            )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["billing_state"] == billing_state
+
+        # `update_subscription_payment_token`: retrieve the customer, attach
+        # the (unattached-by-default) PaymentMethod, then pin it as both the
+        # customer's and the subscription's default (SHOULD-FIX 6).
+        mock_subscription_resource.retrieve.assert_called_once_with(
+            "sub_stripe_1", api_key="sk_test_123"
+        )
+        mock_payment_method.attach.assert_called_once_with(
+            "tok-new-card", customer="cus_stripe_1", api_key="sk_test_123"
+        )
+        mock_customer.modify.assert_called_once_with(
+            "cus_stripe_1",
+            invoice_settings={"default_payment_method": "tok-new-card"},
+            api_key="sk_test_123",
+        )
+        mock_subscription_resource.modify.assert_called_once_with(
+            "sub_stripe_1", default_payment_method="tok-new-card", api_key="sk_test_123"
+        )
+
+        # `pay_outstanding_invoice`: both `open` and `uncollectible` are
+        # queried (SHOULD-FIX 5), no `limit` (SHOULD-FIX 4), and the invoice
+        # is paid with the new token passed explicitly (SHOULD-FIX 6) under a
+        # per-invoice idempotency key.
+        assert mock_invoice.list.call_args_list == [
+            ((), {"subscription": "sub_stripe_1", "status": "open", "api_key": "sk_test_123"}),
+            (
+                (),
+                {
+                    "subscription": "sub_stripe_1",
+                    "status": "uncollectible",
+                    "api_key": "sk_test_123",
+                },
+            ),
+        ]
+        expected_key = retry_payment_idempotency_key(subscription.pk, "idem-retry-7")
+        mock_invoice.pay.assert_called_once_with(
+            "in_open_1",
+            payment_method="tok-new-card",
+            idempotency_key=f"{expected_key}-in_open_1",
+            api_key="sk_test_123",
+        )
+
+    @pytest.mark.parametrize("billing_state", [BillingState.GRACE, BillingState.RESTRICTED])
+    def test_stripe_no_outstanding_invoice_returns_409(
+        self,
+        di_container,
+        auth_client,
+        admin_membership,
+        subscription,
+        billing_state,
+    ):
+        """Reviewer finding SHOULD-FIX 10: no endpoint-level test previously
+        asserted the `no_outstanding_balance` 409 -- the only thing that would
+        have pinned `set_rollback()` on that branch in
+        `common.exception_handlers.vinta_exception_handler`."""
+        self._make_grace_subscription(
+            subscription, billing_state=billing_state, external_id="sub_stripe_2"
+        )
+        subscription.payment_provider = PaymentProviders.STRIPE
+        subscription.save(update_fields=["payment_provider"])
+
+        stripe_adapter = StripeSubscriptionAdapter(api_key="sk_test_123", webhook_secret="whsec")
+        with (
+            patch(
+                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe"
+                ".Subscription"
+            ) as mock_subscription_resource,
+            patch(
+                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe"
+                ".PaymentMethod"
+            ),
+            patch(
+                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe"
+                ".Customer"
+            ),
+            patch(
+                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice"
+            ) as mock_invoice,
+            di_container.stripe_subscription_gateway.override(stripe_adapter),
+        ):
+            mock_subscription_resource.retrieve.return_value = MagicMock(customer="cus_stripe_2")
+            mock_invoice.list.return_value = MagicMock(data=[])
+
+            response = auth_client.post(
+                retry_payment_url(),
+                {"payment_token": "tok-new-card", "idempotency_key": "idem-retry-8"},
+                format="json",
+            )
+
+        assert response.status_code == status.HTTP_409_CONFLICT
+        assert response.data["code"] == "no_outstanding_balance"
+        assert "detail" in response.data
+        mock_invoice.pay.assert_not_called()
 
 
 @pytest.mark.django_db

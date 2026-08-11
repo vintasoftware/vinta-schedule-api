@@ -51,7 +51,11 @@ files that were already there before this run.
 | 2 | Constrain `document_type` | 2→3 (sonnet) | ✅ done | `plan/billing-api-contract-hardening/phase-2` | [#250](https://github.com/vintasoftware/vinta-schedule-api/pull/250) |
 | 3 | Grace recovery via retry-payment | 3 (reviewer 4) | ✅ done | `plan/billing-api-contract-hardening/phase-3` | [#251](https://github.com/vintasoftware/vinta-schedule-api/pull/251) |
 
-**All three phases complete.** Final full-suite run on phase-3: **5364 passed, 0 failed.**
+| 4 | Collect the outstanding balance on retry | 3 (reviewer 4) | ✅ done | `plan/billing-api-contract-hardening/phase-4` | [#252](https://github.com/vintasoftware/vinta-schedule-api/pull/252) |
+
+**Four phases complete.** Final full-suite run on phase-4: **5391 passed, 0 failed.**
+
+Phase 4 was added *after* Phase 3 shipped, on evidence from a live Stripe probe.
 
 ## Phase notes
 
@@ -198,6 +202,56 @@ methods that no longer exist.
 pure method→module-function move with identical bodies plus call-site renames —
 behaviorally inert. No stale references remain. Stash list contains only pre-existing
 entries from other branches (a fixer had a `git stash` mishap mid-run and recovered).
+
+### Phase 4 — Collect the outstanding balance on retry ✅
+
+Added after Phase 3 shipped. PR [#252](https://github.com/vintasoftware/vinta-schedule-api/pull/252), 2 commits, 16 files.
+
+**Why.** Phase 3's endpoint passed a 5364-test suite and collected **$0.00**. A probe
+against real Stripe test mode (Test Clock, real adapter methods, genuine renewal
+failure) showed the same-amount price move prorating to zero, raising a $0.00 invoice,
+marking it paid, and flipping the subscription to `active` while the $49 stayed open.
+That $0 invoice emits `invoice.paid`, which is in `RELEVANT_SUBSCRIPTION_PAYMENT_EVENT_TYPES` —
+a false-recovery risk, not merely a no-op.
+
+**What landed.** New `pay_outstanding_invoice` adapter primitive (Stripe: pay every
+open/uncollectible invoice oldest-first with per-invoice idempotency keys and an
+explicit `payment_method`; MercadoPago: typed `collection_not_supported` refusal);
+`PaymentService` wrapper on Rule A routing; `retry_payment` repointed;
+`NoOutstandingBalanceError`; a zero-amount guard so no payment of zero can resolve
+dunning. `retry_failed_charge` and `dunning_service` byte-unchanged.
+
+**Two BLOCKERs the probe could not see — the lesson of this phase.** The probe verified
+money moved *at Stripe*; it never checked that **our** system notices. The Tier 4
+reviewer found the recovery never completed:
+
+1. The webhook resolved the payment off `latest_invoice`, but paying an older invoice
+   creates nothing new — so `latest_invoice` was the ladder's $0 proration invoice,
+   which has no PaymentIntent. Lookup returned `None`, no `Payment` row, payer rode
+   GRACE → RESTRICTED with $49 already taken. Phase 3's failure inverted.
+2. `payments.data[0]` picked the dead card's *failed* `InvoicePayment` (both entries
+   are present after a paid-after-failure; Stripe documents no ordering), mapping to
+   `pending` — neither approved nor failed — so nothing happened.
+
+Both reproduced red-then-green.
+
+**Also fixed:** `limit=1` unordered paid the newest open invoice, leaving the real
+past-due one open; `uncollectible` invoices produced spurious 409s; `PaymentMethod.attach`
+was never called (a fresh Elements `pm_...` would error) and the customer's
+`invoice_settings` default still pointed at the dead card; MercadoPago's refusal was an
+unhandled 500; `record_payment_method` fired on $0, granting `has_payment_method`;
+`Decimal(None)`/`Decimal("")` could 500 the webhook into an infinite provider retry.
+The implementer separately found `confirm_plan_change` carries its **own** unconditional
+GRACE→ACTIVE transition, so guarding `resolve_payment_success` alone left the hole open.
+
+**Verified live after every change:** $49.00 collected, previously-open invoice `paid`,
+none left open, `charge.succeeded $49.00`.
+
+**Open, deliberately not bundled.** The Stripe dunning ladder now always runs to
+RESTRICTED: `retry_failed_charge` collects $0.00 and the new guard correctly refuses to
+call that recovery. Previously the $0 falsely recovered payers for free. Pointing the
+ladder at `pay_outstanding_invoice` changes behaviour for every payer — needs its own
+decision.
 
 ### Infrastructure fix during Phase 1
 

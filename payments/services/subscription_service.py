@@ -745,17 +745,50 @@ class SubscriptionService:
         self, subscription: Subscription, payment_token: str, idempotency_key: str
     ) -> Subscription:
         """Grace recovery: attach a *new* payment instrument to ``subscription``
-        and drive a fresh charge against it -- the single entry point behind
-        ``POST /billing/subscription/retry-payment/``.
+        and collect the outstanding balance against it -- the single entry
+        point behind ``POST /billing/subscription/retry-payment/``.
 
-        This is **not** ``retry_failed_charge``. That method re-drives whichever
-        instrument is already on file, which is useless for the most common
-        grace cause (an expired card): there would be nothing new to charge.
-        This method attaches ``payment_token`` first
+        This is **not** ``retry_failed_charge`` (nor, transitively, the
+        ``_ensure_provider_plan`` + ``change_subscription_plan`` pair
+        ``retry_failed_charge`` drives) -- it was, until Billing API Contract
+        Hardening Phase 4, and that was a defect, not a design choice.
+        ``change_subscription_plan`` moves a subscriber onto a plan and only
+        charges a *proration* as a side effect of that move; it was never a
+        "collect the missed payment" primitive, and a Stripe test-mode probe
+        driving the real adapter methods with a Test Clock proved it out on a
+        genuine renewal failure:
+
+        - $49 renewal invoice: ``open`` before retry, still ``open`` after.
+        - Collected: $49.00 before retry, **$0.00** from the retry itself.
+        - Stripe subscription status: ``past_due`` before retry, ``active`` after
+          (a false recovery -- see below).
+
+        The mechanism: ``_ensure_provider_plan`` mints a *fresh* Stripe Price at
+        the *same* amount every call (see its own docstring for why), so
+        ``Subscription.modify(proration_behavior="always_invoice")`` produced
+        offsetting proration line items (``-42.47`` / ``+42.47``) that net to
+        zero. Stripe raised a **$0.00 invoice**, finalized it, marked it paid,
+        and flipped the subscription to ``active`` -- while the real past-due
+        invoice sat untouched, and that $0.00 invoice's ``invoice.paid`` event
+        was itself in ``RELEVANT_SUBSCRIPTION_PAYMENT_EVENT_TYPES``, so it would
+        have reached ``resolve_payment_success`` and reported a false recovery
+        had the zero-amount guard (``PaymentsViewSet
+        ._apply_subscription_payment_side_effects``) not also shipped in Phase 4.
+        **Do not restore the call to ``retry_failed_charge``/
+        ``change_subscription_plan`` here** -- that is what silently collected
+        nothing while reporting success.
+
+        This method now attaches ``payment_token`` first
         (``PaymentService.update_subscription_payment_token`` ->
         ``BaseSubscriptionAdapter.update_subscription_payment_token``), *then*
-        retries the charge against it -- order matters, since attaching after
-        charging would charge the dead instrument one more time.
+        drives ``PaymentService.pay_outstanding_invoice`` ->
+        ``BaseSubscriptionAdapter.pay_outstanding_invoice`` -- the provider's
+        actual "collect the specific outstanding balance now" primitive (Stripe:
+        locate the subscription's ``open`` invoice and ``Invoice.pay`` it; see
+        that method's docstring for the full contract and MercadoPago's explicit,
+        unverified refusal) -- against the newly attached instrument. Order
+        matters, since attaching after charging would charge the dead instrument
+        one more time.
 
         **Serialized by a row lock; deduplicated by the caller's idempotency
         key -- not by this method.** These are two separate claims, and only
@@ -815,10 +848,10 @@ class SubscriptionService:
             charge -- see below. There is no failed charge to retry right now.
         :raises SubscriptionNotAttachedError: ``subscription.external_id`` is
             blank -- there is no provider-side instrument to attach a new token
-            to or a charge to retry. Unlike ``retry_failed_charge``'s existing
-            dunning-ladder caller (which logs and returns unchanged -- fine for
-            a background beat tick nobody is waiting on), a user-facing request
-            must not report success having silently done nothing.
+            to or a balance to collect against. Unlike ``retry_failed_charge``'s
+            existing dunning-ladder caller (which logs and returns unchanged --
+            fine for a background beat tick nobody is waiting on), a user-facing
+            request must not report success having silently done nothing.
 
         Not every GRACE/RESTRICTED episode means "a payment failed" --
         ``_schedule_downgrade`` also puts a subscription into GRACE, with
@@ -826,13 +859,13 @@ class SubscriptionService:
         no charge ever having failed. ``is_downgrade_grace`` (module-level in
         ``dunning_service``, shared with ``DunningService._process_grace`` -- see
         its docstring; the two call sites must not drift apart) is checked and
-        refused before
-        anything is driven: charging here would bill
-        ``retry_failed_charge`` -> ``_ensure_provider_plan(subscription,
-        subscription.plan, ...)`` at the still-active, *higher* plan, while
-        the approved-payment webhook's ``confirm_plan_change`` takes the
-        pending-downgrade branch and syncs the *lower* plan's limits -- the
-        payer would pay the high price and receive the low plan.
+        refused before anything is driven: there is no failed charge behind a
+        downgrade-originated episode, so there is nothing for
+        ``pay_outstanding_invoice`` to legitimately collect either -- refusing
+        here up front with the specific, actionable ``retry_payment_not_applicable``
+        gives a clearer signal than letting the request through only to bounce
+        off ``NoOutstandingBalanceError`` after already attaching a new payment
+        instrument for no reason.
         """
         with transaction.atomic():
             # Re-read under a row lock, same discipline as `request_plan_change`
@@ -852,7 +885,13 @@ class SubscriptionService:
             namespaced_idempotency_key = retry_payment_idempotency_key(
                 subscription.pk, idempotency_key
             )
-            self.retry_failed_charge(subscription, namespaced_idempotency_key)
+            # Billing API Contract Hardening, Phase 4: `pay_outstanding_invoice`,
+            # never `retry_failed_charge`/`change_subscription_plan` -- see this
+            # method's docstring for the probe evidence of why that collected
+            # $0.00 against a real past-due invoice.
+            payment_service.pay_outstanding_invoice(
+                subscription, payment_token, namespaced_idempotency_key
+            )
         return subscription
 
     def _schedule_downgrade(

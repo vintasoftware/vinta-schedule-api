@@ -9,7 +9,11 @@ import pytest
 
 from payments.billing_constants import BillingInterval
 from payments.constants import PaymentProviders, PaymentStatuses
-from payments.exceptions import ProviderWebhookEventIdMissingError
+from payments.exceptions import (
+    NoOutstandingBalanceError,
+    PaymentAdapterError,
+    ProviderWebhookEventIdMissingError,
+)
 from payments.services.dataclasses import (
     BillingAddress,
     BillingProfile,
@@ -298,21 +302,36 @@ def test_change_subscription_plan_without_external_id(
 ):
     mock_subscription.external_id = None
 
-    from payments.exceptions import PaymentAdapterError
-
     with pytest.raises(PaymentAdapterError):
         adapter.change_subscription_plan(mock_subscription, mock_created_plan)
 
 
+@patch("payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Customer")
+@patch("payments.services.subscription_adapters.stripe_subscription_adapter.stripe.PaymentMethod")
 @patch("payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Subscription")
 def test_update_subscription_payment_token_success(
-    mock_subscription_resource, adapter, mock_subscription
+    mock_subscription_resource, mock_payment_method, mock_customer, adapter, mock_subscription
 ):
     """`default_payment_method` is a genuine `Subscription` field (confirmed via
     `'default_payment_method' in stripe.Subscription.__annotations__` == `True`)
-    — same field name `create_subscription` already sets."""
+    — same field name `create_subscription` already sets. The new token must
+    also be attached to the customer *before* anything points at it (Stripe
+    rejects an unattached `PaymentMethod` on both `Subscription.modify` and
+    `Customer.modify`), and the customer's own `invoice_settings.default_payment_method`
+    must be updated too, for parity with `create_subscription`."""
+    mock_subscription_resource.retrieve.return_value = Mock(customer="cus_456")
+
     adapter.update_subscription_payment_token(mock_subscription, "pm_new_token")
 
+    mock_subscription_resource.retrieve.assert_called_once_with("sub_456", api_key="sk_test_123")
+    mock_payment_method.attach.assert_called_once_with(
+        "pm_new_token", customer="cus_456", api_key="sk_test_123"
+    )
+    mock_customer.modify.assert_called_once_with(
+        "cus_456",
+        invoice_settings={"default_payment_method": "pm_new_token"},
+        api_key="sk_test_123",
+    )
     mock_subscription_resource.modify.assert_called_once_with(
         "sub_456", default_payment_method="pm_new_token", api_key="sk_test_123"
     )
@@ -321,10 +340,134 @@ def test_update_subscription_payment_token_success(
 def test_update_subscription_payment_token_without_external_id(adapter, mock_subscription):
     mock_subscription.external_id = None
 
-    from payments.exceptions import PaymentAdapterError
-
     with pytest.raises(PaymentAdapterError):
         adapter.update_subscription_payment_token(mock_subscription, "pm_new_token")
+
+
+@patch("payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice")
+def test_pay_outstanding_invoice_pays_the_open_invoice(mock_invoice, adapter, mock_subscription):
+    """The money-moving line this phase exists to fix: locate the subscription's
+    outstanding invoice and pay *that* -- not a proration on a freshly-minted
+    price (`change_subscription_plan`), which is what previously collected
+    $0.00 against a real past-due renewal (see `BaseSubscriptionAdapter
+    .pay_outstanding_invoice`'s docstring for the probe numbers). Both `open`
+    and `uncollectible` are queried (SHOULD-FIX 5) -- only `open` has a match
+    here, so `uncollectible` resolves empty."""
+    mock_invoice.list.side_effect = [
+        Mock(data=[Mock(id="in_open_1", created=1000)]),
+        Mock(data=[]),
+    ]
+
+    adapter.pay_outstanding_invoice(mock_subscription, "pm_new_token")
+
+    assert mock_invoice.list.call_args_list == [
+        ((), {"subscription": "sub_456", "status": "open", "api_key": "sk_test_123"}),
+        ((), {"subscription": "sub_456", "status": "uncollectible", "api_key": "sk_test_123"}),
+    ]
+    mock_invoice.pay.assert_called_once_with(
+        "in_open_1", payment_method="pm_new_token", api_key="sk_test_123"
+    )
+
+
+@patch("payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice")
+def test_pay_outstanding_invoice_pays_every_outstanding_invoice_oldest_first(
+    mock_invoice, adapter, mock_subscription
+):
+    """SHOULD-FIX 4: a subscription can carry more than one outstanding invoice
+    at once (e.g. a proration invoice from `change_subscription_plan` sitting
+    alongside the original past-due renewal) -- every one must be paid, not
+    just the first Stripe happens to list, and the original past-due invoice
+    (older `created`) must be paid before a later proration, never the
+    reverse. `uncollectible` contributes the third invoice, proving the two
+    statuses are merged into one ordered pass rather than only the `open`
+    list being paid."""
+    mock_invoice.list.side_effect = [
+        Mock(
+            data=[
+                Mock(id="in_newer_proration", created=3000),
+                Mock(id="in_original_past_due", created=1000),
+            ]
+        ),
+        Mock(data=[Mock(id="in_uncollectible_middle", created=2000)]),
+    ]
+
+    adapter.pay_outstanding_invoice(mock_subscription, "pm_new_token")
+
+    assert [call.args[0] for call in mock_invoice.pay.call_args_list] == [
+        "in_original_past_due",
+        "in_uncollectible_middle",
+        "in_newer_proration",
+    ]
+    for call in mock_invoice.pay.call_args_list:
+        assert call.kwargs["payment_method"] == "pm_new_token"
+
+
+@patch("payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice")
+def test_pay_outstanding_invoice_namespaces_the_idempotency_key_per_invoice(
+    mock_invoice, adapter, mock_subscription
+):
+    """The caller's idempotency key must not be reused verbatim across two
+    different `Invoice.pay` calls -- Stripe scopes a key to one set of request
+    parameters, so a second call with the *same* key but a *different* invoice
+    id would error rather than collect. Each invoice gets its own key, derived
+    from the caller's."""
+    mock_invoice.list.side_effect = [
+        Mock(data=[Mock(id="in_a", created=1000), Mock(id="in_b", created=2000)]),
+        Mock(data=[]),
+    ]
+
+    adapter.pay_outstanding_invoice(
+        mock_subscription, "pm_new_token", idempotency_key="retry-payment-42-client-key-1"
+    )
+
+    assert mock_invoice.pay.call_args_list[0].kwargs["idempotency_key"] == (
+        "retry-payment-42-client-key-1-in_a"
+    )
+    assert mock_invoice.pay.call_args_list[1].kwargs["idempotency_key"] == (
+        "retry-payment-42-client-key-1-in_b"
+    )
+
+
+@patch("payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice")
+def test_pay_outstanding_invoice_raises_when_no_open_invoice_exists(
+    mock_invoice, adapter, mock_subscription
+):
+    """No open or uncollectible invoice means nothing to collect right now --
+    this must raise a typed error, never silently succeed (that silent-success
+    shape is exactly the defect this phase exists to remove)."""
+    mock_invoice.list.return_value = Mock(data=[])
+
+    with pytest.raises(NoOutstandingBalanceError):
+        adapter.pay_outstanding_invoice(mock_subscription, "pm_new_token")
+
+    mock_invoice.pay.assert_not_called()
+
+
+@patch("payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice")
+def test_pay_outstanding_invoice_collects_a_balance_left_uncollectible(
+    mock_invoice, adapter, mock_subscription
+):
+    """SHOULD-FIX 5: an invoice the account marked `uncollectible` after
+    exhausting its own retries still carries an owed balance -- querying only
+    `open` would make this return a spurious `NoOutstandingBalanceError` while
+    money is still owed."""
+    mock_invoice.list.side_effect = [
+        Mock(data=[]),
+        Mock(data=[Mock(id="in_uncollectible_1", created=1000)]),
+    ]
+
+    adapter.pay_outstanding_invoice(mock_subscription, "pm_new_token")
+
+    mock_invoice.pay.assert_called_once_with(
+        "in_uncollectible_1", payment_method="pm_new_token", api_key="sk_test_123"
+    )
+
+
+def test_pay_outstanding_invoice_without_external_id(adapter, mock_subscription):
+    mock_subscription.external_id = None
+
+    with pytest.raises(PaymentAdapterError):
+        adapter.pay_outstanding_invoice(mock_subscription, "pm_new_token")
 
 
 def test_get_subscription_external_id_from_update_subscription_event(adapter):
@@ -486,6 +629,252 @@ def test_get_payment_external_id_from_subscription_payload_no_payments_yet(adapt
     subscription_payload = {"latest_invoice": {"payments": {"object": "list", "data": []}}}
 
     assert adapter.get_payment_external_id_from_subscription_payload(subscription_payload) is None
+
+
+def test_get_payment_external_id_from_subscription_payload_picks_the_paid_entry_not_index_zero(
+    adapter,
+):
+    """BLOCKER 2 (Billing API Contract Hardening, Phase 4 reviewer finding): a
+    dunning-recovered invoice carries both the dead card's failed attempt and
+    the new card's successful one, in an order Stripe does not document as
+    stable. `data[0]` is the dead card's failed `InvoicePayment` here (Stripe
+    does not order this list) -- blindly taking it, as the code used to,
+    resolves to the failed attempt's PaymentIntent, whose status is neither
+    `APPROVED` nor `FAILED`, so nothing ever happens even though the balance
+    was genuinely collected."""
+    subscription_payload = {
+        "latest_invoice": {
+            "payments": {
+                "object": "list",
+                "data": [
+                    {
+                        "id": "inpay_failed",
+                        "status": "open",
+                        "created": 1000,
+                        "payment": {
+                            "type": "payment_intent",
+                            "payment_intent": "pi_dead_card_failed",
+                        },
+                    },
+                    {
+                        "id": "inpay_success",
+                        "status": "paid",
+                        "created": 2000,
+                        "payment": {
+                            "type": "payment_intent",
+                            "payment_intent": "pi_new_card_success",
+                        },
+                    },
+                ],
+            }
+        }
+    }
+
+    result = adapter.get_payment_external_id_from_subscription_payload(subscription_payload)
+
+    assert result == "pi_new_card_success"
+
+
+def test_get_payment_external_id_from_subscription_payload_falls_back_to_most_recent_when_none_paid(
+    adapter,
+):
+    """No `"paid"` entry (e.g. every attempt on this invoice is still failing)
+    falls back to the most recently created entry, not list position."""
+    subscription_payload = {
+        "latest_invoice": {
+            "payments": {
+                "object": "list",
+                "data": [
+                    {
+                        "id": "inpay_newer_failure",
+                        "status": "open",
+                        "created": 2000,
+                        "payment": {"type": "payment_intent", "payment_intent": "pi_newer_failure"},
+                    },
+                    {
+                        "id": "inpay_older_failure",
+                        "status": "open",
+                        "created": 1000,
+                        "payment": {"type": "payment_intent", "payment_intent": "pi_older_failure"},
+                    },
+                ],
+            }
+        }
+    }
+
+    result = adapter.get_payment_external_id_from_subscription_payload(subscription_payload)
+
+    assert result == "pi_newer_failure"
+
+
+@patch("payments.services.subscription_adapters.stripe_subscription_adapter.stripe.PaymentIntent")
+@patch("payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice")
+def test_receive_payment_update_invoice_event_resolves_off_the_events_own_invoice(
+    mock_invoice, mock_payment_intent, adapter
+):
+    """BLOCKER 1 (Billing API Contract Hardening, Phase 4 reviewer finding):
+    `invoice.paid` for a **non-latest** invoice must resolve the payment off
+    the invoice the event was actually about (`Invoice.retrieve(event's
+    invoice id, expand=["payments"])`), never `Subscription.latest_invoice` --
+    the most recently *created* invoice, which the dunning ladder's $0
+    proration tick makes a different, unrelated, PaymentIntent-less invoice
+    by the time a payer recovers through `retry_payment`.
+
+    `stripe.Subscription` is deliberately left unpatched (unmocked real calls
+    would error loudly) -- the fixed code must never call
+    `Subscription.retrieve` for an `invoice.*` event at all.
+    """
+    payload = {
+        "type": "invoice.paid",
+        "id": "evt_1",
+        "data": {
+            "object": {
+                "id": "in_past_due_49",
+                "parent": {
+                    "type": "subscription_details",
+                    "subscription_details": {"subscription": "sub_1"},
+                },
+            }
+        },
+    }
+    mock_invoice.retrieve.return_value = Mock(
+        to_dict=lambda: {
+            "id": "in_past_due_49",
+            "payments": {
+                "object": "list",
+                "data": [
+                    {
+                        "id": "inpay_failed",
+                        "status": "open",
+                        "created": 1000,
+                        "payment": {
+                            "type": "payment_intent",
+                            "payment_intent": "pi_dead_card_failed",
+                        },
+                    },
+                    {
+                        "id": "inpay_success",
+                        "status": "paid",
+                        "created": 2000,
+                        "payment": {
+                            "type": "payment_intent",
+                            "payment_intent": "pi_new_card_success",
+                        },
+                    },
+                ],
+            },
+        }
+    )
+    mock_payment_intent.retrieve.return_value = Mock(
+        to_dict=lambda: {
+            "id": "pi_new_card_success",
+            "amount": 4900,
+            "currency": "usd",
+            "status": "succeeded",
+            "payment_method_types": ["card"],
+            "description": "Past-due renewal",
+        }
+    )
+
+    result = adapter.receive_payment_update(payload)
+
+    assert result is not None
+    subscription_payment, status_update = result
+    mock_invoice.retrieve.assert_called_once_with(
+        "in_past_due_49", expand=["payments"], api_key="sk_test_123"
+    )
+    mock_payment_intent.retrieve.assert_called_once_with(
+        "pi_new_card_success", api_key="sk_test_123"
+    )
+    assert subscription_payment.external_id == "pi_new_card_success"
+    assert subscription_payment.subscription_external_id == "sub_1"
+    assert subscription_payment.value == Decimal("49.00")
+    assert status_update.status == PaymentStatuses.APPROVED
+
+
+@patch("payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice")
+def test_receive_payment_update_invoice_event_with_no_invoice_id_returns_none(
+    mock_invoice, adapter
+):
+    payload = {
+        "type": "invoice.paid",
+        "id": "evt_1",
+        "data": {
+            "object": {
+                "parent": {
+                    "type": "subscription_details",
+                    "subscription_details": {"subscription": "sub_1"},
+                }
+            }
+        },
+    }
+
+    assert adapter.receive_payment_update(payload) is None
+    mock_invoice.retrieve.assert_not_called()
+
+
+@patch("payments.services.subscription_adapters.stripe_subscription_adapter.stripe.PaymentIntent")
+@patch("payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Subscription")
+def test_receive_payment_update_non_invoice_event_keeps_the_latest_invoice_lookup(
+    mock_subscription_resource, mock_payment_intent, adapter
+):
+    """`customer.subscription.*` events have no specific invoice to resolve
+    against -- unaffected by BLOCKER 1's fix, and must keep going through
+    `get_subscription_payload`/`Subscription.latest_invoice`, never
+    `Invoice.retrieve`.
+
+    `is_payment_update` is patched to `True`: `RELEVANT_SUBSCRIPTION_PAYMENT
+    _EVENT_TYPES` only actually contains `invoice.*` types today, so a
+    `customer.subscription.*` event never reaches this method in production
+    either -- this test pins the override's *branching* (invoice vs.
+    everything else), which is what BLOCKER 1's fix touched, independent of
+    that separate, pre-existing gate.
+    """
+    payload = {
+        "type": "customer.subscription.updated",
+        "id": "evt_2",
+        "data": {"object": {"id": "sub_1"}},
+    }
+    mock_subscription_resource.retrieve.return_value = Mock(
+        to_dict=lambda: {
+            "latest_invoice": {
+                "payments": {
+                    "object": "list",
+                    "data": [
+                        {
+                            "id": "inpay_1",
+                            "status": "paid",
+                            "created": 1000,
+                            "payment": {"type": "payment_intent", "payment_intent": "pi_latest"},
+                        }
+                    ],
+                }
+            }
+        }
+    )
+    mock_payment_intent.retrieve.return_value = Mock(
+        to_dict=lambda: {
+            "id": "pi_latest",
+            "amount": 4900,
+            "currency": "usd",
+            "status": "succeeded",
+            "payment_method_types": ["card"],
+            "description": "Renewal",
+        }
+    )
+
+    with patch.object(adapter, "is_payment_update", return_value=True):
+        result = adapter.receive_payment_update(payload)
+
+    assert result is not None
+    mock_subscription_resource.retrieve.assert_called_once_with(
+        "sub_1", expand=["latest_invoice.payments"], api_key="sk_test_123"
+    )
+    mock_payment_intent.retrieve.assert_called_once_with("pi_latest", api_key="sk_test_123")
+
+
+def test_receive_payment_update_irrelevant_event_returns_none(adapter):
+    assert adapter.receive_payment_update({"type": "customer.created"}) is None
 
 
 def test_create_subscription_payment_from_payment_payload(adapter):
