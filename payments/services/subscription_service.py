@@ -19,10 +19,13 @@ from payments.exceptions import (
     AddOnNotPurchasableError,
     BillingPeriodResolutionError,
     BillingRootCycleError,
+    ChargeDeclinedError,
+    CollectionNotSupportedError,
     IllegalBillingStateTransitionError,
     IncompleteBillingPlanError,
     MissingBillingProfileError,
     NoDefaultBillingPlanError,
+    NoOutstandingBalanceError,
     PaymentTokenRequiredError,
     RetryPaymentNotApplicableError,
     SubscriptionNotAttachedError,
@@ -700,22 +703,29 @@ class SubscriptionService:
         return created
 
     def retry_failed_charge(self, subscription: Subscription, idempotency_key: str) -> Subscription:
-        """Ask the provider to re-attempt billing ``subscription`` at its current
-        plan and billing interval -- the charge ``DunningService``'s dunning
-        ladder (``payments/tasks.py::process_dunning``) retries across the grace
-        window.
+        """Ask the provider to collect the outstanding balance behind
+        ``subscription``'s failed charge -- the automatic dunning ladder's own
+        retry (``DunningService._retry_charge_and_notify``, driven by
+        ``payments/tasks.py::process_dunning``).
 
-        Reuses the exact provider round trip ``_initiate_upgrade`` drives for an
-        already-attached subscription (``_ensure_provider_plan`` +
-        ``change_subscription_plan``) against ``subscription.plan``/
-        ``subscription.billing_interval`` themselves -- nothing here changes what
-        the org is subscribed to, only asks the provider to bill it again.
+        **Drives ``pay_outstanding_invoice``, not ``change_subscription_plan``**
+        (Billing API Contract Hardening, Phase 5). Before this phase this
+        method reused ``_initiate_upgrade``'s ``_ensure_provider_plan`` +
+        ``change_subscription_plan`` pair -- exactly the operation Phase 4's
+        live Stripe probe proved collects **$0.00** against a real past-due
+        invoice (a same-amount price move prorates to zero; see
+        ``BaseSubscriptionAdapter.pay_outstanding_invoice``'s docstring for the
+        numbers). Phase 4 fixed the user-facing ``retry_payment`` endpoint but
+        deliberately left this method alone pending its own decision -- this
+        phase is that decision. ``payment_token`` is passed as ``""``: the
+        ladder is re-driving whatever instrument is *already on file*, it has
+        no new token to attach (see ``BaseSubscriptionAdapter
+        .pay_outstanding_invoice``'s docstring for the two-callers contract).
 
         ``idempotency_key`` reaches the provider's own idempotency header (see
-        ``BaseSubscriptionAdapter.change_subscription_plan``), so a Celery task
+        ``BaseSubscriptionAdapter.pay_outstanding_invoice``), so a Celery task
         redelivery of the same logical dunning attempt (``CELERY_TASK_ACKS_LATE``)
-        cannot double-charge -- the same fail-closed-for-money handling
-        built for plan-change/add-on charges, reused rather than re-invented here.
+        cannot double-charge.
 
         Writes nothing about the outcome locally -- success or a further failure
         arrives later through the subscription-payment webhook, exactly like
@@ -723,7 +733,91 @@ class SubscriptionService:
 
         A subscription that never attached a payment method (blank
         ``external_id``) has nothing to retry against; returned unchanged rather
-        than driving a pointless provider round trip.
+        than driving a pointless provider round trip. **Deliberately unlike
+        ``retry_payment``**, which raises ``SubscriptionNotAttachedError`` for
+        the same condition -- that method is a synchronous user request that
+        must not report success having silently done nothing; this one is a
+        background beat tick nobody is waiting on, and raising out of it would
+        poison the Celery task for a legitimate "nothing attached yet" case.
+
+        **MercadoPago fallback, explicitly temporary, and pinned to
+        MercadoPago.** MercadoPago's adapter raises ``CollectionNotSupportedError``
+        from ``pay_outstanding_invoice`` -- it has no verified "collect the
+        outstanding balance" primitive (see that adapter's docstring).
+        Catching it here and falling back to the pre-Phase-5
+        ``_ensure_provider_plan`` + ``change_subscription_plan`` path keeps
+        MercadoPago's ladder byte-identical **in provider calls, arguments,
+        and idempotency key** to before this phase -- not quite byte-identical
+        in every respect: an MP subscription whose organization has no
+        ``BillingProfile`` now fails one call earlier and without side
+        effects (``PaymentService.pay_outstanding_invoice`` raises
+        ``MissingBillingProfileError`` from its own ``_serialize_subscription``
+        before ever reaching the adapter), where previously
+        ``_ensure_provider_plan`` ran first and minted an orphan provider-side
+        plan object before ``change_subscription_plan`` hit the same missing
+        profile -- a strictly better failure order, not a regression, since
+        that error is not caught here and propagates (now to the Celery
+        task's own best-effort guard). The fallback exists rather than
+        breaking every MercadoPago dunning tick on a guess about a primitive
+        nobody has verified. Retire it once
+        ``MercadoPagoSubscriptionAdapter.pay_outstanding_invoice``'s own
+        docstring probe recipe is run against a real MercadoPago account and
+        its refusal is replaced with a verified collection call.
+
+        Re-raised, rather than falling back, for every **other** provider:
+        the fallback is a deliberate, temporary concession to MercadoPago's
+        specific unverified state, not a generic "this provider raised
+        something odd" catch-all. A Stripe subscription (or any future
+        provider) is never expected to raise ``CollectionNotSupportedError``
+        today -- if one somehow did, silently routing it into
+        ``change_subscription_plan`` would drive exactly the operation a live
+        Stripe probe proved collects **$0.00** (see this method's own opening
+        paragraph), with only an ``INFO`` log to notice by. Re-raising makes
+        that combination fail loudly instead.
+
+        **A tick with nothing owed must not raise either -- but it is not a
+        routine no-op for a GRACE subscription.** ``NoOutstandingBalanceError``
+        means the provider reports nothing outstanding right now even though
+        this subscription is in an active payment-failure episode -- e.g. the
+        balance was resolved through another channel between two ticks, or a
+        genuine bookkeeping mismatch between this system and the provider.
+        Swallowed here for the same operational reason as the blank-
+        ``external_id`` case above (a background beat must not raise on a
+        state it cannot fix by raising), but the caller
+        (``DunningService._retry_charge_and_notify``) still stamps
+        ``last_dunning_attempt_at`` and still sends that rung's "your payment
+        failed, update your card" (or final-warning) email regardless of this
+        swallow -- so a subscription that hits this on every tick is silently
+        walked to RESTRICTED at grace expiry while the provider says it owes
+        nothing. Logged at ``WARNING``, not ``INFO``: this is an
+        inconsistency worth someone's attention, not routine "nothing to do".
+        Reconciling the provider's and this system's view of the balance is a
+        separate decision and deliberately out of scope here.
+
+        **Nor must a declined (or unattemptable) charge.** ``ChargeDeclinedError``
+        (Billing API Contract Hardening, Phase 5 live-probe BLOCKER) means the
+        provider either attempted the charge and the card on file was
+        declined, or refused to attempt it at all (e.g. no default payment
+        method on file) -- see that exception's own docstring for the full
+        translation. Either is the *common* dunning-tick outcome, since a
+        dead or missing card is why the subscription is in dunning at all.
+        Left uncaught, this reached the Celery task
+        (``payments.tasks.process_dunning_for_subscription``) unhandled: per
+        that task's own docstring, a raising task "is redelivered and fails
+        identically forever, turning a benign race into a permanent stream of
+        alerts" -- exactly what a still-dead card would do on every
+        subsequent tick. Logged and swallowed here, same as the two outcomes
+        above -- **not** because the provider's own webhook will perform some
+        transition on this decline (a ladder retry never reaches the
+        webhook-driven ``enter_grace`` edge: the subscription here is already
+        GRACE/RESTRICTED, and ``DunningService.enter_grace`` no-ops for both
+        -- see that method's docstring), but because the tick's own
+        bookkeeping (``last_dunning_attempt_at`` and the ladder's reminder
+        email, both written by ``_retry_charge_and_notify``) must not be
+        rolled back by an expected decline. The webhook, when it arrives,
+        still records the ``Payment``/``PaymentStatusUpdate`` rows for this
+        failed charge -- it just performs no ``billing_state`` transition of
+        its own here.
         """
         if not subscription.external_id:
             logger.warning(
@@ -732,13 +826,64 @@ class SubscriptionService:
                 subscription.pk,
             )
             return subscription
-        created_plan = self._ensure_provider_plan(
-            subscription, subscription.plan, subscription.billing_interval
-        )
         payment_service = self._require_payment_service()
-        payment_service.change_subscription_plan(
-            subscription, created_plan, idempotency_key=idempotency_key
-        )
+        needs_mercadopago_fallback = False
+        try:
+            payment_service.pay_outstanding_invoice(
+                subscription, payment_token="", idempotency_key=idempotency_key
+            )
+        except CollectionNotSupportedError:
+            if subscription.payment_provider != PaymentProviders.MERCADOPAGO:
+                # See this method's docstring for why the fallback below is
+                # pinned to MercadoPago and every other provider re-raises.
+                raise
+            logger.info(
+                "retry_failed_charge: Subscription %s's provider has no verified "
+                "pay_outstanding_invoice primitive -- falling back to the "
+                "pre-Phase-5 change_subscription_plan path. See "
+                "MercadoPagoSubscriptionAdapter.pay_outstanding_invoice's "
+                "docstring for what would retire this fallback.",
+                subscription.pk,
+            )
+            needs_mercadopago_fallback = True
+        except NoOutstandingBalanceError:
+            logger.warning(
+                "retry_failed_charge: Subscription %s has no outstanding balance "
+                "at the provider right now, despite being in an active dunning "
+                "episode -- the ladder's own bookkeeping (last_dunning_attempt_at, "
+                "the reminder email) still proceeds regardless. See this method's "
+                "docstring: this is an inconsistency, not a routine no-op.",
+                subscription.pk,
+            )
+        except ChargeDeclinedError as e:
+            logger.info(
+                "retry_failed_charge: Subscription %s's charge was declined by "
+                "the provider (%s) -- an expected dunning-tick outcome, not an "
+                "error. See this method's docstring for why nothing further is "
+                "written here.",
+                subscription.pk,
+                e.provider_message,
+            )
+            if e.invoices_paid:
+                logger.warning(
+                    "retry_failed_charge: Subscription %s partially collected -- %d "
+                    "outstanding invoice(s) were paid before the provider declined a "
+                    "later one (%s). This is a partial, not a pure, decline.",
+                    subscription.pk,
+                    e.invoices_paid,
+                    e.provider_message,
+                )
+        # Run outside the `except` block above (rather than inside it) so a
+        # failure in the fallback itself surfaces as its own clean traceback
+        # rather than "During handling of the above exception..." burying the
+        # real error under the CollectionNotSupportedError that triggered it.
+        if needs_mercadopago_fallback:
+            created_plan = self._ensure_provider_plan(
+                subscription, subscription.plan, subscription.billing_interval
+            )
+            payment_service.change_subscription_plan(
+                subscription, created_plan, idempotency_key=idempotency_key
+            )
         return subscription
 
     def retry_payment(

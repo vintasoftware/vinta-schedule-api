@@ -743,7 +743,7 @@ class PaymentService[
         )
 
     def pay_outstanding_invoice(
-        self, subscription: SubscriptionModel, payment_token: str, idempotency_key: str = ""
+        self, subscription: SubscriptionModel, payment_token: str = "", idempotency_key: str = ""
     ) -> None:
         """Collect the balance that put `subscription` into dunning, right now.
 
@@ -756,13 +756,22 @@ class PaymentService[
         be driven at the provider holding it, never the organization's current
         pin.
 
-        `SubscriptionService.retry_payment` is this method's only caller,
-        called *after* `update_subscription_payment_token` so the collection
-        attempt runs against the newly attached instrument, not whichever one
-        was already on file. `payment_token` is forwarded through unchanged so
-        the adapter can pass it to the provider explicitly (e.g. Stripe's
-        `Invoice.pay(..., payment_method=payment_token)`) rather than relying
-        on whichever instrument the provider considers "the" default.
+        `payment_token` is optional (Billing API Contract Hardening, Phase 5)
+        -- this method now has two callers with two different meanings:
+
+        - `SubscriptionService.retry_payment` (the user-facing endpoint) calls
+          this *after* `update_subscription_payment_token`, with the token it
+          just attached, so the collection attempt runs against the newly
+          attached instrument rather than whichever one was already on file.
+        - `SubscriptionService.retry_failed_charge` (the automatic dunning
+          ladder) calls this with `payment_token=""` -- the ladder has no new
+          instrument to attach, it is re-driving whatever is already on file.
+
+        `payment_token` is forwarded through unchanged either way so the
+        adapter can pass it to the provider explicitly when set (e.g. Stripe's
+        `Invoice.pay(..., payment_method=payment_token)`) or omit it when
+        empty, falling back to whichever instrument the provider considers
+        "the" default.
         """
         adapter = self.get_configured_subscription_adapter(subscription.payment_provider)
         adapter.pay_outstanding_invoice(

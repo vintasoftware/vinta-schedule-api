@@ -110,7 +110,7 @@ class BaseSubscriptionAdapter:
 
     @abstractmethod
     def pay_outstanding_invoice(
-        self, subscription: Subscription, payment_token: str, idempotency_key: str = ""
+        self, subscription: Subscription, payment_token: str = "", idempotency_key: str = ""
     ) -> None:
         """
         Collect the balance that put ``subscription`` into dunning, right now.
@@ -127,11 +127,24 @@ class BaseSubscriptionAdapter:
         thing dunning exists to collect -- and asks the provider to attempt to
         charge exactly that, with no plan/price/proration math involved at all.
 
-        Called by ``SubscriptionService.retry_payment`` *after*
-        ``update_subscription_payment_token``, so the collection attempt runs
-        against the payment instrument the caller just attached, not whichever
-        one was already on file (which is exactly the dead-card case
-        ``retry_payment`` exists to recover from).
+        **``payment_token`` is optional -- exactly two callers, exactly two
+        meanings (Billing API Contract Hardening, Phase 5):**
+
+        - **Set** (``SubscriptionService.retry_payment``, the user-facing
+          grace-recovery endpoint): "attach this new instrument, then collect
+          against it." Called *after* ``update_subscription_payment_token``,
+          so the collection attempt runs against the instrument the caller
+          just attached, not whichever one was already on file (which is
+          exactly the dead-card case ``retry_payment`` exists to recover
+          from).
+        - **Empty** (``SubscriptionService.retry_failed_charge``, the
+          automatic dunning ladder's tick): "collect using whatever instrument
+          is already on file." The ladder has no new token to attach -- it is
+          re-driving the *existing* instrument, not onboarding a replacement
+          one -- so there is nothing to pass explicitly, and the provider's
+          own default-instrument resolution is used instead (see
+          ``StripeSubscriptionAdapter.pay_outstanding_invoice`` for exactly
+          what that means on Stripe).
 
         Writes nothing locally and returns nothing: like every other charge in
         this codebase, the outcome (paid vs. still failing) arrives later
@@ -140,12 +153,9 @@ class BaseSubscriptionAdapter:
         :param subscription: The subscription whose outstanding balance should
             be collected. Must have ``external_id`` set -- there is no
             provider-side subscription to look a balance up against otherwise.
-        :param payment_token: The payment instrument to charge -- the same one
-            ``update_subscription_payment_token`` just attached, forwarded
-            explicitly rather than relying on whatever the provider considers
-            "the" default instrument (see ``StripeSubscriptionAdapter
-            .pay_outstanding_invoice``'s docstring for why that precedence is
-            not safe to rely on implicitly).
+        :param payment_token: The payment instrument to charge, or ``""`` to
+            collect against whatever instrument is already on file -- see
+            above for the exact two cases this distinguishes.
         :param idempotency_key: When set, forwarded to the provider as its own
             idempotency key so a retried collection attempt resolves to the
             same provider-side charge rather than a second one.
@@ -158,6 +168,10 @@ class BaseSubscriptionAdapter:
             for ``subscription`` right now -- there is no outstanding invoice
             to collect (e.g. a GRACE/RESTRICTED subscription whose balance was
             already resolved through some other channel).
+        :raises ChargeDeclinedError: the provider actually attempted the charge
+            and it was declined (Stripe, as of this writing -- see
+            ``StripeSubscriptionAdapter.pay_outstanding_invoice``'s docstring
+            for exactly which provider exception this translates and why).
         """
         raise NotImplementedError
 

@@ -707,6 +707,21 @@ class SubscriptionViewSet(TenantScopedViewMixin, GenericVirtualModelViewMixin, G
                 ),
             ),
             400: OpenApiResponse(description="`payment_token` or `idempotency_key` is missing."),
+            402: OpenApiResponse(
+                response=BILLING_ERROR_BODY_SERIALIZER,
+                description=(
+                    "The new instrument was attached, but the provider declined the charge "
+                    'against it, or refused to attempt it at all (`code: "charge_declined"`, '
+                    "`ChargeDeclinedError`). Distinct from the over-limit 402 rendered "
+                    'elsewhere in this API (`OverLimitError`, `code: "limit_exceeded"`) -- '
+                    "both use 402 Payment Required, `code` disambiguates. The subscription "
+                    "stays GRACE/RESTRICTED. A subscription can carry more than one "
+                    "outstanding invoice; if an earlier one was paid before a later one hit "
+                    "this decline, a partial collection may already have occurred -- submit "
+                    "a different `payment_token` to retry the remainder, do not assume "
+                    "nothing moved."
+                ),
+            ),
             409: OpenApiResponse(
                 response=BILLING_ERROR_BODY_SERIALIZER,
                 description=(
@@ -734,7 +749,9 @@ class SubscriptionViewSet(TenantScopedViewMixin, GenericVirtualModelViewMixin, G
 
         # `RetryPaymentNotApplicableError`, `SubscriptionNotAttachedError`,
         # `NoOutstandingBalanceError`, and `CollectionNotSupportedError` (all
-        # 409) are rendered centrally by
+        # 409), and `ChargeDeclinedError` (402 -- Billing API Contract
+        # Hardening, Phase 5: the provider actually attempted the charge and
+        # declined it) are rendered centrally by
         # `common.exception_handlers.vinta_exception_handler` -- no local
         # try/except needed here.
         self.subscription_service.retry_payment(

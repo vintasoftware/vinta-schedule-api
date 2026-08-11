@@ -2029,6 +2029,20 @@ paths:
             the charge.
         '400':
           description: '`payment_token` or `idempotency_key` is missing.'
+        '402':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingErrorBody'
+          description: 'The new instrument was attached, but the provider declined
+            the charge against it, or refused to attempt it at all (`code: "charge_declined"`,
+            `ChargeDeclinedError`). Distinct from the over-limit 402 rendered elsewhere
+            in this API (`OverLimitError`, `code: "limit_exceeded"`) -- both use 402
+            Payment Required, `code` disambiguates. The subscription stays GRACE/RESTRICTED.
+            A subscription can carry more than one outstanding invoice; if an earlier
+            one was paid before a later one hit this decline, a partial collection
+            may already have occurred -- submit a different `payment_token` to retry
+            the remainder, do not assume nothing moved.'
         '409':
           content:
             application/json:
@@ -2100,6 +2114,20 @@ paths:
             the charge.
         '400':
           description: '`payment_token` or `idempotency_key` is missing.'
+        '402':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingErrorBody'
+          description: 'The new instrument was attached, but the provider declined
+            the charge against it, or refused to attempt it at all (`code: "charge_declined"`,
+            `ChargeDeclinedError`). Distinct from the over-limit 402 rendered elsewhere
+            in this API (`OverLimitError`, `code: "limit_exceeded"`) -- both use 402
+            Payment Required, `code` disambiguates. The subscription stays GRACE/RESTRICTED.
+            A subscription can carry more than one outstanding invoice; if an earlier
+            one was paid before a later one hit this decline, a partial collection
+            may already have occurred -- submit a different `payment_token` to retry
+            the remainder, do not assume nothing moved.'
         '409':
           content:
             application/json:

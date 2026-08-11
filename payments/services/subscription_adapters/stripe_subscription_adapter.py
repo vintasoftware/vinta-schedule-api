@@ -10,6 +10,7 @@ import stripe
 from payments.billing_constants import BillingInterval
 from payments.constants import PaymentProviders, PaymentStatuses
 from payments.exceptions import (
+    ChargeDeclinedError,
     NoOutstandingBalanceError,
     PaymentAdapterError,
     ProviderWebhookEventIdMissingError,
@@ -331,7 +332,7 @@ class StripeSubscriptionAdapter(BaseSubscriptionAdapter):
         )
 
     def pay_outstanding_invoice(
-        self, subscription: Subscription, payment_token: str, idempotency_key: str = ""
+        self, subscription: Subscription, payment_token: str = "", idempotency_key: str = ""
     ) -> None:
         """
         Stripe's actual "collect now" primitive -- see
@@ -365,15 +366,36 @@ class StripeSubscriptionAdapter(BaseSubscriptionAdapter):
         retries" setting enabled -- if it does not, no invoice will ever reach
         ``uncollectible`` and this query is simply always empty.
 
-        `payment_token` is passed to `Invoice.pay` as an explicit
-        `payment_method=` rather than left to Stripe's default-payment-method
-        precedence (`Subscription.default_payment_method`, then
-        `Customer.invoice_settings.default_payment_method`) -- this phase's
-        original probe could not confirm that precedence order because it had
-        updated both to the new card. Passing it explicitly removes the
-        ambiguity: every invoice paid here is always charged against the
-        specific instrument `retry_payment` just attached
-        (`update_subscription_payment_token`, called immediately before this).
+        When `payment_token` is set, it is passed to `Invoice.pay` as an
+        explicit `payment_method=` rather than left to Stripe's own
+        fallback precedence for an `Invoice.pay` call with no `payment_method`:
+        the invoice's own `default_payment_method`, then its `default_source`,
+        then `Subscription.default_payment_method`, then
+        `Customer.invoice_settings.default_payment_method`. This adapter never
+        itself stamps `invoice.default_payment_method` (no code path here or
+        in `update_subscription_payment_token` writes it), so the first two
+        links in that chain are always empty in practice -- which is exactly
+        why the subscription-level default (the one `update_subscription_payment_token`
+        pins) is the one that actually wins when `payment_token` is omitted,
+        not an accident of Stripe's ordering. This phase's original probe
+        could not confirm the subscription-vs-customer half of that
+        precedence because it had updated both to the new card. Passing
+        `payment_token` explicitly here removes the ambiguity entirely: every
+        invoice paid here is always charged against the specific instrument
+        `retry_payment` just attached (`update_subscription_payment_token`,
+        called immediately before this).
+
+        When `payment_token` is **empty** (Billing API Contract Hardening,
+        Phase 5 -- the dunning ladder's own call, via
+        `SubscriptionService.retry_failed_charge`), `payment_method` is
+        omitted from `Invoice.pay` entirely rather than passed as `""` --
+        Stripe rejects an explicit empty string, and omitting the key is what
+        actually falls back to its own default-payment-method precedence.
+        This method never itself calls `PaymentMethod.attach` or
+        `Customer.modify` either way -- those only ever run inside
+        `update_subscription_payment_token`, which the ladder does not call
+        (it has no new token to attach); this method only ever *reads* an
+        instrument, it never attaches one.
 
         `idempotency_key`, when set, guards the money-moving `Invoice.pay`
         calls so a retried collection attempt resolves to the same payment
@@ -383,6 +405,55 @@ class StripeSubscriptionAdapter(BaseSubscriptionAdapter):
         a single set of request parameters, and reusing one key across two
         `Invoice.pay` calls with two different invoice ids would make the
         second call error instead of collecting.
+
+        **`stripe.CardError` and `stripe.InvalidRequestError` are both
+        translated into `ChargeDeclinedError`** -- a live Stripe test-mode
+        probe of this exact call (Billing API Contract Hardening, Phase 5
+        BLOCKER) proved a still-dead card on file (the *common* dunning-tick
+        outcome) raises `stripe.CardError` from `Invoice.pay`, uncaught. A
+        Tier 4 reviewer then proved, with a second runnable probe, that a
+        customer with **no** default payment method at all -- the payer
+        detached their card in the billing portal, also a canonical dunning
+        population -- makes `Invoice.pay` raise `stripe.InvalidRequestError`
+        instead, not `CardError`. So does calling `Invoice.pay` on an invoice
+        Stripe's own automatic retries already settled between this method's
+        `Invoice.list` and its `Invoice.pay` ("Invoice is already paid").
+        Left untranslated, any of these would have reached
+        `SubscriptionService.retry_failed_charge` as a raw provider exception,
+        which the codebase's adapter abstraction never allows past this layer
+        (`SubscriptionService` must not import `stripe` types), and would have
+        propagated out of the `process_dunning_for_subscription` Celery task
+        -- see that task's own docstring for why an uncaught raise there is a
+        permanent, per-subscription redelivery loop, not a one-off failure.
+
+        Both are folded into the **same** `ChargeDeclinedError` rather than a
+        separate exception type for the "provider refused to even attempt
+        the charge" case: every existing caller of this method
+        (`retry_failed_charge`, `retry_payment`) already treats
+        `ChargeDeclinedError` identically regardless of *why* the provider
+        would not collect -- log-and-swallow for the background ladder, a
+        typed 402 for the user-facing endpoint -- so a sibling class would
+        only add a second `isinstance` branch in three places for no
+        behavioral difference. `provider_message` on the exception still
+        carries Stripe's own text for anyone reading logs who needs to tell
+        the two apart.
+
+        The net around `Invoice.pay` is widened to `stripe.StripeError`
+        (from just `stripe.CardError`) specifically so this discrimination
+        can happen in one place: every `StripeError` is caught, and re-raised
+        unchanged unless it is a `CardError` or `InvalidRequestError`. Every
+        other subclass (`AuthenticationError` -- bad API key,
+        `APIConnectionError`, `RateLimitError`, `PermissionError`) is a
+        genuine integration or transport fault, not a declined or
+        unattemptable charge, and is deliberately left to propagate as an
+        unhandled adapter-layer error rather than being swallowed into the
+        same "expected" handling as a declined card.
+
+        **Partial collection.** A subscription can carry more than one
+        outstanding invoice (see above); if an earlier invoice in the loop
+        is paid before a later one raises, money already moved, and the
+        caller must know that rather than treat the raise as "nothing
+        collected" -- see `invoices_paid` on `ChargeDeclinedError`.
         """
         if not subscription.external_id:
             raise PaymentAdapterError(
@@ -405,11 +476,33 @@ class StripeSubscriptionAdapter(BaseSubscriptionAdapter):
             len(outstanding_invoices),
             subscription.id,
         )
+        invoices_paid = 0
         for invoice in outstanding_invoices:
-            pay_params: dict = {"payment_method": payment_token, "api_key": self.api_key}
+            pay_params: dict = {"api_key": self.api_key}
+            if payment_token:
+                pay_params["payment_method"] = payment_token
             if idempotency_key:
                 pay_params["idempotency_key"] = f"{idempotency_key}-{invoice.id}"
-            stripe.Invoice.pay(invoice.id, **pay_params)
+            try:
+                stripe.Invoice.pay(invoice.id, **pay_params)
+            except stripe.StripeError as e:
+                if isinstance(e, stripe.CardError | stripe.InvalidRequestError):
+                    # See this method's docstring for exactly why both are
+                    # caught here, and why -- unlike every other branch above,
+                    # which writes nothing and lets the caller keep going
+                    # through the remaining invoices -- this stops the loop
+                    # rather than moving on to the next invoice: the
+                    # instrument (or this invoice) just proved unusable, so
+                    # trying it again against a second invoice in the same
+                    # call would only reproduce the same failure.
+                    raise ChargeDeclinedError(
+                        subscription.id, str(e), invoices_paid=invoices_paid
+                    ) from e
+                # A genuine integration or transport fault, not a declined or
+                # unattemptable charge -- propagate unchanged, see this
+                # method's docstring.
+                raise
+            invoices_paid += 1
 
     def get_subscription_external_id_from_update(self, update_payload: dict) -> str | None:
         """

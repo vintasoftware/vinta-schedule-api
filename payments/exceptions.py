@@ -579,6 +579,70 @@ class CollectionNotSupportedError(PaymentAdapterError):
         self.subscription_id = subscription_id
 
 
+class ChargeDeclinedError(PaymentError):
+    """Raised by ``StripeSubscriptionAdapter.pay_outstanding_invoice`` when the
+    provider will not collect against the instrument on file -- either it
+    actually attempted the charge and the issuer declined it
+    (``stripe.CardError``, e.g. a dead card, insufficient funds), or it
+    refused to attempt the charge at all (``stripe.InvalidRequestError``,
+    e.g. no default payment method on the customer, or the invoice was
+    already resolved by the provider's own auto-retry between this method's
+    ``Invoice.list`` and its ``Invoice.pay``). Both are translated at the
+    adapter boundary into this one typed domain error rather than left as raw
+    provider exceptions (see that method's docstring for the full
+    translation and why only these two -- never every ``stripe.StripeError``
+    subclass -- are caught there).
+
+    Billing API Contract Hardening, Phase 5 live-probe BLOCKER: a Stripe
+    test-mode probe of the exact call ``retry_failed_charge`` makes, against a
+    card still dead (the *common* dunning-tick outcome -- a dead card is why a
+    payer is in dunning at all), raised an uncaught ``stripe.CardError`` before
+    this class existed. A Tier 4 reviewer then proved a second, related gap
+    with a runnable probe: a customer with no default payment method at all
+    (also a canonical dunning population) raises ``stripe.InvalidRequestError``
+    instead, which the original ``CardError``-only translation did not catch.
+    Either, left uncaught, would have reached the
+    ``process_dunning_for_subscription`` Celery task unhandled -- and per that
+    task's own docstring, a raising task "is redelivered and fails identically
+    forever, turning a benign race into a permanent stream of alerts".
+    ``SubscriptionService.retry_failed_charge`` catches this and treats it as
+    an expected, non-fatal tick outcome (see its docstring) -- not because the
+    provider's own webhook will perform some transition on this decline (a
+    ladder retry never reaches the webhook-driven ``enter_grace`` edge: the
+    subscription is already GRACE/RESTRICTED, and ``DunningService.enter_grace``
+    no-ops for both), but because the tick's own bookkeeping
+    (``last_dunning_attempt_at`` and the ladder's reminder email, both written
+    by ``DunningService._retry_charge_and_notify``) must not be rolled back by
+    an expected decline.
+
+    ``invoices_paid`` carries how many of a subscription's outstanding
+    invoices this call had already paid before the one that raised -- a
+    subscription can carry more than one (see
+    ``pay_outstanding_invoice``'s docstring), so a decline partway through the
+    loop is a **partial** collection, not a pure one, and callers need to know
+    that rather than treating every raise as "nothing moved".
+
+    Also the fix for a second, user-facing bug sharing the same root cause:
+    ``SubscriptionService.retry_payment`` (``POST
+    /billing/subscription/retry-payment/``) drives the same
+    ``pay_outstanding_invoice`` call, so a payer submitting a card the provider
+    declines got an unhandled 500 before this class and its
+    ``common.exception_handlers.vinta_exception_handler`` branch existed,
+    instead of a clean typed response.
+    """
+
+    code = "charge_declined"
+
+    def __init__(self, subscription_id: int, provider_message: str, invoices_paid: int = 0):
+        super().__init__(
+            f"Subscription {subscription_id}'s charge was declined by the provider: "
+            f"{provider_message}"
+        )
+        self.subscription_id = subscription_id
+        self.provider_message = provider_message
+        self.invoices_paid = invoices_paid
+
+
 class AddOnNotPurchasableError(PaymentError):
     """Raised when ``purchase_add_on`` is asked to sell capacity for a resource
     whose current ``SubscriptionPlanLimit`` carries no ``overage_unit_price`` —
