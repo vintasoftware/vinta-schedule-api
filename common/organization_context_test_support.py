@@ -78,7 +78,45 @@ def _is_organization_scoped(model: type[Model] | None) -> bool:
     return issubclass(model, SingleOrganizationModelMixin | OrganizationModel)
 
 
-def _is_scoped_enough(query: Query, model: type[Model]) -> bool:
+#: The compilers whose statements may be addressed by primary key alone --
+#: see :func:`_is_scoped_enough`.
+_PRIMARY_KEY_EXEMPT_COMPILERS = frozenset({"SQLUpdateCompiler", "SQLDeleteCompiler"})
+
+
+def _clauses_of(sql: str) -> str:
+    """``sql`` from its outermost ``FROM`` on, i.e. with the select list removed.
+
+    The select list of a scoped model always names ``organization_id``, so
+    leaving it in would make :func:`_is_scoped_enough` answer "yes" for every
+    query. *Outermost* matters in both directions, which is why this tracks
+    parenthesis depth rather than partitioning on the string:
+
+    * ``partition`` takes the **first** ``FROM``, which for a query whose select
+      list contains a subquery is the subquery's -- putting the outer select
+      list, and its ``organization_id``, back into the result.
+    * ``rpartition`` takes the **last**, which for the far commoner
+      ``WHERE x IN (SELECT ... FROM ...)`` throws away the outer ``WHERE`` and
+      reports a properly scoped query as unscoped.
+
+    Parameters are already interpolated into ``str(query)``, so a value
+    containing an unbalanced bracket could skew the depth count; the scan falls
+    back to the whole statement rather than to a truncated one, which can only
+    make this function's caller more permissive, never wrongly accusatory.
+    """
+    depth = 0
+
+    for index, character in enumerate(sql):
+        if character == "(":
+            depth += 1
+        elif character == ")":
+            depth -= 1
+        elif depth == 0 and sql.startswith(" FROM ", index):
+            return sql[index:]
+
+    return sql
+
+
+def _is_scoped_enough(query: Query, model: type[Model], compiler_name: str) -> bool:
     """Is this query narrow enough that no ambient organization would add anything?
 
     Two ways to qualify, both read off the compiled SQL rather than off
@@ -89,28 +127,37 @@ def _is_scoped_enough(query: Query, model: type[Model]) -> bool:
 
     1. **It names an organization.** ``filter_by_organization(...)`` and the
        relation joins above.
-    2. **It addresses identified rows by primary key.** ``refresh_from_db()``,
-       the ``UPDATE`` behind ``save()``, the delete collector and
-       ``assert ... .filter(pk=x).exists()`` all name rows the caller already
-       holds; a primary key identifies one row in the whole table, so there is no
-       scoping decision left for an organization to make. Reporting these would
-       flag ``instance.refresh_from_db()`` in every test that requests the
-       fixture, which is a demand for a redundant filter rather than a finding.
+    2. **It is an ``UPDATE`` or a ``DELETE`` addressed by primary key.** These
+       are the statements Django itself emits for a row the caller is already
+       holding: the ``UPDATE`` behind ``save()`` and the ``DELETE`` the collector
+       issues once it has gathered the rows. There is no scoping decision left in
+       either -- the row was fetched (and, on a read, scoped) earlier, and the
+       statement only writes back what the instance already says.
 
-    Everything before ``FROM`` is discarded first: the select list of a scoped
-    model always names ``organization_id``, which would make this answer "yes"
-    for every query.
+    A ``SELECT`` addressed by primary key is **not** exempt, deliberately.
+    ``Calendar.objects.unscoped().get(pk=<id from the URL>)`` is the exact shape
+    of an IDOR, and "a primary key identifies one row in the whole table" is not
+    a reason to allow it: the scoping decision is precisely *whose* row it is,
+    and it is the read that decides. Phase 0's queryset-method guard reported
+    this shape; exempting every primary-key-addressed statement would be a
+    coverage regression against the one defect class the tripwire exists for.
+    The cost is that an unbound ``instance.refresh_from_db()`` is reported --
+    correctly: it re-reads a row without saying which organization may see it.
     """
     try:
         sql = str(query)
-    except Exception:  # noqa: BLE001 -- a query this cannot render is not evidence of a leak
+    except (TypeError, ValueError):
+        # A query this cannot render (an unresolvable expression, a compiler
+        # that needs state ``str()`` does not set up) is not evidence of a leak.
         return True
 
-    _, _, after_from = sql.partition(" FROM ")
-    clauses = after_from or sql
+    clauses = _clauses_of(sql)
 
     if "organization_id" in clauses:
         return True
+
+    if compiler_name not in _PRIMARY_KEY_EXEMPT_COMPILERS:
+        return False
 
     primary_key = f'"{model._meta.db_table}"."{model._meta.pk.column}"'
     return f"{primary_key} = " in clauses or f"{primary_key} IN (" in clauses
@@ -142,6 +189,7 @@ def assert_all_scoped_queries_are_bound() -> Iterator[list[str]]:
         def wrapper(self: SQLCompiler, *args: Any, **kwargs: Any) -> Any:
             query = self.query
             model = query.model
+            compiler_name = type(self).__name__
             if (
                 model is not None
                 and _is_organization_scoped(model)
@@ -152,9 +200,9 @@ def assert_all_scoped_queries_are_bound() -> Iterator[list[str]]:
                 # correct here even though it would be too eager outside a
                 # test-only guard.
                 and not get_current_organization()
-                and not _is_scoped_enough(query, model)
+                and not _is_scoped_enough(query, model, compiler_name)
             ):
-                statement = _STATEMENT_BY_COMPILER.get(type(self).__name__, "query")
+                statement = _STATEMENT_BY_COMPILER.get(compiler_name, "query")
                 unbound_calls.append(f"{model.__name__} ({statement})")
             return original(self, *args, **kwargs)
 

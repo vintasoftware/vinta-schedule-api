@@ -152,7 +152,14 @@ class Calendar(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseMode
             "organizations.OrganizationMembership",
             related_name="calendars",
             through="CalendarOwnership",
-            through_fields=("calendar_fk", "membership"),
+            # ``calendar``, not ``calendar_fk``: the first hop is the
+            # organization-safe ``ForeignObject``, so Calendar -> CalendarOwnership
+            # joins on ``(calendar_fk, organization)`` rather than on the key
+            # alone. Naming the concrete field would drop the organization out of
+            # the ``ON`` clause, and the related manager this builds is not
+            # organization-scoped (see ``common.managers.OrganizationScopedManager``),
+            # so nothing else would put it back.
+            through_fields=("calendar", "membership"),
             blank=True,
         )
     )
@@ -1259,6 +1266,23 @@ class CalendarEvent(RecurringMixin):
         through_fields=("event", "membership"),
         blank=True,
     )
+    # KNOWN GAP (carried into Phase 2b of the vinta-django-orgs migration).
+    # This is the one many-to-many on a scoped model with an *auto-created*
+    # through table: ``calendar_integration_calendarevent_external_attendees``
+    # has ``calendarevent_id`` and ``externalattendee_id`` and no
+    # ``organization`` column, so the join carries no organization and the
+    # related manager it builds is not organization-scoped either (see
+    # ``common.managers.OrganizationScopedManager``). A row in that table
+    # pairing this organization's event with another organization's
+    # ``ExternalAttendee`` would be read back through ``event.external_attendees``
+    # -- and it is exposed publicly at ``calendar_integration/graphql.py``.
+    #
+    # Nothing writes the table today (``EventExternalAttendance`` is the
+    # organization-scoped through model every write path actually uses, and it is
+    # what ``external_attendances`` reads), so there is no leak to fix here yet.
+    # Replacing this field with an explicit organization-scoped through model is
+    # an API contract decision -- it is a public GraphQL field -- and is
+    # deliberately out of scope for a fix pass.
     external_attendees = models.ManyToManyField(ExternalAttendee, related_name="calendar_events")
     resources = models.ManyToManyField(
         Calendar,

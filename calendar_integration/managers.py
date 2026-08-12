@@ -1,6 +1,6 @@
 import datetime
 from collections.abc import Iterable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from django.db import transaction
 from django.utils import timezone
@@ -32,6 +32,7 @@ from common.managers import OrganizationScopedManager
 
 if TYPE_CHECKING:
     from calendar_integration.models import BookingPolicy, CalendarManagementToken
+    from organizations.models import Organization
     from organizations.models import OrganizationMembership as OrganizationMembershipType
 
 
@@ -245,10 +246,17 @@ class BlockedTimeManager(_BlockedTimeManagerBase, RecurringManagerMixin):  # typ
     no call-site change.
     """
 
-    def get_queryset(self, *args, **kwargs) -> "BlockedTimeQuerySet":
+    def get_queryset(self, *args: Any, **kwargs: Any) -> "BlockedTimeQuerySet":
         return super().get_queryset(*args, **kwargs).base_rows_only()
 
-    def filter_by_organization(self, organization, *args, **kwargs) -> "BlockedTimeQuerySet":
+    # ``type: ignore[override]`` on the two scoping methods below (and on
+    # ``AvailableTimeManager``'s pair) for the same reason as
+    # ``common.managers.OrganizationScopedManager``'s: the package types
+    # ``organization`` as an ``Organization`` and this project passes the id just
+    # as often. Only the annotation is widened.
+    def filter_by_organization(  # type: ignore[override]
+        self, organization: "Organization | int", *args: Any, **kwargs: Any
+    ) -> "BlockedTimeQuerySet":
         return (
             super()
             .filter_by_organization(  # type: ignore[misc]
@@ -257,7 +265,9 @@ class BlockedTimeManager(_BlockedTimeManagerBase, RecurringManagerMixin):  # typ
             .base_rows_only()
         )
 
-    def exclude_by_organization(self, organization, *args, **kwargs) -> "BlockedTimeQuerySet":
+    def exclude_by_organization(  # type: ignore[override]
+        self, organization: "Organization | int", *args: Any, **kwargs: Any
+    ) -> "BlockedTimeQuerySet":
         return (
             super()
             .exclude_by_organization(  # type: ignore[misc]
@@ -294,10 +304,12 @@ class AvailableTimeManager(_AvailableTimeManagerBase, RecurringManagerMixin):  #
     ``get_queryset``, and why ``unscoped()`` is left to the package.
     """
 
-    def get_queryset(self, *args, **kwargs) -> "AvailableTimeQuerySet":
+    def get_queryset(self, *args: Any, **kwargs: Any) -> "AvailableTimeQuerySet":
         return super().get_queryset(*args, **kwargs).base_rows_only()
 
-    def filter_by_organization(self, organization, *args, **kwargs) -> "AvailableTimeQuerySet":
+    def filter_by_organization(  # type: ignore[override]
+        self, organization: "Organization | int", *args: Any, **kwargs: Any
+    ) -> "AvailableTimeQuerySet":
         return (
             super()
             .filter_by_organization(  # type: ignore[misc]
@@ -306,7 +318,9 @@ class AvailableTimeManager(_AvailableTimeManagerBase, RecurringManagerMixin):  #
             .base_rows_only()
         )
 
-    def exclude_by_organization(self, organization, *args, **kwargs) -> "AvailableTimeQuerySet":
+    def exclude_by_organization(  # type: ignore[override]
+        self, organization: "Organization | int", *args: Any, **kwargs: Any
+    ) -> "AvailableTimeQuerySet":
         return (
             super()
             .exclude_by_organization(  # type: ignore[misc]

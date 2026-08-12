@@ -33,6 +33,26 @@ class OrganizationScopedManager(SingleOrganizationModelManager):
     same position for *forward* relations, which go through ``_base_manager``
     precisely so a related object is always retrievable.
 
+    **That reasoning holds for reverse foreign keys and one-to-ones; it does not
+    hold unconditionally for many-to-many.** ``create_forward_many_to_many_manager``
+    produces a related manager too, and it lands in the same ``self.instance``
+    branch, but the parent filter is on the *through* table's join columns rather
+    than on the target's. Whether the organization is in that filter depends on
+    the through model:
+
+    * ``through_fields`` naming a relation declared with
+      ``OrganizationSafeForeignKey`` (the ``<name>``, not the ``<name>_fk``)
+      joins on ``(<name>_fk, organization)``, so the paragraph above applies
+      unchanged. ``Calendar.memberships`` is spelled this way for exactly that
+      reason.
+    * ``through_fields`` naming the *concrete* ``<name>_fk``, or an
+      auto-created through table (which has no ``organization`` column at all),
+      joins on the key alone. Nothing puts the organization in the ``WHERE``
+      clause there, and this manager does not add it back.
+
+    ``CalendarEvent.external_attendees`` is the second shape and is a known gap
+    -- see the comment at its declaration in ``calendar_integration.models``.
+
     **A write that names its organization is not scoped either.**
     ``create`` / ``get_or_create`` / ``update_or_create`` / ``bulk_create`` are
     copied onto the manager from ``QuerySet``, so they route through
@@ -45,7 +65,10 @@ class OrganizationScopedManager(SingleOrganizationModelManager):
     that is already unambiguous. A write that does *not* name an organization
     still goes through the scoped queryset: either the context supplies one (and
     ``SingleOrganizationModelMixin.save()`` stamps it) or nothing does and it
-    raises, exactly as a read would.
+    raises, exactly as a read would. "Names its organization" means in the
+    arguments that reach the *lookup* -- ``get_or_create``'s ``defaults`` does
+    not count, because it never reaches the ``get()``; see the comment above
+    those two methods.
     """
 
     #: The ways a caller can name the organization on a write.
@@ -115,17 +138,29 @@ class OrganizationScopedManager(SingleOrganizationModelManager):
             return self.unscoped().create(**kwargs)
         return super().create(**kwargs)
 
+    # ``defaults`` is deliberately *not* consulted by either method below, unlike
+    # ``kwargs``. ``defaults`` is only applied to the row these methods create or
+    # update; it takes no part in the ``get()`` that runs first. Letting it
+    # unscope the call would therefore widen a lookup it does not narrow: a
+    # ``get_or_create(external_id="x", defaults={"organization": org})`` would run
+    # ``get(external_id="x")`` across every tenant, hand back whichever
+    # organization happened to own a row with that value, and -- through
+    # ``update_or_create`` -- then ``save()`` it. Naming the organization would
+    # make the call strictly *less* safe than omitting it. When only ``defaults``
+    # names one, the lookup is genuinely unscoped and goes through the scoped
+    # queryset, so an unbound caller is told so instead of reading another
+    # tenant's row.
     def get_or_create(  # type: ignore[override]
         self, defaults: dict[str, Any] | None = None, **kwargs: Any
     ) -> Any:
-        if self._names_an_organization(kwargs) or self._names_an_organization(defaults):
+        if self._names_an_organization(kwargs):
             return self.unscoped().get_or_create(defaults=defaults, **kwargs)
         return super().get_or_create(defaults=defaults, **kwargs)
 
     def update_or_create(  # type: ignore[override]
         self, defaults: dict[str, Any] | None = None, **kwargs: Any
     ) -> Any:
-        if self._names_an_organization(kwargs) or self._names_an_organization(defaults):
+        if self._names_an_organization(kwargs):
             return self.unscoped().update_or_create(defaults=defaults, **kwargs)
         return super().update_or_create(defaults=defaults, **kwargs)
 

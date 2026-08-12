@@ -11,8 +11,11 @@ Three claims, one per class:
    cross organizations.
 
 Plus the two carve-outs this project makes on top of the package (see
-``common.managers.OrganizationScopedManager``): reverse related managers are not
-scoped, and a write that names its own organization is not either.
+``common.managers.OrganizationScopedManager``): related managers are not scoped
+-- reverse foreign keys, many-to-many, and prefetches through either -- and a
+write that names its own organization is not either. "Names" means in the
+arguments that reach the *lookup*: ``get_or_create``/``update_or_create``'s
+``defaults`` does not count, and the last class here is why.
 """
 
 from __future__ import annotations
@@ -20,9 +23,10 @@ from __future__ import annotations
 import pytest
 from vinta_orgs.exceptions import OrganizationNotFoundError
 
-from calendar_integration.models import Calendar, CalendarSync
+from calendar_integration.models import Calendar, CalendarOwnership, CalendarSync
 from common.organization_context import organization_context
-from organizations.models import Organization
+from organizations.models import Organization, OrganizationMembership
+from users.models import User
 
 
 pytestmark = pytest.mark.django_db
@@ -187,3 +191,185 @@ class TestTheProjectsTwoCarveOuts:
     def test_a_write_that_names_no_organization_raises_unbound(self):
         with pytest.raises(OrganizationNotFoundError):
             Calendar.objects.create(name="orphan")
+
+    def test_bulk_create_works_unbound_because_each_object_carries_its_own(
+        self, organization_a, organization_b
+    ):
+        """``bulk_create`` never calls ``save()``, so the context's stamping is not
+        available to it -- the objects have to carry their organizations, and they
+        do. The manager therefore lets the statement through unbound rather than
+        refusing a write that is already unambiguous.
+        """
+        created = Calendar.objects.bulk_create(
+            [
+                Calendar(name="A's", organization=organization_a),
+                Calendar(name="B's", organization=organization_b),
+            ]
+        )
+
+        assert {calendar.organization_id for calendar in created} == {
+            organization_a.id,
+            organization_b.id,
+        }
+        assert set(Calendar.objects.filter_by_organization(organization_a.id)) == {created[0]}
+
+    def test_bulk_update_works_unbound_and_writes_each_rows_own_organization(
+        self, organization_a, organization_b, calendar_a, calendar_b
+    ):
+        """Same reasoning as ``bulk_create``: the statement is addressed to primary
+        keys the caller already holds. Both organizations' rows are updated in one
+        call, which no ambient scope could express.
+        """
+        calendar_a.name = "renamed A"
+        calendar_b.name = "renamed B"
+
+        Calendar.objects.bulk_update([calendar_a, calendar_b], ["name"])
+
+        calendar_a.refresh_from_db()
+        calendar_b.refresh_from_db()
+        assert (calendar_a.name, calendar_a.organization_id) == ("renamed A", organization_a.id)
+        assert (calendar_b.name, calendar_b.organization_id) == ("renamed B", organization_b.id)
+
+    def test_a_many_to_many_traversal_reads_unbound_and_stays_in_its_organization(
+        self, organization_a, organization_b, calendar_a, calendar_b
+    ):
+        """``Calendar.memberships`` goes through ``CalendarOwnership`` on
+        ``through_fields=("calendar", "membership")`` -- the organization-safe
+        relation -- so the first hop of the join carries ``organization`` and the
+        related manager needs no ambient one. Pinned because a many-to-many
+        related manager lands in the same unscoped carve-out as a reverse foreign
+        key while resting on a *different* argument (see
+        ``common.managers.OrganizationScopedManager``).
+        """
+        user_a = User.objects.create_user(email="a@example.com")
+        user_b = User.objects.create_user(email="b@example.com")
+        membership_a = OrganizationMembership.objects.create(
+            user=user_a, organization=organization_a
+        )
+        membership_b = OrganizationMembership.objects.create(
+            user=user_b, organization=organization_b
+        )
+        CalendarOwnership.objects.create(
+            organization=organization_a, calendar=calendar_a, membership_user_id=user_a.id
+        )
+        CalendarOwnership.objects.create(
+            organization=organization_b, calendar=calendar_b, membership_user_id=user_b.id
+        )
+
+        assert list(calendar_a.memberships.all()) == [membership_a]
+        assert list(calendar_b.memberships.all()) == [membership_b]
+
+    def test_a_prefetch_through_a_related_manager_reads_unbound(
+        self, organization_a, organization_b, calendar_a, calendar_b
+    ):
+        """``prefetch_related`` runs the related manager's queryset as a second,
+        separate query rather than as a join, so it hits ``get_queryset`` on its
+        own -- exactly the path the ``self.instance`` carve-out has to cover for
+        the reverse accessor to work outside a bound context.
+        """
+        sync_a = CalendarSync.objects.create(
+            calendar=calendar_a,
+            organization=organization_a,
+            start_datetime="2025-06-22T00:00:00Z",
+            end_datetime="2025-06-22T23:59:00Z",
+            should_update_events=True,
+        )
+        CalendarSync.objects.create(
+            calendar=calendar_b,
+            organization=organization_b,
+            start_datetime="2025-06-22T00:00:00Z",
+            end_datetime="2025-06-22T23:59:00Z",
+            should_update_events=True,
+        )
+
+        prefetched = Calendar.objects.filter_by_organization(organization_a.id).prefetch_related(
+            "syncs"
+        )
+
+        assert [list(calendar.syncs.all()) for calendar in prefetched] == [[sync_a]]
+
+
+class TestGetOrCreateDoesNotWidenItsLookup:
+    """``defaults`` names the organization; ``kwargs`` does not.
+
+    ``defaults`` is only applied to the row that gets created or updated -- it
+    takes no part in the ``get()`` that runs first. So it cannot make the lookup
+    safe, and the manager must not treat it as if it did: an unscoped
+    ``get(external_id=...)`` reaches every tenant's rows, and
+    ``update_or_create`` would then ``save()`` whichever one it found.
+    """
+
+    def test_get_or_create_does_not_return_another_organizations_row(
+        self, organization_a, organization_b
+    ):
+        Calendar.objects.create(
+            name="B's shared-id calendar", external_id="shared", organization=organization_b
+        )
+
+        with organization_context(organization_a):
+            calendar, created = Calendar.objects.get_or_create(
+                external_id="shared",
+                defaults={"organization": organization_a, "name": "A's shared-id calendar"},
+            )
+
+        assert created is True
+        assert calendar.organization_id == organization_a.id
+        assert Calendar.objects.filter_by_organization(organization_b.id).count() == 1
+
+    def test_get_or_create_refuses_rather_than_reaching_across_tenants_unbound(
+        self, organization_a, organization_b
+    ):
+        """With nothing bound the lookup is genuinely unscoped, so it raises. The
+        alternative -- honouring ``defaults`` -- is what handed back another
+        organization's row.
+        """
+        Calendar.objects.create(
+            name="B's shared-id calendar", external_id="shared", organization=organization_b
+        )
+
+        with pytest.raises(OrganizationNotFoundError):
+            Calendar.objects.get_or_create(
+                external_id="shared",
+                defaults={"organization": organization_a, "name": "A's shared-id calendar"},
+            )
+
+    def test_update_or_create_does_not_write_another_organizations_row(
+        self, organization_a, organization_b
+    ):
+        other = Calendar.objects.create(
+            name="B's shared-id calendar", external_id="shared", organization=organization_b
+        )
+
+        with organization_context(organization_a):
+            calendar, created = Calendar.objects.update_or_create(
+                external_id="shared",
+                defaults={"organization": organization_a, "name": "A's shared-id calendar"},
+            )
+
+        assert created is True
+        assert calendar.organization_id == organization_a.id
+
+        other.refresh_from_db()
+        assert other.name == "B's shared-id calendar"
+        assert other.organization_id == organization_b.id
+
+    def test_naming_the_organization_in_the_lookup_still_skips_the_scope(
+        self, organization_a, organization_b
+    ):
+        """The carve-out itself is unchanged: an organization in ``kwargs`` *does*
+        narrow the ``get()``, so the call still works unbound. Every
+        ``get_or_create`` / ``update_or_create`` in this codebase is spelled this
+        way.
+        """
+        Calendar.objects.create(
+            name="B's shared-id calendar", external_id="shared", organization=organization_b
+        )
+
+        calendar, created = Calendar.objects.get_or_create(
+            external_id="shared",
+            organization=organization_a,
+            defaults={"name": "A's shared-id calendar"},
+        )
+
+        assert created is True
+        assert calendar.organization_id == organization_a.id

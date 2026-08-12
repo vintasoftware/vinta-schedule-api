@@ -223,3 +223,40 @@ class TestCalendarGroupBookableInRanges(TestCase):
         )
         bookable = self._bookable([self.range1])
         assert empty_pool_group not in bookable
+
+    def test_another_organizations_slot_pointing_at_this_group_is_ignored(self):
+        """The ``unsatisfied_slot`` subquery is correlated on the organization as
+        well as on the group key.
+
+        Correlating on the key alone let a slot row owned by *another*
+        organization count towards this group's ``~Exists(unsatisfied_slot)``
+        filter: the row below has no pool at all, so it can never be satisfied,
+        and it would silently remove this organization's group from every
+        availability result -- a cross-tenant read with no error and no trace.
+
+        The row is written by setting the concrete ``group_fk_id`` directly,
+        which is the only way to produce it: assigning ``group=`` copies the
+        target's organization onto the slot, which is what the safe relation is
+        for. The control below (the same slot inside this organization) proves
+        the fixture really is unsatisfiable, so this cannot pass by accident.
+        """
+        other_org = Organization.objects.create(name="Other Org", should_sync_rooms=False)
+        CalendarGroupSlot.objects.create(
+            organization=other_org,
+            group_fk_id=self.group.id,
+            name="Other org's unsatisfiable slot",
+            order=99,
+        )
+
+        assert self._bookable([self.range1]) == [self.group]
+
+        # Control: the identical slot inside *this* organization does exclude the
+        # group, so the assertion above is about the organization and nothing else.
+        CalendarGroupSlot.objects.create(
+            organization=self.organization,
+            group_fk_id=self.group.id,
+            name="Our own unsatisfiable slot",
+            order=100,
+        )
+
+        assert self._bookable([self.range1]) == []

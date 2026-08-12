@@ -22,6 +22,7 @@ from calendar_integration.constants import CalendarProvider
 from calendar_integration.models import Calendar, CalendarWebhookEvent
 from common.organization_context import organization_context
 from common.organization_context_test_support import (
+    _clauses_of,
     assert_all_scoped_queries_are_bound,
     raise_if_unbound_scoped_queries_occurred,
 )
@@ -146,16 +147,54 @@ def test_records_a_violation_when_delete_runs_unbound(organization, calendar_web
     assert violations == ["CalendarWebhookEvent (DELETE)"]
 
 
-def test_records_nothing_for_a_read_addressed_by_primary_key(organization, calendar):
-    """``refresh_from_db()`` (and every ``filter(pk=...)`` assertion) names one
-    identified row, so an ambient organization would add nothing -- reporting it
-    would only demand a redundant filter.
+def test_records_a_violation_for_a_read_addressed_by_primary_key(organization, calendar):
+    """A primary key does **not** excuse a ``SELECT``.
+
+    ``Calendar.objects.unscoped().get(pk=<id from the URL>)`` is the shape of an
+    IDOR, and "a primary key identifies one row in the whole table" is not a
+    defence: the scoping decision is precisely *whose* row it is, and the read is
+    what makes it. Phase 0's queryset-method guard reported this shape, so
+    exempting it would have been a coverage regression against the one defect
+    class the tripwire exists for.
+
+    ``refresh_from_db()`` is reported for the same reason and by design -- it
+    re-reads a row without saying which organization may see it.
     """
     with assert_all_scoped_queries_are_bound() as violations:
-        calendar.refresh_from_db()
         Calendar.original_manager.filter(pk=calendar.pk).exists()
 
+    assert violations == ["Calendar (SELECT)"]
+
+    with assert_all_scoped_queries_are_bound() as refresh_violations:
+        calendar.refresh_from_db()
+
+    assert refresh_violations == ["Calendar (SELECT)"]
+
+
+def test_records_nothing_for_the_update_and_delete_behind_an_instance(
+    organization, calendar, calendar_webhook_event
+):
+    """The two statements Django itself emits for a row the caller already holds:
+    the ``UPDATE`` behind ``save()`` and the ``DELETE`` the collector issues once
+    it has gathered the rows. Neither has a scoping decision left in it -- the row
+    was fetched earlier, and the statement only writes back what the instance
+    already says. Reporting these would flag ``instance.save()`` in every test
+    that requests the fixture.
+    """
+    with assert_all_scoped_queries_are_bound() as violations:
+        calendar.name = "Renamed"
+        calendar.save(update_fields=["name"])
+
     assert violations == []
+
+    with assert_all_scoped_queries_are_bound() as delete_violations:
+        # ``CalendarWebhookEvent`` rather than ``Calendar``: it cascades to
+        # nothing, so Django takes the fast path and the whole delete is the one
+        # statement under test. A cascading delete *reads* its children first,
+        # and those reads are reported -- correctly, they are unscoped ``SELECT``s.
+        CalendarWebhookEvent.original_manager.filter(pk=calendar_webhook_event.pk).delete()
+
+    assert delete_violations == []
 
 
 def test_records_a_violation_when_aggregate_runs_unbound(organization, calendar):
@@ -210,6 +249,44 @@ def test_restores_the_original_method_even_when_the_block_raises(organization):
             raise ValueError("boom")
 
     assert SQLCompiler.execute_sql is original
+
+
+class TestTheSelectListIsDiscardedAtTheOutermostFrom:
+    """``_clauses_of`` is what stops the select list answering the question.
+
+    Every scoped model names ``organization_id`` in its select list, so the
+    search has to start at the query's *own* ``FROM``. Both naive splits get one
+    of these two shapes wrong, which is why it counts brackets: ``partition``
+    stops at a subquery in the select list and hands the outer select list back;
+    ``rpartition`` stops at a subquery in the ``WHERE`` and throws the outer
+    ``WHERE`` away.
+
+    Unit-tested on strings rather than through the ORM because which of these
+    two shapes a given queryset compiles to is Django's choice about select-list
+    ordering, not a property of this project.
+    """
+
+    def test_a_subquery_in_the_select_list_does_not_drag_the_select_list_back_in(self):
+        sql = (
+            'SELECT "t"."id", (SELECT U0."x" FROM "u" U0) AS "a", "t"."organization_id" '
+            'FROM "t" WHERE "t"."name" = \'x\''
+        )
+
+        assert _clauses_of(sql) == ' FROM "t" WHERE "t"."name" = \'x\''
+        assert "organization_id" not in _clauses_of(sql)
+
+    def test_a_subquery_in_the_where_clause_does_not_take_the_where_clause_with_it(self):
+        sql = (
+            'SELECT "t"."id" FROM "t" '
+            'WHERE ("t"."organization_id" = 1 AND "t"."x" IN (SELECT U0."id" FROM "u" U0))'
+        )
+
+        assert "organization_id" in _clauses_of(sql)
+
+    def test_a_statement_with_no_from_is_returned_whole(self):
+        sql = 'UPDATE "t" SET "name" = \'x\' WHERE "t"."organization_id" = 1'
+
+        assert _clauses_of(sql) == sql
 
 
 def test_ignores_models_that_are_not_organization_scoped(organization):

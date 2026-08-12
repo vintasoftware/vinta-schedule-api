@@ -344,26 +344,6 @@ class CalendarQuerySet(OrganizationScopedQuerySet):
             )
         )
 
-    def update(self, **kwargs):
-        # find model fields that are CalendarOrganizationForeignKey
-        foreign_key_fields_in_kwargs = [
-            field.name
-            for field in self._meta.get_fields()
-            if (
-                self.model.is_field_organization_foreign_key(field)
-                and (field.name in kwargs.keys() or f"{field.name}_id" in kwargs.keys())
-            )
-        ]
-
-        for field_name in foreign_key_fields_in_kwargs:
-            if field_name in kwargs.keys() and not kwargs.get(f"{field_name}_fk", None):
-                kwargs[f"{field_name}_fk"] = kwargs.pop(field_name)
-                continue
-            if f"{field_name}_id" in kwargs.keys() and not kwargs.get(f"{field_name}_fk_id", None):
-                kwargs[f"{field_name}_fk_id"] = kwargs.pop(f"{field_name}_id")
-                continue
-        return super().update(**kwargs)
-
     def only_calendars_available_in_ranges(
         self, ranges: Iterable[tuple[datetime.datetime, datetime.datetime]]
     ):
@@ -913,7 +893,13 @@ class CalendarGroupQuerySet(OrganizationScopedQuerySet):
             )([(start_datetime, end_datetime)]).values("id")
             unsatisfied_slot = (
                 CalendarGroupSlot.objects.unscoped()
-                .filter(group_fk_id=OuterRef("id"))
+                # Correlated on the organization as well as on the group key --
+                # the same two columns the ``group`` safe relation puts in its
+                # ``ON`` clause. Without it a slot row belonging to another
+                # organization but pointing at this group counts towards
+                # ``~Exists(...)`` and silently hides this organization's group
+                # from availability results.
+                .filter(group_fk_id=OuterRef("id"), organization_id=OuterRef("organization_id"))
                 .annotate(
                     available_in_slot=Count(
                         "memberships",

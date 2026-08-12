@@ -146,8 +146,15 @@ class TestSyncCalendarTaskOrganizationBindingIsLoadBearing:
 
         # The binding happened, and the task did its work through it.
         assert bound_result["observed_bound_organization_id"] == bound_org.id
-        assert bound_result == {
-            **bound_result,
+        assert {
+            key: bound_result[key]
+            for key in (
+                "task_return_value",
+                "final_status",
+                "authenticate_call_count",
+                "sync_events_call_count",
+            )
+        } == {
             "task_return_value": None,
             "final_status": CalendarSyncStatus.SUCCESS,
             "authenticate_call_count": 1,
