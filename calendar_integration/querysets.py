@@ -21,8 +21,6 @@ from django.db.models import (
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 
-from vinta_orgs.querysets import SingleOrganizationQuerySet
-
 from calendar_integration.constants import (
     CalendarSyncStatus,
     CalendarType,
@@ -37,6 +35,7 @@ from calendar_integration.database_functions import (
     GetEventOccurrencesJSON,
     GetEventOccurrencesWithBulkModificationsJSON,
 )
+from common.querysets import OrganizationScopedQuerySet
 
 
 if TYPE_CHECKING:
@@ -45,7 +44,7 @@ if TYPE_CHECKING:
     from organizations.models import OrganizationMembership as OrganizationMembershipType
 
 
-class CalendarManagementTokenQuerySet(SingleOrganizationQuerySet):
+class CalendarManagementTokenQuerySet(OrganizationScopedQuerySet):
     """QuerySet for CalendarManagementToken with lifecycle-aware filtering."""
 
     def active(self) -> "CalendarManagementTokenQuerySet":
@@ -65,7 +64,7 @@ class CalendarManagementTokenQuerySet(SingleOrganizationQuerySet):
 
 if TYPE_CHECKING:
     # Type-checking-only base so mypy resolves `self.filter(...)` below — at
-    # runtime this mixin is only ever combined with `SingleOrganizationQuerySet`
+    # runtime this mixin is only ever combined with `OrganizationScopedQuerySet`
     # subclasses (which already provide `filter`), never instantiated alone.
     _GroupSlotScopedQuerySetBase = models.QuerySet
 else:
@@ -107,7 +106,7 @@ class GroupSlotScopedQuerySetMixin(_GroupSlotScopedQuerySetBase):
 class RecurringQuerySetMixin:
     """
     Mixin for querysets that provides recurring functionality.
-    Should be used with querysets that inherit from SingleOrganizationQuerySet.
+    Should be used with querysets that inherit from OrganizationScopedQuerySet.
     """
 
     def annotate_recurring_occurrences_on_date_range(
@@ -207,7 +206,7 @@ class RecurringQuerySetMixin:
         return self.none()  # type: ignore
 
 
-class CalendarQuerySet(SingleOrganizationQuerySet):
+class CalendarQuerySet(OrganizationScopedQuerySet):
     """
     Custom QuerySet for Calendar model to handle specific queries.
     """
@@ -631,7 +630,7 @@ def _policy_field_subqueries(winning_policy_id_ref: OuterRef, org_id_ref: OuterR
     }
 
 
-class CalendarEventQuerySet(SingleOrganizationQuerySet, RecurringQuerySetMixin):
+class CalendarEventQuerySet(OrganizationScopedQuerySet, RecurringQuerySetMixin):
     """
     Custom QuerySet for CalendarEvent model to handle specific queries.
     """
@@ -758,7 +757,7 @@ class CalendarEventQuerySet(SingleOrganizationQuerySet, RecurringQuerySetMixin):
         )
 
 
-class CalendarSyncQuerySet(SingleOrganizationQuerySet):
+class CalendarSyncQuerySet(OrganizationScopedQuerySet):
     """
     Custom QuerySet for CalendarSync model to handle specific queries.
     """
@@ -773,7 +772,7 @@ class CalendarSyncQuerySet(SingleOrganizationQuerySet):
 
 
 class BlockedTimeQuerySet(
-    SingleOrganizationQuerySet, RecurringQuerySetMixin, GroupSlotScopedQuerySetMixin
+    OrganizationScopedQuerySet, RecurringQuerySetMixin, GroupSlotScopedQuerySetMixin
 ):
     """
     Custom QuerySet for BlockedTime model to handle specific queries.
@@ -848,7 +847,7 @@ class BlockedTimeQuerySet(
         )
 
 
-class CalendarGroupQuerySet(SingleOrganizationQuerySet):
+class CalendarGroupQuerySet(OrganizationScopedQuerySet):
     """
     Custom QuerySet for CalendarGroup model to handle specific queries.
     """
@@ -1055,25 +1054,25 @@ class CalendarGroupQuerySet(SingleOrganizationQuerySet):
         )
 
 
-class CalendarGroupSlotQuerySet(SingleOrganizationQuerySet):
+class CalendarGroupSlotQuerySet(OrganizationScopedQuerySet):
     """
     Custom QuerySet for CalendarGroupSlot model to handle specific queries.
     """
 
 
-class CalendarGroupSlotMembershipQuerySet(SingleOrganizationQuerySet):
+class CalendarGroupSlotMembershipQuerySet(OrganizationScopedQuerySet):
     """
     Custom QuerySet for CalendarGroupSlotMembership model to handle specific queries.
     """
 
 
-class CalendarEventGroupSelectionQuerySet(SingleOrganizationQuerySet):
+class CalendarEventGroupSelectionQuerySet(OrganizationScopedQuerySet):
     """
     Custom QuerySet for CalendarEventGroupSelection model to handle specific queries.
     """
 
 
-class CalendarGroupSlotQuotaRuleQuerySet(SingleOrganizationQuerySet):
+class CalendarGroupSlotQuotaRuleQuerySet(OrganizationScopedQuerySet):
     """Custom QuerySet for CalendarGroupSlotQuotaRule model to handle specific queries."""
 
     def for_group_slot(self, group_slot_id: int) -> "CalendarGroupSlotQuotaRuleQuerySet":
@@ -1086,7 +1085,7 @@ class CalendarGroupSlotQuotaRuleQuerySet(SingleOrganizationQuerySet):
 
 
 class AvailableTimeQuerySet(
-    SingleOrganizationQuerySet, RecurringQuerySetMixin, GroupSlotScopedQuerySetMixin
+    OrganizationScopedQuerySet, RecurringQuerySetMixin, GroupSlotScopedQuerySetMixin
 ):
     """
     Custom QuerySet for AvailableTime model to handle specific queries.
@@ -1175,7 +1174,7 @@ class AvailableTimeQuerySet(
         )
 
 
-class ExternalEventChangeRequestQuerySet(SingleOrganizationQuerySet):
+class ExternalEventChangeRequestQuerySet(OrganizationScopedQuerySet):
     """QuerySet for ExternalEventChangeRequest."""
 
     def pending(self) -> "ExternalEventChangeRequestQuerySet":
@@ -1236,7 +1235,7 @@ class ExternalEventChangeRequestQuerySet(SingleOrganizationQuerySet):
         return self.filter(event_fk_id__in=attendee_event_ids)
 
 
-class BookingPolicyQuerySet(SingleOrganizationQuerySet):
+class BookingPolicyQuerySet(OrganizationScopedQuerySet):
     """QuerySet for :class:`~calendar_integration.models.BookingPolicy`.
 
     A ``BookingPolicy`` is attached to exactly one target: a calendar, an owning

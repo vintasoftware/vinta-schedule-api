@@ -30,19 +30,62 @@ Two consequences worth knowing before you bind an organization:
 
 Kept as a module rather than asking call sites to import ``vinta_orgs.state``
 directly: it is the one import path Phase 0 threaded through every Celery task
-and management command, and it documents *this project's* contract with the
-package in one place.
+and management command, it documents *this project's* contract with the package
+in one place, and it is where the package's signatures are restated in terms of
+*our* ``Organization`` (see below).
 """
 
-from vinta_orgs.state import (
-    OrganizationOrSlug,
-    OrganizationToken,
-    clear_current_organization,
-    get_current_organization,
-    organization_context,
-    reset_current_organization,
-    set_current_organization,
-)
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+
+if TYPE_CHECKING:
+    from contextvars import Token
+    from types import TracebackType
+    from typing import Literal, Self
+
+    from django.utils.functional import LazyObject
+
+    from organizations.models import Organization
+
+    # The package annotates all of these against its own concrete
+    # ``vinta_orgs.models.Organization``, which ``ORGANIZATION_MODEL`` swaps out --
+    # so at runtime every one of them receives an ``organizations.Organization``
+    # and the type checker rejects it. Restating the surface here (type-check time
+    # only; the runtime objects above are untouched) is what makes the swap
+    # invisible to callers, which was the whole point of routing them through this
+    # module.
+    type OrganizationOrSlug = Organization | LazyObject | str
+    type OrganizationToken = Token[Organization | None]
+
+    def get_current_organization() -> Organization | None: ...
+    def set_current_organization(organization: OrganizationOrSlug | None) -> OrganizationToken: ...
+    def clear_current_organization() -> OrganizationToken: ...
+    def reset_current_organization(token: OrganizationToken) -> None: ...
+
+    class organization_context:  # noqa: N801 -- matches the package's public name
+        def __init__(self, organization: OrganizationOrSlug | None) -> None: ...
+        def __call__(self, func): ...
+        def __enter__(self) -> Organization | None: ...
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc_value: BaseException | None,
+            traceback: TracebackType | None,
+        ) -> Literal[False]: ...
+        def _recreate_cm(self) -> Self: ...
+
+else:
+    from vinta_orgs.state import (
+        OrganizationOrSlug,
+        OrganizationToken,
+        clear_current_organization,
+        get_current_organization,
+        organization_context,
+        reset_current_organization,
+        set_current_organization,
+    )
 
 
 __all__ = [

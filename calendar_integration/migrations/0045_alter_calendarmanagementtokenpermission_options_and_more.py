@@ -42,6 +42,11 @@ tenants (see the plan's "Pre-launch posture" Guiding Decision). A live deploymen
 would want the index work split out and run ``CONCURRENTLY`` outside a transaction.
 """
 
+# ``to_fields=(None, 'organization')`` is what ``ForeignObject.deconstruct()``
+# emits, and ``None`` means "the target's primary key" -- which Django accepts and
+# django-stubs' ``Sequence[str]`` annotation does not.
+# mypy: disable-error-code="arg-type"
+
 import django.db.models.deletion
 import django.db.models.manager
 import vinta_orgs.fields

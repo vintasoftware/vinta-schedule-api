@@ -7,7 +7,6 @@ from django.db import models
 from django.utils import timezone
 
 from encrypted_fields.fields import EncryptedCharField, EncryptedTextField  # type:ignore
-from vinta_orgs.fields import OrganizationSafeForeignKey, OrganizationSafeOneToOneField
 from vinta_orgs.mixins import SingleOrganizationModelMixin
 
 from calendar_integration.constants import (
@@ -41,7 +40,11 @@ from calendar_integration.managers import (
     CalendarSyncManager,
     ExternalEventChangeRequestManager,
 )
-from common.fields import OrganizationMembershipForeignKey
+from common.fields import (
+    OrganizationMembershipForeignKey,
+    OrganizationSafeForeignKey,
+    OrganizationSafeOneToOneField,
+)
 from common.managers import OrganizationScopedManager
 from common.models import BaseModel, SafeRelationNullInitMixin
 from organizations.models import Organization, OrganizationMembership
@@ -162,7 +165,7 @@ class Calendar(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseMode
         )
     )
 
-    objects: CalendarManager = CalendarManager()
+    objects: ClassVar[CalendarManager] = CalendarManager()
 
     events: "RelatedManager[CalendarEvent]"
     blocked_times: "RelatedManager[BlockedTime]"
@@ -210,7 +213,7 @@ class Calendar(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseMode
 class ChildrenCalendarRelationship(
     SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel
 ):
-    objects = OrganizationScopedManager()
+    objects: ClassVar[OrganizationScopedManager] = OrganizationScopedManager()
     bundle_calendar = OrganizationSafeForeignKey(
         Calendar,
         on_delete=models.CASCADE,
@@ -245,7 +248,7 @@ class CalendarOwnership(SingleOrganizationModelMixin, SafeRelationNullInitMixin,
     constraint.
     """
 
-    objects = OrganizationScopedManager()
+    objects: ClassVar[OrganizationScopedManager] = OrganizationScopedManager()
 
     calendar = OrganizationSafeForeignKey(  # type:ignore
         Calendar,
@@ -307,7 +310,7 @@ class CalendarGroup(SingleOrganizationModelMixin, SafeRelationNullInitMixin, Bas
         ),
     )
 
-    objects: CalendarGroupManager = CalendarGroupManager()
+    objects: ClassVar[CalendarGroupManager] = CalendarGroupManager()
 
     slots: "RelatedManager[CalendarGroupSlot]"
     events: "RelatedManager[CalendarEvent]"
@@ -356,7 +359,7 @@ class CalendarGroupSlot(SingleOrganizationModelMixin, SafeRelationNullInitMixin,
         )
     )
 
-    objects: CalendarGroupSlotManager = CalendarGroupSlotManager()
+    objects: ClassVar[CalendarGroupSlotManager] = CalendarGroupSlotManager()
 
     memberships: "RelatedManager[CalendarGroupSlotMembership]"
 
@@ -391,7 +394,7 @@ class CalendarGroupSlotMembership(
         related_name="group_slot_memberships",
     )
 
-    objects: CalendarGroupSlotMembershipManager = CalendarGroupSlotMembershipManager()
+    objects: ClassVar[CalendarGroupSlotMembershipManager] = CalendarGroupSlotMembershipManager()
 
     class Meta:
         constraints = (
@@ -455,7 +458,7 @@ class CalendarGroupSlotQuotaRule(
         ),
     )
 
-    objects: CalendarGroupSlotQuotaRuleManager = CalendarGroupSlotQuotaRuleManager()
+    objects: ClassVar[CalendarGroupSlotQuotaRuleManager] = CalendarGroupSlotQuotaRuleManager()
 
     class Meta:
         constraints = (
@@ -486,7 +489,7 @@ class ExternalAttendee(SingleOrganizationModelMixin, SafeRelationNullInitMixin, 
     Represents an external user who can attend events in a calendar.
     """
 
-    objects = OrganizationScopedManager()
+    objects: ClassVar[OrganizationScopedManager] = OrganizationScopedManager()
 
     name = models.CharField(max_length=255, blank=True)
     email = models.EmailField()
@@ -500,7 +503,7 @@ class EventExternalAttendance(SingleOrganizationModelMixin, SafeRelationNullInit
     Represents the attendance of an external user at a event.
     """
 
-    objects = OrganizationScopedManager()
+    objects: ClassVar[OrganizationScopedManager] = OrganizationScopedManager()
 
     event = OrganizationSafeForeignKey(
         "CalendarEvent",
@@ -541,7 +544,7 @@ class EventAttendance(SingleOrganizationModelMixin, SafeRelationNullInitMixin, B
     DEFERRED), not by the ForeignObject (which is set to ``DO_NOTHING``).
     """
 
-    objects = OrganizationScopedManager()
+    objects: ClassVar[OrganizationScopedManager] = OrganizationScopedManager()
 
     event = OrganizationSafeForeignKey(
         "CalendarEvent",
@@ -578,7 +581,7 @@ class ResourceAllocation(SingleOrganizationModelMixin, SafeRelationNullInitMixin
     Represents the allocation of a resource to a calendar event.
     """
 
-    objects = OrganizationScopedManager()
+    objects: ClassVar[OrganizationScopedManager] = OrganizationScopedManager()
 
     event = OrganizationSafeForeignKey(
         "CalendarEvent",
@@ -608,7 +611,7 @@ class RecurrenceRule(SingleOrganizationModelMixin, SafeRelationNullInitMixin, Ba
     Represents a recurrence rule for recurring events following RFC 5545 (RRULE).
     """
 
-    objects = OrganizationScopedManager()
+    objects: ClassVar[OrganizationScopedManager] = OrganizationScopedManager()
 
     frequency = models.CharField(
         max_length=10,
@@ -824,7 +827,7 @@ class RecurringMixin(SingleOrganizationModelMixin, SafeRelationNullInitMixin, Ba
     Models that inherit from this mixin have timezone-aware 'start_time' and 'end_time' fields.
     """
 
-    objects = OrganizationScopedManager()
+    objects: ClassVar[OrganizationScopedManager] = OrganizationScopedManager()
 
     # Raw datetime fields stored as UTC timestamps but treated as timezone-unaware
     start_time_tz_unaware = models.DateTimeField()
@@ -1271,7 +1274,7 @@ class CalendarEvent(RecurringMixin):
     recurring_instances: "RelatedManager[CalendarEvent]"
     group_selections: "RelatedManager[CalendarEventGroupSelection]"
 
-    objects: CalendarEventManager = CalendarEventManager()
+    objects: ClassVar[CalendarEventManager] = CalendarEventManager()
 
     def __str__(self):
         return f"{self.title} ({self.start_time} - {self.end_time})"
@@ -1350,7 +1353,7 @@ class CalendarEventGroupSelection(
         related_name="group_selections",
     )
 
-    objects: CalendarEventGroupSelectionManager = CalendarEventGroupSelectionManager()
+    objects: ClassVar[CalendarEventGroupSelectionManager] = CalendarEventGroupSelectionManager()
 
     class Meta:
         constraints = (
@@ -1369,7 +1372,7 @@ class RecurrenceExceptionMixin(SingleOrganizationModelMixin, SafeRelationNullIni
     Represents an exception to a recurring event (cancelled or modified occurrence).
     """
 
-    objects = OrganizationScopedManager()
+    objects: ClassVar[OrganizationScopedManager] = OrganizationScopedManager()
 
     exception_date = models.DateTimeField(
         help_text="The original start time of the occurrence being excepted"
@@ -1456,7 +1459,7 @@ class BlockedTime(RecurringMixin):
         help_text="For bundle representations, points to the primary event that this blocked time represents",
     )
 
-    objects: "BlockedTimeManager" = BlockedTimeManager()
+    objects: ClassVar[BlockedTimeManager] = BlockedTimeManager()
 
     # Bulk modification chain parent: if this blocked time is a continuation created
     # by a bulk modification split, this points to the original recurring blocked time.
@@ -1558,7 +1561,7 @@ class AvailableTime(RecurringMixin):
         related_name="available_times",
     )
 
-    objects: "AvailableTimeManager" = AvailableTimeManager()
+    objects: ClassVar[AvailableTimeManager] = AvailableTimeManager()
 
     # Bulk modification chain parent: if this available time is a continuation created
     # by a bulk modification split, this points to the original recurring available time.
@@ -1724,7 +1727,7 @@ class RecurrenceBulkModificationMixin(
     Base mixin for tracking bulk modifications to recurring series.
     """
 
-    objects = OrganizationScopedManager()
+    objects: ClassVar[OrganizationScopedManager] = OrganizationScopedManager()
 
     modification_start_date = models.DateTimeField(
         help_text="The date from which the modification applies"
@@ -1824,7 +1827,7 @@ class CalendarSync(SingleOrganizationModelMixin, SafeRelationNullInitMixin, Base
     )
     error_message = models.TextField(blank=True)
 
-    objects: CalendarSyncManager = CalendarSyncManager()
+    objects: ClassVar[CalendarSyncManager] = CalendarSyncManager()
 
     def __str__(self):
         return f"Sync for {self.calendar} at {self.created}"
@@ -1838,7 +1841,7 @@ class CalendarOrganizationResourcesImport(
     This is used to import resources from external calendar providers.
     """
 
-    objects = OrganizationScopedManager()
+    objects: ClassVar[OrganizationScopedManager] = OrganizationScopedManager()
 
     start_time = models.DateTimeField()
     end_time = models.DateTimeField()
@@ -1860,7 +1863,7 @@ class GoogleCalendarServiceAccount(
     Represents a Google Calendar service account.
     """
 
-    objects = OrganizationScopedManager()
+    objects: ClassVar[OrganizationScopedManager] = OrganizationScopedManager()
 
     calendar = OrganizationSafeForeignKey(  # type:ignore
         Calendar,
@@ -1958,7 +1961,7 @@ class CalendarManagementToken(SingleOrganizationModelMixin, SafeRelationNullInit
         related_name="calendar_event_management_tokens",
     )
 
-    objects: "CalendarManagementTokenManager" = CalendarManagementTokenManager()
+    objects: ClassVar[CalendarManagementTokenManager] = CalendarManagementTokenManager()
 
     permissions: "RelatedManager[CalendarManagementTokenPermission]"
 
@@ -1987,7 +1990,7 @@ class CalendarManagementTokenPermission(
     Represents a permission associated with a CalendarEventUpdateToken.
     """
 
-    objects = OrganizationScopedManager()
+    objects: ClassVar[OrganizationScopedManager] = OrganizationScopedManager()
 
     token = OrganizationSafeForeignKey(
         CalendarManagementToken,
@@ -2006,7 +2009,7 @@ class CalendarWebhookSubscription(
 ):
     """Tracks active webhook subscriptions for calendars."""
 
-    objects = OrganizationScopedManager()
+    objects: ClassVar[OrganizationScopedManager] = OrganizationScopedManager()
 
     calendar = OrganizationSafeForeignKey(
         Calendar, on_delete=models.CASCADE, related_name="webhook_subscriptions"
@@ -2051,7 +2054,7 @@ class CalendarWebhookSubscription(
 class CalendarWebhookEvent(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel):
     """Logs incoming webhook notifications for debugging and monitoring."""
 
-    objects = OrganizationScopedManager()
+    objects: ClassVar[OrganizationScopedManager] = OrganizationScopedManager()
 
     subscription = OrganizationSafeForeignKey(
         CalendarWebhookSubscription,
@@ -2211,7 +2214,7 @@ class ExternalEventChangeRequest(
     )
     resolved_at = models.DateTimeField(null=True, blank=True)
 
-    objects: ExternalEventChangeRequestManager = ExternalEventChangeRequestManager()
+    objects: ClassVar[ExternalEventChangeRequestManager] = ExternalEventChangeRequestManager()
 
     class Meta:
         indexes: ClassVar = [
@@ -2287,7 +2290,7 @@ class BookingPolicy(SingleOrganizationModelMixin, SafeRelationNullInitMixin, Bas
     buffer_before_seconds = models.PositiveIntegerField(default=0)
     buffer_after_seconds = models.PositiveIntegerField(default=0)
 
-    objects = BookingPolicyManager()
+    objects: ClassVar[BookingPolicyManager] = BookingPolicyManager()
 
     class Meta:
         indexes: ClassVar = [

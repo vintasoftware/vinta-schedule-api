@@ -1,9 +1,14 @@
 """Unit tests for ``common.organization_context_test_support``.
 
-Exercises the tripwire directly (bypassing pytest's fixture protocol) so its
-own catching/silent behavior is pinned independently of
-``conftest.assert_no_unbound_scoped_queries``, which is a thin wrapper around
-it.
+Exercises the tripwire directly (bypassing pytest's fixture protocol) so its own
+catching/silent behavior is pinned independently of
+``conftest.assert_no_unbound_scoped_queries``, which is a thin wrapper around it.
+
+The contract these pin changed in Phase 2a of the vinta-django-orgs migration --
+see that module's docstring. In short: a query that *names* its organization is
+fine unbound (``filter_by_organization(...)`` is the sanctioned way to reach
+outside the ambient context), and what is reported is a query on a scoped table
+that neither binds nor names one.
 """
 
 from __future__ import annotations
@@ -41,11 +46,6 @@ def calendar(organization: Organization) -> Calendar:
 
 @pytest.fixture
 def calendar_webhook_event(organization: Organization) -> CalendarWebhookEvent:
-    # No default manager/queryset override on ``CalendarWebhookEvent`` (unlike
-    # ``Calendar``'s ``CalendarQuerySet.update``), and nothing else has an
-    # incoming FK to it, so it exercises the guard's own patched
-    # ``BaseOrganizationModelQuerySet.update``/``.delete()`` directly rather
-    # than a subclass override, or a cascade, that would shadow/complicate it.
     return CalendarWebhookEvent.objects.create(
         organization=organization,
         provider=CalendarProvider.GOOGLE,
@@ -58,21 +58,32 @@ def calendar_webhook_event(organization: Organization) -> CalendarWebhookEvent:
 def test_records_nothing_when_every_scoped_query_runs_bound(organization, calendar):
     with assert_all_scoped_queries_are_bound() as violations:
         with organization_context(organization):
-            list(Calendar.objects.filter_by_organization(organization.id))
-            Calendar.objects.filter_by_organization(organization.id).count()
-            Calendar.objects.filter_by_organization(organization.id).get(pk=calendar.pk)
+            list(Calendar.objects.all())
+            Calendar.objects.count()
+            Calendar.objects.get(pk=calendar.pk)
 
     assert violations == []
     raise_if_unbound_scoped_queries_occurred(violations)  # must not raise
 
 
-def test_records_a_violation_when_iter_runs_unbound(organization, calendar):
+def test_records_nothing_when_the_query_names_its_organization_unbound(organization, calendar):
+    """``filter_by_organization(...)`` is the sanctioned way to reach outside the
+    ambient context: it starts from the unscoped queryset and says which
+    organization it means, so it is not a violation even with nothing bound.
+    """
     with assert_all_scoped_queries_are_bound() as violations:
-        # No `organization_context(...)` bound here on purpose.
         list(Calendar.objects.filter_by_organization(organization.id))
 
-    assert violations == ["Calendar.objects.__iter__()"]
-    with pytest.raises(AssertionError, match="Unbound organization-scoped queries"):
+    assert violations == []
+
+
+def test_records_a_violation_when_an_unscoped_read_runs_unbound(organization, calendar):
+    with assert_all_scoped_queries_are_bound() as violations:
+        # No `organization_context(...)`, and `original_manager` does not scope.
+        list(Calendar.original_manager.all())
+
+    assert violations == ["Calendar (SELECT)"]
+    with pytest.raises(AssertionError, match="Organization-scoped queries ran"):
         raise_if_unbound_scoped_queries_occurred(violations)
 
 
@@ -87,110 +98,113 @@ def test_records_a_violation_when_bound_to_a_lazy_object_that_resolves_to_none(
     """
     with assert_all_scoped_queries_are_bound() as violations:
         with organization_context(SimpleLazyObject(lambda: None)):
-            list(Calendar.objects.filter_by_organization(organization.id))
+            list(Calendar.original_manager.all())
 
-    assert violations == ["Calendar.objects.__iter__()"]
+    assert violations == ["Calendar (SELECT)"]
 
 
-def test_records_a_violation_when_get_runs_unbound(organization, calendar):
+def test_records_a_violation_for_a_read_that_no_queryset_method_wraps(organization, calendar):
+    """The Phase 0 blind spot, closed.
+
+    ``iterator()`` reaches the database without going through ``__iter__``,
+    ``get``, ``count``, ``exists``, ``update``, ``delete`` or ``aggregate`` -- the
+    seven methods the previous implementation wrapped -- so it used to slip past
+    entirely. Guarding ``SQLCompiler.execute_sql`` leaves no such route.
+    """
     with assert_all_scoped_queries_are_bound() as violations:
-        Calendar.objects.filter_by_organization(organization.id).get(pk=calendar.pk)
+        list(Calendar.original_manager.all().iterator())
 
-    assert violations == ["Calendar.objects.get()"]
+    assert violations == ["Calendar (SELECT)"]
 
 
-def test_records_a_violation_when_count_runs_unbound(organization, calendar):
+def test_records_a_violation_for_a_custom_manager_method_that_iterates_itself(
+    organization, calendar
+):
+    """The other half of the same blind spot: a manager method that builds a
+    queryset and consumes it through something other than the wrapped names.
+    ``values_list(...).first()`` slices and reads ``_result_cache`` directly.
+    """
     with assert_all_scoped_queries_are_bound() as violations:
-        Calendar.objects.filter_by_organization(organization.id).count()
+        Calendar.original_manager.all().values_list("id", flat=True).first()
 
-    assert violations == ["Calendar.objects.count()"]
-
-
-def test_records_a_violation_when_exists_runs_unbound(organization, calendar):
-    with assert_all_scoped_queries_are_bound() as violations:
-        Calendar.objects.filter_by_organization(organization.id).exists()
-
-    assert violations == ["Calendar.objects.exists()"]
+    assert violations == ["Calendar (SELECT)"]
 
 
 def test_records_a_violation_when_update_runs_unbound(organization, calendar_webhook_event):
     with assert_all_scoped_queries_are_bound() as violations:
-        CalendarWebhookEvent.objects.filter_by_organization(organization.id).update(
-            event_type="updated"
-        )
+        CalendarWebhookEvent.original_manager.all().update(event_type="updated")
 
-    assert violations == ["CalendarWebhookEvent.objects.update()"]
+    assert violations == ["CalendarWebhookEvent (UPDATE)"]
 
 
 def test_records_a_violation_when_delete_runs_unbound(organization, calendar_webhook_event):
     with assert_all_scoped_queries_are_bound() as violations:
-        CalendarWebhookEvent.objects.filter_by_organization(organization.id).filter(
-            pk=calendar_webhook_event.pk
-        ).delete()
+        CalendarWebhookEvent.original_manager.filter(pk=calendar_webhook_event.pk).delete()
 
-    assert violations == ["CalendarWebhookEvent.objects.delete()"]
+    # Django's delete collector fast-paths a single-table, no-cascade delete into
+    # one statement, so exactly one violation is reported.
+    assert violations == ["CalendarWebhookEvent (DELETE)"]
 
 
 def test_records_a_violation_when_aggregate_runs_unbound(organization, calendar):
     with assert_all_scoped_queries_are_bound() as violations:
-        Calendar.objects.filter_by_organization(organization.id).aggregate(total=Count("id"))
+        Calendar.original_manager.all().aggregate(total=Count("id"))
 
-    assert violations == ["Calendar.objects.aggregate()"]
+    assert violations == ["Calendar (SELECT)"]
 
 
 def test_records_one_violation_per_unbound_call(organization, calendar):
     with assert_all_scoped_queries_are_bound() as violations:
-        list(Calendar.objects.filter_by_organization(organization.id))
-        list(Calendar.objects.filter_by_organization(organization.id))
+        list(Calendar.original_manager.all())
+        list(Calendar.original_manager.all())
 
-    assert violations == [
-        "Calendar.objects.__iter__()",
-        "Calendar.objects.__iter__()",
-    ]
+    assert violations == ["Calendar (SELECT)", "Calendar (SELECT)"]
 
 
-def test_restores_the_original_methods_on_exit(organization, calendar):
-    from organizations.querysets import BaseOrganizationModelQuerySet
+def test_does_not_report_a_query_organization_matched_through_a_safe_relation(
+    organization, calendar
+):
+    """An organization-safe relation carries its organization condition in the
+    join's ``ON`` clause, not in ``WHERE``. Filtering by a target *instance* is
+    therefore already organization-matched, and reporting it would push callers
+    towards a redundant second filter.
+    """
+    from calendar_integration.models import CalendarSync
 
-    originals = {
-        name: getattr(BaseOrganizationModelQuerySet, name) for name in ("__iter__", "get", "count")
-    }
+    with assert_all_scoped_queries_are_bound() as violations:
+        list(CalendarSync.objects.unscoped().filter(calendar=calendar))
+
+    assert violations == []
+
+
+def test_restores_the_original_method_on_exit(organization, calendar):
+    from django.db.models.sql.compiler import SQLCompiler
+
+    original = SQLCompiler.execute_sql
 
     with assert_all_scoped_queries_are_bound():
-        list(Calendar.objects.filter_by_organization(organization.id))
+        list(Calendar.original_manager.all())
 
-    for name, original in originals.items():
-        assert getattr(BaseOrganizationModelQuerySet, name) is original
+    assert SQLCompiler.execute_sql is original
 
 
-def test_restores_the_original_methods_even_when_the_block_raises(organization):
-    from organizations.querysets import BaseOrganizationModelQuerySet
+def test_restores_the_original_method_even_when_the_block_raises(organization):
+    from django.db.models.sql.compiler import SQLCompiler
 
-    originals = {
-        name: getattr(BaseOrganizationModelQuerySet, name) for name in ("__iter__", "get", "count")
-    }
+    original = SQLCompiler.execute_sql
 
     with pytest.raises(ValueError, match="boom"):
         with assert_all_scoped_queries_are_bound():
             raise ValueError("boom")
 
-    for name, original in originals.items():
-        assert getattr(BaseOrganizationModelQuerySet, name) is original
+    assert SQLCompiler.execute_sql is original
 
 
-def test_explicit_organization_filter_is_orthogonal_to_the_binding_check(organization, calendar):
-    """The tripwire checks the *context binding*, not the explicit filter the
-    manager itself already requires. A query with the explicit filter but no
-    binding is exactly the Phase 0 state -- passes today's manager contract,
-    and is precisely what this tripwire exists to still flag.
-    """
+def test_ignores_models_that_are_not_organization_scoped(organization):
     with assert_all_scoped_queries_are_bound() as violations:
-        # Carries the explicit organization filter `BaseOrganizationModelQuerySet`
-        # itself requires -- would not raise `ImproperlyConfigured` -- but still
-        # has no `organization_context` bound.
-        list(Calendar.objects.filter_by_organization(organization.id))
+        list(Organization.objects.all())
 
-    assert violations
+    assert violations == []
 
 
 def test_pytest_fixture_is_wired_and_passes_for_properly_bound_queries(
@@ -198,10 +212,10 @@ def test_pytest_fixture_is_wired_and_passes_for_properly_bound_queries(
 ):
     """Smoke test for the actual pytest fixture (``conftest
     .assert_no_unbound_scoped_queries``), requested the way a Phase 0 task test
-    would use it: every scoped query in this test runs bound, so requesting
-    the fixture must not fail the test.
+    would use it: every scoped query in this test runs bound, so requesting the
+    fixture must not fail the test.
     """
     with organization_context(organization):
-        list(Calendar.objects.filter_by_organization(organization.id))
+        list(Calendar.objects.all())
 
     assert assert_no_unbound_scoped_queries == []

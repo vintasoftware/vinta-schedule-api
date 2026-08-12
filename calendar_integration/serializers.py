@@ -410,7 +410,7 @@ class CalendarBundleUpdateSerializer(serializers.Serializer):
                 ~Q(visibility=CalendarVisibility.INACTIVE) | Q(id__in=existing_child_ids)
             )
         else:
-            qs = Calendar.original_manager.none()
+            qs = Calendar.objects.unscoped().none()
 
         self.fields["bundle_calendars"] = serializers.PrimaryKeyRelatedField(
             many=True,

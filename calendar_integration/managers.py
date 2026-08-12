@@ -32,7 +32,6 @@ from common.managers import OrganizationScopedManager
 
 if TYPE_CHECKING:
     from calendar_integration.models import BookingPolicy, CalendarManagementToken
-    from organizations.models import Organization
     from organizations.models import OrganizationMembership as OrganizationMembershipType
 
 
@@ -249,15 +248,23 @@ class BlockedTimeManager(_BlockedTimeManagerBase, RecurringManagerMixin):  # typ
     def get_queryset(self, *args, **kwargs) -> "BlockedTimeQuerySet":
         return super().get_queryset(*args, **kwargs).base_rows_only()
 
-    def filter_by_organization(
-        self, organization: "Organization | int", *args, **kwargs
-    ) -> "BlockedTimeQuerySet":
-        return super().filter_by_organization(organization, *args, **kwargs).base_rows_only()
+    def filter_by_organization(self, organization, *args, **kwargs) -> "BlockedTimeQuerySet":
+        return (
+            super()
+            .filter_by_organization(  # type: ignore[misc]
+                organization, *args, **kwargs
+            )
+            .base_rows_only()
+        )
 
-    def exclude_by_organization(
-        self, organization: "Organization | int", *args, **kwargs
-    ) -> "BlockedTimeQuerySet":
-        return super().exclude_by_organization(organization, *args, **kwargs).base_rows_only()
+    def exclude_by_organization(self, organization, *args, **kwargs) -> "BlockedTimeQuerySet":
+        return (
+            super()
+            .exclude_by_organization(  # type: ignore[misc]
+                organization, *args, **kwargs
+            )
+            .base_rows_only()
+        )
 
     def unscoped_default_queryset(self) -> "BlockedTimeQuerySet":
         return super().unscoped_default_queryset().base_rows_only()
@@ -290,15 +297,23 @@ class AvailableTimeManager(_AvailableTimeManagerBase, RecurringManagerMixin):  #
     def get_queryset(self, *args, **kwargs) -> "AvailableTimeQuerySet":
         return super().get_queryset(*args, **kwargs).base_rows_only()
 
-    def filter_by_organization(
-        self, organization: "Organization | int", *args, **kwargs
-    ) -> "AvailableTimeQuerySet":
-        return super().filter_by_organization(organization, *args, **kwargs).base_rows_only()
+    def filter_by_organization(self, organization, *args, **kwargs) -> "AvailableTimeQuerySet":
+        return (
+            super()
+            .filter_by_organization(  # type: ignore[misc]
+                organization, *args, **kwargs
+            )
+            .base_rows_only()
+        )
 
-    def exclude_by_organization(
-        self, organization: "Organization | int", *args, **kwargs
-    ) -> "AvailableTimeQuerySet":
-        return super().exclude_by_organization(organization, *args, **kwargs).base_rows_only()
+    def exclude_by_organization(self, organization, *args, **kwargs) -> "AvailableTimeQuerySet":
+        return (
+            super()
+            .exclude_by_organization(  # type: ignore[misc]
+                organization, *args, **kwargs
+            )
+            .base_rows_only()
+        )
 
     def unscoped_default_queryset(self) -> "AvailableTimeQuerySet":
         return super().unscoped_default_queryset().base_rows_only()
@@ -371,8 +386,15 @@ class CalendarGroupSlotQuotaRuleManager(_CalendarGroupSlotQuotaRuleManagerBase):
     """Custom manager for CalendarGroupSlotQuotaRule model to handle specific queries."""
 
     def for_group_slot(self, group_slot_id: int) -> CalendarGroupSlotQuotaRuleQuerySet:
-        """Wraps :meth:`CalendarGroupSlotQuotaRuleQuerySet.for_group_slot`."""
-        return self.get_queryset().for_group_slot(group_slot_id)
+        """Wraps :meth:`CalendarGroupSlotQuotaRuleQuerySet.for_group_slot`.
+
+        Deliberately cross-organization (it starts from ``unscoped()``), matching
+        ``BlockedTimeManager.for_group_slot`` / ``AvailableTimeManager.for_group_slot``:
+        every caller narrows the result with ``filter_by_organization``, which is
+        where the tenant boundary is drawn, and this is reached from request and
+        GraphQL paths that bind no organization until Phase 2b.
+        """
+        return self.unscoped().for_group_slot(group_slot_id)
 
 
 class CalendarManagementTokenManager(_CalendarManagementTokenManagerBase):  # type: ignore[misc,valid-type]

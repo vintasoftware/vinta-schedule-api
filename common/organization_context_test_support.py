@@ -1,106 +1,158 @@
-"""Test-only tripwire: catch an ``OrganizationModel``-scoped query that runs unbound.
+"""Test-only tripwire: catch a query on a scoped model that names no organization.
 
 Backs the ``assert_no_unbound_scoped_queries`` pytest fixture (root
-``conftest.py``). Split out as a plain context manager, independent of
-pytest's fixture protocol, so its own behavior -- catching an unbound query,
-staying silent when everything is bound -- can be unit-tested directly rather
-than only indirectly through pytest's fixture teardown machinery. See
+``conftest.py``). Split out as a plain context manager, independent of pytest's
+fixture protocol, so its own behavior -- catching an unscoped query, staying
+silent when everything is scoped -- can be unit-tested directly rather than only
+indirectly through pytest's fixture teardown machinery. See
 ``common/tests/test_organization_context_test_support.py``.
 
-Context: Phase 0 of the vinta-django-orgs migration
-(``ai-plans/2026-08-12-VINTA_DJANGO_ORGS_MIGRATION_IMPLEMENTATION_PLAN.md``)
-threads an explicit ``organization_context(...)`` binding through every Celery
-task and management command that touches a scoped model, while
-``organizations.managers.BaseOrganizationModelManager`` /
-``organizations.querysets.BaseOrganizationModelQuerySet`` keep enforcing only
-their own, unrelated contract (an explicit ``organization`` filter on the
-query itself, independent of any binding). Phase 2 flips that: the manager
-swaps to implicit, context-bound scoping and (``STRICT_ORGANIZATION_FILTER =
-True``) an unbound query raises instead of silently returning nothing. This
-module lets a test assert that *future* contract now, ahead of the flip.
+What it checks, and why that changed in Phase 2a
+------------------------------------------------
+Phase 0 of the vinta-django-orgs migration added an
+``organization_context(...)`` binding to every Celery task and management
+command, while the managers of the day ignored the binding entirely. The
+tripwire's question then was "did anything run *unbound*?", because an unbound
+call site was the thing Phase 2 would break.
+
+Phase 2a landed that flip for ``calendar_integration``: ``objects`` scopes to the
+bound organization and, with ``STRICT_ORGANIZATION_FILTER = True``, raises when
+nothing is bound. The manager now enforces the "unbound" half by itself, and
+loudly. What it cannot enforce is the deliberate escape hatch: ``unscoped()`` /
+``original_manager`` / ``filter_by_organization(...)`` all bypass the ambient
+context on purpose, and only the *last* of those names an organization. So the
+question worth asking became:
+
+    did a query touch an organization-scoped table with no organization bound
+    **and** without naming one itself?
+
+**This also closes the blind spot Phase 0 recorded.** That implementation
+wrapped seven ``QuerySet`` methods (``__iter__``, ``get``, ``count``, ``exists``,
+``update``, ``delete``, ``aggregate``), so anything reaching the database by
+another route -- ``iterator()``, ``first()`` on a sliced queryset, ``len(qs)``,
+``bulk_update``, ``in_bulk``, or a custom manager method that iterates something
+it built itself -- slipped past. The guard now sits on
+``SQLCompiler.execute_sql``, the single point every ``SELECT`` / ``UPDATE`` /
+``DELETE`` / aggregate passes through, so there is no "other route" left. (Only
+``INSERT`` is excluded: it has its own compiler, and an insert reads nothing.)
 """
 
 from __future__ import annotations
 
 import contextlib
 from collections.abc import Callable, Iterator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from common.organization_context import get_current_organization
 
 
-#: ``__iter__``, ``get``, and ``count`` are the three query-execution entry
-#: points ``BaseOrganizationModelQuerySet._check_required_tenant_filter``
-#: already instruments for the (unrelated) explicit-filter check -- reused
-#: here so both guards fire from the same, already-audited set of entry
-#: points rather than a second, possibly incomplete one. ``exists``,
-#: ``update``, ``delete``, and ``aggregate`` are added on top of that shared
-#: set: none of the three above run for them, so an unbound
-#: ``Model.objects.exists()`` / ``.update()`` / ``.delete()`` /
-#: ``.aggregate()`` would otherwise pass this tripwire silently even though
-#: Phase 2's implicit scoping applies to them too. Known blind spot left for
-#: Phase 2a to close: any *other* queryset-execution method (e.g. a custom
-#: manager method that calls ``.values_list(...)`` and iterates it without
-#: going through one of the eight names here) is still unguarded -- this
-#: tuple only covers ``QuerySet``'s own execution entry points, not every
-#: possible path to one.
-_GUARDED_METHOD_NAMES = ("__iter__", "get", "count", "exists", "update", "delete", "aggregate")
+if TYPE_CHECKING:
+    from django.db.models import Model
+    from django.db.models.sql import Query
+
+
+#: Compiler class name -> the statement it emits, for the violation message.
+_STATEMENT_BY_COMPILER = {
+    "SQLCompiler": "SELECT",
+    "SQLUpdateCompiler": "UPDATE",
+    "SQLDeleteCompiler": "DELETE",
+    "SQLAggregateCompiler": "aggregate",
+}
+
+
+def _is_organization_scoped(model: type[Model] | None) -> bool:
+    """Is ``model`` one of the models this project scopes per organization?
+
+    Both bases are checked: ``calendar_integration`` moved to the package's
+    ``SingleOrganizationModelMixin`` in Phase 2a, and ``audit`` / ``webhooks`` /
+    ``public_api`` / ``organizations`` still sit on ``OrganizationModel`` until
+    Phase 2b.
+    """
+    if model is None:
+        return False
+
+    from vinta_orgs.mixins import SingleOrganizationModelMixin
+
+    from organizations.models import OrganizationModel
+
+    return issubclass(model, SingleOrganizationModelMixin | OrganizationModel)
+
+
+def _names_an_organization(query: Query) -> bool:
+    """Does the query restrict itself to an organization, without ambient help?
+
+    Read off the compiled SQL rather than off ``Query.where``, because an
+    organization-safe relation puts its organization condition in a join's ``ON``
+    clause -- ``EventAttendance.objects.unscoped().filter(event=event)`` is
+    organization-matched through the relation and must not be reported.
+
+    Everything before ``FROM`` is discarded first: the select list of a scoped
+    model always names ``organization_id``, which would make this answer "yes"
+    for every query.
+    """
+    try:
+        sql = str(query)
+    except Exception:  # noqa: BLE001 -- a query this cannot render is not evidence of a leak
+        return True
+
+    _, _, after_from = sql.partition(" FROM ")
+    return "organization_id" in (after_from or sql)
 
 
 @contextlib.contextmanager
 def assert_all_scoped_queries_are_bound() -> Iterator[list[str]]:
-    """Monkeypatch ``BaseOrganizationModelQuerySet`` for the duration of the block.
+    """Watch every query for the duration of the block.
 
-    Yields the (initially empty) list of violations found; append happens as
-    they occur, so the caller can inspect it either during or after the
-    ``with`` block. Restores the original methods unconditionally on exit,
+    Yields the (initially empty) list of violations found; entries are appended
+    as they occur, so the caller can inspect it either during or after the
+    ``with`` block. Restores the original method unconditionally on exit,
     including when the block raises.
 
     Does **not** itself assert anything -- see
-    :func:`raise_if_unbound_scoped_queries_occurred` for that, kept separate
-    so a caller can choose to collect violations without failing (e.g. to
-    assert on the exact list contents).
+    :func:`raise_if_unbound_scoped_queries_occurred` for that, kept separate so a
+    caller can collect violations without failing (e.g. to assert on the exact
+    list contents).
     """
-    # Deferred: not to avoid a circular import (verified there is none -- this
-    # module and ``organizations.querysets`` do not import each other), but
-    # because this module can itself be imported before ``django.setup()``
-    # completes (``conftest.py`` imports it from inside a fixture body, but
-    # pytest collects ``conftest.py`` itself earlier than that), and
-    # importing anything that touches Django's ORM at that point risks
-    # ``AppRegistryNotReady`` -- mirrors the same deferral in
-    # ``common.organization_context._get_organization_by_slug``.
-    from organizations.querysets import BaseOrganizationModelQuerySet
+    # Deferred: this module can be imported before ``django.setup()`` completes
+    # (``conftest.py`` imports it from inside a fixture body, but pytest collects
+    # ``conftest.py`` itself earlier than that), and importing anything that
+    # touches Django's ORM at that point risks ``AppRegistryNotReady``.
+    from django.db.models.sql.compiler import SQLCompiler
 
     unbound_calls: list[str] = []
 
-    def _guard(method_name: str, original: Callable) -> Callable:
-        def wrapper(self, *args: Any, **kwargs: Any) -> Any:
-            bound = get_current_organization()
-            if not bound:
-                # ``not bound`` (rather than ``bound is None``) so a
-                # ``SimpleLazyObject`` that *resolves* to ``None`` -- how
-                # Phase 0's Celery task bindings bind a stale/deleted
-                # organization id -- is still reported as unbound.
-                # ``LazyObject.__bool__`` proxies through to the wrapped
-                # value (forcing resolution), so this is correct here even
-                # though it would be too eager a check outside a test-only
-                # guard.
-                unbound_calls.append(f"{self.model.__name__}.objects.{method_name}()")
+    def _guard(original: Callable) -> Callable:
+        def wrapper(self: SQLCompiler, *args: Any, **kwargs: Any) -> Any:
+            query = self.query
+            model = query.model
+            if (
+                model is not None
+                and _is_organization_scoped(model)
+                # ``not bound`` rather than ``bound is None``: a
+                # ``SimpleLazyObject`` that *resolves* to ``None`` -- how a task
+                # binds a stale or deleted organization id -- is still unbound.
+                # ``LazyObject.__bool__`` proxies to the wrapped value, which is
+                # correct here even though it would be too eager outside a
+                # test-only guard.
+                and not get_current_organization()
+                and not _names_an_organization(query)
+            ):
+                statement = _STATEMENT_BY_COMPILER.get(type(self).__name__, "query")
+                unbound_calls.append(f"{model.__name__} ({statement})")
             return original(self, *args, **kwargs)
 
         return wrapper
 
-    originals = {
-        name: getattr(BaseOrganizationModelQuerySet, name) for name in _GUARDED_METHOD_NAMES
-    }
-    for name, original in originals.items():
-        setattr(BaseOrganizationModelQuerySet, name, _guard(name, original))
+    original = SQLCompiler.execute_sql
+    # Patched on the base class only: ``SQLUpdateCompiler`` /
+    # ``SQLDeleteCompiler`` / ``SQLAggregateCompiler`` all reach it through
+    # ``super()``, so one patch covers every statement that reads.
+    SQLCompiler.execute_sql = _guard(original)  # type: ignore[method-assign]
 
     try:
         yield unbound_calls
     finally:
-        for name, original in originals.items():
-            setattr(BaseOrganizationModelQuerySet, name, original)
+        SQLCompiler.execute_sql = original  # type: ignore[method-assign]
 
 
 def raise_if_unbound_scoped_queries_occurred(unbound_calls: list[str]) -> None:
@@ -108,8 +160,9 @@ def raise_if_unbound_scoped_queries_occurred(unbound_calls: list[str]) -> None:
     above) is non-empty, naming every violation found.
     """
     assert not unbound_calls, (
-        "Unbound organization-scoped queries executed (no organization was bound "
-        f"via common.organization_context at the time): {unbound_calls}. Phase 2's "
-        "implicit, strict scoping will raise here -- bind the organization before "
-        "the call, mirroring the Phase 0 task/command bindings."
+        "Organization-scoped queries ran with no organization bound (via "
+        f"common.organization_context) and without naming one: {unbound_calls}. "
+        "Bind the organization before the call, mirroring the Phase 0 task and "
+        "command bindings, or scope the query explicitly with "
+        "filter_by_organization(...)."
     )

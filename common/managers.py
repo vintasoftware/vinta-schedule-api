@@ -1,9 +1,11 @@
 from collections.abc import Iterable
-from typing import Any
-
-from django.db.models import QuerySet
+from typing import TYPE_CHECKING, Any
 
 from vinta_orgs.managers import SingleOrganizationModelManager
+
+
+if TYPE_CHECKING:
+    from organizations.models import Organization
 
 
 class OrganizationScopedManager(SingleOrganizationModelManager):
@@ -52,7 +54,20 @@ class OrganizationScopedManager(SingleOrganizationModelManager):
     #: services.
     _ORGANIZATION_KWARGS = ("organization", "organization_id")
 
-    def get_queryset(self, *args: Any, **kwargs: Any) -> QuerySet:
+    # Return types are ``Any`` throughout: ``Manager.from_queryset`` builds each
+    # concrete manager's class at runtime, so the queryset class a subclass
+    # actually returns (``CalendarQuerySet``, ``BlockedTimeQuerySet``, ...) is not
+    # visible to the type checker. Narrowing to ``QuerySet`` here would make every
+    # model-specific queryset method a false ``attr-defined`` error at the call
+    # site, which is what the manager this replaces avoided by carrying no
+    # annotation at all.
+    def get_original_queryset(self, *args: Any, **kwargs: Any) -> Any:
+        return super().get_original_queryset(*args, **kwargs)
+
+    def unscoped(self, *args: Any, **kwargs: Any) -> Any:
+        return super().unscoped(*args, **kwargs)
+
+    def get_queryset(self, *args: Any, **kwargs: Any) -> Any:
         # ``instance`` is set by the related managers Django generates in
         # ``create_reverse_many_to_one_manager`` / ``create_forward_many_to_many_manager``
         # and is never present on a plain model manager.
@@ -60,7 +75,7 @@ class OrganizationScopedManager(SingleOrganizationModelManager):
             return self.get_original_queryset(*args, **kwargs)
         return super().get_queryset(*args, **kwargs)
 
-    def unscoped_default_queryset(self) -> QuerySet:
+    def unscoped_default_queryset(self) -> Any:
         """This manager's default view with the *organization* scoping removed.
 
         Distinct from ``unscoped()``, which means "every row, no filter of any
@@ -74,6 +89,22 @@ class OrganizationScopedManager(SingleOrganizationModelManager):
         """
         return self.get_original_queryset()
 
+    def filter_by_organization(  # type: ignore[override]
+        self, organization: "Organization | int", *args: Any, **kwargs: Any
+    ) -> Any:
+        """Restrict to ``organization``, given either the instance or its id.
+
+        Only the annotation is widened -- see
+        ``common.querysets.OrganizationScopedQuerySet`` for why an id is accepted.
+        """
+        return super().filter_by_organization(organization, *args, **kwargs)  # type: ignore[arg-type]
+
+    def exclude_by_organization(  # type: ignore[override]
+        self, organization: "Organization | int", *args: Any, **kwargs: Any
+    ) -> Any:
+        """Drop every row of ``organization``, given either the instance or its id."""
+        return super().exclude_by_organization(organization, *args, **kwargs)  # type: ignore[arg-type]
+
     def _names_an_organization(self, kwargs: dict[str, Any] | None) -> bool:
         if not kwargs:
             return False
@@ -84,12 +115,16 @@ class OrganizationScopedManager(SingleOrganizationModelManager):
             return self.unscoped().create(**kwargs)
         return super().create(**kwargs)
 
-    def get_or_create(self, defaults: dict[str, Any] | None = None, **kwargs: Any) -> Any:
+    def get_or_create(  # type: ignore[override]
+        self, defaults: dict[str, Any] | None = None, **kwargs: Any
+    ) -> Any:
         if self._names_an_organization(kwargs) or self._names_an_organization(defaults):
             return self.unscoped().get_or_create(defaults=defaults, **kwargs)
         return super().get_or_create(defaults=defaults, **kwargs)
 
-    def update_or_create(self, defaults: dict[str, Any] | None = None, **kwargs: Any) -> Any:
+    def update_or_create(  # type: ignore[override]
+        self, defaults: dict[str, Any] | None = None, **kwargs: Any
+    ) -> Any:
         if self._names_an_organization(kwargs) or self._names_an_organization(defaults):
             return self.unscoped().update_or_create(defaults=defaults, **kwargs)
         return super().update_or_create(defaults=defaults, **kwargs)

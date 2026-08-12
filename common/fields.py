@@ -29,6 +29,7 @@ Why no real DB foreign-key constraint here?
 """
 
 import uuid
+from typing import TYPE_CHECKING, Any
 
 from django.db import models
 from django.db.backends.base.operations import BaseDatabaseOperations
@@ -38,6 +39,35 @@ from django.db.models.fields.related import ForeignObject
 
 
 BaseDatabaseOperations.integer_field_ranges["UUIDField"] = (0, 0)
+
+
+# ``vinta_orgs``' organization-safe relations, re-exported so a model declaration
+# type-checks the way a ``ForeignKey`` declaration does.
+#
+# ``OrganizationSafeRelation`` is deliberately not a ``Field`` -- it only
+# implements ``contribute_to_class``, which is what lets one declaration become
+# two fields. django-stubs' plugin recognises ``Field`` subclasses and gives the
+# model attribute the *related instance*'s type; it cannot recognise this, so
+# ``event.calendar`` type-checked as ``OrganizationSafeForeignKey`` and every
+# attribute read off it was an error. The retired ``OrganizationForeignKey``
+# subclassed ``models.Field`` and so never had the problem.
+#
+# Typed as returning ``Any`` rather than as the target model, because the
+# declaration site does not know it: ``to`` may be a string (``"CalendarEvent"``,
+# ``"self"``). That is the same amount of checking the project had before.
+if TYPE_CHECKING:
+
+    def OrganizationSafeForeignKey(*args: Any, **kwargs: Any) -> Any:  # noqa: N802
+        """A ``ForeignKey`` whose ORM traversals also match on the organization."""
+
+    def OrganizationSafeOneToOneField(*args: Any, **kwargs: Any) -> Any:  # noqa: N802
+        """A ``OneToOneField`` whose ORM traversals also match on the organization."""
+
+else:
+    from vinta_orgs.fields import (  # noqa: F401
+        OrganizationSafeForeignKey,
+        OrganizationSafeOneToOneField,
+    )
 
 
 class _SafeCompositeAttribute(CompositeAttribute):
