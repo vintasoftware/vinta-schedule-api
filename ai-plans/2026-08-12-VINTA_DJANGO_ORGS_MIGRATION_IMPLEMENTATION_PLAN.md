@@ -1,6 +1,8 @@
 # Migrate `organizations` onto vinta-django-orgs — Implementation Plan
 
-Migrates this repo's bespoke multi-tenancy layer onto [vinta-django-orgs](https://github.com/vintasoftware/vinta-django-orgs) `0.1.1`, and replaces the flat `role` / `is_billing_owner` membership attributes with the package's `auth.Group` / `auth.Permission` model.
+Migrates this repo's bespoke multi-tenancy layer onto [vinta-django-orgs](https://github.com/vintasoftware/vinta-django-orgs) `0.2.0`, and replaces the flat `role` / `is_billing_owner` membership attributes with the package's `auth.Group` / `auth.Permission` model.
+
+> **Amended 2026-08-12 for package `0.2.0`.** The plan was originally written against `0.1.1`, whose Django app was labelled `organizations` — the same label as ours. Everything about the collision that forced (Phase 1a) renaming our app to `tenancy`, and everything that rename in turn forced (Phase 1b's content-type relabel, the `audit.subject_type` namespace backfill, and the seeded-database migration-history command), existed *only* to service that clash. `0.2.0` renames the package's own Python packages and app labels to `vinta_orgs` / `vinta_orgs_custom_data`, so the clash is gone and our app keeps the name `organizations`. Phases 1a, 1b, and 1c are collapsed into a single **Phase 1**. See the **Amendments** section at the end for the full record.
 
 No SPEC sibling exists — this is a migration of existing behavior rather than a new feature, so the contract is "what the system does today, on a different foundation". Every behavioral change this plan *does* make is named in **Guiding Decisions** and nowhere else.
 
@@ -14,7 +16,7 @@ No SPEC sibling exists — this is a migration of existing behavior rather than 
 
 **Non-goals:**
 
-- **`organizations_custom_data`.** The package's second app (per-organization dynamic tables, org-specific field definitions, per-table permission rows) is not installed, not migrated, and not referenced.
+- **`vinta_orgs_custom_data`.** The package's second app (per-organization dynamic tables, org-specific field definitions, per-table permission rows) is not installed, not migrated, and not referenced.
 - **`OrganizationSite` and domain-based tenancy.** We do not do subdomain tenancy. `retrieve_by_domain` stays out of `ORGANIZATION_RETRIEVERS` and `CACHE_ORGANIZATION_RETRIEVAL` is irrelevant. The `OrganizationSite` model is *not* swappable, so installing the package app creates its table regardless — it stays empty and unread.
 - **Per-organization custom roles.** Global groups only. Checks read permissions rather than group names specifically so a per-org layer can be added later without touching call sites, but no per-org group rows, name mangling, or tenant-facing role-management surface ships here.
 - **Session-based and `Organization-Slug` header resolution.** `retrieve_by_session` and `retrieve_by_http_header` stay out of the retriever list.
@@ -23,14 +25,18 @@ No SPEC sibling exists — this is a migration of existing behavior rather than 
 
 ## 2. Guiding Decisions
 
+**Amended 2026-08-12** (package `0.1.1` → `0.2.0`): the **App-label collision** row below is replaced. Its old resolution — rename our app to `tenancy` — is withdrawn, along with every consequence it had. Affects the phases formerly numbered 1a, 1b, and 1c, now collapsed into **Phase 1**; the **No feature flag** row is narrowed to match. Nothing else in this table changes: the composite-PK unwind, the scoping-semantics flip, the retriever decision, both slug rows, and the whole group/permission design are independent of what the package's app is called.
+
 | Decision | Resolution |
 |---|---|
-| **App-label collision** | The package's app is literally labelled `organizations`, and so is ours. Ours is renamed to `tenancy`; the package keeps `organizations`. Every renamed model pins `db_table` to its existing `organizations_*` name, so the app label, migration graph, and `django_content_type` rows move while **no table does**. Chosen over renaming tables because the raw-SQL PROTECT FKs in `@calendar_integration/migrations/0026_calendarownership_membership_protect_fk.py` and `@audit/migrations/0001_initial.py` name tables as strings, and an `ALTER TABLE ... RENAME` takes `ACCESS EXCLUSIVE`. |
-| **Composite primary key** | `OrganizationMembership.pk = SafeCompositePrimaryKey("user", "organization")` is unwound back to a surrogate `id`, because Django cannot hang a `ManyToManyField` off a composite-PK model and the package's `groups` / `permissions` fields are exactly that. **The `uniq_membership_user_organization` unique constraint is kept**, which is what makes this cheap: the three raw-SQL composite FKs target that *constraint*, not the PK, so they need no rebind and no data migration. |
+| **App-label collision — none** (amended, package `0.2.0`) | **There is no collision, so our app keeps the name `organizations` and nothing is renamed.** `0.1.1` labelled the package's own app `organizations`, identical to ours, and the original plan resolved that by renaming ours to `tenancy` with `db_table` pinned on every model. `0.2.0` renames the *package's* Python packages and app labels to `vinta_orgs` and `vinta_orgs_custom_data` for exactly this reason, so ours is unambiguous as it stands. Consequences of withdrawing the rename: no `git mv`, no `label = "tenancy"`, **no `db_table` pins at all** (the default `{app_label}_{model}` already resolves to each model's existing table name — verify with `makemigrations --check` rather than assuming, and pin only a model whose default would not match), no migration-graph rewrite across 79 migration files, no `django_content_type` / `auth_permission` relabel, no `audit.subject_type` namespace backfill, and no seeded-database migration-history command. Our imports read `from organizations...` exactly as they do today; the *package's* read `from vinta_orgs...`. The reason table renames were avoided in the first place — the **five** raw-SQL PROTECT FKs name tables as string literals — still holds and is now satisfied for free. (Corrected while verifying this amendment: the original text said the FKs lived in `calendar_integration` *and* `audit/migrations/0001_initial.py`. All five are in `calendar_integration` — `0026`, `0032`, `0036`, `0038`, `0040`; `audit` has no raw-SQL table literal at all.) |
+| **Composite primary key** | `OrganizationMembership.pk = SafeCompositePrimaryKey("user", "organization")` is unwound back to a surrogate `id`, because Django cannot hang a `ManyToManyField` off a composite-PK model and the package's `groups` / `permissions` fields are exactly that. **The `uniq_membership_user_organization` unique constraint is kept**, which is what makes this cheap: the five raw-SQL composite FKs target that *constraint*, not the PK, so they need no rebind and no data migration. |
 | **Scoping semantics flip** | Our `BaseOrganizationModelManager` requires an explicit `filter_by_organization(org_id)`; the package's `objects` scopes implicitly and returns `.none()` when nothing is bound. This is the single most dangerous delta in the migration — an unbound query in a Celery task reads as "no data" rather than as a bug. Mitigated two ways: a behavior-neutral audit phase binds every call site *before* any model flips, and `STRICT_ORGANIZATION_FILTER = True` from the moment the first one does, so the failure is an exception rather than an empty list. |
 | **Organization resolution** | A custom retriever reads `X-Organization-Id` (integer PK) and is the only entry in `ORGANIZATION_RETRIEVERS`. `TenantScopedViewMixin` is retained rather than replaced by `OrganizationMiddleware`: its 400-on-ambiguity / 403-on-non-member rules are *membership*-aware, and the package's middleware runs before DRF authentication has populated `request.user`. The mixin gains one responsibility — binding the resolved organization to the context. |
-| **Slug becomes NOT NULL** | `AbstractOrganization` declares `slug = CharField(max_length=255, unique=True)`, NOT NULL. We inherit it rather than overriding, and backfill `slugify(name)` with a numeric disambiguator on collision, falling back to `org-<pk>` when the derived value fails `@organizations/slug_validation.py`'s reserved-word or confusable-character rules. Note the consequence: **slug is public** (it appears in branded login URLs), so a derived slug discloses the organization name. Accepted here because there is no production data to disclose. |
-| **No feature flag** | This repo has no feature-flag module, and the change is not flag-shaped: a default-manager swap and an app rename cannot be gated per-request or per-tenant, because they are resolved at class-definition and migration time. Combined with pre-launch status and no production tenants, the flag would cost a PR and gate nothing. **The safety mechanism is the audit phase plus `STRICT_ORGANIZATION_FILTER`, not a flag.** There is consequently no flag-removal phase. |
+| **Slug becomes NOT NULL** | `AbstractOrganization` declares `slug = CharField(max_length=255, unique=True)`, NOT NULL. We inherit it rather than overriding, and backfill `slugify(name)` with a numeric disambiguator on collision, falling back to `org-<pk>` when the derived value fails `@organizations/slug_validation.py`'s reserved-word or confusable-character rules. Note the consequence: **slug is public** (it appears in branded login URLs), so a derived slug discloses the organization name. Accepted here **only for the backfill** — the pre-existing rows the migration touches, on the grounds that there is no production data to disclose. |
+| **Slug precondition for branding writes is retired** (review of the phase formerly numbered 1c) | `organizations.permissions.evaluate_branding_write_gate`'s third condition (`if not organization.slug: return NO_SLUG`) — "an eligible organization must also have picked a public slug before it may write branding" — is retired as a product rule. The NOT NULL slug above made it unsatisfiable for any organization reachable through a supported write path the moment this phase shipped; the Phase 1c review closed the one remaining loophole (an out-of-band `queryset.update(slug="")` past `save()`, which nothing prevented at the database level) with `models.CheckConstraint(condition=~models.Q(slug=""), name="organization_slug_not_blank")` on `Organization.Meta.constraints`, making the retirement permanent rather than merely untested. The `BrandingWriteGateReason.NO_SLUG` enum member, its `BRANDING_GATE_EXCEPTIONS` entry, and the `if not organization.slug` check are kept dead-with-reason rather than deleted immediately — they are still part of the gate's public contract — and are scheduled for removal in **Phase 4** (see that phase's Changes list). |
+| **Runtime slug default is opaque, not name-derived** (review of the phase formerly numbered 1c) | The row above's disclosure trade-off was accepted **only for the Phase 1 slug backfill** of pre-existing rows (no production data to disclose at that moment) — it was never sanctioned as `Organization.save()`'s permanent runtime default, which would make name disclosure permanent for every organization saved without an explicit slug from this deploy on. `Organization.save()`'s fallback (used when a caller left `slug` blank) now derives the opaque `org-<token>` form (`organizations.slug_generation.derive_organization_slug(..., disclose_name=False)`), not `slugify(name)`. Name-derivation remains sanctioned for exactly one runtime write path — `OrganizationService.create_organization`, the self-serve "create my own organization" flow, where the human caller explicitly chose `name` for their own, about-to-be-public organization — which now computes and passes an explicit, name-derived `slug` itself rather than relying on the model's fallback. |
+| **No feature flag** | This repo has no feature-flag module, and the change is not flag-shaped: a default-manager swap and a change of base class cannot be gated per-request or per-tenant, because they are resolved at class-definition and migration time. Combined with pre-launch status and no production tenants, the flag would cost a PR and gate nothing. **The safety mechanism is the audit phase plus `STRICT_ORGANIZATION_FILTER`, not a flag.** There is consequently no flag-removal phase. |
 | **Group scope** | Three global `auth.Group` rows — `organization_admin`, `organization_billing_owner`, `organization_member` — shared by every organization, seeded by a data migration. Every authorization check reads `user.has_perm("app.codename")`, **never** `membership.groups.filter(name=...)`, so introducing per-org groups later changes the seeding and nothing above the auth backend. This deliberately diverges from the package's own `IsOrganizationOwner`, which filters on `groups__name='organization_owner'` — we do not use that class. |
 | **Permission catalog shape** | Custom `Meta.permissions` named for *capabilities* (`manage_billing`, `manage_members`, `manage_branding`), not for the model-CRUD triples `auth.Permission` defaults to. Our authorization questions are behavioral ("may this member change the plan"), and mapping them onto `change_subscription` would misrepresent them. |
 | **Four rules stay hand-written** | `IsBillingOwnerOrAdmin`'s acting-reseller-root walk grants over organization B from a membership in A — the auth backend keys on the *current* organization (B) and cannot see a grant held in A. `OrganizationManagementPermission` gates on membership *absence*. Both branding gates are entitlement-driven, not role-driven. These four keep bespoke logic; what changes is the sub-check they compose with (`membership.is_admin` becomes `has_perm`). |
@@ -39,11 +45,11 @@ No SPEC sibling exists — this is a migration of existing behavior rather than 
 
 ## 3. Data Model Changes
 
-### 3.1 `tenancy.Organization` (renamed from `organizations.Organization`)
+### 3.1 `organizations.Organization`
 
 ```python
-# tenancy/models.py
-from organizations.models import AbstractOrganization
+# organizations/models.py
+from vinta_orgs.models import AbstractOrganization
 
 
 class Organization(AbstractOrganization):
@@ -57,7 +63,8 @@ class Organization(AbstractOrganization):
     can_invite_organizations = models.BooleanField(default=False, ...)
 
     class Meta(AbstractOrganization.Meta):
-        db_table = "organizations_organization"   # pinned — no table rename
+        # No `db_table` — the app label is still `organizations`, so Django's
+        # default already resolves to `organizations_organization`.
         constraints = [
             models.UniqueConstraint(fields=["parent", "name"], name="uniq_org_name_per_parent"),
         ]
@@ -65,13 +72,13 @@ class Organization(AbstractOrganization):
 
 Dropped: `BaseModel`'s `meta` JSONField, the `created` / `modified` indexes. Retained unchanged: `is_reseller()`, `get_branding_root()`, `resolve_branding()`, `resolve_branding_for_display()`.
 
-`slug` is no longer nullable. `@organizations/slug_validation.py` moves to `tenancy/slug_validation.py` unchanged — the format, reserved-word, and confusable-character rules still apply at every write surface.
+`slug` is no longer nullable. `@organizations/slug_validation.py` stays exactly where it is, unchanged — the format, reserved-word, and confusable-character rules still apply at every write surface.
 
-### 3.2 `tenancy.OrganizationMembership`
+### 3.2 `organizations.OrganizationMembership`
 
 ```python
-# tenancy/models.py
-from organizations.models import AbstractOrganizationMembership
+# organizations/models.py
+from vinta_orgs.models import AbstractOrganizationMembership
 
 
 class OrganizationMembership(AbstractOrganizationMembership):
@@ -82,7 +89,7 @@ class OrganizationMembership(AbstractOrganizationMembership):
     objects = OrganizationMembershipManager()   # see 3.3
 
     class Meta(AbstractOrganizationMembership.Meta):
-        db_table = "organizations_organizationmembership"   # pinned
+        # No `db_table` — see 3.1.
         default_manager_name = "objects"
         constraints = [
             models.UniqueConstraint(fields=["user", "organization"],
@@ -93,7 +100,7 @@ class OrganizationMembership(AbstractOrganizationMembership):
 Three structural changes, in dependency order:
 
 1. **`pk` reverts to a surrogate `id`.** `SafeCompositePrimaryKey` is removed from the model; `@common/fields.py`'s `SafeCompositePrimaryKey` and `_SafeCompositeAttribute` are deleted in the final phase once nothing imports them.
-2. **`uniq_membership_user_organization` is kept.** This is load-bearing. `@calendar_integration/migrations/0026_calendarownership_membership_protect_fk.py` and the `audit` equivalent declare `FOREIGN KEY (membership_user_id, organization_id) REFERENCES organization_membership(user_id, organization_id)` — a composite FK may target any unique constraint, so those FKs survive the PK change untouched.
+2. **`uniq_membership_user_organization` is kept.** This is load-bearing. Five migrations in `calendar_integration` — `0026_calendarownership_membership_protect_fk.py`, `0032_eventattendance_...`, `0036_calendarmanagementtoken_...`, `0038_externaleventchangerequest_resolved_by_...`, `0040_bookingpolicy_...` — declare `FOREIGN KEY (<name>_user_id, organization_id) REFERENCES organizations_organizationmembership (user_id, organization_id)`. A composite FK may target any unique constraint, so all five survive the PK change untouched. (There is no `audit` equivalent; an earlier revision of this plan said there was.)
 3. **`role` and `is_billing_owner` are dropped**, but not until Phase 6, after the group backfill and the API surface change have both landed.
 
 `AbstractOrganizationMembership` also renames the reverse accessor: it declares `related_name="memberships"` on both FKs, where ours uses `organization_memberships` (user side) and `memberships` (organization side). The user-side rename touches every `user.organization_memberships` call site.
@@ -116,9 +123,9 @@ Declared as custom `Meta.permissions` on the models that own the capability:
 
 | Permission | Declared on | Replaces |
 |---|---|---|
-| `tenancy.manage_members` | `OrganizationMembership` | `membership.is_admin` in `IsOrganizationAdmin`, `CalendarGroupPermission`, `User.is_organization_admin` |
-| `tenancy.manage_organization` | `Organization` | `membership.is_admin` on organization-update paths |
-| `tenancy.manage_branding` | `Organization` | the role half of the branding gates (the entitlement half is unchanged) |
+| `organizations.manage_members` | `OrganizationMembership` | `membership.is_admin` in `IsOrganizationAdmin`, `CalendarGroupPermission`, `User.is_organization_admin` |
+| `organizations.manage_organization` | `Organization` | `membership.is_admin` on organization-update paths |
+| `organizations.manage_branding` | `Organization` | the role half of the branding gates (the entitlement half is unchanged) |
 | `payments.manage_billing` | `Subscription` | `membership.is_admin or membership.is_billing_owner` in `IsBillingOwnerOrAdmin` |
 
 Seeded group → permission mapping, written by a data migration:
@@ -143,12 +150,12 @@ Seeded group → permission mapping, written by a data migration:
 GET /organizations/current/
 - { "organization": {...}, "role": "admin", "can_manage_branding": true }
 + { "organization": {...},
-+   "permissions": ["tenancy.manage_members", "tenancy.manage_organization",
-+                   "tenancy.manage_branding", "payments.manage_billing"],
++   "permissions": ["organizations.manage_members", "organizations.manage_organization",
++                   "organizations.manage_branding", "payments.manage_billing"],
 +   "can_manage_branding": true }
 ```
 
-`can_manage_branding` stays a distinct field rather than folding into `permissions`: it is the *composite* of `tenancy.manage_branding` and the `white_label_branding` entitlement plus the parentless check, and collapsing it into the permission list would misreport an entitled-but-unpermitted caller.
+`can_manage_branding` stays a distinct field rather than folding into `permissions`: it is the *composite* of `organizations.manage_branding` and the `white_label_branding` entitlement plus the parentless check, and collapsing it into the permission list would misreport an entitled-but-unpermitted caller.
 
 `GET /organizations/mine/` gains the same `permissions` key per row and drops `role`. `GET /organization-members/` drops `role` and `is_billing_owner`.
 
@@ -159,7 +166,7 @@ GET /organizations/current/
 + POST /organization-members/{user_id}/groups/        { "groups": ["organization_admin"] }
 ```
 
-Write-side only, and the one place a group name is accepted — assigning a group is the act of choosing one, so there is nothing to abstract. Errors preserved from the old endpoint: setting the current value is an idempotent success, and demoting the last active member holding `tenancy.manage_members` in the organization is rejected (the "protect the last active admin" rule, restated in permission terms).
+Write-side only, and the one place a group name is accepted — assigning a group is the act of choosing one, so there is nothing to abstract. Errors preserved from the old endpoint: setting the current value is an idempotent success, and demoting the last active member holding `organizations.manage_members` in the organization is rejected (the "protect the last active admin" rule, restated in permission terms).
 
 ### 4.3 Public GraphQL invitation input
 
@@ -208,95 +215,46 @@ Acceptance: every Celery task and management command that touches an org-scoped 
 
 ---
 
-### Phase 1a — Install the package and rename our app to `tenancy`
+### Phase 1 — Adopt the package's abstract bases, unwind the composite PK, backfill slugs
 
-**Goal**: `vinta-django-orgs` is installed and our app answers to `tenancy`, with every table still at its old name and every model still behaving exactly as before.
+**Goal**: `Organization` and `OrganizationMembership` are the package's models, carrying our extra fields, with `groups` and `permissions` M2Ms available and unused. Our app is still called `organizations` and every table is still where it was.
 
-**Feature flag**: none.
-
-Changes:
-
-1. `@pyproject.toml`: add `vinta-django-orgs>=0.1.1,<0.2`. Pin the minor — the package is `0.1.1` and Development Status `Alpha`, so a minor bump may move the abstract bases.
-2. `@vinta_schedule_api/settings/base.py`: add `organizations.apps.OrganizationsConfig` to `INSTALLED_APPS`; rename `organizations` to `tenancy` in `INTERNAL_INSTALLED_APPS`. Add the `SHARED_SCHEMA_ORGANIZATIONS` dict with `ORGANIZATION_RETRIEVERS` pointing at our retriever (written in Phase 1b) and every non-goal retriever omitted.
-3. `git mv organizations/ tenancy/`, and add `label = "tenancy"` to its `AppConfig`.
-4. Pin `db_table` on every model in `tenancy/models.py` to its current `organizations_*` name.
-5. Mechanical sweep: 367 `from organizations...` imports and 223 non-migration `"organizations.X"` string references become `tenancy`. The 72 in-migration references are Phase 1b's problem, not this one.
-6. `@di_core/apps.py` wires `container.wire(packages=INTERNAL_INSTALLED_APPS)` — the renamed package must still be wired.
-
-Spec use-case: shared scaffolding — no use-case yet.
-
-Tests:
-- **Integration**: `tenancy/tests/test_app_label.py` — `Organization._meta.app_label == "tenancy"`, `Organization._meta.db_table == "organizations_organization"`, and `makemigrations --check --dry-run` reports no pending model changes beyond the label move.
-- The entire existing suite passes unchanged. That is the acceptance signal for a rename.
-
-**Suggested AI model**: Tier 2 (IDs in [resources/ai-models.yaml](../.claude/skills/plan-feature/resources/ai-models.yaml)). High file count but each edit is a mechanical substitution with an exact precedent; the judgement is concentrated in the settings block.
-
-**Reusable skills**: `add-env-var` is not needed (no new env vars). None otherwise.
-
-Acceptance: `grep -rn "from organizations" --include="*.py" tenancy/ calendar_integration/ payments/ audit/ webhooks/ public_api/ users/ accounts/ common/` returns only imports of the *package*, the suite is green, and no table was renamed.
-
----
-
-### Phase 1b — Move the migration graph, content types, and swappable settings
-
-**Goal**: Django's migration state and `django_content_type` agree that our models live in `tenancy`, and the package knows to use them.
+**Collapsed from the phases formerly numbered 1a, 1b, and 1c** (amended 2026-08-12 for package `0.2.0` — see the **Amendments** section). Phase 1a existed to rename our app to `tenancy`; Phase 1b existed to repair what that rename broke. `0.2.0` labels the package's own apps `vinta_orgs` / `vinta_orgs_custom_data`, so neither is needed. What survives is the substance of 1c plus one module from 1b (the retriever). Concretely, the following are **not** in this plan any more and must not be reintroduced: the `organizations/` → `tenancy/` move, `label = "tenancy"`, any `db_table` pin, the 79-file migration-graph rewrite, `0023_move_content_types_to_tenancy.py`, `audit/migrations/0002_backfill_subject_type_namespace.py`, and `rename_organizations_migration_history`.
 
 **Feature flag**: none.
 
 Changes:
 
-1. `@vinta_schedule_api/settings/base.py`: `ORGANIZATION_MODEL = "tenancy.Organization"`, `ORGANIZATION_MEMBERSHIP_MODEL = "tenancy.OrganizationMembership"`. These are top-level settings, not keys inside `SHARED_SCHEMA_ORGANIZATIONS` — Django's `Meta.swappable` reads them with a plain `getattr`.
-2. Rewrite the 72 in-migration `organizations.` references across the 79 migrations that carry them, and add `migrations.swappable_dependency(settings.ORGANIZATION_MODEL)` where the autodetector now requires it.
-3. Data migration: update `django_content_type.app_label` from `organizations` to `tenancy` for our models, and repoint the `auth_permission` rows that reference them. Idempotent — matches on the old label and no-ops if already moved.
-4. Write `common/org_retrievers.py::retrieve_by_x_organization_id`, reading the header by integer PK, and register it as the sole entry in `ORGANIZATION_RETRIEVERS`. Not yet consulted by anything — `TenantScopedViewMixin` starts using it in Phase 2b.
-5. Add `OrganizationMiddleware` to `MIDDLEWARE`? **No** — deliberately omitted. Context binding happens in `TenantScopedViewMixin`, after authentication. Recorded here because its absence is a decision, not an oversight.
+1. `@pyproject.toml`: add `vinta-django-orgs>=0.2,<0.3` and sync `uv.lock`. Pin the minor — the package is Development Status `Alpha`, and `0.2.0` is itself an app-label rename, which is precisely the kind of move a minor bump makes.
+2. `@vinta_schedule_api/settings/base.py`: add `vinta_orgs.apps.OrganizationsConfig` to `INSTALLED_APPS`, kept separate from `INTERNAL_INSTALLED_APPS` (which drives di_core's DI wiring and names only this project's apps). Set `ORGANIZATION_MODEL = "organizations.Organization"` and `ORGANIZATION_MEMBERSHIP_MODEL = "organizations.OrganizationMembership"` so the package's own models are `_meta.swapped` rather than leaving a phantom CASCADE relation on `User.delete()`. Add the `SHARED_SCHEMA_ORGANIZATIONS` dict with `ORGANIZATION_RETRIEVERS` pointing at our retriever (change 3) and every non-goal retriever omitted. `INTERNAL_INSTALLED_APPS` still names `organizations` — it is not renamed.
+3. Write `@common/org_retrievers.py::retrieve_by_x_organization_id`, reading `X-Organization-Id` by integer PK. Not yet consulted by anything — `TenantScopedViewMixin` starts using it in Phase 2b. (Carried over from the phase formerly numbered 1b, which is otherwise withdrawn; this module was never rename-dependent.)
+4. Resolve the admin double-registration with a supported call rather than a `sys.modules` patch: after `django.contrib.admin.autodiscover()` has run (or via the relevant `AppConfig.ready()`), `admin.site.unregister(...)` for whichever of the package's own admin registrations collide with `@organizations/admin.py`'s existing `ModelAdmin` registrations, then leave ours in place. **This is a security-relevant step, not cosmetic**: the package's `OrganizationMembershipAdmin` exposes `role`, `is_billing_owner`, and `groups` as unguarded staff-editable fields, which ours deliberately does not.
+5. Remove `pk = SafeCompositePrimaryKey("user", "organization")` from `OrganizationMembership`; add back a surrogate `id`. Keep the `uniq_membership_user_organization` constraint — the raw-SQL PROTECT FKs target it and must not be touched.
+6. Reparent both models onto `AbstractOrganization` / `AbstractOrganizationMembership` as shown in **Data Model Changes**. Drop `meta` and the two timestamp indexes. **Declare no `db_table`** — the app label is unchanged, so every default already matches the existing table; prove it with `makemigrations --check` rather than assuming, and pin only a model whose default would not match.
+7. `OrganizationMembershipManager` inherits `SingleOrganizationUnscopedManager`; set `default_manager_name = "objects"`. Getting this wrong scopes `user.memberships` and breaks every pre-selection lookup.
+8. Rename the user-side reverse accessor: `user.organization_memberships` becomes `user.memberships` at every call site.
+9. Slug backfill data migration, then `ALTER COLUMN slug SET NOT NULL`, then the `organization_slug_not_blank` CHECK constraint. Backfill derives `slugify(name)` with a numeric disambiguator on collision and an `org-<pk>` fallback when the derived value fails `@organizations/slug_validation.py`. `Organization.save()`'s runtime fallback is the **opaque** `org-<token>` form, not `slugify(name)`; the one sanctioned name-derived runtime path is `OrganizationService.create_organization`, which computes and passes an explicit slug itself. Both Guiding Decisions rows on slugs apply in full.
+10. Retire `evaluate_branding_write_gate`'s `NO_SLUG` condition explicitly, per the **Slug precondition for branding writes is retired** Guiding Decision — the CHECK constraint in change 9 makes it permanently unreachable. Keep the enum member dead-with-reason until Phase 4 deletes it, and **delete any test helper that manufactured the old state via `queryset.update(slug="")`** rather than leaving a test that fabricates an unreachable condition.
+11. `role` and `is_billing_owner` stay on the model, untouched and still read by every permission class. Nothing about authorization changes in this phase.
 
 Spec use-case: shared scaffolding — no use-case yet.
 
 Tests:
-- **Integration**: `tenancy/tests/test_content_type_migration.py` — the data migration is idempotent across two runs and leaves no `organizations`-labelled content type for our models.
-- **Integration**: `common/tests/test_org_retrievers.py` — the retriever resolves a valid header, returns `None` on a missing or non-integer one, and does not raise on an unknown PK.
+- **Integration**: `organizations/tests/test_app_identity.py` — `Organization._meta.app_label == "organizations"`, `Organization._meta.db_table == "organizations_organization"` (and the same for every other model in the app), the package's app is installed under label `vinta_orgs`, and `makemigrations --check --dry-run` reports nothing pending. This is the regression gate for the whole amendment: it fails loudly if a future change reintroduces a rename or a table move.
+- **Unit**: `organizations/tests/test_membership_pk.py` — a membership round-trips through save / refresh / delete on the surrogate PK; `uniq_membership_user_organization` still rejects a duplicate `(user, organization)`.
+- **Integration**: `calendar_integration/tests/test_membership_protect_fk.py` — deleting a membership with a `CalendarOwnership` still raises the raw-SQL `RESTRICT`, proving the FK survived the PK change. Note there are **five** such raw-SQL composite FKs across the repo, not two; enumerate them and cover each.
+- **Integration**: `organizations/tests/test_slug_backfill.py` — collision disambiguation, reserved-word fallback, idempotent re-run, NOT NULL after, and the CHECK constraint rejecting a blank slug written past `save()`.
+- **Unit**: `organizations/tests/test_membership_manager.py` — `user.memberships` returns rows with no organization bound (the unscoped-manager contract).
+- **Integration**: `common/tests/test_org_retrievers.py` — the retriever resolves a valid header, returns `None` on a missing, empty, or non-integer header, and returns `None` (never raises) on an unknown PK.
+- **Integration**: `organizations/tests/test_admin_registrations.py` — the membership admin registered in `admin.site` is ours, and exposes neither `role` nor `is_billing_owner` nor `groups` as an editable field.
 
-**Suggested AI model**: Tier 3. Migration-graph surgery across 79 files with cross-app dependencies; the autodetector's complaints require reading the graph, not pattern-matching.
+**Suggested AI model**: Tier 4 (IDs in [resources/ai-models.yaml](../.claude/skills/plan-feature/resources/ai-models.yaml)). Unwinding a composite PK while keeping a constraint that raw SQL depends on, against a base class whose manager semantics are subtle, is the hardest single phase here. The rename plumbing that used to surround this is gone, but none of the difficulty was in the rename.
 
-**Review models**: reviewer Tier 4 — a wrong `swappable_dependency` or a missed content-type row produces a migration graph that applies cleanly on an empty database and fails on a populated one, which is the failure mode CI is least likely to catch.
-
-**Reusable skills**: `add-migration` — the content-type data migration and the graph rewrite both go through it.
-
-Acceptance: `migrate` runs clean from zero on an empty database *and* from the pre-rename state on a seeded one; `makemigrations --check` reports nothing pending; the suite is green.
-
----
-
-### Phase 1c — Unwind the composite PK, subclass the abstract bases, backfill slugs
-
-**Goal**: `Organization` and `OrganizationMembership` are the package's models, carrying our extra fields, with `groups` and `permissions` M2Ms available and unused.
-
-**Feature flag**: none.
-
-Changes:
-
-1. Remove `pk = SafeCompositePrimaryKey("user", "organization")` from `OrganizationMembership`; add back a surrogate `id`. Keep the `uniq_membership_user_organization` constraint — the raw-SQL PROTECT FKs target it and must not be touched.
-2. Reparent both models onto `AbstractOrganization` / `AbstractOrganizationMembership` as shown in **Data Model Changes**. Drop `meta` and the two timestamp indexes.
-3. `OrganizationMembershipManager` inherits `SingleOrganizationUnscopedManager`; set `default_manager_name = "objects"`. Getting this wrong scopes `user.memberships` and breaks every pre-selection lookup.
-4. Rename the user-side reverse accessor: `user.organization_memberships` becomes `user.memberships` at every call site.
-5. Slug backfill data migration: `slugify(name)`, numeric disambiguator on collision, `org-<pk>` fallback when the derived value fails `tenancy/slug_validation.py`. Then `ALTER COLUMN slug SET NOT NULL`.
-6. `role` and `is_billing_owner` stay on the model, untouched and still read by every permission class. Nothing about authorization changes in this phase.
-
-Spec use-case: shared scaffolding — no use-case yet.
-
-Tests:
-- **Unit**: `tenancy/tests/test_membership_pk.py` — a membership round-trips through save / refresh / delete on the surrogate PK; `uniq_membership_user_organization` still rejects a duplicate `(user, organization)`.
-- **Integration**: `calendar_integration/tests/test_membership_protect_fk.py` — deleting a membership with a `CalendarOwnership` still raises the raw-SQL `RESTRICT`, proving the FK survived the PK change.
-- **Integration**: `tenancy/tests/test_slug_backfill.py` — collision disambiguation, reserved-word fallback, idempotent re-run, and NOT NULL after.
-- **Unit**: `tenancy/tests/test_membership_manager.py` — `user.memberships` returns rows with no organization bound (the unscoped-manager contract).
-
-**Suggested AI model**: Tier 4 (IDs in [resources/ai-models.yaml](../.claude/skills/plan-feature/resources/ai-models.yaml)). Unwinding a composite PK while keeping a constraint that raw SQL depends on, against a base class whose manager semantics are subtle, is the hardest single phase here.
-
-**Review models**: reviewer Tier 4, fixer Tier 3 — the PROTECT-FK interaction is the kind of thing that passes tests and fails in production.
+**Review models**: reviewer Tier 4, fixer Tier 3 — the PROTECT-FK interaction is the kind of thing that passes tests and fails in production, and change 4 is an authorization surface.
 
 **Reusable skills**: `add-migration`; `add-model` for the reparenting conventions.
 
-Acceptance: memberships have a surrogate PK, `groups` / `permissions` M2M tables exist and are empty, every organization has a valid non-null slug, the raw-SQL PROTECT FK still fires, and the suite is green with authorization behavior unchanged.
+Acceptance: our app is still labelled `organizations` with every table at its original name and no content-type or migration-history surgery anywhere in the diff; the package is installed under `vinta_orgs`; memberships have a surrogate PK; `groups` / `permissions` M2M tables exist and are empty; every organization has a valid non-null slug and a blank one is rejected by the database; all five raw-SQL PROTECT FKs still fire; the membership admin is ours; and the suite is green with authorization behavior unchanged.
 
 ---
 
@@ -333,16 +291,16 @@ Acceptance: all 28 models scope implicitly, an unbound query raises, the cross-o
 
 ### Phase 2b — Flip the remaining scoped models
 
-**Goal**: `audit`, `webhooks`, `public_api`, and `tenancy` finish the model layer; `TenantScopedViewMixin` binds the request's organization.
+**Goal**: `audit`, `webhooks`, `public_api`, and `organizations` finish the model layer; `TenantScopedViewMixin` binds the request's organization.
 
 **Feature flag**: none.
 
 Changes:
 
-1. Same flip as Phase 2a for the remaining 6 models and 6 relations across `@audit/models.py`, `@webhooks/models.py`, `@public_api/models.py`, `@tenancy/models.py`.
+1. Same flip as Phase 2a for the remaining 6 models and 6 relations across `@audit/models.py`, `@webhooks/models.py`, `@public_api/models.py`, `@organizations/models.py`.
 2. `@common/utils/view_utils.py`: after `TenantScopedViewMixin.initial()` resolves the membership, bind the organization to the context and unbind on response. The resolution table (400 on ambiguity, 403 on non-member, per-action opt-outs via `active_org_resolution_optional` / `active_org_optional_actions`) is unchanged — only the binding is new.
 3. `@public_api/middlewares.py::PublicApiSystemUserMiddleware` runs before DRF and resolves a system user; confirm it binds an organization before touching scoped models, or moves its scoped work behind the binding.
-4. Delete `OrganizationModel`, `BaseOrganizationModelManager`, `BaseOrganizationModelQuerySet` from `tenancy/`. `@common/fields.py`'s `TenantSafeForeignKey` and friends stay until Phase 6 — `OrganizationMembershipForeignKey` still builds on them.
+4. Delete `OrganizationModel`, `BaseOrganizationModelManager`, `BaseOrganizationModelQuerySet` from `organizations/`. `@common/fields.py`'s `TenantSafeForeignKey` and friends stay until Phase 6 — `OrganizationMembershipForeignKey` still builds on them.
 
 Spec use-case: shared scaffolding — no use-case yet.
 
@@ -373,14 +331,14 @@ Changes:
 2. Add `organizations.auth_backends.OrganizationModelBackend` to `AUTHENTICATION_BACKENDS`. It unions global and per-organization permissions and keys the org half on `get_current_organization()` — which Phase 2b now guarantees is bound during a request.
 3. Data migration: seed the three global groups and their permission mappings.
 4. Data migration: assign groups from existing state — `role == ADMIN` → `organization_admin`, `is_billing_owner` → `organization_billing_owner`, everything else → `organization_member`. Idempotent; `role` and `is_billing_owner` are read, not written.
-5. `@tenancy/services.py`: membership and invitation creation assigns groups *in addition to* setting `role`, so both representations stay consistent until Phase 6 drops one.
+5. `@organizations/services.py`: membership and invitation creation assigns groups *in addition to* setting `role`, so both representations stay consistent until Phase 6 drops one.
 6. `billing_recipients()` switches to the permission-shaped query from **Manager plumbing**.
 
 Spec use-case: shared scaffolding — no use-case yet.
 
 Tests:
-- **Unit**: `tenancy/tests/test_permission_backend.py` — an admin's membership resolves the four permissions under a bound organization and **none** under a different bound organization; the union with global permissions works; an unbound context yields no organization permissions.
-- **Integration**: `tenancy/tests/test_group_backfill_migration.py` — every combination of `role` × `is_billing_owner` maps to the right groups, and re-running changes nothing.
+- **Unit**: `organizations/tests/test_permission_backend.py` — an admin's membership resolves the four permissions under a bound organization and **none** under a different bound organization; the union with global permissions works; an unbound context yields no organization permissions.
+- **Integration**: `organizations/tests/test_group_backfill_migration.py` — every combination of `role` × `is_billing_owner` maps to the right groups, and re-running changes nothing.
 - **Integration**: `payments/tests/test_dunning_recipients.py` — `billing_recipients` returns the same set before and after the query change. Pin literal expected recipients rather than deriving the expectation from the same filter under test.
 
 **Suggested AI model**: Tier 3. Established Django patterns, but the backend's per-organization cache semantics and the backfill's edge cases need care.
@@ -399,18 +357,19 @@ Acceptance: `user.has_perm("payments.manage_billing")` is `True` under a bound o
 
 Changes:
 
-1. `@tenancy/permissions.py`: `IsOrganizationAdmin` reads `tenancy.manage_members`. `IsBillingOwnerOrAdmin`'s direct check reads `payments.manage_billing`; **its acting-reseller-root branch keeps its bespoke subtree walk** — the backend keys on the current organization and cannot see a grant held in an ancestor, so `is_target_in_subtree` and the `can_invite_organizations` check stay, with only the role sub-check swapped.
+1. `@organizations/permissions.py`: `IsOrganizationAdmin` reads `organizations.manage_members`. `IsBillingOwnerOrAdmin`'s direct check reads `payments.manage_billing`; **its acting-reseller-root branch keeps its bespoke subtree walk** — the backend keys on the current organization and cannot see a grant held in an ancestor, so `is_target_in_subtree` and the `can_invite_organizations` check stay, with only the role sub-check swapped.
 2. `OrganizationManagementPermission` keeps its membership-*absence* gate verbatim; nothing about it is permission-shaped.
-3. Both branding gates keep their entitlement logic; only the role half becomes `tenancy.manage_branding`. `user_administers_branding_eligible_organization` (the S3Direct `auth` callable) iterates permitted memberships instead of `role=ADMIN` ones.
+3. Both branding gates keep their entitlement logic; only the role half becomes `organizations.manage_branding`. `user_administers_branding_eligible_organization` (the S3Direct `auth` callable) iterates permitted memberships instead of `role=ADMIN` ones.
 4. `@users/models.py::is_organization_admin(organization)` becomes a `has_perm` wrapper, keeping its signature so `@calendar_integration/permissions.py` needs no change beyond what it inherits.
 5. Sweep the remaining classes across `@calendar_integration/permissions.py` (7 classes), `@public_api/permissions.py` (2), `@users/permissions.py` (1).
+6. Delete the dead-with-reason `BrandingWriteGateReason.NO_SLUG` (and its `BRANDING_GATE_EXCEPTIONS` entry and the `if not organization.slug` check in `evaluate_branding_write_gate`) from `@organizations/permissions.py` — retired in Phase 1 (see the plan's Guiding Decisions "Slug precondition for branding writes is retired" row) once `organization_slug_not_blank` made it permanently unreachable through any supported write path. `OrganizationSlugRequiredForBrandingError` in `@organizations/exceptions.py` goes with it once nothing references it.
 
 Spec use-case: shared scaffolding — no use-case yet.
 
 Tests:
-- **Integration**: `tenancy/tests/test_permissions_parity.py` — for each of the 15 permission classes, a matrix of (membership state × target object) yields the same allow/deny as before the change. This is the phase's contract.
+- **Integration**: `organizations/tests/test_permissions_parity.py` — for each of the 15 permission classes, a matrix of (membership state × target object) yields the same allow/deny as before the change. This is the phase's contract.
 - **Integration**: `payments/tests/test_reseller_root_billing.py` — an admin of a reseller parent may still manage a descendant's billing while the bound organization is the descendant. This is the case `has_perm` alone gets wrong, so it gets its own test.
-- **Integration**: `tenancy/tests/test_branding_gate_parity.py` — entitled-but-unpermitted and permitted-but-unentitled both still deny.
+- **Integration**: `organizations/tests/test_branding_gate_parity.py` — entitled-but-unpermitted and permitted-but-unentitled both still deny.
 
 **Suggested AI model**: Tier 4. Fifteen classes, four of which do not fit the model being migrated to; the risk is silently widening a grant.
 
@@ -430,18 +389,18 @@ Acceptance: no permission class reads `role` or `is_billing_owner`, the parity m
 
 Changes:
 
-1. `@tenancy/serializers.py`: `MyMembershipSerializer` and the `mine` serializer swap `role` for `permissions`; the member-list serializer drops `role` and `is_billing_owner`. `can_manage_branding` stays a distinct field for the reason given in **API Design**.
-2. `@tenancy/views.py`: `update-role` becomes `POST /organization-members/{user_id}/groups/`, preserving idempotency and the last-admin protection restated as "the last active member holding `tenancy.manage_members`".
+1. `@organizations/serializers.py`: `MyMembershipSerializer` and the `mine` serializer swap `role` for `permissions`; the member-list serializer drops `role` and `is_billing_owner`. `can_manage_branding` stays a distinct field for the reason given in **API Design**.
+2. `@organizations/views.py`: `update-role` becomes `POST /organization-members/{user_id}/groups/`, preserving idempotency and the last-admin protection restated as "the last active member holding `organizations.manage_members`".
 3. `@public_api/types.py`: delete `OrgRole`; the invitation input takes `groups`.
-4. `@tenancy/graphql.py` and `@public_api/queries.py` / `mutations.py`: update the affected fields.
+4. `@organizations/graphql.py` and `@public_api/queries.py` / `mutations.py`: update the affected fields.
 5. Regenerate `@schema.yml`.
 6. Produce the client handoff via `handoff-to-client`.
 
 Spec use-case: shared scaffolding — no use-case yet.
 
 Tests:
-- **Integration**: `tenancy/tests/test_membership_api_surface.py` — responses carry `permissions` and no `role`; the permission list matches what the backend resolves.
-- **Integration**: `tenancy/tests/test_group_assignment_endpoint.py` — assignment, idempotent re-assignment, rejection of the last-admin demotion, rejection of an unknown group name.
+- **Integration**: `organizations/tests/test_membership_api_surface.py` — responses carry `permissions` and no `role`; the permission list matches what the backend resolves.
+- **Integration**: `organizations/tests/test_group_assignment_endpoint.py` — assignment, idempotent re-assignment, rejection of the last-admin demotion, rejection of an unknown group name.
 - **Integration**: `public_api/tests/test_invitation_groups.py` — the GraphQL invitation accepts `groups` and defaults to `organization_member`.
 
 **Suggested AI model**: Tier 3. Multi-surface change with real validation rules, against established serializer and strawberry precedent.
@@ -462,7 +421,7 @@ Changes:
 
 1. Drop the `role` and `is_billing_owner` columns from `OrganizationMembership`; delete `OrganizationRole`.
 2. Delete from `@common/fields.py`: `TenantSafeForeignKey`, `TenantSafeOneToOneField`, `SafeCompositePrimaryKey`, `_SafeCompositeAttribute`. Keep `OrganizationMembershipForeignKey` (see **Open Questions**), reparented onto the package's field classes.
-3. Delete the compatibility shims left in `@tenancy/services.py` that wrote both representations.
+3. Delete the compatibility shims left in `@organizations/services.py` that wrote both representations.
 4. `grep -rn "OrganizationRole\|is_billing_owner\|OrganizationModel\b" --include="*.py"` across the repo returns nothing outside migrations.
 5. Remove tests that exercised the dual-write period.
 
@@ -487,13 +446,13 @@ Acceptance: the grep in change 4 returns nothing outside migrations, the suite i
 
 **Query plans change.** `AUTO_DEFER_SAFE_JOINS` defaults to `True`, splitting `select_related` on safe relations into a second query — the package's own [benchmarks](https://github.com/vintasoftware/vinta-django-orgs/blob/main/benchmarks/RESULTS.md) explain why (PostgreSQL costs the key and organization conditions as independent when they are not). The `class_prepared` receiver also replaces each FK's single-column index with `(organization, pk)`. Both are improvements in the general case; neither is free on a specific hot query. Review the index migration per model rather than accepting the autodetector's output.
 
-**Locks.** Table renames are avoided entirely by pinning `db_table`. The remaining DDL is index add/drop per scoped model, the membership PK change, `ALTER COLUMN slug SET NOT NULL`, and two column drops. Pre-launch, so lock duration is not a production concern — but the migrations are written as if it were, because that posture is cheap now and expensive to retrofit.
+**Locks.** No table is renamed and no `db_table` pin is needed — the app label never changes, so every table stays at the name Django already derives for it. The remaining DDL is index add/drop per scoped model, the membership PK change, `ALTER COLUMN slug SET NOT NULL`, the `organization_slug_not_blank` CHECK, and two column drops. Pre-launch, so lock duration is not a production concern — but the migrations are written as if it were, because that posture is cheap now and expensive to retrofit.
 
-**Alpha dependency.** `vinta-django-orgs` is `0.1.1`, Development Status `Alpha`, first published to PyPI on 2026-08-11, and its `0.1.0` release notes already record a breaking change to `OrganizationMembership.objects` scoping. Pinned `<0.2`. Being the package's author is what makes this acceptable — a breaking upstream change is a decision, not a surprise.
+**Alpha dependency.** `vinta-django-orgs` is `0.2.0`, Development Status `Alpha`, first published to PyPI on 2026-08-11. Pinned `>=0.2,<0.3`. Two minor releases have each carried a breaking change already — `0.1.0` to `OrganizationMembership.objects` scoping, and `0.2.0` renaming both app labels — so the minor pin is doing real work. Being the package's author is what makes this acceptable: a breaking upstream change is a decision, not a surprise. **This plan was itself amended once for exactly such a bump** (see **Amendments**), which is the empirical case for keeping the pin tight and re-reading the diff on every bump rather than trusting semver alone.
 
-**Rollback.** Pre-launch posture: no per-phase reverse path is guaranteed. The practical unit of rollback is the phase branch. Phases 0, 1a, and 1b are cleanly revertible (no destructive DDL); 1c onward are not, because the PK change and the slug NOT NULL constraint discard information.
+**Rollback.** Pre-launch posture: no per-phase reverse path is guaranteed. The practical unit of rollback is the phase branch. Phase 0 is cleanly revertible (no DDL at all); Phase 1 onward is not, because the PK change, the slug NOT NULL constraint, and the CHECK constraint discard information.
 
-**Backfills.** Three, all idempotent and all small enough to run in one transaction pre-launch: content types (Phase 1b), slugs (Phase 1c), group assignment (Phase 3). Written batched and resumable anyway — see `add-one-off-script`'s contract for the shape — so they remain usable if the pre-launch assumption changes.
+**Backfills.** Two, both idempotent and both small enough to run in one transaction pre-launch: slugs (Phase 1) and group assignment (Phase 3). The content-type backfill the original plan carried is withdrawn along with the app rename. Written batched and resumable anyway — see `add-one-off-script`'s contract for the shape — so they remain usable if the pre-launch assumption changes.
 
 **Deploy ordering.** Single repo, no cross-repo producer. The one external ordering constraint is Phase 5: the web SPA and partner integrations break when `role` leaves the API, so the client handoff must land before that phase deploys.
 
@@ -515,26 +474,16 @@ Acceptance: the grep in change 4 returns nothing outside migrations, the suite i
 - [organizations/admin.py](organizations/admin.py)
 - `@common/tests/test_organization_context.py`, `@calendar_integration/tests/tasks/test_sync_task_scoping.py` (new)
 
-**Phase 1a**
-- [pyproject.toml](pyproject.toml), [uv.lock](uv.lock)
-- [vinta_schedule_api/settings/base.py](vinta_schedule_api/settings/base.py)
-- `organizations/` → `tenancy/` (whole app: 19 modules, 23 migrations, 18 test modules)
-- [di_core/apps.py](di_core/apps.py)
-- 367 import sites and 223 string references across `calendar_integration`, `payments`, `audit`, `webhooks`, `public_api`, `users`, `accounts`, `common`
-- `@tenancy/tests/test_app_label.py` (new)
-
-**Phase 1b**
-- [vinta_schedule_api/settings/base.py](vinta_schedule_api/settings/base.py)
-- 72 in-migration references across 79 migrations in `calendar_integration`, `payments`, `audit`, `webhooks`, `public_api`, `users`
-- `@tenancy/migrations/00XX_move_content_types.py` (new)
+**Phase 1**
+- [pyproject.toml](pyproject.toml), [uv.lock](uv.lock) — `vinta-django-orgs>=0.2,<0.3`
+- [vinta_schedule_api/settings/base.py](vinta_schedule_api/settings/base.py) — install `vinta_orgs`, `ORGANIZATION_MODEL` / `ORGANIZATION_MEMBERSHIP_MODEL`, `SHARED_SCHEMA_ORGANIZATIONS`, admin double-registration fix
+- [organizations/models.py](organizations/models.py), [organizations/managers.py](organizations/managers.py), [organizations/querysets.py](organizations/querysets.py), [organizations/admin.py](organizations/admin.py), [organizations/permissions.py](organizations/permissions.py), `@organizations/slug_generation.py` (new)
+- `@organizations/migrations/00XX_unwind_composite_pk.py`, `@organizations/migrations/00XX_backfill_slugs.py`, `@organizations/migrations/00XX_slug_not_null_and_check.py` (new)
 - `@common/org_retrievers.py` (new)
-- `@tenancy/tests/test_content_type_migration.py`, `@common/tests/test_org_retrievers.py` (new)
+- `user.organization_memberships` call sites across `organizations`, `payments`, `calendar_integration`, `public_api`
+- `@organizations/tests/test_app_identity.py`, `@organizations/tests/test_membership_pk.py`, `@organizations/tests/test_slug_backfill.py`, `@organizations/tests/test_membership_manager.py`, `@organizations/tests/test_admin_registrations.py`, `@common/tests/test_org_retrievers.py`, `@calendar_integration/tests/test_membership_protect_fk.py` (new)
 
-**Phase 1c**
-- [organizations/models.py](organizations/models.py) → `tenancy/models.py`, [organizations/managers.py](organizations/managers.py), [organizations/querysets.py](organizations/querysets.py)
-- `@tenancy/migrations/00XX_unwind_composite_pk.py`, `@tenancy/migrations/00XX_backfill_slugs.py` (new)
-- `user.organization_memberships` call sites across `tenancy`, `payments`, `calendar_integration`, `public_api`
-- `@tenancy/tests/test_membership_pk.py`, `@tenancy/tests/test_slug_backfill.py`, `@tenancy/tests/test_membership_manager.py`, `@calendar_integration/tests/test_membership_protect_fk.py` (new)
+**Not touched** (withdrawn with the app rename — see **Amendments**): no app directory move, no `di_core/apps.py` change, no import sweep across the repo, no migration-graph rewrite, no content-type migration, no `audit` namespace backfill, no migration-history management command.
 
 **Phase 2a**
 - [calendar_integration/models.py](calendar_integration/models.py) — 28 models, 59 relations
@@ -543,31 +492,45 @@ Acceptance: the grep in change 4 returns nothing outside migrations, the suite i
 - `@calendar_integration/tests/test_implicit_scoping.py`, `@calendar_integration/tests/test_safe_relation_joins.py` (new); query-count assertions across the existing suite
 
 **Phase 2b**
-- [audit/models.py](audit/models.py), [webhooks/models.py](webhooks/models.py), [public_api/models.py](public_api/models.py), `tenancy/models.py`
+- [audit/models.py](audit/models.py), [webhooks/models.py](webhooks/models.py), [public_api/models.py](public_api/models.py), `organizations/models.py`
 - [common/utils/view_utils.py](common/utils/view_utils.py), [public_api/middlewares.py](public_api/middlewares.py)
-- `tenancy/managers.py`, `tenancy/querysets.py` — delete `OrganizationModel`, `BaseOrganizationModelManager`, `BaseOrganizationModelQuerySet`
+- `organizations/managers.py`, `organizations/querysets.py` — delete `OrganizationModel`, `BaseOrganizationModelManager`, `BaseOrganizationModelQuerySet`
 - `@common/tests/test_tenant_scoped_binding.py`, `@public_api/tests/test_system_user_scoping.py`, `@audit/tests/test_audit_scoping.py` (new)
 
 **Phase 3**
-- `tenancy/models.py` (`Meta.permissions`), [payments/models.py](payments/models.py) (`Meta.permissions`)
+- `organizations/models.py` (`Meta.permissions`), [payments/models.py](payments/models.py) (`Meta.permissions`)
 - [vinta_schedule_api/settings/base.py](vinta_schedule_api/settings/base.py) — `AUTHENTICATION_BACKENDS`
-- `@tenancy/migrations/00XX_seed_permission_groups.py`, `@tenancy/migrations/00XX_backfill_membership_groups.py` (new)
-- `tenancy/services.py`, `tenancy/querysets.py` (`billing_recipients`)
-- `@tenancy/tests/test_permission_backend.py`, `@tenancy/tests/test_group_backfill_migration.py`, `@payments/tests/test_dunning_recipients.py` (new)
+- `@organizations/migrations/00XX_seed_permission_groups.py`, `@organizations/migrations/00XX_backfill_membership_groups.py` (new)
+- `organizations/services.py`, `organizations/querysets.py` (`billing_recipients`)
+- `@organizations/tests/test_permission_backend.py`, `@organizations/tests/test_group_backfill_migration.py`, `@payments/tests/test_dunning_recipients.py` (new)
 
 **Phase 4**
-- `tenancy/permissions.py`, [calendar_integration/permissions.py](calendar_integration/permissions.py), [public_api/permissions.py](public_api/permissions.py), [users/permissions.py](users/permissions.py), [users/models.py](users/models.py)
-- `@tenancy/tests/test_permissions_parity.py`, `@payments/tests/test_reseller_root_billing.py`, `@tenancy/tests/test_branding_gate_parity.py` (new)
+- `organizations/permissions.py`, [calendar_integration/permissions.py](calendar_integration/permissions.py), [public_api/permissions.py](public_api/permissions.py), [users/permissions.py](users/permissions.py), [users/models.py](users/models.py)
+- `@organizations/tests/test_permissions_parity.py`, `@payments/tests/test_reseller_root_billing.py`, `@organizations/tests/test_branding_gate_parity.py` (new)
 
 **Phase 5**
-- `tenancy/serializers.py`, `tenancy/views.py`, `tenancy/routes.py`, `tenancy/graphql.py`
+- `organizations/serializers.py`, `organizations/views.py`, `organizations/routes.py`, `organizations/graphql.py`
 - [public_api/types.py](public_api/types.py), [public_api/queries.py](public_api/queries.py), `public_api/mutations.py`
 - [schema.yml](schema.yml) (regenerated)
 - `@.vinta-ai-workflows/client-handoffs/2026-XX-XX-membership-permissions.md` (new)
-- `@tenancy/tests/test_membership_api_surface.py`, `@tenancy/tests/test_group_assignment_endpoint.py`, `@public_api/tests/test_invitation_groups.py` (new)
+- `@organizations/tests/test_membership_api_surface.py`, `@organizations/tests/test_group_assignment_endpoint.py`, `@public_api/tests/test_invitation_groups.py` (new)
 
 **Phase 6**
-- `@tenancy/migrations/00XX_drop_role_and_billing_owner.py` (new)
+- `@organizations/migrations/00XX_drop_role_and_billing_owner.py` (new)
 - [common/fields.py](common/fields.py) — delete `TenantSafeForeignKey`, `TenantSafeOneToOneField`, `SafeCompositePrimaryKey`, `_SafeCompositeAttribute`
-- `tenancy/services.py` — delete dual-write shims
-- Dual-write-period tests across `tenancy/tests/`
+- `organizations/services.py` — delete dual-write shims
+- Dual-write-period tests across `organizations/tests/`
+
+## Amendments
+
+- **2026-08-12** — Retargeted from `vinta-django-orgs` `0.1.1` to `0.2.0`, and **withdrew the `organizations` → `tenancy` app rename entirely**.
+
+  **Why.** `0.1.1` shipped its Django app under the label `organizations`, identical to ours. The original plan resolved that collision by renaming *our* app to `tenancy` and pinning `db_table` on every model — and that rename, not the package adoption, is what generated Phase 1b in its entirety: a `django_content_type` / `auth_permission` relabel migration, an `audit.subject_type` namespace backfill (our audit rows persist the app label as a string, so the rename silently split audit history in two), and a `rename_organizations_migration_history` management command for databases seeded before the branch. `0.2.0` renames the *package's* Python packages and app labels to `vinta_orgs` / `vinta_orgs_custom_data` for precisely this reason. With no collision, every one of those artifacts is unnecessary.
+
+  **Verified before acting**, by diffing the two wheels module-by-module with the package name normalized: `mixins`, `fields`, `managers`, `querysets`, `state`, `models`, `conf`, `settings`, `permissions`, `middleware`, `organization_retrievers`, `auth_backends`, `serializers`, `admin`, and `utils` differ **only** in import paths and docstrings. `0.2.0` is a pure rename — no behavioral change to the abstract bases, the safe-relation fields, or the scoping managers. Its migrations are squashed to a single `0001_initial` per app, and the top-level setting names (`ORGANIZATION_MODEL`, `ORGANIZATION_MEMBERSHIP_MODEL`, `SHARED_SCHEMA_ORGANIZATIONS`) are unchanged.
+
+  **Affected phases**: 1a (withdrawn), 1b (withdrawn except `common/org_retrievers.py`, which was never rename-dependent), 1c (retained in substance, renumbered) — collapsed into a single **Phase 1**. Phase 0 is untouched: it predates the rename and imports nothing from the package. Phases 2a–6 change only in that paths read `organizations/` rather than `tenancy/` and permission codenames read `organizations.*` rather than `tenancy.*`.
+
+  **Branches**: `plan/vinta-django-orgs-migration/phase-1a`, `phase-1b`, and `phase-1c` are abandoned in place for audit and their PRs (#255, #256, #257) closed unmerged; a new `phase-1` branches off `phase-0`. Nothing had been merged to `main`, no branch had more than one author, and no PR carried a review — which is what made withdrawing cheaper than building forward on top of a rename we no longer wanted. In-flight Phase 2a work was preserved on `salvage/phase-2a-pre-amend` before any rewrite.
+
+  **What must not come back.** The withdrawn artifacts are named explicitly in the **App-label collision — none** Guiding Decision and in Phase 1's collapse note, and `organizations/tests/test_app_identity.py` is the regression gate: it asserts our app label and every table name, so a future change that reintroduces a rename or a table move fails loudly rather than quietly re-earning Phase 1b.
