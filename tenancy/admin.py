@@ -13,6 +13,41 @@ every ``.objects`` query below (``Organization.objects.filter(slug=...)`` in
 already runs on Django's stock, unscoped manager, not
 ``tenancy.managers.BaseOrganizationModelManager``. This note exists so that fact is
 recorded rather than silently assumed.
+
+Admin double registration (Phase 1c)
+------------------------------------
+``vinta-django-orgs``' own ``organizations/admin.py`` ends with::
+
+    admin.site.register(get_organization_model(), OrganizationAdmin)
+    admin.site.register(get_organization_membership_model(), OrganizationMembershipAdmin)
+
+Those two calls resolve the *swappable* settings, so on this project they
+register ``tenancy.Organization`` and ``tenancy.OrganizationMembership`` -- and
+``admin.site.register`` refuses a model it already knows, so whichever of the two
+``admin`` modules ``autodiscover()`` imports second raises ``AlreadyRegistered``.
+The package's own docstring names the supported resolution: "A project that
+swapped either one and wants a different admin for it should unregister first."
+
+That is what the module-level block below does. Importing ``organizations.admin``
+explicitly makes the ordering deterministic rather than a function of
+``INSTALLED_APPS`` order (``autodiscover_modules`` is a no-op for an already
+imported module, so whichever order it walks, the package's registrations exist
+by the time ours are installed and are dropped exactly once). It is also
+re-entrant in the two ways that matter: the module body runs once per process,
+so a second ``AdminConfig.ready()`` -- which ``override_settings(INSTALLED_APPS=...)``
+triggers by repopulating the app registry -- re-imports nothing and leaves
+``admin.site._registry`` holding *our* ``ModelAdmin``; and the unregister is
+guarded on ``is_registered`` so it cannot raise ``NotRegistered`` if the package
+ever stops registering.
+
+Only ``Organization`` is taken over. ``OrganizationMembership`` has no
+``ModelAdmin`` of ours to collide with, so the package's
+``OrganizationMembershipAdmin`` (which ``select_related``s user + organization
+and prefetches groups, precisely to keep its changelist from N+1-ing on
+``__str__``) is left registered as the project's membership admin.
+
+No ``sys.modules`` patching: the Phase 1a attempt at that was rejected in review,
+and nothing here needs it.
 """
 
 from typing import Annotated, Any
@@ -22,11 +57,17 @@ from django.contrib import admin
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.http import HttpRequest
 
+import organizations.admin  # noqa: F401 -- imported for its registration side effect
 from dependency_injector.wiring import Provide, inject
 
 from payments.services.subscription_service import SubscriptionService
 from tenancy.models import Organization, OrganizationBranding
 from tenancy.slug_validation import validate_organization_slug
+
+
+if admin.site.is_registered(Organization):
+    # The package registered it (see the module docstring). Ours replaces it.
+    admin.site.unregister(Organization)
 
 
 class OrganizationAdminForm(forms.ModelForm):
@@ -64,13 +105,20 @@ class OrganizationAdminForm(forms.ModelForm):
     def clean_slug(self) -> str | None:
         """Run the shared slug rules, then check uniqueness against the DB.
 
-        A blank submission normalizes to ``None`` (the model's NULL-when-unset
-        contract) before the uniqueness check — otherwise two organizations both
-        left blank would collide on the stored empty string, which is not the
-        "multiple NULLs coexist" behavior the field is nullable for.
+        A blank submission is refused on an organization that already has a slug:
+        the column became NOT NULL in Phase 1c of the vinta-django-orgs migration
+        and "unset it" is no longer expressible. Mirrors
+        ``OrganizationSerializer.validate_slug`` deliberately — the two write
+        surfaces must not disagree about what blank means. On the *add* form,
+        blank still passes through as ``None`` and ``Organization.save()`` derives
+        one from the name.
         """
         value = self.cleaned_data.get("slug")
         if not value:
+            if self.instance.pk is not None and self.instance.slug:
+                raise forms.ValidationError(
+                    "An organization's slug cannot be cleared. Submit a new slug instead."
+                )
             return None
 
         try:

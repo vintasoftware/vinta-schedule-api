@@ -11,6 +11,7 @@ from model_bakery import baker
 
 from tenancy.invitation_urls import build_invitation_accept_url
 from tenancy.models import Organization
+from tenancy.tests.helpers import clear_organization_slug
 
 
 ACCEPT_URLS = {
@@ -31,7 +32,7 @@ class TestBuildInvitationAcceptUrl:
 
     def test_branding_root_with_no_slug_uses_the_plain_template(self, settings, db):
         settings.HEADLESS_FRONTEND_URLS = ACCEPT_URLS
-        org = baker.make(Organization, slug=None)
+        org = clear_organization_slug(baker.make(Organization))
 
         url = build_invitation_accept_url(org, "tok123")
 

@@ -25,8 +25,13 @@ class SystemUser(OrganizationModel):
         blank=True,
     )
     # Membership reference via the (organization_id, scoped_to_membership_user_id)
-    # composite join rather than a real FK. Django 6 forbids a real FK to a
-    # composite-PK model, and OrganizationMembership has a composite PK.
+    # composite join rather than a real FK. Originally forced: Django 6 forbids a
+    # real FK to a composite-PK model, which OrganizationMembership was. It has a
+    # surrogate ``id`` again since Phase 1c of the vinta-django-orgs migration, so
+    # a real FK became legal -- and is deliberately not taken (see that plan's
+    # Open Questions): the raw-SQL composite PROTECT FKs already bind to
+    # ``uniq_membership_user_organization``, and repointing at a surrogate id
+    # would cost a new column, a backfill and a constraint rebind to buy nothing.
     # This contributes a concrete ``scoped_to_membership_user_id`` column plus a
     # ForeignObject descriptor ``scoped_to_membership``. NULL = organization-wide token.
     scoped_to_membership = OrganizationMembershipForeignKey(

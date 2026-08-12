@@ -2,6 +2,8 @@ from collections.abc import Sequence
 
 from django.db.models import Manager
 
+from organizations.managers import SingleOrganizationUnscopedManager
+
 from tenancy.querysets import (
     BaseOrganizationModelQuerySet,
     OrganizationInvitationQuerySet,
@@ -9,8 +11,34 @@ from tenancy.querysets import (
 )
 
 
-class OrganizationMembershipManager(Manager):
-    """Manager for OrganizationMembership with domain-specific query methods."""
+class OrganizationMembershipManager(SingleOrganizationUnscopedManager):
+    """Manager for OrganizationMembership with domain-specific query methods.
+
+    Inherits ``SingleOrganizationUnscopedManager``, **not** ``models.Manager``
+    and **not** the scoped ``SingleOrganizationModelManager``. Two reasons, and
+    both are load-bearing:
+
+    * **Unscoped.** A membership is how an organization gets *selected*, so
+      scoping the membership table to the selected organization is circular.
+      ``AbstractOrganizationMembership`` sets its own ``objects`` to this class
+      for exactly that reason; replacing it with a scoped manager would empty
+      ``user.memberships`` (listing the organizations a user belongs to),
+      first-membership provisioning at signup, and every invitation-time "is
+      this user already a member" check -- all of which run before anything has
+      been selected. Django builds the reverse accessors from
+      ``_default_manager.__class__``, so the mistake would propagate to
+      ``user.memberships`` and ``organization.memberships`` too.
+    * **Still organization-aware.** Being the unscoped manager does not mean
+      losing the scoping *methods*: ``filter_by_organization(org)`` and
+      ``for_current_organization()`` come along, so a caller that does want one
+      organization says so explicitly.
+
+    ``get_queryset`` returns ``OrganizationMembershipQuerySet``, which subclasses
+    the package's ``SingleOrganizationQuerySet`` -- the methods
+    ``Manager.from_queryset`` copied onto this class all delegate to
+    ``self.get_queryset()``, so returning a plain ``QuerySet`` here would break
+    them.
+    """
 
     def get_queryset(self) -> OrganizationMembershipQuerySet:
         return OrganizationMembershipQuerySet(self.model, using=self._db)

@@ -30,6 +30,7 @@ from tenancy.models import (
     OrganizationMembership,
     OrganizationRole,
 )
+from tenancy.tests.helpers import clear_organization_slug
 
 
 @pytest.fixture
@@ -2337,6 +2338,12 @@ class TestUpdateBrandingSlugInOneCall:
 
     def _org_with_branding_scope(self, **org_kwargs):
         org = baker.make(Organization, can_invite_organizations=False, parent=None, **org_kwargs)
+        if "slug" not in org_kwargs:
+            # "no public identifier yet" -- the write gate's NO_SLUG
+            # precondition, which these tests exist to exercise. Since Phase 1c
+            # of the vinta-django-orgs migration a saved organization always has
+            # a slug, so the state has to be forced. See the helper's docstring.
+            clear_organization_slug(org)
         auth_service = PublicAPIAuthService()
         system_user, token = auth_service.create_system_user(
             integration_name="branding_integration", organization=org
@@ -2350,7 +2357,7 @@ class TestUpdateBrandingSlugInOneCall:
         from di_core.containers import container
 
         org, auth_service, system_user, token = self._org_with_branding_scope()
-        assert org.slug is None
+        assert not org.slug
 
         with container.public_api_auth_service.override(auth_service):
             response = self.client.post(
@@ -2410,7 +2417,7 @@ class TestUpdateBrandingSlugInOneCall:
         from di_core.containers import container
 
         org, auth_service, system_user, token = self._org_with_branding_scope()
-        assert org.slug is None
+        assert not org.slug
 
         with container.public_api_auth_service.override(auth_service):
             response = self.client.post(
@@ -2434,7 +2441,7 @@ class TestUpdateBrandingSlugInOneCall:
         assert data["errors"]
 
         org.refresh_from_db()
-        assert org.slug is None
+        assert not org.slug
         assert not OrganizationBranding.objects.filter(organization=org).exists()
 
     def test_colliding_slug_rejects_without_partially_applying(self):
@@ -2445,7 +2452,7 @@ class TestUpdateBrandingSlugInOneCall:
 
         baker.make(Organization, parent=None, slug="already-taken-slug")
         org, auth_service, system_user, token = self._org_with_branding_scope()
-        assert org.slug is None
+        assert not org.slug
 
         with container.public_api_auth_service.override(auth_service):
             response = self.client.post(
@@ -2469,7 +2476,7 @@ class TestUpdateBrandingSlugInOneCall:
         assert "already exists" in str(data["errors"]).lower()
 
         org.refresh_from_db()
-        assert org.slug is None
+        assert not org.slug
         assert not OrganizationBranding.objects.filter(organization=org).exists()
 
     def test_slug_collision_surfacing_as_integrity_error_is_a_friendly_graphql_error(self):
@@ -2482,7 +2489,7 @@ class TestUpdateBrandingSlugInOneCall:
         transaction (verified here by asserting the org's slug is unchanged
         afterwards, i.e. the save's own savepoint rolled back cleanly)."""
         baker.make(Organization, parent=None, slug="race-slug")
-        org = baker.make(Organization, parent=None)
+        org = clear_organization_slug(baker.make(Organization, parent=None))
 
         with patch("public_api.mutations.Organization.objects.filter") as mock_filter:
             mock_filter.return_value.exclude.return_value.exists.return_value = False
@@ -2490,7 +2497,7 @@ class TestUpdateBrandingSlugInOneCall:
                 _apply_input_slug(org, "race-slug")
 
         org.refresh_from_db()
-        assert org.slug is None
+        assert not org.slug
 
     def test_valid_slug_rolls_back_when_a_later_validation_fails(self):
         """Transaction check: the slug write and the branding upsert are one
@@ -2501,7 +2508,7 @@ class TestUpdateBrandingSlugInOneCall:
         from di_core.containers import container
 
         org, auth_service, system_user, token = self._org_with_branding_scope()
-        assert org.slug is None
+        assert not org.slug
 
         with container.public_api_auth_service.override(auth_service):
             response = self.client.post(
@@ -2526,7 +2533,7 @@ class TestUpdateBrandingSlugInOneCall:
         assert "invalid primary_color" in str(data["errors"]).lower()
 
         org.refresh_from_db()
-        assert org.slug is None, (
+        assert not org.slug, (
             "The slug write must roll back with the rest of the transaction, "
             "even though the slug itself was valid and would-have-been unique."
         )

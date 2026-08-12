@@ -611,9 +611,7 @@ class Query:
         """Get users filtered by user's organization."""
         org = _get_org(info)
 
-        queryset = User.objects.filter(
-            organization_memberships__organization=org, organization_memberships__is_active=True
-        )
+        queryset = User.objects.filter(memberships__organization=org, memberships__is_active=True)
         if user_id is not None:
             queryset = queryset.filter(id=user_id)
 
@@ -1105,8 +1103,10 @@ class Query:
         membership_sq = (
             OrganizationMembership.objects.filter(organization_id=OuterRef("pk"))
             .values("organization_id")
-            # OrganizationMembership has a composite PK (user, organization) and no
-            # scalar ``id``; count rows via ``user_id`` (a NOT NULL PK column).
+            # Counted via ``user_id`` -- NOT NULL, and half the (user,
+            # organization) pair that identifies a membership. Left as-is after
+            # Phase 1c restored a surrogate ``id``: counting a NOT NULL column is
+            # what matters here, and both qualify.
             .annotate(cnt=DjangoCount("user_id"))
             .values("cnt")
         )

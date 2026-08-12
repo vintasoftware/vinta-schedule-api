@@ -481,9 +481,7 @@ class OrganizationService:
             if verify_long_lived_token(token, invitation.token_hash):
                 # Per-org check: refuse only a duplicate in the SAME org.
                 # A user already in a different org is allowed to join this one.
-                if user.organization_memberships.filter(
-                    organization=invitation.organization
-                ).exists():
+                if user.memberships.filter(organization=invitation.organization).exists():
                     raise UserAlreadyHasMembershipError()
                 with transaction.atomic():
                     # Guard first, before the membership write, inside the same
@@ -603,9 +601,7 @@ class OrganizationService:
         if pending_invitation is not None:
             # Per-org check: refuse only a duplicate in the SAME org.
             # A user already in a different org is allowed to join the inviting org.
-            if user.organization_memberships.filter(
-                organization=pending_invitation.organization
-            ).exists():
+            if user.memberships.filter(organization=pending_invitation.organization).exists():
                 raise UserAlreadyHasMembershipError()
             with transaction.atomic():
                 # Guard first, before the membership write, inside the same
@@ -664,7 +660,7 @@ class OrganizationService:
             # Auto-creating a second org for an existing member is handled by the create
             # endpoint (OrganizationManagementPermission on POST /organizations/).
             # This signup-path branch keeps the original single-membership check.
-            if user.organization_memberships.exists():
+            if user.memberships.exists():
                 raise UserAlreadyHasMembershipError()
             try:
                 with transaction.atomic():

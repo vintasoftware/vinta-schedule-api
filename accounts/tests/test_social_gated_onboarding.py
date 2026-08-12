@@ -141,7 +141,7 @@ class TestSocialGatedOnboarding:
     def test_uninvited_social_user_has_no_organization_membership(self):
         """
         A gated (membership-less) user has no OrganizationMembership rows.
-        With user.organization_memberships now a FK manager (not a OneToOne
+        With user.memberships now a FK manager (not a OneToOne
         descriptor), the gating invariant is confirmed by checking the queryset
         is empty rather than expecting RelatedObjectDoesNotExist.
         """
@@ -149,7 +149,7 @@ class TestSocialGatedOnboarding:
 
         user = _social_save_user("gated@social.example.com")
 
-        assert user.organization_memberships.count() == 0
+        assert user.memberships.count() == 0
         assert get_active_organization_membership(user) is None
 
     # ------------------------------------------------------------------

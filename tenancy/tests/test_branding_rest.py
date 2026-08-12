@@ -20,6 +20,7 @@ from tenancy.models import (
     OrganizationMembership,
     OrganizationRole,
 )
+from tenancy.tests.helpers import clear_organization_slug
 
 
 User = get_user_model()
@@ -103,8 +104,12 @@ def reseller_org():
 
 @pytest.fixture
 def reseller_org_without_slug():
-    """Same as ``reseller_org`` but deliberately unslugged."""
-    return baker.make(Organization, can_invite_organizations=True)
+    """Same as ``reseller_org`` but deliberately unslugged.
+
+    ``clear_organization_slug`` rather than "just omit the slug": since Phase 1c
+    of the vinta-django-orgs migration a saved organization always has one -- see
+    that helper's docstring."""
+    return clear_organization_slug(baker.make(Organization, can_invite_organizations=True))
 
 
 @pytest.fixture
@@ -119,7 +124,9 @@ def eligible_org():
 def no_slug_org():
     """Parentless and entitled, but no slug -- the "one step away" refusal
     (spec: "Eligible org with no public identifier yet")."""
-    return baker.make(Organization, can_invite_organizations=False, parent=None)
+    return clear_organization_slug(
+        baker.make(Organization, can_invite_organizations=False, parent=None)
+    )
 
 
 @pytest.fixture

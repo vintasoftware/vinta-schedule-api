@@ -116,17 +116,17 @@ class OrganizationSerializer(VirtualModelSerializer):
     google_service_account = serializers.SerializerMethodField()
 
     # Explicitly declared as CharField (rather than left to ModelSerializer
-    # auto-build, and NOT as SlugField) so we control allow_null/allow_blank/
-    # required ourselves and, more importantly, so DRF does NOT auto-attach a
-    # model-derived UniqueValidator or the SlugField's ASCII-only
-    # RegexValidator: both would run before validate_slug() below.  The
-    # UniqueValidator would compare a blank submission's raw "" against other
-    # organizations' "" — colliding two orgs that both left the slug unset.
-    # The RegexValidator would preempt the confusables/reserved-word rules in
-    # validate_slug(), which is the sole source of format/confusable/reserved
-    # validation. validate_slug() normalizes blank/None to None (matching the
-    # model's NULL-when-unset contract) and performs the uniqueness check
-    # itself, after normalization.
+    # auto-build) so we control allow_null/allow_blank/required ourselves and,
+    # more importantly, so DRF does NOT auto-attach a model-derived
+    # UniqueValidator, which would run before validate_slug() below and report a
+    # collision in its own generic wording rather than ours. ``max_length`` is
+    # SLUG_MAX_LENGTH (63), not the column's 255: the column widened when the
+    # field was inherited from AbstractOrganization in Phase 1c of the
+    # vinta-django-orgs migration, but the *rule* did not, and
+    # tenancy.slug_validation is the sole source of format/confusable/
+    # reserved-word validation. ``allow_null`` / ``allow_blank`` stay so a blank
+    # submission reaches validate_slug() and gets its specific "cannot be
+    # cleared" message instead of DRF's generic one.
     slug = serializers.CharField(
         required=False,
         allow_null=True,
@@ -181,14 +181,27 @@ class OrganizationSerializer(VirtualModelSerializer):
     def validate_slug(self, value: str | None) -> str | None:
         """Validate format/reserved-word/confusable rules, then uniqueness.
 
-        A blank or missing slug normalizes to ``None`` — the model's NULL-when-unset
-        contract (a Postgres unique index admits any number of NULLs, but two
-        organizations both stored as ``""`` would collide). Uniqueness is checked
-        here, against the shared queryset, excluding the instance being updated, so
-        a collision returns 400 naming the conflicting value rather than a 500 from
-        the DB's unique-index integrity error.
+        A blank slug **on an existing organization is refused**: ``slug`` became
+        NOT NULL in Phase 1c of the vinta-django-orgs migration (inherited from
+        ``AbstractOrganization``), so "unset it" is no longer an operation the
+        column can express. It is refused rather than silently ignored, and
+        rather than silently re-derived from the name — an organization's slug is
+        its public identity, and changing it out from under previously-issued
+        branded login URLs must be something the caller asked for. Changing it to
+        a new value is unaffected.
+
+        On create, blank still normalizes to ``None``; ``Organization.save()``
+        derives one from the name.
+
+        Uniqueness is checked here, against the shared queryset, excluding the
+        instance being updated, so a collision returns 400 naming the conflicting
+        value rather than a 500 from the DB's unique-index integrity error.
         """
         if not value:
+            if self.instance is not None:
+                raise serializers.ValidationError(
+                    "An organization's slug cannot be cleared. Submit a new slug instead."
+                )
             return None
 
         try:
@@ -428,10 +441,13 @@ class OrganizationMembershipSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = OrganizationMembership
-        # OrganizationMembership has a composite PK (user, organization) and no scalar
-        # ``id``. Expose the membership identity as ``user_id`` + ``organization_id``
-        # (Open Question #1 resolution: a membership is identified by the (user, org)
-        # pair) instead of the dropped ``id``.
+        # A membership is identified by the (user, organization) pair (Open
+        # Question #1 resolution), so that pair -- not a row id -- is what the API
+        # exposes. Phase 1c of the vinta-django-orgs migration put a surrogate
+        # ``id`` back on the model (a ManyToManyField cannot hang off a composite
+        # primary key, and the package's ``groups`` / ``permissions`` are exactly
+        # that), but ``uniq_membership_user_organization`` still makes the pair the
+        # logical identity and this contract is deliberately unchanged by it.
         fields = (
             "user_id",
             "organization_id",

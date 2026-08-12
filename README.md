@@ -68,6 +68,15 @@ never affected. See its module docstring
 the full explanation, including why this has to be a management command and
 not a Django migration.
 
+**Its window has closed on `main`.** The command refuses to run
+(`CommandError`) once `vinta-django-orgs`' own `organizations` app is
+installed, which it now is — from that point an `organizations`-labelled
+`django_migrations` row belongs to the package, not to this app's pre-rename
+history, and rewriting it would corrupt the package's applied state. A database
+still stuck in the pre-rename shape has to be fixed from a checkout that
+predates that install (the phase branch `plan/vinta-django-orgs-migration/phase-1b`),
+or dropped and rebuilt.
+
 ## Floci S3 Configuration
 
 This project uses [Floci](https://github.com/floci-io/floci) to provide a local AWS S3-compatible service for development instead of MinIO. Floci is a free, open-source AWS emulator that needs no account, auth token, or feature gates, and starts in milliseconds.

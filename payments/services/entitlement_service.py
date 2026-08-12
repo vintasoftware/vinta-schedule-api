@@ -106,15 +106,15 @@ def _group_counts_by_organization(queryset: QuerySet[Any]) -> dict[int, int]:
     # it means a later, unrelated ``Meta.ordering`` addition on any of those
     # models can no longer mis-bill every customer through this path.
     #
-    # ``Count("pk")``: on ``OrganizationMembership`` (composite primary key,
-    # ``SafeCompositePrimaryKey("user", "organization")``), Django 6 rewrites the
-    # ``ColPairs`` source to its first column, so this becomes ``COUNT(user_id)``
-    # — correct, but as a side effect of a Django internal, not a documented
-    # contract. The same rewrite raises ``ValueError("COUNT(DISTINCT) doesn't
-    # support composite primary keys")`` the moment ``distinct=True`` is added.
-    # Do not add ``distinct=True`` "defensively": no chain feeding this function
-    # has a row-multiplying join, so it is not needed, and it would turn this
-    # into a 500 on every seat check.
+    # ``Count("pk")`` counts rows, and every model reaching this function has a
+    # scalar primary key -- including ``OrganizationMembership``, whose composite
+    # ``(user, organization)`` primary key was unwound back to a surrogate ``id``
+    # in Phase 1c of the vinta-django-orgs migration. (Until then this expression
+    # only worked by way of a Django internal that rewrote the composite source
+    # to its first column, and ``distinct=True`` raised outright.) ``distinct``
+    # is still deliberately absent: no chain feeding this function has a
+    # row-multiplying join, so it would buy nothing and cost a DISTINCT sort on
+    # every seat check.
     return {
         row["organization_id"]: row["usage_count"]
         for row in queryset.order_by().values("organization_id").annotate(usage_count=Count("pk"))

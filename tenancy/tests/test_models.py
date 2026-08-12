@@ -355,31 +355,16 @@ class TestMultiOrgMembership:
         assert resolved.organization == org_a
 
 
-@pytest.mark.django_db
-class TestOrganizationMembershipCompositePK:
-    """Unit tests for the composite primary key (user_id, organization_id)."""
-
-    def test_pk_tuple_lookup_returns_membership(self):
-        """OrganizationMembership.objects.get(pk=(user.id, org.id)) returns the membership."""
-        user = baker.make(User)
-        org = baker.make(Organization)
-        membership = OrganizationMembership.objects.create(user=user, organization=org)
-
-        fetched = OrganizationMembership.objects.get(pk=(user.id, org.id))
-        assert fetched == membership
-
-    def test_instance_pk_is_tuple_of_user_and_org_ids(self):
-        """membership.pk is the (user_id, organization_id) tuple after save."""
-        user = baker.make(User)
-        org = baker.make(Organization)
-        membership = OrganizationMembership.objects.create(user=user, organization=org)
-
-        assert membership.pk == (user.id, org.id)
-
-
 @pytest.mark.django_db(transaction=True)
-class TestOrganizationMembershipCompositePKUniqueness:
-    """Transaction-level test for the composite PK uniqueness constraint."""
+class TestOrganizationMembershipUserOrganizationUniqueness:
+    """Transaction-level test for ``uniq_membership_user_organization``.
+
+    The composite primary key this pair once *was* is gone (Phase 1c of the
+    vinta-django-orgs migration: see ``tenancy/tests/test_membership_pk.py``),
+    but the unique constraint on the same two columns is not -- it is what the
+    five raw-SQL composite PROTECT FKs bind to, and it is still what makes
+    (user, organization) a membership's logical identity.
+    """
 
     def test_duplicate_membership_raises_integrity_error(self):
         """Creating a second OrganizationMembership for the same (user, org) raises IntegrityError.
@@ -493,10 +478,10 @@ class TestWeekStart:
             cursor.execute(
                 """
                 INSERT INTO organizations_organization
-                (name, should_sync_rooms, external_event_update_policy, meta, created, modified, can_invite_organizations)
+                (name, slug, should_sync_rooms, external_event_update_policy, created, modified, can_invite_organizations)
                 VALUES (%s, %s, %s, %s, NOW(), NOW(), %s)
                 """,
-                ["Pre-migration Org", False, "change_request", "{}", False],
+                ["Pre-migration Org", "pre-migration-org", False, "change_request", False],
             )
 
         # Read the row back via the ORM and verify week_start is Monday.
@@ -509,25 +494,28 @@ class TestWeekStart:
 class TestOrganizationSlug:
     """Unit tests for Organization.slug (Phase 1 — self-serve organization slug)."""
 
-    def test_slug_is_optional_on_creation(self):
-        """A freshly created Organization has slug=None when not supplied."""
-        org = baker.make(Organization)
-        assert org.slug is None
+    def test_slug_is_derived_from_the_name_when_not_supplied(self):
+        """A freshly created Organization gets a slug derived from its name.
+
+        ``slug`` became NOT NULL in Phase 1c of the vinta-django-orgs migration
+        (inherited from ``AbstractOrganization``), so "no slug yet" stopped
+        being a storable state and ``Organization.save()`` derives one.
+        """
+        org = Organization.objects.create(name="Acme Inc")
+        assert org.slug == "acme-inc"
 
     def test_slug_can_be_set_on_creation(self):
-        """slug can be supplied at creation time."""
+        """slug can be supplied at creation time, and is not overwritten."""
         org = baker.make(Organization, slug="my-org")
         assert org.slug == "my-org"
 
-    def test_multiple_null_slugs_coexist(self):
-        """Postgres's unique index admits any number of NULL slugs."""
-        org_a = baker.make(Organization)
-        org_b = baker.make(Organization)
-        assert org_a.slug is None
-        assert org_b.slug is None
-        # No IntegrityError raised by baker.make above is the assertion — both rows
-        # persisted with slug=NULL.
-        assert Organization.objects.filter(slug__isnull=True).count() >= 2
+    def test_derived_slugs_are_disambiguated_rather_than_colliding(self):
+        """Two organizations with the same name get distinct derived slugs."""
+        org_a = Organization.objects.create(name="Acme Inc")
+        org_b = Organization.objects.create(name="Acme Inc", parent=org_a)
+
+        assert org_a.slug == "acme-inc"
+        assert org_b.slug == "acme-inc-2"
 
     def test_duplicate_slug_raises_integrity_error(self):
         """Two organizations cannot share the same non-null slug."""

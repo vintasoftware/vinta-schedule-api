@@ -721,10 +721,12 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
     serializer_class = OrganizationMembershipSerializer
     permission_classes = (IsOrganizationAdmin,)
     filterset_class = OrganizationMembershipFilterSet
-    # OrganizationMembership has a composite PK (user, organization) and no scalar
-    # ``id``. The queryset is already scoped to the caller's single organization, so a
-    # member is uniquely identified within that scope by ``user_id``; use it as the
-    # detail-route lookup instead of the (now non-existent) scalar pk.
+    # The queryset is already scoped to the caller's single organization, so a
+    # member is uniquely identified within that scope by ``user_id``; that is the
+    # detail-route lookup. The model regained a surrogate ``id`` in Phase 1c of the
+    # vinta-django-orgs migration, but it is deliberately not exposed: the URL
+    # contract is (organization from the header) + user, and switching to the row
+    # id would be a client break for no gain.
     lookup_field = "user_id"
 
     @inject
@@ -745,8 +747,9 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
             return (
                 OrganizationMembership.objects.filter(organization_id=membership.organization_id)
                 .select_related("user", "user__profile")
-                # OrganizationMembership has a composite PK (user, organization) and no
-                # scalar ``id``; order by the PK columns for a stable, deterministic list.
+                # Ordered by the (user, organization) identity pair for a stable,
+                # deterministic list -- not by the surrogate ``id`` Phase 1c restored,
+                # which carries no meaning a client could rely on.
                 .order_by("user_id", "organization_id")
             )
         return OrganizationMembership.objects.none()
@@ -800,8 +803,9 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
                     role=target.role,  # Same role filter (ADMIN)
                     is_active=True,
                 )
-                # Composite PK (user, organization): exclude the target by its user_id
-                # within the already org-scoped filter.
+                # Excluded by ``user_id`` within the already org-scoped filter:
+                # (user, organization) is the membership identity, so inside one
+                # organization the user is the discriminator.
                 .exclude(user_id=target.user_id)
                 .count()
             )
@@ -886,8 +890,9 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
                     role=OrganizationRole.ADMIN,
                     is_active=True,
                 )
-                # Composite PK (user, organization): exclude the target by its user_id
-                # within the already org-scoped filter.
+                # Excluded by ``user_id`` within the already org-scoped filter:
+                # (user, organization) is the membership identity, so inside one
+                # organization the user is the discriminator.
                 .exclude(user_id=target.user_id)
                 .count()
             )

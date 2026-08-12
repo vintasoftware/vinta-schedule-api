@@ -497,7 +497,7 @@ class TestOrganizationSlugUpdate:
 
         assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
         organization_with_membership.refresh_from_db()
-        assert organization_with_membership.slug is None
+        assert organization_with_membership.slug != "member-org"
 
     def test_duplicate_slug_returns_400_naming_the_collision(self):
         """A second organization claiming a taken slug gets 400, not a 500."""
@@ -516,7 +516,7 @@ class TestOrganizationSlugUpdate:
         assert "slug" in body
         assert "taken-slug" in body["slug"][0]
         organization.refresh_from_db()
-        assert organization.slug is None
+        assert organization.slug != "taken-slug"
 
     def test_changing_an_existing_slug_succeeds(self):
         """An admin can change an already-set slug to a new unique value."""
@@ -543,8 +543,14 @@ class TestOrganizationSlugUpdate:
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
         assert "reserved" in response.json()["slug"][0]
 
-    def test_blank_slug_clears_to_none(self):
-        """Submitting a blank slug clears it to NULL rather than storing ''."""
+    def test_blank_slug_is_refused(self):
+        """Submitting a blank slug is refused rather than clearing it.
+
+        ``slug`` became NOT NULL in Phase 1c of the vinta-django-orgs migration,
+        so "unset it" is no longer an operation the column can express. It is
+        refused rather than silently re-derived from the name -- the slug is the
+        organization's public identity and appears in branded login URLs. See
+        ``OrganizationSerializer.validate_slug``."""
         organization = OrganizationTestFactory.create_organization(name="Clear Org")
         organization.slug = "clearable"
         organization.save()
@@ -553,9 +559,10 @@ class TestOrganizationSlugUpdate:
         url = reverse("api:Organizations-detail", kwargs={"pk": organization.pk})
         response = client.patch(url, {"slug": ""}, format="json")
 
-        assert_response_status_code(response, status.HTTP_200_OK)
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "cannot be cleared" in response.json()["slug"][0]
         organization.refresh_from_db()
-        assert organization.slug is None
+        assert organization.slug == "clearable"
 
     def test_confusable_slug_returns_400_naming_the_confusable_rule(self):
         """A mixed-script lookalike slug is rejected by the confusables rule, not
@@ -580,7 +587,7 @@ class TestOrganizationSlugUpdate:
         assert "non-ASCII character" in message
         assert "lookalike" in message
         organization.refresh_from_db()
-        assert organization.slug is None
+        assert organization.slug != lookalike_slug
 
     def test_super_route_slug_is_rejected_as_reserved(self):
         """The real admin path segment ``super`` (see ``vinta_schedule_api/urls.py``)
@@ -595,7 +602,7 @@ class TestOrganizationSlugUpdate:
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
         assert "reserved" in response.json()["slug"][0]
         organization.refresh_from_db()
-        assert organization.slug is None
+        assert organization.slug != "super"
 
 
 @pytest.mark.django_db
@@ -1674,7 +1681,7 @@ class TestOrganizationMembershipViewSet:
         results = response.json()["results"]
         # Should only see 1 member (the admin from org1)
         assert len(results) == 1
-        assert results[0]["user_id"] == user.organization_memberships.get().user_id
+        assert results[0]["user_id"] == user.memberships.get().user_id
 
     def test_retrieve_member_admin_success(self, auth_client, user):
         """Test that admin can retrieve a specific member"""
@@ -3769,18 +3776,19 @@ class TestOrganizationMineAction:
         assert role_by_org[org_a.id] == OrganizationRole.ADMIN
         assert role_by_org[org_b.id] == OrganizationRole.MEMBER
 
-        # Verify the membership objects that were created are retrievable from the DB
-        # by composite PK — confirming the (user_id, organization_id) identity is
-        # persisted correctly by the composite PK.
+        # Verify the membership objects that were created are retrievable from the
+        # DB by their (user, organization) pair — the logical identity, which
+        # `uniq_membership_user_organization` still enforces after Phase 1c put a
+        # surrogate `id` back as the primary key.
         assert (
             OrganizationMembership.objects.get(
-                pk=(membership_a.user_id, membership_a.organization_id)
+                user_id=membership_a.user_id, organization_id=membership_a.organization_id
             )
             == membership_a
         )
         assert (
             OrganizationMembership.objects.get(
-                pk=(membership_b.user_id, membership_b.organization_id)
+                user_id=membership_b.user_id, organization_id=membership_b.organization_id
             )
             == membership_b
         )

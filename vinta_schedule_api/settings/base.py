@@ -71,8 +71,44 @@ INSTALLED_APPS = [
     "django_filters",
     "vintasend_django",
     "s3direct",
+    # vinta-django-orgs' own Django app. Deliberately NOT in
+    # INTERNAL_INSTALLED_APPS: that list drives di_core's DI wiring
+    # (``container.wire(packages=INTERNAL_INSTALLED_APPS)``) and names only this
+    # project's apps. Installed for its abstract bases, its managers, and the
+    # ``class_prepared`` index receiver; ``OrganizationSite`` (its one
+    # non-swappable model) gets a table that stays empty and unread -- see the
+    # plan's Non-goals.
+    "organizations.apps.OrganizationsConfig",
     *INTERNAL_INSTALLED_APPS,
 ]
+
+# ``Organization`` and ``OrganizationMembership`` are swappable the way
+# ``auth.User`` is, and Django reads ``Meta.swappable`` through a *top-level*
+# setting (a plain ``getattr(settings, "ORGANIZATION_MODEL")``) -- so these two
+# cannot live inside SHARED_SCHEMA_ORGANIZATIONS below. Pointing them at our
+# models marks the package's own concrete models swapped out: no table is
+# created for them, no phantom CASCADE relation hangs off ``User.delete()``,
+# and there is no ``models.E028`` duplicate-``db_table`` collision with ours.
+ORGANIZATION_MODEL = "tenancy.Organization"
+ORGANIZATION_MEMBERSHIP_MODEL = "tenancy.OrganizationMembership"
+
+SHARED_SCHEMA_ORGANIZATIONS = {
+    # Our ``X-Organization-Id`` retriever, and only ours. The package's
+    # ``retrieve_by_domain`` / ``retrieve_by_http_header`` (Organization-Slug) /
+    # ``retrieve_by_session`` are all plan Non-goals: we do not do subdomain
+    # tenancy, slug-header resolution, or session-pinned organizations.
+    "ORGANIZATION_RETRIEVERS": ["common.org_retrievers.retrieve_by_x_organization_id"],
+    # No catch-all organization. The package's default is the slug "default",
+    # which ``SingleOrganizationModelMixin.save()`` falls back to when a scoped
+    # row is saved with no organization set and none bound. We have no such
+    # organization (``default`` is a reserved slug -- see
+    # ``tenancy.slug_validation``), and silently filing a row under one would be
+    # exactly the cross-tenant write the whole migration exists to prevent.
+    # ``None`` makes the fallback a no-op instead of a wasted query.
+    "DEFAULT_ORGANIZATION_SLUG": None,
+    # NOTE: STRICT_ORGANIZATION_FILTER is deliberately absent -- it is Phase 2a's,
+    # and turning it on before the models flip would gate nothing.
+}
 
 MIDDLEWARE = [
     "django.middleware.gzip.GZipMiddleware",

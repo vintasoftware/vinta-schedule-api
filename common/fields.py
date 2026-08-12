@@ -8,6 +8,18 @@ model whose primary key is composite (``CompositePrimaryKey``).  Even before
 the relationship is the only design that will survive that migration without a
 second round of model rewrites.
 
+**Update (Phase 1c, vinta-django-orgs migration).** ``OrganizationMembership``
+has a surrogate ``id`` primary key again -- the composite one was unwound
+because Django cannot hang a ``ManyToManyField`` off it, and the package's
+``groups`` / ``permissions`` are exactly that. A real ``ForeignKey`` is
+therefore legal once more, and this field is **deliberately kept anyway** (see
+the plan's Open Questions): the five raw-SQL composite PROTECT FKs bind to
+``uniq_membership_user_organization``, which the unwind left untouched, so they
+work unchanged -- while repointing ``audit`` and ``calendar_integration`` at a
+surrogate id would mean a new column, a backfill and a constraint rebind on
+both, to buy nothing. The rationale below is therefore historical for the first
+paragraph and current for the rest.
+
 Why denormalize ``user_id``?
     A bare ``ForeignObject`` on ``(organization_id, …)`` requires the *host*
     row to already carry the second join column.  The host row always has

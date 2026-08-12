@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, ClassVar
 
 from django.conf import settings
 from django.core.exceptions import FieldDoesNotExist, ObjectDoesNotExist
 from django.db import models
 
+from organizations.models import AbstractOrganization, AbstractOrganizationMembership
+
 from common.fields import (
     OrganizationMembershipForeignKey,
-    SafeCompositePrimaryKey,
     TenantSafeForeignKey,
     TenantSafeOneToOneField,
 )
@@ -21,7 +23,7 @@ from tenancy.managers import (
     OrganizationInvitationManager,
     OrganizationMembershipManager,
 )
-from tenancy.slug_validation import SLUG_MAX_LENGTH
+from tenancy.slug_generation import derive_organization_slug
 
 
 if TYPE_CHECKING:
@@ -70,7 +72,7 @@ def get_active_organization_membership(
     # Off-request path (management commands, Celery tasks, direct test calls):
     # fall back to the single active membership query. Stable ordering ensures
     # determinism if a user somehow ends up with two active memberships here.
-    return user.organization_memberships.filter(is_active=True).order_by("created").first()  # type: ignore[union-attr]
+    return user.memberships.filter(is_active=True).order_by("created").first()  # type: ignore[union-attr]
 
 
 class ExternalEventUpdatePolicy(models.TextChoices):
@@ -100,12 +102,19 @@ class WeekStart(models.TextChoices):
     SUNDAY = "sunday", "Sunday"
 
 
-class Organization(BaseModel):
+class Organization(AbstractOrganization):
     """
     Represents a calendar organization.
+
+    Extends ``vinta-django-orgs``' ``AbstractOrganization``, which supplies
+    ``name``, ``slug`` (NOT NULL, unique) and ``model_utils``' ``created`` /
+    ``modified``. Two things came from ``common.models.BaseModel`` before and are
+    deliberately gone: the ``meta`` JSONField (verifiably unread on this model --
+    only ``payments`` uses ``meta``) and the ``db_index=True`` on ``created`` /
+    ``modified`` (neither is queried by timestamp range). See the plan's
+    "``meta`` and timestamp indexes" Guiding Decision.
     """
 
-    name = models.CharField(max_length=255)
     should_sync_rooms = models.BooleanField(
         default=False, help_text="Whether to sync rooms for this organization."
     )
@@ -148,27 +157,8 @@ class Organization(BaseModel):
             "Enables the whole reseller capability bundle."
         ),
     )
-    slug = models.SlugField(
-        max_length=SLUG_MAX_LENGTH,
-        unique=True,
-        null=True,
-        blank=True,
-        default=None,
-        help_text=(
-            "Public, URL-safe identifier used by the organization's branded login page "
-            "and by brandingForTenant. Optional until the organization sets one "
-            "self-serve; stored as NULL (never empty string) when unset — default=None "
-            "keeps a field left blank in a form/serializer NULL rather than '', which "
-            "is what lets the unique index admit any number of organizations with no "
-            "slug. Mutable after set: changing it orphans previously-issued branded "
-            "login URLs, which then fall back to the default identity rather than "
-            "erroring. Format, reserved-word, and confusable-character rules live in "
-            "tenancy.slug_validation and are enforced by each write surface "
-            "(REST serializer, admin form, GraphQL input), not here."
-        ),
-    )
 
-    class Meta:
+    class Meta(AbstractOrganization.Meta):
         # Pinned to the pre-rename table name -- the "tenancy" app label is new
         # (Phase 1a of the vinta-django-orgs migration), but no table is
         # renamed along with it. See ai-plans/2026-08-12-VINTA_DJANGO_ORGS_
@@ -181,8 +171,32 @@ class Organization(BaseModel):
             ),
         ]
 
-    def __str__(self):
-        return self.name
+    def save(self, *args, **kwargs):
+        """Fill in a derived ``slug`` when the caller left one out.
+
+        ``AbstractOrganization.slug`` is NOT NULL and unique, so "no public
+        identifier yet" is no longer a storable state -- every write surface
+        that used to normalize a blank slug to ``NULL`` (the REST serializer,
+        the admin form, ``OrganizationService.create_organization``, the
+        reseller GraphQL mutation, ``baker.make``) would otherwise fail on the
+        NOT NULL constraint. Deriving here rather than at each of those call
+        sites keeps the invariant on the model that declares it, which is also
+        what the slug backfill data migration asserts about existing rows.
+
+        A slug the caller *did* supply is never touched: validation of a
+        caller-supplied slug (format, reserved words, confusables, uniqueness)
+        stays where it is, on the write surfaces -- see
+        ``tenancy.slug_validation``.
+        """
+        if not self.slug:
+            taken = Organization.objects.all()
+            if self.pk is not None:
+                taken = taken.exclude(pk=self.pk)
+            self.slug = derive_organization_slug(
+                self.name,
+                slug_exists=lambda candidate: taken.filter(slug=candidate).exists(),
+            )
+        super().save(*args, **kwargs)
 
     def is_reseller(self) -> bool:
         """Return True if this org can invite/create other organizations."""
@@ -248,7 +262,7 @@ class OrganizationRole(models.TextChoices):
     ADMIN = "admin", "Admin"
 
 
-class OrganizationMembership(BaseModel):
+class OrganizationMembership(AbstractOrganizationMembership):
     """
     Represents a membership of a user in a calendar organization.
     This is used to link users to their respective calendar organizations.
@@ -269,21 +283,17 @@ class OrganizationMembership(BaseModel):
         single-membership user it returns that membership; for a multi-org user it
         resolves the active org from the ``X-Organization-Id`` header.
 
-        Never read ``user.organization_memberships`` directly in permission /
-        scoping code — always go through ``get_active_organization_membership`` so
-        the resolution stays in one place.
+        Never read ``user.memberships`` directly in permission / scoping code —
+        always go through ``get_active_organization_membership`` so the
+        resolution stays in one place.
+
+    Extends ``vinta-django-orgs``' ``AbstractOrganizationMembership``, which
+    supplies ``user`` (``related_name="memberships"``), ``organization``, the
+    ``groups`` / ``permissions`` M2Ms, ``created`` / ``modified``, and the
+    deliberately *unscoped* default manager. The ``groups`` / ``permissions``
+    M2Ms ship empty and are read by nothing until Phase 3.
     """
 
-    user = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name="organization_memberships",
-    )
-    organization = models.ForeignKey(
-        Organization,
-        on_delete=models.CASCADE,
-        related_name="memberships",
-    )
     role = models.CharField(
         max_length=20,
         choices=OrganizationRole,
@@ -317,23 +327,35 @@ class OrganizationMembership(BaseModel):
         ),
     )
 
-    # Composite primary key on (user, organization) — a membership's identity is the
-    # (user, org) pair. The implicit ``id`` BigAutoField is dropped; this composite
-    # key replaces it. The legacy ``uniq_membership_user_organization`` unique
-    # constraint is kept (it is what the three raw-SQL calendar PROTECT FKs bind to);
-    # it is redundant with the composite-PK unique index but kept so the FKs need no
-    # rebind.
+    # Back to a surrogate ``id``: Django cannot hang a ``ManyToManyField`` off a
+    # composite-PK model, and the base class's ``groups`` / ``permissions`` are
+    # exactly that. The composite PK is dropped in
+    # ``0024_unwind_membership_composite_pk``; ``uniq_membership_user_organization``
+    # below is NOT -- it is the unique constraint the five raw-SQL composite
+    # PROTECT FKs in ``calendar_integration`` bind to (verified against
+    # ``pg_constraint.conindid``), so keeping it is what makes the PK swap free
+    # of any FK rebind.
     #
-    # ``SafeCompositePrimaryKey`` (not stock ``models.CompositePrimaryKey``) is used so
-    # class-level ``OrganizationMembership.pk`` access does not crash third-party model
-    # introspection (e.g. ``django_virtual_models``' method discovery). See
-    # ``common.fields.SafeCompositePrimaryKey``.
-    pk = SafeCompositePrimaryKey("user", "organization")
+    # Ignored for the same reason the base class ignores its own assignment:
+    # replacing an inherited manager is exactly what is intended, and mypy reads
+    # a narrower manager type on a subclass as an incompatible override.
+    objects = OrganizationMembershipManager()  # type: ignore[assignment,misc]
 
-    objects: OrganizationMembershipManager = OrganizationMembershipManager()
-
-    class Meta:
+    class Meta(AbstractOrganizationMembership.Meta):
         db_table = "organizations_organizationmembership"
+        # Spelled out rather than inherited so the "objects is the default
+        # manager" contract is visible on the model that depends on it: the
+        # reverse accessors (``user.memberships``, ``organization.memberships``)
+        # are built from ``_default_manager.__class__``, and pointing them at a
+        # scoped manager would empty every membership lookup that runs *before*
+        # an organization has been selected.
+        default_manager_name = "objects"
+        # The base declares ``unique_together = [("user", "organization")]``.
+        # Cleared here because the UniqueConstraint below covers exactly the same
+        # columns and is the one Postgres bound the raw-SQL PROTECT FKs to;
+        # keeping both would build a second, redundant unique index on the same
+        # pair.
+        unique_together: ClassVar[list[Sequence[str]]] = []
         constraints: ClassVar = [
             models.UniqueConstraint(
                 fields=["user", "organization"],
@@ -391,8 +413,10 @@ class OrganizationInvitation(BaseModel):
     token_hash = models.TextField()
     expires_at = models.DateTimeField()
     # Membership reference via the (organization_id, membership_user_id) composite join
-    # rather than a real FK. Django 6 forbids a real FK to a composite-PK model
-    # (OrganizationMembership uses a composite PK). This contributes a
+    # rather than a real FK. Originally forced (Django 6 forbids a real FK to a
+    # composite-PK model, which OrganizationMembership was until Phase 1c of the
+    # vinta-django-orgs migration), and deliberately kept afterwards -- see that
+    # plan's Open Questions. This contributes a
     # concrete ``membership_user_id`` column plus a ForeignObject descriptor ``membership``.
     # OneToOne semantics are preserved by the partial UniqueConstraint below
     # (one accepted invitation per membership). ``related_name="invitation"`` keeps the

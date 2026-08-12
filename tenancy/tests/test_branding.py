@@ -51,6 +51,7 @@ from tenancy.permissions import (
 )
 from tenancy.redirect_url_validation import validate_redirect_url
 from tenancy.serializers import CurrentMembershipSerializer, MyMembershipSerializer
+from tenancy.tests.helpers import clear_organization_slug
 from users.factories import UserFactory
 
 
@@ -506,8 +507,10 @@ class TestEvaluateBrandingWriteGate:
         assert evaluate_branding_write_gate(org) is BrandingWriteGateReason.NOT_ENTITLED
 
     def test_refuses_an_organization_with_no_slug(self):
-        org = _org_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None)
-        assert org.slug is None
+        org = clear_organization_slug(
+            _org_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None)
+        )
+        assert not org.slug
 
         assert evaluate_branding_write_gate(org) is BrandingWriteGateReason.NO_SLUG
 
@@ -521,8 +524,8 @@ class TestEvaluateBrandingWriteGate:
         unentitled_org = _org_with_entitlement(
             Entitlement.WHITE_LABEL_BRANDING, is_enabled=False, parent=None, slug="unentitled-org"
         )
-        no_slug_org = _org_with_entitlement(
-            Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None
+        no_slug_org = clear_organization_slug(
+            _org_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None)
         )
 
         reasons = {
@@ -545,8 +548,10 @@ class TestEvaluateBrandingWriteGate:
         between the two-condition and three-condition gates as a regression
         test: a future change that folds the slug condition into
         `is_branding_eligible_organization` would flip this assertion."""
-        org = _org_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None)
-        assert org.slug is None
+        org = clear_organization_slug(
+            _org_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None)
+        )
+        assert not org.slug
 
         assert is_branding_eligible_organization(org) is True
         assert evaluate_branding_write_gate(org) is BrandingWriteGateReason.NO_SLUG
@@ -590,8 +595,10 @@ class TestCanManageBrandingCapabilityField:
         """The key case: NOT including the slug condition. Pins the split against
         `evaluate_branding_write_gate`, which would return NO_SLUG (falsy) for
         this exact organization."""
-        org = _org_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None)
-        assert org.slug is None
+        org = clear_organization_slug(
+            _org_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None)
+        )
+        assert not org.slug
         membership = self._membership(org)
 
         assert CurrentMembershipSerializer(membership).data["can_manage_branding"] is True
