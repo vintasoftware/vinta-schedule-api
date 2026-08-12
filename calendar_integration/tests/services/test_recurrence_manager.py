@@ -25,7 +25,7 @@ from calendar_integration.models import (
 from calendar_integration.recurrence_utils import persist_truncated_rule
 from calendar_integration.services.calendar_service_context import CalendarServiceContext
 from calendar_integration.services.recurrence_manager import RecurrenceManager
-from organizations.models import Organization
+from tenancy.models import Organization
 
 
 @pytest.fixture

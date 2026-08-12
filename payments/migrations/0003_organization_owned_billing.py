@@ -28,7 +28,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("organizations", "0014_organization_external_event_update_policy"),
+        ("tenancy", "0014_organization_external_event_update_policy"),
         ("payments", "0002_initial"),
     ]
 
@@ -134,7 +134,7 @@ class Migration(migrations.Migration):
                         primary_key=True,
                         related_name="billing_profile",
                         serialize=False,
-                        to="organizations.organization",
+                        to="tenancy.organization",
                     ),
                 ),
                 ("contact_first_name", models.CharField(max_length=255)),
@@ -243,7 +243,7 @@ class Migration(migrations.Migration):
                     models.OneToOneField(
                         on_delete=django.db.models.deletion.CASCADE,
                         related_name="subscription",
-                        to="organizations.organization",
+                        to="tenancy.organization",
                     ),
                 ),
                 (

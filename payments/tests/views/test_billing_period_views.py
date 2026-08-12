@@ -21,9 +21,9 @@ import pytest
 from model_bakery import baker
 from rest_framework import status
 
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
 from payments.billing_constants import BillingInterval
 from payments.models import BillingPeriodResourceUsage, BillingPeriodSummary, Payment
+from tenancy.models import Organization, OrganizationMembership, OrganizationRole
 
 
 def periods_list_url() -> str:

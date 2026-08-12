@@ -7,7 +7,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from common.utils.view_utils import ReadOnlyVintaScheduleModelViewSet, VintaScheduleModelViewSet
-from organizations.models import get_active_organization_membership
+from tenancy.models import get_active_organization_membership
 from webhooks.constants import WebhookStatus
 from webhooks.models import WebhookConfiguration, WebhookEvent
 from webhooks.serializers import WebhookConfigurationSerializer, WebhookEventSerializer

@@ -4,11 +4,11 @@ from decimal import Decimal
 import pytest
 from model_bakery import baker
 
-from organizations.models import Organization
 from payments.billing_constants import BillingInterval
 from payments.constants import PaymentProviders
 from payments.models import BillingPlan, Subscription
 from payments.services.subscription_plan_factory.billing_plan_factory import BillingPlanFactory
+from tenancy.models import Organization
 
 
 # This module builds its own Subscription rows (OneToOne with Organization), so it

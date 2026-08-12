@@ -16,7 +16,7 @@ from model_bakery import baker
 from audit.constants import AuditAction, AuditActorType
 from audit.factories import AuditAffectedMembershipFactory, AuditFactory
 from audit.models import Audit, AuditAffectedMembership
-from organizations.models import Organization, OrganizationMembership
+from tenancy.models import Organization, OrganizationMembership
 
 
 User = get_user_model()
@@ -209,7 +209,7 @@ class TestAuditTenantCorrectness:
             Audit.objects.create(
                 action=AuditAction.CREATE,
                 actor_type=AuditActorType.SYSTEM,
-                subject_type="organizations.Organization",
+                subject_type="tenancy.Organization",
                 subject_id="1",
             )
 

@@ -21,12 +21,12 @@ from django.utils import timezone
 import pytest
 from model_bakery import baker
 
-from organizations.models import Organization
 from payments.billing_constants import BillingState, LimitedResource, LimitKind
 from payments.exceptions import OverLimitError
 from payments.models import BillingPlan, Subscription, SubscriptionPlanLimit
 from public_api.models import SystemUser
 from public_api.services import PublicAPIAuthService
+from tenancy.models import Organization
 
 
 # This module builds its own Subscription rows (OneToOne with Organization), so it

@@ -57,7 +57,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ('calendar_integration', '0036_calendarmanagementtoken_membership_protect_fk'),
-        ('organizations', '0014_organization_external_event_update_policy'),
+        ('tenancy', '0014_organization_external_event_update_policy'),
     ]
 
     operations = [
@@ -78,8 +78,8 @@ class Migration(migrations.Migration):
                 ('resolved_by_user_id', models.BigIntegerField(blank=True, null=True)),
                 ('event', models.ForeignObject(editable=False, from_fields=['event_fk', 'organization_id'], null=True, on_delete=django.db.models.deletion.DO_NOTHING, related_name='external_change_requests', to='calendar_integration.calendarevent', to_fields=['id', 'organization_id'])),
                 ('event_fk', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='external_change_requests_fk_rel', to='calendar_integration.calendarevent')),
-                ('organization', models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization')),
-                ('resolved_by', models.ForeignObject(editable=False, from_fields=['resolved_by_user_id', 'organization_id'], null=True, on_delete=django.db.models.deletion.DO_NOTHING, related_name='resolved_external_change_requests', to='organizations.organizationmembership', to_fields=['user_id', 'organization_id'])),
+                ('organization', models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='tenancy.organization')),
+                ('resolved_by', models.ForeignObject(editable=False, from_fields=['resolved_by_user_id', 'organization_id'], null=True, on_delete=django.db.models.deletion.DO_NOTHING, related_name='resolved_external_change_requests', to='tenancy.organizationmembership', to_fields=['user_id', 'organization_id'])),
             ],
             options={
                 'indexes': [models.Index(fields=['organization', 'resolved_by_user_id'], name='extevtcr_org_resolver_idx')],

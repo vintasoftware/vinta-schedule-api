@@ -41,7 +41,7 @@ def create_calendar_ownership(
     organization_id)`` enforces that a non-NULL ``membership_user_id`` references
     a real membership, so the ``with_membership=True`` path must seed one.
     """
-    from organizations.models import OrganizationMembership
+    from tenancy.models import OrganizationMembership
 
     organization = calendar.organization
 
@@ -91,7 +91,7 @@ def create_event_attendance(
     """
     # Imported late to avoid an import cycle between this factory module and the
     # ``organizations`` app at module load time.
-    from organizations.models import OrganizationMembership
+    from tenancy.models import OrganizationMembership
 
     organization = event.organization
 

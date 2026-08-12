@@ -27,7 +27,7 @@ from calendar_integration.models import (
     CalendarGroupSlotMembership,
     CalendarManagementToken,
 )
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from tenancy.models import Organization, OrganizationMembership, OrganizationRole
 
 
 def _grant_calendar_owner_token(user, calendar):

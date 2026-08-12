@@ -35,13 +35,13 @@ from calendar_integration.database_functions import (
     GetEventOccurrencesJSON,
     GetEventOccurrencesWithBulkModificationsJSON,
 )
-from organizations.querysets import BaseOrganizationModelQuerySet
+from tenancy.querysets import BaseOrganizationModelQuerySet
 
 
 if TYPE_CHECKING:
     from calendar_integration.models import CalendarEvent as CalendarEventType
     from calendar_integration.models import CalendarSync as CalendarSyncType
-    from organizations.models import OrganizationMembership as OrganizationMembershipType
+    from tenancy.models import OrganizationMembership as OrganizationMembershipType
 
 
 class CalendarManagementTokenQuerySet(BaseOrganizationModelQuerySet):

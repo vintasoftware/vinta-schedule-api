@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Annotated
 from dependency_injector.wiring import Provide, inject
 
 from common.organization_context import organization_context
-from organizations.models import Organization
+from tenancy.models import Organization
 from vinta_schedule_api.celery import app
 from webhooks.constants import WebhookStatus
 from webhooks.models import WebhookEvent

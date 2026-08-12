@@ -36,8 +36,8 @@ from typing import TYPE_CHECKING
 
 
 if TYPE_CHECKING:
-    from organizations.models import Organization
     from payments.services.entitlement_service import EntitlementService
+    from tenancy.models import Organization
 
 
 _entitlement_cache: contextvars.ContextVar[dict[tuple[int, str], bool] | None] = (

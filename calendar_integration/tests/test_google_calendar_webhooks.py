@@ -29,9 +29,9 @@ from calendar_integration.services.calendar_adapters.google_calendar_adapter imp
     GoogleCalendarAdapter,
 )
 from calendar_integration.services.calendar_service import CalendarService
-from organizations.models import Organization
 from payments.billing_constants import BillingState, Entitlement
 from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
+from tenancy.models import Organization
 
 
 @override_settings(GOOGLE_CLIENT_ID="test_client_id", GOOGLE_CLIENT_SECRET="test_client_secret")

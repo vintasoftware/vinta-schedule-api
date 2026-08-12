@@ -6,7 +6,7 @@ registered at startup, mirroring
 ``calendar_integration/notification_contexts.py``.
 
 Deliberately plain -- no branding-tree resolution like
-``organizations.notification_contexts.organization_invitation_context`` -- these
+``tenancy.notification_contexts.organization_invitation_context`` -- these
 values are passed in directly by ``DunningService``, which already has the
 ``Subscription``/``Organization`` in hand and would otherwise re-query them.
 """

@@ -20,7 +20,7 @@ from common.organization_context_test_support import (
     assert_all_scoped_queries_are_bound,
     raise_if_unbound_scoped_queries_occurred,
 )
-from organizations.models import Organization
+from tenancy.models import Organization
 
 
 pytestmark = pytest.mark.django_db
@@ -150,7 +150,7 @@ def test_records_one_violation_per_unbound_call(organization, calendar):
 
 
 def test_restores_the_original_methods_on_exit(organization, calendar):
-    from organizations.querysets import BaseOrganizationModelQuerySet
+    from tenancy.querysets import BaseOrganizationModelQuerySet
 
     originals = {
         name: getattr(BaseOrganizationModelQuerySet, name) for name in ("__iter__", "get", "count")
@@ -164,7 +164,7 @@ def test_restores_the_original_methods_on_exit(organization, calendar):
 
 
 def test_restores_the_original_methods_even_when_the_block_raises(organization):
-    from organizations.querysets import BaseOrganizationModelQuerySet
+    from tenancy.querysets import BaseOrganizationModelQuerySet
 
     originals = {
         name: getattr(BaseOrganizationModelQuerySet, name) for name in ("__iter__", "get", "count")

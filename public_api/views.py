@@ -14,8 +14,6 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.viewsets import GenericViewSet, ViewSet
 
-from organizations.models import get_active_organization_membership
-from organizations.permissions import IsOrganizationAdmin
 from payments.services.entitlement_service import EntitlementService
 from public_api.constants import PROVIDER_SCOPED_RESOURCES
 from public_api.docs_content import get_concept_doc, list_concept_docs
@@ -29,6 +27,8 @@ from public_api.serializers import (
     SystemUserTokenUpdateSerializer,
     WebhookEventDocSerializer,
 )
+from tenancy.models import get_active_organization_membership
+from tenancy.permissions import IsOrganizationAdmin
 from webhooks.constants import WEBHOOK_EVENT_DESCRIPTIONS, WebhookEventType
 
 

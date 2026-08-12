@@ -11,7 +11,7 @@ from django.utils import timezone
 from model_bakery import baker
 
 from calendar_integration.management.commands.refresh_webhook_subscriptions import Command
-from organizations.models import Organization
+from tenancy.models import Organization
 
 
 class TestRefreshWebhookSubscriptionsCommand(TestCase):

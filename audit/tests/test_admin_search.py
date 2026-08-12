@@ -22,7 +22,7 @@ from audit.constants import AuditActorType
 from audit.factories import AuditFactory
 from audit.models import AuditAffectedMembership
 from audit.types import AuditPage, AuditQuery, AuditRecord
-from organizations.models import Organization, OrganizationMembership
+from tenancy.models import Organization, OrganizationMembership
 
 
 User = get_user_model()

@@ -16,10 +16,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 from model_bakery import baker
 
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
 from payments.billing_constants import BillingState, LimitedResource, LimitKind
 from payments.models import BillingPlan, LimitWarningNotification, PlanLimit, Subscription
 from payments.tasks import check_approaching_limits, check_approaching_limits_for_subscription
+from tenancy.models import Organization, OrganizationMembership, OrganizationRole
 from users.models import User
 
 

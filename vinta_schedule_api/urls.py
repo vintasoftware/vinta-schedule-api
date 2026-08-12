@@ -15,13 +15,13 @@ from strawberry.django.views import GraphQLView
 from calendar_integration.routes import routes as calendar_integration_routes
 from legal.routes import routes as legal_routes
 from notifications.routes import routes as notifications_routes
-from organizations.routes import extra_patterns as organizations_extra_patterns
-from organizations.routes import routes as organizations_routes
-from organizations.views import AcceptInvitationView
 from payments.routes import extra_patterns as payments_extra_patterns
 from payments.routes import routes as payments_routes
 from public_api.routes import routes as public_api_routes
 from public_api.schema import schema
+from tenancy.routes import extra_patterns as organizations_extra_patterns
+from tenancy.routes import routes as organizations_routes
+from tenancy.views import AcceptInvitationView
 from users.routes import routes as users_routes
 from webhooks.routes import routes as webhooks_routes
 

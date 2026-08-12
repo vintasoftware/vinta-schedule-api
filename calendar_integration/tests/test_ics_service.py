@@ -34,7 +34,7 @@ from calendar_integration.services import CalendarEventICSService
 @pytest.mark.django_db
 def test_build_ics_basic_event():
     """Test building ICS for a simple event with external_id."""
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     calendar = baker.make("calendar_integration.Calendar", organization=org)
 
     event = baker.make(
@@ -76,7 +76,7 @@ def test_build_ics_basic_event():
 @pytest.mark.django_db
 def test_build_ics_synthetic_uid():
     """Test that events without external_id get synthetic uid."""
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     calendar = baker.make("calendar_integration.Calendar", organization=org)
 
     event = baker.make(
@@ -106,7 +106,7 @@ def test_build_ics_synthetic_uid():
 @pytest.mark.django_db
 def test_build_ics_with_special_chars_in_description():
     """Test that special characters in description are properly escaped."""
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     calendar = baker.make("calendar_integration.Calendar", organization=org)
 
     # Description with commas, semicolons, and newlines
@@ -146,7 +146,7 @@ def test_build_ics_with_special_chars_in_description():
 @pytest.mark.django_db
 def test_build_ics_without_description():
     """Test that events without description don't include DESCRIPTION line."""
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     calendar = baker.make("calendar_integration.Calendar", organization=org)
 
     event = baker.make(
@@ -176,7 +176,7 @@ def test_build_ics_without_description():
 @pytest.mark.django_db
 def test_build_ics_timezone_aware_times():
     """Test that DTSTART/DTEND are timezone-aware."""
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     calendar = baker.make("calendar_integration.Calendar", organization=org)
 
     event = baker.make(
@@ -231,7 +231,7 @@ def test_build_ics_timezone_aware_times():
 @pytest.mark.django_db
 def test_build_ics_sequence_from_modified():
     """Test that SEQUENCE is derived from modified timestamp."""
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     calendar = baker.make("calendar_integration.Calendar", organization=org)
 
     event = baker.make(
@@ -262,7 +262,7 @@ def test_build_ics_sequence_from_modified():
 @pytest.mark.django_db
 def test_build_ics_dtstamp_from_modified():
     """Test that DTSTAMP is set from the modified timestamp."""
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     calendar = baker.make("calendar_integration.Calendar", organization=org)
 
     event = baker.make(
@@ -291,7 +291,7 @@ def test_build_ics_dtstamp_from_modified():
 @pytest.mark.django_db
 def test_build_ics_status_confirmed():
     """Test that STATUS is CONFIRMED for normal events."""
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     calendar = baker.make("calendar_integration.Calendar", organization=org)
 
     event = baker.make(
@@ -320,7 +320,7 @@ def test_build_ics_status_confirmed():
 @pytest.mark.django_db
 def test_build_ics_prodid_and_version():
     """Test that PRODID and VERSION are correct in the calendar."""
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     calendar = baker.make("calendar_integration.Calendar", organization=org)
 
     event = baker.make(
@@ -351,7 +351,7 @@ def test_build_ics_prodid_and_version():
 @pytest.mark.django_db
 def test_build_ics_missing_title_raises_value_error():
     """Test that events without title raise a ValueError."""
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     calendar = baker.make("calendar_integration.Calendar", organization=org)
 
     event = baker.make(
@@ -413,7 +413,7 @@ def test_build_ics_missing_required_field_raises_value_error(missing_field, expe
 @pytest.mark.django_db
 def test_build_ics_multiple_events_each_valid():
     """Test building ICS for multiple different events."""
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     calendar = baker.make("calendar_integration.Calendar", organization=org)
 
     events = [
@@ -463,7 +463,7 @@ def _parse_vevent(ics_bytes: bytes) -> icalendar.cal.Component:
 def test_build_ics_recurring_event_emits_single_vevent_with_rrule():
     """A recurring event emits exactly ONE VEVENT whose RRULE matches
     the recurrence rule's to_rrule_string() output."""
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     calendar = baker.make("calendar_integration.Calendar", organization=org)
 
     event = CalendarEventFactory.create_recurring_event(
@@ -501,7 +501,7 @@ def test_build_ics_recurring_event_emits_single_vevent_with_rrule():
 @pytest.mark.django_db
 def test_build_ics_non_recurring_event_has_no_rrule():
     """A plain (non-recurring) event must NOT contain an RRULE line."""
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     calendar = baker.make("calendar_integration.Calendar", organization=org)
 
     event = baker.make(
@@ -530,7 +530,7 @@ def test_build_ics_non_recurring_event_has_no_rrule():
 def test_build_ics_recurring_event_with_cancelled_exception_emits_exdate():
     """A recurring event with a cancelled EventRecurrenceException emits
     an EXDATE whose datetime matches the exception_date."""
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     calendar = baker.make("calendar_integration.Calendar", organization=org)
 
     event = CalendarEventFactory.create_recurring_event(
@@ -608,7 +608,7 @@ def test_build_ics_recurring_event_with_cancelled_exception_emits_exdate():
 def test_build_ics_modified_exception_does_not_appear_in_exdate():
     """A modified (non-cancelled) EventRecurrenceException must NOT appear
     in EXDATE — only cancelled ones do."""
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     calendar = baker.make("calendar_integration.Calendar", organization=org)
 
     event = CalendarEventFactory.create_recurring_event(
@@ -653,7 +653,7 @@ def test_build_ics_attendees_internal_and_external():
     """
     from users.factories import UserFactory
 
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     calendar = baker.make("calendar_integration.Calendar", organization=org)
 
     event = baker.make(
@@ -749,7 +749,7 @@ def test_build_ics_attendee_partstat_mapping():
     """Verify all RSVPStatus values map to the correct PARTSTAT in the ICS."""
     from users.factories import UserFactory
 
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     calendar = baker.make("calendar_integration.Calendar", organization=org)
 
     def _make_event_with_status(rsvp_status: str, ext_id: str) -> bytes:
@@ -785,7 +785,7 @@ def test_build_ics_organizer_present_when_calendar_has_owner():
     """ORGANIZER line is present when the calendar has a primary owner membership."""
     from users.factories import UserFactory
 
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     calendar = baker.make("calendar_integration.Calendar", organization=org)
 
     owner_user = UserFactory().create_user(email="owner@example.com")
@@ -829,7 +829,7 @@ def test_build_ics_organizer_is_default_owner_when_multiple_owners():
     ``is_default=True`` (deterministic), not an arbitrary ``first()`` row."""
     from users.factories import UserFactory
 
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     calendar = baker.make("calendar_integration.Calendar", organization=org)
 
     # Non-default owner created first so a naive first()/ORDER BY pk would pick it.
@@ -873,7 +873,7 @@ def test_build_ics_organizer_is_default_owner_when_multiple_owners():
 def test_build_ics_organizer_omitted_when_calendar_has_no_owner():
     """ORGANIZER line is omitted (and build_ics does not crash) when the
     calendar has no ownership rows."""
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     calendar = baker.make("calendar_integration.Calendar", organization=org)
     # Deliberately no CalendarOwnership created
 
@@ -910,7 +910,7 @@ def test_build_ics_organizer_omitted_when_calendar_has_no_owner():
 @pytest.mark.django_db
 def test_build_ics_normal_event_status_confirmed():
     """A normal (non-exception) event emits STATUS:CONFIRMED."""
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     calendar = baker.make("calendar_integration.Calendar", organization=org)
 
     event = baker.make(
@@ -948,7 +948,7 @@ def test_build_ics_cancelled_exception_event_emits_status_cancelled():
     change starts spawning a cancelled CalendarEvent. Do NOT read its coverage as
     evidence that this path is reachable in production.
     """
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     calendar = baker.make("calendar_integration.Calendar", organization=org)
 
     parent_event = baker.make(
@@ -1011,7 +1011,7 @@ def test_build_ics_full_acceptance_scenario():
     """
     from users.factories import UserFactory
 
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     calendar = baker.make("calendar_integration.Calendar", organization=org)
 
     # Calendar owner → ORGANIZER

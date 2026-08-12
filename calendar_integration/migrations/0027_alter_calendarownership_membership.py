@@ -20,13 +20,13 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ('calendar_integration', '0026_calendarownership_membership_protect_fk'),
-        ('organizations', '0011_organizationbranding'),
+        ('tenancy', '0011_organizationbranding'),
     ]
 
     operations = [
         migrations.AlterField(
             model_name='calendarownership',
             name='membership',
-            field=models.ForeignObject(editable=False, from_fields=('membership_user_id', 'organization_id'), null=True, on_delete=django.db.models.deletion.DO_NOTHING, related_name='calendar_ownerships', to='organizations.organizationmembership', to_fields=('user_id', 'organization_id')),
+            field=models.ForeignObject(editable=False, from_fields=('membership_user_id', 'organization_id'), null=True, on_delete=django.db.models.deletion.DO_NOTHING, related_name='calendar_ownerships', to='tenancy.organizationmembership', to_fields=('user_id', 'organization_id')),
         ),
     ]

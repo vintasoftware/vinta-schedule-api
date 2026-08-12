@@ -65,7 +65,7 @@ class TestCalendarQueries:
     @pytest.fixture
     def organization(self):
         """Create test organization."""
-        return baker.make("organizations.Organization")
+        return baker.make("tenancy.Organization")
 
     @pytest.fixture
     def user(self, organization):

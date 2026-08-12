@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 import pytest
 from model_bakery import baker
 
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from tenancy.models import Organization, OrganizationMembership, OrganizationRole
 from users.models import User
 from webhooks.constants import WebhookEventType
 from webhooks.services.webhook_membership_side_effects import WebhookMembershipSideEffectsService

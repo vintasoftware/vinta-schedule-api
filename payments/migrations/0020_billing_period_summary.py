@@ -9,7 +9,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('organizations', '0022_organization_week_start'),
+        ('tenancy', '0022_organization_week_start'),
         ('payments', '0019_backfill_subscription_payment_provider_on_payments'),
     ]
 
@@ -32,7 +32,7 @@ class Migration(migrations.Migration):
                 ('reconciliation_unmetered', models.PositiveIntegerField()),
                 ('reconciliation_orphaned', models.PositiveIntegerField()),
                 ('closed_at', models.DateTimeField()),
-                ('organization', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='billing_period_summaries', to='organizations.organization')),
+                ('organization', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='billing_period_summaries', to='tenancy.organization')),
                 ('payment', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='period_summaries', to='payments.payment')),
                 ('subscription', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='period_summaries', to='payments.subscription')),
             ],

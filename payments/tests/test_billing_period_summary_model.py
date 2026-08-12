@@ -18,8 +18,8 @@ from django.db.migrations.executor import MigrationExecutor
 import pytest
 from model_bakery import baker
 
-from organizations.models import Organization
 from payments.models import BillingPeriodResourceUsage, BillingPeriodSummary, Subscription
+from tenancy.models import Organization
 
 
 PERIOD_START = datetime.datetime(2026, 7, 1, tzinfo=datetime.UTC)

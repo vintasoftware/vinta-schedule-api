@@ -8,9 +8,9 @@ from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
 
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
 from public_api.constants import PROVIDER_SCOPED_RESOURCES, PublicAPIResources
 from public_api.models import ResourceAccess, SystemUser
+from tenancy.models import Organization, OrganizationMembership, OrganizationRole
 from users.models import Profile
 
 

@@ -29,11 +29,11 @@ from model_bakery import baker
 from calendar_integration.constants import CalendarProvider, RecurrenceFrequency
 from calendar_integration.factories import CalendarEventFactory
 from calendar_integration.models import Calendar
-from organizations.models import Organization
 from payments.billing_constants import BillingState, LimitedResource, LimitKind
 from payments.models import BillingPlan, MeteredOccurrence, Subscription, SubscriptionPlanLimit
 from payments.services.entitlement_service import EntitlementService
 from payments.services.metering_service import MeteringService
+from tenancy.models import Organization
 
 
 # This module builds its own `Subscription` rows on specific organizations

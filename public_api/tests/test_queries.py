@@ -33,10 +33,10 @@ from calendar_integration.services.dataclasses import (
     UnavailableTimeWindow,
 )
 from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess, SystemUser
 from public_api.services import PublicAPIAuthService
+from tenancy.models import Organization, OrganizationMembership, OrganizationRole
 from users.factories import UserFactory
 from users.models import User
 
@@ -72,7 +72,7 @@ def assert_graphql_success(response):
 def assert_default_logo_url(url: str) -> None:
     """``logoUrl`` for an organization with no logo of its own: the delivery
     route's URL keyed by its reserved "default" sentinel slug (see
-    ``organizations.branding_logo.build_logo_display_url``). Never empty, and
+    ``tenancy.branding_logo.build_logo_display_url``). Never empty, and
     identical for an unknown tenant and a real-but-logoless one -- the
     no-enumeration-oracle contract."""
     assert url.startswith("http"), url
@@ -81,7 +81,7 @@ def assert_default_logo_url(url: str) -> None:
 
 def assert_signed_logo_url(url: str, expected_key: str) -> None:
     """``logoUrl`` for an organization that has uploaded a logo: a storage URL
-    for the stored key (``organizations.branding_logo.signed_logo_url``), not
+    for the stored key (``tenancy.branding_logo.signed_logo_url``), not
     the delivery route's stable per-slug URL -- so replacing the logo changes
     the URL and no cache can keep serving the old image."""
     assert url.startswith("http"), url
@@ -2023,7 +2023,7 @@ class TestBrandingForTenantQuery:
             Organization, name="Reseller", can_invite_organizations=True, slug="my-reseller"
         )
         baker.make(
-            "organizations.OrganizationBranding",
+            "tenancy.OrganizationBranding",
             organization=reseller,
             app_name="MyScheduler",
             logo="uploads/branding_logos/logo.png",
@@ -2066,7 +2066,7 @@ class TestBrandingForTenantQuery:
             Organization, name="Reseller", can_invite_organizations=True, slug="parent-reseller"
         )
         baker.make(
-            "organizations.OrganizationBranding",
+            "tenancy.OrganizationBranding",
             organization=reseller,
             app_name="ChildBranding",
             logo="uploads/branding_logos/child-logo.png",
@@ -2116,7 +2116,7 @@ class TestBrandingForTenantQuery:
         # Create a reseller with branding including secrets
         reseller = baker.make(Organization, name="Reseller", can_invite_organizations=True)
         baker.make(
-            "organizations.OrganizationBranding",
+            "tenancy.OrganizationBranding",
             organization=reseller,
             app_name="MyApp",
             logo="uploads/branding_logos/logo.png",
@@ -2234,7 +2234,7 @@ class TestBrandingForTenantQuery:
             slug="slug-lookup-reseller",
         )
         baker.make(
-            "organizations.OrganizationBranding",
+            "tenancy.OrganizationBranding",
             organization=reseller,
             app_name="SlugLookupBrand",
             logo="uploads/branding_logos/logo.png",
@@ -2392,7 +2392,7 @@ class TestBrandingForTenantQuery:
             slug="org-a-by-id",
         )
         baker.make(
-            "organizations.OrganizationBranding",
+            "tenancy.OrganizationBranding",
             organization=org_a,
             app_name="BrandA",
             logo="uploads/branding_logos/logo-a.png",
@@ -2407,7 +2407,7 @@ class TestBrandingForTenantQuery:
             slug="org-b-by-slug",
         )
         baker.make(
-            "organizations.OrganizationBranding",
+            "tenancy.OrganizationBranding",
             organization=org_b,
             app_name="BrandB",
             logo="uploads/branding_logos/logo-b.png",
@@ -2459,7 +2459,7 @@ class TestBrandingForTenantQuery:
             slug="valid-slug-not-used",
         )
         baker.make(
-            "organizations.OrganizationBranding",
+            "tenancy.OrganizationBranding",
             organization=reseller,
             app_name="ShouldNotBeReturned",
             logo="uploads/branding_logos/logo.png",
@@ -2549,7 +2549,7 @@ class TestBrandingForTenantQuery:
         assert org.can_invite_organizations is False
 
         baker.make(
-            "organizations.OrganizationBranding",
+            "tenancy.OrganizationBranding",
             organization=org,
             app_name="StandaloneBrand",
             logo="uploads/branding_logos/logo.png",
@@ -6737,7 +6737,7 @@ class TestBrandingForTenantEntitlementDowngrade:
             is_enabled=False,
         )
         baker.make(
-            "organizations.OrganizationBranding",
+            "tenancy.OrganizationBranding",
             organization=reseller,
             app_name="Downgraded App",
         )

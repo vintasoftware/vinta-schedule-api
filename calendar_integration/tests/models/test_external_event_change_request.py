@@ -30,7 +30,7 @@ from calendar_integration.models import (
     CalendarEvent,
     ExternalEventChangeRequest,
 )
-from organizations.models import Organization
+from tenancy.models import Organization
 
 
 @pytest.fixture

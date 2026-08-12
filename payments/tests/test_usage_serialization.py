@@ -25,11 +25,11 @@ from rest_framework.test import APIClient
 
 from calendar_integration.constants import CalendarType
 from calendar_integration.models import Calendar
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
 from payments.billing_constants import BillingState, LimitedResource, LimitKind
 from payments.models import BillingPlan, PlanLimit, SubscriptionAddOn
 from payments.serializers import UsageResponseSerializer
 from payments.services.subscription_service import SubscriptionService
+from tenancy.models import Organization, OrganizationMembership, OrganizationRole
 from users.factories import UserFactory
 
 

@@ -2,8 +2,8 @@
 
 Phase 0's entire point is that wrapping a task body in
 ``common.organization_context.organization_context(...)`` changes *nothing*
-observable: the managers it wraps (``organizations.managers
-.BaseOrganizationModelManager`` / ``organizations.querysets
+observable: the managers it wraps (``tenancy.managers
+.BaseOrganizationModelManager`` / ``tenancy.querysets
 .BaseOrganizationModelQuerySet``) ignore the binding completely today and keep
 requiring their own explicit ``organization`` filter. This suite proves that,
 rather than asserting it, by running the exact same task body twice against
@@ -36,7 +36,7 @@ from calendar_integration.constants import CalendarProvider
 from calendar_integration.models import Calendar, CalendarSync, CalendarSyncStatus
 from calendar_integration.tasks import calendar_sync_tasks
 from common.organization_context import get_current_organization, organization_context
-from organizations.models import Organization
+from tenancy.models import Organization
 from users.models import User
 
 

@@ -46,10 +46,10 @@ from calendar_integration.models import (
     ExternalAttendee,
     ResourceAllocation,
 )
-from organizations.models import Organization, OrganizationMembership
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess
 from public_api.services import PublicAPIAuthService
+from tenancy.models import Organization, OrganizationMembership
 from users.models import User
 
 

@@ -27,7 +27,7 @@ from audit.models import Audit, AuditAffectedMembership
 from audit.services import AuditService
 from audit.tasks import persist_audit_record
 from audit.types import ActorSnapshot, AuditRecordData, SubjectRef
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from tenancy.models import Organization, OrganizationMembership, OrganizationRole
 
 
 # ---------------------------------------------------------------------------
@@ -42,7 +42,7 @@ def build_payload(data: AuditRecordData) -> dict:
 
 def make_subject(org: Organization) -> SubjectRef:
     return SubjectRef(
-        subject_type="organizations.Organization",
+        subject_type="tenancy.Organization",
         subject_id=str(org.pk),
         subject_label="Test Org",
     )
@@ -193,7 +193,7 @@ class TestPersistAuditRecordTask:
 
         actor = AuditService.actor_from_membership(membership)
         subject = SubjectRef(
-            subject_type="organizations.OrganizationMembership",
+            subject_type="tenancy.OrganizationMembership",
             subject_id=str(membership.user_id),
         )
         diff = {"role": {"old": "member", "new": "admin"}}

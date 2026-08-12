@@ -10,7 +10,7 @@ import pytest
 from calendar_integration.constants import CalendarProvider, IncomingWebhookProcessingStatus
 from calendar_integration.models import CalendarWebhookEvent
 from calendar_integration.services.webhook_analytics_service import WebhookAnalyticsService
-from organizations.models import Organization
+from tenancy.models import Organization
 
 
 @pytest.mark.django_db

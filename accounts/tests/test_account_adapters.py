@@ -14,9 +14,9 @@ from accounts.account_adapters import (
     SocialAccountAdapter,
 )
 from legal.factories import UserConsentFactory
-from organizations.models import Organization, OrganizationInvitation, OrganizationMembership
 from payments.billing_constants import BillingState, LimitedResource, LimitKind
 from payments.models import BillingPlan, Subscription, SubscriptionPlanLimit
+from tenancy.models import Organization, OrganizationInvitation, OrganizationMembership
 from users.models import Profile, User
 
 

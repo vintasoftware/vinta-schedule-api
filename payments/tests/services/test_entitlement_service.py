@@ -19,7 +19,6 @@ from model_bakery import baker
 
 from calendar_integration.constants import CalendarType, CalendarVisibility
 from calendar_integration.models import Calendar, CalendarGroup
-from organizations.models import Organization, OrganizationInvitation, OrganizationMembership
 from payments.billing_constants import (
     BillingState,
     Entitlement,
@@ -36,6 +35,7 @@ from payments.models import (
     SubscriptionPlanLimit,
 )
 from payments.services.entitlement_service import USAGE_COUNTERS, EntitlementService
+from tenancy.models import Organization, OrganizationInvitation, OrganizationMembership
 from webhooks.models import WebhookConfiguration
 
 

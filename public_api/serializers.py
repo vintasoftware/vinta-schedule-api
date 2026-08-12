@@ -6,10 +6,10 @@ from dependency_injector.wiring import Provide, inject
 from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
 
-from organizations.models import OrganizationMembership, get_active_organization_membership
 from public_api.constants import PROVIDER_SCOPED_RESOURCES, PublicAPIResources
 from public_api.models import ResourceAccess, SystemUser
 from public_api.services import PublicAPIAuthService
+from tenancy.models import OrganizationMembership, get_active_organization_membership
 
 
 class SystemUserTokenCreateSerializer(serializers.Serializer):

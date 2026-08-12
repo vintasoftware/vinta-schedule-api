@@ -19,7 +19,7 @@ from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
 
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from tenancy.models import Organization, OrganizationMembership, OrganizationRole
 from users.models import Profile, User
 
 

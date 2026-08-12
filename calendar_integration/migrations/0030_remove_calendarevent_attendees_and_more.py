@@ -7,7 +7,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ('calendar_integration', '0029_backfill_eventattendance_membership_user_id'),
-        ('organizations', '0011_organizationbranding'),
+        ('tenancy', '0011_organizationbranding'),
     ]
 
     operations = [
@@ -18,6 +18,6 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='calendarevent',
             name='attendee_memberships',
-            field=models.ManyToManyField(blank=True, related_name='attended_events', through='calendar_integration.EventAttendance', through_fields=('event', 'membership'), to='organizations.organizationmembership'),
+            field=models.ManyToManyField(blank=True, related_name='attended_events', through='calendar_integration.EventAttendance', through_fields=('event', 'membership'), to='tenancy.organizationmembership'),
         ),
     ]

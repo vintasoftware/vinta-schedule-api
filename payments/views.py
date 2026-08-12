@@ -17,7 +17,6 @@ from rest_framework.views import APIView
 from rest_framework.viewsets import GenericViewSet, ViewSet
 
 from common.utils.view_utils import TenantScopedViewMixin
-from organizations.permissions import IsOrganizationAdmin
 from payments.billing_views import _require_organization
 from payments.constants import PaymentStatuses
 from payments.exceptions import (
@@ -30,6 +29,7 @@ from payments.models import PaymentStatusUpdate as PaymentStatusUpdateModel
 from payments.serializers import BillingProfileSerializer, PaymentProviderSerializer
 from payments.services.dunning_service import FAILED_SUBSCRIPTION_PAYMENT_STATUSES
 from payments.services.provider_credentials import resolve_public_credentials
+from tenancy.permissions import IsOrganizationAdmin
 
 
 if TYPE_CHECKING:

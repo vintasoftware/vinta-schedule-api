@@ -31,7 +31,6 @@ from rest_framework import status
 
 from calendar_integration.constants import CalendarType
 from calendar_integration.models import AvailableTime, Calendar, CalendarGroup
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
 from payments.billing_constants import BillingState, LimitedResource, LimitKind
 from payments.models import BillingPlan, MeteredOccurrence, PlanLimit
 from payments.services.entitlement_service import EntitlementService
@@ -40,6 +39,7 @@ from payments.services.subscription_service import (
     current_billing_period_start,
 )
 from public_api.models import SystemUser
+from tenancy.models import Organization, OrganizationMembership, OrganizationRole
 from webhooks.constants import WebhookEventType
 from webhooks.models import WebhookConfiguration
 

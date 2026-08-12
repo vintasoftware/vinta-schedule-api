@@ -113,7 +113,7 @@ class GetCalendarGroupQuotaPeriodCountsJSON(Func):
 
     ``period_type`` is one of ``calendar_integration.constants.QuotaPeriod``
     ("day" / "week" / "month"); ``week_start`` is one of
-    ``organizations.models.WeekStart`` ("monday" / "sunday") and only affects
+    ``tenancy.models.WeekStart`` ("monday" / "sunday") and only affects
     week-period bucketing.
 
     ``period_type``/``week_start`` are always wrapped in ``Value(...)``

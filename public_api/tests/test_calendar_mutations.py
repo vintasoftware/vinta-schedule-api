@@ -21,10 +21,10 @@ from rest_framework.test import APIClient
 
 from calendar_integration.constants import CalendarProvider, CalendarType, CalendarVisibility
 from calendar_integration.models import Calendar
-from organizations.models import Organization
 from public_api.constants import PROVIDER_SCOPED_RESOURCES, PublicAPIResources
 from public_api.models import ResourceAccess
 from public_api.services import PublicAPIAuthService
+from tenancy.models import Organization
 
 
 # ---------------------------------------------------------------------------

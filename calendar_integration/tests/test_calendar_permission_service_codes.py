@@ -36,8 +36,8 @@ from calendar_integration.models import (
 )
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from calendar_integration.services.dataclasses import CalendarEventInputData, CalendarSettingsData
-from organizations.models import Organization
 from public_api.models import SystemUser
+from tenancy.models import Organization
 
 
 # ---------------------------------------------------------------------------
@@ -47,7 +47,7 @@ from public_api.models import SystemUser
 
 @pytest.fixture
 def org(db) -> Organization:
-    return baker.make("organizations.Organization")
+    return baker.make("tenancy.Organization")
 
 
 @pytest.fixture
@@ -252,7 +252,7 @@ def test_validate_code_raises_invalid_for_wrong_org(service, org, calendar):
         calendar_id=calendar.id,
     )
 
-    other_org = baker.make("organizations.Organization")
+    other_org = baker.make("tenancy.Organization")
     with pytest.raises(InvalidTokenError):
         service.validate_code(code, other_org.id)
 
@@ -497,7 +497,7 @@ def test_can_perform_scheduling_group_token_member_calendar_in_other_org_returns
     - A CREATE token is minted in org A scoped to grp_a.
     - can_perform_scheduling is called with org B's calendar id → must return False.
     """
-    other_org = baker.make("organizations.Organization")
+    other_org = baker.make("tenancy.Organization")
 
     # Org A side
     grp_a = CalendarGroup.objects.create(organization=org, name="Org-A Group")

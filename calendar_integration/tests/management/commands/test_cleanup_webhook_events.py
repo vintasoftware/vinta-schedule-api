@@ -10,7 +10,7 @@ import pytest
 from model_bakery import baker
 
 from calendar_integration.management.commands.cleanup_webhook_events import Command
-from organizations.models import Organization
+from tenancy.models import Organization
 
 
 class TestCleanupWebhookEventsCommand(TestCase):

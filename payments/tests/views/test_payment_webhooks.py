@@ -21,7 +21,6 @@ from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
 
-from organizations.models import Organization
 from payments.billing_constants import BillingState
 from payments.constants import PaymentProviders, PaymentStatuses
 from payments.models import Payment, ProviderWebhookEvent
@@ -38,6 +37,7 @@ from payments.services.subscription_service import SubscriptionService
 from payments.tests.services.subscription_adapters.test_stripe_subscription_adapter import (
     build_signed_request,
 )
+from tenancy.models import Organization
 
 
 WEBHOOK_SECRET = "test-webhook-secret"

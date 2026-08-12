@@ -17,9 +17,9 @@ from django.utils import timezone
 
 import pytest
 
-from organizations.models import Organization
 from payments.models import Subscription
 from payments.tasks import close_billing_periods, close_subscription_billing_period
+from tenancy.models import Organization
 
 
 PERIOD_START = datetime.datetime(2025, 6, 1, 0, 0, tzinfo=datetime.UTC)

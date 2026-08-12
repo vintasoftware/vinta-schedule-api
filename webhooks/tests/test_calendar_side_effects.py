@@ -9,7 +9,7 @@ from calendar_integration.services.calendar_side_effects_service import (
     OnUpdateAttendeeOnEventHandler,
 )
 from calendar_integration.services.dataclasses import CalendarEventData, EventExternalAttendeeData
-from organizations.models import Organization
+from tenancy.models import Organization
 from webhooks.constants import WebhookEventType
 from webhooks.services.webhook_calendar_side_effects import WebhookCalendarEventSideEffectsService
 

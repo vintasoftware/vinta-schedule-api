@@ -8,7 +8,7 @@ import pytest
 from model_bakery import baker
 from rest_framework import status
 
-from organizations.models import Organization, OrganizationMembership
+from tenancy.models import Organization, OrganizationMembership
 from webhooks.constants import WebhookEventType, WebhookStatus
 from webhooks.models import WebhookConfiguration, WebhookEvent
 

@@ -24,7 +24,7 @@ from calendar_integration.services.calendar_group_service import CalendarGroupSe
 from calendar_integration.services.calendar_permission_service import (
     CalendarPermissionService,
 )
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from tenancy.models import Organization, OrganizationMembership, OrganizationRole
 from users.models import User
 
 

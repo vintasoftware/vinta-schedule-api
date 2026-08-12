@@ -23,10 +23,10 @@ from vintasend.services.notification_service import NotificationService
 
 from accounts.exceptions import ConsentRequiredError
 from legal.services import ConsentService
-from organizations.exceptions import UserAlreadyHasMembershipError
-from organizations.models import get_active_organization_membership
-from organizations.services import OrganizationService
 from payments.exceptions import OverLimitError
+from tenancy.exceptions import UserAlreadyHasMembershipError
+from tenancy.models import get_active_organization_membership
+from tenancy.services import OrganizationService
 from users.models import Profile, User
 
 

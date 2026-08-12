@@ -26,7 +26,7 @@ from calendar_integration.serializers import (
     OwnershipMembershipSerializer,
 )
 from calendar_integration.services.calendar_service import CalendarService
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from tenancy.models import Organization, OrganizationMembership, OrganizationRole
 
 
 @pytest.fixture

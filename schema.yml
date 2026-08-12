@@ -4562,7 +4562,7 @@ paths:
         key/credential logic has one implementation.
 
         Gated on the two-condition branding **eligibility** check
-        (``organizations.permissions.check_branding_read_eligibility`` -- parentless
+        (``tenancy.permissions.check_branding_read_eligibility`` -- parentless
         AND entitled), not the three-condition write gate: the frontend uploads a
         logo on file-picker change, before the slug/branding PUT on form submit, so
         requiring a slug here would refuse an upload the write gate itself never
@@ -13148,7 +13148,7 @@ paths:
         ``GenericVirtualModelViewMixin`` (requires a ``VirtualModelSerializer``
         with a ``virtual_model``, which this flat, no-N+1 serializer doesn't need).
         A plain DRF ``ReadOnlyModelViewSet`` mirrors the existing precedent in
-        ``organizations.views.ServiceAccountViewSet`` for this shape.
+        ``tenancy.views.ServiceAccountViewSet`` for this shape.
 
         Auth split:
         - ``latest`` / ``latest_by_type`` are **public** (``AllowAny``) — the
@@ -13211,7 +13211,7 @@ paths:
         ``GenericVirtualModelViewMixin`` (requires a ``VirtualModelSerializer``
         with a ``virtual_model``, which this flat, no-N+1 serializer doesn't need).
         A plain DRF ``ReadOnlyModelViewSet`` mirrors the existing precedent in
-        ``organizations.views.ServiceAccountViewSet`` for this shape.
+        ``tenancy.views.ServiceAccountViewSet`` for this shape.
 
         Auth split:
         - ``latest`` / ``latest_by_type`` are **public** (``AllowAny``) — the
@@ -13281,7 +13281,7 @@ paths:
         ``GenericVirtualModelViewMixin`` (requires a ``VirtualModelSerializer``
         with a ``virtual_model``, which this flat, no-N+1 serializer doesn't need).
         A plain DRF ``ReadOnlyModelViewSet`` mirrors the existing precedent in
-        ``organizations.views.ServiceAccountViewSet`` for this shape.
+        ``tenancy.views.ServiceAccountViewSet`` for this shape.
 
         Auth split:
         - ``latest`` / ``latest_by_type`` are **public** (``AllowAny``) — the
@@ -13323,7 +13323,7 @@ paths:
         ``GenericVirtualModelViewMixin`` (requires a ``VirtualModelSerializer``
         with a ``virtual_model``, which this flat, no-N+1 serializer doesn't need).
         A plain DRF ``ReadOnlyModelViewSet`` mirrors the existing precedent in
-        ``organizations.views.ServiceAccountViewSet`` for this shape.
+        ``tenancy.views.ServiceAccountViewSet`` for this shape.
 
         Auth split:
         - ``latest`` / ``latest_by_type`` are **public** (``AllowAny``) — the
@@ -17504,7 +17504,7 @@ components:
             condition (Organization Auth-Area Branding plan, Phase 4 Capability
             signal guiding decision), so an organization missing only a slug still
             sees the branding page instead of it being silently absent. Shares
-            ``organizations.permissions.is_branding_eligible_organization`` rather
+            ``tenancy.permissions.is_branding_eligible_organization`` rather
             than restating the two-condition check, so this tracks the same gate
             that governs ``GET /branding/`` (see
             ``OrganizationBrandingView._check_branding_read_gate``) rather than
@@ -18584,7 +18584,7 @@ components:
         Validates:
         - Color format: #RRGGBB or #RRGGBBAA (regex).
         - redirect_url: HTTPS scheme, no wildcard character, no path-prefix pattern
-          (organizations.redirect_url_validation).
+          (tenancy.redirect_url_validation).
 
         ``logo_url`` round-trips through ``BrandingLogoField``: reads return a
         time-limited signed URL for the stored object (``None`` when no logo is
@@ -18619,7 +18619,7 @@ components:
             Replaces the old return_url_allowlist: no caller-supplied redirect target
             is ever honored, so there is nothing to validate at request time and no
             open-redirect surface. Must be HTTPS with no wildcard character and no
-            path-prefix pattern (organizations.redirect_url_validation).'
+            path-prefix pattern (tenancy.redirect_url_validation).'
           maxLength: 200
       required:
       - app_name
@@ -18627,7 +18627,7 @@ components:
       type: object
       description: |-
         Response body for ``OrganizationBrandingLogoUploadParamsView`` — the same
-        shape ``organizations.branding_logo.sign_branding_logo_upload`` and the
+        shape ``tenancy.branding_logo.sign_branding_logo_upload`` and the
         GraphQL ``create_branding_logo_upload`` mutation return.
 
         ``upload_url`` is a complete SigV4 presigned PUT URL. The client uploads by
@@ -18691,7 +18691,7 @@ components:
             is what lets the unique index admit any number of organizations with no
             slug. Mutable after set: changing it orphans previously-issued branded
             login URLs, which then fall back to the default identity rather than erroring.
-            Format, reserved-word, and confusable-character rules live in organizations.slug_validation
+            Format, reserved-word, and confusable-character rules live in tenancy.slug_validation
             and are enforced by each write surface (REST serializer, admin form, GraphQL
             input), not here.'
           pattern: ^[-a-zA-Z0-9_]+$
@@ -19904,7 +19904,7 @@ components:
         Validates:
         - Color format: #RRGGBB or #RRGGBBAA (regex).
         - redirect_url: HTTPS scheme, no wildcard character, no path-prefix pattern
-          (organizations.redirect_url_validation).
+          (tenancy.redirect_url_validation).
 
         ``logo_url`` round-trips through ``BrandingLogoField``: reads return a
         time-limited signed URL for the stored object (``None`` when no logo is
@@ -19939,7 +19939,7 @@ components:
             Replaces the old return_url_allowlist: no caller-supplied redirect target
             is ever honored, so there is nothing to validate at request time and no
             open-redirect surface. Must be HTTPS with no wildcard character and no
-            path-prefix pattern (organizations.redirect_url_validation).'
+            path-prefix pattern (tenancy.redirect_url_validation).'
           maxLength: 200
     PatchedProfile:
       type: object

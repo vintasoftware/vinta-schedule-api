@@ -27,7 +27,7 @@ from audit.constants import AuditAction, AuditActorType
 from audit.models import Audit, AuditAffectedMembership
 from audit.repositories import DjangoORMAuditRepository
 from audit.types import ActorSnapshot, AuditRecord, AuditRecordData, SubjectRef
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from tenancy.models import Organization, OrganizationMembership, OrganizationRole
 
 
 User = get_user_model()
@@ -46,7 +46,7 @@ def make_membership(org: Organization) -> OrganizationMembership:
 
 def make_subject() -> SubjectRef:
     return SubjectRef(
-        subject_type="organizations.Organization",
+        subject_type="tenancy.Organization",
         subject_id="42",
         subject_label="Test Org",
     )
@@ -468,7 +468,7 @@ class TestDjangoORMAuditRepositoryGet:
         membership = make_membership(org)
         repo = DjangoORMAuditRepository()
         subject = SubjectRef(
-            subject_type="organizations.OrganizationMembership",
+            subject_type="tenancy.OrganizationMembership",
             subject_id=str(membership.user_id),
             subject_label="Test Member",
         )

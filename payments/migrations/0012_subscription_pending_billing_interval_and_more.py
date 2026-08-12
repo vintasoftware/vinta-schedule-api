@@ -9,7 +9,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('organizations', '0016_organizationmembership_is_billing_owner'),
+        ('tenancy', '0016_organizationmembership_is_billing_owner'),
         ('payments', '0011_meteredoccurrence'),
     ]
 
@@ -44,7 +44,7 @@ class Migration(migrations.Migration):
                 ('provider', models.CharField(choices=[('mercadopago', 'MercadoPago'), ('stripe', 'Stripe')], max_length=50)),
                 ('external_id', models.CharField(max_length=255)),
                 ('is_active', models.BooleanField(db_index=True, default=True)),
-                ('organization', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='payment_methods', to='organizations.organization')),
+                ('organization', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='payment_methods', to='tenancy.organization')),
             ],
             options={
                 'abstract': False,

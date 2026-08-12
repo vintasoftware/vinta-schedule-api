@@ -29,7 +29,7 @@ from calendar_integration.models import (
     CalendarGroupSlot,
     CalendarGroupSlotMembership,
 )
-from organizations.models import Organization, WeekStart
+from tenancy.models import Organization, WeekStart
 
 
 # ---------------------------------------------------------------------------

@@ -35,7 +35,7 @@ from calendar_integration.services.dataclasses import (
     EventInternalAttendeeData,
     ResourceData,
 )
-from organizations.models import OrganizationMembership
+from tenancy.models import OrganizationMembership
 from users.models import User
 
 
@@ -62,7 +62,7 @@ if TYPE_CHECKING:
 
     from calendar_integration.services.calendar_permission_service import CalendarPermissionService
     from calendar_integration.services.protocols.calendar_adapter import CalendarAdapter
-    from organizations.models import Organization
+    from tenancy.models import Organization
 
 
 # ---------------------------------------------------------------------------

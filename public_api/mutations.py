@@ -55,32 +55,6 @@ from calendar_integration.services.dataclasses import (
     ExternalAttendeeInputData,
     ResourceAllocationInputData,
 )
-from organizations.branding_logo import (
-    branding_diff_state,
-    build_logo_display_url,
-    normalize_uploaded_logo_key,
-    sign_branding_logo_upload,
-)
-from organizations.exceptions import (
-    BrandingLogoUploadRejectedError,
-    NoServiceAccountConfiguredError,
-    UserAlreadyHasMembershipError,
-)
-from organizations.invitation_urls import build_invitation_accept_url
-from organizations.models import (
-    Organization,
-    OrganizationBranding,
-    OrganizationMembership,
-    resolve_branding_for_display,
-)
-from organizations.permissions import (
-    BrandingWriteGateReason,
-    evaluate_branding_write_gate,
-    is_branding_eligible_organization,
-)
-from organizations.redirect_url_validation import validate_redirect_url
-from organizations.services import OrganizationService
-from organizations.slug_validation import validate_organization_slug
 from payments.exceptions import OverLimitError
 from payments.services.subscription_service import SubscriptionService
 from public_api.capabilities import assert_org_can_invite, assert_target_in_subtree
@@ -107,6 +81,32 @@ from public_api.types import (
     UpdateBrandingInput,
     UpdateBrandingResult,
 )
+from tenancy.branding_logo import (
+    branding_diff_state,
+    build_logo_display_url,
+    normalize_uploaded_logo_key,
+    sign_branding_logo_upload,
+)
+from tenancy.exceptions import (
+    BrandingLogoUploadRejectedError,
+    NoServiceAccountConfiguredError,
+    UserAlreadyHasMembershipError,
+)
+from tenancy.invitation_urls import build_invitation_accept_url
+from tenancy.models import (
+    Organization,
+    OrganizationBranding,
+    OrganizationMembership,
+    resolve_branding_for_display,
+)
+from tenancy.permissions import (
+    BrandingWriteGateReason,
+    evaluate_branding_write_gate,
+    is_branding_eligible_organization,
+)
+from tenancy.redirect_url_validation import validate_redirect_url
+from tenancy.services import OrganizationService
+from tenancy.slug_validation import validate_organization_slug
 from webhooks.graphql import WebhookConfigurationGraphQLType
 from webhooks.models import WebhookConfiguration
 
@@ -130,11 +130,11 @@ HEX_COLOR_PATTERN = re.compile(r"^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$")
 # GraphQL error rather than surfacing as a DB-level error after work has begun.
 EVENT_TITLE_MAX_LENGTH = 255
 
-# One message per ``organizations.permissions.BrandingWriteGateReason`` failure --
+# One message per ``tenancy.permissions.BrandingWriteGateReason`` failure --
 # this surface's translation of the shared write gate into its own error idiom
 # (GraphQLError), matching the plan's Shared gate helper guiding decision. Kept
-# distinct in wording from the REST 403 bodies (organizations.exceptions) and the
-# admin form error (organizations.admin) so each surface reads naturally, while
+# distinct in wording from the REST 403 bodies (tenancy.exceptions) and the
+# admin form error (tenancy.admin) so each surface reads naturally, while
 # preserving the same three-way distinguishability.
 _BRANDING_GATE_MESSAGES: dict[BrandingWriteGateReason, str] = {
     BrandingWriteGateReason.HAS_PARENT: (
@@ -1281,7 +1281,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             # Build the invite URL exactly as the branded email does -- keyed on the
             # branding root's slug (not target_org's directly), so a child
             # organization's invite carries its reseller's slug. See
-            # organizations.invitation_urls.build_invitation_accept_url.
+            # tenancy.invitation_urls.build_invitation_accept_url.
             branding_root = resolve_branding_for_display(target_org)
             invite_url = build_invitation_accept_url(
                 branding_root.organization if branding_root else None, raw_token
@@ -1508,7 +1508,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
            org itself) and applies it to the acting org BEFORE step 2 -- see
            ``UpdateBrandingInput.slug``'s docstring and ``_apply_input_slug``.
         2. Evaluates the shared branding write gate -- parentless, entitled,
-           slug-set (``organizations.permissions.evaluate_branding_write_gate``).
+           slug-set (``tenancy.permissions.evaluate_branding_write_gate``).
            Replaces the old ``can_invite_organizations``-only check
            (``assert_org_can_invite``): a reseller is not exempt from any of
            the three conditions. Raises a distinguishable ``GraphQLError`` per
@@ -1516,7 +1516,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         3. Validates app_name: non-empty and max 120 characters.
         4. Validates primary_color and secondary_color format (#RRGGBB or #RRGGBBAA).
         5. Validates redirect_url: HTTPS scheme, no wildcard, no path-prefix pattern
-           (organizations.redirect_url_validation, shared with the REST serializer).
+           (tenancy.redirect_url_validation, shared with the REST serializer).
         6. Upserts OrganizationBranding on the acting org only (always keyed to acting_org).
         7. Returns the upserted branding row (without internal fields like support_email/
            redirect_url).
@@ -1589,7 +1589,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
 
             # `logo_url` is write-only here despite the name: normalize a bare key or a
             # full signed/public URL down to the bare S3 key -- the persisted value,
-            # never a URL. See organizations.branding_logo.normalize_uploaded_logo_key.
+            # never a URL. See tenancy.branding_logo.normalize_uploaded_logo_key.
             # Raises BrandingLogoUploadRejectedError if the normalized key falls
             # outside the branding_logos upload prefix (e.g. a key from another
             # destination in the shared media bucket) -- see BRANDING_LOGO_KEY_PREFIX.
@@ -1665,7 +1665,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         entitlement -- evaluated against the acting organization directly
         (`is_branding_eligible_organization`), NOT the destination's own `auth`
         callable: that callable only ever receives a bare user (see
-        `organizations.permissions.user_administers_branding_eligible_organization`),
+        `tenancy.permissions.user_administers_branding_eligible_organization`),
         so this mutation gets the tighter, org-specific check its caller's token
         already carries via `OrganizationResourceAccess`.
 

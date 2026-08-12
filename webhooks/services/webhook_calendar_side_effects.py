@@ -8,8 +8,8 @@ from calendar_integration.services.dataclasses import (
     EventExternalAttendeeData,
     EventInternalAttendeeData,
 )
-from organizations.models import Organization
 from public_api.models import SystemUser
+from tenancy.models import Organization
 from users.models import User
 from webhooks.constants import WebhookEventType
 from webhooks.services.payloads import CalendarEventWebhookPayload, EventAttendeeWebhookPayload

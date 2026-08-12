@@ -41,13 +41,13 @@ from calendar_integration.tasks.calendar_sync_tasks import (
     resync_organization_calendars_task,
     sync_calendar_task,
 )
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
 from payments.billing_constants import BillingState, Entitlement
 from payments.exceptions import OverLimitError
 from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
 from payments.services.dunning_service import DunningService
 from payments.services.entitlement_service import EntitlementService
 from payments.services.subscription_service import SubscriptionService
+from tenancy.models import Organization, OrganizationMembership, OrganizationRole
 from users.models import Profile, User
 
 

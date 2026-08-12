@@ -45,7 +45,7 @@ from calendar_integration.services.dataclasses import (
     CalendarSettingsData,
 )
 from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
-from organizations.models import Organization
+from tenancy.models import Organization
 
 
 # ---------------------------------------------------------------------------

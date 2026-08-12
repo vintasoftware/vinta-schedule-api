@@ -9,10 +9,10 @@ from rest_framework.test import APIClient
 
 from calendar_integration.constants import CalendarType
 from calendar_integration.models import Calendar, CalendarGroup
-from organizations.models import Organization
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess
 from public_api.services import PublicAPIAuthService
+from tenancy.models import Organization
 
 
 def assert_graphql_success(response):

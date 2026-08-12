@@ -52,7 +52,7 @@ from calendar_integration.services.dataclasses import (
     CalendarGroupEventInputData,
     CalendarGroupSlotSelectionInputData,
 )
-from organizations.models import Organization, OrganizationMembership, OrganizationRole, WeekStart
+from tenancy.models import Organization, OrganizationMembership, OrganizationRole, WeekStart
 from users.models import Profile, User
 
 

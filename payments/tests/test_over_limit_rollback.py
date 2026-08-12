@@ -28,9 +28,9 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from calendar_integration.models import CalendarGroup
-from organizations.models import Organization
 from payments.billing_constants import LimitedResource, LimitRemedy
 from payments.exceptions import OverLimitError, PaymentProviderNotConfiguredError
+from tenancy.models import Organization
 
 
 #: The organization the two views below write against.

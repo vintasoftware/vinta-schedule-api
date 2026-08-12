@@ -14,7 +14,7 @@ from calendar_integration.models import CalendarEvent, CalendarManagementToken
 from calendar_integration.serializers import CalendarEventSerializer
 from calendar_integration.services.calendar_service import CalendarService
 from common.utils.view_utils import NoListVintaScheduleModelViewSet
-from organizations.models import Organization
+from tenancy.models import Organization
 
 
 class TokenAuthenticationMixin:

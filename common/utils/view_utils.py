@@ -130,7 +130,7 @@ class TenantScopedViewMixin:
         and so subclasses can override or extend it without touching ``initial()``.
         """
         # Lazily import to avoid a circular import (organizations → common → organizations).
-        from organizations.models import OrganizationMembership  # noqa: PLC0415
+        from tenancy.models import OrganizationMembership  # noqa: PLC0415
 
         # Default: nothing resolved yet.
         resolved_membership: OrganizationMembership | None = None

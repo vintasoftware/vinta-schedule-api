@@ -54,7 +54,6 @@ from calendar_integration.services.dataclasses import (
     CalendarEventInputData,
 )
 from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
-from organizations.models import Organization, OrganizationMembership
 from payments.billing_constants import (
     BillingState,
     Entitlement,
@@ -74,6 +73,7 @@ from payments.models import (
 )
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess
+from tenancy.models import Organization, OrganizationMembership
 from users.models import Profile, User
 
 

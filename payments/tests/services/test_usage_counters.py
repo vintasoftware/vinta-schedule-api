@@ -45,18 +45,18 @@ from calendar_integration.services.availability_service import AvailabilityServi
 from calendar_integration.services.calendar_service_context import CalendarServiceContext
 from calendar_integration.services.recurrence_manager import RecurrenceManager
 from calendar_integration.tests.services.test_availability_service import FakeHost
-from organizations.models import (
-    Organization,
-    OrganizationInvitation,
-    OrganizationMembership,
-    OrganizationRole,
-)
 from payments.billing_constants import LimitedResource
 from payments.exceptions import InapplicableInvitationExclusionError
 from payments.models import MeteredOccurrence, Subscription
 from payments.services.entitlement_service import EntitlementService
 from payments.services.subscription_service import current_billing_period_start
 from public_api.models import SystemUser
+from tenancy.models import (
+    Organization,
+    OrganizationInvitation,
+    OrganizationMembership,
+    OrganizationRole,
+)
 from users.models import Profile, User
 from webhooks.models import WebhookConfiguration
 

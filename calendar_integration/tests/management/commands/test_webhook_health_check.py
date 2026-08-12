@@ -11,7 +11,7 @@ from django.utils import timezone
 from model_bakery import baker
 
 from calendar_integration.management.commands.webhook_health_check import Command
-from organizations.models import Organization
+from tenancy.models import Organization
 
 
 class TestWebhookHealthCheckCommand(TestCase):

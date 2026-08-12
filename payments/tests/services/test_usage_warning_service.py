@@ -22,7 +22,6 @@ import pytest
 from freezegun import freeze_time
 from model_bakery import baker
 
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
 from payments.billing_constants import BillingState, LimitedResource, LimitKind, LimitWarningLevel
 from payments.models import (
     BillingPlan,
@@ -32,6 +31,7 @@ from payments.models import (
 )
 from payments.services.entitlement_service import EntitlementService
 from payments.services.usage_warning_service import UsageWarningService
+from tenancy.models import Organization, OrganizationMembership, OrganizationRole
 from users.models import User
 
 

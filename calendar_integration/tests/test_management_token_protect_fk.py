@@ -30,7 +30,7 @@ from model_bakery import baker
 
 from calendar_integration.models import Calendar, CalendarManagementToken
 from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
-from organizations.models import Organization, OrganizationMembership
+from tenancy.models import Organization, OrganizationMembership
 from users.models import User
 
 

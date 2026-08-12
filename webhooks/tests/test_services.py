@@ -5,7 +5,7 @@ import pytest
 import requests
 from model_bakery import baker
 
-from organizations.models import Organization
+from tenancy.models import Organization
 from webhooks.constants import WebhookEventType, WebhookStatus
 from webhooks.models import WebhookConfiguration, WebhookEvent
 from webhooks.services.webhook_service import WebhookService

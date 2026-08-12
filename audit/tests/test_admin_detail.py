@@ -27,7 +27,7 @@ from audit.constants import AuditAction, AuditActorType
 from audit.factories import AuditAffectedMembershipFactory, AuditFactory
 from audit.repositories import AuditRepository
 from audit.types import ActorSnapshot, AuditRecord, SubjectRef
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from tenancy.models import Organization, OrganizationMembership, OrganizationRole
 
 
 User = get_user_model()

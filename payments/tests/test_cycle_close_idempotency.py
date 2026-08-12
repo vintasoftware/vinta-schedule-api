@@ -20,10 +20,10 @@ import pytest
 from dateutil.relativedelta import relativedelta
 from model_bakery import baker
 
-from organizations.models import Organization
 from payments.billing_constants import LimitedResource
 from payments.models import BillingPeriodSummary, MeteredOccurrence, Payment, Subscription
 from payments.services.cycle_close_service import CycleCloseService
+from tenancy.models import Organization
 
 
 PERIOD_START = datetime.datetime(2025, 6, 1, 0, 0, tzinfo=datetime.UTC)

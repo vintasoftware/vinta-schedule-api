@@ -54,12 +54,6 @@ from calendar_integration.models import (
     ExternalEventChangeRequest,
 )
 from calendar_integration.services.ics_service import CalendarEventICSService
-from organizations.branding_logo import build_logo_display_url
-from organizations.models import (
-    Organization,
-    OrganizationMembership,
-    resolve_branding_for_display,
-)
 from public_api.capabilities import assert_org_can_invite
 from public_api.permissions import (
     IsAuthenticated,
@@ -70,6 +64,12 @@ from public_api.types import (
     ChildOrganizationMetrics,
     PublicApiHttpRequest,
     PublicBrandingResult,
+)
+from tenancy.branding_logo import build_logo_display_url
+from tenancy.models import (
+    Organization,
+    OrganizationMembership,
+    resolve_branding_for_display,
 )
 from users.graphql import UserGraphQLType
 from users.models import User
@@ -177,7 +177,7 @@ def _vinta_default_branding(request=None) -> PublicBrandingResult:
     organizations, ensuring the response is identical for unknown vs unbranded
     to prevent enumeration attacks. ``logo_url`` is the logo delivery route's
     URL keyed by its reserved "default" sentinel slug (see
-    ``organizations.branding_logo.build_logo_display_url``), never empty --
+    ``tenancy.branding_logo.build_logo_display_url``), never empty --
     the route always streams something, even our own default logo.
     """
     return PublicBrandingResult(

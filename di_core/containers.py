@@ -29,7 +29,6 @@ from notifications.notification_adapters.django_in_app import DjangoInAppNotific
 from notifications.notification_template_renderers.django_in_app_renderer import (
     DjangoTemplatedInAppRenderer,
 )
-from organizations.services import OrganizationService
 from payments.constants import PaymentProviders
 from payments.services.cycle_close_service import CycleCloseService
 from payments.services.dunning_service import DunningService
@@ -49,6 +48,7 @@ from payments.services.subscription_plan_factory.billing_plan_factory import Bil
 from payments.services.subscription_service import SubscriptionService
 from payments.services.usage_warning_service import UsageWarningService
 from public_api.services import PublicAPIAuthService
+from tenancy.services import OrganizationService
 from vintasend_django_sms_template_renderer.services.notification_template_renderers.django_sms_template_renderer import (
     DjangoTemplatedSMSRenderer,
 )

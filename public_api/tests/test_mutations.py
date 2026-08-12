@@ -13,13 +13,6 @@ from rest_framework.test import APIClient
 from calendar_integration.constants import CalendarType, CalendarVisibility
 from calendar_integration.models import AvailableTime, Calendar, ChildrenCalendarRelationship
 from calendar_integration.services.calendar_service import CalendarService
-from organizations.models import (
-    Organization,
-    OrganizationBranding,
-    OrganizationInvitation,
-    OrganizationMembership,
-    OrganizationRole,
-)
 from payments.billing_constants import BillingState, Entitlement
 from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
 from public_api.constants import PublicAPIResources
@@ -30,6 +23,13 @@ from public_api.mutations import (
     get_calendar_mutation_dependencies,
 )
 from public_api.services import PublicAPIAuthService
+from tenancy.models import (
+    Organization,
+    OrganizationBranding,
+    OrganizationInvitation,
+    OrganizationMembership,
+    OrganizationRole,
+)
 
 
 @pytest.fixture
@@ -437,7 +437,7 @@ class TestCreateInvitationMutation:
 
         user_email = "invitee@example.com"
         with patch(
-            "organizations.services.OrganizationService.invite_user_to_organization"
+            "tenancy.services.OrganizationService.invite_user_to_organization"
         ) as mock_invite:
             mock_invitation = baker.prepare(
                 OrganizationInvitation,
@@ -482,7 +482,7 @@ class TestCreateInvitationMutation:
 
         user_email = "admin_invitee@example.com"
         with patch(
-            "organizations.services.OrganizationService.invite_user_to_organization"
+            "tenancy.services.OrganizationService.invite_user_to_organization"
         ) as mock_invite:
             mock_invitation = baker.prepare(
                 OrganizationInvitation,
@@ -653,7 +653,7 @@ class TestCreateInvitationMutation:
         child_org = baker.make(Organization, name="Child Org", parent=reseller_org)
 
         with patch(
-            "organizations.services.OrganizationService.invite_user_to_organization"
+            "tenancy.services.OrganizationService.invite_user_to_organization"
         ) as mock_invite:
             mock_invitation = baker.prepare(
                 OrganizationInvitation,
@@ -692,7 +692,7 @@ class TestCreateInvitationMutation:
         reseller_org, system_user, token, auth_service = self._setup_reseller()
 
         with patch(
-            "organizations.services.OrganizationService.invite_user_to_organization"
+            "tenancy.services.OrganizationService.invite_user_to_organization"
         ) as mock_invite:
             mock_invitation = baker.prepare(
                 OrganizationInvitation,
@@ -794,7 +794,7 @@ class TestCreateInvitationMutation:
         with (
             container.public_api_auth_service.override(auth_service),
             patch(
-                "organizations.services.NotificationService.create_one_off_notification"
+                "tenancy.services.NotificationService.create_one_off_notification"
             ) as mock_send_email,
         ):
             response = self.client.post(
@@ -842,7 +842,7 @@ class TestCreateInvitationMutation:
         """
         from common.utils.authentication_utils import verify_long_lived_token
         from di_core.containers import container
-        from organizations.services import OrganizationService
+        from tenancy.services import OrganizationService
 
         reseller_org, system_user, api_token, auth_service = self._setup_reseller()
         child_org = baker.make(Organization, name="Child Org", parent=reseller_org)
@@ -2031,7 +2031,7 @@ class TestUpdateBranding:
         assert data2["data"]["updateBranding"]["branding"]["appName"] == "Second"
 
         # Should only have one branding row
-        from organizations.models import OrganizationBranding
+        from tenancy.models import OrganizationBranding
 
         assert OrganizationBranding.objects.filter(organization=reseller_org).count() == 1
 
@@ -2046,7 +2046,7 @@ class TestUpdateBranding:
         - Reseller A's branding row is completely untouched (same values, still exactly one row).
         """
         from di_core.containers import container
-        from organizations.models import OrganizationBranding
+        from tenancy.models import OrganizationBranding
 
         # Create two independent reseller organizations
         reseller_a = baker.make(
@@ -2200,7 +2200,7 @@ class TestUpdateBranding:
         record = payloads[0]
         assert record["organization_id"] == org.id
         assert record["action"] == "create"
-        assert record["subject"]["subject_type"] == "organizations.OrganizationBranding"
+        assert record["subject"]["subject_type"] == "tenancy.OrganizationBranding"
         assert record["actor"]["actor_type"] == "system_user"
         assert record["actor"]["actor_id"] == system_user.id
         assert record["diff"] is None
@@ -2587,7 +2587,7 @@ def _make_unentitled_organization(**org_kwargs) -> Organization:
 class TestCreateBrandingLogoUploadMutation:
     """Test the ``createBrandingLogoUpload`` signing mutation.
 
-    Gated on ``organizations.permissions.is_branding_eligible_organization``
+    Gated on ``tenancy.permissions.is_branding_eligible_organization``
     evaluated against the acting organization -- the tighter, org-specific
     check, NOT the ``branding_logos`` destination's own ``auth`` callable (see
     ``organizations/tests/test_branding.py::TestBrandingLogoDestinationAuth``
@@ -2620,7 +2620,7 @@ class TestCreateBrandingLogoUploadMutation:
         with (
             container.public_api_auth_service.override(auth_service),
             patch(
-                "organizations.branding_logo.get_aws_credentials",
+                "tenancy.branding_logo.get_aws_credentials",
                 return_value=AWSCredentials(token=None, secret_key="secret", access_key="AKIATEST"),
             ),
         ):
@@ -3409,7 +3409,7 @@ class TestImportResourceCalendarsMutation:
         """
         org, system_user, token, auth_service = self._setup_org_and_token()
 
-        with patch("organizations.services.OrganizationService.request_rooms_sync") as mock_sync:
+        with patch("tenancy.services.OrganizationService.request_rooms_sync") as mock_sync:
             mock_sync.return_value = None
 
             response = self._post_mutation(
@@ -3443,7 +3443,7 @@ class TestImportResourceCalendarsMutation:
         start = datetime.datetime(2026, 1, 1, 0, 0, 0, tzinfo=datetime.UTC)
         end = datetime.datetime(2026, 12, 31, 23, 59, 59, tzinfo=datetime.UTC)
 
-        with patch("organizations.services.OrganizationService.request_rooms_sync") as mock_sync:
+        with patch("tenancy.services.OrganizationService.request_rooms_sync") as mock_sync:
             mock_sync.return_value = None
 
             response = self._post_mutation(
@@ -3490,7 +3490,7 @@ class TestImportResourceCalendarsMutation:
         as the mock side_effect while the service path is mocked; we do not hit
         the real request_rooms_sync or Google APIs.
         """
-        from organizations.exceptions import NoServiceAccountConfiguredError
+        from tenancy.exceptions import NoServiceAccountConfiguredError
 
         org, system_user, token, auth_service = self._setup_org_and_token()
 
@@ -3498,7 +3498,7 @@ class TestImportResourceCalendarsMutation:
         # matching the real error the service raises when no GoogleCalendarServiceAccount
         # is configured for the org.
         with patch(
-            "organizations.services.OrganizationService.request_rooms_sync",
+            "tenancy.services.OrganizationService.request_rooms_sync",
             side_effect=NoServiceAccountConfiguredError(),
         ):
             response = self._post_mutation(

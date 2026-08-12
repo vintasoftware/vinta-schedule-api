@@ -5,7 +5,6 @@
 import pytest
 from model_bakery import baker
 
-from organizations.models import Organization
 from payments.constants import PaymentProviders
 from payments.exceptions import PaymentProviderNotConfiguredError
 from payments.models import BillingProfile
@@ -14,6 +13,7 @@ from payments.services.provider_credentials import (
     PublicProviderCredentials,
     resolve_public_credentials,
 )
+from tenancy.models import Organization
 
 
 pytestmark = pytest.mark.django_db

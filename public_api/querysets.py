@@ -1,4 +1,4 @@
-from organizations.querysets import BaseOrganizationModelQuerySet
+from tenancy.querysets import BaseOrganizationModelQuerySet
 
 
 class SystemUserQuerySet(BaseOrganizationModelQuerySet):

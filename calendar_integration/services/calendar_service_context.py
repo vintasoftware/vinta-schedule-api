@@ -26,9 +26,9 @@ if TYPE_CHECKING:
         CalendarSideEffectsService,
     )
     from calendar_integration.services.protocols.calendar_adapter import CalendarAdapter
-    from organizations.models import Organization
     from payments.services.entitlement_service import EntitlementService
     from public_api.models import SystemUser
+    from tenancy.models import Organization
     from users.models import User
 
 

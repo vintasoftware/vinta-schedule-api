@@ -25,13 +25,13 @@ from calendar_integration.querysets import (
     ExternalEventChangeRequestQuerySet,
     RecurringQuerySetMixin,
 )
-from organizations.managers import BaseOrganizationModelManager
+from tenancy.managers import BaseOrganizationModelManager
 
 
 if TYPE_CHECKING:
     from calendar_integration.models import BookingPolicy, CalendarManagementToken
     from calendar_integration.querysets import AvailableTimeQuerySet, BlockedTimeQuerySet
-    from organizations.models import OrganizationMembership as OrganizationMembershipType
+    from tenancy.models import OrganizationMembership as OrganizationMembershipType
 
 
 class RecurringManagerMixin:

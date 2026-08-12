@@ -35,7 +35,6 @@ import pytest
 from dateutil.relativedelta import relativedelta
 from model_bakery import baker
 
-from organizations.models import Organization
 from payments.billing_constants import BillingInterval, BillingState, LimitedResource, LimitKind
 from payments.models import (
     BillingPlan,
@@ -45,6 +44,7 @@ from payments.models import (
     SubscriptionPlanLimit,
 )
 from payments.services.cycle_close_service import CycleCloseService, overage_idempotency_key
+from tenancy.models import Organization
 
 
 # This module builds its own Subscription rows (OneToOne with Organization), so it

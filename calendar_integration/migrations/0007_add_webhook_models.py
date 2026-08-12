@@ -10,7 +10,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ('calendar_integration', '0006_calendareventupdatetoken_and_more'),
-        ('organizations', '0003_organizationinvitation'),
+        ('tenancy', '0003_organizationinvitation'),
     ]
 
     operations = [
@@ -33,7 +33,7 @@ class Migration(migrations.Migration):
                 ('last_notification_at', models.DateTimeField(blank=True, null=True)),
                 ('calendar', models.ForeignObject(editable=False, from_fields=['calendar_fk', 'organization_id'], on_delete=django.db.models.deletion.CASCADE, related_name='webhook_subscriptions', to='calendar_integration.calendar', to_fields=['id', 'organization_id'])),
                 ('calendar_fk', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='webhook_subscriptions_fk_rel', to='calendar_integration.calendar')),
-                ('organization', models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization')),
+                ('organization', models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='tenancy.organization')),
             ],
         ),
         migrations.CreateModel(
@@ -53,7 +53,7 @@ class Migration(migrations.Migration):
                 ('processing_status', models.CharField(choices=[('pending', 'Pending'), ('processed', 'Processed'), ('failed', 'Failed'), ('ignored', 'Ignored')], default='pending', max_length=50)),
                 ('calendar_sync', models.ForeignObject(editable=False, from_fields=['calendar_sync_fk', 'organization_id'], null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='calendar_sync_set', to='calendar_integration.calendarsync', to_fields=['id', 'organization_id'])),
                 ('calendar_sync_fk', models.ForeignKey(blank=True, help_text='Associated calendar sync if triggered', null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='calendar_sync_fk_rel', to='calendar_integration.calendarsync')),
-                ('organization', models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization')),
+                ('organization', models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='tenancy.organization')),
                 ('subscription', models.ForeignObject(editable=False, from_fields=['subscription_fk', 'organization_id'], null=True, on_delete=django.db.models.deletion.CASCADE, related_name='webhook_events', to='calendar_integration.calendarwebhooksubscription', to_fields=['id', 'organization_id'])),
                 ('subscription_fk', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.CASCADE, related_name='webhook_events_fk_rel', to='calendar_integration.calendarwebhooksubscription')),
             ],

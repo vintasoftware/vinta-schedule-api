@@ -29,7 +29,7 @@ from allauth.account.adapter import get_adapter
 from allauth.account.models import EmailAddress
 from model_bakery import baker
 
-from organizations.models import Organization, OrganizationInvitation, OrganizationMembership
+from tenancy.models import Organization, OrganizationInvitation, OrganizationMembership
 from users.factories import UserFactory
 
 

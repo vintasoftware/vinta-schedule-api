@@ -33,10 +33,10 @@ from calendar_integration.models import (
     EventManagementPermissions,
 )
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
-from organizations.models import Organization, OrganizationMembership
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess
 from public_api.services import PublicAPIAuthService
+from tenancy.models import Organization, OrganizationMembership
 
 
 # ---------------------------------------------------------------------------

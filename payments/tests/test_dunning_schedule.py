@@ -18,7 +18,6 @@ import stripe
 from freezegun import freeze_time
 from model_bakery import baker
 
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
 from payments.billing_constants import BillingState, LimitedResource, LimitKind
 from payments.constants import PaymentProviders
 from payments.models import BillingPlan, PlanLimit, Subscription
@@ -30,6 +29,7 @@ from payments.services.subscription_adapters.stripe_subscription_adapter import 
     StripeSubscriptionAdapter,
 )
 from payments.tasks import process_dunning, process_dunning_for_subscription
+from tenancy.models import Organization, OrganizationMembership, OrganizationRole
 from users.models import User
 
 

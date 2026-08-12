@@ -29,7 +29,6 @@ from django.db.models.query import QuerySet
 
 from calendar_integration.constants import CalendarType
 from calendar_integration.models import AvailableTime, BlockedTime, Calendar, CalendarGroup
-from organizations.models import Organization, OrganizationInvitation, OrganizationMembership
 from payments.billing_constants import (
     BillingState,
     LimitedResource,
@@ -51,6 +50,7 @@ from payments.services.subscription_service import (
     resolve_billing_root,
 )
 from public_api.models import SystemUser
+from tenancy.models import Organization, OrganizationInvitation, OrganizationMembership
 from webhooks.models import WebhookConfiguration
 
 

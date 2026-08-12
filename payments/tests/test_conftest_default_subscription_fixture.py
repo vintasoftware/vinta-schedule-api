@@ -16,7 +16,7 @@ from unittest.mock import MagicMock
 import pytest
 from model_bakery import baker
 
-from organizations.models import Organization
+from tenancy.models import Organization
 
 
 @pytest.mark.django_db

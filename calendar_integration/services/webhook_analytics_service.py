@@ -8,7 +8,7 @@ from django.db.models import Avg, Count, F, Q, QuerySet
 
 from calendar_integration.constants import IncomingWebhookProcessingStatus
 from calendar_integration.models import CalendarWebhookEvent, CalendarWebhookSubscription
-from organizations.models import Organization
+from tenancy.models import Organization
 
 
 class WebhookAnalyticsService:

@@ -39,7 +39,7 @@ from common.utils.authentication_utils import (
     hash_long_lived_token,
     verify_long_lived_token,
 )
-from organizations.models import OrganizationMembership
+from tenancy.models import OrganizationMembership
 from users.models import User
 
 

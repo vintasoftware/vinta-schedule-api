@@ -7,7 +7,7 @@ from django.core.management.base import BaseCommand, CommandParser
 
 from calendar_integration.models import CalendarWebhookSubscription
 from common.organization_context import organization_context
-from organizations.models import Organization
+from tenancy.models import Organization
 
 
 class Command(BaseCommand):

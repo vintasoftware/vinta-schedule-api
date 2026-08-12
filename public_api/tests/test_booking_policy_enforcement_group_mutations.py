@@ -43,7 +43,7 @@ from calendar_integration.services.booking_policy_service import BookingPolicySe
 from calendar_integration.services.calendar_group_service import CalendarGroupService
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from calendar_integration.services.calendar_service import CalendarService
-from organizations.models import Organization
+from tenancy.models import Organization
 
 
 # ---------------------------------------------------------------------------

@@ -30,10 +30,10 @@ from calendar_integration.models import (
 from calendar_integration.services.calendar_group_service import CalendarGroupService
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.dataclasses import CalendarGroupInputData
-from organizations.models import Organization
 from payments.billing_constants import BillingState, LimitedResource, LimitKind
 from payments.exceptions import OverLimitError
 from payments.models import BillingPlan, Subscription, SubscriptionPlanLimit
+from tenancy.models import Organization
 
 
 # This module builds its own Subscription rows (OneToOne with Organization), so it

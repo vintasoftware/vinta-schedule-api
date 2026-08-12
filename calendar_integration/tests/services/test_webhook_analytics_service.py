@@ -16,7 +16,7 @@ from calendar_integration.models import (
     CalendarWebhookEvent,
 )
 from calendar_integration.services.webhook_analytics_service import WebhookAnalyticsService
-from organizations.models import Organization
+from tenancy.models import Organization
 
 
 class TestWebhookAnalyticsService(TestCase):

@@ -29,7 +29,7 @@ from calendar_integration.services.dataclasses import (
     CalendarEventInputData,
     ResourceAllocationInputData,
 )
-from organizations.models import Organization, OrganizationMembership
+from tenancy.models import Organization, OrganizationMembership
 from users.models import Profile, User
 
 

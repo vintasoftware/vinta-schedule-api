@@ -1,5 +1,5 @@
-from organizations.managers import BaseOrganizationModelManager
 from public_api.querysets import SystemUserQuerySet
+from tenancy.managers import BaseOrganizationModelManager
 
 
 class SystemUserManager(BaseOrganizationModelManager):

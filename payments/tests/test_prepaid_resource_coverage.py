@@ -30,11 +30,11 @@ from calendar_integration.models import AvailableTime, Calendar, CalendarGroup
 from calendar_integration.services.calendar_group_service import CalendarGroupService
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.dataclasses import CalendarGroupInputData
-from organizations.models import Organization, OrganizationInvitation, OrganizationMembership
 from payments.billing_constants import BillingState, LimitedResource, LimitKind
 from payments.exceptions import OverLimitError
 from payments.models import BillingPlan, Subscription, SubscriptionPlanLimit
 from public_api.models import SystemUser
+from tenancy.models import Organization, OrganizationInvitation, OrganizationMembership
 from webhooks.constants import WebhookEventType
 from webhooks.models import WebhookConfiguration
 from webhooks.services.webhook_service import WebhookService

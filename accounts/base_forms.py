@@ -10,7 +10,7 @@ from common.utils.request_utils import client_ip_from_request, user_agent_from_r
 from legal.exceptions import NoPolicyDocumentError
 from legal.models import ConsentSource, PolicyDocumentType
 from legal.services import ConsentService
-from organizations.models import OrganizationInvitation
+from tenancy.models import OrganizationInvitation
 from users.models import Profile
 
 

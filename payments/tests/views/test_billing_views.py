@@ -19,8 +19,6 @@ from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
 
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
-from organizations.services import OrganizationService
 from payments.billing_constants import BillingInterval, BillingState, LimitedResource, LimitKind
 from payments.constants import PaymentProviders
 from payments.exceptions import OverLimitError
@@ -49,6 +47,8 @@ from payments.services.subscription_service import (
     retry_payment_idempotency_key,
 )
 from payments.tests.views.test_payment_webhooks import sign as sign_webhook
+from tenancy.models import Organization, OrganizationMembership, OrganizationRole
+from tenancy.services import OrganizationService
 
 
 WEBHOOK_SECRET = "test-webhook-secret"

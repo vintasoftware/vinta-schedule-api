@@ -30,7 +30,7 @@ from audit.constants import AuditAction, AuditActorType
 from audit.factories import AuditFactory
 from audit.repositories import AuditRepository
 from audit.types import ActorSnapshot, AuditPage, AuditQuery, AuditRecord, SubjectRef
-from organizations.models import Organization
+from tenancy.models import Organization
 
 
 User = get_user_model()

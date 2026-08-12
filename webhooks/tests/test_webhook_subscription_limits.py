@@ -17,10 +17,10 @@ from django.utils import timezone
 import pytest
 from model_bakery import baker
 
-from organizations.models import Organization
 from payments.billing_constants import BillingState, LimitedResource, LimitKind
 from payments.exceptions import OverLimitError
 from payments.models import BillingPlan, Subscription, SubscriptionPlanLimit
+from tenancy.models import Organization
 from webhooks.constants import WebhookEventType
 from webhooks.models import WebhookConfiguration
 from webhooks.services.webhook_service import WebhookService

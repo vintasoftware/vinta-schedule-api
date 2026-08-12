@@ -44,7 +44,7 @@ from calendar_integration.services.dataclasses import (
     CalendarGroupSlotInputData,
     CalendarGroupSlotSelectionInputData,
 )
-from organizations.models import Organization
+from tenancy.models import Organization
 
 
 # ---------------------------------------------------------------------------

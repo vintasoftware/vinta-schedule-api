@@ -6,7 +6,6 @@ import pytest
 from model_bakery import baker
 
 from audit.constants import AuditAction
-from organizations.models import Organization
 from payments.billing_constants import BillingInterval, BillingState
 from payments.constants import (
     PaymentProviders,
@@ -58,6 +57,7 @@ from payments.services.subscription_adapters.stripe_subscription_adapter import 
 )
 from payments.services.subscription_plan_factory.base import BaseSubscriptionPlanFactory
 from payments.services.subscription_service import SubscriptionService
+from tenancy.models import Organization
 
 
 # This module builds its own Subscription rows (OneToOne with Organization), so it
@@ -1415,7 +1415,7 @@ def test_set_payment_provider_records_actor_from_user(
     ``request.user``) must name that staff member in the audit entry as a
     MEMBERSHIP actor, not the generic SYSTEM actor every other caller gets."""
     from audit.constants import AuditActorType
-    from organizations.models import OrganizationMembership, OrganizationRole
+    from tenancy.models import OrganizationMembership, OrganizationRole
 
     staff_user = baker.make("users.User")
     membership = OrganizationMembership.objects.create(

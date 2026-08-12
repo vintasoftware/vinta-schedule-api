@@ -58,7 +58,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ('calendar_integration', '0024_remove_calendar_users_calendar_memberships'),
-        ('organizations', '0011_organizationbranding'),
+        ('tenancy', '0011_organizationbranding'),
     ]
 
     operations = [

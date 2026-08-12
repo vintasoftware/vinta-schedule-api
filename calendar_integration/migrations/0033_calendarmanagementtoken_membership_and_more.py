@@ -9,7 +9,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ('calendar_integration', '0032_eventattendance_membership_protect_fk'),
-        ('organizations', '0011_organizationbranding'),
+        ('tenancy', '0011_organizationbranding'),
         ('public_api', '0007_systemuser_scoped_to_membership'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
@@ -18,7 +18,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='calendarmanagementtoken',
             name='membership',
-            field=models.ForeignObject(editable=False, from_fields=['membership_user_id', 'organization_id'], null=True, on_delete=django.db.models.deletion.DO_NOTHING, related_name='calendar_event_management_tokens', to='organizations.organizationmembership', to_fields=['user_id', 'organization_id']),
+            field=models.ForeignObject(editable=False, from_fields=['membership_user_id', 'organization_id'], null=True, on_delete=django.db.models.deletion.DO_NOTHING, related_name='calendar_event_management_tokens', to='tenancy.organizationmembership', to_fields=['user_id', 'organization_id']),
         ),
         migrations.AddField(
             model_name='calendarmanagementtoken',

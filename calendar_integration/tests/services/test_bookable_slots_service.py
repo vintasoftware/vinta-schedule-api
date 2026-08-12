@@ -45,7 +45,7 @@ from calendar_integration.services.dataclasses import (
     CalendarGroupSlotInputData,
     EffectivePolicy,
 )
-from organizations.models import Organization
+from tenancy.models import Organization
 
 
 # ---------------------------------------------------------------------------

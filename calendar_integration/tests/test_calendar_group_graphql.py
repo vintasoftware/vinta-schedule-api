@@ -29,8 +29,8 @@ from calendar_integration.mutations import (
 )
 from calendar_integration.services.calendar_group_service import CalendarGroupService
 from calendar_integration.services.calendar_service import CalendarService
-from organizations.models import Organization
 from public_api.queries import DateTimeRangeInput, Query, QueryDependencies
+from tenancy.models import Organization
 
 
 @pytest.fixture

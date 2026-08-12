@@ -59,7 +59,7 @@ from calendar_integration.services.dataclasses import CalendarEventAdapterOutput
 from calendar_integration.services.external_event_change_request_service import (
     ExternalEventChangeRequestService,
 )
-from organizations.models import ExternalEventUpdatePolicy, Organization, OrganizationMembership
+from tenancy.models import ExternalEventUpdatePolicy, Organization, OrganizationMembership
 from users.models import Profile, User
 
 

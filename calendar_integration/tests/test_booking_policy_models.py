@@ -20,7 +20,7 @@ def _make_calendar(org, **extra) -> Calendar:
 
 def _make_membership(org):
     """Create an active membership and return its denormalized user id."""
-    from organizations.models import OrganizationMembership
+    from tenancy.models import OrganizationMembership
 
     user = baker.make("users.User")
     OrganizationMembership.objects.create(user=user, organization=org)
@@ -29,7 +29,7 @@ def _make_membership(org):
 
 @pytest.mark.django_db
 def test_factory_builds_valid_calendar_policy():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     calendar = _make_calendar(org)
 
     policy = create_booking_policy(calendar=calendar, lead_time_seconds=3600)
@@ -44,7 +44,7 @@ def test_factory_builds_valid_calendar_policy():
 
 @pytest.mark.django_db
 def test_factory_builds_valid_membership_policy():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     membership_user_id = _make_membership(org)
 
     policy = create_booking_policy(membership_user_id=membership_user_id, organization=org)
@@ -55,7 +55,7 @@ def test_factory_builds_valid_membership_policy():
 
 @pytest.mark.django_db
 def test_factory_builds_valid_group_policy():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     group = CalendarGroup.objects.create(organization=org, name="Clinic")
 
     policy = create_booking_policy(calendar_group=group)
@@ -65,7 +65,7 @@ def test_factory_builds_valid_group_policy():
 
 @pytest.mark.django_db
 def test_factory_builds_valid_org_default_policy():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
 
     policy = create_booking_policy(is_organization_default=True, organization=org)
 
@@ -75,7 +75,7 @@ def test_factory_builds_valid_org_default_policy():
 
 @pytest.mark.django_db
 def test_factory_rejects_zero_targets():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
 
     with pytest.raises(ValueError, match="exactly one target"):
         create_booking_policy(organization=org)
@@ -83,7 +83,7 @@ def test_factory_rejects_zero_targets():
 
 @pytest.mark.django_db
 def test_factory_rejects_multiple_targets():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     calendar = _make_calendar(org)
 
     with pytest.raises(ValueError, match="exactly one target"):
@@ -92,7 +92,7 @@ def test_factory_rejects_multiple_targets():
 
 @pytest.mark.django_db
 def test_check_constraint_rejects_zero_target():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
 
     with pytest.raises(IntegrityError):
         BookingPolicy.objects.create(organization=org)
@@ -100,7 +100,7 @@ def test_check_constraint_rejects_zero_target():
 
 @pytest.mark.django_db
 def test_check_constraint_rejects_multi_target_calendar_and_group():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     calendar = _make_calendar(org)
     group = CalendarGroup.objects.create(organization=org, name="Clinic")
 
@@ -110,7 +110,7 @@ def test_check_constraint_rejects_multi_target_calendar_and_group():
 
 @pytest.mark.django_db
 def test_check_constraint_rejects_target_plus_org_default():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     calendar = _make_calendar(org)
 
     with pytest.raises(IntegrityError):
@@ -121,7 +121,7 @@ def test_check_constraint_rejects_target_plus_org_default():
 
 @pytest.mark.django_db
 def test_uniq_calendar_rejects_duplicate():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     calendar = _make_calendar(org)
     create_booking_policy(calendar=calendar)
 
@@ -131,7 +131,7 @@ def test_uniq_calendar_rejects_duplicate():
 
 @pytest.mark.django_db
 def test_uniq_membership_rejects_duplicate():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     membership_user_id = _make_membership(org)
     create_booking_policy(membership_user_id=membership_user_id, organization=org)
 
@@ -141,7 +141,7 @@ def test_uniq_membership_rejects_duplicate():
 
 @pytest.mark.django_db
 def test_uniq_group_rejects_duplicate():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     group = CalendarGroup.objects.create(organization=org, name="Clinic")
     create_booking_policy(calendar_group=group)
 
@@ -151,7 +151,7 @@ def test_uniq_group_rejects_duplicate():
 
 @pytest.mark.django_db
 def test_uniq_org_default_rejects_duplicate():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     create_booking_policy(is_organization_default=True, organization=org)
 
     with pytest.raises(IntegrityError):
@@ -160,8 +160,8 @@ def test_uniq_org_default_rejects_duplicate():
 
 @pytest.mark.django_db
 def test_org_default_allowed_in_two_different_orgs():
-    org1 = baker.make("organizations.Organization")
-    org2 = baker.make("organizations.Organization")
+    org1 = baker.make("tenancy.Organization")
+    org2 = baker.make("tenancy.Organization")
 
     create_booking_policy(is_organization_default=True, organization=org1)
     create_booking_policy(is_organization_default=True, organization=org2)  # no raise
@@ -172,7 +172,7 @@ def test_org_default_allowed_in_two_different_orgs():
 
 @pytest.mark.django_db
 def test_negative_lead_time_rejected():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     calendar = _make_calendar(org)
 
     with pytest.raises(IntegrityError):
@@ -182,7 +182,7 @@ def test_negative_lead_time_rejected():
 
 @pytest.mark.django_db
 def test_negative_buffer_rejected():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     calendar = _make_calendar(org)
 
     with pytest.raises(IntegrityError):
@@ -194,7 +194,7 @@ def test_negative_buffer_rejected():
 
 @pytest.mark.django_db
 def test_manager_for_target_returns_matching_policy():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     calendar = _make_calendar(org)
     policy = create_booking_policy(calendar=calendar)
 
@@ -204,7 +204,7 @@ def test_manager_for_target_returns_matching_policy():
 
 @pytest.mark.django_db
 def test_manager_org_default_lookup():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     policy = create_booking_policy(is_organization_default=True, organization=org)
 
     found = BookingPolicy.objects.filter_by_organization(org.id).org_default().get()
@@ -214,7 +214,7 @@ def test_manager_org_default_lookup():
 @pytest.mark.django_db
 def test_manager_for_target_org_scoped_returns_row_and_none():
     """``BookingPolicyManager.for_target(org_id, ...)`` is org-scoped and returns the row or None."""
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     calendar = _make_calendar(org)
     policy = create_booking_policy(calendar=calendar)
 
@@ -229,14 +229,14 @@ def test_manager_for_target_org_scoped_returns_row_and_none():
 @pytest.mark.django_db
 def test_manager_org_default_org_scoped_returns_row_and_none():
     """``BookingPolicyManager.org_default(org_id)`` is org-scoped and returns the row or None."""
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     policy = create_booking_policy(is_organization_default=True, organization=org)
 
     found = BookingPolicy.objects.org_default(org.id)
     assert found is not None
     assert found.pk == policy.pk
 
-    other_org = baker.make("organizations.Organization")
+    other_org = baker.make("tenancy.Organization")
     assert BookingPolicy.objects.org_default(other_org.id) is None
 
 
@@ -248,7 +248,7 @@ def test_membership_composite_fk_rejects_nonexistent_membership():
     surfaces when the transaction COMMITs — hence ``transaction=True`` and the
     explicit ``transaction.atomic()`` block.
     """
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
 
     with pytest.raises(IntegrityError):
         with transaction.atomic():
@@ -261,9 +261,9 @@ def test_membership_composite_fk_rejects_nonexistent_membership():
 @pytest.mark.django_db(transaction=True)
 def test_membership_delete_blocked_while_policy_live():
     """Deleting a membership referenced by a live policy is blocked at commit (deferred NO ACTION)."""
-    from organizations.models import OrganizationMembership
+    from tenancy.models import OrganizationMembership
 
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     user = baker.make("users.User")
     membership = OrganizationMembership.objects.create(user=user, organization=org)
     create_booking_policy(membership_user_id=user.id, organization=org)
@@ -275,7 +275,7 @@ def test_membership_delete_blocked_while_policy_live():
 
 @pytest.mark.django_db
 def test_str_describes_target():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     calendar = _make_calendar(org)
     policy = create_booking_policy(calendar=calendar)
 

@@ -22,7 +22,7 @@ from calendar_integration.permissions import CalendarGroupPermission
 from calendar_integration.services.calendar_permission_service import (
     CalendarPermissionService,
 )
-from organizations.models import (
+from tenancy.models import (
     Organization,
     OrganizationMembership,
     OrganizationRole,
@@ -177,7 +177,7 @@ def test_create_organization_grants_admin_to_creator():
     from unittest.mock import Mock
 
     from di_core.containers import container
-    from organizations.services import OrganizationService
+    from tenancy.services import OrganizationService
 
     mock_calendar_service = Mock()
     with container.calendar_service.override(mock_calendar_service):

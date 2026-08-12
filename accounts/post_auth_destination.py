@@ -1,7 +1,7 @@
 """Where a just-authenticated user should land, resolved server-side.
 
 The destination is read exclusively from the acting organization's stored
-branding (``organizations.models.resolve_branding_for_display``) -- never from a
+branding (``tenancy.models.resolve_branding_for_display``) -- never from a
 ``next``/``callback_url`` parameter, a header, or anything else the caller
 controls. That is the whole point of the design: there is no caller-supplied
 redirect target, so there is no open-redirect surface to validate away (see the
@@ -20,7 +20,7 @@ import logging
 from django.conf import settings
 from django.http import HttpRequest, HttpResponse
 
-from organizations.models import get_active_organization_membership, resolve_branding_for_display
+from tenancy.models import get_active_organization_membership, resolve_branding_for_display
 from users.models import User
 
 

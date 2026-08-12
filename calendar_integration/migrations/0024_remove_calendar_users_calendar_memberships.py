@@ -7,7 +7,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ('calendar_integration', '0023_backfill_calendarownership_membership_user_id'),
-        ('organizations', '0011_organizationbranding'),
+        ('tenancy', '0011_organizationbranding'),
     ]
 
     operations = [
@@ -18,6 +18,6 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='calendar',
             name='memberships',
-            field=models.ManyToManyField(blank=True, related_name='calendars', through='calendar_integration.CalendarOwnership', through_fields=('calendar_fk', 'membership'), to='organizations.organizationmembership'),
+            field=models.ManyToManyField(blank=True, related_name='calendars', through='calendar_integration.CalendarOwnership', through_fields=('calendar_fk', 'membership'), to='tenancy.organizationmembership'),
         ),
     ]

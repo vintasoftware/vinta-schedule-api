@@ -32,7 +32,7 @@ class AuditFactory:
             "action": AuditAction.CREATE,
             "actor_type": AuditActorType.SYSTEM,
             "actor_id": None,
-            "subject_type": "organizations.Organization",
+            "subject_type": "tenancy.Organization",
             "subject_id": str(organization.pk),
         }
         defaults.update(overrides)

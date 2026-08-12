@@ -11,8 +11,8 @@ Context: Phase 0 of the vinta-django-orgs migration
 (``ai-plans/2026-08-12-VINTA_DJANGO_ORGS_MIGRATION_IMPLEMENTATION_PLAN.md``)
 threads an explicit ``organization_context(...)`` binding through every Celery
 task and management command that touches a scoped model, while
-``organizations.managers.BaseOrganizationModelManager`` /
-``organizations.querysets.BaseOrganizationModelQuerySet`` keep enforcing only
+``tenancy.managers.BaseOrganizationModelManager`` /
+``tenancy.querysets.BaseOrganizationModelQuerySet`` keep enforcing only
 their own, unrelated contract (an explicit ``organization`` filter on the
 query itself, independent of any binding). Phase 2 flips that: the manager
 swaps to implicit, context-bound scoping and (``STRICT_ORGANIZATION_FILTER =
@@ -62,14 +62,14 @@ def assert_all_scoped_queries_are_bound() -> Iterator[list[str]]:
     assert on the exact list contents).
     """
     # Deferred: not to avoid a circular import (verified there is none -- this
-    # module and ``organizations.querysets`` do not import each other), but
+    # module and ``tenancy.querysets`` do not import each other), but
     # because this module can itself be imported before ``django.setup()``
     # completes (``conftest.py`` imports it from inside a fixture body, but
     # pytest collects ``conftest.py`` itself earlier than that), and
     # importing anything that touches Django's ORM at that point risks
     # ``AppRegistryNotReady`` -- mirrors the same deferral in
     # ``common.organization_context._get_organization_by_slug``.
-    from organizations.querysets import BaseOrganizationModelQuerySet
+    from tenancy.querysets import BaseOrganizationModelQuerySet
 
     unbound_calls: list[str] = []
 

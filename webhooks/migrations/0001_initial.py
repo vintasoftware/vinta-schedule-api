@@ -11,7 +11,7 @@ class Migration(migrations.Migration):
     initial = True
 
     dependencies = [
-        ('organizations', '0001_initial'),
+        ('tenancy', '0001_initial'),
     ]
 
     operations = [
@@ -26,7 +26,7 @@ class Migration(migrations.Migration):
                 ('url', models.URLField(max_length=2000)),
                 ('headers', models.JSONField(default=dict)),
                 ('deleted_at', models.DateTimeField(blank=True, null=True)),
-                ('organization', models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization')),
+                ('organization', models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='tenancy.organization')),
             ],
             options={
                 'abstract': False,
@@ -53,7 +53,7 @@ class Migration(migrations.Migration):
                 ('configuration_fk', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='configuration_fk_rel', to='webhooks.webhookconfiguration')),
                 ('main_event', models.ForeignObject(editable=False, from_fields=['main_event_fk', 'organization_id'], null=True, on_delete=django.db.models.deletion.CASCADE, related_name='main_event_set', to='webhooks.webhookevent', to_fields=['id', 'organization_id'])),
                 ('main_event_fk', models.ForeignKey(blank=True, help_text='Reference to the main event in case of retries', null=True, on_delete=django.db.models.deletion.CASCADE, related_name='main_event_fk_rel', to='webhooks.webhookevent')),
-                ('organization', models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization')),
+                ('organization', models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='tenancy.organization')),
             ],
             options={
                 'abstract': False,

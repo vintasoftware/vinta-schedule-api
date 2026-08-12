@@ -8,9 +8,9 @@ from django.core.management import CommandError, call_command
 
 import pytest
 
-from organizations.models import Organization
 from payments.billing_constants import BillingInterval
 from payments.models import MeteredOccurrence, Subscription
+from tenancy.models import Organization
 
 
 PERIOD_START = datetime.datetime(2025, 6, 1, 0, 0, tzinfo=datetime.UTC)

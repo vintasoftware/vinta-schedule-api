@@ -29,7 +29,6 @@ import pytest
 from model_bakery import baker
 from vintasend.constants import NotificationTypes
 
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
 from payments.billing_constants import BillingState, LimitedResource, LimitKind
 from payments.constants import PaymentProviders
 from payments.exceptions import (
@@ -51,6 +50,7 @@ from payments.services.dunning_service import (
 )
 from payments.services.entitlement_service import EntitlementService
 from payments.services.subscription_service import SubscriptionService
+from tenancy.models import Organization, OrganizationMembership, OrganizationRole
 from users.models import User
 
 

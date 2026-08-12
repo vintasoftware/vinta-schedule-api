@@ -79,7 +79,7 @@ from calendar_integration.services.dataclasses import (
     BookableSlotProposal,
     EffectivePolicy,
 )
-from organizations.models import WeekStart
+from tenancy.models import WeekStart
 
 
 Span = tuple[datetime.datetime, datetime.datetime]
@@ -749,7 +749,7 @@ def quota_period_start_utc(
     calendar-level timezone exists in this schema, so per-event/per-candidate
     timezones must never be allowed to split or bypass a quota bucket.
 
-    Week buckets honor ``week_start`` (``organizations.models.WeekStart``):
+    Week buckets honor ``week_start`` (``tenancy.models.WeekStart``):
     a Monday start truncates to the ISO Monday on/before ``instant``; a Sunday
     start truncates to the Sunday on/before ``instant`` (mirrors the SQL
     function's ``date_trunc('week', ts + 1 day) - 1 day`` shift).

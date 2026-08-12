@@ -11,7 +11,7 @@ class Migration(migrations.Migration):
     initial = True
 
     dependencies = [
-        ('organizations', '0001_initial'),
+        ('tenancy', '0001_initial'),
     ]
 
     operations = [
@@ -25,7 +25,7 @@ class Migration(migrations.Migration):
                 ('integration_name', models.CharField(db_index=True, max_length=150, unique=True)),
                 ('long_lived_token_hash', models.CharField(db_index=True, help_text="Hash of the the system user's access token.", max_length=255)),
                 ('is_active', models.BooleanField(default=True, help_text='Indicates if the user is active.')),
-                ('organization', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.CASCADE, related_name='system_users', to='organizations.organization')),
+                ('organization', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.CASCADE, related_name='system_users', to='tenancy.organization')),
             ],
             options={
                 'abstract': False,

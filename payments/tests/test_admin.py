@@ -13,7 +13,6 @@ from django.contrib.auth import get_user_model
 import pytest
 from model_bakery import baker
 
-from organizations.models import Organization
 from payments.admin import (
     BillingPlanAdminForm,
     BillingProfileAdmin,
@@ -28,6 +27,7 @@ from payments.exceptions import UnknownPaymentProviderError
 from payments.models import BillingPlan, BillingProfile, PlanLimit, Subscription
 from payments.services.payment_adapters.stripe_payment_adapter import StripePaymentAdapter
 from payments.services.subscription_service import SubscriptionService
+from tenancy.models import Organization
 
 
 # This module builds its own Subscription rows (OneToOne with Organization), so it

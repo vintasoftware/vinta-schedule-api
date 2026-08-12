@@ -92,7 +92,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ("calendar_integration", "0041_alter_calendarorganizationresourcesimport_status"),
-        ("organizations", "0017_alter_organizationmembership_is_billing_owner"),
+        ("tenancy", "0017_alter_organizationmembership_is_billing_owner"),
     ]
 
     operations = [

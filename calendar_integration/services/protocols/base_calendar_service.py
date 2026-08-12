@@ -5,8 +5,8 @@ from allauth.socialaccount.models import SocialAccount
 from calendar_integration.models import GoogleCalendarServiceAccount
 from calendar_integration.services.calendar_side_effects_service import CalendarSideEffectsService
 from calendar_integration.services.protocols.calendar_adapter import CalendarAdapter
-from organizations.models import Organization
 from public_api.models import SystemUser
+from tenancy.models import Organization
 from users.models import User
 
 

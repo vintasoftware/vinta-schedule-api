@@ -65,9 +65,9 @@ from calendar_integration.services.dataclasses import (
     GroupScopedBlockWriteResult,
     ResourceAllocationInputData,
 )
-from organizations.models import Organization
 from payments.billing_constants import LimitedResource
 from payments.exceptions import OverLimitError
+from tenancy.models import Organization
 from users.models import User
 
 

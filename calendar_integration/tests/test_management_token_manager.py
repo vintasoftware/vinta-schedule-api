@@ -29,7 +29,7 @@ from calendar_integration.models import (
     CalendarManagementToken,
 )
 from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
-from organizations.models import Organization
+from tenancy.models import Organization
 
 
 # ---------------------------------------------------------------------------
@@ -60,7 +60,7 @@ def _make_token(org: Organization, **kwargs) -> CalendarManagementToken:
 
 @pytest.fixture
 def org(db) -> Organization:
-    return baker.make("organizations.Organization")
+    return baker.make("tenancy.Organization")
 
 
 @pytest.fixture

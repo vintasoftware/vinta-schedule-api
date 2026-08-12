@@ -6,7 +6,7 @@ import strawberry_django
 from model_bakery import baker
 from strawberry_django.optimizer import DjangoOptimizerExtension
 
-from organizations.models import Organization
+from tenancy.models import Organization
 from webhooks.constants import WebhookEventType, WebhookStatus
 from webhooks.graphql import WebhookConfigurationGraphQLType, WebhookEventGraphQLType
 from webhooks.models import WebhookConfiguration, WebhookEvent

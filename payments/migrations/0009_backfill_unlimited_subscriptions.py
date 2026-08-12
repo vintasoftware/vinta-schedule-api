@@ -43,7 +43,7 @@ BACKFILL_META_VALUE = "payments.0009"
 
 
 def backfill_unlimited_subscriptions(apps, schema_editor):
-    Organization = apps.get_model("organizations", "Organization")
+    Organization = apps.get_model("tenancy", "Organization")
     BillingPlan = apps.get_model("payments", "BillingPlan")
     Subscription = apps.get_model("payments", "Subscription")
     SubscriptionPlanLimit = apps.get_model("payments", "SubscriptionPlanLimit")
@@ -154,7 +154,7 @@ def delete_backfilled_subscriptions(apps, schema_editor):
 class Migration(migrations.Migration):
     dependencies = [
         ("payments", "0008_subscriptionentitlement_subscriptionplanlimit"),
-        ("organizations", "0016_organizationmembership_is_billing_owner"),
+        ("tenancy", "0016_organizationmembership_is_billing_owner"),
     ]
 
     operations = [

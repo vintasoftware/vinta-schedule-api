@@ -32,7 +32,7 @@ class PolicyDocumentViewSet(ReadOnlyModelViewSet):
     ``GenericVirtualModelViewMixin`` (requires a ``VirtualModelSerializer``
     with a ``virtual_model``, which this flat, no-N+1 serializer doesn't need).
     A plain DRF ``ReadOnlyModelViewSet`` mirrors the existing precedent in
-    ``organizations.views.ServiceAccountViewSet`` for this shape.
+    ``tenancy.views.ServiceAccountViewSet`` for this shape.
 
     Auth split:
     - ``latest`` / ``latest_by_type`` are **public** (``AllowAny``) — the

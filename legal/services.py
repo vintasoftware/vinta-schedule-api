@@ -1,6 +1,6 @@
 """ConsentService — records and queries UserConsent (audit-grade proof).
 
-Usage (DI-injected, mirrors ``organizations.services.OrganizationService``):
+Usage (DI-injected, mirrors ``tenancy.services.OrganizationService``):
 
     consent = self.consent_service.record_consent(
         user,
@@ -21,7 +21,7 @@ from audit.services import AuditService
 from common.utils.phone_utils import normalize_phone_number
 from legal.exceptions import NoPolicyDocumentError
 from legal.models import PolicyDocument, UserConsent
-from organizations.models import get_active_organization_membership
+from tenancy.models import get_active_organization_membership
 from users.models import User
 
 

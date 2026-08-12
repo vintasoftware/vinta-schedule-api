@@ -12,10 +12,10 @@ from calendar_integration.models import (
     CalendarManagementToken,
     EventManagementPermissions,
 )
-from organizations.models import Organization
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess
 from public_api.services import PublicAPIAuthService
+from tenancy.models import Organization
 
 
 REVOKE_BOOKING_CODE_MUTATION = """

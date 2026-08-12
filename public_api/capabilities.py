@@ -3,7 +3,7 @@
 from graphql import GraphQLError
 from rest_framework.exceptions import PermissionDenied
 
-from organizations.models import Organization
+from tenancy.models import Organization
 
 
 def assert_org_can_invite(acting_org: Organization) -> None:

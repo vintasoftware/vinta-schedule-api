@@ -15,7 +15,7 @@ def _dt(year, month, day, hour=9, minute=0):
 
 @pytest.mark.django_db
 def test_split_at_date_truncates_and_continues():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     start = _dt(2025, 1, 1)
     # daily rule with no count/until
     rule = baker.make(
@@ -38,7 +38,7 @@ def test_split_at_date_truncates_and_continues():
 
 @pytest.mark.django_db
 def test_split_with_count_creates_continuation_with_remaining_count():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     start = _dt(2025, 1, 1)
     # count=5 occurrences Jan1..Jan5
     rule = baker.make(
@@ -63,7 +63,7 @@ def test_split_with_count_creates_continuation_with_remaining_count():
 
 @pytest.mark.django_db
 def test_create_continuation_returns_none_if_until_before_start():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     start = _dt(2025, 1, 1)
     # rule that ends Jan 5
     rule = baker.make(
@@ -83,7 +83,7 @@ def test_create_continuation_returns_none_if_until_before_start():
 
 @pytest.mark.django_db
 def test_truncate_clears_count_and_sets_until():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     rule = baker.make(
         RecurrenceRule,
         organization=org,
@@ -109,7 +109,7 @@ def test_split_returns_rules_that_do_not_alias_the_original_row():
     original rule instead of an ``INSERT`` -- which is how a bulk modification
     used to erase the parent's truncation and duplicate the series.
     """
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     start = _dt(2025, 1, 1)
     rule = baker.make(
         RecurrenceRule,
@@ -138,7 +138,7 @@ def test_split_returns_rules_that_do_not_alias_the_original_row():
 
 @pytest.mark.django_db
 def test_split_monthly_edge_case_with_jan31():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     start = _dt(2025, 1, 31)
     # monthly rule with count=3 -> Jan31, Feb28/29, Mar31
     rule = baker.make(

@@ -21,7 +21,7 @@ from calendar_integration.models import (
     RecurrenceRule,
 )
 from calendar_integration.services.calendar_service import CalendarService
-from organizations.models import Organization
+from tenancy.models import Organization
 
 
 # ---------------------------------------------------------------------------

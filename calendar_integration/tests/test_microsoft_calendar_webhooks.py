@@ -15,7 +15,7 @@ from calendar_integration.services.calendar_adapters.ms_outlook_calendar_adapter
     MSOutlookCalendarAdapter,
 )
 from calendar_integration.services.calendar_service import CalendarService
-from organizations.models import Organization
+from tenancy.models import Organization
 
 
 @pytest.fixture

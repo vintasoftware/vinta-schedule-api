@@ -60,10 +60,10 @@ from calendar_integration.services.external_event_change_request_service import 
     ExternalEventChangeRequestService,
 )
 from calendar_integration.services.webhook_analytics_service import WebhookAnalyticsService
-from organizations.models import Organization, OrganizationMembership
 from payments.exceptions import OverLimitError
 from public_api.extensions import raise_over_limit_graphql_error
 from public_api.permissions import IsAuthenticated, OrganizationResourceAccess
+from tenancy.models import Organization, OrganizationMembership
 
 
 if TYPE_CHECKING:

@@ -17,7 +17,7 @@ from calendar_integration.tasks.calendar_sync_tasks import (
     import_organization_calendar_resources_task,
     sync_calendar_task,
 )
-from organizations.models import Organization
+from tenancy.models import Organization
 from users.models import User
 
 

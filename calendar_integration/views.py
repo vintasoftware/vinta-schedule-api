@@ -112,8 +112,8 @@ from calendar_integration.services.external_event_change_request_service import 
 )
 from calendar_integration.services.ics_service import CalendarEventICSService
 from common.utils.view_utils import ReadOnlyVintaScheduleModelViewSet, VintaScheduleModelViewSet
-from organizations.models import get_active_organization_membership
-from organizations.permissions import IsOrganizationAdmin
+from tenancy.models import get_active_organization_membership
+from tenancy.permissions import IsOrganizationAdmin
 
 
 def _parse_bool(value, *, default: bool = True) -> bool:

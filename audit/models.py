@@ -17,7 +17,7 @@ from django.db import models
 
 from audit.constants import AuditAction, AuditActorType
 from common.fields import OrganizationMembershipForeignKey
-from organizations.models import OrganizationForeignKey, OrganizationModel, OrganizationRole
+from tenancy.models import OrganizationForeignKey, OrganizationModel, OrganizationRole
 
 
 class Audit(OrganizationModel):
@@ -63,7 +63,7 @@ class Audit(OrganizationModel):
     diff = models.JSONField(null=True, blank=True)
 
     affected_memberships = models.ManyToManyField(
-        "organizations.OrganizationMembership",
+        "tenancy.OrganizationMembership",
         through="audit.AuditAffectedMembership",
         # through_fields references the ForeignObject descriptor name "membership"
         # (the name given to OrganizationMembershipForeignKey) per the convention

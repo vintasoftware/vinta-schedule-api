@@ -29,7 +29,7 @@ class ReplyToDjangoEmailNotificationAdapter[
     back to whatever mail client behavior applies to the From address. This adapter
     reads an optional ``reply_to`` string out of the rendered notification context
     (set by the registered context function, e.g.
-    ``organizations.notification_contexts.organization_invitation_context``) and
+    ``tenancy.notification_contexts.organization_invitation_context``) and
     sets it as the outbound message's reply-to.
 
     The From address is untouched in every case, branded or not: it is always

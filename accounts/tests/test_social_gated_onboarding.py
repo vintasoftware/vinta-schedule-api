@@ -40,7 +40,7 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from accounts.account_adapters import SocialAccountAdapter
-from organizations.models import (
+from tenancy.models import (
     Organization,
     OrganizationInvitation,
     OrganizationMembership,
@@ -145,7 +145,7 @@ class TestSocialGatedOnboarding:
         descriptor), the gating invariant is confirmed by checking the queryset
         is empty rather than expecting RelatedObjectDoesNotExist.
         """
-        from organizations.models import get_active_organization_membership
+        from tenancy.models import get_active_organization_membership
 
         user = _social_save_user("gated@social.example.com")
 

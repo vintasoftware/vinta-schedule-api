@@ -4,9 +4,9 @@ from django.db import models
 
 from common.fields import OrganizationMembershipForeignKey
 from common.models import BaseModel
-from organizations.models import OrganizationModel
 from public_api.constants import PublicAPIResources
 from public_api.managers import SystemUserManager
+from tenancy.models import OrganizationModel
 
 
 class SystemUser(OrganizationModel):
@@ -18,7 +18,7 @@ class SystemUser(OrganizationModel):
     objects: SystemUserManager = SystemUserManager()
 
     organization = models.ForeignKey(
-        "organizations.Organization",
+        "tenancy.Organization",
         related_name="system_users",
         on_delete=models.CASCADE,
         null=True,

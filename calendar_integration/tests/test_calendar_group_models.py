@@ -31,7 +31,7 @@ def _make_event(org, calendar, **extra):
 
 @pytest.mark.django_db
 def test_calendar_group_str():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     group = CalendarGroup.objects.create(organization=org, name="Clinic Appointments")
 
     assert str(group) == "Clinic Appointments"
@@ -39,7 +39,7 @@ def test_calendar_group_str():
 
 @pytest.mark.django_db
 def test_calendar_group_unique_name_per_org():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     CalendarGroup.objects.create(organization=org, name="Clinic")
 
     with pytest.raises(IntegrityError):
@@ -48,8 +48,8 @@ def test_calendar_group_unique_name_per_org():
 
 @pytest.mark.django_db
 def test_calendar_group_same_name_different_org_allowed():
-    org1 = baker.make("organizations.Organization")
-    org2 = baker.make("organizations.Organization")
+    org1 = baker.make("tenancy.Organization")
+    org2 = baker.make("tenancy.Organization")
 
     CalendarGroup.objects.create(organization=org1, name="Clinic")
     CalendarGroup.objects.create(organization=org2, name="Clinic")  # should not raise
@@ -60,7 +60,7 @@ def test_calendar_group_same_name_different_org_allowed():
 
 @pytest.mark.django_db
 def test_calendar_group_slot_str_and_defaults():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     group = CalendarGroup.objects.create(organization=org, name="Clinic")
     slot = CalendarGroupSlot.objects.create(organization=org, group=group, name="Physicians")
 
@@ -71,7 +71,7 @@ def test_calendar_group_slot_str_and_defaults():
 
 @pytest.mark.django_db
 def test_calendar_group_slot_unique_name_per_group():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     group = CalendarGroup.objects.create(organization=org, name="Clinic")
     CalendarGroupSlot.objects.create(organization=org, group=group, name="Physicians")
 
@@ -81,7 +81,7 @@ def test_calendar_group_slot_unique_name_per_group():
 
 @pytest.mark.django_db
 def test_calendar_group_slot_same_name_different_group_allowed():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     group1 = CalendarGroup.objects.create(organization=org, name="Clinic A")
     group2 = CalendarGroup.objects.create(organization=org, name="Clinic B")
 
@@ -93,7 +93,7 @@ def test_calendar_group_slot_same_name_different_group_allowed():
 
 @pytest.mark.django_db
 def test_calendar_group_slot_membership_unique():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     group = CalendarGroup.objects.create(organization=org, name="Clinic")
     slot = CalendarGroupSlot.objects.create(organization=org, group=group, name="Physicians")
     calendar = baker.make(Calendar, organization=org, external_id=baker.seq("cal"))
@@ -106,7 +106,7 @@ def test_calendar_group_slot_membership_unique():
 
 @pytest.mark.django_db
 def test_calendar_group_slot_calendars_m2m():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     group = CalendarGroup.objects.create(organization=org, name="Clinic")
     slot = CalendarGroupSlot.objects.create(organization=org, group=group, name="Physicians")
     cal1 = baker.make(Calendar, organization=org, external_id="cal-m2m-1")
@@ -121,7 +121,7 @@ def test_calendar_group_slot_calendars_m2m():
 
 @pytest.mark.django_db
 def test_calendar_event_group_selection_unique():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     group = CalendarGroup.objects.create(organization=org, name="Clinic")
     slot = CalendarGroupSlot.objects.create(organization=org, group=group, name="Physicians")
     calendar = baker.make(Calendar, organization=org, external_id=baker.seq("cal"))
@@ -139,7 +139,7 @@ def test_calendar_event_group_selection_unique():
 
 @pytest.mark.django_db
 def test_calendar_event_calendar_group_reverse_relation():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     group = CalendarGroup.objects.create(organization=org, name="Clinic")
     calendar = baker.make(Calendar, organization=org, external_id=baker.seq("cal"))
     event = _make_event(org, calendar, calendar_group_fk=group)
@@ -150,7 +150,7 @@ def test_calendar_event_calendar_group_reverse_relation():
 
 @pytest.mark.django_db
 def test_calendar_group_accepts_public_scheduling_default_false():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     group = CalendarGroup.objects.create(organization=org, name="Test Group")
 
     assert group.accepts_public_scheduling is False
@@ -158,7 +158,7 @@ def test_calendar_group_accepts_public_scheduling_default_false():
 
 @pytest.mark.django_db
 def test_calendar_group_accepts_public_scheduling_true():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     group = CalendarGroup.objects.create(
         organization=org, name="Public Group", accepts_public_scheduling=True
     )
@@ -168,7 +168,7 @@ def test_calendar_group_accepts_public_scheduling_true():
 
 @pytest.mark.django_db
 def test_calendar_group_accepts_public_scheduling_update():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     group = CalendarGroup.objects.create(organization=org, name="Test Group")
 
     assert group.accepts_public_scheduling is False

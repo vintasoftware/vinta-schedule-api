@@ -25,10 +25,10 @@ import strawberry
 from strawberry.django.views import GraphQLView
 
 from calendar_integration.models import CalendarGroup
-from organizations.models import Organization
 from payments.billing_constants import LimitedResource, LimitRemedy
 from payments.exceptions import OverLimitError
 from public_api.extensions import raise_over_limit_graphql_error
+from tenancy.models import Organization
 
 
 #: Mirrors payments/tests/test_over_limit_rollback.py's use of a ContextVar

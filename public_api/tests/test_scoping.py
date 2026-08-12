@@ -2,10 +2,10 @@ import pytest
 from model_bakery import baker
 
 from calendar_integration.models import Calendar, CalendarOwnership
-from organizations.models import Organization, OrganizationMembership
 from public_api.models import SystemUser
 from public_api.scoping import assert_calendar_in_owner_scope, scoped_calendar_ids
 from public_api.services import PublicAPIAuthService
+from tenancy.models import Organization, OrganizationMembership
 from users.models import User
 
 

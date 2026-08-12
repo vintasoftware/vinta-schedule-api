@@ -38,11 +38,11 @@ from django.utils import timezone
 from vintasend.constants import NotificationTypes
 from vintasend.services.notification_service import NotificationContextDict
 
-from organizations.models import OrganizationMembership
 from payments.billing_constants import BillingState
 from payments.constants import PaymentStatuses
 from payments.models import BillingPlan, Subscription
 from payments.services.billing_state_machine import transition_billing_state
+from tenancy.models import OrganizationMembership
 
 
 if TYPE_CHECKING:

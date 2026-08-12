@@ -22,10 +22,10 @@ from model_bakery import baker
 from calendar_integration.constants import CalendarProvider, RecurrenceFrequency
 from calendar_integration.factories import CalendarEventFactory
 from calendar_integration.models import Calendar, CalendarEvent
-from organizations.models import Organization
 from payments.billing_constants import LimitedResource
 from payments.models import MeteredOccurrence, Payment, Subscription
 from payments.services.cycle_close_service import CycleCloseService
+from tenancy.models import Organization
 
 
 PERIOD_START = datetime.datetime(2025, 6, 1, 0, 0, tzinfo=datetime.UTC)

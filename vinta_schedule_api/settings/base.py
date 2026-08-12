@@ -35,7 +35,7 @@ INTERNAL_INSTALLED_APPS = [
     "s3direct_overrides",
     "accounts",
     "users",
-    "organizations",
+    "tenancy",
     "audit",
     "payments",
     "notifications",
@@ -44,6 +44,30 @@ INTERNAL_INSTALLED_APPS = [
     "legal",
     "public_api",
 ]
+# The vinta-django-orgs package's own ``organizations.admin`` unconditionally
+# registers whichever models ``ORGANIZATION_MODEL`` / `ORGANIZATION_MEMBERSHIP_MODEL`
+# resolve to (``admin.site.register(get_organization_membership_model(), ...)``
+# at import time, inside ``django.contrib.admin.autodiscover()``). Two
+# independent reasons that has to be short-circuited here, before
+# ``django.setup()`` builds the app registry: (1) ``tenancy.OrganizationMembership``
+# still carries its ``SafeCompositePrimaryKey`` until Phase 1c unwinds it, and
+# Django's admin unconditionally refuses to register a composite-PK model
+# (``ImproperlyConfigured``, checked *before* the "already registered" branch,
+# so pre-registering the model ourselves would not help); (2) even once that
+# is fixed, ``tenancy/admin.py`` already registers ``Organization`` with this
+# project's own ``ModelAdmin`` -- the package's admin.py registering the same
+# model again would raise ``AlreadyRegistered``. See
+# ``common/vendor_stubs/organizations_admin.py`` for the full rationale. Safe
+# to remove once Phase 1c gives ``OrganizationMembership`` a surrogate PK (at
+# which point the double-registration in reason 2 still needs *some*
+# resolution, just a smaller one).
+import sys as _sys  # noqa: E402
+
+from common.vendor_stubs import organizations_admin as _organizations_admin_stub  # noqa: E402
+
+
+_sys.modules["organizations.admin"] = _organizations_admin_stub
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
@@ -70,8 +94,56 @@ INSTALLED_APPS = [
     "django_filters",
     "vintasend_django",
     "s3direct",
+    # vinta-django-orgs -- the package's own app, labelled "organizations". Kept
+    # separate from INTERNAL_INSTALLED_APPS (which drives di_core's DI wiring and
+    # names only this project's apps) even though it is installed alongside them.
+    "organizations.apps.OrganizationsConfig",
     *INTERNAL_INSTALLED_APPS,
 ]
+
+# vinta-django-orgs settings. ORGANIZATION_RETRIEVERS names our own retriever,
+# written in Phase 1b (common/org_retrievers.py), and nothing else -- every
+# other retriever the package ships (domain, session, generic header) is a
+# deliberate non-goal, see the plan's Guiding Decisions. Not consumed by
+# anything yet: OrganizationMiddleware is deliberately not installed (context
+# binding happens in TenantScopedViewMixin, after DRF auth -- Phase 2b), and
+# the package only imports a retriever path lazily, at call time, so naming a
+# module that does not exist yet is safe as long as nothing imports it.
+SHARED_SCHEMA_ORGANIZATIONS: dict = {
+    "ORGANIZATION_RETRIEVERS": [
+        "common.org_retrievers.retrieve_by_x_organization_id",
+    ],
+}
+
+# ``ORGANIZATION_MODEL`` / ``ORGANIZATION_MEMBERSHIP_MODEL`` -- normally Phase 1b's
+# first change (see the plan's Phased Rollout), pulled forward into this phase
+# out of necessity, not by choice. Phase 1a pins every ``tenancy`` model's
+# ``db_table`` to its pre-rename ``organizations_*`` name (the plan's Guiding
+# Decisions, "App-label collision" row) so no table moves with the app -- but
+# the package's own app is *also* labelled "organizations", so its own
+# (identically-named) ``Organization`` / ``OrganizationMembership`` models
+# default to the exact same table names. Leaving those two settings unset
+# (their package default: pointing at the package's own models) does not just
+# fail Django's models.E028 duplicate-table check -- it is a real behavior
+# change, which Phase 1a's hard rule forbids: the package's own, still-live
+# ``user`` foreign key to ``AUTH_USER_MODEL`` adds a second, phantom CASCADE
+# relation Django's deletion collector discovers on every ``User.delete()``,
+# which then queries *this project's* ``organizations_organizationmembership``
+# table through the package's model class (whose own field shape does not
+# match ours -- e.g. it still assumes a single ``id`` primary key) and raises
+# a real ``ProgrammingError``. Verified with
+# ``calendar_integration/tests/test_ownership_protect_fk.py::test_delete_user_with_live_ownership_is_blocked``,
+# which passes on the pre-rename code and fails once the package's app is
+# installed without swapping. Setting these two is what makes the package's
+# own models ``_meta.swapped`` -- excluded from ``apps.get_models()``, from
+# the deletion collector's relation graph, and from ``models.E028`` entirely,
+# and it makes the package's own migrations apply as state-only no-ops
+# (``ModelOperation.allow_migrate_model`` skips a swapped model), so no
+# ``MIGRATION_MODULES`` override is needed either. The one model the package
+# does *not* let you swap, ``OrganizationSite``, still gets a real (empty,
+# unread) table -- expected, see the plan's Non-goals.
+ORGANIZATION_MODEL = "tenancy.Organization"
+ORGANIZATION_MEMBERSHIP_MODEL = "tenancy.OrganizationMembership"
 
 MIDDLEWARE = [
     "django.middleware.gzip.GZipMiddleware",
@@ -489,10 +561,10 @@ def _user_administers_branding_eligible_organization(user):
     Settings modules must not import app code at module scope -- the app
     registry isn't ready during settings load. This deferred import is only
     ever invoked by s3direct's signing view at request time, well after
-    startup, mirroring the pattern ``organizations.models.
+    startup, mirroring the pattern ``tenancy.models.
     resolve_branding_for_display`` uses for ``di_core.containers.container``.
     """
-    from organizations.permissions import user_administers_branding_eligible_organization
+    from tenancy.permissions import user_administers_branding_eligible_organization
 
     return user_administers_branding_eligible_organization(user)
 

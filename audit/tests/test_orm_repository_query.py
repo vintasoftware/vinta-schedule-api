@@ -26,7 +26,7 @@ from audit.constants import AuditAction, AuditActorType
 from audit.factories import AuditFactory
 from audit.repositories import DjangoORMAuditRepository
 from audit.types import ActorSnapshot, AuditQuery, AuditRecordData, SubjectRef
-from organizations.models import Organization, OrganizationMembership
+from tenancy.models import Organization, OrganizationMembership
 
 
 User = get_user_model()
@@ -44,7 +44,7 @@ def make_membership(org: Organization) -> OrganizationMembership:
 
 
 def make_subject(
-    subject_type: str = "organizations.Organization",
+    subject_type: str = "tenancy.Organization",
     subject_id: str = "1",
     subject_label: str | None = None,
 ) -> SubjectRef:
@@ -260,7 +260,7 @@ class TestQuerySubjectFilters:
         target = add_record(
             repo, org, subject=make_subject(subject_type="calendar_integration.CalendarEvent")
         )
-        add_record(repo, org, subject=make_subject(subject_type="organizations.Organization"))
+        add_record(repo, org, subject=make_subject(subject_type="tenancy.Organization"))
 
         page = repo.query(
             AuditQuery(
@@ -454,7 +454,7 @@ class TestQuerySearch:
         target = add_record(
             repo, org, subject=make_subject(subject_type="calendar_integration.CalendarEvent")
         )
-        add_record(repo, org, subject=make_subject(subject_type="organizations.Organization"))
+        add_record(repo, org, subject=make_subject(subject_type="tenancy.Organization"))
 
         page = repo.query(AuditQuery(organization_id=org.pk, search="CalendarEvent"), limit=100)
         ids = {r.id for r in page.items}

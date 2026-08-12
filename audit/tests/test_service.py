@@ -19,7 +19,7 @@ from audit.constants import AuditAction, AuditActorType
 from audit.repositories import DjangoORMAuditRepository
 from audit.services import AuditService
 from audit.types import SubjectRef
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from tenancy.models import Organization, OrganizationMembership, OrganizationRole
 
 
 # ---------------------------------------------------------------------------
@@ -38,7 +38,7 @@ def make_service() -> AuditService:
 
 def make_subject() -> SubjectRef:
     return SubjectRef(
-        subject_type="organizations.Organization",
+        subject_type="tenancy.Organization",
         subject_id="1",
         subject_label="Test Org",
     )
@@ -339,7 +339,7 @@ class TestSubjectFromInstance:
 
         subject = AuditService.subject_from_instance(org)
 
-        assert subject.subject_type == "organizations.Organization"
+        assert subject.subject_type == "tenancy.Organization"
         assert subject.subject_id == str(org.pk)
         # Label is NOT auto-computed from str(instance) — stays None unless passed.
         assert subject.subject_label is None
@@ -438,7 +438,7 @@ class TestRecordEnqueues:
         org = baker.make(Organization)
         actor = AuditService.system_actor()
         subject = SubjectRef(
-            subject_type="organizations.Organization",
+            subject_type="tenancy.Organization",
             subject_id=str(org.pk),
             subject_label="ACME Corp",
         )
@@ -453,7 +453,7 @@ class TestRecordEnqueues:
                 )
 
         payload = mock_task.delay.call_args[0][0]
-        assert payload["subject"]["subject_type"] == "organizations.Organization"
+        assert payload["subject"]["subject_type"] == "tenancy.Organization"
         assert payload["subject"]["subject_id"] == str(org.pk)
         assert payload["subject"]["subject_label"] == "ACME Corp"
 

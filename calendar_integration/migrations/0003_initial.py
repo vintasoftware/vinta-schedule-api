@@ -11,7 +11,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ('calendar_integration', '0002_initial'),
-        ('organizations', '0001_initial'),
+        ('tenancy', '0001_initial'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
@@ -39,7 +39,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='calendarsync',
             name='organization',
-            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization'),
+            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='tenancy.organization'),
         ),
         migrations.AddField(
             model_name='childrencalendarrelationship',
@@ -64,7 +64,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='childrencalendarrelationship',
             name='organization',
-            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization'),
+            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='tenancy.organization'),
         ),
         migrations.AddField(
             model_name='calendar',
@@ -84,7 +84,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='eventattendance',
             name='organization',
-            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization'),
+            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='tenancy.organization'),
         ),
         migrations.AddField(
             model_name='eventattendance',
@@ -109,7 +109,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='eventbulkmodification',
             name='organization',
-            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization'),
+            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='tenancy.organization'),
         ),
         migrations.AddField(
             model_name='eventbulkmodification',
@@ -144,7 +144,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='eventexternalattendance',
             name='organization',
-            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization'),
+            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='tenancy.organization'),
         ),
         migrations.AddField(
             model_name='eventrecurrenceexception',
@@ -159,7 +159,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='eventrecurrenceexception',
             name='organization',
-            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization'),
+            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='tenancy.organization'),
         ),
         migrations.AddField(
             model_name='eventrecurrenceexception',
@@ -174,7 +174,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='externalattendee',
             name='organization',
-            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization'),
+            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='tenancy.organization'),
         ),
         migrations.AddField(
             model_name='eventexternalattendance',
@@ -204,12 +204,12 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='googlecalendarserviceaccount',
             name='organization',
-            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization'),
+            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='tenancy.organization'),
         ),
         migrations.AddField(
             model_name='recurrencerule',
             name='organization',
-            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization'),
+            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='tenancy.organization'),
         ),
         migrations.AddField(
             model_name='calendarevent',
@@ -264,7 +264,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='resourceallocation',
             name='organization',
-            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization'),
+            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='tenancy.organization'),
         ),
         migrations.AddField(
             model_name='calendarevent',

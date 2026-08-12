@@ -8,7 +8,7 @@ from calendar_integration.services.booking_policy_permission_service import (
     BookingPolicyPermissionService,
 )
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
-from organizations.models import get_active_organization_membership
+from tenancy.models import get_active_organization_membership
 
 
 class BookingPolicyPermission(BasePermission):

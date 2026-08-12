@@ -31,7 +31,7 @@ from calendar_integration.services.dataclasses import (
     AvailableTimeWindow,
     CalendarEventInputData,
 )
-from organizations.models import Organization
+from tenancy.models import Organization
 
 
 # ---------------------------------------------------------------------------

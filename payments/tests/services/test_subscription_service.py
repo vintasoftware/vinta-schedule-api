@@ -10,7 +10,6 @@ already-sold subscription. Each subscription keeps its own copy of the limits.
 import pytest
 from model_bakery import baker
 
-from organizations.models import Organization
 from payments.billing_constants import BillingState, Entitlement, LimitedResource, LimitKind
 from payments.constants import PaymentProviders
 from payments.exceptions import (
@@ -30,6 +29,7 @@ from payments.services.subscription_service import (
     is_billing_root,
     resolve_billing_root,
 )
+from tenancy.models import Organization
 
 
 # This module builds its own Subscription rows (OneToOne with Organization), so it

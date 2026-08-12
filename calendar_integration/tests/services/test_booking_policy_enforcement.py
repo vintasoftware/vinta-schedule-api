@@ -43,7 +43,7 @@ from calendar_integration.models import (
 from calendar_integration.services.booking_policy_service import BookingPolicyService
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.dataclasses import CalendarEventInputData
-from organizations.models import Organization
+from tenancy.models import Organization
 
 
 # ---------------------------------------------------------------------------

@@ -74,9 +74,9 @@ from calendar_integration.services.protocols.initializer_or_authenticated_calend
     InitializedOrAuthenticatedCalendarService,
 )
 from calendar_integration.services.type_guards import is_authenticated_calendar_service
-from organizations.models import ExternalEventUpdatePolicy, OrganizationMembership
 from payments.billing_constants import LimitedResource
 from payments.exceptions import OverLimitError
+from tenancy.models import ExternalEventUpdatePolicy, OrganizationMembership
 from users.models import User
 
 
@@ -91,7 +91,7 @@ if TYPE_CHECKING:
     from calendar_integration.services.external_event_change_request_service import (
         ExternalEventChangeRequestService,
     )
-    from organizations.models import Organization
+    from tenancy.models import Organization
 
 
 logger = logging.getLogger(__name__)

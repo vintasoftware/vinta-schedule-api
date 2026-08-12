@@ -12,15 +12,15 @@ from model_bakery import baker
 from rest_framework.test import APIClient
 
 from accounts.account_adapters import SocialAccountAdapter
-from organizations.models import (
+from public_api.models import ResourceAccess
+from public_api.services import PublicAPIAuthService
+from tenancy.models import (
     Organization,
     OrganizationBranding,
     OrganizationInvitation,
     OrganizationMembership,
     OrganizationRole,
 )
-from public_api.models import ResourceAccess
-from public_api.services import PublicAPIAuthService
 from users.models import Profile, User
 
 
@@ -345,7 +345,7 @@ class TestCreateInvitationProvisioning:
             invited_email = "invited.user@example.com"
 
             # Step 2: createInvitation (email is mocked to avoid real email send)
-            with patch("organizations.services.NotificationService.create_one_off_notification"):
+            with patch("tenancy.services.NotificationService.create_one_off_notification"):
                 r3 = self.client.post(
                     "/graphql/",
                     data={
@@ -441,7 +441,7 @@ class TestCreateInvitationProvisioning:
         """
         from common.utils.authentication_utils import verify_long_lived_token
         from di_core.containers import container
-        from organizations.services import OrganizationService
+        from tenancy.services import OrganizationService
 
         # Setup reseller + child org
         reseller_org = baker.make(Organization, name="Reseller", can_invite_organizations=True)
@@ -602,7 +602,7 @@ class TestCreateInvitationProvisioning:
         with (
             container.public_api_auth_service.override(auth_service),
             patch(
-                "organizations.services.NotificationService.create_one_off_notification"
+                "tenancy.services.NotificationService.create_one_off_notification"
             ) as mock_send_email,
         ):
             response = self.client.post(

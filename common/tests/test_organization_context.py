@@ -20,7 +20,7 @@ from common.organization_context import (
     reset_current_organization,
     set_current_organization,
 )
-from organizations.models import Organization
+from tenancy.models import Organization
 
 
 pytestmark = pytest.mark.django_db

@@ -12,7 +12,6 @@ from dateutil.relativedelta import relativedelta
 from dependency_injector.wiring import Provide, inject
 
 from audit.constants import AuditAction
-from organizations.models import Organization
 from payments.billing_constants import BillingInterval, BillingState
 from payments.constants import PaymentProviders
 from payments.exceptions import (
@@ -44,6 +43,7 @@ from payments.models import (
 from payments.services.billing_state_machine import transition_billing_state
 from payments.services.dataclasses import CreatedPlan, Plan
 from payments.services.dunning_service import is_downgrade_grace
+from tenancy.models import Organization
 
 
 if TYPE_CHECKING:

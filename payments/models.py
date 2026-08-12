@@ -187,7 +187,7 @@ class PlanEntitlement(BaseModel):
 
 class BillingProfile(BaseModel):
     organization = models.OneToOneField(
-        "organizations.Organization",
+        "tenancy.Organization",
         primary_key=True,
         on_delete=models.CASCADE,
         related_name="billing_profile",
@@ -236,7 +236,7 @@ class Subscription(BaseModel):
     """
 
     organization = models.OneToOneField(
-        "organizations.Organization", on_delete=models.CASCADE, related_name="subscription"
+        "tenancy.Organization", on_delete=models.CASCADE, related_name="subscription"
     )
     plan = models.ForeignKey(BillingPlan, on_delete=models.PROTECT, related_name="subscriptions")
     status = models.CharField(
@@ -326,7 +326,7 @@ class PaymentMethod(BaseModel):
     """
 
     organization = models.ForeignKey(
-        "organizations.Organization", on_delete=models.CASCADE, related_name="payment_methods"
+        "tenancy.Organization", on_delete=models.CASCADE, related_name="payment_methods"
     )
     provider = models.CharField(max_length=50, choices=PaymentProviders)
     external_id = models.CharField(max_length=255)
@@ -607,7 +607,7 @@ class MeteredOccurrence(BaseModel):
     """
 
     organization = models.ForeignKey(
-        "organizations.Organization",
+        "tenancy.Organization",
         on_delete=models.CASCADE,
         related_name="metered_occurrences",
     )
@@ -721,7 +721,7 @@ class BillingPeriodSummary(BaseModel):
         Subscription, on_delete=models.CASCADE, related_name="period_summaries"
     )
     organization = models.ForeignKey(
-        "organizations.Organization",
+        "tenancy.Organization",
         on_delete=models.CASCADE,
         related_name="billing_period_summaries",
     )

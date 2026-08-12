@@ -18,7 +18,7 @@ from django.template.loader import render_to_string
 import pytest
 from model_bakery import baker
 
-from organizations.models import Organization, OrganizationBranding, OrganizationInvitation
+from tenancy.models import Organization, OrganizationBranding, OrganizationInvitation
 from users.factories import UserFactory
 
 
@@ -31,7 +31,7 @@ def _make_reseller_with_branding(app_name="ResellApp"):
     """Create a reseller org with a branding row and return (reseller, branding).
 
     ``slug`` is set so the invitation context's ``logo_url`` (the logo delivery
-    route's URL, see ``organizations.branding_logo.build_logo_delivery_url``)
+    route's URL, see ``tenancy.branding_logo.build_logo_delivery_url``)
     resolves to a deterministic, org-specific path rather than the reserved
     "default" sentinel.
     """
@@ -89,7 +89,7 @@ class TestEmailBranding:
             membership_user_id=None,
         )
 
-        from organizations.notification_contexts import organization_invitation_context
+        from tenancy.notification_contexts import organization_invitation_context
 
         ctx = organization_invitation_context(
             organization_invitation_id=invitation.id,
@@ -134,7 +134,7 @@ class TestEmailBranding:
             membership_user_id=None,
         )
 
-        from organizations.notification_contexts import organization_invitation_context
+        from tenancy.notification_contexts import organization_invitation_context
 
         ctx = organization_invitation_context(
             organization_invitation_id=invitation.id,
@@ -174,7 +174,7 @@ class TestEmailBranding:
             membership_user_id=None,
         )
 
-        from organizations.notification_contexts import organization_invitation_context
+        from tenancy.notification_contexts import organization_invitation_context
 
         ctx = organization_invitation_context(
             organization_invitation_id=invitation.id,
@@ -318,7 +318,7 @@ class TestInvitationTemplateRendering:
             membership_user_id=None,
         )
 
-        from organizations.notification_contexts import organization_invitation_context
+        from tenancy.notification_contexts import organization_invitation_context
 
         ctx = organization_invitation_context(
             organization_invitation_id=invitation.id,
@@ -372,7 +372,7 @@ class TestPublicApiInviteInvitedByNone:
             membership_user_id=None,
         )
 
-        from organizations.notification_contexts import organization_invitation_context
+        from tenancy.notification_contexts import organization_invitation_context
 
         # Must not raise NotificationContextGenerationError
         ctx = organization_invitation_context(
@@ -407,7 +407,7 @@ class TestPublicApiInviteInvitedByNone:
             membership_user_id=None,
         )
 
-        from organizations.notification_contexts import organization_invitation_context
+        from tenancy.notification_contexts import organization_invitation_context
 
         ctx = organization_invitation_context(
             organization_invitation_id=invitation.id,

@@ -10,7 +10,7 @@ from calendar_integration.constants import CalendarProvider, IncomingWebhookProc
 from calendar_integration.exceptions import WebhookAuthenticationError, WebhookValidationError
 from calendar_integration.models import Calendar, CalendarWebhookEvent, CalendarWebhookSubscription
 from calendar_integration.services.incoming_webhook_service import CalendarIncomingWebhookService
-from organizations.models import Organization
+from tenancy.models import Organization
 
 
 class CalendarWebhookSubscriptionModelTest(TestCase):

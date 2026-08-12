@@ -4,7 +4,7 @@ from dependency_injector.wiring import Provide, inject
 from rest_framework import serializers
 
 from common.utils.serializer_utils import VirtualModelSerializer
-from organizations.models import get_active_organization_membership
+from tenancy.models import get_active_organization_membership
 from webhooks.models import WebhookConfiguration, WebhookEvent
 from webhooks.services import WebhookService
 from webhooks.virtual_models import WebhookConfigurationVirtualModel, WebhookEventVirtualModel

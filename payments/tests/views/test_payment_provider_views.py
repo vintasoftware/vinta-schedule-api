@@ -12,9 +12,9 @@ from model_bakery import baker
 from rest_framework import status
 from rest_framework.throttling import ScopedRateThrottle
 
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
 from payments.constants import PaymentProviders
 from payments.models import BillingAddress, BillingProfile
+from tenancy.models import Organization, OrganizationMembership, OrganizationRole
 
 
 pytestmark = pytest.mark.django_db

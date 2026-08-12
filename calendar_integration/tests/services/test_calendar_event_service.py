@@ -26,7 +26,7 @@ from calendar_integration.services.dataclasses import (
     CalendarEventAdapterOutputData,
     CalendarEventInputData,
 )
-from organizations.models import Organization, OrganizationMembership
+from tenancy.models import Organization, OrganizationMembership
 from users.models import Profile, User
 
 
@@ -357,7 +357,7 @@ def scoped_event_setup(db):
     needed) and no provider, so no external write adapter is invoked.
     """
     from calendar_integration.models import CalendarOwnership
-    from organizations.models import OrganizationMembership
+    from tenancy.models import OrganizationMembership
 
     organization = Organization.objects.create(name="Scoped Event Org", should_sync_rooms=False)
     owner = User.objects.create_user(email="scoped-owner@example.com", password="testpass123")
@@ -462,8 +462,8 @@ def test_create_event_blocks_scoped_token_on_non_owned_calendar(scoped_event_set
     """
     from django.core.exceptions import PermissionDenied
 
-    from organizations.models import OrganizationMembership
     from public_api.services import PublicAPIAuthService
+    from tenancy.models import OrganizationMembership
 
     org = scoped_event_setup["organization"]
     membership = scoped_event_setup["membership"]

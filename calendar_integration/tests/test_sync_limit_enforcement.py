@@ -46,7 +46,6 @@ from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.calendar_service_context import CalendarServiceContext
 from calendar_integration.services.calendar_sync_service import CalendarSyncService
 from calendar_integration.services.dataclasses import CalendarResourceData
-from organizations.models import Organization
 from payments.billing_constants import BillingState, Entitlement, LimitedResource, LimitKind
 from payments.models import (
     BillingPlan,
@@ -56,6 +55,7 @@ from payments.models import (
 )
 from payments.services.entitlement_service import EntitlementService
 from payments.services.subscription_service import SubscriptionService
+from tenancy.models import Organization
 from users.models import Profile, User
 
 

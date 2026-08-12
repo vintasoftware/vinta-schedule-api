@@ -34,9 +34,9 @@ from calendar_integration.services.calendar_permission_service import (
     DEFAULT_CALENDAR_OWNER_PERMISSIONS,
 )
 from calendar_integration.services.calendar_service import CalendarService
-from organizations.models import Organization, OrganizationMembership
 from payments.models import MeteredOccurrence, Subscription
 from payments.services.metering_service import MeteringService
+from tenancy.models import Organization, OrganizationMembership
 from users.models import Profile, User
 
 

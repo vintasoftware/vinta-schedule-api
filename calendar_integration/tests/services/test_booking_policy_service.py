@@ -37,7 +37,7 @@ from calendar_integration.models import (
 )
 from calendar_integration.services.booking_policy_service import BookingPolicyService
 from calendar_integration.services.dataclasses import EffectivePolicy
-from organizations.models import Organization, OrganizationMembership
+from tenancy.models import Organization, OrganizationMembership
 
 
 # ---------------------------------------------------------------------------

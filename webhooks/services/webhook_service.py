@@ -8,9 +8,9 @@ from django.db import transaction
 import requests
 from dependency_injector.wiring import Provide, inject
 
-from organizations.models import Organization
 from payments.billing_constants import LimitedResource
 from payments.exceptions import OverLimitError
+from tenancy.models import Organization
 from webhooks.constants import WebhookEventType, WebhookStatus
 from webhooks.models import WebhookConfiguration, WebhookEvent
 from webhooks.services.payloads import WebhookEnvelope

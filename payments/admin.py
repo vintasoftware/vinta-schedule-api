@@ -202,7 +202,7 @@ class BillingProfileAdmin(admin.ModelAdmin):
         staff member who repointed the pin, not a generic system actor. Narrowed
         via ``is_authenticated`` (``AbstractBaseUser | AnonymousUser`` ->
         ``AbstractBaseUser`` for mypy, matching the pattern in
-        ``organizations.views``'s branding write gate) even though the admin
+        ``tenancy.views``'s branding write gate) even though the admin
         already refuses an unauthenticated request before ``save_model`` runs.
         """
         if change and "payment_provider" in form.changed_data:

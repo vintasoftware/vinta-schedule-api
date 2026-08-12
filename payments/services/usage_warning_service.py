@@ -23,11 +23,11 @@ from django.db import transaction
 from vintasend.constants import NotificationTypes
 from vintasend.services.notification_service import NotificationContextDict
 
-from organizations.models import Organization, OrganizationMembership
 from payments.billing_constants import BillingState, LimitedResource, LimitWarningLevel
 from payments.models import LimitWarningNotification, Subscription
 from payments.services.entitlement_service import EntitlementService
 from payments.services.subscription_service import current_billing_period_start
+from tenancy.models import Organization, OrganizationMembership
 
 
 if TYPE_CHECKING:

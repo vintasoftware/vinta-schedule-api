@@ -5,8 +5,8 @@ from graphql import GraphQLError
 from model_bakery import baker
 from rest_framework.exceptions import PermissionDenied
 
-from organizations.models import Organization
 from public_api.capabilities import assert_org_can_invite, assert_target_in_subtree
+from tenancy.models import Organization
 
 
 @pytest.mark.django_db

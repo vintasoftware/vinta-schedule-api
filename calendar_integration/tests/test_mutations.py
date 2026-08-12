@@ -23,7 +23,7 @@ from calendar_integration.mutations import (
 )
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.webhook_analytics_service import WebhookAnalyticsService
-from organizations.models import Organization
+from tenancy.models import Organization
 
 
 class TestGetWebhookMutationDependencies:

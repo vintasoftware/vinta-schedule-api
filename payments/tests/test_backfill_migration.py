@@ -32,10 +32,10 @@ from django.apps import apps
 import pytest
 from model_bakery import baker
 
-from organizations.models import Organization
 from payments.billing_constants import LimitedResource
 from payments.exceptions import MissingSeedBillingPlanError
 from payments.models import BillingPlan, Subscription
+from tenancy.models import Organization
 
 
 # This module is *about* the plan-less state the backfill migration repairs, so it opts

@@ -9,7 +9,6 @@ from django.db import transaction
 
 from dependency_injector.wiring import Provide, inject
 
-from organizations.models import Organization
 from payments.billing_constants import BillingInterval, ProviderWebhookRoute
 from payments.constants import (
     PaymentStatuses,
@@ -45,6 +44,7 @@ from payments.services.payment_adapters.base import BasePaymentAdapter
 from payments.services.payment_provider_resolver import PaymentProviderResolver
 from payments.services.subscription_adapters.base import BaseSubscriptionAdapter
 from payments.services.subscription_plan_factory.base import BaseSubscriptionPlanFactory
+from tenancy.models import Organization
 
 
 logger = logging.getLogger(__name__)

@@ -43,7 +43,7 @@ from calendar_integration.services.dataclasses import (
     BookableSlotProposal,
     EffectivePolicy,
 )
-from organizations.models import Organization
+from tenancy.models import Organization
 
 
 class BookableSlotsService:

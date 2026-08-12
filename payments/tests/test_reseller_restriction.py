@@ -18,11 +18,11 @@ from model_bakery import baker
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.models import Calendar
 from calendar_integration.services.calendar_service import CalendarService
-from organizations.models import Organization
 from payments.billing_constants import BillingState, LimitedResource, LimitKind
 from payments.exceptions import OverLimitError
 from payments.models import BillingPlan, Subscription, SubscriptionPlanLimit
 from payments.services.entitlement_service import EntitlementService
+from tenancy.models import Organization
 from webhooks.constants import WebhookEventType
 from webhooks.services.webhook_service import WebhookService
 

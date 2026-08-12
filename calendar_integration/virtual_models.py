@@ -19,7 +19,7 @@ from calendar_integration.models import (
     RecurrenceRule,
     ResourceAllocation,
 )
-from organizations.virtual_models import OrganizationMembershipVirtualModel
+from tenancy.virtual_models import OrganizationMembershipVirtualModel
 
 
 class CalendarOwnershipVirtualModel(v.VirtualModel):

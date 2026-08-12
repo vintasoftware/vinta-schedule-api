@@ -10,14 +10,14 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ('calendar_integration', '0001_initial'),
-        ('organizations', '0001_initial'),
+        ('tenancy', '0001_initial'),
     ]
 
     operations = [
         migrations.AddField(
             model_name='availabletime',
             name='organization',
-            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization'),
+            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='tenancy.organization'),
         ),
         migrations.AddField(
             model_name='availabletime',
@@ -42,7 +42,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='availabletimebulkmodification',
             name='organization',
-            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization'),
+            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='tenancy.organization'),
         ),
         migrations.AddField(
             model_name='availabletimebulkmodification',
@@ -77,7 +77,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='availabletimerecurrenceexception',
             name='organization',
-            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization'),
+            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='tenancy.organization'),
         ),
         migrations.AddField(
             model_name='availabletimerecurrenceexception',
@@ -102,7 +102,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='blockedtime',
             name='organization',
-            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization'),
+            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='tenancy.organization'),
         ),
         migrations.AddField(
             model_name='blockedtime',
@@ -127,7 +127,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='blockedtimebulkmodification',
             name='organization',
-            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization'),
+            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='tenancy.organization'),
         ),
         migrations.AddField(
             model_name='blockedtimebulkmodification',
@@ -162,7 +162,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='blockedtimerecurrenceexception',
             name='organization',
-            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization'),
+            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='tenancy.organization'),
         ),
         migrations.AddField(
             model_name='blockedtimerecurrenceexception',
@@ -177,7 +177,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='calendar',
             name='organization',
-            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization'),
+            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='tenancy.organization'),
         ),
         migrations.AddField(
             model_name='blockedtime',
@@ -252,7 +252,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='calendarevent',
             name='organization',
-            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization'),
+            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='tenancy.organization'),
         ),
         migrations.AddField(
             model_name='calendarevent',
@@ -277,7 +277,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='calendarorganizationresourcesimport',
             name='organization',
-            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization'),
+            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='tenancy.organization'),
         ),
         migrations.AddField(
             model_name='calendarownership',
@@ -292,6 +292,6 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='calendarownership',
             name='organization',
-            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization'),
+            field=models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='tenancy.organization'),
         ),
     ]

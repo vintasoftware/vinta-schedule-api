@@ -7,7 +7,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('organizations', '0011_organizationbranding'),
+        ('tenancy', '0011_organizationbranding'),
         ('public_api', '0006_alter_resourceaccess_resource_name'),
     ]
 
@@ -15,11 +15,11 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='systemuser',
             name='scoped_to_membership',
-            field=models.ForeignObject(editable=False, from_fields=['scoped_to_membership_fk', 'organization_id'], null=True, on_delete=django.db.models.deletion.CASCADE, related_name='scoped_system_users', to='organizations.organizationmembership', to_fields=['id', 'organization_id']),
+            field=models.ForeignObject(editable=False, from_fields=['scoped_to_membership_fk', 'organization_id'], null=True, on_delete=django.db.models.deletion.CASCADE, related_name='scoped_system_users', to='tenancy.organizationmembership', to_fields=['id', 'organization_id']),
         ),
         migrations.AddField(
             model_name='systemuser',
             name='scoped_to_membership_fk',
-            field=models.ForeignKey(blank=True, help_text="When set, this token may only read/write data belonging to calendars owned by this organization membership's user. NULL = organization-wide token (legacy default).", null=True, on_delete=django.db.models.deletion.CASCADE, related_name='scoped_system_users_fk_rel', to='organizations.organizationmembership'),
+            field=models.ForeignKey(blank=True, help_text="When set, this token may only read/write data belonging to calendars owned by this organization membership's user. NULL = organization-wide token (legacy default).", null=True, on_delete=django.db.models.deletion.CASCADE, related_name='scoped_system_users_fk_rel', to='tenancy.organizationmembership'),
         ),
     ]

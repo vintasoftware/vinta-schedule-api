@@ -36,7 +36,7 @@ from calendar_integration.services.dataclasses import (
     CalendarEventAdapterOutputData,
     CalendarResourceData,
 )
-from organizations.models import Organization
+from tenancy.models import Organization
 from users.models import Profile, User
 
 

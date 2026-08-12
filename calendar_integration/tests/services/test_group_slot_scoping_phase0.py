@@ -30,7 +30,7 @@ from calendar_integration.services.availability_service import AvailabilityServi
 from calendar_integration.services.calendar_group_service import CalendarGroupService
 from calendar_integration.services.calendar_service_context import CalendarServiceContext
 from calendar_integration.services.recurrence_manager import RecurrenceManager
-from organizations.models import Organization
+from tenancy.models import Organization
 
 
 class _FakeAvailabilityHost:

@@ -26,12 +26,12 @@ from calendar_integration.models import (
     CalendarGroupSlotMembership,
     CalendarGroupSlotQuotaRule,
 )
-from organizations.models import Organization
+from tenancy.models import Organization
 
 
 @pytest.fixture
 def organization(db):
-    return baker.make("organizations.Organization")
+    return baker.make("tenancy.Organization")
 
 
 @pytest.fixture
@@ -184,8 +184,8 @@ def test_cascade_delete_on_calendar_deletion(
 def test_same_calendar_slot_period_different_org_allowed(calendar: Calendar):
     """Uniqueness is scoped by the tenant-safe FKs, not a bare unique -- two
     different orgs must be able to define identical rules."""
-    org1: Organization = baker.make("organizations.Organization")
-    org2: Organization = baker.make("organizations.Organization")
+    org1: Organization = baker.make("tenancy.Organization")
+    org2: Organization = baker.make("tenancy.Organization")
 
     cal1 = Calendar.objects.create(
         organization=org1,

@@ -3,15 +3,19 @@
 **Phase 0 of the vinta-django-orgs migration** (see
 ``ai-plans/2026-08-12-VINTA_DJANGO_ORGS_MIGRATION_IMPLEMENTATION_PLAN.md``). This
 module is a *temporary, local* implementation of the binding API
-``vinta-django-orgs`` ships as ``organizations.state`` — the package is not
-installed yet (that is Phase 1a's job), so this module cannot import it. It
-exists so every call site that will *become* implicitly organization-scoped in
-Phase 2 can bind an organization today, through one importable name, while the
-current managers (``organizations.managers.BaseOrganizationModelManager`` /
-``organizations.querysets.BaseOrganizationModelQuerySet``) keep ignoring the
-binding entirely and requiring their own explicit ``organization`` filter.
-That is what makes this phase behavior-neutral: nothing here changes what any
-query returns.
+``vinta-django-orgs`` ships as ``organizations.state``. As of Phase 1a the
+package is installed and this repo's app has been renamed to ``tenancy``
+(freeing the ``organizations`` name for the package), but the swap-over to the
+package's implementation is deliberately deferred — Phase 1a is a rename with
+no behavior change, and importing the package's ``organizations.state`` here
+would change what a bound query sees before the manager flip (Phase 2) is
+ready for it. It exists so every call site that will *become* implicitly
+organization-scoped in Phase 2 can bind an organization today, through one
+importable name, while the current managers
+(``tenancy.managers.BaseOrganizationModelManager`` /
+``tenancy.querysets.BaseOrganizationModelQuerySet``) keep ignoring the binding
+entirely and requiring their own explicit ``organization`` filter. That is what
+makes this phase behavior-neutral: nothing here changes what any query returns.
 
 The public surface below — ``organization_context``, ``set_current_organization``,
 ``get_current_organization``, ``clear_current_organization``,
@@ -19,12 +23,10 @@ The public surface below — ``organization_context``, ``set_current_organizatio
 type aliases — mirrors ``organizations.state`` in the installed package
 (``vinta-django-orgs==0.1.1``) name-for-name and semantics-for-semantics
 (binding returns a ``contextvars.Token``; nested/sequential binds restore the
-*previous* organization rather than clearing it). Once Phase 1a installs the
-package and renames this repo's ``organizations`` app to ``tenancy`` (freeing
-the ``organizations`` name for the package), this module's *body* becomes a
-one-line re-export:
+*previous* organization rather than clearing it), so a later phase can swap
+this module's *body* to a one-line re-export:
 
-    from organizations.state import (  # noqa: F401
+    from tenancy.state import (  # noqa: F401
         OrganizationOrSlug,
         OrganizationToken,
         clear_current_organization,
@@ -52,7 +54,7 @@ from django.utils.functional import LazyObject, SimpleLazyObject
 
 
 if TYPE_CHECKING:
-    from organizations.models import Organization
+    from tenancy.models import Organization
 
 
 #: What callers may bind: a loaded ``Organization``, the slug of one, or a
@@ -75,7 +77,7 @@ def _get_organization_by_slug(slug: str) -> Organization | None:
     # command module, at worker/command startup) before Django's app
     # registry has finished loading; importing the ``Organization`` model at
     # module scope raises ``AppRegistryNotReady`` in that case (verified).
-    from organizations.models import Organization
+    from tenancy.models import Organization
 
     return Organization.objects.filter(slug=slug).first()
 

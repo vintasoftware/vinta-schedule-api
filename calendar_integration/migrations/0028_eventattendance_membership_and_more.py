@@ -8,7 +8,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
     dependencies = [
         ("calendar_integration", "0027_alter_calendarownership_membership"),
-        ("organizations", "0011_organizationbranding"),
+        ("tenancy", "0011_organizationbranding"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
@@ -22,7 +22,7 @@ class Migration(migrations.Migration):
                 null=True,
                 on_delete=django.db.models.deletion.DO_NOTHING,
                 related_name="event_attendances",
-                to="organizations.organizationmembership",
+                to="tenancy.organizationmembership",
                 to_fields=["user_id", "organization_id"],
             ),
         ),

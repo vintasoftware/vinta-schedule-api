@@ -45,7 +45,7 @@ from django.test.utils import isolate_apps
 import pytest
 
 from common.fields import OrganizationMembershipForeignKey
-from organizations.models import Organization, OrganizationMembership, OrganizationModel
+from tenancy.models import Organization, OrganizationMembership, OrganizationModel
 
 
 User = get_user_model()
@@ -307,7 +307,7 @@ class TestOrganizationMembershipForeignKeyBehavior:
 
     def test_filter_traversal_via_membership_role(self, probe_host_table):
         """filter(membership__role='admin') returns the host row for an admin member."""
-        from organizations.models import OrganizationRole
+        from tenancy.models import OrganizationRole
 
         user = User.objects.create_user(email="role@example.com", password="pw")  # type: ignore[attr-defined]
         org = Organization.objects.create(name="Test Org Role")

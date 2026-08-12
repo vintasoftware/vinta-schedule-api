@@ -30,7 +30,7 @@ from calendar_integration.models import (
     EventManagementPermissions,
 )
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
-from organizations.models import Organization
+from tenancy.models import Organization
 
 
 # ---------------------------------------------------------------------------

@@ -29,7 +29,7 @@ from model_bakery import baker
 
 from calendar_integration.factories import create_event_attendance
 from calendar_integration.models import CalendarEvent, EventAttendance
-from organizations.models import Organization, OrganizationMembership
+from tenancy.models import Organization, OrganizationMembership
 from users.models import User
 
 

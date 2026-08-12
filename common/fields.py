@@ -321,7 +321,7 @@ class OrganizationMembershipForeignKey(models.Field):
         #    commit. ``self.on_delete`` is retained for introspection/documentation
         #    of the intended semantics only.
         fo_field = ForeignObject(
-            "organizations.OrganizationMembership",
+            "tenancy.OrganizationMembership",
             from_fields=[user_id_field_name, "organization_id"],
             to_fields=["user_id", "organization_id"],
             on_delete=models.DO_NOTHING,

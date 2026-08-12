@@ -40,7 +40,7 @@ from calendar_integration.managers import (
     ExternalEventChangeRequestManager,
 )
 from common.fields import OrganizationMembershipForeignKey
-from organizations.models import (
+from tenancy.models import (
     Organization,
     OrganizationForeignKey,
     OrganizationMembership,
@@ -148,7 +148,7 @@ class Calendar(OrganizationModel):
 
     memberships: "models.ManyToManyField[OrganizationMembership, CalendarOwnership]" = (
         models.ManyToManyField(
-            "organizations.OrganizationMembership",
+            "tenancy.OrganizationMembership",
             related_name="calendars",
             through="CalendarOwnership",
             through_fields=("calendar_fk", "membership"),
@@ -1218,7 +1218,7 @@ class CalendarEvent(RecurringMixin):
     )
 
     attendee_memberships = models.ManyToManyField(
-        "organizations.OrganizationMembership",
+        "tenancy.OrganizationMembership",
         related_name="attended_events",
         through=EventAttendance,
         through_fields=("event", "membership"),

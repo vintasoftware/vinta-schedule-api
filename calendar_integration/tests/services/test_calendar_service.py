@@ -72,7 +72,7 @@ from calendar_integration.services.dataclasses import (
     ResourceData,
     UnavailableTimeWindow,
 )
-from organizations.models import ExternalEventUpdatePolicy, Organization, OrganizationMembership
+from tenancy.models import ExternalEventUpdatePolicy, Organization, OrganizationMembership
 from users.models import Profile, User
 
 

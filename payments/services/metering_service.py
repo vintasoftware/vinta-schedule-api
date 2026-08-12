@@ -52,7 +52,6 @@ from decimal import Decimal
 from django.db import transaction
 
 from calendar_integration.models import CalendarEvent
-from organizations.models import Organization
 from payments.billing_constants import LimitedResource
 from payments.models import MeteredOccurrence, Subscription
 from payments.services.billing_dataclasses import (
@@ -67,6 +66,7 @@ from payments.services.subscription_service import (
     resolve_billing_period_start,
     resolve_settlement_period,
 )
+from tenancy.models import Organization
 
 
 logger = logging.getLogger(__name__)

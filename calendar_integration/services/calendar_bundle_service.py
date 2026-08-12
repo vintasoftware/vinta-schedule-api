@@ -73,9 +73,9 @@ from calendar_integration.services.protocols.base_calendar_service import BaseCa
 from calendar_integration.services.type_guards import (
     is_initialized_or_authenticated_calendar_service,
 )
-from organizations.models import OrganizationMembership
 from payments.billing_constants import LimitedResource
 from payments.exceptions import OverLimitError
+from tenancy.models import OrganizationMembership
 from users.models import User
 
 

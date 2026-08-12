@@ -10,7 +10,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ('calendar_integration', '0009_fix_webhook_unique_constraint'),
-        ('organizations', '0003_organizationinvitation'),
+        ('tenancy', '0003_organizationinvitation'),
     ]
 
     operations = [
@@ -23,7 +23,7 @@ class Migration(migrations.Migration):
                 ('meta', models.JSONField(blank=True, default=dict, verbose_name='meta')),
                 ('name', models.CharField(max_length=255)),
                 ('description', models.TextField(blank=True)),
-                ('organization', models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization')),
+                ('organization', models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='tenancy.organization')),
             ],
         ),
         migrations.AddField(
@@ -49,7 +49,7 @@ class Migration(migrations.Migration):
                 ('required_count', models.PositiveSmallIntegerField(default=1, help_text='How many calendars from the pool must be selected when booking. Default 1; use larger values when a slot needs multiple calendars (e.g. two nurses).')),
                 ('group', models.ForeignObject(editable=False, from_fields=['group_fk', 'organization_id'], on_delete=django.db.models.deletion.CASCADE, related_name='slots', to='calendar_integration.calendargroup', to_fields=['id', 'organization_id'])),
                 ('group_fk', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='slots_fk_rel', to='calendar_integration.calendargroup')),
-                ('organization', models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization')),
+                ('organization', models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='tenancy.organization')),
             ],
             options={
                 'ordering': ('order', 'id'),
@@ -66,7 +66,7 @@ class Migration(migrations.Migration):
                 ('calendar_fk', models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name='group_selections_fk_rel', to='calendar_integration.calendar')),
                 ('event', models.ForeignObject(editable=False, from_fields=['event_fk', 'organization_id'], on_delete=django.db.models.deletion.CASCADE, related_name='group_selections', to='calendar_integration.calendarevent', to_fields=['id', 'organization_id'])),
                 ('event_fk', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='group_selections_fk_rel', to='calendar_integration.calendarevent')),
-                ('organization', models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization')),
+                ('organization', models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='tenancy.organization')),
                 ('slot', models.ForeignObject(editable=False, from_fields=['slot_fk', 'organization_id'], on_delete=django.db.models.deletion.PROTECT, related_name='selections', to='calendar_integration.calendargroupslot', to_fields=['id', 'organization_id'])),
                 ('slot_fk', models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name='selections_fk_rel', to='calendar_integration.calendargroupslot')),
             ],
@@ -80,7 +80,7 @@ class Migration(migrations.Migration):
                 ('meta', models.JSONField(blank=True, default=dict, verbose_name='meta')),
                 ('calendar', models.ForeignObject(editable=False, from_fields=['calendar_fk', 'organization_id'], on_delete=django.db.models.deletion.CASCADE, related_name='group_slot_memberships', to='calendar_integration.calendar', to_fields=['id', 'organization_id'])),
                 ('calendar_fk', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='group_slot_memberships_fk_rel', to='calendar_integration.calendar')),
-                ('organization', models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization')),
+                ('organization', models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='tenancy.organization')),
                 ('slot', models.ForeignObject(editable=False, from_fields=['slot_fk', 'organization_id'], on_delete=django.db.models.deletion.CASCADE, related_name='memberships', to='calendar_integration.calendargroupslot', to_fields=['id', 'organization_id'])),
                 ('slot_fk', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='memberships_fk_rel', to='calendar_integration.calendargroupslot')),
             ],

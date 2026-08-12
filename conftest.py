@@ -184,7 +184,7 @@ def provision_default_subscription(request):
 
     from django.db.models.signals import post_save
 
-    from organizations.models import Organization
+    from tenancy.models import Organization
 
     def _provision(sender, instance, created, raw=False, **kwargs):
         if not created or raw:
@@ -261,8 +261,8 @@ def assert_no_unbound_scoped_queries():
     (``ai-plans/2026-08-12-VINTA_DJANGO_ORGS_MIGRATION_IMPLEMENTATION_PLAN.md``)
     threads an explicit ``organization_context(...)`` binding through every
     Celery task and management command that touches a scoped model, while the
-    manager itself (``organizations.managers.BaseOrganizationModelManager`` /
-    ``organizations.querysets.BaseOrganizationModelQuerySet``) keeps enforcing
+    manager itself (``tenancy.managers.BaseOrganizationModelManager`` /
+    ``tenancy.querysets.BaseOrganizationModelQuerySet``) keeps enforcing
     only its own, unrelated contract: an explicit ``organization`` filter on the
     query, checked independently of this binding. That is what makes Phase 0
     behavior-neutral -- today, a query can run unbound and still succeed, as

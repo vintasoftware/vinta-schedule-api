@@ -46,7 +46,7 @@ from calendar_integration.services.calendar_webhook_service import (
     CalendarWebhookService,
     WebhookHealthStatus,
 )
-from organizations.models import Organization
+from tenancy.models import Organization
 from users.models import Profile, User
 
 

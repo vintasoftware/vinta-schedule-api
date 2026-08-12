@@ -27,7 +27,7 @@ def _dt(year, month, day, hour=9, minute=0):
 
 @pytest.mark.django_db
 def test_recurrence_rule_to_rrule_string_basic():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     until = _dt(2025, 1, 10)
     rule = baker.make(
         RecurrenceRule,
@@ -48,7 +48,7 @@ def test_recurrence_rule_to_rrule_string_basic():
 
 @pytest.mark.django_db
 def test_recurrence_rule_from_rrule_string_roundtrip():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     src_rule = baker.make(
         RecurrenceRule,
         organization=org,
@@ -67,7 +67,7 @@ def test_recurrence_rule_from_rrule_string_roundtrip():
 
 @pytest.mark.django_db
 def test_recurrence_rule_clean_conflicting_count_and_until():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     rule = RecurrenceRule(
         organization=org,
         frequency=RecurrenceFrequency.DAILY,
@@ -80,7 +80,7 @@ def test_recurrence_rule_clean_conflicting_count_and_until():
 
 @pytest.mark.django_db
 def test_recurrence_rule_clean_invalid_weekday():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     rule = RecurrenceRule(organization=org, frequency=RecurrenceFrequency.WEEKLY, by_weekday="XX")
     with pytest.raises(ValidationError):
         rule.save()
@@ -88,7 +88,7 @@ def test_recurrence_rule_clean_invalid_weekday():
 
 @pytest.mark.django_db
 def test_calendar_event_get_next_occurrence_daily_basic():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     cal = baker.make(
         "calendar_integration.Calendar", organization=org, external_id=baker.seq("cal")
     )
@@ -117,7 +117,7 @@ def test_calendar_event_get_next_occurrence_daily_basic():
 
 @pytest.mark.django_db
 def test_calendar_event_get_next_occurrence_daily_count_limit():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     cal = baker.make(
         "calendar_integration.Calendar", organization=org, external_id=baker.seq("cal")
     )
@@ -150,7 +150,7 @@ def test_calendar_event_get_next_occurrence_daily_count_limit():
 
 @pytest.mark.django_db
 def test_calendar_event_generate_instances_with_cancelled_exception():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     cal = baker.make(
         "calendar_integration.Calendar", organization=org, external_id=baker.seq("cal")
     )
@@ -187,7 +187,7 @@ def test_calendar_event_generate_instances_with_cancelled_exception():
 
 @pytest.mark.django_db
 def test_calendar_event_get_occurrences_in_range_with_modified_exception():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     cal = baker.make(
         "calendar_integration.Calendar", organization=org, external_id=baker.seq("cal")
     )
@@ -236,7 +236,7 @@ def test_calendar_event_get_occurrences_in_range_with_modified_exception():
 
 @pytest.mark.django_db
 def test_calendar_event_create_exception_updates_existing():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     cal = baker.make(
         "calendar_integration.Calendar", organization=org, external_id=baker.seq("cal")
     )
@@ -284,7 +284,7 @@ def test_calendar_event_create_exception_updates_existing():
 
 @pytest.mark.django_db
 def test_recurrence_rule_to_rrule_string_all_fields():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     until = _dt(2025, 12, 31, 23, 59)
     rule = baker.make(
         RecurrenceRule,
@@ -321,7 +321,7 @@ def test_recurrence_rule_to_rrule_string_all_fields():
 
 @pytest.mark.django_db
 def test_recurrence_rule_to_rrule_string_defaults_and_empty_fields():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     rule = baker.make(
         RecurrenceRule,
         organization=org,
@@ -357,7 +357,7 @@ def test_recurrence_rule_to_rrule_string_defaults_and_empty_fields():
 
 @pytest.mark.django_db
 def test_recurrence_rule_to_rrule_string_with_count():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     rule = baker.make(
         RecurrenceRule,
         organization=org,
@@ -375,7 +375,7 @@ def test_recurrence_rule_to_rrule_string_with_count():
 
 @pytest.mark.django_db
 def test_from_rrule_string_all_fields():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     rrule = (
         "FREQ=MONTHLY;INTERVAL=2;COUNT=5;UNTIL=20251231T235900Z;BYDAY=MO,WE;BYMONTHDAY=1,-1;BYMONTH=1,12;"
         "BYYEARDAY=100,200;BYWEEKNO=1,52;BYHOUR=0,12;BYMINUTE=0,30;BYSECOND=0,59;WKST=SU"
@@ -398,7 +398,7 @@ def test_from_rrule_string_all_fields():
 
 @pytest.mark.django_db
 def test_from_rrule_string_with_rrule_prefix():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     rrule = "RRULE:FREQ=WEEKLY;INTERVAL=3;COUNT=2;BYDAY=TU,TH"
     rule = RecurrenceRule.from_rrule_string(rrule, organization=org)
     assert rule.frequency == "WEEKLY"
@@ -409,7 +409,7 @@ def test_from_rrule_string_with_rrule_prefix():
 
 @pytest.mark.django_db
 def test_from_rrule_string_partial_fields():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     rrule = "FREQ=DAILY"
     rule = RecurrenceRule.from_rrule_string(rrule, organization=org)
     assert rule.frequency == "DAILY"
@@ -429,7 +429,7 @@ def test_from_rrule_string_partial_fields():
 
 @pytest.mark.django_db
 def test_from_rrule_string_invalid_parts_are_ignored():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     rrule = "FREQ=DAILY;FOO=BAR;INTERVAL=2"
     rule = RecurrenceRule.from_rrule_string(rrule, organization=org)
     assert rule.frequency == "DAILY"
@@ -439,7 +439,7 @@ def test_from_rrule_string_invalid_parts_are_ignored():
 
 @pytest.mark.django_db
 def test_from_rrule_string_until_without_z():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     rrule = "FREQ=DAILY;UNTIL=20251231T235900"  # No Z, should not parse until
     rule = RecurrenceRule.from_rrule_string(rrule, organization=org)
     assert rule.until is None
@@ -447,7 +447,7 @@ def test_from_rrule_string_until_without_z():
 
 @pytest.mark.django_db
 def test_recurrence_rule_clean_invalid_month_day():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     # 0 and 32 are invalid, -32 is invalid
     rule = RecurrenceRule(
         organization=org, frequency=RecurrenceFrequency.MONTHLY, by_month_day="0,32,-32,15"
@@ -459,7 +459,7 @@ def test_recurrence_rule_clean_invalid_month_day():
 
 @pytest.mark.django_db
 def test_recurrence_rule_clean_non_integer_month_day():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     rule = RecurrenceRule(
         organization=org, frequency=RecurrenceFrequency.MONTHLY, by_month_day="1,foo,3"
     )
@@ -470,7 +470,7 @@ def test_recurrence_rule_clean_non_integer_month_day():
 
 @pytest.mark.django_db
 def test_recurrence_rule_clean_invalid_month():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     # 0 and 13 are invalid
     rule = RecurrenceRule(
         organization=org, frequency=RecurrenceFrequency.MONTHLY, by_month="0,13,5"
@@ -482,7 +482,7 @@ def test_recurrence_rule_clean_invalid_month():
 
 @pytest.mark.django_db
 def test_recurrence_rule_clean_non_integer_month():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     rule = RecurrenceRule(
         organization=org, frequency=RecurrenceFrequency.MONTHLY, by_month="1,foo,12"
     )
@@ -493,7 +493,7 @@ def test_recurrence_rule_clean_non_integer_month():
 
 @pytest.mark.django_db
 def test_get_next_occurrence_not_recurring():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     cal = baker.make("calendar_integration.Calendar", organization=org)
     event = baker.make(
         CalendarEvent,
@@ -509,7 +509,7 @@ def test_get_next_occurrence_not_recurring():
 
 @pytest.mark.django_db
 def test_get_next_occurrence_after_date_none():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     rule = baker.make(
         RecurrenceRule,
         organization=org,
@@ -532,7 +532,7 @@ def test_get_next_occurrence_after_date_none():
 
 @pytest.mark.django_db
 def test_get_next_occurrence_after_date_before_start():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     rule = baker.make(
         RecurrenceRule,
         organization=org,
@@ -553,7 +553,7 @@ def test_get_next_occurrence_after_date_before_start():
 
 @pytest.mark.django_db
 def test_get_next_occurrence_until_exceeded():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     rule = baker.make(
         RecurrenceRule,
         organization=org,
@@ -575,7 +575,7 @@ def test_get_next_occurrence_until_exceeded():
 
 @pytest.mark.django_db
 def test_get_next_occurrence_daily_count_limit():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     rule = baker.make(
         RecurrenceRule,
         organization=org,
@@ -597,7 +597,7 @@ def test_get_next_occurrence_daily_count_limit():
 
 @pytest.mark.django_db
 def test_get_next_occurrence_weekly():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     rule = baker.make(
         RecurrenceRule,
         organization=org,
@@ -619,7 +619,7 @@ def test_get_next_occurrence_weekly():
 
 @pytest.mark.django_db
 def test_get_next_occurrence_monthly():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     cal = baker.make("calendar_integration.Calendar", organization=org)
     rule = baker.make(
         RecurrenceRule,
@@ -648,7 +648,7 @@ def test_get_next_occurrence_monthly():
 
 @pytest.mark.django_db
 def test_get_next_occurrence_yearly():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     rule = baker.make(
         RecurrenceRule,
         organization=org,
@@ -675,7 +675,7 @@ def test_get_next_occurrence_yearly():
 
 @pytest.mark.django_db
 def test_generate_instances_not_recurring():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     cal = baker.make("calendar_integration.Calendar", organization=org)
     event = baker.make(
         CalendarEvent,
@@ -697,7 +697,7 @@ def test_generate_instances_not_recurring():
 
 @pytest.mark.django_db
 def test_generate_instances_daily_until_and_count():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     cal = baker.make("calendar_integration.Calendar", organization=org)
     # Only set count, not until
     rule = baker.make(
@@ -727,7 +727,7 @@ def test_generate_instances_daily_until_and_count():
 
 @pytest.mark.django_db
 def test_generate_instances_weekly_by_weekday():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     rule = baker.make(
         RecurrenceRule,
         organization=org,
@@ -756,7 +756,7 @@ def test_generate_instances_weekly_by_weekday():
 
 @pytest.mark.django_db
 def test_generate_instances_weekly_simple():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     rule = baker.make(
         RecurrenceRule,
         organization=org,
@@ -783,7 +783,7 @@ def test_generate_instances_weekly_simple():
 
 @pytest.mark.django_db
 def test_generate_instances_monthly_edge_case():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     rule = baker.make(
         RecurrenceRule,
         organization=org,
@@ -810,7 +810,7 @@ def test_generate_instances_monthly_edge_case():
 
 @pytest.mark.django_db
 def test_generate_instances_yearly_leap_year():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     rule = baker.make(
         RecurrenceRule,
         organization=org,
@@ -836,7 +836,7 @@ def test_generate_instances_yearly_leap_year():
 
 @pytest.mark.django_db
 def test_generate_instances_unknown_frequency():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     cal = baker.make("calendar_integration.Calendar", organization=org)
     rule = baker.make(
         RecurrenceRule,
@@ -865,7 +865,7 @@ def test_generate_instances_unknown_frequency():
 
 @pytest.mark.django_db
 def test_generate_instances_with_exceptions():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     cal = baker.make("calendar_integration.Calendar", organization=org)
     rule = baker.make(
         RecurrenceRule,
@@ -903,7 +903,7 @@ def test_generate_instances_with_exceptions():
 @pytest.mark.django_db
 def test_get_next_occurrence_with_cancelled_exception_before_range():
     """Test that cancelled exceptions before search range don't count toward limit"""
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     cal = baker.make("calendar_integration.Calendar", organization=org)
     rule = baker.make(
         RecurrenceRule,
@@ -947,7 +947,7 @@ def test_get_next_occurrence_with_cancelled_exception_before_range():
 @pytest.mark.django_db
 def test_get_next_occurrence_with_modified_exception_before_range():
     """Test that modified exceptions before search range still count toward limit"""
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     cal = baker.make("calendar_integration.Calendar", organization=org)
     rule = baker.make(
         RecurrenceRule,
@@ -999,7 +999,7 @@ def test_get_next_occurrence_with_modified_exception_before_range():
 @pytest.mark.django_db
 def test_get_occurrences_in_range_with_cancelled_before_range():
     """Test generating occurrences when cancelled exceptions exist before the range"""
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     cal = baker.make("calendar_integration.Calendar", organization=org)
     rule = baker.make(
         RecurrenceRule,
@@ -1037,7 +1037,7 @@ def test_get_occurrences_in_range_with_cancelled_before_range():
 @pytest.mark.django_db
 def test_get_occurrences_in_range_weekly_with_cancelled_before_range():
     """Test weekly recurrence with cancelled exceptions before range"""
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     cal = baker.make("calendar_integration.Calendar", organization=org)
     rule = baker.make(
         RecurrenceRule,
@@ -1083,7 +1083,7 @@ def test_get_occurrences_in_range_weekly_with_cancelled_before_range():
 @pytest.mark.django_db
 def test_get_next_occurrence_multiple_cancellations_before_range():
     """Test with multiple cancelled exceptions before search range"""
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     cal = baker.make("calendar_integration.Calendar", organization=org)
     rule = baker.make(
         RecurrenceRule,
@@ -1128,7 +1128,7 @@ def test_get_next_occurrence_multiple_cancellations_before_range():
 @pytest.mark.django_db
 def test_get_next_occurrence_mixed_exceptions_before_range():
     """Test with both cancelled and modified exceptions before search range"""
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     cal = baker.make("calendar_integration.Calendar", organization=org)
     rule = baker.make(
         RecurrenceRule,
@@ -1187,7 +1187,7 @@ def test_get_next_occurrence_mixed_exceptions_before_range():
 
 @pytest.mark.django_db
 def test_event_bulk_modification_create_and_linking():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     cal = baker.make(
         "calendar_integration.Calendar", organization=org, external_id=baker.seq("cal")
     )
@@ -1249,7 +1249,7 @@ def test_event_bulk_modification_create_and_linking():
 
 @pytest.mark.django_db
 def test_blocked_and_available_bulk_modification_parent_fields():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     cal = baker.make(
         "calendar_integration.Calendar", organization=org, external_id=baker.seq("cal")
     )
@@ -1305,7 +1305,7 @@ def test_blocked_and_available_bulk_modification_parent_fields():
 
 @pytest.mark.django_db
 def test_blockedtime_and_availabletime_bulk_modification_records():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     cal = baker.make(
         "calendar_integration.Calendar", organization=org, external_id=baker.seq("cal")
     )
@@ -1366,7 +1366,7 @@ def _make_group_slot(org) -> CalendarGroupSlot:
 
 @pytest.mark.django_db
 def test_available_time_default_manager_excludes_group_scoped_rows():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     cal = baker.make(
         "calendar_integration.Calendar", organization=org, external_id=baker.seq("cal")
     )
@@ -1413,7 +1413,7 @@ def test_available_time_default_manager_excludes_group_scoped_rows():
 
 @pytest.mark.django_db
 def test_blocked_time_default_manager_excludes_group_scoped_rows():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     cal = baker.make(
         "calendar_integration.Calendar", organization=org, external_id=baker.seq("cal")
     )
@@ -1460,7 +1460,7 @@ def test_blocked_time_default_manager_excludes_group_scoped_rows():
 
 @pytest.mark.django_db
 def test_available_time_cascade_deletes_on_group_slot_deletion():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     cal = baker.make(
         "calendar_integration.Calendar", organization=org, external_id=baker.seq("cal")
     )
@@ -1495,7 +1495,7 @@ def test_available_time_cascade_deletes_on_group_slot_deletion():
 
 @pytest.mark.django_db
 def test_blocked_time_cascade_deletes_on_group_slot_deletion():
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     cal = baker.make(
         "calendar_integration.Calendar", organization=org, external_id=baker.seq("cal")
     )
@@ -1537,7 +1537,7 @@ def test_available_time_only_user_authored_composes_with_group_scoping():
     unscoped/for_group_slot accessors, since group-scoped windows are metered
     too (see AvailableTimeQuerySet.only_user_authored and Guiding Decisions).
     """
-    org = baker.make("organizations.Organization")
+    org = baker.make("tenancy.Organization")
     cal = baker.make(
         "calendar_integration.Calendar", organization=org, external_id=baker.seq("cal")
     )

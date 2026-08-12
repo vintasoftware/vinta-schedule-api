@@ -10,7 +10,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ('calendar_integration', '0038_externaleventchangerequest_resolved_by_protect_fk'),
-        ('organizations', '0014_organization_external_event_update_policy'),
+        ('tenancy', '0014_organization_external_event_update_policy'),
     ]
 
     operations = [
@@ -31,8 +31,8 @@ class Migration(migrations.Migration):
                 ('calendar_fk', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.CASCADE, related_name='booking_policies_fk_rel', to='calendar_integration.calendar')),
                 ('calendar_group', models.ForeignObject(editable=False, from_fields=['calendar_group_fk', 'organization_id'], null=True, on_delete=django.db.models.deletion.CASCADE, related_name='booking_policies', to='calendar_integration.calendargroup', to_fields=['id', 'organization_id'])),
                 ('calendar_group_fk', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.CASCADE, related_name='booking_policies_fk_rel', to='calendar_integration.calendargroup')),
-                ('membership', models.ForeignObject(editable=False, from_fields=['membership_user_id', 'organization_id'], null=True, on_delete=django.db.models.deletion.DO_NOTHING, related_name='booking_policies', to='organizations.organizationmembership', to_fields=['user_id', 'organization_id'])),
-                ('organization', models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization')),
+                ('membership', models.ForeignObject(editable=False, from_fields=['membership_user_id', 'organization_id'], null=True, on_delete=django.db.models.deletion.DO_NOTHING, related_name='booking_policies', to='tenancy.organizationmembership', to_fields=['user_id', 'organization_id'])),
+                ('organization', models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='tenancy.organization')),
             ],
             options={
                 'indexes': [models.Index(fields=['organization', 'calendar_fk'], name='bookingpolicy_org_cal_idx'), models.Index(fields=['organization', 'membership_user_id'], name='bookingpolicy_org_member_idx'), models.Index(fields=['organization', 'calendar_group_fk'], name='bookingpolicy_org_group_idx')],

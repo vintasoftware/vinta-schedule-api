@@ -26,8 +26,8 @@ from calendar_integration.models import (
     EventBulkModification,
     RecurrenceRule,
 )
-from organizations.models import Organization
 from payments.models import MeteredOccurrence, Subscription
+from tenancy.models import Organization
 from users.models import Profile, User
 
 

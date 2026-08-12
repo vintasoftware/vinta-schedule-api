@@ -30,8 +30,8 @@ from allauth.socialaccount.models import SocialLogin
 from model_bakery import baker
 
 from accounts.account_adapters import SocialAccountAdapter
-from organizations.exceptions import UserAlreadyHasMembershipError
-from organizations.models import (
+from tenancy.exceptions import UserAlreadyHasMembershipError
+from tenancy.models import (
     Organization,
     OrganizationInvitation,
     OrganizationMembership,

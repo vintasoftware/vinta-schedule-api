@@ -4,7 +4,7 @@ from django.db import transaction
 
 from dependency_injector.wiring import Provide, inject
 
-from organizations.models import OrganizationMembership
+from tenancy.models import OrganizationMembership
 from webhooks.constants import WebhookEventType
 from webhooks.services.payloads import OrganizationMemberCreatedWebhookPayload
 

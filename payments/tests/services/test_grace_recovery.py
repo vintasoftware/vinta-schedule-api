@@ -46,7 +46,6 @@ import pytest
 from model_bakery import baker
 
 from calendar_integration.tasks.calendar_sync_tasks import resync_organization_calendars_task
-from organizations.models import Organization
 from payments.billing_constants import BillingState, LimitedResource, LimitKind
 from payments.exceptions import RetryPaymentNotApplicableError, SubscriptionNotAttachedError
 from payments.models import BillingPlan, PlanLimit, Subscription
@@ -61,6 +60,7 @@ from payments.services.subscription_service import (
     SubscriptionService,
     retry_payment_idempotency_key,
 )
+from tenancy.models import Organization
 
 
 # This module builds its own Subscription rows directly via SubscriptionService,

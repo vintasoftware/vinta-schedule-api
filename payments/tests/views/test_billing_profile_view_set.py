@@ -4,8 +4,8 @@ import pytest
 from model_bakery import baker
 from rest_framework import status
 
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
 from payments.models import BillingAddress, BillingProfile
+from tenancy.models import Organization, OrganizationMembership, OrganizationRole
 
 
 @pytest.fixture

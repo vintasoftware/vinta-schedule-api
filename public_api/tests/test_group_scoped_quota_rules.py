@@ -31,12 +31,12 @@ from calendar_integration.models import (
     CalendarGroupSlotQuotaRule,
     CalendarOwnership,
 )
-from organizations.models import Organization, OrganizationMembership
 from payments.billing_constants import BillingState
 from payments.models import Subscription
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess
 from public_api.services import PublicAPIAuthService
+from tenancy.models import Organization, OrganizationMembership
 
 
 GROUP_SCOPED_QUOTA_RULES_QUERY = """

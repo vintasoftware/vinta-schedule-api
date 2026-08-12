@@ -16,7 +16,7 @@ import pytest
 from model_bakery import baker
 
 from accounts.base_forms import BaseVintaScheduleSignupForm
-from organizations.models import Organization, OrganizationInvitation
+from tenancy.models import Organization, OrganizationInvitation
 from users.factories import UserFactory
 from users.models import Profile, User
 

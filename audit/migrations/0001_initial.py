@@ -12,7 +12,7 @@ class Migration(migrations.Migration):
     initial = True
 
     dependencies = [
-        ('organizations', '0013_organizationmembership_composite_pk'),
+        ('tenancy', '0013_organizationmembership_composite_pk'),
     ]
 
     operations = [
@@ -34,7 +34,7 @@ class Migration(migrations.Migration):
                 ('subject_id', models.CharField(db_index=True, max_length=255)),
                 ('subject_label', models.CharField(blank=True, max_length=255, null=True)),
                 ('diff', models.JSONField(blank=True, null=True)),
-                ('organization', models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization')),
+                ('organization', models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='tenancy.organization')),
             ],
         ),
         migrations.CreateModel(
@@ -47,14 +47,14 @@ class Migration(migrations.Migration):
                 ('membership_user_id', models.BigIntegerField()),
                 ('audit', models.ForeignObject(editable=False, from_fields=['audit_fk', 'organization_id'], on_delete=django.db.models.deletion.CASCADE, related_name='affected_membership_links', to='audit.audit', to_fields=['id', 'organization_id'])),
                 ('audit_fk', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='affected_membership_links_fk_rel', to='audit.audit')),
-                ('membership', models.ForeignObject(editable=False, from_fields=['membership_user_id', 'organization_id'], on_delete=django.db.models.deletion.DO_NOTHING, related_name='audit_affected_links', to='organizations.organizationmembership', to_fields=['user_id', 'organization_id'])),
-                ('organization', models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization')),
+                ('membership', models.ForeignObject(editable=False, from_fields=['membership_user_id', 'organization_id'], on_delete=django.db.models.deletion.DO_NOTHING, related_name='audit_affected_links', to='tenancy.organizationmembership', to_fields=['user_id', 'organization_id'])),
+                ('organization', models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='tenancy.organization')),
             ],
         ),
         migrations.AddField(
             model_name='audit',
             name='affected_memberships',
-            field=models.ManyToManyField(blank=True, related_name='+', through='audit.AuditAffectedMembership', through_fields=('audit_fk', 'membership'), to='organizations.organizationmembership'),
+            field=models.ManyToManyField(blank=True, related_name='+', through='audit.AuditAffectedMembership', through_fields=('audit_fk', 'membership'), to='tenancy.organizationmembership'),
         ),
         migrations.AddIndex(
             model_name='auditaffectedmembership',

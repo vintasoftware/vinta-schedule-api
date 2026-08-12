@@ -28,7 +28,7 @@ from model_bakery import baker
 
 from calendar_integration.factories import create_calendar_ownership
 from calendar_integration.models import Calendar, CalendarOwnership
-from organizations.models import Organization, OrganizationMembership
+from tenancy.models import Organization, OrganizationMembership
 from users.models import User
 
 

@@ -31,8 +31,8 @@ from calendar_integration.models import BookingPolicy, CalendarOwnership
 
 if TYPE_CHECKING:
     from calendar_integration.querysets import BookingPolicyQuerySet
-    from organizations.models import OrganizationMembership
     from public_api.models import SystemUser
+    from tenancy.models import OrganizationMembership
     from users.models import User
 
 

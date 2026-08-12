@@ -39,7 +39,7 @@ from calendar_integration.models import (
     ChildrenCalendarRelationship,
 )
 from calendar_integration.services.dataclasses import EffectivePolicy
-from organizations.models import Organization, OrganizationMembership
+from tenancy.models import Organization, OrganizationMembership
 
 
 if TYPE_CHECKING:

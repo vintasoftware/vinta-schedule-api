@@ -20,7 +20,7 @@ from calendar_integration.models import (
     CalendarSync,
     RecurrenceRule,
 )
-from organizations.models import Organization
+from tenancy.models import Organization
 
 
 def _dt(year, month, day, hour=9, minute=0):

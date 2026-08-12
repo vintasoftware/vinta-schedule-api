@@ -11,7 +11,7 @@ def backfill_scoped_to_membership_user_id(apps, schema_editor):
     NULL stays NULL (organization-wide token).
     """
     SystemUser = apps.get_model("public_api", "SystemUser")
-    OrganizationMembership = apps.get_model("organizations", "OrganizationMembership")
+    OrganizationMembership = apps.get_model("tenancy", "OrganizationMembership")
     membership_user_by_id = dict(OrganizationMembership.objects.values_list("id", "user_id"))
     for system_user_id, membership_id in SystemUser.objects.filter(
         scoped_to_membership_fk_id__isnull=False
@@ -58,7 +58,7 @@ class Migration(migrations.Migration):
     """
 
     dependencies = [
-        ("organizations", "0012_organizationinvitation_membership_user_id_and_more"),
+        ("tenancy", "0012_organizationinvitation_membership_user_id_and_more"),
         ("public_api", "0007_systemuser_scoped_to_membership"),
     ]
 
@@ -99,7 +99,7 @@ class Migration(migrations.Migration):
                         null=True,
                         on_delete=django.db.models.deletion.DO_NOTHING,
                         related_name="scoped_system_users",
-                        to="organizations.organizationmembership",
+                        to="tenancy.organizationmembership",
                         to_fields=("user_id", "organization_id"),
                     ),
                 ),

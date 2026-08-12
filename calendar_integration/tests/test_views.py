@@ -34,7 +34,7 @@ from calendar_integration.services.dataclasses import (
     AvailableTimeWindow,
     UnavailableTimeWindow,
 )
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from tenancy.models import Organization, OrganizationMembership, OrganizationRole
 
 
 User = get_user_model()

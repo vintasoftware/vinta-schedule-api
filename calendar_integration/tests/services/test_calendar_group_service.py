@@ -29,7 +29,7 @@ from calendar_integration.services.dataclasses import (
     CalendarGroupSlotSelectionInputData,
     EventAttendanceInputData,
 )
-from organizations.models import Organization, OrganizationMembership
+from tenancy.models import Organization, OrganizationMembership
 from users.models import User
 
 

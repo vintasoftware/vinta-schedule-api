@@ -8,7 +8,7 @@ from calendar_integration.exceptions import WebhookAuthenticationError, WebhookV
 from calendar_integration.models import CalendarWebhookEvent, CalendarWebhookSubscription
 from calendar_integration.webhook_parsers import WEBHOOK_PARSERS
 from calendar_integration.webhook_validators import WEBHOOK_VALIDATORS
-from organizations.models import Organization
+from tenancy.models import Organization
 
 
 logger = logging.getLogger(__name__)

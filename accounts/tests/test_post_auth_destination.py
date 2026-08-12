@@ -29,7 +29,7 @@ from rest_framework.test import APIClient
 
 from legal.factories import PolicyDocumentFactory
 from legal.models import PolicyDocumentType
-from organizations.models import (
+from tenancy.models import (
     Organization,
     OrganizationBranding,
     OrganizationMembership,

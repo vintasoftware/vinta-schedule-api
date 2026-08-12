@@ -22,7 +22,6 @@ from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.models import Calendar, CalendarEvent
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.dataclasses import CalendarEventInputData
-from organizations.models import Organization
 from payments.billing_constants import BillingState, LimitedResource, LimitKind, LimitRemedy
 from payments.constants import PaymentProviders
 from payments.exceptions import OverLimitError
@@ -34,6 +33,7 @@ from payments.models import (
     SubscriptionPlanLimit,
 )
 from payments.services.entitlement_service import EntitlementService
+from tenancy.models import Organization
 
 
 # This module builds its own Subscription rows (OneToOne with Organization), so it

@@ -18,8 +18,8 @@ from public_api.models import SystemUser
 
 
 if TYPE_CHECKING:
-    from organizations.models import Organization, OrganizationMembership
     from payments.services.entitlement_service import EntitlementService
+    from tenancy.models import Organization, OrganizationMembership
 
 
 logger = logging.getLogger(__name__)

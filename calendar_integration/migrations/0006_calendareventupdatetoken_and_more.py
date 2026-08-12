@@ -13,7 +13,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ('calendar_integration', '0005_add_timezone_aware_fields'),
-        ('organizations', '0002_initial'),
+        ('tenancy', '0002_initial'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
@@ -39,7 +39,7 @@ class Migration(migrations.Migration):
                 ('calendar_fk', models.ForeignKey(null=True, on_delete=django.db.models.deletion.CASCADE, related_name='management_tokens_fk_rel', to='calendar_integration.calendar')),
                 ('external_attendee', models.ForeignObject(editable=False, from_fields=('external_attendee_fk', 'organization_id'), null=True, on_delete=django.db.models.deletion.CASCADE, related_name='calendar_event_management_tokens', to='calendar_integration.externalattendee', to_fields=('id', 'organization_id'))),
                 ('external_attendee_fk', models.ForeignKey(null=True, on_delete=django.db.models.deletion.CASCADE, related_name='calendar_event_management_tokens_fk_rel', to='calendar_integration.externalattendee')),
-                ('organization', models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization')),
+                ('organization', models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='tenancy.organization')),
                 ('user', models.ForeignKey(null=True, on_delete=django.db.models.deletion.CASCADE, related_name='calendar_event_management_tokens', to=settings.AUTH_USER_MODEL)),
             ],
             options={
@@ -54,7 +54,7 @@ class Migration(migrations.Migration):
                 ('modified', model_utils.fields.AutoLastModifiedField(db_index=True, default=django.utils.timezone.now, editable=False, verbose_name='modified')),
                 ('meta', models.JSONField(blank=True, default=dict, verbose_name='meta')),
                 ('permission', models.CharField(choices=EventManagementPermissions.choices, max_length=100)),
-                ('organization', models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization')),
+                ('organization', models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='tenancy.organization')),
                 ('token', models.ForeignObject(editable=False, from_fields=['token_fk', 'organization_id'], null=True, on_delete=django.db.models.deletion.CASCADE, related_name='permissions', to='calendar_integration.calendarmanagementtoken', to_fields=['id', 'organization_id'])),
                 ('token_fk', models.ForeignKey(null=True, on_delete=django.db.models.deletion.CASCADE, related_name='permissions_fk_rel', to='calendar_integration.calendarmanagementtoken')),
             ],

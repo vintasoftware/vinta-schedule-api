@@ -23,13 +23,13 @@ import pytest
 from calendar_integration.constants import CalendarProvider, RecurrenceFrequency
 from calendar_integration.factories import CalendarEventFactory
 from calendar_integration.models import Calendar
-from organizations.models import Organization
 from payments.models import MeteredOccurrence, Subscription
 from payments.tasks import (
     METERING_SWEEP_WINDOW,
     meter_event_occurrences,
     meter_subscription_event_occurrences,
 )
+from tenancy.models import Organization
 
 
 @pytest.fixture

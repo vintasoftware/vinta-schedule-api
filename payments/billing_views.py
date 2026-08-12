@@ -34,8 +34,6 @@ from rest_framework.viewsets import GenericViewSet, ViewSet
 
 from calendar_integration.models import CalendarEvent, CalendarOwnership
 from common.utils.view_utils import TenantScopedViewMixin
-from organizations.models import Organization
-from organizations.permissions import IsBillingOwnerOrAdmin
 from payments.billing_constants import BillingState, LimitedResource
 from payments.filtersets import (
     BillingPeriodSummaryFilterSet,
@@ -69,6 +67,8 @@ from payments.services.subscription_service import (
     resolve_billing_period,
     resolve_billing_root,
 )
+from tenancy.models import Organization
+from tenancy.permissions import IsBillingOwnerOrAdmin
 
 
 if TYPE_CHECKING:

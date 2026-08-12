@@ -28,9 +28,9 @@ from django.apps import apps
 import pytest
 from model_bakery import baker
 
-from organizations.models import Organization
 from payments.constants import PaymentProviders, PaymentStatuses
 from payments.models import BillingPlan, Payment, Subscription
+from tenancy.models import Organization
 
 
 # These modules build their own Subscription rows (OneToOne with Organization),

@@ -2188,6 +2188,20 @@ wheels = [
 ]
 
 [[package]]
+name = "vinta-django-orgs"
+version = "0.1.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "django" },
+    { name = "django-model-utils" },
+    { name = "djangorestframework" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/41/c4/bb3787c6ef6d39c21ac0ed18878eaa0ca0654402e9672bf9a6700d442462/vinta_django_orgs-0.1.1.tar.gz", hash = "sha256:f1f3122e19b1ae1500c10d0292d13d1c9c7694c527b1feab4b1f0c5305051726", size = 80525, upload-time = "2026-08-11T22:49:02.968Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/82/f9/fef25f3fbaed8417115b6f7dac4db9301dd6290713b281a155215303bb0c/vinta_django_orgs-0.1.1-py3-none-any.whl", hash = "sha256:67608564f111edb87428571b2ea6e58d091f19e1ad1b1a7f89c468d1f3caf385", size = 78703, upload-time = "2026-08-11T22:49:01.961Z" },
+]
+
+[[package]]
 name = "vinta-schedule-api"
 version = "0.1.0"
 source = { virtual = "." }
@@ -2240,6 +2254,7 @@ dependencies = [
     { name = "strawberry-graphql-django" },
     { name = "stripe" },
     { name = "twilio" },
+    { name = "vinta-django-orgs" },
     { name = "vintasend" },
     { name = "vintasend-celery" },
     { name = "vintasend-django" },
@@ -2314,6 +2329,7 @@ requires-dist = [
     { name = "strawberry-graphql-django", specifier = ">=0.86.0,<0.87.0" },
     { name = "stripe", specifier = ">=15.3.1,<16" },
     { name = "twilio", specifier = ">=9.6.5,<10" },
+    { name = "vinta-django-orgs", specifier = ">=0.1.1,<0.2" },
     { name = "vintasend", specifier = ">=1.2.0,<2" },
     { name = "vintasend-celery", specifier = ">=1.2.0,<2" },
     { name = "vintasend-django", specifier = ">=1.2.1,<2" },

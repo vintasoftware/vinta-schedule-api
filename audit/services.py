@@ -4,7 +4,7 @@ Usage (from a caller that has been injected with AuditService):
 
     actor = self.audit_service.actor_from_membership(membership)
     subject = SubjectRef(
-        subject_type="organizations.OrganizationMembership",
+        subject_type="tenancy.OrganizationMembership",
         subject_id=str(membership.user_id),
         subject_label=str(membership),
     )
@@ -149,7 +149,7 @@ class AuditService:
         """
         # Lazy import: audit is a leaf app; importing organizations at module load
         # would create an import cycle (organizations services import audit_service).
-        from organizations.models import OrganizationMembership
+        from tenancy.models import OrganizationMembership
 
         membership = OrganizationMembership.objects.filter(
             user_id=user.id,  # type: ignore[attr-defined]

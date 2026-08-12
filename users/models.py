@@ -45,7 +45,7 @@ class User(AbstractBaseUser, PermissionsMixin, BaseModel):
         An inactive membership (is_active=False) is treated the same as no
         membership — returns False to deny access.
         """
-        from organizations.models import OrganizationRole
+        from tenancy.models import OrganizationRole
 
         organization_id = getattr(organization, "id", organization)
         return self.organization_memberships.filter(  # type: ignore[attr-defined]

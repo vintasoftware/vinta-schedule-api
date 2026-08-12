@@ -10,7 +10,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ('calendar_integration', '0042_availabletime_blockedtime_group_slot'),
-        ('organizations', '0022_organization_week_start'),
+        ('tenancy', '0022_organization_week_start'),
     ]
 
     operations = [
@@ -27,7 +27,7 @@ class Migration(migrations.Migration):
                 ('calendar_fk', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='group_slot_quota_rules_fk_rel', to='calendar_integration.calendar')),
                 ('group_slot', models.ForeignObject(editable=False, from_fields=['group_slot_fk', 'organization_id'], on_delete=django.db.models.deletion.CASCADE, related_name='quota_rules', to='calendar_integration.calendargroupslot', to_fields=['id', 'organization_id'])),
                 ('group_slot_fk', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='quota_rules_fk_rel', to='calendar_integration.calendargroupslot')),
-                ('organization', models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='organizations.organization')),
+                ('organization', models.ForeignKey(help_text='The organization this model is associated with. Queries should use the `organization` field.', on_delete=django.db.models.deletion.CASCADE, related_name='+', to='tenancy.organization')),
             ],
             options={
                 'indexes': [models.Index(fields=['organization', 'group_slot_fk'], name='cgsquotarule_org_slot_idx')],

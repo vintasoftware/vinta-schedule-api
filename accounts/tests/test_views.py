@@ -11,9 +11,9 @@ import pytest
 from allauth.socialaccount.providers.base import ProviderException
 from model_bakery import baker
 
-from organizations.models import Organization, OrganizationBranding, OrganizationMembership
 from payments.billing_constants import BillingState, Entitlement
 from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
+from tenancy.models import Organization, OrganizationBranding, OrganizationMembership
 from users.factories import UserFactory
 
 

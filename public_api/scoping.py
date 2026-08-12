@@ -2,8 +2,8 @@ from typing import Literal
 
 from calendar_integration.models import Calendar
 from calendar_integration.querysets import CalendarGroupQuerySet
-from organizations.models import Organization, OrganizationMembership
 from public_api.models import SystemUser
+from tenancy.models import Organization, OrganizationMembership
 
 
 SystemUserScope = Literal["org_wide", "scoped_admin", "scoped_member"]

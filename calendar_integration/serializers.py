@@ -81,7 +81,7 @@ from calendar_integration.virtual_models import (
     ResourceAllocationVirtualModel,
 )
 from common.utils.serializer_utils import VirtualModelSerializer
-from organizations.models import (
+from tenancy.models import (
     Organization,
     OrganizationMembership,
     get_active_organization_membership,

@@ -33,7 +33,7 @@ from calendar_integration.services.dataclasses import (
     AvailableTimeWindow,
     CalendarEventInputData,
 )
-from organizations.models import Organization, OrganizationMembership
+from tenancy.models import Organization, OrganizationMembership
 from users.models import Profile, User
 
 
@@ -921,7 +921,7 @@ def test_collect_bundle_attendees_includes_calendar_owners(
     Profile.objects.create(user=user)
 
     from calendar_integration.models import CalendarOwnership
-    from organizations.models import OrganizationMembership
+    from tenancy.models import OrganizationMembership
 
     OrganizationMembership.objects.create(user=user, organization=organization)
     CalendarOwnership.objects.create(
@@ -959,7 +959,7 @@ def test_collect_bundle_attendees_deduplicates(
 
     from calendar_integration.models import CalendarOwnership
     from calendar_integration.services.dataclasses import EventAttendanceInputData
-    from organizations.models import OrganizationMembership
+    from tenancy.models import OrganizationMembership
 
     OrganizationMembership.objects.create(user=user, organization=organization)
     CalendarOwnership.objects.create(

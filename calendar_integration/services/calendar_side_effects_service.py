@@ -3,8 +3,8 @@ from typing import Protocol, runtime_checkable
 
 from calendar_integration.models import CalendarManagementToken
 from calendar_integration.services.dataclasses import CalendarEventData, EventExternalAttendeeData
-from organizations.models import Organization
 from public_api.models import SystemUser
+from tenancy.models import Organization
 from users.models import User
 
 

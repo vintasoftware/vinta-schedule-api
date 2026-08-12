@@ -1,4 +1,4 @@
-from organizations.managers import BaseOrganizationModelManager
+from tenancy.managers import BaseOrganizationModelManager
 from webhooks.querysets import WebhookConfigurationQuerySet
 
 

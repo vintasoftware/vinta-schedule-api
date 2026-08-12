@@ -29,10 +29,10 @@ from rest_framework.test import APIRequestFactory
 
 from calendar_integration.factories import create_calendar_ownership
 from calendar_integration.models import Calendar, CalendarEvent
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
 from payments.models import MeteredOccurrence
 from payments.pagination import LargeLimitOffsetPagination
 from payments.services.subscription_service import current_billing_period_start
+from tenancy.models import Organization, OrganizationMembership, OrganizationRole
 
 
 def occurrences_url() -> str:

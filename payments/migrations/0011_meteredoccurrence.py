@@ -9,7 +9,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('organizations', '0016_organizationmembership_is_billing_owner'),
+        ('tenancy', '0016_organizationmembership_is_billing_owner'),
         ('payments', '0010_subscriptionaddon'),
     ]
 
@@ -26,7 +26,7 @@ class Migration(migrations.Migration):
                 ('billing_period_start', models.DateTimeField(db_index=True)),
                 ('is_within_allowance', models.BooleanField()),
                 ('unit_price', models.DecimalField(decimal_places=4, max_digits=10)),
-                ('organization', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='metered_occurrences', to='organizations.organization')),
+                ('organization', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='metered_occurrences', to='tenancy.organization')),
                 ('subscription', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='metered_occurrences', to='payments.subscription')),
             ],
             options={

@@ -20,9 +20,9 @@ from calendar_integration.models import (
 )
 from calendar_integration.services.calendar_service import CalendarService
 from common.organization_context import organization_context
-from organizations.models import Organization
 from payments.exceptions import OverLimitError
 from payments.services.entitlement_service import EntitlementService
+from tenancy.models import Organization
 from vinta_schedule_api.celery import app
 
 

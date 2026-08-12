@@ -15,7 +15,7 @@ from calendar_integration.models import (
     CalendarGroupSlot,
     CalendarGroupSlotMembership,
 )
-from organizations.models import Organization
+from tenancy.models import Organization
 
 
 @pytest.mark.django_db

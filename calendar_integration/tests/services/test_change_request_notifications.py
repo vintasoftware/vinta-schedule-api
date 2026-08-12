@@ -40,7 +40,7 @@ from calendar_integration.models import Calendar, CalendarEvent
 from calendar_integration.services.external_event_change_request_service import (
     ExternalEventChangeRequestService,
 )
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from tenancy.models import Organization, OrganizationMembership, OrganizationRole
 from users.models import Profile, User
 
 

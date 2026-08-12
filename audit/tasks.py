@@ -26,7 +26,7 @@ from dependency_injector.wiring import Provide, inject
 
 from audit.types import ActorSnapshot, AuditRecordData, SubjectRef
 from common.organization_context import organization_context
-from organizations.models import Organization
+from tenancy.models import Organization
 from vinta_schedule_api.celery import app
 
 

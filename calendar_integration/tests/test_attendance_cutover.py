@@ -30,7 +30,7 @@ from calendar_integration.serializers import (
     OwnershipMembershipSerializer,
 )
 from calendar_integration.services.calendar_service_utils import resolve_member_user_ids
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from tenancy.models import Organization, OrganizationMembership, OrganizationRole
 
 
 @pytest.fixture

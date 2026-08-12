@@ -9,7 +9,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ('calendar_integration', '0021_calendargroup_accepts_public_scheduling'),
-        ('organizations', '0011_organizationbranding'),
+        ('tenancy', '0011_organizationbranding'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
@@ -17,7 +17,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='calendarownership',
             name='membership',
-            field=models.ForeignObject(editable=False, from_fields=['membership_user_id', 'organization_id'], null=True, on_delete=django.db.models.deletion.PROTECT, related_name='calendar_ownerships', to='organizations.organizationmembership', to_fields=['user_id', 'organization_id']),
+            field=models.ForeignObject(editable=False, from_fields=['membership_user_id', 'organization_id'], null=True, on_delete=django.db.models.deletion.PROTECT, related_name='calendar_ownerships', to='tenancy.organizationmembership', to_fields=['user_id', 'organization_id']),
         ),
         migrations.AddField(
             model_name='calendarownership',

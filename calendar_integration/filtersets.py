@@ -13,7 +13,7 @@ from calendar_integration.models import (
     CalendarGroup,
     ExternalEventChangeRequest,
 )
-from organizations.models import get_active_organization_membership
+from tenancy.models import get_active_organization_membership
 
 
 class CalendarFilterSet(filters.FilterSet):

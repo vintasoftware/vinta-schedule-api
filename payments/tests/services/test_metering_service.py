@@ -26,13 +26,13 @@ from freezegun import freeze_time
 from calendar_integration.constants import CalendarProvider, RecurrenceFrequency
 from calendar_integration.factories import CalendarEventFactory
 from calendar_integration.models import Calendar, CalendarEvent
-from organizations.models import Organization
 from payments.billing_constants import LimitedResource
 from payments.exceptions import BillingPeriodResolutionError
 from payments.models import MeteredOccurrence, Subscription
 from payments.services.entitlement_service import EntitlementService
 from payments.services.metering_service import MAX_SERIES_CHAIN_DEPTH, MeteringService
 from payments.services.subscription_service import resolve_billing_period
+from tenancy.models import Organization
 
 
 #: A whole calendar month used as the subscription's billing period, chosen so the

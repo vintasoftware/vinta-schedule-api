@@ -15,7 +15,7 @@ from legal.exceptions import NoPolicyDocumentError
 from legal.factories import PolicyDocumentFactory, UserConsentFactory
 from legal.models import ConsentSource, PolicyDocumentType, UserConsent
 from legal.services import ConsentService
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from tenancy.models import Organization, OrganizationMembership, OrganizationRole
 from users.models import User
 
 

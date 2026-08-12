@@ -9,7 +9,6 @@ from django.http import (
 
 from dependency_injector.wiring import Provide, inject
 
-from organizations.models import Organization
 from payments.billing_constants import Entitlement
 from payments.entitlement_cache import entitlement_request_cache, has_entitlement_cached
 from payments.exceptions import OverLimitError
@@ -17,6 +16,7 @@ from public_api.exceptions import InvalidAuthorizationHeaderError, PublicAPIServ
 from public_api.models import SystemUser
 from public_api.services import PublicAPIAuthService
 from public_api.types import PublicApiHttpRequest
+from tenancy.models import Organization
 
 
 if TYPE_CHECKING:

@@ -13,7 +13,7 @@ import pytest
 
 from audit.constants import AuditAction, AuditActorType
 from audit.models import Audit, AuditAffectedMembership
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from tenancy.models import Organization, OrganizationMembership, OrganizationRole
 
 
 User = get_user_model()

@@ -72,7 +72,7 @@ from calendar_integration.services.dataclasses import (
     EventAttendeeData,
     ResourceData,
 )
-from organizations.models import OrganizationMembership, OrganizationRole
+from tenancy.models import OrganizationMembership, OrganizationRole
 
 
 if TYPE_CHECKING:
@@ -100,7 +100,7 @@ class ExternalEventChangeRequestService:
     Provide[...]]`` markers ``@inject`` introspects at wiring time, making the decorator
     a silent no-op (``dependency_injector`` emits ``DIWiringWarning`` and returns the
     function unpatched). Leaving it on would imply a wiring mechanism that is not
-    running. See ``organizations.models.resolve_branding_for_display`` for the
+    running. See ``tenancy.models.resolve_branding_for_display`` for the
     deferred-container-import pattern used where injection is actually needed under
     the same constraint.
 

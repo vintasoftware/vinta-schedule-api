@@ -4,10 +4,10 @@ import pytest
 from model_bakery import baker
 from rest_framework.test import APIClient
 
-from organizations.models import Organization
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess
 from public_api.services import PublicAPIAuthService
+from tenancy.models import Organization
 from webhooks.constants import WebhookEventType, WebhookStatus
 from webhooks.models import WebhookConfiguration, WebhookEvent
 
