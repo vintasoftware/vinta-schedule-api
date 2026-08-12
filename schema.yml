@@ -17501,10 +17501,11 @@ components:
           description: |-
             Whether the membership's organization is branding-eligible.
 
-            Computed as parentless-and-entitled -- deliberately excludes the slug
-            condition (Organization Auth-Area Branding plan, Phase 4 Capability
-            signal guiding decision), so an organization missing only a slug still
-            sees the branding page instead of it being silently absent. Shares
+            Computed as parentless-and-entitled. It once deliberately excluded a
+            third, slug condition (Organization Auth-Area Branding plan, Phase 4
+            Capability signal guiding decision) so an organization missing only a
+            slug still saw the branding page; that condition is now retired, so the
+            exclusion is vacuous and the two checks coincide. Shares
             ``organizations.permissions.is_branding_eligible_organization`` rather
             than restating the two-condition check, so this tracks the same gate
             that governs ``GET /branding/`` (see
