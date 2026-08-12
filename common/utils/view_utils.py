@@ -12,11 +12,10 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.viewsets import ModelViewSet, ViewSetMixin
 
+from common.constants import ACTIVE_ORG_HEADER
+
 
 logger = logging.getLogger(__name__)
-
-#: Header name used to select the active organization for a request.
-ACTIVE_ORG_HEADER = "X-Organization-Id"
 
 
 class TenantScopedViewMixin:

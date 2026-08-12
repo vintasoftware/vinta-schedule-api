@@ -108,18 +108,39 @@ class TestBackfillSubjectTypeNamespaceForward:
         assert already_tenancy.subject_type == "tenancy.Organization"
 
     def test_subject_type_with_organizations_substring_not_at_prefix_is_untouched(self):
-        """Only a literal ``organizations.`` *prefix* is rewritten -- a value that
-        merely contains the substring elsewhere must be left alone, proving the
-        migration matches on prefix, not on substring."""
+        """A value that merely *contains* the old prefix, but not at the start,
+        must be left alone -- proving the ``startswith`` gate (and, by
+        extension, an anchored rewrite) actually matches on prefix, not on
+        substring. ``"payments.organizations.Report"`` genuinely contains
+        ``"organizations."`` (same case, with the trailing dot) starting at
+        index 9, so this pins the real boundary the old, capitalization- and
+        dot-mismatched fixture (``"payments.OrganizationsBillingReport"``)
+        could never actually exercise."""
         org = baker.make(Organization)
         audit = AuditFactory().create(
-            organization=org, subject_type="payments.OrganizationsBillingReport"
+            organization=org, subject_type="payments.organizations.Report"
         )
 
         backfill_forward(apps, None)
 
         audit.refresh_from_db()
-        assert audit.subject_type == "payments.OrganizationsBillingReport"
+        assert audit.subject_type == "payments.organizations.Report"
+
+    def test_rewrite_is_anchored_to_the_prefix_not_every_occurrence(self):
+        """Pins the literal post-migration value for a ``subject_type`` that
+        contains the old prefix *both* as its real prefix *and* again later in
+        the string. An unanchored rewrite (e.g. a bare ``Replace`` over the
+        whole string) would rewrite both occurrences; the anchored rewrite
+        under test must only ever touch the leading one."""
+        org = baker.make(Organization)
+        audit = AuditFactory().create(
+            organization=org, subject_type="organizations.Foo.organizations.Bar"
+        )
+
+        backfill_forward(apps, None)
+
+        audit.refresh_from_db()
+        assert audit.subject_type == "tenancy.Foo.organizations.Bar"
 
 
 @pytest.mark.django_db

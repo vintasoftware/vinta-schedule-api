@@ -47,6 +47,27 @@ We use the [`DRF-Spectacular`](https://drf-spectacular.readthedocs.io/en/latest/
 
 The API documentation pages are accessible at `http://localhost:8000/api/schema/swagger-ui/` or `http://localhost:8000/api/schema/redoc/`.
 
+## Upgrading past the tenancy rename
+
+If your local database was created (fully migrated) before the
+`organizations` → `tenancy` app rename landed, a plain `make migrate` /
+`manage.py migrate` fails with `InconsistentMigrationHistory`: the app's
+migrations are recorded in `django_migrations` under the old `organizations`
+label, and the on-disk graph now resolves them as `tenancy`. Fix it once,
+before migrating:
+
+```bash
+make manage rename_organizations_migration_history
+make migrate
+```
+
+(`uv run python manage.py rename_organizations_migration_history` on the host
+surface.) The command is idempotent — safe to run even if your database was
+never affected. See its module docstring
+(`tenancy/management/commands/rename_organizations_migration_history.py`) for
+the full explanation, including why this has to be a management command and
+not a Django migration.
+
 ## Floci S3 Configuration
 
 This project uses [Floci](https://github.com/floci-io/floci) to provide a local AWS S3-compatible service for development instead of MinIO. Floci is a free, open-source AWS emulator that needs no account, auth token, or feature gates, and starts in milliseconds.

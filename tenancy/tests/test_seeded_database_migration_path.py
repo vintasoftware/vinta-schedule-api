@@ -25,16 +25,31 @@ assertion outcome -- hence ``@pytest.mark.django_db(transaction=True)``
 (direct DDL/DML against ``django_migrations`` must actually commit to be
 visible to a fresh ``MigrationExecutor``, so the transactional-rollback
 default fixture is the wrong tool here).
+
+Also covers the command's two Phase 1c guards (see
+``rename_organizations_migration_history``'s module docstring): the
+migration-name scope (only the 22 pre-rename ``tenancy`` migration names are
+ever rewritten, never an unrelated ``organizations``-labelled row) and the
+``CommandError`` refusal once the vinta-django-orgs package's own
+``organizations`` app is installed.
 """
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
+from django.contrib.contenttypes.models import ContentType
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.db import connection
 from django.db.migrations.exceptions import InconsistentMigrationHistory
 from django.db.migrations.executor import MigrationExecutor
 
 import pytest
+from model_bakery import baker
+
+from audit.factories import AuditFactory
+from tenancy.models import Organization
 
 
 # The migration immediately after which this phase's own new migrations
@@ -57,7 +72,24 @@ _PRE_RENAME_CUTOFF = "0023_"
 # damage from that pollution; scoping to the two apps this phase's migrations
 # actually touch keeps the assertion meaningful without depending on every
 # other app's test-isolation discipline.
+#
+# Consequence: the empty-plan assertions in this file only prove the global
+# `InconsistentMigrationHistory` guarantee for `tenancy` and `audit`. The
+# project-wide guarantee -- that no *other* app's applied migrations were
+# left inconsistent by the relabel -- comes only from
+# `executor.loader.check_consistent_history(connection)` (called against the
+# full graph, not a scoped one) in `test_migrate_runs_clean_from_a_simulated_
+# pre_rename_state` below.
 _SCOPED_APPS = frozenset({"tenancy", "audit"})
+
+# The four models this app owns as of Phase 1b -- mirrors
+# `tenancy.migrations.0023_move_content_types_to_tenancy._TENANCY_MODEL_NAMES`.
+_TENANCY_MODEL_NAMES = (
+    "organization",
+    "organizationmembership",
+    "organizationinvitation",
+    "organizationbranding",
+)
 
 
 def _pre_rename_tenancy_migration_names() -> list[str]:
@@ -163,6 +195,86 @@ class TestSeededDatabaseMigrationPath:
                     "UPDATE django_migrations SET app = 'tenancy' WHERE app = 'organizations'"
                 )
 
+    def test_migrate_runs_this_phases_own_migrations_against_pre_rename_data(self):
+        """Extends the simulated pre-rename state above so `tenancy.0023` and
+        `audit.0002` are genuinely *pending*, not already applied -- the
+        earlier test only relabels `0001`..`0022`, leaving `0023` and
+        `audit.0002` recorded as applied and the content types already at
+        `tenancy`, so `migrate` has nothing left to do for either migration.
+        This additionally deletes their `django_migrations` rows, relabels
+        the four content types back to `organizations` (deleting the
+        `tenancy` ones this test database auto-created), and seeds one
+        pre-rename-shaped audit row, then proves the fix command + a real
+        `migrate` actually run both migrations and produce the same
+        post-rename state.
+        """
+        pre_rename_names = _pre_rename_tenancy_migration_names()
+        placeholders = ", ".join(["%s"] * len(pre_rename_names))
+
+        org = baker.make(Organization)
+        stale_audit = AuditFactory().create(
+            organization=org, subject_type="organizations.Organization"
+        )
+
+        original_content_type_ids = {
+            model_name: ContentType.objects.get(app_label="tenancy", model=model_name).pk
+            for model_name in _TENANCY_MODEL_NAMES
+        }
+
+        try:
+            # --- Step 1: relabel the 22 pre-rename tenancy migrations, same
+            # as the base simulated state. ---
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE django_migrations SET app = 'organizations' "
+                    f"WHERE app = 'tenancy' AND name IN ({placeholders})",
+                    pre_rename_names,
+                )
+                # --- Step 2: this phase's own migrations were never applied
+                # against a genuinely pre-rename database -- delete their
+                # applied rows so `migrate` actually has to run them.
+                cursor.execute(
+                    "DELETE FROM django_migrations WHERE "
+                    "(app = 'tenancy' AND name = '0023_move_content_types_to_tenancy') "
+                    "OR (app = 'audit' AND name = '0002_backfill_subject_type_namespace')"
+                )
+
+            # --- Step 3: relabel the content types back to 'organizations',
+            # deleting the head-state 'tenancy' rows -- the shape a database
+            # seeded before Phase 1a's rename actually has. ---
+            for content_type_id in original_content_type_ids.values():
+                ContentType.objects.filter(pk=content_type_id).update(app_label="organizations")
+
+            # --- Step 4: run the fix, then the real migrate for the two
+            # apps this phase touches. ---
+            call_command("rename_organizations_migration_history")
+            for app_label in _SCOPED_APPS:
+                call_command("migrate", app_label, verbosity=0)
+
+            # --- Assert: `tenancy.0023` actually ran and moved the content
+            # types back to 'tenancy', at their original ids. ---
+            for content_type_id in original_content_type_ids.values():
+                content_type = ContentType.objects.get(pk=content_type_id)
+                assert content_type.app_label == "tenancy"
+
+            # --- Assert: `audit.0002` actually ran and rewrote the
+            # pre-rename `subject_type`. ---
+            stale_audit.refresh_from_db()
+            assert stale_audit.subject_type == "tenancy.Organization"
+        finally:
+            # Restore head state so later tests in this worker's database are
+            # unaffected, regardless of where an assertion above failed. Both
+            # calls are idempotent no-ops if the try block already reached
+            # them successfully.
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "UPDATE django_migrations SET app = 'tenancy' WHERE app = 'organizations'"
+                )
+            for app_label in _SCOPED_APPS:
+                call_command("migrate", app_label, verbosity=0)
+            for content_type_id in original_content_type_ids.values():
+                ContentType.objects.filter(pk=content_type_id).update(app_label="tenancy")
+
     def test_command_is_idempotent(self):
         call_command("rename_organizations_migration_history")
         call_command("rename_organizations_migration_history")
@@ -194,3 +306,60 @@ class TestSeededDatabaseMigrationPath:
                 cursor.execute(
                     "UPDATE django_migrations SET app = 'tenancy' WHERE app = 'organizations'"
                 )
+
+
+@pytest.mark.django_db(transaction=True)
+class TestRenameCommandGuardsAgainstPackageOwnedRows:
+    """BLOCKER 1 (Phase 1b review): Phase 1c installs the vinta-django-orgs
+    package's own ``organizations.apps.OrganizationsConfig``, which records
+    its migrations in ``django_migrations`` under the same ``organizations``
+    label this command used to rewrite unconditionally. Both guards the
+    command now has are exercised here: the name-scoped ``UPDATE`` (only the
+    22 pre-rename ``tenancy`` migration names are ever touched) and the
+    ``CommandError`` refusal once the package's app is installed.
+    """
+
+    def test_out_of_scope_organizations_row_is_left_untouched(self):
+        """A ``django_migrations`` row labelled ``organizations`` whose name
+        is not one of this app's 22 pre-rename migrations -- the shape a
+        package-owned row would have -- must survive the rewrite even though
+        it carries the same app label as the rows this command does move.
+        """
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO django_migrations (app, name, applied) "
+                "VALUES ('organizations', '9999_package_owned_migration', now())"
+            )
+
+        try:
+            call_command("rename_organizations_migration_history")
+
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT app FROM django_migrations WHERE name = '9999_package_owned_migration'"
+                )
+                (app_label,) = cursor.fetchone()
+            assert app_label == "organizations"
+        finally:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "DELETE FROM django_migrations WHERE name = '9999_package_owned_migration'"
+                )
+                cursor.execute(
+                    "UPDATE django_migrations SET app = 'tenancy' WHERE app = 'organizations'"
+                )
+
+    def test_refuses_to_run_when_the_organizations_app_is_installed(self):
+        """Once Phase 1c installs the package's own ``organizations`` app,
+        this command must refuse outright rather than attempt any rewrite --
+        by that point, this command's job is already done, and any
+        ``organizations``-labelled row left in ``django_migrations`` belongs
+        to the package, not to this app's pre-rename history.
+        """
+        with patch(
+            "tenancy.management.commands.rename_organizations_migration_history"
+            ".django_apps.is_installed",
+            return_value=True,
+        ):
+            with pytest.raises(CommandError):
+                call_command("rename_organizations_migration_history")

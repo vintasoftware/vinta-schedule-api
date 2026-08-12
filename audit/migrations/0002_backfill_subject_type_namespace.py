@@ -32,11 +32,19 @@
 # was, and is, exclusively this app's pre-rename label, so
 # `subject_type LIKE 'organizations.%'` cannot collide with a legitimately
 # `organizations.`-prefixed value from any other app.
+#
+# Deploy note: `persist_audit_record` (`audit/tasks.py`) rebuilds `subject_type`
+# from its queued payload at consume time, not at enqueue time. With
+# `CELERY_TASK_ACKS_LATE = True` and a persistent broker, a task enqueued
+# before this migration deploys but consumed after it lands writes a fresh
+# `organizations.`-prefixed row this backfill already ran past. Drain the
+# audit Celery queue before deploying this migration, or re-run it afterward
+# -- it is idempotent.
 from __future__ import annotations
 
 from django.db import migrations
 from django.db.models import Value
-from django.db.models.functions import Replace
+from django.db.models.functions import Concat, Substr
 
 
 _OLD_PREFIX = "organizations."
@@ -45,15 +53,21 @@ _NEW_PREFIX = "tenancy."
 
 def backfill_subject_type_namespace_forward(apps, schema_editor) -> None:
     Audit = apps.get_model("audit", "Audit")
+    # Anchored at the prefix -- unlike `Replace`, which rewrites every
+    # occurrence of `_OLD_PREFIX` in `subject_type` wherever it appears, this
+    # only ever touches the leading `len(_OLD_PREFIX)` characters (guaranteed
+    # to be `_OLD_PREFIX` by the `startswith` filter), leaving the remainder
+    # of the string -- including any later, coincidental occurrence of the
+    # same substring -- untouched.
     Audit.objects.filter(subject_type__startswith=_OLD_PREFIX).update(
-        subject_type=Replace("subject_type", Value(_OLD_PREFIX), Value(_NEW_PREFIX))
+        subject_type=Concat(Value(_NEW_PREFIX), Substr("subject_type", len(_OLD_PREFIX) + 1))
     )
 
 
 def backfill_subject_type_namespace_backward(apps, schema_editor) -> None:
     Audit = apps.get_model("audit", "Audit")
     Audit.objects.filter(subject_type__startswith=_NEW_PREFIX).update(
-        subject_type=Replace("subject_type", Value(_NEW_PREFIX), Value(_OLD_PREFIX))
+        subject_type=Concat(Value(_OLD_PREFIX), Substr("subject_type", len(_NEW_PREFIX) + 1))
     )
 
 

@@ -20,16 +20,16 @@ from __future__ import annotations
 
 from django.http import HttpRequest
 
+from common.constants import ACTIVE_ORG_HEADER
 from tenancy.models import Organization
 
 
-#: Header name used to select the active organization for a request. Mirrors
-#: ``common.utils.view_utils.ACTIVE_ORG_HEADER`` — kept as a separate constant
-#: here (rather than imported) so this module has no dependency on
-#: ``common.utils.view_utils``, which is DRF-specific and imports
+#: Header name used to select the active organization for a request. Aliased
+#: from ``common.constants.ACTIVE_ORG_HEADER`` (a DRF-free module) rather than
+#: from ``common.utils.view_utils``, which is DRF-specific and imports
 #: ``rest_framework``; this retriever must stay importable from plain Django
 #: request-handling code with no DRF in the import chain.
-ORGANIZATION_ID_HEADER = "X-Organization-Id"
+ORGANIZATION_ID_HEADER = ACTIVE_ORG_HEADER
 
 
 def retrieve_by_x_organization_id(request: HttpRequest) -> Organization | None:
