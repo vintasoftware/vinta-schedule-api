@@ -101,6 +101,20 @@ Carry-forward facts for later phases:
 
 ### Phase 1b — Content types, `audit.subject_type` backfill, retriever, seeded-DB path
 
+- **Commits**: `0196b1e` (implement, Tier 3) · `d9a1373` (review fixes, fixer Tier 2)
+- **Review**: reviewer Tier 4 (plan override). **Two BLOCKERs**, both fixed:
+  1. *The seeded-DB command would have corrupted Phase 1c.* Its `UPDATE django_migrations SET app='tenancy' WHERE app='organizations'` was unqualified. Phase 1c installs the package's Django app, which records its own rows under the label `organizations` — so from that point the command would rewrite the **package's** applied history onto `tenancy` and the next `migrate` would re-run `organizations.0001_initial` against existing tables. Now carries two independent guards: the `UPDATE` is scoped to migration names computed from the on-disk `tenancy` graph below `0023_`, and the command raises `CommandError` when `apps.is_installed("organizations")`. Both tested.
+  2. *The content-type collision path orphaned admin history and the reverse manufactured it.* Deleting the old content-type row cascades `SET_NULL` onto `django_admin_log.content_type_id`; and the reverse relabelled rows back, after which `post_migrate`'s `create_contenttypes` recreated fresh `tenancy` rows, so forward → reverse → forward destroyed the originals. Fixed by **inverting the merge** so the original row survives with its id — which makes the collision branch converge with the no-collision branch and turns the reverse into an exact, lossless undo. Verified against real Postgres (ids 21–24 preserved, freshly-recreated 85–88 discarded).
+- **Gate**: ruff clean, `makemigrations --check` no changes, mypy 379 (baseline), full suite **5479 passed / 0 failed**.
+
+Carry-forward facts:
+
+- **`audit.subject_type`'s rewrite is now prefix-anchored** (`Concat(Value(...), Substr(...))`, not `Replace`), so only the leading occurrence moves. A test pins `"organizations.Foo.organizations.Bar"` → `"tenancy.Foo.organizations.Bar"`.
+- **In-flight Celery audit tasks can still write stale rows.** `audit/tasks.py::persist_audit_record` rebuilds `subject_type` from a queued payload, so a task enqueued before deploy and consumed after the migration writes a fresh `organizations.`-prefixed row. With `CELERY_TASK_ACKS_LATE=True` that window is real. Documented in the migration docstring: drain the audit queue before deploying, or re-run the (idempotent) migration afterwards.
+- **`common/org_retrievers.py` ships tested but unwired.** Phase 1c registers it in `ORGANIZATION_RETRIEVERS`. Its `X-Organization-Id` constant now lives in `common/constants.py`, shared with `common/utils/view_utils.py` and therefore with the OpenAPI schema, so the wire contract cannot drift.
+- **The retriever returns `None` on an unknown id where the package's `retrieve_by_http_header` raises `OrganizationNotFoundError`.** Deliberate: `TenantScopedViewMixin` already owns the 403 for "header names an organization you are not a member of", and the package middleware is deliberately not installed. Phase 1c/2b should not "fix" this.
+- **Seeded databases need `manage.py rename_organizations_migration_history`.** Documented in `README.md` under "Upgrading past the tenancy rename". Deliberately **not** wired into `render_build.sh` — that is a deploy-ordering decision above this phase.
+
 - **Branch**: `plan/vinta-django-orgs-migration/phase-1b` off `phase-1a`
 - **Scope**: re-scoped per the note above — Phase 1a already did the 72-reference migration-graph rewrite (mandatory there: `MigrationLoader.build_graph()` raised `NodeNotFoundError` without it), and the swappable settings stay deferred to Phase 1c. This phase shipped the five items below.
 - **Gate**: `ruff check` clean, `ruff format --check` clean, `manage.py check --deploy` clean, `makemigrations --check` reports no pending model changes, `mypy` **379 errors** (baseline, unchanged), full suite **passed, 0 failed** (`pytest -n auto`; the new tests in this phase add to the baseline count).
