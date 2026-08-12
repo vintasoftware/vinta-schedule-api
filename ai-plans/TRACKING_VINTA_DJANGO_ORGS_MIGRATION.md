@@ -48,8 +48,8 @@ Verified after fixing: host surface and container surface both load Django and b
 | Phase | Title | Impl tier | Review override | Status | Branch | Base | PR |
 |---|---|---|---|---|---|---|---|
 | 0 | Bind the organization at every unscoped call site | 3 | reviewer 4 | ✅ done | `plan/vinta-django-orgs-migration/phase-0` | `plan-vinta-django-orgs-migration` | see below |
-| 1a | Install the package and rename our app to `tenancy` | 2 | — | ⏳ pending | — | phase-0 | — |
-| 1b | Move the migration graph, content types, swappable settings | 3 | reviewer 4 | ⏳ pending | — | phase-1a | — |
+| 1a | Rename our app to `tenancy` (package app deferred to 1c) | 2 | reviewer 4 (escalated) | ✅ done | `plan/vinta-django-orgs-migration/phase-1a` | phase-0 | see below |
+| 1b | Content types, `audit.subject_type` backfill, retriever, seeded-DB path | 3 | reviewer 4 | ⏳ pending (re-scoped) | — | phase-1a | — |
 | 1c | Unwind the composite PK, subclass abstract bases, backfill slugs | 4 | reviewer 4, fixer 3 | ⏳ pending | — | phase-1b | — |
 | 2a | Flip `calendar_integration` onto the mixin and safe relations | 4 | reviewer 4 | ⏳ pending | — | phase-1c | — |
 | 2b | Flip the remaining scoped models | 3 | reviewer 4 | ⏳ pending | — | phase-2a | — |
@@ -79,7 +79,12 @@ Carry-forward facts for later phases:
 
 **Verification note for every later phase:** `pytest.ini` sets a 10-second per-test timeout. Running any two test suites (or a test suite alongside a file-scanning subagent) concurrently causes unrelated tests to fail spuriously with `Failed: Timeout (>10.0s)`. Several Phase 0 "failures" were traced to exactly this. Run verification serially on an otherwise idle machine, and re-run any failure alone before believing it.
 
-### Phase 1a — Install the package and rename our app to `tenancy`
+### Phase 1a — Rename our app to `tenancy`
+
+- **Branch**: `plan/vinta-django-orgs-migration/phase-1a` off `phase-0`
+- **Commits**: `0970703` (implement, Tier 2→Sonnet) · `e6fce74` (review fixes, fixer Tier 2)
+- **Review**: reviewer **Tier 4 — escalated by the conductor** from the Tier 3 default, because the phase deviated three times from its brief (rewrote migration content, pulled Phase 1b's swappable settings forward, and monkeypatched `sys.modules`). The escalation found the BLOCKER below plus the structural fix that removed two of the three deviations entirely.
+- **Scope change**: the package's *Django app* installation moved to Phase 1c. The reviewer established it had **zero consumers** in this phase (nothing in the repo imports `vinta-django-orgs` yet) and was the sole root cause of the other two deviations. The `vinta-django-orgs` distribution stays in `pyproject.toml`; only the app installation moved. Phase 1a is therefore a pure rename, as originally intended. The plan file was amended to match what shipped.
 
 **Review fixes applied**: removed the package's Django app installation and its fallout (`SHARED_SCHEMA_ORGANIZATIONS`, `ORGANIZATION_MODEL`/`ORGANIZATION_MEMBERSHIP_MODEL`, the `sys.modules["organizations.admin"]` stub and `common/vendor_stubs/`) — deferred to Phase 1c, which is the first phase that actually needs the package's abstract bases; restored two sed-damage spots (`common/organization_context.py`'s docstring example, `tenancy/migrations/0002_initial.py`'s `related_name`); pinned `db_table` on `OrganizationTier` / `SubscriptionPlan` in `tenancy/migrations/0001_initial.py` for consistency with `Organization` / `OrganizationMembership`; added the missing `makemigrations --check` assertion to `tenancy/tests/test_app_label.py`; fixed `AGENTS.md` / `docs/glossary.md` stale `organizations/` references; recorded the `audit.subject_type` namespace split (see below) and the seeded-database migration gap as carry-forwards.
 
@@ -96,7 +101,13 @@ Carry-forward facts for later phases:
 
 ## Current phase
 
-Phase 1a — review findings applied by fixer; outer gate green (see above). Ready for integration.
+Phase 1b — **re-scoped**. Phase 1a already did the migration-graph rewrite (it was mandatory: `MigrationLoader.build_graph()` raised `NodeNotFoundError` without it), and the swappable settings moved to Phase 1c. What remains for 1b:
+
+1. `django_content_type` / `auth_permission` data migration (`organizations` → `tenancy`), idempotent.
+2. The `audit.subject_type` backfill (see the Phase 1a carry-forward above).
+3. `common/org_retrievers.py::retrieve_by_x_organization_id` — `SHARED_SCHEMA_ORGANIZATIONS` is not set until Phase 1c, so this phase writes the retriever without wiring it.
+4. A decision and mechanism for seeded databases (`UPDATE django_migrations SET app = 'tenancy' WHERE app = 'organizations'` vs. requiring a fresh DB), plus its acceptance test.
+5. A final audit pass over in-migration references for anything Phase 1a's sweep missed.
 
 ## Deferred phases
 
