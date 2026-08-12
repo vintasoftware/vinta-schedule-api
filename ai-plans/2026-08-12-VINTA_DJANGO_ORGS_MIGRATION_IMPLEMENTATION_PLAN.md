@@ -237,36 +237,40 @@ Acceptance: `grep -rn "from organizations" --include="*.py" tenancy/ calendar_in
 
 ---
 
-### Phase 1b — Move the migration graph and content types
+### Phase 1b — Content types, the audit namespace split, the retriever, and the seeded-database migration path
 
-**Goal**: Django's migration state and `django_content_type` agree that our models live in `tenancy`.
+**Goal**: Django's `django_content_type` / `auth_permission` state agrees our models live in `tenancy`; the `audit.subject_type` split Phase 1a's rename caused is repaired; the `X-Organization-Id` retriever exists (unwired); a database seeded before this branch can still `migrate` cleanly.
 
 **Feature flag**: none.
+
+**Re-scoped from the original text below.** Phase 1a's migration-graph rewrite (this phase's original change 1: rewriting the 72 in-migration `organizations.` references across 79 migrations) turned out to be **mandatory for Phase 1a itself** — `MigrationLoader.build_graph()` raises `NodeNotFoundError` on a repo where the app is renamed but its own migrations still declare `dependencies = [('organizations', ...)]` against a graph that no longer has an `organizations` app. Phase 1a therefore did that rewrite as part of its own change, and this phase's remaining scope is the five items below. See `ai-plans/TRACKING_VINTA_DJANGO_ORGS_MIGRATION.md`'s "Current phase" section for the re-scope note and the Phase 1a carry-forwards it responds to.
 
 **Note**: `ORGANIZATION_MODEL` / `ORGANIZATION_MEMBERSHIP_MODEL` and `SHARED_SCHEMA_ORGANIZATIONS` are **not** set in this phase — Phase 1c owns them, bundled with installing the package's Django app (see that phase's Changes list and the Phase 1a fixer note recorded in the tracking file). Setting a swappable-model target without the app installed to resolve it exercises nothing, so the two move together.
 
 Changes:
 
-1. Rewrite the 72 in-migration `organizations.` references across the 79 migrations that carry them. `migrations.swappable_dependency(...)` calls, if the autodetector requires any, follow once `Organization` actually declares `swappable = "ORGANIZATION_MODEL"` (Phase 1c reparents it onto `AbstractOrganization`) — re-check this step against the autodetector's actual output rather than assuming it applies here.
-2. Data migration: update `django_content_type.app_label` from `organizations` to `tenancy` for our models, and repoint the `auth_permission` rows that reference them. Idempotent — matches on the old label and no-ops if already moved.
+1. **Content-type / permission data migration** (`tenancy/migrations/0023_move_content_types_to_tenancy.py`): update `django_content_type.app_label` from `organizations` to `tenancy` for the app's four models (`Organization`, `OrganizationMembership`, `OrganizationInvitation`, `OrganizationBranding`), and repoint the `auth_permission` rows that reference them. Idempotent both directions. Two cases, both handled: **no collision** (no `tenancy`-labelled row yet for a model) relabels the existing row in place, so every FK stays valid at the same id with zero further work; **collision** (both an `organizations`- and a `tenancy`-labelled row already exist — the shape produced by a `migrate` run against a database while the app was resolvable under both labels) merges the old row into the surviving `tenancy` one: a duplicate-codename permission is merged (its group/user grants re-pointed, the old permission row deleted), a permission with no codename match is simply re-pointed, and the old, now-empty content type row is deleted last. `organizationtier` / `subscriptionplan` (models deleted in `0015_remove_subscriptionplan_tier_and_more.py`) and `organizationsite` (the package's own model, not installed until Phase 1c) are explicitly out of scope. Reverse is best-effort per the "Pre-launch posture" Guiding Decision: it relabels back exactly in the no-collision case and recreates a fresh `organizations`-labelled row (new id) in the collision case rather than raising.
+2. **Audit `subject_type` backfill** (`audit/migrations/0002_backfill_subject_type_namespace.py`): `audit/services.py::AuditService.subject_from_instance` persists `subject_type=f"{meta.app_label}.{instance.__class__.__name__}"`. Every write from `tenancy/services.py`, `tenancy/views.py`, and `public_api/mutations.py` stored `organizations.*` before Phase 1a's app rename and stores `tenancy.*` after it — `AuditRepository.query()` filters on that exact string, so audit history silently splits into two namespaces the moment Phase 1a ships, and pre-rename rows fall out of every subject-type-filtered query. Idempotent data migration, paired with change 1's content-type migration in the same pass: `UPDATE audit_audit SET subject_type = replace(subject_type, 'organizations.', 'tenancy.') WHERE subject_type LIKE 'organizations.%'` (table/column verified: `audit_audit.subject_type`, `character varying(255)`; every `subject_from_instance` caller across `tenancy`, `public_api`, `payments`, `calendar_integration`, and `legal` passes an instance whose app label is one of those five — never `organizations` — so `organizations.` cannot collide with a legitimately-prefixed value from any other app). Carried forward from the Phase 1a review.
 3. Write `common/org_retrievers.py::retrieve_by_x_organization_id`, reading the header by integer PK. Not yet registered in `ORGANIZATION_RETRIEVERS` (that list lives inside `SHARED_SCHEMA_ORGANIZATIONS`, created in Phase 1c) and not yet consulted by anything — `TenantScopedViewMixin` starts using it in Phase 2b.
 4. Add `OrganizationMiddleware` to `MIDDLEWARE`? **No** — deliberately omitted. Context binding happens in `TenantScopedViewMixin`, after authentication. Recorded here because its absence is a decision, not an oversight.
-5. **Audit `subject_type` backfill.** `audit/services.py::AuditService.subject_from_instance` persists `subject_type=f"{meta.app_label}.{instance.__class__.__name__}"`. Every write from `tenancy/services.py`, `tenancy/views.py`, and `public_api/mutations.py` stored `organizations.*` before Phase 1a's app rename and stores `tenancy.*` after it — `AuditRepository.query()` filters on that exact string, so audit history silently splits into two namespaces the moment Phase 1a ships, and pre-rename rows fall out of every subject-type-filtered query. Add an idempotent data migration (paired with change 2's content-type migration, same `add-migration` pass): `UPDATE audit SET subject_type = replace(subject_type, 'organizations.', 'tenancy.') WHERE subject_type LIKE 'organizations.%'`. Idempotent — matches on the old prefix and no-ops if already moved. Carried forward from the Phase 1a review; see `ai-plans/TRACKING_VINTA_DJANGO_ORGS_MIGRATION.md`.
+5. **Seeded-database migration path.** A database created before this branch has `django_migrations` rows keyed `('organizations', '0001_initial')` … `('0022_...')`. After the rename, `manage.py migrate` calls `loader.check_consistent_history(connection)` before computing any plan, and that raises `InconsistentMigrationHistory` — some already-applied migration (in `audit`, `calendar_integration`, `payments`, `public_api`, or `webhooks`) now has an unapplied dependency, because the `tenancy` migrations its graph edge points at are recorded under the old label. **Chose option (a)**: a management command, `python manage.py rename_organizations_migration_history` (`tenancy/management/commands/`), run once before `migrate` against any pre-branch database — `UPDATE django_migrations SET app = 'tenancy' WHERE app = 'organizations'`, idempotent, with a `--dry-run` flag. **Why a command and not a migration**: a migration cannot fix its own app's identity — the loader decides what is pending by reading `django_migrations` *before* running anything, so a `RunPython` step inside the `tenancy` graph would never get a chance to execute; the loader is already stuck on the inconsistency first. Operator runbook: run the command once against a pre-branch database, then `migrate` as normal.
+6. Final audit pass over `*/migrations/*.py` for any remaining `organizations` → `tenancy` substitution that landed on something other than an app-label reference (`related_name`, `related_query_name`, `verbose_name`, index/constraint names, permission codenames, help text) or a raw-SQL literal table name that should have stayed `organizations_*`. Result: **none found** beyond the one already fixed and recorded in the Phase 1a review (`related_name='organizations'` restored on `tenancy/migrations/0002_initial.py`'s `OrganizationTier` FK).
 
 Spec use-case: shared scaffolding — no use-case yet.
 
 Tests:
-- **Integration**: `tenancy/tests/test_content_type_migration.py` — the data migration is idempotent across two runs and leaves no `organizations`-labelled content type for our models.
-- **Integration**: `common/tests/test_org_retrievers.py` — the retriever resolves a valid header, returns `None` on a missing or non-integer one, and does not raise on an unknown PK.
-- **Integration**: `audit/tests/test_subject_type_migration.py` — a pre-rename `Audit` row with `subject_type="organizations.Organization"` (and similar) becomes `"tenancy.Organization"` after the migration, re-running the migration changes nothing, and a row that never had the `organizations.` prefix is left untouched.
+- **Integration**: `tenancy/tests/test_content_type_migration.py` — no-collision relabel, collision merge (permission repoint, group/user grant re-pointing, duplicate-codename deletion), idempotency in both cases, and the reverse (exact undo in the no-collision case, no-op when an `organizations` row already exists).
+- **Integration**: `audit/tests/test_subject_type_migration.py` — every affected subject type is rewritten, the migration is idempotent, unrelated `subject_type` values (including one that merely contains the substring `organizations` without the exact prefix) are untouched, and reverse round-trips. Expected values are pinned as literals, not derived from the `Replace` expression under test.
+- **Integration**: `common/tests/test_org_retrievers.py` — the retriever resolves a valid header, returns `None` on a missing, empty, or non-integer header, and returns `None` (never raises) on an unknown PK.
+- **Integration**: `tenancy/tests/test_seeded_database_migration_path.py` — builds the pre-rename state by relabelling the test database's own applied `tenancy` migration rows back onto `organizations`, proves `loader.check_consistent_history` then raises `InconsistentMigrationHistory` (the real failure mode), runs the fix command, and proves `migrate` is a clean no-op afterward (empty plan, no raise, `check_consistent_history` passes) — plus the "from zero" case (the test database itself, built by `migrate` from empty before any test runs) and the command's own idempotency and `--dry-run` behavior.
 
-**Suggested AI model**: Tier 3. Migration-graph surgery across 79 files with cross-app dependencies; the autodetector's complaints require reading the graph, not pattern-matching.
+**Suggested AI model**: Tier 3.
 
-**Review models**: reviewer Tier 4 — a wrong `swappable_dependency` or a missed content-type row produces a migration graph that applies cleanly on an empty database and fails on a populated one, which is the failure mode CI is least likely to catch.
+**Review models**: reviewer Tier 4 — a missed content-type row or a wrong seeded-database fix produces a migration graph that applies cleanly on an empty database and fails on a populated one, which is the failure mode CI is least likely to catch.
 
-**Reusable skills**: `add-migration` — the content-type data migration and the graph rewrite both go through it.
+**Reusable skills**: `add-migration` — the content-type and audit-namespace data migrations both go through it.
 
-Acceptance: `migrate` runs clean from zero on an empty database *and* from the pre-rename state on a seeded one; `makemigrations --check` reports nothing pending; the suite is green.
+Acceptance: `migrate` runs clean from zero on an empty database *and* from the pre-rename state on a seeded one (via the fix command); `makemigrations --check` reports nothing pending; the suite is green.
 
 ---
 
@@ -528,13 +532,12 @@ Acceptance: the grep in change 4 returns nothing outside migrations, the suite i
 - 367 import sites and 223 string references across `calendar_integration`, `payments`, `audit`, `webhooks`, `public_api`, `users`, `accounts`, `common`
 - `@tenancy/tests/test_app_label.py` (new)
 
-**Phase 1b**
-- [vinta_schedule_api/settings/base.py](vinta_schedule_api/settings/base.py)
-- 72 in-migration references across 79 migrations in `calendar_integration`, `payments`, `audit`, `webhooks`, `public_api`, `users`
-- `@tenancy/migrations/00XX_move_content_types.py` (new)
-- `@audit/migrations/00XX_backfill_subject_type_namespace.py` (new)
+**Phase 1b** (re-scoped — see the phase entry's "Re-scoped from the original text below" note; the 72 in-migration references across 79 migrations moved into Phase 1a's own change, out of necessity)
+- `@tenancy/migrations/0023_move_content_types_to_tenancy.py` (new)
+- `@audit/migrations/0002_backfill_subject_type_namespace.py` (new)
 - `@common/org_retrievers.py` (new)
-- `@tenancy/tests/test_content_type_migration.py`, `@common/tests/test_org_retrievers.py`, `@audit/tests/test_subject_type_migration.py` (new)
+- `@tenancy/management/commands/rename_organizations_migration_history.py` (new)
+- `@tenancy/tests/test_content_type_migration.py`, `@common/tests/test_org_retrievers.py`, `@audit/tests/test_subject_type_migration.py`, `@tenancy/tests/test_seeded_database_migration_path.py` (new)
 
 **Phase 1c**
 - [vinta_schedule_api/settings/base.py](vinta_schedule_api/settings/base.py) — install the package's app, `ORGANIZATION_MODEL` / `ORGANIZATION_MEMBERSHIP_MODEL`, `SHARED_SCHEMA_ORGANIZATIONS`, admin double-registration fix
