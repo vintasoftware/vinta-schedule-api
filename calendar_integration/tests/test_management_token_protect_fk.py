@@ -121,8 +121,8 @@ def test_delete_organization_cascade_with_member_token_succeeds(
 
     assert not Organization.objects.filter(pk=organization.pk).exists()
     assert not OrganizationMembership.objects.filter(pk=membership.pk).exists()
-    assert not CalendarManagementToken.objects.filter(pk=token.pk).exists()
-    assert not Calendar.objects.filter(pk=calendar.pk).exists()
+    assert not CalendarManagementToken.original_manager.filter(pk=token.pk).exists()
+    assert not Calendar.original_manager.filter(pk=calendar.pk).exists()
 
 
 @pytest.mark.django_db(transaction=True)

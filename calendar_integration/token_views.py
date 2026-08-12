@@ -76,7 +76,10 @@ class TokenCalendarEventViewSet(TokenAuthenticationMixin, NoListVintaScheduleMod
     """
 
     serializer_class = CalendarEventSerializer
-    queryset = CalendarEvent.objects.all()
+    # ``unscoped()``, not ``all()``: evaluated at import time, where no
+    # organization is bound. ``get_queryset()`` narrows to the token's
+    # organization, which is the tenant boundary for a token-authenticated read.
+    queryset = CalendarEvent.objects.unscoped()
     authentication_classes = tuple()  # Disable default authentication - we handle it manually
     permission_classes = tuple()  # Disable default permissions - we handle it manually
 

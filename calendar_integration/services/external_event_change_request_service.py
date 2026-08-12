@@ -207,8 +207,7 @@ class ExternalEventChangeRequestService:
         ``transaction.atomic()`` block so the stale-mark and the new-PENDING
         creation are a single unit.
         """
-        ExternalEventChangeRequest.objects.filter(
-            organization_id=event.organization_id,
+        ExternalEventChangeRequest.objects.filter_by_organization(event.organization_id).filter(
             event=event,
             status=ExternalEventChangeRequestStatus.PENDING,
         ).update(status=ExternalEventChangeRequestStatus.STALE)
@@ -256,8 +255,8 @@ class ExternalEventChangeRequestService:
         # Member-attendees: EventAttendance rows for this event with a non-NULL membership
         # that is ACTIVE (matching the admin query which filters is_active=True).
         attendee_user_ids = (
-            EventAttendance.objects.filter(
-                organization_id=organization_id,
+            EventAttendance.objects.filter_by_organization(organization_id)
+            .filter(
                 event_fk_id=request.event_fk_id,
                 membership_user_id__isnull=False,
                 membership__is_active=True,
@@ -510,12 +509,15 @@ class ExternalEventChangeRequestService:
         if request.event_fk_id is None:
             return False
 
-        return EventAttendance.objects.filter(
-            organization_id=request.organization_id,
-            event_fk_id=request.event_fk_id,
-            membership_user_id=membership.user_id,
-            membership__is_active=True,
-        ).exists()
+        return (
+            EventAttendance.objects.filter_by_organization(request.organization_id)
+            .filter(
+                event_fk_id=request.event_fk_id,
+                membership_user_id=membership.user_id,
+                membership__is_active=True,
+            )
+            .exists()
+        )
 
     def approve(
         self,

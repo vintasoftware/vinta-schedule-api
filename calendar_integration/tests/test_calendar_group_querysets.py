@@ -114,7 +114,7 @@ class TestCalendarGroupBookableInRanges(TestCase):
     def _bookable(self, ranges):
         return list(
             CalendarGroup.objects.filter_by_organization(
-                organization_id=self.organization.id
+                self.organization.id
             ).only_groups_bookable_in_ranges(ranges)
         )
 

@@ -33,8 +33,8 @@ class WebhookAnalyticsService:
         """
         start_time = datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(hours=hours_back)
 
-        events_qs = CalendarWebhookEvent.objects.filter(
-            organization=self.organization, created__gte=start_time
+        events_qs = CalendarWebhookEvent.objects.filter_by_organization(self.organization).filter(
+            created__gte=start_time,
         )
 
         total_events = events_qs.count()
@@ -109,8 +109,8 @@ class WebhookAnalyticsService:
         start_time = datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(hours=hours_back)
 
         processed_events = (
-            CalendarWebhookEvent.objects.filter(
-                organization=self.organization,
+            CalendarWebhookEvent.objects.filter_by_organization(self.organization)
+            .filter(
                 created__gte=start_time,
                 processing_status=IncomingWebhookProcessingStatus.PROCESSED,
                 processed_at__isnull=False,
@@ -162,8 +162,8 @@ class WebhookAnalyticsService:
         start_time = datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(hours=hours_back)
 
         return (
-            CalendarWebhookEvent.objects.filter(
-                organization=self.organization,
+            CalendarWebhookEvent.objects.filter_by_organization(self.organization)
+            .filter(
                 created__gte=start_time,
                 processing_status=IncomingWebhookProcessingStatus.FAILED,
             )
@@ -216,8 +216,8 @@ class WebhookAnalyticsService:
         now = datetime.datetime.now(tz=datetime.UTC)
         expiring_threshold = now + datetime.timedelta(hours=24)
 
-        subscriptions_qs = CalendarWebhookSubscription.objects.filter(
-            organization=self.organization
+        subscriptions_qs = CalendarWebhookSubscription.objects.filter_by_organization(
+            self.organization
         )
 
         # Basic counts
@@ -262,9 +262,13 @@ class WebhookAnalyticsService:
         """
         cutoff_date = datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=days_to_keep)
 
-        deleted_count, _ = CalendarWebhookEvent.objects.filter(
-            organization=self.organization, created__lt=cutoff_date
-        ).delete()
+        deleted_count, _ = (
+            CalendarWebhookEvent.objects.filter_by_organization(self.organization)
+            .filter(
+                created__lt=cutoff_date,
+            )
+            .delete()
+        )
 
         if deleted_count:
             logging.getLogger(__name__).info(

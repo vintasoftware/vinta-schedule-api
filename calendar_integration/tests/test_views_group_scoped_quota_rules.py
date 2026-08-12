@@ -251,7 +251,7 @@ class TestGroupScopedQuotaRuleLifecycle:
         # Delete.
         delete_response = client.delete(_detail_url(group.id, group_slot.id, rule_id))
         assert delete_response.status_code == status.HTTP_204_NO_CONTENT
-        assert not CalendarGroupSlotQuotaRule.objects.filter(id=rule_id).exists()
+        assert not CalendarGroupSlotQuotaRule.original_manager.filter(id=rule_id).exists()
 
         # Now invisible everywhere, including the group-scoped read path.
         retrieve_after_delete = client.get(_detail_url(group.id, group_slot.id, rule_id))
@@ -533,7 +533,9 @@ class TestGroupScopedQuotaRuleNonDisclosure:
         assert other_owner_response.status_code == status.HTTP_404_NOT_FOUND
         assert stranger_response.status_code == status.HTTP_404_NOT_FOUND
         assert other_owner_response.data == stranger_response.data
-        assert not CalendarGroupSlotQuotaRule.objects.filter(group_slot_fk=group_slot).exists()
+        assert not CalendarGroupSlotQuotaRule.original_manager.filter(
+            group_slot_fk=group_slot
+        ).exists()
 
     def test_other_owner_can_see_and_manage_their_own_slot_in_the_group(
         self,

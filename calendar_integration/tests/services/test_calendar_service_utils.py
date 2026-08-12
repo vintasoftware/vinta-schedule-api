@@ -320,7 +320,7 @@ class TestSerializeEventDataInputResourceAllocations:
 
     NOTE: This test documents and pins a *known pre-existing latent bug* that the
     refactor deliberately preserves byte-for-byte. The resources comprehension
-    iterates ``Calendar`` objects (the ``Calendar.objects.filter(...)`` result) but then
+    iterates ``Calendar`` objects (the ``Calendar.original_manager.filter(...)`` result) but then
     accesses ``resource_allocation.calendar.name`` / ``.status`` as if each item were a
     ``ResourceAllocation``. A ``Calendar`` has no ``.calendar`` attribute, so when the
     resource_allocations match a RESOURCE calendar in the org, evaluating the resources

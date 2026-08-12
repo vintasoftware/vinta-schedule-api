@@ -73,7 +73,7 @@ class TestReservedCascadeBlocksTheWholeSubtree:
             service.create_resource_calendar(name="Blocked in child", description="")
 
         assert exc_info.value.remedy == "resolve_billing"
-        assert not Calendar.objects.filter(organization=child).exists()
+        assert not Calendar.objects.filter_by_organization(child).exists()
 
     def test_child_resource_calendar_update_is_blocked_by_the_roots_restriction(self):
         _root, child = _reseller_tree(BillingState.RESTRICTED)
@@ -128,7 +128,13 @@ class TestReservedCascadeBlocksTheWholeSubtree:
 
         service.create_resource_calendar(name="Still allowed in child", description="")
 
-        assert Calendar.objects.filter(organization=child, name="Still allowed in child").exists()
+        assert (
+            Calendar.objects.filter_by_organization(child)
+            .filter(
+                name="Still allowed in child",
+            )
+            .exists()
+        )
 
     def test_child_writes_are_unaffected_when_the_root_is_active(self):
         _root, child = _reseller_tree(BillingState.ACTIVE)
@@ -137,7 +143,13 @@ class TestReservedCascadeBlocksTheWholeSubtree:
 
         service.create_resource_calendar(name="Active root allows this", description="")
 
-        assert Calendar.objects.filter(organization=child, name="Active root allows this").exists()
+        assert (
+            Calendar.objects.filter_by_organization(child)
+            .filter(
+                name="Active root allows this",
+            )
+            .exists()
+        )
 
     def test_is_billing_root_restricted_resolves_the_child_against_the_root(self):
         root, child = _reseller_tree(BillingState.RESTRICTED)
@@ -193,6 +205,10 @@ class TestReservedCascadeBlocksTheWholeSubtree:
         service.initialize_without_provider(organization=nested_child)
         service.create_resource_calendar(name="Nested reseller still open", description="")
 
-        assert Calendar.objects.filter(
-            organization=nested_child, name="Nested reseller still open"
-        ).exists()
+        assert (
+            Calendar.objects.filter_by_organization(nested_child)
+            .filter(
+                name="Nested reseller still open",
+            )
+            .exists()
+        )

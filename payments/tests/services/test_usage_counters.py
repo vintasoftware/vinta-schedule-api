@@ -191,7 +191,7 @@ class TestAvailabilityWindowCounter:
 
         # The extra row genuinely exists -- this is not a test that passes because
         # the edit did nothing.
-        assert AvailableTime.objects.filter(organization_id=organization.pk).count() > 1, (
+        assert AvailableTime.objects.filter_by_organization(organization.pk).count() > 1, (
             "Expected the modified occurrence to have inserted a derived row."
         )
 
@@ -249,7 +249,7 @@ class TestAvailabilityWindowCounter:
             modified_end_time_offset=datetime.timedelta(hours=4),
         )
 
-        assert AvailableTime.objects.filter(organization_id=organization.pk).count() > 1, (
+        assert AvailableTime.objects.filter_by_organization(organization.pk).count() > 1, (
             "Expected the bulk modification to have inserted a continuation row."
         )
         assert (
@@ -348,7 +348,7 @@ class TestBlockedTimeCounter:
 
         # The extra row genuinely exists -- this is not a test that passes because
         # the edit did nothing.
-        assert BlockedTime.objects.filter(organization_id=organization.pk).count() > 1, (
+        assert BlockedTime.objects.filter_by_organization(organization.pk).count() > 1, (
             "Expected the modified occurrence to have inserted a derived row."
         )
 
@@ -406,7 +406,7 @@ class TestBlockedTimeCounter:
             modified_end_time_offset=datetime.timedelta(hours=4),
         )
 
-        assert BlockedTime.objects.filter(organization_id=organization.pk).count() > 1, (
+        assert BlockedTime.objects.filter_by_organization(organization.pk).count() > 1, (
             "Expected the bulk modification to have inserted a continuation row."
         )
         assert (

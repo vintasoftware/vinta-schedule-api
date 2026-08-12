@@ -545,7 +545,7 @@ def test_build_ics_recurring_event_with_cancelled_exception_emits_exdate():
     # Use a non-UTC timezone so DTSTART carries a TZID and we can assert EXDATE
     # uses the SAME TZID (RFC 5545 §3.8.5.1) rather than a UTC `Z` instant.
     # (Set via update so the generated start_time recomputes on reload below.)
-    CalendarEvent.objects.filter(id=event.id).update(timezone="America/New_York")
+    CalendarEvent.original_manager.filter(id=event.id).update(timezone="America/New_York")
 
     # Create a cancelled exception for 2025-06-25 08:00 UTC
     cancelled_dt = datetime.datetime(2025, 6, 25, 8, 0, tzinfo=datetime.UTC)

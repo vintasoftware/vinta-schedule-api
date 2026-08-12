@@ -174,7 +174,13 @@ class CalendarViewSet(VintaScheduleModelViewSet):
     """
 
     permission_classes = (CalendarAvailabilityPermission,)
-    queryset = Calendar.objects.all()
+    # ``unscoped()``, not ``all()``: this class attribute is evaluated at import
+    # time, where no organization is bound and the scoped manager would raise. It
+    # is only a template -- ``get_queryset()`` below draws the tenant boundary with
+    # ``filter_by_organization(...)``, which is where it belongs on a request the
+    # membership, not the ambient context, resolves. (Phase 2b binds the request's
+    # organization; even then this attribute is built before any request exists.)
+    queryset = Calendar.objects.unscoped()
     serializer_class = CalendarSerializer
     filterset_class = CalendarFilterSet
 
@@ -327,11 +333,14 @@ class CalendarViewSet(VintaScheduleModelViewSet):
                 raise PermissionDenied("Only org admins can disable a bundle calendar.")
         else:
             # Non-bundle calendars (PERSONAL/RESOURCE/VIRTUAL): owner or admin.
-            is_owner = CalendarOwnership.objects.filter(
-                calendar=calendar,
-                membership_user_id=request.user.id,
-                organization_id=calendar.organization_id,
-            ).exists()
+            is_owner = (
+                CalendarOwnership.objects.filter_by_organization(calendar.organization_id)
+                .filter(
+                    calendar=calendar,
+                    membership_user_id=request.user.id,
+                )
+                .exists()
+            )
             is_admin = request.user.is_organization_admin(calendar.organization_id)
             if not (is_owner or is_admin):
                 raise PermissionDenied(
@@ -552,11 +561,14 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         user = request.user
 
         # Check ownership - user must own this calendar
-        if not CalendarOwnership.objects.filter(
-            calendar=calendar,
-            membership_user_id=user.id,
-            organization_id=calendar.organization_id,
-        ).exists():
+        if (
+            not CalendarOwnership.objects.filter_by_organization(calendar.organization_id)
+            .filter(
+                calendar=calendar,
+                membership_user_id=user.id,
+            )
+            .exists()
+        ):
             return Response(
                 {"detail": "You do not own this calendar."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -653,9 +665,9 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         # orphan ownerships with a null membership cannot resolve an owner).
         # Use the default owner if multiple owners exist; else the first
         ownership = (
-            CalendarOwnership.objects.filter(
+            CalendarOwnership.objects.filter_by_organization(calendar.organization_id)
+            .filter(
                 calendar=calendar,
-                organization_id=calendar.organization_id,
                 membership_user_id__isnull=False,
             )
             .order_by("-is_default", "id")
@@ -885,7 +897,8 @@ class CalendarEventViewSet(VintaScheduleModelViewSet):
 
     filterset_class = CalendarEventFilterSet
     permission_classes = (CalendarEventPermission,)
-    queryset = CalendarEvent.objects.all()
+    # See ``CalendarViewSet.queryset``.
+    queryset = CalendarEvent.objects.unscoped()
     serializer_class = CalendarEventSerializer
 
     def get_queryset(self):
@@ -1183,9 +1196,9 @@ class CalendarEventViewSet(VintaScheduleModelViewSet):
         # --- Authenticate with the SOURCE calendar owner's credentials ---
         source_calendar = event.calendar
         ownership = (
-            CalendarOwnership.objects.filter(
+            CalendarOwnership.objects.filter_by_organization(source_calendar.organization_id)
+            .filter(
                 calendar=source_calendar,
-                organization_id=source_calendar.organization_id,
                 membership_user_id__isnull=False,
             )
             .order_by("-is_default", "id")
@@ -1283,7 +1296,10 @@ class BlockedTimeViewSet(VintaScheduleModelViewSet):
     """
 
     permission_classes = (CalendarAvailabilityPermission,)
-    queryset = BlockedTime.objects.all()
+    # See ``CalendarViewSet.queryset``. ``base_rows_only()`` preserves what
+    # ``BlockedTime.objects`` already applied: group-scoped rows stay invisible
+    # to this viewset (``GroupScopedBlockedTimeViewSet`` is the one that sees them).
+    queryset = BlockedTime.objects.unscoped().base_rows_only()
     serializer_class = BlockedTimeSerializer
     filterset_class = BlockedTimeFilterSet
 
@@ -1524,7 +1540,8 @@ class AvailableTimeViewSet(VintaScheduleModelViewSet):
     """
 
     permission_classes = (CalendarAvailabilityPermission,)
-    queryset = AvailableTime.objects.all()
+    # See ``BlockedTimeViewSet.queryset``.
+    queryset = AvailableTime.objects.unscoped().base_rows_only()
     serializer_class = AvailableTimeSerializer
     filterset_class = AvailableTimeFilterSet
 
@@ -2149,7 +2166,8 @@ class GroupScopedQuotaRuleViewSet(VintaScheduleModelViewSet):
     """
 
     permission_classes = (GroupScopedQuotaRulePermission,)
-    queryset = CalendarGroupSlotQuotaRule.objects.all()
+    # See ``CalendarViewSet.queryset``.
+    queryset = CalendarGroupSlotQuotaRule.objects.unscoped()
     serializer_class = GroupScopedQuotaRuleSerializer
     # PUT is intentionally unsupported: the underlying service is a partial
     # update by design (only provided fields change), so only PATCH applies.
@@ -2303,7 +2321,8 @@ class CalendarGroupViewSet(VintaScheduleModelViewSet):
     """
 
     permission_classes = (CalendarGroupPermission,)
-    queryset = CalendarGroup.objects.all()
+    # See ``CalendarViewSet.queryset``.
+    queryset = CalendarGroup.objects.unscoped()
     serializer_class = CalendarGroupSerializer
     filterset_class = CalendarGroupFilterSet
 
@@ -2587,7 +2606,8 @@ class BookingPolicyViewSet(VintaScheduleModelViewSet):
     """
 
     permission_classes = (BookingPolicyPermission,)
-    queryset = BookingPolicy.objects.all()
+    # See ``CalendarViewSet.queryset``.
+    queryset = BookingPolicy.objects.unscoped()
     serializer_class = BookingPolicySerializer
 
     def get_queryset(self):
@@ -2769,7 +2789,8 @@ class ExternalEventChangeRequestViewSet(ReadOnlyVintaScheduleModelViewSet):
     """
 
     permission_classes = (ExternalEventChangeRequestPermission,)
-    queryset = ExternalEventChangeRequest.objects.all()
+    # See ``CalendarViewSet.queryset``.
+    queryset = ExternalEventChangeRequest.objects.unscoped()
     serializer_class = ExternalEventChangeRequestSerializer
     filterset_class = ExternalEventChangeRequestFilterSet
     http_method_names = ("get", "post", "head", "options")
@@ -2907,9 +2928,9 @@ class ExternalEventChangeRequestViewSet(ReadOnlyVintaScheduleModelViewSet):
         # rather than the requester's credentials, because the requester may not own
         # the calendar (e.g. an admin approving on behalf of a team member).
         ownership = (
-            CalendarOwnership.objects.filter(
+            CalendarOwnership.objects.filter_by_organization(calendar.organization_id)
+            .filter(
                 calendar=calendar,
-                organization_id=calendar.organization_id,
                 membership_user_id__isnull=False,
             )
             .order_by("-is_default", "id")

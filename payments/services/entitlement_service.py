@@ -161,26 +161,40 @@ def _count_organization_members(context: UsageContext) -> dict[int, int]:
 
 
 def _count_resource_calendars(context: UsageContext) -> dict[int, int]:
-    """Resource/room calendars per organization, excluding soft-deleted ones."""
+    """Resource/room calendars per organization, excluding soft-deleted ones.
+
+    ``unscoped()`` for the reason given in the module note on pooled usage: a
+    usage count spans a subscription's whole reseller subtree
+    (``context.organization_ids``), which no single-organization binding can
+    express. The tenant boundary is ``organization_ids`` itself, resolved from
+    the billing root, and it is applied on the next line.
+    """
     return _group_counts_by_organization(
-        Calendar.objects.live_of_type(CalendarType.RESOURCE).filter(
-            organization_id__in=context.organization_ids
-        )
+        Calendar.objects.unscoped()
+        .live_of_type(CalendarType.RESOURCE)
+        .filter(organization_id__in=context.organization_ids)
     )
 
 
 def _count_bundle_calendars(context: UsageContext) -> dict[int, int]:
-    """Bundle calendars per organization, excluding soft-deleted ones."""
+    """Bundle calendars per organization, excluding soft-deleted ones.
+
+    ``unscoped()``: see :func:`_count_resource_calendars`.
+    """
     return _group_counts_by_organization(
-        Calendar.objects.live_of_type(CalendarType.BUNDLE).filter(
-            organization_id__in=context.organization_ids
-        )
+        Calendar.objects.unscoped()
+        .live_of_type(CalendarType.BUNDLE)
+        .filter(organization_id__in=context.organization_ids)
     )
 
 
 def _count_calendar_groups(context: UsageContext) -> dict[int, int]:
+    """Calendar groups per organization.
+
+    ``unscoped()``: see :func:`_count_resource_calendars`.
+    """
     return _group_counts_by_organization(
-        CalendarGroup.objects.filter(organization_id__in=context.organization_ids)
+        CalendarGroup.objects.unscoped().filter(organization_id__in=context.organization_ids)
     )
 
 

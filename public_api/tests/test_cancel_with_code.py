@@ -342,7 +342,7 @@ class TestCancelEventWithCodeCalendarHappyPath:
         assert result["errorCode"] is None
 
         # The event must be deleted.
-        assert not CalendarEvent.objects.filter(id=event_id).exists()
+        assert not CalendarEvent.original_manager.filter(id=event_id).exists()
 
         # The token must be gone: the event FK has on_delete=CASCADE so deleting
         # the event also removes the token.  Non-existence proves the cancel was
@@ -380,9 +380,9 @@ class TestCancelEventWithCodeCalendarHappyPath:
         assert result["success"] is True, result
 
         # Bound event is gone.
-        assert not CalendarEvent.objects.filter(id=token.event_fk_id).exists()
+        assert not CalendarEvent.original_manager.filter(id=token.event_fk_id).exists()
         # Other event is untouched.
-        assert CalendarEvent.objects.filter(id=other_event.id).exists()
+        assert CalendarEvent.original_manager.filter(id=other_event.id).exists()
 
 
 # ---------------------------------------------------------------------------
@@ -420,13 +420,15 @@ class TestCancelEventWithCodeGroupHappyPath:
         assert result["errorCode"] is None
 
         # Primary CalendarEvent must be deleted.
-        assert not CalendarEvent.objects.filter(id=event_id).exists()
+        assert not CalendarEvent.original_manager.filter(id=event_id).exists()
 
         # CalendarEventGroupSelection rows must be gone (FK cascade from event delete).
-        assert not CalendarEventGroupSelection.objects.filter(event_fk_id=event_id).exists()
+        assert not CalendarEventGroupSelection.original_manager.filter(
+            event_fk_id=event_id
+        ).exists()
 
         # Non-primary BlockedTimes with the canonical external_id prefix must be deleted.
-        assert not BlockedTime.objects.filter(
+        assert not BlockedTime.original_manager.filter(
             external_id__startswith=f"group-event-{event_id}-cal-"
         ).exists()
 
@@ -450,14 +452,14 @@ class TestCancelEventWithCodeGroupHappyPath:
         event_id = grouped_event.id
 
         # Confirm the BlockedTime exists before cancel.
-        assert BlockedTime.objects.filter(
+        assert BlockedTime.original_manager.filter(
             external_id=f"group-event-{event_id}-cal-{secondary_calendar.id}"
         ).exists()
 
         post_graphql(anon_client, CANCEL_WITH_CODE, {"input": _cancel_input(code)})
 
         # After cancel, no BlockedTime with that prefix should remain.
-        assert not BlockedTime.objects.filter(
+        assert not BlockedTime.original_manager.filter(
             external_id__startswith=f"group-event-{event_id}-cal-"
         ).exists()
 
@@ -556,7 +558,7 @@ class TestCancelEventWithCodeWrongPermission:
         assert result["errorCode"] == "NOT_PERMITTED"
 
         # Event must still exist.
-        assert CalendarEvent.objects.filter(id=existing_event.id).exists()
+        assert CalendarEvent.original_manager.filter(id=existing_event.id).exists()
 
     @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
     def test_create_only_code_returns_not_permitted(
@@ -576,7 +578,7 @@ class TestCancelEventWithCodeWrongPermission:
         assert result["errorCode"] == "NOT_PERMITTED"
 
         # Event must still exist.
-        assert CalendarEvent.objects.filter(id=existing_event.id).exists()
+        assert CalendarEvent.original_manager.filter(id=existing_event.id).exists()
 
 
 # ---------------------------------------------------------------------------
@@ -615,7 +617,7 @@ class TestCancelEventWithCodeLifecycleRejections:
         assert result["errorCode"] == "EXPIRED"
 
         # Event must still exist.
-        assert CalendarEvent.objects.filter(id=existing_event.id).exists()
+        assert CalendarEvent.original_manager.filter(id=existing_event.id).exists()
 
     @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
     def test_revoked_code_returns_revoked(
@@ -643,7 +645,7 @@ class TestCancelEventWithCodeLifecycleRejections:
         assert result["errorCode"] == "REVOKED"
 
         # Event must still exist.
-        assert CalendarEvent.objects.filter(id=existing_event.id).exists()
+        assert CalendarEvent.original_manager.filter(id=existing_event.id).exists()
 
     @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
     def test_invalid_code_returns_invalid_code(
@@ -681,7 +683,7 @@ class TestCancelEventWithCodeLifecycleRejections:
             calendar_id=calendar.id,
             event_id=existing_event.id,
         )
-        CalendarManagementToken.objects.filter(id=token.id).update(
+        CalendarManagementToken.original_manager.filter(id=token.id).update(
             used_at=datetime.datetime(2025, 1, 1, tzinfo=datetime.UTC)
         )
 
@@ -692,7 +694,7 @@ class TestCancelEventWithCodeLifecycleRejections:
         assert result["errorCode"] == "ALREADY_USED"
 
         # Event must still exist.
-        assert CalendarEvent.objects.filter(id=existing_event.id).exists()
+        assert CalendarEvent.original_manager.filter(id=existing_event.id).exists()
 
 
 # ---------------------------------------------------------------------------
@@ -745,6 +747,6 @@ class TestCancelEventWithCodeAtomicity:
         assert refreshed.used_at is None, "Token was consumed despite the delete failure"
 
         # (c) The event must still exist.
-        assert CalendarEvent.objects.filter(id=existing_event.id).exists(), (
+        assert CalendarEvent.original_manager.filter(id=existing_event.id).exists(), (
             "Event was deleted despite the delete failure rolling back"
         )

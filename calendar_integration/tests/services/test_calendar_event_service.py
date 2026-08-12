@@ -262,9 +262,13 @@ def test_delete_event(
 
     event_service.delete_event(calendar.id, created_id)
 
-    assert not CalendarEvent.objects.filter(
-        id=created_id, organization_id=calendar.organization_id
-    ).exists()
+    assert (
+        not CalendarEvent.objects.filter_by_organization(calendar.organization_id)
+        .filter(
+            id=created_id,
+        )
+        .exists()
+    )
     mock_google_adapter.delete_event.assert_called_once()
 
 
@@ -313,9 +317,13 @@ def test_transfer_event(
 
     assert new_event.calendar == target_calendar
     assert new_event.external_id == "transferred_event"
-    assert not CalendarEvent.objects.filter(
-        id=original.id, organization_id=calendar.organization_id
-    ).exists()
+    assert (
+        not CalendarEvent.objects.filter_by_organization(calendar.organization_id)
+        .filter(
+            id=original.id,
+        )
+        .exists()
+    )
 
 
 @pytest.mark.django_db
@@ -448,9 +456,13 @@ def test_create_event_still_blocks_org_wide_system_user(scoped_event_setup):
     with pytest.raises(PermissionDenied, match="Events cannot be created through the Public API"):
         facade.create_event(calendar.id, _scoped_event_input())
 
-    assert not CalendarEvent.objects.filter(
-        calendar_fk_id=calendar.id, organization_id=org.id
-    ).exists()
+    assert (
+        not CalendarEvent.objects.filter_by_organization(org.id)
+        .filter(
+            calendar_fk_id=calendar.id,
+        )
+        .exists()
+    )
 
 
 @pytest.mark.django_db
@@ -491,9 +503,13 @@ def test_create_event_blocks_scoped_token_on_non_owned_calendar(scoped_event_set
     with pytest.raises(PermissionDenied, match="Events cannot be created through the Public API"):
         facade.create_event(other_calendar.id, _scoped_event_input())
 
-    assert not CalendarEvent.objects.filter(
-        calendar_fk_id=other_calendar.id, organization_id=org.id
-    ).exists()
+    assert (
+        not CalendarEvent.objects.filter_by_organization(org.id)
+        .filter(
+            calendar_fk_id=other_calendar.id,
+        )
+        .exists()
+    )
 
 
 @pytest.mark.django_db
@@ -704,7 +720,13 @@ def test_delete_event_allows_owner_scoped_system_user_on_owned_calendar(write_al
     facade = _facade_for_system_user(system_user, org)
     facade.delete_event(calendar.id, event_id)
 
-    assert not CalendarEvent.objects.filter(id=event_id, organization_id=org.id).exists()
+    assert (
+        not CalendarEvent.objects.filter_by_organization(org.id)
+        .filter(
+            id=event_id,
+        )
+        .exists()
+    )
 
 
 # ------------------------------------------------------------------
@@ -743,7 +765,13 @@ def test_update_event_blocks_owner_scoped_system_user_on_foreign_calendar(write_
         facade.update_event(calendar_b.id, event.id, _updated_event_input())
 
     # The event must be unchanged.
-    assert CalendarEvent.objects.filter(id=event.id, organization_id=org.id).exists()
+    assert (
+        CalendarEvent.objects.filter_by_organization(org.id)
+        .filter(
+            id=event.id,
+        )
+        .exists()
+    )
 
 
 @pytest.mark.django_db
@@ -774,7 +802,13 @@ def test_delete_event_blocks_owner_scoped_system_user_on_foreign_calendar(write_
     with pytest.raises(PermissionDenied, match=r"Calendar matching query does not exist\."):
         facade.delete_event(calendar_b.id, event_id)
 
-    assert CalendarEvent.objects.filter(id=event_id, organization_id=org.id).exists()
+    assert (
+        CalendarEvent.objects.filter_by_organization(org.id)
+        .filter(
+            id=event_id,
+        )
+        .exists()
+    )
 
 
 # ------------------------------------------------------------------
@@ -827,7 +861,13 @@ def test_delete_event_allows_org_wide_system_user(write_allowance_setup):
     facade = _facade_for_system_user(system_user, org)
     facade.delete_event(calendar.id, event_id)
 
-    assert not CalendarEvent.objects.filter(id=event_id, organization_id=org.id).exists()
+    assert (
+        not CalendarEvent.objects.filter_by_organization(org.id)
+        .filter(
+            id=event_id,
+        )
+        .exists()
+    )
 
 
 # ------------------------------------------------------------------
@@ -860,9 +900,13 @@ def test_create_event_org_wide_system_user_stays_blocked(write_allowance_setup):
     with pytest.raises(PermissionDenied, match="Events cannot be created through the Public API"):
         facade.create_event(calendar.id, _scoped_event_input())
 
-    assert not CalendarEvent.objects.filter(
-        calendar_fk_id=calendar.id, organization_id=org.id
-    ).exists()
+    assert (
+        not CalendarEvent.objects.filter_by_organization(org.id)
+        .filter(
+            calendar_fk_id=calendar.id,
+        )
+        .exists()
+    )
 
 
 @pytest.mark.django_db
@@ -1098,7 +1142,13 @@ def test_update_event_org_wide_token_denied_across_tenants(db):
         facade.update_event(calendar_b.id, event_b.id, _updated_event_input())
 
     # The event must survive.
-    assert CalendarEvent.objects.filter(id=event_b.id, organization_id=org_b.id).exists()
+    assert (
+        CalendarEvent.objects.filter_by_organization(org_b.id)
+        .filter(
+            id=event_b.id,
+        )
+        .exists()
+    )
 
 
 @pytest.mark.django_db
@@ -1142,7 +1192,13 @@ def test_delete_event_org_wide_token_denied_across_tenants(db):
         facade.delete_event(calendar_b.id, event_id)
 
     # The event must survive.
-    assert CalendarEvent.objects.filter(id=event_id, organization_id=org_b.id).exists()
+    assert (
+        CalendarEvent.objects.filter_by_organization(org_b.id)
+        .filter(
+            id=event_id,
+        )
+        .exists()
+    )
 
 
 # ------------------------------------------------------------------
@@ -1246,7 +1302,13 @@ def test_delete_event_owner_scoped_audit_actor_is_system_user(write_allowance_se
         if side_effects is not None:
             side_effects.on_delete_event = original  # type: ignore[method-assign]
 
-    assert not CalendarEvent.objects.filter(id=event_id, organization_id=org.id).exists()
+    assert (
+        not CalendarEvent.objects.filter_by_organization(org.id)
+        .filter(
+            id=event_id,
+        )
+        .exists()
+    )
 
     if side_effects is not None:
         assert recorded, "on_delete_event side effect did not fire"
@@ -1332,8 +1394,8 @@ def test_reschedule_event_occurrence_creates_modified_exception(write_allowance_
     assert modified.end_time == new_end
 
     # Exactly one exception, modified (not cancelled), pointing at the new event.
-    exceptions = EventRecurrenceException.objects.filter(
-        parent_event_fk=master, organization_id=org.id
+    exceptions = EventRecurrenceException.objects.filter_by_organization(org.id).filter(
+        parent_event_fk=master,
     )
     assert exceptions.count() == 1
     exception = exceptions.get()
@@ -1388,8 +1450,8 @@ def test_reschedule_event_occurrence_is_idempotent(write_allowance_setup):
         timezone="UTC",
     )
 
-    exceptions = EventRecurrenceException.objects.filter(
-        parent_event_fk=master, organization_id=org.id
+    exceptions = EventRecurrenceException.objects.filter_by_organization(org.id).filter(
+        parent_event_fk=master,
     )
     assert exceptions.count() == 1
     exception = exceptions.get()
@@ -1431,8 +1493,8 @@ def test_cancel_event_occurrence_creates_cancellation_exception(write_allowance_
     )
     assert result is None
 
-    exceptions = EventRecurrenceException.objects.filter(
-        parent_event_fk=master, organization_id=org.id
+    exceptions = EventRecurrenceException.objects.filter_by_organization(org.id).filter(
+        parent_event_fk=master,
     )
     assert exceptions.count() == 1
     exception = exceptions.get()
@@ -1474,9 +1536,11 @@ def test_cancel_event_occurrence_is_idempotent(write_allowance_setup):
     )
 
     assert (
-        EventRecurrenceException.objects.filter(
-            parent_event_fk=master, organization_id=org.id
-        ).count()
+        EventRecurrenceException.objects.filter_by_organization(org.id)
+        .filter(
+            parent_event_fk=master,
+        )
+        .count()
         == 1
     )
 
@@ -1522,9 +1586,11 @@ def test_occurrence_methods_allow_org_wide_token(write_allowance_setup):
     )
 
     assert (
-        EventRecurrenceException.objects.filter(
-            parent_event_fk=master, organization_id=org.id
-        ).count()
+        EventRecurrenceException.objects.filter_by_organization(org.id)
+        .filter(
+            parent_event_fk=master,
+        )
+        .count()
         == 2
     )
 
@@ -1572,9 +1638,13 @@ def test_occurrence_methods_block_owner_scoped_on_foreign_master(write_allowance
             recurrence_id=_RECURRENCE_ID,
         )
 
-    assert not EventRecurrenceException.objects.filter(
-        parent_event_fk=master, organization_id=org.id
-    ).exists()
+    assert (
+        not EventRecurrenceException.objects.filter_by_organization(org.id)
+        .filter(
+            parent_event_fk=master,
+        )
+        .exists()
+    )
 
 
 @pytest.mark.django_db
@@ -1612,9 +1682,13 @@ def test_occurrence_methods_cross_tenant_master_denied():
             recurrence_id=_RECURRENCE_ID,
         )
 
-    assert not EventRecurrenceException.objects.filter(
-        parent_event_fk=master, organization_id=org_b.id
-    ).exists()
+    assert (
+        not EventRecurrenceException.objects.filter_by_organization(org_b.id)
+        .filter(
+            parent_event_fk=master,
+        )
+        .exists()
+    )
 
 
 @pytest.mark.django_db
@@ -1707,7 +1781,9 @@ def test_occurrence_methods_allowed_for_scoped_token_on_owned_bundle_calendar(
         end_time=datetime.datetime(2026, 7, 17, 15, 0, tzinfo=datetime.UTC),
         timezone="UTC",
     )
-    exc = EventRecurrenceException.objects.get(parent_event_fk=master, organization_id=org.id)
+    exc = EventRecurrenceException.objects.filter_by_organization(org.id).get(
+        parent_event_fk=master,
+    )
     assert exc.is_cancelled is False
     assert exc.modified_event_fk_id is not None
 

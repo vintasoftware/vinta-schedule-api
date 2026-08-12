@@ -259,8 +259,9 @@ def test_execute_calendar_sync_full_cycle_creates_updates_and_deletes(
     fake_adapter.get_events.assert_called_once()
 
     # new event materialized as a BlockedTime
-    new_block = BlockedTime.objects.get(
-        calendar=calendar, external_id="ext_new", organization_id=organization.id
+    new_block = BlockedTime.objects.filter_by_organization(organization.id).get(
+        calendar=calendar,
+        external_id="ext_new",
     )
     assert new_block.reason == "Brand New"
 
@@ -268,16 +269,24 @@ def test_execute_calendar_sync_full_cycle_creates_updates_and_deletes(
     existing_block.refresh_from_db()
     assert existing_block.reason == "Updated reason"
     assert (
-        BlockedTime.objects.filter(
-            calendar=calendar, external_id="ext_existing", organization_id=organization.id
-        ).count()
+        BlockedTime.objects.filter_by_organization(organization.id)
+        .filter(
+            calendar=calendar,
+            external_id="ext_existing",
+        )
+        .count()
         == 1
     )
 
     # the vanished BlockedTime survives a full sync (deletion targets CalendarEvent rows)
-    assert BlockedTime.objects.filter(
-        calendar=calendar, external_id="ext_vanished", organization_id=organization.id
-    ).exists()
+    assert (
+        BlockedTime.objects.filter_by_organization(organization.id)
+        .filter(
+            calendar=calendar,
+            external_id="ext_vanished",
+        )
+        .exists()
+    )
 
 
 @pytest.mark.django_db
@@ -341,7 +350,9 @@ def test_execute_organization_calendar_resources_import_syncs_each_resource(
     assert list(result) == [resource]
 
     # The resource calendar was upserted with the RESOURCE type ...
-    room_calendar = Calendar.objects.get(external_id="room_a", organization_id=organization.id)
+    room_calendar = Calendar.objects.filter_by_organization(organization.id).get(
+        external_id="room_a",
+    )
     assert room_calendar.calendar_type == CalendarType.RESOURCE
 
     # ... and exactly one request_calendar_sync was routed through the host for it.

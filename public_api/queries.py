@@ -728,7 +728,10 @@ class Query:
         start_time = datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(hours=hours_back)
 
         queryset = (
-            CalendarWebhookEvent.objects.filter(organization=org, created__gte=start_time)
+            CalendarWebhookEvent.objects.filter_by_organization(org)
+            .filter(
+                created__gte=start_time,
+            )
             .select_related("subscription")
             .order_by("-created")
         )

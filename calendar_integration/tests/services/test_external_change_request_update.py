@@ -346,8 +346,9 @@ def test_change_request_policy_creates_pending_request_and_leaves_event_unchange
     assert existing.description == "Original description"
 
     # Exactly one PENDING change request must exist.
-    requests = ExternalEventChangeRequest.objects.filter(
-        organization_id=organization_change_request.id,
+    requests = ExternalEventChangeRequest.objects.filter_by_organization(
+        organization_change_request.id
+    ).filter(
         event=existing,
     )
     assert requests.count() == 1
@@ -410,26 +411,33 @@ def test_change_request_policy_event_not_deleted_by_full_sync(
     service._execute_calendar_sync(calendar_sync, sync_token=None)
 
     # The intercepted event must still exist (matched_event_ids kept it from deletion).
-    assert CalendarEvent.objects.filter(
-        external_id="evt_cr_intercept",
-        organization_id=organization_change_request.id,
-    ).exists()
+    assert (
+        CalendarEvent.objects.filter_by_organization(organization_change_request.id)
+        .filter(
+            external_id="evt_cr_intercept",
+        )
+        .exists()
+    )
     intercepted.refresh_from_db()
     assert intercepted.title == "Will Not Be Mutated"
 
     # The truly vanished event must have been deleted by full-sync.
-    assert not CalendarEvent.objects.filter(
-        external_id="evt_cr_vanished",
-        organization_id=organization_change_request.id,
-    ).exists()
+    assert (
+        not CalendarEvent.objects.filter_by_organization(organization_change_request.id)
+        .filter(
+            external_id="evt_cr_vanished",
+        )
+        .exists()
+    )
 
     # One PENDING change request created for the intercepted event.
     assert (
-        ExternalEventChangeRequest.objects.filter(
-            organization_id=organization_change_request.id,
+        ExternalEventChangeRequest.objects.filter_by_organization(organization_change_request.id)
+        .filter(
             event=intercepted,
             status=ExternalEventChangeRequestStatus.PENDING,
-        ).count()
+        )
+        .count()
         == 1
     )
 
@@ -471,8 +479,9 @@ def test_change_request_policy_re_edit_marks_prior_stale_and_creates_new_pending
     service._execute_calendar_sync(calendar_sync_1, sync_token="tok-prev-1")
 
     # Confirm first PENDING request exists.
-    first_request = ExternalEventChangeRequest.objects.get(
-        organization_id=organization_change_request.id,
+    first_request = ExternalEventChangeRequest.objects.filter_by_organization(
+        organization_change_request.id
+    ).get(
         event=existing,
         status=ExternalEventChangeRequestStatus.PENDING,
     )
@@ -499,10 +508,11 @@ def test_change_request_policy_re_edit_marks_prior_stale_and_creates_new_pending
 
     # Total of 2 rows: one STALE, one PENDING.
     all_requests = list(
-        ExternalEventChangeRequest.objects.filter(
-            organization_id=organization_change_request.id,
+        ExternalEventChangeRequest.objects.filter_by_organization(organization_change_request.id)
+        .filter(
             event=existing,
-        ).order_by("id")
+        )
+        .order_by("id")
     )
     assert len(all_requests) == 2
 
@@ -576,8 +586,8 @@ def test_allow_policy_applies_edit_directly_and_creates_no_change_request(
     assert existing.description == "Edited description"
 
     # No ExternalEventChangeRequest created.
-    assert not ExternalEventChangeRequest.objects.filter(
-        organization_id=organization_allow.id,
+    assert not ExternalEventChangeRequest.objects.filter_by_organization(
+        organization_allow.id
     ).exists()
 
 

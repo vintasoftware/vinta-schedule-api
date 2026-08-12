@@ -125,13 +125,7 @@ def import_account_calendars_task(
             else:
                 account = None
         else:
-            account = (
-                GoogleCalendarServiceAccount.objects.filter_by_organization(
-                    organization_id=organization_id
-                )
-                .filter(id=account_id)
-                .first()
-            )
+            account = GoogleCalendarServiceAccount.objects.filter(id=account_id).first()
 
         if not account:
             return
@@ -162,9 +156,10 @@ def sync_calendar_task(
         if _restricted_or_skip(entitlement_service, organization):
             return
 
-        calendar_sync = CalendarSync.objects.filter_by_organization(
-            organization_id=organization_id
-        ).get_not_started_calendar_sync(calendar_sync_id)
+        # No explicit ``filter_by_organization``: the enclosing
+        # ``organization_context(organization)`` binds the same organization this
+        # task was handed, and ``.objects`` now scopes to it implicitly.
+        calendar_sync = CalendarSync.objects.get_not_started_calendar_sync(calendar_sync_id)
         if account_type == "social_account":
             social_account = SocialAccount.objects.filter(id=account_id).first()
             if social_account:
@@ -172,13 +167,8 @@ def sync_calendar_task(
             else:
                 account = None
         else:
-            account = (
-                GoogleCalendarServiceAccount.objects.filter_by_organization(
-                    organization_id=organization_id
-                )
-                .filter(id=account_id)
-                .first()
-            )
+            # See above on why no explicit organization filter.
+            account = GoogleCalendarServiceAccount.objects.filter(id=account_id).first()
 
         if not account or not calendar_sync:
             return
@@ -211,16 +201,11 @@ def import_organization_calendar_resources_task(
         if _restricted_or_skip(entitlement_service, organization):
             return
 
-        import_workflow_state = (
-            CalendarOrganizationResourcesImport.objects.filter_by_organization(
-                organization_id=organization_id
-            )
-            .filter(
-                id=import_workflow_state_id,
-                status=CalendarOrganizationResourceImportStatus.NOT_STARTED,
-            )
-            .first()
-        )
+        # See ``sync_calendar_task`` on why no explicit organization filter.
+        import_workflow_state = CalendarOrganizationResourcesImport.objects.filter(
+            id=import_workflow_state_id,
+            status=CalendarOrganizationResourceImportStatus.NOT_STARTED,
+        ).first()
 
         if not import_workflow_state:
             return
@@ -232,13 +217,8 @@ def import_organization_calendar_resources_task(
             else:
                 account = None
         else:
-            account = (
-                GoogleCalendarServiceAccount.objects.filter_by_organization(
-                    organization_id=organization_id
-                )
-                .filter(id=account_id)
-                .first()
-            )
+            # See above on why no explicit organization filter.
+            account = GoogleCalendarServiceAccount.objects.filter(id=account_id).first()
 
         if not account:
             return

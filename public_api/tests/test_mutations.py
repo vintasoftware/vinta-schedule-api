@@ -5746,7 +5746,7 @@ class TestDeleteBlockedTimeMutation:
         assert result["errorMessage"] is None
 
         # Verify row is gone from DB
-        assert not BlockedTime.objects.filter(id=blocked_time_id).exists()
+        assert not BlockedTime.original_manager.filter(id=blocked_time_id).exists()
 
     def test_delete_blocked_time_missing_id_returns_failure(self):
         """A non-existent blocked_time_id returns success=False."""
@@ -5895,7 +5895,7 @@ class TestDeleteBlockedTimeMutation:
         assert result["errorMessage"] is None
 
         # The row must be gone from the DB
-        assert not BlockedTime.objects.filter(id=blocked_time_id).exists()
+        assert not BlockedTime.original_manager.filter(id=blocked_time_id).exists()
 
     def test_delete_blocked_time_unauthenticated_denied(self):
         """An unauthenticated call (no Authorization header) is denied."""
@@ -8279,7 +8279,7 @@ class TestScopedTokenBlockedTimeWrites:
         )
 
         # No BlockedTime rows must have been created in either case
-        assert not BlockedTime.objects.filter(calendar_fk_id=calendar_b.id).exists()
+        assert not BlockedTime.original_manager.filter(calendar_fk_id=calendar_b.id).exists()
 
     # ------------------------------------------------------------------
     # updateBlockedTime — scoped happy path
@@ -8441,7 +8441,7 @@ class TestScopedTokenBlockedTimeWrites:
         assert result["success"] is True
 
         # DB row must be gone
-        assert not BlockedTime.objects.filter(id=bt_id).exists()
+        assert not BlockedTime.original_manager.filter(id=bt_id).exists()
 
     # ------------------------------------------------------------------
     # deleteBlockedTime — cross-owner not-found
@@ -8509,7 +8509,7 @@ class TestScopedTokenBlockedTimeWrites:
         assert cross_msg == missing_msg
 
         # Row must still exist — the cross-owner delete must NOT have succeeded
-        assert BlockedTime.objects.filter(id=bt_b_id).exists()
+        assert BlockedTime.original_manager.filter(id=bt_b_id).exists()
 
     # ------------------------------------------------------------------
     # blockedTimeId / calendarId mismatch — service-layer filter is load-bearing
@@ -8595,7 +8595,7 @@ class TestScopedTokenBlockedTimeWrites:
         assert "errors" not in delete_data or len(delete_data.get("errors", [])) == 0
         assert delete_data["data"]["deleteBlockedTime"]["success"] is False
         # B's row must still exist — the foreign delete must NOT have succeeded
-        assert BlockedTime.objects.filter(id=bt_b_id).exists()
+        assert BlockedTime.original_manager.filter(id=bt_b_id).exists()
 
     # ------------------------------------------------------------------
     # Org-wide token — no-regression assertions for all three verbs
@@ -8710,7 +8710,7 @@ class TestScopedTokenBlockedTimeWrites:
         assert "errors" not in data or len(data.get("errors", [])) == 0
         result = data["data"]["deleteBlockedTime"]
         assert result["success"] is True
-        assert not BlockedTime.objects.filter(id=bt_id).exists()
+        assert not BlockedTime.original_manager.filter(id=bt_id).exists()
 
     # ------------------------------------------------------------------
     # Missing resource grant — scoped token denied
@@ -9142,7 +9142,7 @@ class TestScopedTokenAvailabilityWrites:
         )
 
         # No AvailableTime rows must have been created for the cross-owner calendar
-        assert not AvailableTime.objects.filter(calendar_fk_id=calendar_b.id).exists()
+        assert not AvailableTime.original_manager.filter(calendar_fk_id=calendar_b.id).exists()
 
     # ------------------------------------------------------------------
     # updateAvailabilityWindow — scoped happy path
@@ -9307,7 +9307,7 @@ class TestScopedTokenAvailabilityWrites:
         assert result["success"] is True
 
         # DB row must be gone
-        assert not AvailableTime.objects.filter(id=at_id).exists()
+        assert not AvailableTime.original_manager.filter(id=at_id).exists()
 
     # ------------------------------------------------------------------
     # deleteAvailabilityWindow — cross-owner not-found
@@ -9373,7 +9373,7 @@ class TestScopedTokenAvailabilityWrites:
         assert cross_msg == missing_msg
 
         # Row must still exist — the cross-owner delete must NOT have succeeded
-        assert AvailableTime.objects.filter(id=at_b_id).exists()
+        assert AvailableTime.original_manager.filter(id=at_b_id).exists()
 
     # ------------------------------------------------------------------
     # batchUpdateAvailabilityWindows — scoped happy path
@@ -9684,7 +9684,7 @@ class TestScopedTokenAvailabilityWrites:
         assert "errors" not in data or len(data.get("errors", [])) == 0
         result = data["data"]["deleteAvailabilityWindow"]
         assert result["success"] is True
-        assert not AvailableTime.objects.filter(id=at_id).exists()
+        assert not AvailableTime.original_manager.filter(id=at_id).exists()
 
     def test_batch_update_availability_windows_org_wide_token_unaffected_by_guard(self):
         """An org-wide token can batch-update available times on any calendar (guard is no-op)."""
@@ -11800,7 +11800,7 @@ class TestScopedTokenCancelEvent:
             .exists()
         )
         # Recurrence rule gone (CASCADE or explicit deletion by delete_event).
-        assert not RecurrenceRule.objects.filter(id=rule_id).exists()
+        assert not RecurrenceRule.original_manager.filter(id=rule_id).exists()
 
     # ------------------------------------------------------------------
     # Single-occurrence cancel (recurrenceId set)
@@ -11852,7 +11852,7 @@ class TestScopedTokenCancelEvent:
         # Master event must still exist.
         assert _CalendarEvent.objects.filter_by_organization(org.id).filter(id=master_id).exists()
         # Recurrence rule must still exist.
-        assert RecurrenceRule.objects.filter(id=rule_id).exists()
+        assert RecurrenceRule.original_manager.filter(id=rule_id).exists()
         # A cancellation exception must have been created.
         exception = (
             EventRecurrenceException.objects.filter_by_organization(org.id)

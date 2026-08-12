@@ -194,7 +194,13 @@ def test_create_blocked_time_creates_db_row(
 
     assert bt.pk is not None
     assert bt.reason == "Focus time"
-    assert BlockedTime.objects.filter(pk=bt.pk, organization_id=organization.id).exists()
+    assert (
+        BlockedTime.objects.filter_by_organization(organization.id)
+        .filter(
+            pk=bt.pk,
+        )
+        .exists()
+    )
 
 
 @pytest.mark.django_db
@@ -217,7 +223,13 @@ def test_create_available_time_creates_db_row(
     )
 
     assert at.pk is not None
-    assert AvailableTime.objects.filter(pk=at.pk, organization_id=organization.id).exists()
+    assert (
+        AvailableTime.objects.filter_by_organization(organization.id)
+        .filter(
+            pk=at.pk,
+        )
+        .exists()
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -420,7 +432,7 @@ def test_create_recurring_blocked_time_exception_cancels_occurrence(
     # Cancelled exception returns None
     assert result is None
     # A BlockedTimeRecurrenceException should exist marking the cancelled occurrence
-    assert BlockedTimeRecurrenceException.objects.filter(
+    assert BlockedTimeRecurrenceException.original_manager.filter(
         parent_blocked_time=parent_blocked,
         is_cancelled=True,
     ).exists()
@@ -509,7 +521,7 @@ def test_create_recurring_available_time_exception_cancels_occurrence(
     # Cancelled exception returns None
     assert result is None
     # An AvailableTimeRecurrenceException should exist marking the cancelled occurrence
-    assert AvailableTimeRecurrenceException.objects.filter(
+    assert AvailableTimeRecurrenceException.original_manager.filter(
         parent_available_time=parent_available,
         is_cancelled=True,
     ).exists()
@@ -556,7 +568,7 @@ def test_create_recurring_available_time_exception_modifies_occurrence(
     assert result.start_time == modified_start
     assert result.end_time == modified_end
     # A non-cancelled exception should exist
-    assert AvailableTimeRecurrenceException.objects.filter(
+    assert AvailableTimeRecurrenceException.original_manager.filter(
         parent_available_time=parent_available,
         is_cancelled=False,
     ).exists()
@@ -611,7 +623,7 @@ def test_create_recurring_blocked_time_bulk_modification_creates_continuation(
 
     # A BlockedTimeBulkModification record should exist for the parent
     parent_blocked.refresh_from_db()
-    assert BlockedTimeBulkModification.objects.filter(
+    assert BlockedTimeBulkModification.original_manager.filter(
         parent_blocked_time=parent_blocked,
         is_bulk_cancelled=False,
     ).exists()
@@ -653,7 +665,7 @@ def test_create_recurring_blocked_time_bulk_modification_cancels_series(
     # Returns None for a cancellation
     assert result is None
     # A cancellation record must exist
-    assert BlockedTimeBulkModification.objects.filter(
+    assert BlockedTimeBulkModification.original_manager.filter(
         parent_blocked_time=parent_blocked,
         is_bulk_cancelled=True,
     ).exists()
@@ -754,7 +766,7 @@ def test_create_recurring_available_time_bulk_modification_creates_continuation(
 
     # A AvailableTimeBulkModification record should exist
     parent_available.refresh_from_db()
-    assert AvailableTimeBulkModification.objects.filter(
+    assert AvailableTimeBulkModification.original_manager.filter(
         parent_available_time=parent_available,
         is_bulk_cancelled=False,
     ).exists()
@@ -833,7 +845,7 @@ def test_create_recurring_available_time_bulk_modification_cancels_series(
     )
 
     assert result is None
-    assert AvailableTimeBulkModification.objects.filter(
+    assert AvailableTimeBulkModification.original_manager.filter(
         parent_available_time=parent_available,
         is_bulk_cancelled=True,
     ).exists()
@@ -879,7 +891,7 @@ def test_modify_recurring_blocked_time_from_date_delegates_with_not_cancelled(
     # A continuation is returned (not None) — confirms is_bulk_cancelled=False
     assert result is not None
     assert result.reason == "New reason"
-    assert BlockedTimeBulkModification.objects.filter(
+    assert BlockedTimeBulkModification.original_manager.filter(
         parent_blocked_time=parent_blocked,
         is_bulk_cancelled=False,
     ).exists()
@@ -917,7 +929,7 @@ def test_cancel_recurring_blocked_time_from_date_delegates_with_cancelled(
         modification_start_date=modification_start,
     )
 
-    assert BlockedTimeBulkModification.objects.filter(
+    assert BlockedTimeBulkModification.original_manager.filter(
         parent_blocked_time=parent_blocked,
         is_bulk_cancelled=True,
     ).exists()
@@ -959,7 +971,7 @@ def test_modify_recurring_available_time_from_date_delegates_with_not_cancelled(
 
     # A continuation is returned — confirms is_bulk_cancelled=False
     assert result is not None
-    assert AvailableTimeBulkModification.objects.filter(
+    assert AvailableTimeBulkModification.original_manager.filter(
         parent_available_time=parent_available,
         is_bulk_cancelled=False,
     ).exists()
@@ -995,7 +1007,7 @@ def test_cancel_recurring_available_time_from_date_delegates_with_cancelled(
         modification_start_date=modification_start,
     )
 
-    assert AvailableTimeBulkModification.objects.filter(
+    assert AvailableTimeBulkModification.original_manager.filter(
         parent_available_time=parent_available,
         is_bulk_cancelled=True,
     ).exists()
@@ -1035,10 +1047,11 @@ def test_batch_modify_available_times_create_operation(
     assert result[0].start_time == start
     assert result[0].end_time == end
     assert (
-        AvailableTime.objects.filter(
+        AvailableTime.objects.filter_by_organization(organization.id)
+        .filter(
             calendar=managed_calendar,
-            organization_id=organization.id,
-        ).count()
+        )
+        .count()
         == 1
     )
 
@@ -1118,7 +1131,7 @@ def test_batch_modify_available_times_delete_operation(
     )
 
     assert result == []
-    assert not AvailableTime.objects.filter(pk=existing.pk).exists()
+    assert not AvailableTime.original_manager.filter(pk=existing.pk).exists()
 
 
 @pytest.mark.django_db
@@ -1695,7 +1708,7 @@ def test_create_recurring_blocked_time_exception_modifies_future_occurrence(
     assert result.start_time == modified_start
     assert result.end_time == modified_end
     # A non-cancelled exception should exist
-    assert BlockedTimeRecurrenceException.objects.filter(
+    assert BlockedTimeRecurrenceException.original_manager.filter(
         parent_blocked_time=parent_blocked,
         is_cancelled=False,
     ).exists()
@@ -1735,7 +1748,7 @@ def test_create_recurring_blocked_time_exception_third_occurrence(
     )
 
     assert result is None
-    assert BlockedTimeRecurrenceException.objects.filter(
+    assert BlockedTimeRecurrenceException.original_manager.filter(
         parent_blocked_time=parent_blocked,
         is_cancelled=True,
     ).exists()

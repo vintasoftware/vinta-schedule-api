@@ -154,9 +154,11 @@ class TestOverLimitErrorRollsBackTheRequestTransaction:
 
         assert response.status_code == status.HTTP_201_CREATED
         assert (
-            CalendarGroup.objects.filter(
-                organization_id=organization.pk, name="written-and-kept"
-            ).count()
+            CalendarGroup.objects.filter_by_organization(organization.pk)
+            .filter(
+                name="written-and-kept",
+            )
+            .count()
             == 1
         )
 
@@ -169,9 +171,11 @@ class TestOverLimitErrorRollsBackTheRequestTransaction:
 
         assert response.status_code == status.HTTP_402_PAYMENT_REQUIRED
         assert (
-            CalendarGroup.objects.filter(
-                organization_id=organization.pk, name="written-before-the-guard"
-            ).count()
+            CalendarGroup.objects.filter_by_organization(organization.pk)
+            .filter(
+                name="written-before-the-guard",
+            )
+            .count()
             == 0
         ), (
             "The row written before the over-limit guard was committed. The exception "
@@ -214,9 +218,11 @@ class TestUnconfiguredProviderRollsBackTheRequestTransaction:
 
         assert response.status_code == status.HTTP_409_CONFLICT
         assert (
-            CalendarGroup.objects.filter(
-                organization_id=organization.pk, name="written-before-the-provider-call"
-            ).count()
+            CalendarGroup.objects.filter_by_organization(organization.pk)
+            .filter(
+                name="written-before-the-provider-call",
+            )
+            .count()
             == 0
         ), (
             "The row written before the provider call was committed. The exception "

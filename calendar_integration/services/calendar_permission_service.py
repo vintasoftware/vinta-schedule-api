@@ -140,9 +140,9 @@ class CalendarPermissionService:
 
         try:
             token = (
-                CalendarManagementToken.objects.prefetch_related("permissions")
+                CalendarManagementToken.objects.filter_by_organization(organization_id)
+                .prefetch_related("permissions")
                 .select_related("calendar", "event")
-                .filter(organization_id=organization_id)
                 .get(id=token_id, revoked_at__isnull=True)
             )
         except CalendarManagementToken.DoesNotExist as e:
@@ -173,9 +173,9 @@ class CalendarPermissionService:
             if event_id is not None:
                 # Looking for event-specific token
                 self.token = (
-                    CalendarManagementToken.objects.prefetch_related("permissions")
+                    CalendarManagementToken.objects.filter_by_organization(organization_id)
+                    .prefetch_related("permissions")
                     .select_related("calendar", "event")
-                    .filter(organization_id=organization_id)
                     .get(
                         event_fk_id=event_id,
                         membership_user_id=user.id,
@@ -185,9 +185,9 @@ class CalendarPermissionService:
             else:
                 # Looking for calendar-level token
                 self.token = (
-                    CalendarManagementToken.objects.prefetch_related("permissions")
+                    CalendarManagementToken.objects.filter_by_organization(organization_id)
+                    .prefetch_related("permissions")
                     .select_related("calendar", "event")
-                    .filter(organization_id=organization_id)
                     .get(
                         calendar_fk_id=calendar_id,
                         event_fk_id__isnull=True,

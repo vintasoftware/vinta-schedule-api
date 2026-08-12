@@ -209,11 +209,12 @@ class AvailabilityService:
         blocked_times = list(blocked_times)
         events = list(events)
 
-        available_time_windows = AvailableTime.objects.filter(
+        available_time_windows = AvailableTime.objects.filter_by_organization(
+            context.organization.id
+        ).filter(
             calendar_fk_id=calendar_id,
             start_time__gte=start_time,
             end_time__lte=end_time,
-            organization_id=context.organization.id,
         )
 
         available_time_windows_to_delete: list[int] = []
@@ -235,9 +236,8 @@ class AvailabilityService:
                 # If it overlaps, remove it from the list of blocked times
                 available_time_windows_to_delete.append(available_time.id)
 
-        AvailableTime.objects.filter(
+        AvailableTime.objects.filter_by_organization(context.organization.id).filter(
             id__in=available_time_windows_to_delete,
-            organization_id=context.organization.id,
             calendar_fk_id=calendar_id,
         ).delete()
 
@@ -311,20 +311,20 @@ class AvailabilityService:
         )
 
         # If this calendar is part of any bundles, include bundle events
-        bundle_calendars = Calendar.objects.filter(
+        bundle_calendars = Calendar.objects.filter_by_organization(calendar.organization_id).filter(
             calendar_type=CalendarType.BUNDLE,
             bundle_children=calendar,
-            organization_id=calendar.organization_id,
         )
 
         bundle_events: list[CalendarEvent] = []
         for bundle_calendar in bundle_calendars:
             # Get bundle events from the bundle calendar directly
-            bundle_calendar_events = CalendarEvent.objects.filter(
+            bundle_calendar_events = CalendarEvent.objects.filter_by_organization(
+                bundle_calendar.organization_id
+            ).filter(
                 bundle_calendar=bundle_calendar,
                 start_time__lt=end_datetime,
                 end_time__gt=start_datetime,
-                organization_id=bundle_calendar.organization_id,
             )
             # Only include bundle events that aren't already in our calendar_events
             # (to avoid counting the same event twice)
@@ -713,12 +713,14 @@ class AvailabilityService:
             raise
 
         base_qs = (
-            AvailableTime.objects.annotate_recurring_occurrences_on_date_range(
-                start_date, end_date, overlap=True
-            )
+            # ``filter_by_organization`` leads the chain: it starts from the unscoped
+            # queryset, so the calendar's own organization is the scope and no
+            # ambient binding is required. It also keeps ``AvailableTimeManager``'s
+            # base-rows-only narrowing, which ``.objects`` applied here before.
+            AvailableTime.objects.filter_by_organization(calendar.organization_id)
+            .annotate_recurring_occurrences_on_date_range(start_date, end_date, overlap=True)
             .select_related("recurrence_rule")
             .filter(
-                organization_id=calendar.organization_id,
                 calendar=calendar,
                 parent_recurring_object__isnull=True,  # Master times only
             )
@@ -901,12 +903,11 @@ class AvailabilityService:
             calendars_to_query.extend(bundle_children)
 
         base_qs = (
-            BlockedTime.objects.annotate_recurring_occurrences_on_date_range(
-                start_date, end_date, overlap=True
-            )
+            # See ``get_available_times_expanded`` on the ordering.
+            BlockedTime.objects.filter_by_organization(calendar.organization_id)
+            .annotate_recurring_occurrences_on_date_range(start_date, end_date, overlap=True)
             .select_related("recurrence_rule")
             .filter(
-                organization_id=calendar.organization_id,
                 calendar__in=calendars_to_query,
                 parent_recurring_object__isnull=True,  # Master times only
             )
@@ -1006,12 +1007,19 @@ class AvailabilityService:
         def update_exception_manager(
             parent_obj: RecurringMixin, new_recurring_obj: RecurringMixin
         ) -> None:
-            BlockedTimeRecurrenceException.objects.filter(parent_blocked_time=parent_obj).update(
-                parent_blocked_time_fk=new_recurring_obj
-            )
+            # ``unscoped()``: ``parent_blocked_time`` is an organization-safe
+            # relation, so filtering it by instance puts the parent's
+            # ``organization_id`` in the ``ON`` clause -- the tenant boundary is in
+            # the query already, and this runs from a request where nothing is bound.
+            BlockedTimeRecurrenceException.objects.unscoped().filter(
+                parent_blocked_time=parent_obj
+            ).update(parent_blocked_time_fk=new_recurring_obj)
 
         def delete_exception_manager(parent_obj: RecurringMixin) -> None:
-            BlockedTimeRecurrenceException.objects.filter(parent_blocked_time=parent_obj).delete()
+            # ``unscoped()``: see ``update_exception_manager`` above.
+            BlockedTimeRecurrenceException.objects.unscoped().filter(
+                parent_blocked_time=parent_obj
+            ).delete()
 
         modification_data = {
             "reason": modified_reason,
@@ -1097,12 +1105,17 @@ class AvailabilityService:
         def update_exception_manager(
             parent_obj: RecurringMixin, new_recurring_obj: RecurringMixin
         ) -> None:
-            AvailableTimeRecurrenceException.objects.filter(
+            # ``unscoped()``: ``parent_available_time`` is an organization-safe
+            # relation, so filtering it by instance puts the parent's
+            # ``organization_id`` in the ``ON`` clause -- the tenant boundary is in
+            # the query already, and this runs from a request where nothing is bound.
+            AvailableTimeRecurrenceException.objects.unscoped().filter(
                 parent_available_time=parent_obj
             ).update(parent_available_time_fk=new_recurring_obj)
 
         def delete_exception_manager(parent_obj: RecurringMixin) -> None:
-            AvailableTimeRecurrenceException.objects.filter(
+            # ``unscoped()``: see ``update_exception_manager`` above.
+            AvailableTimeRecurrenceException.objects.unscoped().filter(
                 parent_available_time=parent_obj
             ).delete()
 

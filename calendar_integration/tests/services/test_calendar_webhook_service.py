@@ -238,8 +238,10 @@ def test_create_calendar_webhook_subscription_google(
     assert sub.expires_at == datetime.datetime.fromtimestamp(1700000000000 / 1000, tz=datetime.UTC)
 
     # Verify it's persisted (must filter by organization per multi-tenancy contract)
-    persisted = CalendarWebhookSubscription.objects.get(
-        id=sub.id, organization=calendar.organization_id
+    persisted = CalendarWebhookSubscription.objects.filter_by_organization(
+        calendar.organization_id
+    ).get(
+        id=sub.id,
     )
     assert persisted.channel_id == "channel-abc"
 

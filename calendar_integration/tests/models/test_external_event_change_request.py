@@ -111,7 +111,7 @@ def test_str_does_not_crash_when_event_is_null(event: CalendarEvent) -> None:
     """__str__ does not crash when event_fk_id is None (historical row after event deletion)."""
     request = create_external_event_change_request(event=event)
     # Simulate a historical row where the CalendarEvent has been deleted and set to NULL.
-    ExternalEventChangeRequest.objects.filter(pk=request.pk).update(event_fk=None)
+    ExternalEventChangeRequest.original_manager.filter(pk=request.pk).update(event_fk=None)
     request.refresh_from_db()
     assert "deleted" in str(request)
     assert "ExternalEventChangeRequest" in str(request)
@@ -146,9 +146,11 @@ def test_partial_unique_constraint_allows_stale_alongside_pending(
     )
 
     assert (
-        ExternalEventChangeRequest.objects.filter(
-            organization=event.organization, event_fk_id=event.pk
-        ).count()
+        ExternalEventChangeRequest.objects.filter_by_organization(event.organization)
+        .filter(
+            event_fk_id=event.pk,
+        )
+        .count()
         == 2
     )
     assert stale.status == ExternalEventChangeRequestStatus.STALE
@@ -169,11 +171,12 @@ def test_partial_unique_constraint_allows_two_stale_for_same_event(
 
     assert stale_1.pk != stale_2.pk
     assert (
-        ExternalEventChangeRequest.objects.filter(
-            organization=event.organization,
+        ExternalEventChangeRequest.objects.filter_by_organization(event.organization)
+        .filter(
             event_fk_id=event.pk,
             status=ExternalEventChangeRequestStatus.STALE,
-        ).count()
+        )
+        .count()
         == 2
     )
 
@@ -188,8 +191,8 @@ def test_queryset_pending_filters_to_pending_only(event: CalendarEvent) -> None:
         event=event, status=ExternalEventChangeRequestStatus.STALE
     )
 
-    pending_qs = ExternalEventChangeRequest.objects.filter(
-        organization=event.organization
+    pending_qs = ExternalEventChangeRequest.objects.filter_by_organization(
+        event.organization
     ).pending()
 
     assert pending.pk in pending_qs.values_list("pk", flat=True)
@@ -217,7 +220,7 @@ def test_queryset_for_event_filters_to_event(
         event=other_event, status=ExternalEventChangeRequestStatus.STALE
     )
 
-    qs = ExternalEventChangeRequest.objects.filter(organization=organization).for_event(event)
+    qs = ExternalEventChangeRequest.objects.filter_by_organization(organization).for_event(event)
 
     pks = list(qs.values_list("pk", flat=True))
     assert req_for_event.pk in pks

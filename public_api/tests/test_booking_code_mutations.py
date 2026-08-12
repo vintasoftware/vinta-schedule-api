@@ -217,8 +217,8 @@ class TestCreateCalendarBookingCode:
     ):
         """Org token WITHOUT CALENDAR_BOOKING_CODE is rejected; no token row created."""
         system_user, token, auth_service = system_user_without_booking_code_resource
-        tokens_before = CalendarManagementToken.objects.filter(
-            organization_id=organization.id
+        tokens_before = CalendarManagementToken.objects.filter_by_organization(
+            organization.id
         ).count()
 
         response = self._post_mutation(
@@ -235,8 +235,8 @@ class TestCreateCalendarBookingCode:
         assert "don't have access" in str(data["errors"]).lower()
 
         # No new token row should have been created
-        tokens_after = CalendarManagementToken.objects.filter(
-            organization_id=organization.id
+        tokens_after = CalendarManagementToken.objects.filter_by_organization(
+            organization.id
         ).count()
         assert tokens_after == tokens_before
 
@@ -305,7 +305,9 @@ class TestCreateCalendarBookingCode:
         assert result["errorCode"] == "INVALID_CODE"
 
         # No token row must have been created for the cross-org calendar
-        assert not CalendarManagementToken.objects.filter(calendar_fk_id=other_calendar.id).exists()
+        assert not CalendarManagementToken.original_manager.filter(
+            calendar_fk_id=other_calendar.id
+        ).exists()
 
     def test_organization_id_mismatch_returns_invalid_code(
         self,
@@ -320,8 +322,8 @@ class TestCreateCalendarBookingCode:
         """
         system_user, token, auth_service = system_user_with_booking_code_resource
         other_org = baker.make(Organization, name="Other Org For Mismatch")
-        tokens_before = CalendarManagementToken.objects.filter(
-            organization_id=organization.id
+        tokens_before = CalendarManagementToken.objects.filter_by_organization(
+            organization.id
         ).count()
 
         response = self._post_mutation(
@@ -339,8 +341,8 @@ class TestCreateCalendarBookingCode:
         assert result["success"] is False
         assert result["errorCode"] == "INVALID_CODE"
 
-        tokens_after = CalendarManagementToken.objects.filter(
-            organization_id=organization.id
+        tokens_after = CalendarManagementToken.objects.filter_by_organization(
+            organization.id
         ).count()
         assert tokens_after == tokens_before
 
@@ -430,8 +432,8 @@ class TestCreateCalendarGroupBookingCode:
     ):
         """Org token WITHOUT CALENDAR_BOOKING_CODE is rejected; no token row created."""
         system_user, token, auth_service = system_user_without_booking_code_resource
-        tokens_before = CalendarManagementToken.objects.filter(
-            organization_id=organization.id
+        tokens_before = CalendarManagementToken.objects.filter_by_organization(
+            organization.id
         ).count()
 
         response = self._post_mutation(
@@ -452,8 +454,8 @@ class TestCreateCalendarGroupBookingCode:
         assert len(data["errors"]) > 0
         assert "don't have access" in str(data["errors"]).lower()
 
-        tokens_after = CalendarManagementToken.objects.filter(
-            organization_id=organization.id
+        tokens_after = CalendarManagementToken.objects.filter_by_organization(
+            organization.id
         ).count()
         assert tokens_after == tokens_before
 
@@ -524,7 +526,7 @@ class TestCreateCalendarGroupBookingCode:
         assert result["errorCode"] == "INVALID_CODE"
 
         # No token row must have been created for the cross-org group
-        assert not CalendarManagementToken.objects.filter(
+        assert not CalendarManagementToken.original_manager.filter(
             calendar_group_fk_id=other_group.id
         ).exists()
 
@@ -541,8 +543,8 @@ class TestCreateCalendarGroupBookingCode:
         """
         system_user, token, auth_service = system_user_with_booking_code_resource
         other_org = baker.make(Organization, name="Other Org For Group Mismatch")
-        tokens_before = CalendarManagementToken.objects.filter(
-            organization_id=organization.id
+        tokens_before = CalendarManagementToken.objects.filter_by_organization(
+            organization.id
         ).count()
 
         response = self._post_mutation(
@@ -565,7 +567,7 @@ class TestCreateCalendarGroupBookingCode:
         assert result["success"] is False
         assert result["errorCode"] == "INVALID_CODE"
 
-        tokens_after = CalendarManagementToken.objects.filter(
-            organization_id=organization.id
+        tokens_after = CalendarManagementToken.objects.filter_by_organization(
+            organization.id
         ).count()
         assert tokens_after == tokens_before
