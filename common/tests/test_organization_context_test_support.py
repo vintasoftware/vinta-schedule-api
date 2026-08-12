@@ -139,11 +139,23 @@ def test_records_a_violation_when_update_runs_unbound(organization, calendar_web
 
 def test_records_a_violation_when_delete_runs_unbound(organization, calendar_webhook_event):
     with assert_all_scoped_queries_are_bound() as violations:
-        CalendarWebhookEvent.original_manager.filter(pk=calendar_webhook_event.pk).delete()
+        CalendarWebhookEvent.original_manager.all().delete()
 
     # Django's delete collector fast-paths a single-table, no-cascade delete into
     # one statement, so exactly one violation is reported.
     assert violations == ["CalendarWebhookEvent (DELETE)"]
+
+
+def test_records_nothing_for_a_read_addressed_by_primary_key(organization, calendar):
+    """``refresh_from_db()`` (and every ``filter(pk=...)`` assertion) names one
+    identified row, so an ambient organization would add nothing -- reporting it
+    would only demand a redundant filter.
+    """
+    with assert_all_scoped_queries_are_bound() as violations:
+        calendar.refresh_from_db()
+        Calendar.original_manager.filter(pk=calendar.pk).exists()
+
+    assert violations == []
 
 
 def test_records_a_violation_when_aggregate_runs_unbound(organization, calendar):

@@ -78,13 +78,24 @@ def _is_organization_scoped(model: type[Model] | None) -> bool:
     return issubclass(model, SingleOrganizationModelMixin | OrganizationModel)
 
 
-def _names_an_organization(query: Query) -> bool:
-    """Does the query restrict itself to an organization, without ambient help?
+def _is_scoped_enough(query: Query, model: type[Model]) -> bool:
+    """Is this query narrow enough that no ambient organization would add anything?
 
-    Read off the compiled SQL rather than off ``Query.where``, because an
-    organization-safe relation puts its organization condition in a join's ``ON``
-    clause -- ``EventAttendance.objects.unscoped().filter(event=event)`` is
+    Two ways to qualify, both read off the compiled SQL rather than off
+    ``Query.where``. An organization-safe relation puts its organization
+    condition in a join's ``ON`` clause, and a ``WHERE``-only check would miss it
+    -- ``EventAttendance.objects.unscoped().filter(event=event)`` is
     organization-matched through the relation and must not be reported.
+
+    1. **It names an organization.** ``filter_by_organization(...)`` and the
+       relation joins above.
+    2. **It addresses identified rows by primary key.** ``refresh_from_db()``,
+       the ``UPDATE`` behind ``save()``, the delete collector and
+       ``assert ... .filter(pk=x).exists()`` all name rows the caller already
+       holds; a primary key identifies one row in the whole table, so there is no
+       scoping decision left for an organization to make. Reporting these would
+       flag ``instance.refresh_from_db()`` in every test that requests the
+       fixture, which is a demand for a redundant filter rather than a finding.
 
     Everything before ``FROM`` is discarded first: the select list of a scoped
     model always names ``organization_id``, which would make this answer "yes"
@@ -96,7 +107,13 @@ def _names_an_organization(query: Query) -> bool:
         return True
 
     _, _, after_from = sql.partition(" FROM ")
-    return "organization_id" in (after_from or sql)
+    clauses = after_from or sql
+
+    if "organization_id" in clauses:
+        return True
+
+    primary_key = f'"{model._meta.db_table}"."{model._meta.pk.column}"'
+    return f"{primary_key} = " in clauses or f"{primary_key} IN (" in clauses
 
 
 @contextlib.contextmanager
@@ -135,7 +152,7 @@ def assert_all_scoped_queries_are_bound() -> Iterator[list[str]]:
                 # correct here even though it would be too eager outside a
                 # test-only guard.
                 and not get_current_organization()
-                and not _names_an_organization(query)
+                and not _is_scoped_enough(query, model)
             ):
                 statement = _STATEMENT_BY_COMPILER.get(type(self).__name__, "query")
                 unbound_calls.append(f"{model.__name__} ({statement})")
