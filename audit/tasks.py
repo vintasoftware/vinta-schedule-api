@@ -22,9 +22,13 @@ from the container at call time; no runtime container import is needed.
 import logging
 from typing import TYPE_CHECKING, Annotated
 
+from django.utils.functional import SimpleLazyObject
+
 from dependency_injector.wiring import Provide, inject
 
 from audit.types import ActorSnapshot, AuditRecordData, SubjectRef
+from common.organization_context import organization_context
+from organizations.models import Organization
 from vinta_schedule_api.celery import app
 
 
@@ -97,8 +101,17 @@ def persist_audit_record(
         )
         return
 
+    # `data.organization_id` is the only organization boundary this task ever
+    # sees -- one record, one organization, resolved lazily (no query until
+    # something actually reads the binding; the repository writes by
+    # `organization_id`, not through the tenant-scoped manager) so this phase's
+    # binding costs nothing today.
+    organization = SimpleLazyObject(
+        lambda: Organization.objects.filter(id=data.organization_id).first()
+    )
     try:
-        repository.add(data)
+        with organization_context(organization):
+            repository.add(data)
     except Exception:
         logger.exception(
             "persist_audit_record: repository.add() failed for action %r on organization %s.",
