@@ -3,11 +3,12 @@
 **Phase 0 of the vinta-django-orgs migration** (see
 ``ai-plans/2026-08-12-VINTA_DJANGO_ORGS_MIGRATION_IMPLEMENTATION_PLAN.md``). This
 module is a *temporary, local* implementation of the binding API
-``vinta-django-orgs`` ships as ``organizations.state`` — the package is not
-installed yet (that is Phase 1a's job), so this module cannot import it. It
-exists so every call site that will *become* implicitly organization-scoped in
-Phase 2 can bind an organization today, through one importable name, while the
-current managers (``organizations.managers.BaseOrganizationModelManager`` /
+``vinta-django-orgs`` ships as ``vinta_orgs.state`` — as of Phase 1, the package
+is installed (``vinta-django-orgs==0.2.0``, app label ``vinta_orgs``) but nothing
+reads its scoping yet. It exists so every call site that will *become*
+implicitly organization-scoped in Phase 2 can bind an organization today,
+through one importable name, while the current managers
+(``organizations.managers.BaseOrganizationModelManager`` /
 ``organizations.querysets.BaseOrganizationModelQuerySet``) keep ignoring the
 binding entirely and requiring their own explicit ``organization`` filter.
 That is what makes this phase behavior-neutral: nothing here changes what any
@@ -16,15 +17,14 @@ query returns.
 The public surface below — ``organization_context``, ``set_current_organization``,
 ``get_current_organization``, ``clear_current_organization``,
 ``reset_current_organization``, and the ``OrganizationOrSlug`` / ``OrganizationToken``
-type aliases — mirrors ``organizations.state`` in the installed package
-(``vinta-django-orgs==0.1.1``) name-for-name and semantics-for-semantics
-(binding returns a ``contextvars.Token``; nested/sequential binds restore the
-*previous* organization rather than clearing it). Once Phase 1a installs the
-package and renames this repo's ``organizations`` app to ``tenancy`` (freeing
-the ``organizations`` name for the package), this module's *body* becomes a
-one-line re-export:
+type aliases — mirrors ``vinta_orgs.state`` in the installed package
+name-for-name and semantics-for-semantics (binding returns a
+``contextvars.Token``; nested/sequential binds restore the *previous*
+organization rather than clearing it). Swapping this module's *body* to a
+one-line re-export of ``vinta_orgs.state`` is Phase 2a's precondition, once
+call sites start reading the package's implicit scoping:
 
-    from organizations.state import (  # noqa: F401
+    from vinta_orgs.state import (  # noqa: F401
         OrganizationOrSlug,
         OrganizationToken,
         clear_current_organization,

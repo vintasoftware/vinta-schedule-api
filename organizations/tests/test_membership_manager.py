@@ -17,8 +17,8 @@ from django.db.models import QuerySet
 
 import pytest
 from model_bakery import baker
+from vinta_orgs.state import organization_context
 
-from common.organization_context import organization_context
 from organizations.managers import OrganizationMembershipManager
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
 from organizations.querysets import OrganizationMembershipQuerySet
@@ -98,7 +98,11 @@ class TestUnscopedReadsWithNoOrganizationBound:
 class TestUnscopedReadsWithAnUnrelatedOrganizationBound:
     """The scoped-manager failure mode, if it were ever introduced, would show
     up here rather than above: binding organization A and reading B's
-    memberships."""
+    memberships. Binds through ``vinta_orgs.state`` -- the package's own
+    contextvar, which is what ``SingleOrganizationUnscopedManager`` would read
+    from if it read anything -- rather than ``common.organization_context``,
+    which is this repo's separate, not-yet-consulted binding (Phase 2a's
+    precondition, not this manager's)."""
 
     def test_a_bound_organization_does_not_hide_another_organizations_memberships(self):
         user = baker.make(User)

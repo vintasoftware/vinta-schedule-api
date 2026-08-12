@@ -566,6 +566,27 @@ class TestOrganizationSlugUpdate:
         organization.refresh_from_db()
         assert organization.slug == "clearable"
 
+    def test_null_slug_is_rejected_with_400(self):
+        """An explicit ``null`` is refused with a 400, matching the blank-string
+        case -- ``slug`` is NOT NULL, so there is nothing sensible to write, and
+        the field itself (``allow_null=False``) is what makes a client generated
+        from the schema unable to send a value that always 400s. See the
+        GraphQL surface's ``TestUpdateBrandingSlugInOneCall
+        .test_an_explicit_null_slug_is_refused_rather_than_ignored`` for the
+        same contract on the other write surface.
+        """
+        organization = OrganizationTestFactory.create_organization(name="Null Slug Org")
+        organization.slug = "not-nullable"
+        organization.save()
+        _user, client = self._make_admin_client(organization)
+
+        url = reverse("api:Organizations-detail", kwargs={"pk": organization.pk})
+        response = client.patch(url, {"slug": None}, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        organization.refresh_from_db()
+        assert organization.slug == "not-nullable"
+
     def test_confusable_slug_returns_400_naming_the_confusable_rule(self):
         """A mixed-script lookalike slug is rejected by the confusables rule, not
         DRF's generic ASCII-only slug regex message. This exercises the actual

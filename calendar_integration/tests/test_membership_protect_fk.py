@@ -134,10 +134,12 @@ class TestTheFiveConstraintsSurvivedThePrimaryKeySwap:
     def test_every_one_binds_to_the_unique_constraint_not_the_primary_key(self):
         """The property that made the primary-key swap free.
 
-        A foreign key bound to ``organizations_organizationmembership_pkey``
-        would have blocked ``0023``'s ``DROP CONSTRAINT``; one that somehow
-        rebound to the *new* single-column primary key would silently stop
-        enforcing the ``(user, organization)`` pair.
+        A two-column foreign key cannot rebind to the new single-column
+        primary key, so this assertion cannot fail by that specific
+        mechanism today. Its real value is as a rename tripwire: it fails if
+        ``uniq_membership_user_organization`` is ever renamed or replaced,
+        which would silently detach these five foreign keys from the
+        constraint they depend on without anything else here noticing.
         """
         found = _composite_membership_foreign_keys()
 
@@ -173,14 +175,20 @@ class TestEachConstraintStillBlocksAMembershipDelete:
         create_calendar_ownership(calendar=calendar, user=member_user)
         membership = OrganizationMembership.objects.get(user=member_user, organization=organization)
 
-        with pytest.raises(IntegrityError), transaction.atomic():
+        with (
+            pytest.raises(IntegrityError, match="calownership_membership_protect_fk"),
+            transaction.atomic(),
+        ):
             membership.delete()
 
     def test_event_attendance_blocks_the_delete(self, organization, member_user, event):
         create_event_attendance(event=event, user=member_user)
         membership = OrganizationMembership.objects.get(user=member_user, organization=organization)
 
-        with pytest.raises(IntegrityError), transaction.atomic():
+        with (
+            pytest.raises(IntegrityError, match="evattendance_membership_protect_fk"),
+            transaction.atomic(),
+        ):
             membership.delete()
 
     def test_calendar_management_token_blocks_the_delete(self, organization, member_user, calendar):
@@ -192,7 +200,10 @@ class TestEachConstraintStillBlocksAMembershipDelete:
         )
         membership = OrganizationMembership.objects.get(user=member_user, organization=organization)
 
-        with pytest.raises(IntegrityError), transaction.atomic():
+        with (
+            pytest.raises(IntegrityError, match="calmgmttoken_membership_protect_fk"),
+            transaction.atomic(),
+        ):
             membership.delete()
 
     def test_external_event_change_request_resolved_by_blocks_the_delete(
@@ -208,7 +219,10 @@ class TestEachConstraintStillBlocksAMembershipDelete:
         )
         membership = OrganizationMembership.objects.get(user=member_user, organization=organization)
 
-        with pytest.raises(IntegrityError), transaction.atomic():
+        with (
+            pytest.raises(IntegrityError, match="externaleventcr_resolved_by_protect_fk"),
+            transaction.atomic(),
+        ):
             membership.delete()
 
     def test_booking_policy_blocks_the_delete(self, organization, member_user):
@@ -218,7 +232,10 @@ class TestEachConstraintStillBlocksAMembershipDelete:
         )
         membership = OrganizationMembership.objects.get(user=member_user, organization=organization)
 
-        with pytest.raises(IntegrityError), transaction.atomic():
+        with (
+            pytest.raises(IntegrityError, match="bookingpolicy_membership_protect_fk"),
+            transaction.atomic(),
+        ):
             membership.delete()
 
 
@@ -254,12 +271,26 @@ class TestTheManyToManyThroughTablesBindToThePrimaryKey:
     def test_deleting_a_membership_clears_its_group_and_permission_rows(
         self, organization, member_user
     ):
+        """The through-table rows -- not just the membership row -- must be
+        gone after the delete, proving the CASCADE actually ran rather than
+        merely that the membership itself is gone."""
         from django.contrib.auth.models import Group, Permission
 
         membership = OrganizationMembership.objects.get(user=member_user, organization=organization)
         membership.groups.add(Group.objects.create(name="through-table-group"))
-        membership.permissions.add(Permission.objects.first())
+        membership.permissions.add(baker.make(Permission))
+
+        assert membership.groups.count() == 1
+        assert membership.permissions.count() == 1
+        groups_through_table = OrganizationMembership.groups.through
+        permissions_through_table = OrganizationMembership.permissions.through
 
         membership.delete()
 
         assert not OrganizationMembership.objects.filter(pk=membership.pk).exists()
+        assert not groups_through_table.objects.filter(
+            organizationmembership_id=membership.pk
+        ).exists()
+        assert not permissions_through_table.objects.filter(
+            organizationmembership_id=membership.pk
+        ).exists()

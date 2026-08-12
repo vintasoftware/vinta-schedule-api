@@ -2438,6 +2438,41 @@ class TestUpdateBrandingSlugInOneCall:
         assert org.slug == "untouched-by-blank"
         assert not OrganizationBranding.objects.filter(organization=org).exists()
 
+    def test_an_explicit_null_slug_is_refused_rather_than_ignored(self):
+        """An explicit ``null`` is refused, not treated as "omitted".
+
+        ``UpdateBrandingInput.slug`` defaults to ``strawberry.UNSET`` so an
+        omitted field and an explicit ``null`` are distinguishable; this rule
+        matches ``OrganizationSerializer.validate_slug`` on the REST surface --
+        see ``organizations.tests.test_views.TestOrganizationSlugUpdate
+        .test_null_slug_is_rejected_with_400`` for the same contract there.
+        """
+        from di_core.containers import container
+
+        org, auth_service, system_user, token = self._org_with_branding_scope(
+            slug="untouched-by-null"
+        )
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": UPDATE_BRANDING_WITH_SLUG_MUTATION,
+                    "variables": {"input": {"appName": "ShouldNotPersist", "slug": None}},
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert "cannot be cleared" in str(data["errors"]).lower()
+
+        org.refresh_from_db()
+        assert org.slug == "untouched-by-null"
+        assert not OrganizationBranding.objects.filter(organization=org).exists()
+
     def test_invalid_slug_rejects_the_whole_call_and_leaves_the_slug_unchanged(self):
         """An invalid slug (fails the shared format rule) rejects the entire
         call before the gate or the branding upsert ever runs -- the

@@ -989,21 +989,21 @@ class AcceptInvitationView(generics.CreateAPIView):
 
 @extend_schema(tags=["Branding"])
 class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
-    """Admin-only REST endpoint for managing a parentless, entitled, slugged
+    """Admin-only REST endpoint for managing a parentless, entitled
     organization's branding.
 
     Write gate (Organization Auth-Area Branding plan, Phase 3): PUT/PATCH
-    require the acting org to be parentless, hold the ``white_label_branding``
-    entitlement, AND have a slug set
-    (``organizations.permissions.evaluate_branding_write_gate``), AND the
-    caller must be an org admin (``IsOrganizationAdmin`` permission).
-    Replaces the earlier reseller-only gate (``is_reseller()``) -- any paying,
-    parentless, slugged organization can now manage its own branding, not just
-    resellers. Each of the three failure conditions raises its own
-    ``PermissionDenied`` subclass (``organizations.exceptions``) so the
-    response body -- not just the 403 status -- distinguishes the permanent
-    refusal (has a parent) from the billing state (not entitled) from the
-    one-step-away case (no slug).
+    require the acting org to be parentless and hold the
+    ``white_label_branding`` entitlement
+    (``organizations.permissions.evaluate_branding_write_gate`` -- its third,
+    slug-set condition is retired, see that function), AND the caller must be
+    an org admin (``IsOrganizationAdmin`` permission). Replaces the earlier
+    reseller-only gate (``is_reseller()``) -- any paying, parentless
+    organization can now manage its own branding, not just resellers. Each of
+    the two failure conditions raises its own ``PermissionDenied`` subclass
+    (``organizations.exceptions``) so the response body -- not just the 403
+    status -- distinguishes the permanent refusal (has a parent) from the
+    billing state (not entitled).
 
     GET uses the **eligibility** gate
     (``organizations.permissions.is_branding_eligible_organization`` --

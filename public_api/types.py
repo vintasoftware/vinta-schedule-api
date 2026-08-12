@@ -136,12 +136,14 @@ class UpdateBrandingInput:
     org itself) and applied to the acting organization -- so a partner-API
     caller can rename its public identifier and set branding in a single call,
     rather than needing a separate organization-update mutation that does not
-    exist on this surface. When omitted (``None``) the organization's slug is
-    left alone; an explicit empty string is **refused**, because a slug cannot
-    be cleared (it is NOT NULL, and the database rejects a blank one). The slug
-    write and the branding upsert land in one transaction: an invalid, blank or
-    colliding slug, or a field-validation failure anywhere else in this input,
-    rejects the whole call and leaves the organization's slug unchanged.
+    exist on this surface. Three states, matching the REST serializer's
+    ``validate_slug`` on update: **omitted** (``strawberry.UNSET``) leaves the
+    organization's slug alone; an explicit ``null`` or empty string is
+    **refused**, because a slug cannot be cleared (it is NOT NULL, and the
+    database rejects a blank one). The slug write and the branding upsert land
+    in one transaction: an invalid, blank or colliding slug, or a
+    field-validation failure anywhere else in this input, rejects the whole
+    call and leaves the organization's slug unchanged.
     """
 
     app_name: str
@@ -150,7 +152,7 @@ class UpdateBrandingInput:
     secondary_color: str = ""
     support_email: str = ""
     redirect_url: str = ""
-    slug: str | None = None
+    slug: str | None = strawberry.UNSET  # type: ignore[assignment]
 
 
 @strawberry.type

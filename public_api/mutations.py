@@ -1551,16 +1551,19 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         )
 
         with transaction.atomic():
-            # ``None`` means "leave the slug alone". An explicit ``""`` is
-            # refused rather than treated as omitted: the column is NOT NULL and
-            # the ``organization_slug_not_blank`` constraint rejects a blank
+            # Omitted (``strawberry.UNSET``) means "leave the slug alone". An
+            # explicit ``null`` or ``""`` is refused rather than treated as
+            # omitted: the column is NOT NULL and the
+            # ``organization_slug_not_blank`` constraint rejects a blank
             # value, so silently ignoring it would tell the caller it had
-            # cleared an identifier that is in fact unchanged.
-            if input.slug is not None:
-                if not input.slug.strip():
+            # cleared an identifier that is in fact unchanged. This mirrors
+            # ``OrganizationSerializer.validate_slug`` on the REST surface --
+            # both refuse an explicit null/blank on update.
+            if input.slug is not strawberry.UNSET:
+                if not input.slug or not input.slug.strip():
                     raise GraphQLError(
-                        "Slug cannot be cleared. Send a new slug, or omit the field to "
-                        "leave it unchanged."
+                        "Slug cannot be cleared once set. Send a new slug, or omit the "
+                        "field to leave it unchanged."
                     )
                 _apply_input_slug(acting_org, input.slug)
 

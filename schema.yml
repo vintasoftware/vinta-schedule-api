@@ -18419,7 +18419,7 @@ components:
           type: boolean
           description: |-
             Whether this membership's organization is branding-eligible
-            (parentless-and-entitled, excluding the slug condition) -- see
+            (parentless-and-entitled) -- see
             ``CurrentMembershipSerializer.get_can_manage_branding`` for the full
             rationale. Computed per-membership (not per-role): a non-admin
             member's entry reports the same organization-level capability as an
@@ -18523,7 +18523,6 @@ components:
           maxLength: 255
         slug:
           type: string
-          nullable: true
           description: 'Public, URL-safe identifier used by the organization''s branded
             login page and by brandingForTenant. Always set: an organization saved
             without one is given an opaque ``org-<token>`` slug, and the database
@@ -19854,7 +19853,6 @@ components:
           maxLength: 255
         slug:
           type: string
-          nullable: true
           description: 'Public, URL-safe identifier used by the organization''s branded
             login page and by brandingForTenant. Always set: an organization saved
             without one is given an opaque ``org-<token>`` slug, and the database

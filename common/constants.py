@@ -2,8 +2,9 @@
 
 Kept here rather than in the module that happens to read them first so the
 ``X-Organization-Id`` contract has exactly one definition: ``common.utils.
-view_utils`` (request resolution), ``common.openapi`` (the OpenAPI parameter,
-and therefore ``schema.yml``) and ``common.org_retrievers`` (the
+view_utils`` (request resolution; ``common.openapi``, the OpenAPI parameter and
+therefore ``schema.yml``, imports ``ACTIVE_ORG_HEADER`` from there rather than
+from this module directly) and ``common.org_retrievers`` (the
 ``vinta-django-orgs`` retriever) all read the same name, so the header the
 schema documents cannot drift from the header the code looks for.
 """

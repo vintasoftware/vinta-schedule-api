@@ -123,12 +123,15 @@ class OrganizationSerializer(VirtualModelSerializer):
     # ``max_length`` is pinned to SLUG_MAX_LENGTH rather than inherited from the
     # model: the column is varchar(255) (inherited from the package's
     # ``AbstractOrganization``) but the rules cap a *written* slug at 63.
-    # ``allow_blank``/``allow_null`` are kept so a blank submission reaches
-    # validate_slug(), which refuses it on update ("cannot be cleared") and
-    # treats it as "pick one for me" on create.
+    # ``allow_blank`` is kept so a blank submission reaches validate_slug(),
+    # which refuses it on update ("cannot be cleared") and treats it as "pick
+    # one for me" on create. ``allow_null`` is False: ``slug`` is NOT NULL on
+    # the model, so no response can ever carry ``null`` and no write may
+    # either -- a client generated from the schema would otherwise see a
+    # nullable field that 400s on ``null``.
     slug = serializers.CharField(
         required=False,
-        allow_null=True,
+        allow_null=False,
         allow_blank=True,
         max_length=SLUG_MAX_LENGTH,
         help_text=(
@@ -180,20 +183,23 @@ class OrganizationSerializer(VirtualModelSerializer):
             return None
         return GoogleServiceAccountReadSerializer(account).data
 
-    def validate_slug(self, value: str | None) -> str | None:
+    def validate_slug(self, value: str) -> str:
         """Validate format/reserved-word/confusable rules, then uniqueness.
 
-        A blank or ``null`` slug on **update** is refused: ``slug`` is NOT NULL
-        and the ``organization_slug_not_blank`` check constraint rejects ``""``,
-        so there is nothing sensible to write. It is refused rather than ignored
+        A blank slug on **update** is refused: ``slug`` is NOT NULL and the
+        ``organization_slug_not_blank`` check constraint rejects ``""``, so
+        there is nothing sensible to write. It is refused rather than ignored
         because silently ignoring it would let a client believe it had cleared
         the organization's public identifier — and, since ``Organization.save()``
         mints a replacement for an empty slug, the row would end up with a
         *different* slug rather than the one the client can see. Omitting the
-        field entirely still means "leave it alone".
+        field entirely still means "leave it alone". ``null`` is rejected by
+        the field itself (``allow_null=False``) before this method ever runs.
 
         A blank slug on **create** is accepted and means "pick one for me":
-        ``OrganizationService.create_organization`` derives it from the name.
+        ``OrganizationService.create_organization`` derives it from the name
+        -- ``create()`` below never passes ``slug`` through, so the value
+        returned here for that case is unused.
 
         Uniqueness is checked here, against the shared queryset, excluding the
         instance being updated, so a collision returns 400 naming the conflicting
@@ -205,7 +211,7 @@ class OrganizationSerializer(VirtualModelSerializer):
                     "Slug cannot be cleared once set. Send a new slug, or omit the "
                     "field to leave it unchanged."
                 )
-            return None
+            return value
 
         try:
             validate_organization_slug(value)
@@ -419,7 +425,7 @@ class MyMembershipSerializer(serializers.ModelSerializer):
 
     def get_can_manage_branding(self, obj: OrganizationMembership) -> bool:
         """Whether this membership's organization is branding-eligible
-        (parentless-and-entitled, excluding the slug condition) -- see
+        (parentless-and-entitled) -- see
         ``CurrentMembershipSerializer.get_can_manage_branding`` for the full
         rationale. Computed per-membership (not per-role): a non-admin
         member's entry reports the same organization-level capability as an

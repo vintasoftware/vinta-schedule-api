@@ -1,6 +1,6 @@
 import datetime
 import logging
-from typing import Annotated
+from typing import Annotated, Any
 
 from django.db import IntegrityError, transaction
 
@@ -76,12 +76,22 @@ class OrganizationService:
         self.subscription_service = subscription_service
         self.entitlement_service = entitlement_service
 
-    #: How many times :meth:`_create_organization_row` re-derives a slug after a
-    #: collision. Two callers racing onto the same derived slug is already
-    #: unlikely; three losing in a row is not a case worth carrying more code for.
-    _SLUG_COLLISION_RETRIES = 3
+    #: How many times :meth:`_create_organization_row` attempts the insert --
+    #: an initial derivation plus two re-derives after a lost slug race. Two
+    #: callers racing onto the same derived slug is already unlikely; three
+    #: losing in a row is not a case worth carrying more code for.
+    _SLUG_CREATE_ATTEMPTS = 3
 
-    def _create_organization_row(self, create_kwargs: dict) -> Organization:
+    #: Name of the unique constraint backing ``Organization.slug`` (inherited,
+    #: unnamed, from ``AbstractOrganization.slug``'s ``unique=True`` -- Django's
+    #: default naming for a single-column unique index). Verified against the
+    #: live schema (``\d organizations_organization``) rather than assumed: a
+    #: rename here would silently disable the retry-vs-reraise discriminator
+    #: below rather than raise, so if this ever drifts from the schema, fix the
+    #: constant, not the schema.
+    _SLUG_UNIQUE_CONSTRAINT_NAME = "organizations_organization_slug_key"
+
+    def _create_organization_row(self, create_kwargs: dict[str, Any]) -> Organization:
         """``Organization.objects.create`` with a name-derived slug, race included.
 
         ``derive_organization_slug``'s uniqueness check and the ``INSERT`` are two
@@ -97,8 +107,12 @@ class OrganizationService:
         poisoning the enclosing transaction -- the same pattern
         ``public_api.mutations._apply_input_slug`` uses. The retry re-derives, so
         the loser of the race takes the next free ``name-2`` rather than failing.
+
+        Operates on a local copy of ``create_kwargs`` -- the caller's dict is
+        read, never mutated.
         """
-        for _attempt in range(self._SLUG_COLLISION_RETRIES):
+        create_kwargs = dict(create_kwargs)
+        for _attempt in range(self._SLUG_CREATE_ATTEMPTS):
             create_kwargs["slug"] = derive_organization_slug(
                 create_kwargs["name"],
                 slug_exists=lambda candidate: Organization.objects.filter(slug=candidate).exists(),
@@ -107,11 +121,19 @@ class OrganizationService:
             try:
                 with transaction.atomic():
                     return Organization.objects.create(**create_kwargs)
-            except IntegrityError:
-                # Only a lost slug race is retryable. Any other integrity failure
-                # would fail identically on every attempt, so it is re-raised
-                # rather than retried into a misleading slug error.
-                if not Organization.objects.filter(slug=create_kwargs["slug"]).exists():
+            except IntegrityError as exc:
+                # Only a lost slug race is retryable. Any other integrity
+                # failure (e.g. a `uniq_org_name_per_parent` violation) would
+                # fail identically on every attempt, so it is re-raised rather
+                # than retried into a misleading slug error. Read the failing
+                # constraint directly from the driver error rather than
+                # re-querying for the slug: a concurrent claim on the slug
+                # coinciding with a duplicate-name violation would otherwise
+                # be misread as the (retryable) slug race, exhaust the retry
+                # budget, and report "could not allocate a unique slug" for
+                # what is actually a duplicate-name error.
+                diag = getattr(exc.__cause__, "diag", None)
+                if diag is None or diag.constraint_name != self._SLUG_UNIQUE_CONSTRAINT_NAME:
                     raise
                 logger.warning(
                     "Organization slug %r was claimed concurrently; re-deriving.",

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from django.conf import settings
 from django.core.exceptions import FieldDoesNotExist, ObjectDoesNotExist
@@ -192,7 +192,7 @@ class Organization(AbstractOrganization):
             ),
         ]
 
-    def save(self, *args, **kwargs):
+    def save(self, *args: Any, **kwargs: Any) -> None:
         """Fill in an **opaque** slug when the caller left one out.
 
         ``org-<token>``, never ``slugify(name)``: the slug is public, so a
@@ -210,7 +210,9 @@ class Organization(AbstractOrganization):
         if not self.slug and (update_fields is None or "slug" in update_fields):
             self.slug = derive_organization_slug(
                 self.name,
-                slug_exists=lambda candidate: Organization.objects.filter(slug=candidate).exists(),
+                slug_exists=lambda candidate: (
+                    type(self)._default_manager.filter(slug=candidate).exists()
+                ),
                 disclose_name=False,
             )
         return super().save(*args, **kwargs)
