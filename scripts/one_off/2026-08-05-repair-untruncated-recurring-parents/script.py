@@ -13,7 +13,6 @@ from typing import Any
 
 from django.db import transaction
 from django.db.models import Min
-from django.utils.functional import SimpleLazyObject
 
 from dateutil.rrule import rrulestr
 
@@ -26,8 +25,6 @@ from calendar_integration.models import (
     EventBulkModification,
     RecurrenceRule,
 )
-from common.organization_context import organization_context
-from organizations.models import Organization
 from payments.models import MeteredOccurrence, Subscription
 from payments.services.billing_dataclasses import OccurrenceIdentity
 from payments.services.subscription_service import resolve_settlement_period
@@ -270,23 +267,19 @@ class RepairUntruncatedRecurringParents(BaseOneOffScript[RepairTarget]):
 
     def process(self, item: RepairTarget) -> None:
         kind = KIND_BY_KEY[item.kind]
-        # This item's own organization -- the single-organization boundary for
-        # per-item repair work. Lazily resolved (no query unless read) since
-        # every access below goes through `original_manager`, deliberately
-        # bypassing tenant scoping: the scan in `iter_targets`/`_iter_kind` is
-        # cross-organization by design (mirroring `organizations/admin.py`'s
-        # explicit `original_manager` usage), and this method inherits that.
-        # The one exception is `_delete_phantom_metered`'s call into
-        # `MeteringService.expand_occurrence_identities`, which pools reads
-        # across the subscription's *entire* reseller subtree via
-        # `organization_id__in=...` regardless of what is bound here -- see
-        # `payments/tasks.py`'s module docstring for why that pooled read
-        # stays out of scope for a single-organization binding in this
-        # migration.
-        organization = SimpleLazyObject(
-            lambda: Organization.objects.filter(pk=item.organization_id).first()
-        )
-        with organization_context(organization), transaction.atomic():
+        # No `organization_context` binding here (Phase 0 of the
+        # vinta-django-orgs migration): every access below -- this method's
+        # own `kind.parent_model.original_manager` call and
+        # `_delete_phantom_metered`'s `original_manager` calls -- deliberately
+        # bypasses tenant scoping, mirroring the scan in
+        # `iter_targets`/`_iter_kind`, which is cross-organization by design
+        # (same pattern as `organizations/admin.py`'s explicit
+        # `original_manager` usage). `_delete_phantom_metered` also reads
+        # `Subscription`/`MeteredOccurrence` via `.objects`, but both are
+        # plain `BaseModel` (not `OrganizationModel` -- see `payments/tasks
+        # .py`'s module docstring), so those calls need no organization
+        # context either way.
+        with transaction.atomic():
             parent = (
                 kind.parent_model.original_manager.select_related("recurrence_rule_fk")
                 .select_for_update(of=("self",))

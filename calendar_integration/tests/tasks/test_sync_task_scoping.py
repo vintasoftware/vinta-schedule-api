@@ -138,6 +138,15 @@ def _run_sync_calendar_task(
 
 class TestSyncCalendarTaskOrganizationBindingIsNeutral:
     def test_bound_and_unbound_runs_produce_identical_observable_outcomes(self):
+        # Deliberately does NOT request ``assert_no_unbound_scoped_queries``:
+        # this test's whole point is to run the task body once *without* an
+        # organization bound (reproducing the pre-Phase-0 code path), and
+        # that unbound run legitimately trips the tripwire (verified:
+        # ``CalendarSync.objects.filter_by_organization(...)
+        # .get_not_started_calendar_sync(...)`` calls ``.first()``, which
+        # iterates). Requesting the fixture here would fail by design, not
+        # because of a real unbound call site -- see this phase's fixer
+        # report for the reasoning.
         bound_org, bound_calendar, bound_account = _make_org_and_account("BoundOrg")
         unbound_org, unbound_calendar, unbound_account = _make_org_and_account("UnboundOrg")
 
@@ -170,7 +179,9 @@ class TestSyncCalendarTaskOrganizationBindingIsNeutral:
             "sync_events_call_count": 1,
         }
 
-    def test_missing_organization_short_circuits_identically_bound_or_unbound(self):
+    def test_missing_organization_short_circuits_identically_bound_or_unbound(
+        self, assert_no_unbound_scoped_queries
+    ):
         """The early ``if not organization: return`` guard fires before the
         binding is ever entered, for both implementations -- a task
         dispatched with a stale/deleted organization id is a no-op either

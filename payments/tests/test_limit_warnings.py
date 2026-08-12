@@ -107,7 +107,9 @@ def subscription_service(di_container):
 
 @pytest.mark.django_db
 class TestCheckApproachingLimitsFanOut:
-    def test_excludes_restricted_and_cancelled_subscriptions(self, subscription_service):
+    def test_excludes_restricted_and_cancelled_subscriptions(
+        self, assert_no_unbound_scoped_queries, subscription_service
+    ):
         plan = make_complete_plan()
 
         active_org = baker.make(Organization, parent=None, can_invite_organizations=False)
@@ -145,7 +147,11 @@ class TestCheckApproachingLimitsFanOut:
 @pytest.mark.django_db
 class TestWarningFiresOnceAcrossBeatRuns:
     def test_repeated_beat_ticks_send_exactly_one_warning(
-        self, subscription_service, mock_notification_service, organization
+        self,
+        assert_no_unbound_scoped_queries,
+        subscription_service,
+        mock_notification_service,
+        organization,
     ):
         _add_admin_membership(organization)
         _seed_members(organization, 7)  # + admin = 8 of 10 (80%)
@@ -168,7 +174,11 @@ class TestWarningFiresOnceAcrossBeatRuns:
         )
 
     def test_restricted_subscription_is_never_warned_even_if_dispatched_directly(
-        self, subscription_service, mock_notification_service, organization
+        self,
+        assert_no_unbound_scoped_queries,
+        subscription_service,
+        mock_notification_service,
+        organization,
     ):
         """Belt-and-suspenders: even if a stale task message dispatched before
         a subscription moved to ``RESTRICTED`` is delivered late, the
@@ -185,7 +195,9 @@ class TestWarningFiresOnceAcrossBeatRuns:
 
         mock_notification_service.create_notification.assert_not_called()
 
-    def test_a_deleted_subscription_is_skipped_not_raised(self, mock_notification_service):
+    def test_a_deleted_subscription_is_skipped_not_raised(
+        self, assert_no_unbound_scoped_queries, mock_notification_service
+    ):
         """Mirrors ``process_dunning_for_subscription``'s handling of the same
         race -- a subscription deleted between fan-out and execution must not
         raise (a raising task is redelivered forever under

@@ -8,9 +8,13 @@ it.
 
 from __future__ import annotations
 
+from django.db.models import Count
+from django.utils.functional import SimpleLazyObject
+
 import pytest
 
-from calendar_integration.models import Calendar
+from calendar_integration.constants import CalendarProvider
+from calendar_integration.models import Calendar, CalendarWebhookEvent
 from common.organization_context import organization_context
 from common.organization_context_test_support import (
     assert_all_scoped_queries_are_bound,
@@ -35,6 +39,22 @@ def calendar(organization: Organization) -> Calendar:
     )
 
 
+@pytest.fixture
+def calendar_webhook_event(organization: Organization) -> CalendarWebhookEvent:
+    # No default manager/queryset override on ``CalendarWebhookEvent`` (unlike
+    # ``Calendar``'s ``CalendarQuerySet.update``), and nothing else has an
+    # incoming FK to it, so it exercises the guard's own patched
+    # ``BaseOrganizationModelQuerySet.update``/``.delete()`` directly rather
+    # than a subclass override, or a cascade, that would shadow/complicate it.
+    return CalendarWebhookEvent.objects.create(
+        organization=organization,
+        provider=CalendarProvider.GOOGLE,
+        event_type="created",
+        external_calendar_id="cal-1",
+        raw_payload={},
+    )
+
+
 def test_records_nothing_when_every_scoped_query_runs_bound(organization, calendar):
     with assert_all_scoped_queries_are_bound() as violations:
         with organization_context(organization):
@@ -56,6 +76,22 @@ def test_records_a_violation_when_iter_runs_unbound(organization, calendar):
         raise_if_unbound_scoped_queries_occurred(violations)
 
 
+def test_records_a_violation_when_bound_to_a_lazy_object_that_resolves_to_none(
+    organization, calendar
+):
+    """A ``SimpleLazyObject`` that resolves to ``None`` -- exactly how Phase 0's
+    Celery task bindings bind a stale/deleted organization id (see
+    ``webhooks/tasks.py`` / ``audit/tasks.py``) -- must still be reported as
+    unbound. It is *not* ``is None`` (it is a ``SimpleLazyObject`` instance), so a
+    naive ``get_current_organization() is None`` check would miss it entirely.
+    """
+    with assert_all_scoped_queries_are_bound() as violations:
+        with organization_context(SimpleLazyObject(lambda: None)):
+            list(Calendar.objects.filter_by_organization(organization.id))
+
+    assert violations == ["Calendar.objects.__iter__()"]
+
+
 def test_records_a_violation_when_get_runs_unbound(organization, calendar):
     with assert_all_scoped_queries_are_bound() as violations:
         Calendar.objects.filter_by_organization(organization.id).get(pk=calendar.pk)
@@ -68,6 +104,38 @@ def test_records_a_violation_when_count_runs_unbound(organization, calendar):
         Calendar.objects.filter_by_organization(organization.id).count()
 
     assert violations == ["Calendar.objects.count()"]
+
+
+def test_records_a_violation_when_exists_runs_unbound(organization, calendar):
+    with assert_all_scoped_queries_are_bound() as violations:
+        Calendar.objects.filter_by_organization(organization.id).exists()
+
+    assert violations == ["Calendar.objects.exists()"]
+
+
+def test_records_a_violation_when_update_runs_unbound(organization, calendar_webhook_event):
+    with assert_all_scoped_queries_are_bound() as violations:
+        CalendarWebhookEvent.objects.filter_by_organization(organization.id).update(
+            event_type="updated"
+        )
+
+    assert violations == ["CalendarWebhookEvent.objects.update()"]
+
+
+def test_records_a_violation_when_delete_runs_unbound(organization, calendar_webhook_event):
+    with assert_all_scoped_queries_are_bound() as violations:
+        CalendarWebhookEvent.objects.filter_by_organization(organization.id).filter(
+            pk=calendar_webhook_event.pk
+        ).delete()
+
+    assert violations == ["CalendarWebhookEvent.objects.delete()"]
+
+
+def test_records_a_violation_when_aggregate_runs_unbound(organization, calendar):
+    with assert_all_scoped_queries_are_bound() as violations:
+        Calendar.objects.filter_by_organization(organization.id).aggregate(total=Count("id"))
+
+    assert violations == ["Calendar.objects.aggregate()"]
 
 
 def test_records_one_violation_per_unbound_call(organization, calendar):
