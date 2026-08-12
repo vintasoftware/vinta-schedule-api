@@ -24,16 +24,27 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Callable, Iterator
+from typing import Any
 
 from common.organization_context import get_current_organization
 
 
-#: The three query-execution entry points ``BaseOrganizationModelQuerySet
-#: ._check_required_tenant_filter`` already instruments for the (unrelated)
-#: explicit-filter check -- reused here so both guards fire from the same,
-#: already-audited set of entry points rather than a second, possibly
-#: incomplete one.
-_GUARDED_METHOD_NAMES = ("__iter__", "get", "count")
+#: ``__iter__``, ``get``, and ``count`` are the three query-execution entry
+#: points ``BaseOrganizationModelQuerySet._check_required_tenant_filter``
+#: already instruments for the (unrelated) explicit-filter check -- reused
+#: here so both guards fire from the same, already-audited set of entry
+#: points rather than a second, possibly incomplete one. ``exists``,
+#: ``update``, ``delete``, and ``aggregate`` are added on top of that shared
+#: set: none of the three above run for them, so an unbound
+#: ``Model.objects.exists()`` / ``.update()`` / ``.delete()`` /
+#: ``.aggregate()`` would otherwise pass this tripwire silently even though
+#: Phase 2's implicit scoping applies to them too. Known blind spot left for
+#: Phase 2a to close: any *other* queryset-execution method (e.g. a custom
+#: manager method that calls ``.values_list(...)`` and iterates it without
+#: going through one of the eight names here) is still unguarded -- this
+#: tuple only covers ``QuerySet``'s own execution entry points, not every
+#: possible path to one.
+_GUARDED_METHOD_NAMES = ("__iter__", "get", "count", "exists", "update", "delete", "aggregate")
 
 
 @contextlib.contextmanager
@@ -50,13 +61,30 @@ def assert_all_scoped_queries_are_bound() -> Iterator[list[str]]:
     so a caller can choose to collect violations without failing (e.g. to
     assert on the exact list contents).
     """
+    # Deferred: not to avoid a circular import (verified there is none -- this
+    # module and ``organizations.querysets`` do not import each other), but
+    # because this module can itself be imported before ``django.setup()``
+    # completes (``conftest.py`` imports it from inside a fixture body, but
+    # pytest collects ``conftest.py`` itself earlier than that), and
+    # importing anything that touches Django's ORM at that point risks
+    # ``AppRegistryNotReady`` -- mirrors the same deferral in
+    # ``common.organization_context._get_organization_by_slug``.
     from organizations.querysets import BaseOrganizationModelQuerySet
 
     unbound_calls: list[str] = []
 
     def _guard(method_name: str, original: Callable) -> Callable:
-        def wrapper(self, *args, **kwargs):
-            if get_current_organization() is None:
+        def wrapper(self, *args: Any, **kwargs: Any) -> Any:
+            bound = get_current_organization()
+            if not bound:
+                # ``not bound`` (rather than ``bound is None``) so a
+                # ``SimpleLazyObject`` that *resolves* to ``None`` -- how
+                # Phase 0's Celery task bindings bind a stale/deleted
+                # organization id -- is still reported as unbound.
+                # ``LazyObject.__bool__`` proxies through to the wrapped
+                # value (forcing resolution), so this is correct here even
+                # though it would be too eager a check outside a test-only
+                # guard.
                 unbound_calls.append(f"{self.model.__name__}.objects.{method_name}()")
             return original(self, *args, **kwargs)
 

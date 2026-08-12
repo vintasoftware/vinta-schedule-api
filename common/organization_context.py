@@ -59,11 +59,11 @@ if TYPE_CHECKING:
 #: ``LazyObject`` standing in for one -- deliberately not a bare integer id,
 #: so every call site already matches the shape ``organization_context`` from
 #: the installed package will expect once Phase 1a/2 swaps this module's body.
-type OrganizationOrSlug = "Organization | LazyObject | str"
+type OrganizationOrSlug = Organization | LazyObject | str
 
 #: The token :func:`set_current_organization` hands back, which
 #: :func:`reset_current_organization` consumes.
-type OrganizationToken = "Token[Organization | None]"
+type OrganizationToken = Token[Organization | None]
 
 _current_organization: ContextVar[Organization | None] = ContextVar(
     "common.organization_context.current_organization", default=None
@@ -71,6 +71,10 @@ _current_organization: ContextVar[Organization | None] = ContextVar(
 
 
 def _get_organization_by_slug(slug: str) -> Organization | None:
+    # Deferred: this module can be imported (by a Celery task/management
+    # command module, at worker/command startup) before Django's app
+    # registry has finished loading; importing the ``Organization`` model at
+    # module scope raises ``AppRegistryNotReady`` in that case (verified).
     from organizations.models import Organization
 
     return Organization.objects.filter(slug=slug).first()

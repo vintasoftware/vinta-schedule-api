@@ -286,6 +286,10 @@ def assert_no_unbound_scoped_queries():
     independent of pytest's fixture protocol so it is unit-testable on its own
     -- see that module's tests).
     """
+    # Deferred: pytest imports this root ``conftest.py`` (module scope, see
+    # its top-of-file imports above) during collection, before pytest-django
+    # calls ``django.setup()`` -- so anything that touches the Django ORM
+    # must wait until a fixture actually runs, not sit at module scope here.
     from common.organization_context_test_support import (
         assert_all_scoped_queries_are_bound,
         raise_if_unbound_scoped_queries_occurred,

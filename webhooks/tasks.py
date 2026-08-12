@@ -1,7 +1,6 @@
 import datetime
+import logging
 from typing import TYPE_CHECKING, Annotated
-
-from django.utils.functional import SimpleLazyObject
 
 from dependency_injector.wiring import Provide, inject
 
@@ -16,6 +15,9 @@ if TYPE_CHECKING:
     from webhooks.services import WebhookService
 
 
+logger = logging.getLogger(__name__)
+
+
 @app.task
 @inject
 def process_webhook_event(
@@ -26,14 +28,21 @@ def process_webhook_event(
     if not webhook_service:
         return
 
-    # The task is dispatched with `organization_id` only, never a loaded
-    # `Organization`. Binding is resolved lazily (rather than fetched
-    # eagerly) so this phase's binding is a genuine no-op today: nothing
-    # reads the bound organization yet (the current manager ignores the
-    # binding entirely), so wrapping the lookup in a `SimpleLazyObject`
-    # means no extra query runs until Phase 2 actually starts consulting
-    # the context.
-    organization = SimpleLazyObject(lambda: Organization.objects.filter(id=organization_id).first())
+    # Resolved eagerly (not via a lazy binding): a stale/deleted
+    # `organization_id` must be caught here, at the task boundary, rather
+    # than surfacing later as a bound-but-null organization deep inside a
+    # manager once Phase 2 starts consulting the context -- mirrors
+    # `calendar_integration/tasks/calendar_sync_tasks.py`'s
+    # `organization = Organization.objects.filter(id=organization_id).first()`
+    # / `if not organization: return` guard.
+    organization = Organization.objects.filter(id=organization_id).first()
+    if organization is None:
+        logger.info(
+            "Skipping webhook event %s: organization %s no longer exists.",
+            event_id,
+            organization_id,
+        )
+        return
 
     with organization_context(organization):
         webhook_event = WebhookEvent.objects.filter(

@@ -50,8 +50,15 @@ class Command(BaseCommand):
         now = datetime.datetime.now(tz=datetime.UTC)
         expiry_threshold = now + datetime.timedelta(hours=hours_before_expiry)
 
-        # Get subscriptions to refresh
-        subscriptions_qs = CalendarWebhookSubscription.objects.filter(
+        # Get subscriptions to refresh. `original_manager` (the unscoped
+        # manager `OrganizationModel` attaches) rather than the tenant-scoped
+        # `objects` -- this driving scan is intentionally cross-organization
+        # by design (mirroring `organizations/admin.py`'s explicit
+        # `original_manager` usage): it is what makes the unfiltered "refresh
+        # everything expiring soon" default (no `--organization-id`) work at
+        # all. Each subscription's own organization is bound per-iteration
+        # below instead.
+        subscriptions_qs = CalendarWebhookSubscription.original_manager.filter(
             is_active=True,
             expires_at__lte=expiry_threshold,
             expires_at__gt=now,  # Not yet expired

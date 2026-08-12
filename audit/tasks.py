@@ -22,8 +22,6 @@ from the container at call time; no runtime container import is needed.
 import logging
 from typing import TYPE_CHECKING, Annotated
 
-from django.utils.functional import SimpleLazyObject
-
 from dependency_injector.wiring import Provide, inject
 
 from audit.types import ActorSnapshot, AuditRecordData, SubjectRef
@@ -102,13 +100,24 @@ def persist_audit_record(
         return
 
     # `data.organization_id` is the only organization boundary this task ever
-    # sees -- one record, one organization, resolved lazily (no query until
-    # something actually reads the binding; the repository writes by
-    # `organization_id`, not through the tenant-scoped manager) so this phase's
-    # binding costs nothing today.
-    organization = SimpleLazyObject(
-        lambda: Organization.objects.filter(id=data.organization_id).first()
-    )
+    # sees. Resolved eagerly (not via a lazy binding) so a stale/deleted
+    # organization id is caught here, at the task boundary, rather than
+    # surfacing later as a bound-but-null organization deep inside a manager
+    # once Phase 2 starts consulting the context -- mirrors
+    # `calendar_integration/tasks/calendar_sync_tasks.py`'s
+    # `organization = Organization.objects.filter(id=organization_id).first()`
+    # / `if not organization: return` guard.
+    organization = Organization.objects.filter(id=data.organization_id).first()
+    if organization is None:
+        logger.error(
+            "persist_audit_record: organization %s no longer exists; audit record for "
+            "action %r will not be persisted. Payload: %r",
+            data.organization_id,
+            payload.get("action"),
+            payload,
+        )
+        return
+
     try:
         with organization_context(organization):
             repository.add(data)
