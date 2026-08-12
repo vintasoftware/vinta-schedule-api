@@ -52,7 +52,7 @@ Verified after fixing: host surface and container surface both load Django and b
 | ~~1b~~ | ~~Content types, `audit.subject_type` backfill, retriever, seeded-DB path~~ | — | — | ❌ **withdrawn 2026-08-12** (retriever salvaged into Phase 1) | `phase-1b` (abandoned, kept for audit) | phase-1a | #256 closed unmerged |
 | ~~1c~~ | ~~Unwind the composite PK, subclass abstract bases, backfill slugs~~ | — | — | ♻️ **renumbered → Phase 1** | `phase-1c` (abandoned, kept for audit) | phase-1b | #257 closed unmerged |
 | 1 | Adopt the abstract bases, unwind the composite PK, backfill slugs | 4 | reviewer 4, fixer 3 | ✅ done | `plan/vinta-django-orgs-migration/phase-1` | phase-0 | see below |
-| 2a | Flip `calendar_integration` onto the mixin and safe relations | 4 | reviewer 4 | ⏳ pending | — | phase-1 | — |
+| 2a | Flip `calendar_integration` onto the mixin and safe relations | 4 | reviewer 4 | ✅ done | `plan/vinta-django-orgs-migration/phase-2a` | phase-1 | see below |
 | 2b | Flip the remaining scoped models | 3 | reviewer 4 | ⏳ pending | — | phase-2a | — |
 | 3 | Groups, permissions, and the organization auth backend | 3 | — | ⏳ pending | — | phase-2b | — |
 | 4 | Migrate the permission classes to `has_perm` | 4 | reviewer 4 | ⏳ pending | — | phase-3 | — |
@@ -231,9 +231,53 @@ Carry-forward facts:
 - **`model_bakery` now fills `slug`** with a 255-char random string, since the field is required and the column is `varchar(255)` while `slug_validation` caps *writes* at 63. Tests that posted the value back or asserted `slug is None` were given explicit readable slugs and converted to "unchanged from a pinned starting value". Worth knowing before writing new slug-touching tests.
 - **Pre-existing mypy errors spotted, not fixed** (in the 379 baseline): `public_api/mutations.py:1485` (`SystemUser` has no `scoped_to_membership_user_id`) and `:2071` (`requested_by=None` into a `User` parameter).
 
+### Phase 2a — Flip `calendar_integration` onto the mixin and safe relations
+
+- **Branch**: `plan/vinta-django-orgs-migration/phase-2a` off `phase-1`
+- **Commits**: `3bdd2a9` (precondition swap) · `4af238c` (the flip) · `b0613ec` (isolation tests) · `46892cd` (tripwire) · `fa04150` (review fixes, fixer **Tier 4 — escalated** from the configured Tier 2 by the conductor, because the BLOCKER and five of the six SHOULD-FIX items were tenant-isolation defects requiring reasoning about Django join compilation)
+- **Review**: reviewer Tier 4 (plan override). **One BLOCKER**, six SHOULD-FIX, six NITs. All fixed except one deliberately-skipped NIT (`common/fields.py`'s `TYPE_CHECKING` stub shape).
+
+**The BLOCKER — cross-tenant reads and writes.** `OrganizationScopedManager.get_or_create` / `update_or_create` OR'd `defaults` into the "caller named its organization, so skip the scope" guard, but `defaults` never participates in the `get()`. `Calendar.objects.get_or_create(external_id="x", defaults={"organization": org})` looked up `external_id` across **every tenant**; if another organization owned a matching row the caller got that row with `created=False`, and `update_or_create` then `save()`d it — writing another tenant's data. Naming the organization in `defaults` made the call strictly *less* safe than omitting it. Pinned by four tests, three of which fail if the old condition is restored.
+
+**Five further isolation defects fixed in the same pass**, each proven failing before the fix:
+1. `update(organization=...)` could relocate rows across tenants — the retired `BaseOrganizationModelQuerySet.update` refused it and nothing replaced it. Now raises `OrganizationCannotBeUpdatedError`.
+2. `CalendarQuerySet.update()` read `self._meta` (undefined on `QuerySet`) and called a method removed with `OrganizationModel`, so any `.update()` raised `AttributeError` — and it shadowed the package's working `update()`, which performs the safe-relation kwarg rewrite. No caller today, which is why the suite was green. Deleted.
+3. One correlated subquery (`CalendarGroupSlot ... filter(group_fk_id=OuterRef("id"))`) correlated on the group key alone, so a slot in organization B pointing at organization A's group silently hid A's group from availability results.
+4. `SafeRelationNullInitMixin` missed `OrganizationMembershipForeignKey` (it contributes `<name>_user_id`, not a `<name>_fk` sibling), so `policy.membership = None` still nulled `organization_id` — and where that used to surface as an `IntegrityError`, `save()` now silently re-stamps with the bound organization. Under Phase 2b's request binding that is a cross-tenant row move.
+5. The tripwire's primary-key exemption blinded it to the IDOR shape (`unscoped().get(pk=<leaked id>)` unbound), which Phase 0's guard *did* catch. Exemption now restricted to `SQLUpdateCompiler` / `SQLDeleteCompiler`; it immediately surfaced four real call sites, all bound rather than exempted.
+
+**Three structural problems the flip surfaced**, each solved once rather than per call site:
+- **All 12 managers bypassed scoping** — they built their queryset directly (`XQuerySet(self.model, using=self._db)`), never calling the package's `get_queryset`. Left alone, `.objects` would have *looked* scoped and read every tenant. The reviewer confirmed the claim was real, that all 12 are fixed, and that no thirteenth exists in `calendar_integration`.
+- **`instance.relation = None` cleared `organization`** — Django's forward descriptor writes both local columns of a `ForeignObject`, so making a recurring window non-recurring discarded the row's organization. `SafeRelationNullInitMixin.__setattr__` rewrites only that case.
+- **Reverse related managers would have demanded an ambient organization** — Django builds them by subclassing the target's `_default_manager` class. `OrganizationScopedManager.get_queryset` returns unscoped when `self.instance` is set.
+
+**Strict mode cost 898 initially-failing tests**, converging to zero over five passes (~100 application call sites, ~240 test assertions). That count is a **sequencing fact, not a defect count**: requests do not bind an organization until Phase 2b, so during this phase the implicit scope covers essentially nothing outside Celery tasks and management commands. Ten DRF `queryset = X.objects.all()` class attributes also evaluated at *import* time and raised before Django finished loading; each is now `X.objects.unscoped()` narrowed in `get_queryset()` (the reviewer verified all ten narrow).
+
+**49 deliberate cross-organization reads**, each commented: pooled reseller subtree in `payments`; 11 correlated subqueries in `querysets.py`; the site-wide `WebhookHealthDashboard`; instance-filtered safe relations; three manager methods whose callers narrow. The reviewer checked each group against the code and found exactly one whose rationale did not hold (defect 3 above). `unscoped()` was used rather than `original_manager` because the latter's `_queryset_class` is the package's generic queryset, so model-specific methods like `base_rows_only()` would not exist.
+
+**Indexes**: `(organization, id)` on all 31 concrete models, each FK's single-column index dropped as a prefix. **No hand-authored index dropped** — every organization-leading index here pairs `organization` with a different second column. One finding the autodetector hid: `AlterField` on `bookingpolicy.organization` emitted `DROP INDEX bookingpolicy_uniq_org_default` with no matching `CREATE`, because that is a *partial* `UniqueConstraint` over one column (stored as an index) and Django's `_alter_field` excludes `Meta.indexes` names but not `Meta.constraints` names. Losing it would allow a second organization-default booking policy per organization. Fixed with an explicit `RemoveConstraint`/`AddConstraint` pair; the reviewer confirmed it is the only constraint in the app at risk.
+
+**Query counts: the plan's prediction did not hold, correctly.** `AUTO_DEFER_SAFE_JOINS` does not split paged `select_related` on PostgreSQL — `SingleOrganizationQuerySet._fetch_all` takes the `allow_sliced_subqueries_with_in` branch and rewrites the page as `WHERE pk IN (SELECT pk … LIMIT n)`, staying at one query. **No query-count assertion changed**; the reviewer verified none of the 70 `CaptureQueriesContext` sites was silently absorbed either.
+
+**The isolation test was mutation-tested.** Replacing `CalendarEvent.calendar` with a key-only `ForeignObject` turned `test_safe_relation_joins.py` red (6 failed / 2 passed, the fixture-integrity control staying green); reverted, 8 pass. Every safe-relation assertion is paired with the same assertion through the concrete `calendar_fk`, which *does* reach the cross-organization row, so the file cannot pass vacuously.
+
+**Gate**: ruff clean, `check --deploy` unchanged, `makemigrations --check` no changes, mypy **296** (*below* the 379 baseline — the safe-relation declarations now re-export through `common/fields.py` in a form django-stubs can read, fixing ~80 pre-existing errors), full suite **5563 passed**, `migrate` clean from zero with the partial unique constraint intact.
+
+**A fixer correction worth recording**: the conductor's instruction to use `rpartition` in the tripwire's SQL split was wrong — it discards the outer `WHERE` for the far commoner `WHERE x IN (SELECT … FROM …)`, turning scoped queries into false reports. The fixer split at the outermost `FROM` by bracket depth instead, with three unit tests pinning both failure modes.
+
+Carry-forward facts:
+
+- **`CalendarEvent.external_attendees` is the one M2M on a scoped model with an auto-created through table** — no `organization` column, so the join carries no organization and its related manager is not scoped. No live leak: nothing writes it (`EventExternalAttendance`, the scoped through model, is what every write path uses). Replacing it with an explicit scoped through changes a public GraphQL field (`calendar_integration/graphql.py:350`), so it is an API-contract decision. Documented at the declaration and from `OrganizationScopedManager`'s docstring. **Phase 2b should decide.**
+- **`related_name="+"` on `organization` is gone** (the package's field taken verbatim), so `Organization` gains 31 default reverse accessors (`calendar_set`, …). `manage.py check` reports no clash. Reversible by redeclaring the field at the cost of 31 overrides.
+- **`EventExternalAttendance(external_attendee=<unsaved>)` silently produced a null key** — assigning through a safe relation copies the target's primary key, still `None` before save. Changed to `external_attendee_fk=`. The same shape could exist elsewhere and only surfaces as a `NoneType` read much later.
+- **The Phase 0 neutrality test was inverted, not deleted.** It asserted bound and unbound runs are indistinguishable, which is the opposite of this phase's contract; it now pins that the bound run works and the unbound run raises at the first scoped read.
+- **New shared modules for Phase 2b**: `common/querysets.py`, `common/virtual_models.py`, plus additions to `common/managers.py`, `common/models.py`, `common/fields.py`, `common/exceptions.py`. The reviewer judged these to have real consumers in this phase rather than premature generalization.
+- **`VirtualModel.get_fields` deep-copies its manager**, so an identity check against `model._default_manager` silently stops matching for exactly the nested prefetches it exists to serve. `OrganizationScopedVirtualModel` tests `isinstance(..., OrganizationScopedManagerMixin)` instead.
+- **Flake class now has three members** — `payments/tests/test_billing_period_summary_model.py::TestBillingPeriodSummaryMigration`, `organizations/tests/test_slug_backfill.py::TestTheBackfillMigration`, and (observed once each) `calendar_integration/tests/test_event_creation_surfaces.py::test_every_module_reaching_the_guard_has_a_probe` and `test_availability_limit_concurrency.py::test_without_the_lock_the_net_zero_race_overshoots`. All pass alone. Parallel-load timeouts, not regressions.
+
 ## Current phase
 
-Phase 2a — flip `calendar_integration` onto the package's mixin and safe relations, based on `phase-1`. Read the **Amendment — 2026-08-12** carry-forwards first; the `common/organization_context.py` swap is this phase's precondition.
+Phase 2b — flip the remaining scoped models in `audit`, `webhooks`, `public_api`, `organizations`, and bind the organization in `TenantScopedViewMixin`. Based on `phase-2a`. **Read Phase 2a's carry-forwards first** — the request-path binding it adds is what makes Phase 2a's ~100 explicit call-site narrowings unnecessary, and `CalendarEvent.external_attendees` needs a decision.
 
 ## Deferred phases
 
