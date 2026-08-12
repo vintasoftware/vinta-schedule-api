@@ -169,32 +169,67 @@ class Organization(AbstractOrganization):
                 fields=["parent", "name"],
                 name="uniq_org_name_per_parent",
             ),
+            # Closes the empty-string loophole `Organization.save()`'s
+            # `if not self.slug` derivation relies on convention alone to
+            # avoid: ``slug`` is NOT NULL and unique, but nothing at the
+            # database level stopped a caller that bypasses ``save()``
+            # (``queryset.update(slug="")``, a historical migration model)
+            # from storing ``""`` -- which satisfies NOT NULL and is
+            # unique-constrained (so at most one row could ever hold it), but
+            # is reachable through no supported write path and is exactly the
+            # state ``tenancy.permissions.BrandingWriteGateReason.NO_SLUG``
+            # used to require test helpers to manufacture out-of-band. See
+            # the plan's Guiding Decisions for the "slug precondition for
+            # branding writes" retirement this constraint makes permanent.
+            models.CheckConstraint(
+                condition=~models.Q(slug=""),
+                name="organization_slug_not_blank",
+            ),
         ]
 
     def save(self, *args, **kwargs):
-        """Fill in a derived ``slug`` when the caller left one out.
+        """Fill in a derived, opaque ``slug`` when the caller left one out.
 
         ``AbstractOrganization.slug`` is NOT NULL and unique, so "no public
         identifier yet" is no longer a storable state -- every write surface
         that used to normalize a blank slug to ``NULL`` (the REST serializer,
-        the admin form, ``OrganizationService.create_organization``, the
-        reseller GraphQL mutation, ``baker.make``) would otherwise fail on the
-        NOT NULL constraint. Deriving here rather than at each of those call
-        sites keeps the invariant on the model that declares it, which is also
-        what the slug backfill data migration asserts about existing rows.
+        the admin form, the reseller GraphQL mutation, ``baker.make``) would
+        otherwise fail on the NOT NULL constraint. Deriving here rather than
+        at each of those call sites keeps the invariant on the model that
+        declares it.
+
+        The derived form is the opaque ``org-<token>`` one
+        (``disclose_name=False``): ``slug`` is public -- branded login URLs,
+        ``brandingForTenant``, the logo delivery route -- so a name-derived
+        default would make name disclosure permanent for every organization
+        saved without an explicit slug. Name-derivation was only ever
+        sanctioned for the Phase 1c backfill of pre-existing rows (no
+        production data to disclose) and for the deliberate self-serve
+        organization-create write, where a human explicitly chose the name
+        for their own, about-to-be-public organization -- see
+        ``OrganizationService.create_organization``, which computes and
+        passes an explicit, name-derived ``slug`` itself rather than relying
+        on this fallback. See the plan's Guiding Decisions.
 
         A slug the caller *did* supply is never touched: validation of a
         caller-supplied slug (format, reserved words, confusables, uniqueness)
         stays where it is, on the write surfaces -- see
         ``tenancy.slug_validation``.
+
+        Only derives when the write will actually persist ``slug``:
+        ``save(update_fields=[...])`` that omits ``"slug"`` skips derivation
+        entirely, rather than deriving one into the in-memory instance and
+        silently never writing it.
         """
-        if not self.slug:
+        update_fields = kwargs.get("update_fields")
+        if (update_fields is None or "slug" in update_fields) and not self.slug:
             taken = Organization.objects.all()
             if self.pk is not None:
                 taken = taken.exclude(pk=self.pk)
             self.slug = derive_organization_slug(
                 self.name,
                 slug_exists=lambda candidate: taken.filter(slug=candidate).exists(),
+                disclose_name=False,
             )
         super().save(*args, **kwargs)
 

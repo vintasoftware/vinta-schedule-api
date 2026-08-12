@@ -30,7 +30,6 @@ from tenancy.models import (
     OrganizationMembership,
     OrganizationRole,
 )
-from tenancy.tests.helpers import clear_organization_slug
 
 
 @pytest.fixture
@@ -2326,24 +2325,31 @@ mutation UpdateBranding($input: UpdateBrandingInput!) {
 
 @pytest.mark.django_db
 class TestUpdateBrandingSlugInOneCall:
-    """``UpdateBrandingInput.slug`` -- a partner-API caller can satisfy the
-    write gate's slug precondition and set branding in a single
+    """``UpdateBrandingInput.slug`` -- a partner-API caller can (re)brand the
+    acting organization's public identifier and set branding in a single
     ``updateBranding`` call (Organization Auth-Area Branding plan, Phase 3).
     Both the slug write and the branding upsert land in one
     ``transaction.atomic()`` block: a rejected slug, or a later
-    field-validation failure, must not leave a partial write behind."""
+    field-validation failure, must not leave a partial write behind.
+
+    Every organization here starts with a real, stored slug --
+    ``_org_with_branding_scope``'s default -- rather than none: since Phase 1c
+    of the vinta-django-orgs migration (and, following that phase's review, a
+    database CHECK constraint) a saved organization always has a non-blank
+    slug, so "satisfy the gate's slug precondition via this input" is no
+    longer a state these tests can construct or need to -- the gate's slug
+    condition is unconditionally satisfied for any saved organization. What
+    these tests still prove: this input can *change* an already-set slug
+    alongside a branding write, in one atomic call, with the same rejection /
+    rollback guarantees as before.
+    """
 
     def setup_method(self):
         self.client = APIClient()
 
     def _org_with_branding_scope(self, **org_kwargs):
+        org_kwargs.setdefault("slug", "starting-slug")
         org = baker.make(Organization, can_invite_organizations=False, parent=None, **org_kwargs)
-        if "slug" not in org_kwargs:
-            # "no public identifier yet" -- the write gate's NO_SLUG
-            # precondition, which these tests exist to exercise. Since Phase 1c
-            # of the vinta-django-orgs migration a saved organization always has
-            # a slug, so the state has to be forced. See the helper's docstring.
-            clear_organization_slug(org)
         auth_service = PublicAPIAuthService()
         system_user, token = auth_service.create_system_user(
             integration_name="branding_integration", organization=org
@@ -2352,12 +2358,11 @@ class TestUpdateBrandingSlugInOneCall:
         return org, auth_service, system_user, token
 
     def test_supplying_a_valid_slug_alongside_branding_sets_both(self):
-        """A no-slug org can satisfy the gate's slug precondition and save
-        branding in the same call."""
+        """The acting org's slug changes and branding saves in the same call."""
         from di_core.containers import container
 
         org, auth_service, system_user, token = self._org_with_branding_scope()
-        assert not org.slug
+        assert org.slug == "starting-slug"
 
         with container.public_api_auth_service.override(auth_service):
             response = self.client.post(
@@ -2410,14 +2415,47 @@ class TestUpdateBrandingSlugInOneCall:
         org.refresh_from_db()
         assert org.slug == "already-slugged-org"
 
-    def test_invalid_slug_rejects_the_whole_call_and_leaves_the_org_without_one(self):
+    def test_explicit_blank_slug_is_refused_not_silently_ignored(self):
+        """`slug: ""` (explicitly submitted, not omitted) is refused -- matching
+        `OrganizationSerializer.validate_slug` and `OrganizationAdminForm
+        .clean_slug`, the REST and admin write surfaces, which both refuse a
+        blank slug on an existing organization rather than silently ignoring
+        it or clearing it. Distinct from omitting the field entirely (`None`,
+        covered by `test_omitting_slug_relies_on_the_organizations_stored_slug`
+        above), which stays a no-op."""
+        from di_core.containers import container
+
+        org, auth_service, system_user, token = self._org_with_branding_scope(slug="keep-this-slug")
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": UPDATE_BRANDING_WITH_SLUG_MUTATION,
+                    "variables": {"input": {"appName": "ShouldNotPersist", "slug": ""}},
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert "cannot be cleared" in str(data["errors"]).lower()
+
+        org.refresh_from_db()
+        assert org.slug == "keep-this-slug"
+        assert not OrganizationBranding.objects.filter(organization=org).exists()
+
+    def test_invalid_slug_rejects_the_whole_call_and_leaves_the_slug_unchanged(self):
         """An invalid slug (fails the shared format rule) rejects the entire
         call before the gate or the branding upsert ever runs -- the
-        organization's slug stays unset and no branding row is created."""
+        organization's stored slug is untouched and no branding row is
+        created."""
         from di_core.containers import container
 
         org, auth_service, system_user, token = self._org_with_branding_scope()
-        assert not org.slug
+        assert org.slug == "starting-slug"
 
         with container.public_api_auth_service.override(auth_service):
             response = self.client.post(
@@ -2441,7 +2479,7 @@ class TestUpdateBrandingSlugInOneCall:
         assert data["errors"]
 
         org.refresh_from_db()
-        assert not org.slug
+        assert org.slug == "starting-slug"
         assert not OrganizationBranding.objects.filter(organization=org).exists()
 
     def test_colliding_slug_rejects_without_partially_applying(self):
@@ -2452,7 +2490,7 @@ class TestUpdateBrandingSlugInOneCall:
 
         baker.make(Organization, parent=None, slug="already-taken-slug")
         org, auth_service, system_user, token = self._org_with_branding_scope()
-        assert not org.slug
+        assert org.slug == "starting-slug"
 
         with container.public_api_auth_service.override(auth_service):
             response = self.client.post(
@@ -2476,7 +2514,7 @@ class TestUpdateBrandingSlugInOneCall:
         assert "already exists" in str(data["errors"]).lower()
 
         org.refresh_from_db()
-        assert not org.slug
+        assert org.slug == "starting-slug"
         assert not OrganizationBranding.objects.filter(organization=org).exists()
 
     def test_slug_collision_surfacing_as_integrity_error_is_a_friendly_graphql_error(self):
@@ -2489,7 +2527,7 @@ class TestUpdateBrandingSlugInOneCall:
         transaction (verified here by asserting the org's slug is unchanged
         afterwards, i.e. the save's own savepoint rolled back cleanly)."""
         baker.make(Organization, parent=None, slug="race-slug")
-        org = clear_organization_slug(baker.make(Organization, parent=None))
+        org = baker.make(Organization, parent=None, slug="pre-race-slug")
 
         with patch("public_api.mutations.Organization.objects.filter") as mock_filter:
             mock_filter.return_value.exclude.return_value.exists.return_value = False
@@ -2497,7 +2535,7 @@ class TestUpdateBrandingSlugInOneCall:
                 _apply_input_slug(org, "race-slug")
 
         org.refresh_from_db()
-        assert not org.slug
+        assert org.slug == "pre-race-slug"
 
     def test_valid_slug_rolls_back_when_a_later_validation_fails(self):
         """Transaction check: the slug write and the branding upsert are one
@@ -2508,7 +2546,7 @@ class TestUpdateBrandingSlugInOneCall:
         from di_core.containers import container
 
         org, auth_service, system_user, token = self._org_with_branding_scope()
-        assert not org.slug
+        assert org.slug == "starting-slug"
 
         with container.public_api_auth_service.override(auth_service):
             response = self.client.post(
@@ -2533,7 +2571,7 @@ class TestUpdateBrandingSlugInOneCall:
         assert "invalid primary_color" in str(data["errors"]).lower()
 
         org.refresh_from_db()
-        assert not org.slug, (
+        assert org.slug == "starting-slug", (
             "The slug write must roll back with the rest of the transaction, "
             "even though the slug itself was valid and would-have-been unique."
         )

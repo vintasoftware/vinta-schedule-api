@@ -46,6 +46,7 @@ from tenancy.models import (
     OrganizationRole,
     resolve_branding_for_display,
 )
+from tenancy.slug_generation import derive_organization_slug
 from users.models import User
 from webhooks.services.webhook_membership_side_effects import WebhookMembershipSideEffectsService
 
@@ -99,9 +100,24 @@ class OrganizationService:
         management command, shell, or Celery task calling this directly would
         otherwise be able to commit the ``Organization`` row and then fail on
         subscription creation, leaving a plan-less organization behind.
+
+        This is the one sanctioned, name-disclosing slug default:
+        ``Organization.save()``'s own fallback derives the opaque
+        ``org-<token>`` form (see that method's docstring), but this is the
+        self-serve "create my own organization" write -- the caller
+        (``creator``) explicitly chose ``name`` for their own, about-to-be-
+        public organization, so deriving its slug from that name discloses
+        only what they already put in. Computed and passed explicitly rather
+        than left to ``Organization.save()``'s fallback so that sanctioned
+        disclosure stays visible at this one call site instead of being an
+        emergent property of "this row happened to have no explicit slug".
         """
         create_kwargs: dict = {
             "name": name,
+            "slug": derive_organization_slug(
+                name,
+                slug_exists=lambda candidate: Organization.objects.filter(slug=candidate).exists(),
+            ),
             "should_sync_rooms": should_sync_rooms,
         }
         if external_event_update_policy is not None:

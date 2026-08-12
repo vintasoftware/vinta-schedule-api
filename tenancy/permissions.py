@@ -139,10 +139,22 @@ class BrandingWriteGateReason(enum.Enum):
       as fixable by the organization itself.
     - ``NOT_ENTITLED`` -- a billing state. The organization's plan does not
       include white-label branding; fixable by upgrading.
-    - ``NO_SLUG`` -- one step away. The organization is otherwise eligible but
-      has not picked a public slug yet (spec: "Eligible org with no public
-      identifier yet" -- branding settings stay offered, refused with a
-      message that reads as "pick a slug first", not hidden outright).
+    - ``NO_SLUG`` -- **dead-with-reason, since Phase 1c of the
+      vinta-django-orgs migration.** Originally: one step away, the
+      organization otherwise eligible but not yet having picked a public slug
+      (spec: "Eligible org with no public identifier yet"). ``Organization
+      .slug`` became NOT NULL in that phase and, following that phase's
+      review, is also database-CHECK-constrained against blank
+      (``organization_slug_not_blank``) -- so ``evaluate_branding_write_gate``
+      below can no longer return this member for any *persisted* organization,
+      and "a slug is a precondition for branding writes" is retired as a
+      product rule (see the plan's Guiding Decisions). Kept, not deleted: the
+      member and its ``BRANDING_GATE_EXCEPTIONS`` entry are still part of the
+      gate's public contract and the check below still exists (an in-memory,
+      unpersisted organization can still trip it -- see
+      ``tenancy/tests/test_branding.py``'s
+      ``test_the_dead_no_slug_branch_still_evaluates_correctly``). Scheduled
+      for removal in Phase 4 of the plan (see that phase's Changes list).
     """
 
     OK = "ok"
@@ -173,6 +185,10 @@ def evaluate_branding_write_gate(organization: Organization | None) -> BrandingW
         return BrandingWriteGateReason.HAS_PARENT
     if not _organization_holds_white_label_branding(organization):
         return BrandingWriteGateReason.NOT_ENTITLED
+    # Dead-with-reason since Phase 1c of the vinta-django-orgs migration --
+    # see BrandingWriteGateReason.NO_SLUG's docstring. `organization.slug` is
+    # unreachable-blank for any persisted row; this only still fires against
+    # an in-memory-only mutation.
     if not organization.slug:
         return BrandingWriteGateReason.NO_SLUG
     return BrandingWriteGateReason.OK
@@ -181,6 +197,7 @@ def evaluate_branding_write_gate(organization: Organization | None) -> BrandingW
 BRANDING_GATE_EXCEPTIONS: dict[BrandingWriteGateReason, type[PermissionDenied]] = {
     BrandingWriteGateReason.HAS_PARENT: OrganizationHasParentBrandingError,
     BrandingWriteGateReason.NOT_ENTITLED: BrandingEntitlementRequiredError,
+    # Dead-with-reason -- see BrandingWriteGateReason.NO_SLUG's docstring.
     BrandingWriteGateReason.NO_SLUG: OrganizationSlugRequiredForBrandingError,
 }
 

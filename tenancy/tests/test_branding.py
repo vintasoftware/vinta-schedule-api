@@ -51,7 +51,6 @@ from tenancy.permissions import (
 )
 from tenancy.redirect_url_validation import validate_redirect_url
 from tenancy.serializers import CurrentMembershipSerializer, MyMembershipSerializer
-from tenancy.tests.helpers import clear_organization_slug
 from users.factories import UserFactory
 
 
@@ -489,6 +488,25 @@ class TestEvaluateBrandingWriteGate:
 
         assert evaluate_branding_write_gate(org) is BrandingWriteGateReason.OK
 
+    def test_admits_a_freshly_created_parentless_entitled_organization_with_no_explicit_slug(
+        self,
+    ):
+        """The gate's third condition (``if not organization.slug: return
+        NO_SLUG``) is unsatisfiable for any organization created through a
+        supported write path: ``Organization.slug`` is NOT NULL, unique, and
+        (Phase 1c review fix) database-CHECK-constrained against blank, and
+        ``Organization.save()`` derives one for any row left without one. A
+        parentless entitled organization created with no ``slug`` kwarg at
+        all -- the ordinary case -- must therefore evaluate straight to
+        ``OK``, not ``NO_SLUG``. See the plan's Guiding Decisions for the
+        retirement of "a slug is a precondition for branding writes" as a
+        product rule this NOT NULL slug made unreachable.
+        """
+        org = _org_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None)
+        assert org.slug  # sanity: Organization.save() did derive one
+
+        assert evaluate_branding_write_gate(org) is BrandingWriteGateReason.OK
+
     def test_refuses_an_organization_with_a_parent(self):
         parent_org = _org_with_entitlement(
             Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="parent-org"
@@ -506,17 +524,32 @@ class TestEvaluateBrandingWriteGate:
 
         assert evaluate_branding_write_gate(org) is BrandingWriteGateReason.NOT_ENTITLED
 
-    def test_refuses_an_organization_with_no_slug(self):
-        org = clear_organization_slug(
-            _org_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None)
-        )
-        assert not org.slug
+    def test_the_dead_no_slug_branch_still_evaluates_correctly(self):
+        """``BrandingWriteGateReason.NO_SLUG`` cannot be reached through any
+        supported write path any more (see the test above and the plan's
+        Guiding Decisions) -- the database itself now refuses a blank slug
+        (``organization_slug_not_blank``), so there is no way left to
+        *persist* this state. The enum member and its
+        ``BRANDING_GATE_EXCEPTIONS`` entry are kept rather than deleted
+        (dead-with-reason; scheduled for removal in Phase 4 -- see the plan's
+        Phase 4 Changes list), so this proves the dead branch still evaluates
+        the way that exception mapping assumes, using an **in-memory**
+        mutation rather than a persisted row -- the only way left to
+        construct this state at all.
+        """
+        org = _org_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None)
+        org.slug = ""  # in-memory only -- never saved, never reaches the DB
 
         assert evaluate_branding_write_gate(org) is BrandingWriteGateReason.NO_SLUG
 
     def test_the_three_refusals_are_distinguishable(self):
         """Each failure mode produces its own reason, not a bare False -- this is
-        the whole point of the enum-returning gate over a boolean helper."""
+        the whole point of the enum-returning gate over a boolean helper.
+
+        ``no_slug_org``'s blank slug is an in-memory mutation, not a persisted
+        one -- see ``test_the_dead_no_slug_branch_still_evaluates_correctly``
+        for why that is the only way left to construct the state at all.
+        """
         parent_org = _org_with_entitlement(
             Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="parent-org-2"
         )
@@ -524,9 +557,10 @@ class TestEvaluateBrandingWriteGate:
         unentitled_org = _org_with_entitlement(
             Entitlement.WHITE_LABEL_BRANDING, is_enabled=False, parent=None, slug="unentitled-org"
         )
-        no_slug_org = clear_organization_slug(
-            _org_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None)
+        no_slug_org = _org_with_entitlement(
+            Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None
         )
+        no_slug_org.slug = ""
 
         reasons = {
             evaluate_branding_write_gate(child_org),
@@ -547,11 +581,13 @@ class TestEvaluateBrandingWriteGate:
         an implementation detail (Write gate guiding decision). Pins the split
         between the two-condition and three-condition gates as a regression
         test: a future change that folds the slug condition into
-        `is_branding_eligible_organization` would flip this assertion."""
-        org = clear_organization_slug(
-            _org_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None)
-        )
-        assert not org.slug
+        `is_branding_eligible_organization` would flip this assertion.
+
+        The blank slug is an in-memory mutation -- see
+        ``test_the_dead_no_slug_branch_still_evaluates_correctly``.
+        """
+        org = _org_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None)
+        org.slug = ""
 
         assert is_branding_eligible_organization(org) is True
         assert evaluate_branding_write_gate(org) is BrandingWriteGateReason.NO_SLUG
@@ -594,11 +630,17 @@ class TestCanManageBrandingCapabilityField:
     def test_true_for_a_parentless_entitled_organization_with_no_slug(self):
         """The key case: NOT including the slug condition. Pins the split against
         `evaluate_branding_write_gate`, which would return NO_SLUG (falsy) for
-        this exact organization."""
-        org = clear_organization_slug(
-            _org_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None)
-        )
-        assert not org.slug
+        this exact organization.
+
+        The blank slug is an in-memory mutation, not a persisted one: since
+        Phase 1c of the vinta-django-orgs migration (and, following that
+        phase's review, a database CHECK constraint) a saved organization
+        always has a non-blank slug, so this state is no longer storable at
+        all -- see ``TestEvaluateBrandingWriteGate.
+        test_the_dead_no_slug_branch_still_evaluates_correctly``.
+        """
+        org = _org_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None)
+        org.slug = ""
         membership = self._membership(org)
 
         assert CurrentMembershipSerializer(membership).data["can_manage_branding"] is True

@@ -40,11 +40,18 @@ triggers by repopulating the app registry -- re-imports nothing and leaves
 guarded on ``is_registered`` so it cannot raise ``NotRegistered`` if the package
 ever stops registering.
 
-Only ``Organization`` is taken over. ``OrganizationMembership`` has no
-``ModelAdmin`` of ours to collide with, so the package's
-``OrganizationMembershipAdmin`` (which ``select_related``s user + organization
-and prefetches groups, precisely to keep its changelist from N+1-ing on
-``__str__``) is left registered as the project's membership admin.
+``OrganizationMembership`` has no ``ModelAdmin`` of ours to collide with, but
+the package's own ``OrganizationMembershipAdmin`` is not left registered
+either: it gives staff full add/change/delete over ``OrganizationMembership``
+with ``role``, ``is_billing_owner``, ``is_active``, and the ``groups`` /
+``permissions`` M2Ms all editable, none of the "protect the last active
+admin" or seat-limit rules the REST viewset (``tenancy/views.py``) enforces,
+and with ``groups`` / ``permissions`` semantics undefined until Phase 3. The
+brief this admin resolves is the registration *collision*, not "adopt
+whatever membership admin the package ships" -- so it is unregistered here
+too, leaving the project with no Django-admin surface for memberships at all
+until a real one (respecting the same invariants the REST viewset does) is
+deliberately built in Phase 3.
 
 No ``sys.modules`` patching: the Phase 1a attempt at that was rejected in review,
 and nothing here needs it.
@@ -61,13 +68,18 @@ import organizations.admin  # noqa: F401 -- imported for its registration side e
 from dependency_injector.wiring import Provide, inject
 
 from payments.services.subscription_service import SubscriptionService
-from tenancy.models import Organization, OrganizationBranding
+from tenancy.models import Organization, OrganizationBranding, OrganizationMembership
 from tenancy.slug_validation import validate_organization_slug
 
 
 if admin.site.is_registered(Organization):
     # The package registered it (see the module docstring). Ours replaces it.
     admin.site.unregister(Organization)
+
+if admin.site.is_registered(OrganizationMembership):
+    # The package's OrganizationMembershipAdmin -- see the module docstring
+    # for why this project does not adopt it as-is.
+    admin.site.unregister(OrganizationMembership)
 
 
 class OrganizationAdminForm(forms.ModelForm):

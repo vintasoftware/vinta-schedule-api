@@ -138,8 +138,12 @@ class UpdateBrandingInput:
     slug precondition and set branding in a single call, rather than needing a
     separate organization-update mutation that does not exist on this surface.
     When omitted (``None``), the acting organization's already-stored slug
-    must satisfy the gate on its own. The slug write and the branding upsert
-    land in one transaction: an invalid or colliding slug, or a
+    must satisfy the gate on its own. An explicitly-submitted blank slug
+    (``""``) is refused rather than silently ignored or cleared -- matching
+    ``OrganizationSerializer.validate_slug`` and ``OrganizationAdminForm
+    .clean_slug``, the REST and admin write surfaces, which both refuse a
+    blank slug the same way. The slug write and the branding upsert land in
+    one transaction: an invalid, blank, or colliding slug, or a
     field-validation failure anywhere else in this input, rejects the whole
     call and leaves the organization's slug unchanged.
     """

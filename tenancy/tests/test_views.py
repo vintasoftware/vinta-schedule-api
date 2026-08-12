@@ -492,12 +492,14 @@ class TestOrganizationSlugUpdate:
         self, auth_client, user, organization_with_membership
     ):
         """A non-admin member is refused (IsOrganizationAdmin gates the whole update)."""
+        before = organization_with_membership.slug
+
         url = reverse("api:Organizations-detail", kwargs={"pk": organization_with_membership.pk})
         response = auth_client.patch(url, {"slug": "member-org"}, format="json")
 
         assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
         organization_with_membership.refresh_from_db()
-        assert organization_with_membership.slug != "member-org"
+        assert organization_with_membership.slug == before
 
     def test_duplicate_slug_returns_400_naming_the_collision(self):
         """A second organization claiming a taken slug gets 400, not a 500."""
@@ -506,6 +508,8 @@ class TestOrganizationSlugUpdate:
         existing.save()
 
         organization = OrganizationTestFactory.create_organization(name="Second Org")
+        before = organization.slug
+
         _user, client = self._make_admin_client(organization)
 
         url = reverse("api:Organizations-detail", kwargs={"pk": organization.pk})
@@ -516,7 +520,7 @@ class TestOrganizationSlugUpdate:
         assert "slug" in body
         assert "taken-slug" in body["slug"][0]
         organization.refresh_from_db()
-        assert organization.slug != "taken-slug"
+        assert organization.slug == before
 
     def test_changing_an_existing_slug_succeeds(self):
         """An admin can change an already-set slug to a new unique value."""
@@ -572,6 +576,7 @@ class TestOrganizationSlugUpdate:
         the generic DRF message before the confusable-specific one is reached).
         """
         organization = OrganizationTestFactory.create_organization(name="Confusable Org")
+        before = organization.slug
         _user, client = self._make_admin_client(organization)
 
         url = reverse("api:Organizations-detail", kwargs={"pk": organization.pk})
@@ -587,13 +592,14 @@ class TestOrganizationSlugUpdate:
         assert "non-ASCII character" in message
         assert "lookalike" in message
         organization.refresh_from_db()
-        assert organization.slug != lookalike_slug
+        assert organization.slug == before
 
     def test_super_route_slug_is_rejected_as_reserved(self):
         """The real admin path segment ``super`` (see ``vinta_schedule_api/urls.py``)
         is rejected as reserved, naming the reserved-word rule.
         """
         organization = OrganizationTestFactory.create_organization(name="Super Org")
+        before = organization.slug
         _user, client = self._make_admin_client(organization)
 
         url = reverse("api:Organizations-detail", kwargs={"pk": organization.pk})
@@ -602,7 +608,7 @@ class TestOrganizationSlugUpdate:
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
         assert "reserved" in response.json()["slug"][0]
         organization.refresh_from_db()
-        assert organization.slug != "super"
+        assert organization.slug == before
 
 
 @pytest.mark.django_db

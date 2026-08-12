@@ -1553,7 +1553,19 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             # Slug application happens BEFORE the gate is evaluated so a
             # partner-API caller can satisfy the gate's slug precondition and
             # set branding in one call.
-            if input.slug:
+            #
+            # `None` (omitted) and `""` (explicitly submitted blank) are NOT
+            # the same input here: `None` means "don't touch the slug", and
+            # `""` is refused -- matching `OrganizationSerializer.validate_slug`
+            # and `OrganizationAdminForm.clean_slug`, the REST and admin write
+            # surfaces, which both refuse a blank slug on an organization that
+            # already exists rather than silently ignoring it or re-deriving
+            # one from the name.
+            if input.slug is not None:
+                if not input.slug:
+                    raise GraphQLError(
+                        "An organization's slug cannot be cleared. Submit a new slug instead."
+                    )
                 _apply_input_slug(acting_org, input.slug)
 
             gate_reason = evaluate_branding_write_gate(acting_org)

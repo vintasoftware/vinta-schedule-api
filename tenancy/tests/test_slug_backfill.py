@@ -17,8 +17,9 @@ the same way the code does cannot catch the code computing it wrongly.
 """
 
 import importlib
+from types import SimpleNamespace
 
-from django.apps import apps
+from django.contrib.auth import get_user_model
 from django.db import IntegrityError, connection, transaction
 from django.db.migrations.executor import MigrationExecutor
 
@@ -132,16 +133,28 @@ class TestBackfillMigrationBehaviour:
     The migration itself has already run against the test database (it is part
     of the graph pytest-django applies), so what is exercised here is the
     function it delegates to, against real rows and the real uniqueness
-    predicate -- the same shape ``Organization.save()`` uses.
+    predicate -- the same shape ``OrganizationService.create_organization``
+    uses (the one write path that still derives a slug from the name --
+    ``Organization.save()``'s own default is the opaque, non-name-derived
+    form; see both methods' docstrings).
     """
 
     def _existing_slug_predicate(self):
         return lambda candidate: Organization.objects.filter(slug=candidate).exists()
 
     def test_two_organizations_with_the_same_name_do_not_collide(self):
-        first = Organization.objects.create(name="Duplicate Name Ltd")
-        second = Organization.objects.create(name="Duplicate Name Ltd", parent=first)
-        third = Organization.objects.create(name="Duplicate Name Ltd", parent=second)
+        from tenancy.services import OrganizationService
+
+        service = OrganizationService()
+        first = service.create_organization(
+            creator=baker.make(get_user_model()), name="Duplicate Name Ltd"
+        )
+        second = service.create_organization(
+            creator=baker.make(get_user_model()), name="Duplicate Name Ltd"
+        )
+        third = service.create_organization(
+            creator=baker.make(get_user_model()), name="Duplicate Name Ltd"
+        )
 
         assert first.slug == "duplicate-name-ltd"
         assert second.slug == "duplicate-name-ltd-2"
@@ -161,12 +174,17 @@ class TestBackfillMigrationBehaviour:
     def test_re_running_the_derivation_is_stable_for_an_already_backfilled_row(self):
         """Idempotency, at the level that matters: a second pass finds nothing to
         do, because the migration only selects rows whose slug is NULL or blank
-        and every row now has one."""
+        and every row now has one -- regardless of which write path put it
+        there. ``Organization.objects.create(...)`` (no explicit slug) goes
+        through ``Organization.save()``'s own opaque-default fallback, not
+        name-derivation -- see that method's docstring."""
         Organization.objects.create(name="Stable Org")
 
         assert Organization.objects.filter(slug__isnull=True).count() == 0
         assert Organization.objects.filter(slug="").count() == 0
-        assert Organization.objects.get(name="Stable Org").slug == "stable-org"
+        stable_slug = Organization.objects.get(name="Stable Org").slug
+        assert stable_slug
+        assert stable_slug.startswith("org-")
 
     def test_the_backfill_migration_is_applied_and_has_a_reverse(self):
         """The migration exists in the graph, is applied, and declares a reverse
@@ -183,72 +201,109 @@ class TestBackfillMigrationBehaviour:
         assert operation.reversible
 
 
-@pytest.mark.django_db
-class TestBackfillSlugsFunctionAgainstRealRows:
-    """``0026``'s own ``backfill_slugs``, run against the live table.
+@pytest.fixture
+def historical_organization_model():
+    """The ``Organization`` model as it existed at ``0025`` -- nullable
+    ``slug``, no NOT NULL constraint, no ``organization_slug_not_blank`` CHECK
+    constraint -- so a test can construct the ``slug = ''`` state ``0026``'s
+    ``UNSET_SLUG`` predicate selects for.
 
-    The migration has already been applied to the test database (the graph is
-    what builds it), so the way to exercise the function again is to recreate the
-    state it selects for. ``slug = ''`` is used rather than ``NULL``: ``0027``
-    has made the column NOT NULL, and the migration's ``UNSET_SLUG`` predicate
-    covers both. **One blank row at a time** -- ``slug`` is unique, so ``''``
-    admits exactly one holder; multi-row disambiguation *within one run* is
-    covered at the algorithm level in ``TestDeriveOrganizationSlug``, and
+    That state is no longer storable through the live model: ``0027`` made
+    the column NOT NULL, and the Phase 1c review's
+    ``organization_slug_not_blank`` CHECK constraint (``0028``) closed the
+    empty-string loophole NOT NULL alone left open. Driving the executor back
+    to ``0025`` (real DDL, not just Django's in-memory state) is the only way
+    left to reach this state at all -- see ``TestBackfillMigrationNullBranch``
+    above for the same technique applied to the ``slug IS NULL`` half.
+
+    Restores head afterward regardless of test outcome.
+    """
+    app_label = "tenancy"
+    previous = "0025_reparent_onto_package_abstract_bases"
+
+    executor = MigrationExecutor(connection)
+    head = executor.loader.graph.leaf_nodes(app=app_label)[0]
+
+    try:
+        executor.migrate([(app_label, previous)])
+        executor.loader.build_graph()
+
+        historical_state = executor.loader.project_state((app_label, previous))
+        yield historical_state.apps.get_model("tenancy", "Organization")
+    finally:
+        executor.migrate([head])
+        executor.loader.build_graph()
+
+
+@pytest.mark.django_db(transaction=True)
+class TestBackfillSlugsFunctionAgainstRealRows:
+    """``0026``'s own ``backfill_slugs``, run against a real (if temporarily
+    rewound) table -- see ``historical_organization_model`` above for why a
+    historical model is what makes ``slug = ''`` reachable at all now.
+
+    **One blank row at a time** -- ``slug`` is unique, so ``''`` admits
+    exactly one holder; multi-row disambiguation *within one run* is covered
+    at the algorithm level in ``TestDeriveOrganizationSlug``, and
     disambiguation against rows already in the table is covered here, which is
     the half a pure-function test cannot reach.
     """
 
-    def _blank(self, organization: Organization) -> Organization:
-        Organization.objects.filter(pk=organization.pk).update(slug="")
-        organization.refresh_from_db()
-        return organization
+    def _run(self, historical_organization_model) -> None:
+        # `backfill_slugs` only reads `apps.get_model(...)` off whatever it is
+        # handed, so passing an object exposing just that method (rather than
+        # the full historical `apps` registry) is enough.
+        migration_module.backfill_slugs(
+            SimpleNamespace(get_model=lambda app_label, model_name: historical_organization_model),
+            None,
+        )
 
-    def _run(self) -> None:
-        migration_module.backfill_slugs(apps, None)
+    def test_a_blank_slug_is_filled_from_the_name(self, historical_organization_model):
+        organization = historical_organization_model.objects.create(name="Backfill Me Ltd", slug="")
 
-    def test_a_blank_slug_is_filled_from_the_name(self):
-        organization = self._blank(baker.make(Organization, name="Backfill Me Ltd"))
-
-        self._run()
+        self._run(historical_organization_model)
 
         organization.refresh_from_db()
         assert organization.slug == "backfill-me-ltd"
 
-    def test_it_disambiguates_against_a_slug_already_in_the_table(self):
+    def test_it_disambiguates_against_a_slug_already_in_the_table(
+        self, historical_organization_model
+    ):
         """The real uniqueness predicate, not an injected one: the taken set is
         seeded from the rows that already have slugs."""
-        baker.make(Organization, name="Occupier", slug="collide-me")
-        organization = self._blank(baker.make(Organization, name="Collide Me"))
+        historical_organization_model.objects.create(name="Occupier", slug="collide-me")
+        organization = historical_organization_model.objects.create(name="Collide Me", slug="")
 
-        self._run()
+        self._run(historical_organization_model)
 
         organization.refresh_from_db()
         assert organization.slug == "collide-me-2"
 
-    def test_a_reserved_name_falls_back_to_org_pk(self):
-        organization = self._blank(baker.make(Organization, name="Admin"))
+    def test_a_reserved_name_falls_back_to_org_pk(self, historical_organization_model):
+        organization = historical_organization_model.objects.create(name="Admin", slug="")
 
-        self._run()
+        self._run(historical_organization_model)
 
         organization.refresh_from_db()
         assert organization.slug == f"org-{organization.pk}"
 
-    def test_re_running_it_changes_nothing(self):
-        organization = self._blank(baker.make(Organization, name="Idempotent Org"))
+    def test_re_running_it_changes_nothing(self, historical_organization_model):
+        organization = historical_organization_model.objects.create(name="Idempotent Org", slug="")
 
-        self._run()
+        self._run(historical_organization_model)
         organization.refresh_from_db()
         first_pass = organization.slug
         assert first_pass == "idempotent-org"
 
-        self._run()
+        self._run(historical_organization_model)
         organization.refresh_from_db()
         assert organization.slug == first_pass
 
-    def test_it_leaves_an_already_slugged_organization_alone(self):
-        organization = baker.make(Organization, name="Hand Picked", slug="my-own-choice")
+    def test_it_leaves_an_already_slugged_organization_alone(self, historical_organization_model):
+        organization = historical_organization_model.objects.create(
+            name="Hand Picked", slug="my-own-choice"
+        )
 
-        self._run()
+        self._run(historical_organization_model)
 
         organization.refresh_from_db()
         assert organization.slug == "my-own-choice"
@@ -281,6 +336,67 @@ class TestSlugColumnAfterTheBackfill:
         baker.make(Organization, _quantity=3)
 
         assert Organization.objects.filter(slug__isnull=True).count() == 0
+
+
+@pytest.mark.django_db(transaction=True)
+class TestBackfillMigrationNullBranch:
+    """``0026``'s ``slug IS NULL`` branch, driven for real through ``MigrationExecutor``.
+
+    By the time any other test in this module runs, ``0027`` has already made
+    the column NOT NULL, so ``TestBackfillSlugsFunctionAgainstRealRows`` above
+    can only reach the ``slug = ''`` half of ``UNSET_SLUG`` (one row at a time,
+    since ``''`` is unique-constrained too). The branch that actually mattered
+    on a real pre-1c database -- ``slug IS NULL``, which is *not*
+    unique-constrained, so more than one row can hold it at once -- and the
+    in-run ``taken`` set accumulating disambiguation across multiple such rows
+    in the same pass, are otherwise unproven.
+
+    Drives the executor back to ``0025_reparent_onto_package_abstract_bases``
+    (the last migration before the column is touched at all -- still nullable,
+    not yet backfilled), inserts two same-named rows with ``slug = NULL``
+    directly against the historical model (which has no ``save()`` override,
+    so nothing auto-derives a slug out from under the test), migrates forward
+    again through ``0026`` and ``0027``, and asserts the disambiguated result.
+    Mirrors ``tenancy/tests/test_seeded_database_migration_path.py`` and
+    ``payments/tests/test_billing_period_summary_model.py::
+    TestBillingPeriodSummaryMigration``'s precedent for driving
+    ``MigrationExecutor`` directly against the shared per-worker test
+    database, restored to head in a ``finally`` block regardless of where an
+    assertion fails.
+    """
+
+    def test_two_null_slugged_rows_with_the_same_name_are_disambiguated(self):
+        app_label = "tenancy"
+        previous = "0025_reparent_onto_package_abstract_bases"
+
+        executor = MigrationExecutor(connection)
+        # The real head of the `tenancy` graph, computed rather than pinned to
+        # `0027_organization_slug_not_null` by name -- a later migration in
+        # this app must still come back fully applied when this test restores
+        # state, not just the migration that existed when this test was
+        # written.
+        head = executor.loader.graph.leaf_nodes(app=app_label)[0]
+
+        try:
+            executor.migrate([(app_label, previous)])
+            executor.loader.build_graph()
+
+            historical_state = executor.loader.project_state((app_label, previous))
+            historical_organization_model = historical_state.apps.get_model(
+                "tenancy", "Organization"
+            )
+
+            first = historical_organization_model.objects.create(name="Null Slug Co", slug=None)
+            second = historical_organization_model.objects.create(name="Null Slug Co", slug=None)
+            assert first.slug is None
+            assert second.slug is None
+        finally:
+            executor.migrate([head])
+            executor.loader.build_graph()
+
+        first_row = Organization.objects.get(pk=first.pk)
+        second_row = Organization.objects.get(pk=second.pk)
+        assert {first_row.slug, second_row.slug} == {"null-slug-co", "null-slug-co-2"}
 
 
 @pytest.mark.django_db(transaction=True)

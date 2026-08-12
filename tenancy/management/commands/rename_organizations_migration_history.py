@@ -28,27 +28,54 @@ anything, so a `RunPython` step inside the ``tenancy`` graph would never even
 get a chance to execute (the loader would already be stuck on the
 inconsistency first).
 
-Idempotent: only rows whose ``name`` matches one of the 22 pre-rename
-``tenancy`` migrations (``0001_initial`` … ``0022_organization_week_start``,
-computed from the on-disk migration graph, not hardcoded) are rewritten from
-``organizations`` to ``tenancy``. Re-running after the rename (no matching
-rows left) is a no-op.
+Only rows whose ``name`` matches one of the 22 pre-rename ``tenancy``
+migrations (``0001_initial`` … ``0022_organization_week_start``, computed from
+the on-disk migration graph, not hardcoded) are ever rewritten, from
+``organizations`` to ``tenancy``. Running the fix against an already-fixed
+database used to be a graceful no-op (no matching ``organizations``-labelled
+rows left); as of the guard below, a second run never reaches that check at
+all, because the first run's own success moves ``django_migrations`` out of
+the state the guard requires -- see its "Non-zero" branch.
 
-**Guarded against Phase 1c.** Phase 1c installs
+**Guard, corrected in the Phase 1c review.** Phase 1c installs
 ``organizations.apps.OrganizationsConfig`` -- the vinta-django-orgs package's
-own Django app -- which records its own migrations in ``django_migrations``
-under the label ``organizations`` (a legitimate use of that label, distinct
-from this app's pre-rename history). Once that app is installed, a blanket
-rewrite would corrupt its applied history by relabelling the package's own
-rows onto ``tenancy``, causing the next ``migrate`` to re-run
-``organizations.0001_initial`` against tables that already exist. This
-command therefore refuses to run at all (``CommandError``) once
-``organizations`` is an installed app -- this command's job is already done
-by then; there is nothing left in ``django_migrations`` under the old label
-that legitimately belongs to *this* app's pre-Phase-1c history.
+own Django app -- which is installed for the lifetime of every checkout from
+that phase onward. The command's original guard (``CommandError`` whenever
+``apps.is_installed("organizations")``) tested a **code** fact that became
+permanently true the moment Phase 1c merged, which made this command refuse
+unconditionally on `main` -- including against a genuinely pre-Phase-1a
+database, the one case it exists to fix, and including on the `main`-tracking
+phase branch this repository's `README.md` used to tell operators to run it
+from (a remedy that evaporates the moment that branch is merged and deleted).
 
-Usage, once, before ``migrate``, against any database created before this
-branch::
+The guard now tests a **data** fact instead: ``SELECT COUNT(*) FROM
+django_migrations WHERE app = 'tenancy'``.
+
+* **Zero** -- no migration has ever been recorded under the ``tenancy``
+  label, so this database predates Phase 1a (the label did not exist before
+  it) and every ``organizations``-labelled row up to the pre-rename cutoff is
+  ours. Proceed with the name-scoped rewrite below.
+* **Non-zero** -- some ``tenancy``-labelled migration has been applied, which
+  can only happen *after* Phase 1a landed. This database is not in the state
+  this command exists to fix -- it was migrated fresh post-rename (there is
+  nothing to fix), or it has already been fixed by a prior run of this very
+  command (same conclusion), or Phase 1c has also run (in which case the
+  ``organizations``-labelled rows belong to the package, not to this app's
+  pre-rename history, and rewriting them would corrupt the package's applied
+  state). Refuse outright (``CommandError``), in every one of those cases,
+  rather than trying to tell them apart -- refusing is safe in all of them,
+  and none of them can be told apart from ``django_migrations`` alone.
+
+This is sound because ``migrate`` raises ``InconsistentMigrationHistory``
+before applying anything, so a genuinely pre-rename database can never hold
+a ``tenancy``-labelled row (nothing under that label could have been applied
+to it), and a database that has run `migrate` even once since Phase 1a always
+holds at least one. The name-scoped ``UPDATE`` (only the 22 pre-rename
+``tenancy`` migration names, computed from the on-disk graph) stays as the
+second guard -- belt and braces, not a replacement.
+
+Usage, once, before ``migrate``, against any database created before Phase 1a
+landed::
 
     python manage.py rename_organizations_migration_history
 """
@@ -57,7 +84,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from django.apps import apps as django_apps
 from django.core.management.base import BaseCommand, CommandError, CommandParser
 from django.db import connection
 from django.db.migrations.loader import MigrationLoader
@@ -65,8 +91,8 @@ from django.db.migrations.loader import MigrationLoader
 
 #: The app label this app's migrations were recorded under before Phase 1a's
 #: rename, and the label the vinta-django-orgs package's own app claims from
-#: Phase 1c onward -- see the module docstring's "Guarded against Phase 1c"
-#: section for why those two facts make an unconditional rewrite unsafe.
+#: Phase 1c onward -- see the module docstring's "Guard" section for why that
+#: makes a data-fact guard (not a code-fact one) the sound choice.
 _PRE_RENAME_APP_LABEL = "organizations"
 
 #: The app label this app's migrations are recorded under from Phase 1a onward.
@@ -100,10 +126,13 @@ class Command(BaseCommand):
         "Rewrites django_migrations rows keyed under the pre-rename 'organizations' "
         "app label onto 'tenancy', so `migrate` recognizes them as already applied "
         "instead of re-attempting them and hitting InconsistentMigrationHistory. "
-        "Idempotent -- safe to run against a database that has already been fixed "
-        "or that was never seeded pre-rename. Refuses to run (CommandError) once "
-        "the vinta-django-orgs package's own 'organizations' app is installed "
-        "(Phase 1c onward) -- see the module docstring."
+        "Refuses outright (CommandError, no mutation) unless django_migrations has "
+        "zero rows labelled 'tenancy' -- the data fact that distinguishes a "
+        "genuinely pre-Phase-1a, never-yet-migrated database from every other "
+        "state, including a database migrated fresh under the current codebase and "
+        "one where Phase 1c has installed the vinta-django-orgs package's own app. "
+        "Safe (but not a silent no-op) to run against either of the latter two: "
+        "the refusal is loud, not a corruption. See the module docstring."
     )
 
     def add_arguments(self, parser: CommandParser) -> None:
@@ -114,16 +143,24 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args: Any, **options: Any) -> None:
-        if django_apps.is_installed(_PRE_RENAME_APP_LABEL):
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM django_migrations WHERE app = %s",
+                [_RENAMED_APP_LABEL],
+            )
+            (tenancy_row_count,) = cursor.fetchone()
+
+        if tenancy_row_count > 0:
             raise CommandError(
-                "The 'organizations' app is installed (Phase 1c or later). From that "
-                "point on, 'organizations'-labelled rows in django_migrations belong "
-                "to the vinta-django-orgs package's own app, not to this app's "
-                "pre-rename history -- rewriting them onto 'tenancy' would corrupt "
-                "the package's applied-migration state and cause `migrate` to "
-                "re-attempt migrations against tables that already exist. This "
-                "command is only for databases seeded before Phase 1a's rename, on "
-                "a checkout before Phase 1c installed the package's app."
+                f"django_migrations already has {tenancy_row_count} row(s) labelled "
+                f"'{_RENAMED_APP_LABEL}', so this database does not predate Phase 1a's "
+                "rename -- either it was migrated fresh after the rename (nothing to "
+                "fix), or the vinta-django-orgs package's own app has since recorded "
+                "its migrations under 'organizations' (Phase 1c onward), in which case "
+                "those rows belong to the package and rewriting them would corrupt its "
+                "applied-migration state. This command is only for a database whose "
+                "django_migrations has never recorded anything under 'tenancy' -- see "
+                "the module docstring."
             )
 
         dry_run: bool = options["dry_run"]
@@ -144,8 +181,8 @@ class Command(BaseCommand):
                 self.stdout.write(
                     self.style.SUCCESS(
                         "No pre-rename 'organizations'-labelled rows found in "
-                        "django_migrations -- nothing to do (already fixed, or this "
-                        "database was only ever migrated post-rename)."
+                        "django_migrations -- nothing to do (this database was never "
+                        "migrated at all, under either label)."
                     )
                 )
                 return

@@ -20,7 +20,6 @@ from tenancy.models import (
     OrganizationMembership,
     OrganizationRole,
 )
-from tenancy.tests.helpers import clear_organization_slug
 
 
 User = get_user_model()
@@ -103,30 +102,11 @@ def reseller_org():
 
 
 @pytest.fixture
-def reseller_org_without_slug():
-    """Same as ``reseller_org`` but deliberately unslugged.
-
-    ``clear_organization_slug`` rather than "just omit the slug": since Phase 1c
-    of the vinta-django-orgs migration a saved organization always has one -- see
-    that helper's docstring."""
-    return clear_organization_slug(baker.make(Organization, can_invite_organizations=True))
-
-
-@pytest.fixture
 def eligible_org():
     """A plain (non-reseller), parentless organization that is entitled (the
     suite's autouse default subscription) and has a slug -- the population
     Phase 3 widens the write gate to admit (spec Use-case 1's actor)."""
     return baker.make(Organization, can_invite_organizations=False, slug="eligible-org")
-
-
-@pytest.fixture
-def no_slug_org():
-    """Parentless and entitled, but no slug -- the "one step away" refusal
-    (spec: "Eligible org with no public identifier yet")."""
-    return clear_organization_slug(
-        baker.make(Organization, can_invite_organizations=False, parent=None)
-    )
 
 
 @pytest.fixture
@@ -172,18 +152,6 @@ def eligible_org_member(eligible_org):
         is_active=True,
     )
     return member
-
-
-@pytest.fixture
-def no_slug_org_admin(user, no_slug_org):
-    """Create an admin membership for the user in the no-slug org."""
-    return baker.make(
-        OrganizationMembership,
-        user=user,
-        organization=no_slug_org,
-        role=OrganizationRole.ADMIN,
-        is_active=True,
-    )
 
 
 @pytest.fixture
@@ -492,31 +460,6 @@ class TestOrganizationBrandingViewSet:
 
         response = client.put(BRANDING_URL, data=payload, format="json")
         assert_response_status_code(response, status.HTTP_201_CREATED)
-
-    def test_non_reseller_org_without_a_slug_returns_403_for_the_slug_reason(
-        self, client, user, no_slug_org, no_slug_org_admin
-    ):
-        """A plain (non-reseller) organization is no longer refused for lacking
-        reseller status -- see ``TestBrandingWriteGateAllMethods`` for the full
-        "eligible non-reseller org succeeds" coverage that is the point of this
-        phase. It IS still refused here, but for the slug condition -- the
-        response body must name the slug, not reseller status."""
-        client.force_authenticate(user)
-        client.credentials(HTTP_X_ORGANIZATION_ID=str(no_slug_org.id))
-
-        payload = {
-            "app_name": "MyScheduler",
-            "primary_color": "#FF0000",
-            "secondary_color": "#00FF00",
-            "logo_url": "",
-            "support_email": "",
-            "redirect_url": "",
-        }
-
-        response = client.put(BRANDING_URL, data=payload, format="json")
-        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
-        assert "slug" in str(response.json()).lower()
-        assert "reseller" not in str(response.json()).lower()
 
     def test_non_admin_member_returns_403(self, client, reseller_org, reseller_org_member):
         """Non-admin member of reseller org gets 403."""
@@ -1012,80 +955,6 @@ class TestBrandingWriteGateAllMethods:
 
         assert not OrganizationBranding.objects.filter(organization=parented_org).exists()
 
-    def test_no_slug_org_gets_403_with_the_pick_a_slug_reason(
-        self, client, user, no_slug_org, no_slug_org_admin
-    ):
-        """Spec edge case: "Eligible org with no public identifier yet" --
-        refused with a reason distinct from the other two (named "slug", not
-        "parent" or "plan")."""
-        client.force_authenticate(user)
-        client.credentials(HTTP_X_ORGANIZATION_ID=str(no_slug_org.id))
-
-        payload = {
-            "app_name": "NoSlugApp",
-            "logo_url": "",
-            "primary_color": "",
-            "secondary_color": "",
-            "support_email": "",
-            "redirect_url": "",
-        }
-        response = client.put(BRANDING_URL, data=payload, format="json")
-        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
-        assert "slug" in str(response.json()).lower()
-        assert not OrganizationBranding.objects.filter(organization=no_slug_org).exists()
-
-    def test_no_slug_eligible_org_get_is_allowed_but_put_and_patch_are_refused(
-        self, client, user, no_slug_org, no_slug_org_admin
-    ):
-        """Capability signal guiding decision (Organization Auth-Area
-        Branding plan): a parentless + entitled + slug-less org must still
-        SEE the branding page -- GET is admitted by the narrower
-        two-condition eligibility gate -- even though writing is refused
-        ("pick a slug first") until it does. Matches the spec's "Eligible org
-        with no public identifier yet" edge case: settings still offered,
-        saving refused. Mirrors the slugged-reseller no-row case
-        (``TestResellerNowRequiresASlug.test_reseller_with_a_slug_still_passes_the_gate``):
-        404, not 403, when no branding row exists yet; 200 once one does."""
-        client.force_authenticate(user)
-        client.credentials(HTTP_X_ORGANIZATION_ID=str(no_slug_org.id))
-
-        # No branding row yet: GET admits the request (the eligibility gate
-        # passed) and falls through to the ordinary "no row" 404 -- not 403.
-        get_response = client.get(BRANDING_URL)
-        assert_response_status_code(get_response, status.HTTP_404_NOT_FOUND)
-
-        # PUT/PATCH still refuse with the "pick a slug first" reason.
-        payload = {
-            "app_name": "NoSlugApp",
-            "logo_url": "",
-            "primary_color": "",
-            "secondary_color": "",
-            "support_email": "",
-            "redirect_url": "",
-        }
-        put_response = client.put(BRANDING_URL, data=payload, format="json")
-        assert_response_status_code(put_response, status.HTTP_403_FORBIDDEN)
-        assert "slug" in str(put_response.json()).lower()
-
-        patch_response = client.patch(BRANDING_URL, data={"app_name": "x"}, format="json")
-        assert_response_status_code(patch_response, status.HTTP_403_FORBIDDEN)
-        assert "slug" in str(patch_response.json()).lower()
-
-        # Now with a branding row present, GET succeeds with 200.
-        baker.make(
-            OrganizationBranding,
-            organization=no_slug_org,
-            app_name="NoSlugAppExisting",
-            logo="",
-            primary_color="",
-            secondary_color="",
-            support_email="",
-            redirect_url="",
-        )
-        get_response_with_row = client.get(BRANDING_URL)
-        assert_response_status_code(get_response_with_row, status.HTTP_200_OK)
-        assert get_response_with_row.json()["app_name"] == "NoSlugAppExisting"
-
     def test_non_admin_member_of_an_eligible_org_still_gets_403(
         self, client, eligible_org, eligible_org_member
     ):
@@ -1116,24 +985,27 @@ class TestBrandingWriteGateAllMethods:
         detail = str(response.json()).lower()
         assert "plan" in detail or "entitle" in detail
 
-    def test_the_three_refusal_reasons_are_distinguishable(
+    @pytest.mark.no_auto_subscription
+    def test_the_two_refusal_reasons_are_distinguishable(
         self,
         client,
         user,
         parented_org,
         parented_org_admin,
-        no_slug_org,
-        no_slug_org_admin,
     ):
-        """The has-a-parent and no-slug 403 bodies differ -- not a generic
+        """The has-a-parent and not-entitled 403 bodies differ -- not a generic
         "forbidden" message both times -- so a caller (or a reviewer reading
         the response) can tell which write-gate condition failed.
 
-        Probed via PUT: the no-slug condition is a write-gate-only refusal
-        (GET uses the narrower two-condition eligibility gate and admits a
-        slug-less-but-otherwise-eligible org -- see
-        ``test_no_slug_eligible_org_get_is_allowed_but_put_and_patch_are_refused``),
-        so GET would not reproduce the no-slug 403 body here."""
+        Only two refusal reasons are reachable through any write path since
+        Phase 1c of the vinta-django-orgs migration: ``NO_SLUG`` is retired
+        (see the plan's Guiding Decisions) now that ``Organization.slug`` can
+        never be blank on a saved row, so this no longer compares three
+        reasons -- see ``TestEvaluateBrandingWriteGate.
+        test_the_dead_no_slug_branch_still_evaluates_correctly`` in
+        ``test_branding.py`` for direct coverage of that now-unreachable
+        branch itself.
+        """
         client.force_authenticate(user)
 
         payload = {
@@ -1148,53 +1020,36 @@ class TestBrandingWriteGateAllMethods:
         client.credentials(HTTP_X_ORGANIZATION_ID=str(parented_org.id))
         parented_detail = client.put(BRANDING_URL, data=payload, format="json").json()
 
-        client.credentials(HTTP_X_ORGANIZATION_ID=str(no_slug_org.id))
-        no_slug_detail = client.put(BRANDING_URL, data=payload, format="json").json()
+        unentitled_org = _make_unentitled_org(parent=None, slug="not-entitled-org")
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=unentitled_org,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+        client.credentials(HTTP_X_ORGANIZATION_ID=str(unentitled_org.id))
+        unentitled_detail = client.put(BRANDING_URL, data=payload, format="json").json()
 
-        assert parented_detail != no_slug_detail
+        assert parented_detail != unentitled_detail
         assert "parent" in str(parented_detail).lower()
-        assert "slug" in str(no_slug_detail).lower()
-        assert "slug" not in str(parented_detail).lower()
-        assert "parent" not in str(no_slug_detail).lower()
+        assert (
+            "plan" in str(unentitled_detail).lower() or "entitle" in str(unentitled_detail).lower()
+        )
+        assert "parent" not in str(unentitled_detail).lower()
 
 
 @pytest.mark.django_db
 class TestResellerNowRequiresASlug:
-    """Phase 3 widens the write gate with a THIRD condition (slug-set) on top
-    of the pre-existing parentless+entitled pair. A reseller organization is
-    parentless in every fixture this suite has, and (via the autouse default
-    subscription) entitled by default -- so before this phase a reseller
-    always passed the old ``is_reseller()`` gate. It does NOT get a pass on
-    the new slug condition: this is a deliberate behavior change for reseller
-    fixtures, asserted explicitly here rather than left to be discovered as a
-    side effect of ``reseller_org`` now carrying a slug."""
-
-    def test_reseller_without_a_slug_is_now_refused(self, client, user, reseller_org_without_slug):
-        """The no-slug refusal is a **write** gate condition (see
-        ``OrganizationBrandingView._check_branding_read_gate`` -- GET uses the
-        narrower two-condition eligibility gate and does not refuse for a
-        missing slug), so probe it via PUT."""
-        baker.make(
-            OrganizationMembership,
-            user=user,
-            organization=reseller_org_without_slug,
-            role=OrganizationRole.ADMIN,
-            is_active=True,
-        )
-        client.force_authenticate(user)
-        client.credentials(HTTP_X_ORGANIZATION_ID=str(reseller_org_without_slug.id))
-
-        payload = {
-            "app_name": "NoSlugApp",
-            "logo_url": "",
-            "primary_color": "",
-            "secondary_color": "",
-            "support_email": "",
-            "redirect_url": "",
-        }
-        response = client.put(BRANDING_URL, data=payload, format="json")
-        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
-        assert "slug" in str(response.json()).lower()
+    """Phase 3 widened the write gate with a THIRD condition (slug-set) on top
+    of the pre-existing parentless+entitled pair. The slug condition is
+    retired as of Phase 1c of the vinta-django-orgs migration (see the plan's
+    Guiding Decisions): ``Organization.slug`` can never be blank on a saved
+    row any more, so the condition is unconditionally satisfied and there is
+    no supported way left to construct a reseller that fails it -- the
+    regression this class used to pin (``test_reseller_without_a_slug_is_now_
+    refused``) was deleted for exactly that reason. What remains is the one
+    assertion still meaningful: a slugged reseller passes the gate."""
 
     def test_reseller_with_a_slug_still_passes_the_gate(
         self, client, user, reseller_org, reseller_org_admin
@@ -1215,9 +1070,14 @@ class TestCanManageBrandingOnMembershipPayload:
     fetches (``GET /organizations/current/`` and ``GET /organizations/mine/``)
     -- Organization Auth-Area Branding plan, Phase 4 Capability signal.
 
-    Covers all four write-gate cases named in the phase spec, plus the
-    no-slug-but-eligible case that is the whole point of the field (it must
-    read ``True`` there, unlike the write gate itself)."""
+    Covers the write-gate cases reachable through this REST surface. The
+    no-slug-but-eligible case that used to be the whole point of the field
+    (it must read ``True`` there, unlike the write gate itself) is no longer
+    constructible through a persisted organization -- see
+    ``tenancy/tests/test_branding.py``'s ``TestCanManageBrandingCapabilityField
+    .test_true_for_a_parentless_entitled_organization_with_no_slug`` for that
+    invariant, proven at the serializer level against an in-memory mutation
+    instead."""
 
     def _current_url(self):
         return reverse("api:Organizations-current")
@@ -1237,25 +1097,6 @@ class TestCanManageBrandingOnMembershipPayload:
         assert_response_status_code(mine_response, status.HTTP_200_OK)
         [entry] = mine_response.json()
         assert entry["can_manage_branding"] is True
-
-    def test_eligible_org_with_no_slug_still_reports_true(self, client, user, no_slug_org):
-        """The key case: an org one write-gate step away (missing only a slug)
-        must still report `can_manage_branding=True` -- see the plan's
-        Capability signal guiding decision. Distinguishes this field from the
-        write gate, which would refuse this exact organization."""
-        baker.make(
-            OrganizationMembership,
-            user=user,
-            organization=no_slug_org,
-            role=OrganizationRole.ADMIN,
-            is_active=True,
-        )
-        client.force_authenticate(user)
-        client.credentials(HTTP_X_ORGANIZATION_ID=str(no_slug_org.id))
-
-        current_response = client.get(self._current_url())
-        assert_response_status_code(current_response, status.HTTP_200_OK)
-        assert current_response.json()["can_manage_branding"] is True
 
     def test_parented_org_reports_false(self, client, user, parented_org):
         baker.make(

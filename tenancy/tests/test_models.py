@@ -494,28 +494,39 @@ class TestWeekStart:
 class TestOrganizationSlug:
     """Unit tests for Organization.slug (Phase 1 — self-serve organization slug)."""
 
-    def test_slug_is_derived_from_the_name_when_not_supplied(self):
-        """A freshly created Organization gets a slug derived from its name.
+    def test_slug_defaults_to_an_opaque_form_when_not_supplied(self):
+        """A freshly created Organization gets a non-name-derived slug.
 
         ``slug`` became NOT NULL in Phase 1c of the vinta-django-orgs migration
         (inherited from ``AbstractOrganization``), so "no slug yet" stopped
-        being a storable state and ``Organization.save()`` derives one.
+        being a storable state and ``Organization.save()`` derives one -- but
+        not from the name: ``slug`` is public (branded login URLs,
+        ``brandingForTenant``, the logo delivery route), so
+        ``Organization.save()``'s own default is the opaque ``org-<token>``
+        form. Name-derivation is sanctioned only for the deliberate self-serve
+        organization-create write (``OrganizationService.create_organization``,
+        see ``tenancy/tests/test_slug_backfill.py``'s
+        ``TestBackfillMigrationBehaviour`` for that coverage) and the Phase 1c
+        backfill of pre-existing rows. See both methods' docstrings.
         """
         org = Organization.objects.create(name="Acme Inc")
-        assert org.slug == "acme-inc"
+        assert org.slug.startswith("org-")
+        assert org.slug != "acme-inc"
 
     def test_slug_can_be_set_on_creation(self):
         """slug can be supplied at creation time, and is not overwritten."""
         org = baker.make(Organization, slug="my-org")
         assert org.slug == "my-org"
 
-    def test_derived_slugs_are_disambiguated_rather_than_colliding(self):
-        """Two organizations with the same name get distinct derived slugs."""
+    def test_derived_slugs_never_collide_even_for_the_same_name(self):
+        """Two organizations with the same name get distinct opaque slugs --
+        the random token, not the (unused) name, is what keeps them apart."""
         org_a = Organization.objects.create(name="Acme Inc")
         org_b = Organization.objects.create(name="Acme Inc", parent=org_a)
 
-        assert org_a.slug == "acme-inc"
-        assert org_b.slug == "acme-inc-2"
+        assert org_a.slug != org_b.slug
+        assert org_a.slug.startswith("org-")
+        assert org_b.slug.startswith("org-")
 
     def test_duplicate_slug_raises_integrity_error(self):
         """Two organizations cannot share the same non-null slug."""

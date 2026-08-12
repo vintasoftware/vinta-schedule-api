@@ -62,20 +62,12 @@ make migrate
 ```
 
 (`uv run python manage.py rename_organizations_migration_history` on the host
-surface.) The command is idempotent — safe to run even if your database was
-never affected. See its module docstring
+surface.) Safe to run even if your database was never affected — it refuses
+outright (`CommandError`, no mutation) rather than doing anything against a
+database that isn't in the pre-rename shape. See its module docstring
 (`tenancy/management/commands/rename_organizations_migration_history.py`) for
 the full explanation, including why this has to be a management command and
 not a Django migration.
-
-**Its window has closed on `main`.** The command refuses to run
-(`CommandError`) once `vinta-django-orgs`' own `organizations` app is
-installed, which it now is — from that point an `organizations`-labelled
-`django_migrations` row belongs to the package, not to this app's pre-rename
-history, and rewriting it would corrupt the package's applied state. A database
-still stuck in the pre-rename shape has to be fixed from a checkout that
-predates that install (the phase branch `plan/vinta-django-orgs-migration/phase-1b`),
-or dropped and rebuilt.
 
 ## Floci S3 Configuration
 

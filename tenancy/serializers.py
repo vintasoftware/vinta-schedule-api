@@ -1,5 +1,5 @@
 import re
-from typing import Annotated
+from typing import Annotated, ClassVar
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 
@@ -30,6 +30,19 @@ from tenancy.slug_validation import SLUG_MAX_LENGTH, validate_organization_slug
 from tenancy.virtual_models import (
     OrganizationInvitationVirtualModel,
     OrganizationVirtualModel,
+)
+
+
+#: ``AbstractOrganization.slug`` (vinta-django-orgs) carries no ``help_text`` of
+#: its own, so every serializer exposing it lost the OpenAPI description this
+#: field used to have -- restored here via ``extra_kwargs`` rather than
+#: redeclaring the field, on every serializer that surfaces it directly.
+SLUG_HELP_TEXT = (
+    "Public, URL-safe identifier used by the organization's branded login page "
+    "and by brandingForTenant. Always set (NOT NULL, unique) -- auto-derived on "
+    "creation if left blank. Format, reserved-word, and confusable-character "
+    "rules live in tenancy.slug_validation and are enforced by each write "
+    "surface (REST serializer, admin form, GraphQL input), not here."
 )
 
 
@@ -132,6 +145,7 @@ class OrganizationSerializer(VirtualModelSerializer):
         allow_null=True,
         allow_blank=True,
         max_length=SLUG_MAX_LENGTH,
+        help_text=SLUG_HELP_TEXT,
     )
 
     # ``get_google_service_account`` issues exactly one bounded, org-scoped query
@@ -358,6 +372,7 @@ class OrganizationBriefSerializer(serializers.ModelSerializer):
         model = Organization
         fields = ("id", "name", "slug")
         read_only_fields = ("id", "name", "slug")
+        extra_kwargs: ClassVar = {"slug": {"help_text": SLUG_HELP_TEXT}}
 
 
 class _MyMembershipListSerializer(serializers.ListSerializer):

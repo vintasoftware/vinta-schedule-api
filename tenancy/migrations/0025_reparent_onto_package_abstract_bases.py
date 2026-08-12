@@ -42,6 +42,36 @@ the five raw-SQL composite PROTECT FKs bind to. See
 Deliberately *not* here: ``Organization.slug``'s NOT NULL. It cannot be applied
 until every existing row has one -- see ``0026_backfill_organization_slugs`` and
 ``0027_organization_slug_not_null``.
+
+Lock / downtime audit
+----------------------
+``organizations_organizationmembership`` is the same hot table
+``0024_unwind_membership_composite_pk`` already audited (it gates every
+tenant-scoped request). The index churn here -- dropping ``organization``'s
+single-column index via the ``AlterField`` above and adding the composite
+``(organization, id)`` index at the end of this migration -- is **not** done
+with ``AddIndexConcurrently`` / ``RemoveIndexConcurrently``, deliberately:
+
+* This migration also runs ``RemoveField`` (``meta``, both models) and
+  ``AddField`` (the ``groups`` / ``permissions`` M2Ms), which already take
+  ``ACCESS EXCLUSIVE`` on this table for their own (brief, metadata-level)
+  duration -- see the add-migration skill's lock-aware reference table.
+  Carving just the index operations out into ``AddIndexConcurrently`` would
+  require splitting this migration (``CONCURRENTLY`` cannot run inside the
+  transaction ``atomic = True`` gives every other operation here) into
+  several files with ``atomic = False``, for a marginal reduction against an
+  ``ACCESS EXCLUSIVE`` window this migration already pays for its other
+  operations.
+* Consistent with ``0024``'s own posture on this same table: that migration's
+  primary-key swap -- the far more expensive operation in this chain -- is
+  also not concurrency-split, with the recommendation to schedule the whole
+  chain in a low-traffic window rather than mix concurrent and non-concurrent
+  DDL across one release.
+* Per the plan's "Locks" risk note (Risk & Rollout Notes) and "Pre-launch
+  posture" Guiding Decision: no production tenants exist yet, so lock
+  duration on this migration is not a production concern today -- the
+  posture above is what to revisit if this chain is ever replayed against a
+  live, populated database.
 """
 
 import django.db.models.deletion
@@ -136,6 +166,8 @@ class Migration(migrations.Migration):
         ),
         migrations.AddIndex(
             model_name="organizationmembership",
-            index=models.Index(fields=["organization", "id"], name="organizatio_organiz_5ad970_idx"),
+            index=models.Index(
+                fields=["organization", "id"], name="organizatio_organiz_5ad970_idx"
+            ),
         ),
     ]

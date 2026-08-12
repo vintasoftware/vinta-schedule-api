@@ -11,7 +11,6 @@ from model_bakery import baker
 
 from tenancy.invitation_urls import build_invitation_accept_url
 from tenancy.models import Organization
-from tenancy.tests.helpers import clear_organization_slug
 
 
 ACCEPT_URLS = {
@@ -30,9 +29,18 @@ class TestBuildInvitationAcceptUrl:
 
         assert url == "https://frontend.example.com/auth/accept-invite/?token=tok123"
 
-    def test_branding_root_with_no_slug_uses_the_plain_template(self, settings, db):
+    def test_branding_root_with_no_slug_uses_the_plain_template(self, settings):
+        """``build_invitation_accept_url`` is a pure function, so its defensive
+        "no slug" branch is exercised directly against an **in-memory**,
+        unsaved ``Organization`` -- since Phase 1c of the vinta-django-orgs
+        migration (and, following that phase's review, a database CHECK
+        constraint) a *persisted* organization always has a non-blank slug,
+        so there is no supported way left to reach this state through a
+        saved row. No ``db`` fixture needed: nothing here touches the
+        database.
+        """
         settings.HEADLESS_FRONTEND_URLS = ACCEPT_URLS
-        org = clear_organization_slug(baker.make(Organization))
+        org = Organization(name="No Slug Yet", slug="")
 
         url = build_invitation_accept_url(org, "tok123")
 

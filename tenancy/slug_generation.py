@@ -105,6 +105,7 @@ def derive_organization_slug(
     *,
     slug_exists: Callable[[str], bool],
     fallback_token: str | None = None,
+    disclose_name: bool = True,
 ) -> str:
     """Return a valid, unused slug for an organization called ``name``.
 
@@ -119,6 +120,21 @@ def derive_organization_slug(
             ``name``. Pass the primary key (as a string) for an existing row;
             leave it out for a row that does not have one yet and a random token
             is used instead.
+        disclose_name: Whether ``name``-derived candidates are offered at all.
+            ``slug`` is public -- it appears in branded login URLs,
+            ``brandingForTenant``, and the logo delivery route -- so deriving
+            it from ``name`` discloses the organization's name to anyone who
+            can guess or enumerate slugs. ``True`` (the default) is for
+            callers that have a specific, sanctioned reason to accept that
+            disclosure: the Phase 1c slug backfill (pre-launch, no production
+            data to disclose) and the deliberate self-serve organization-create
+            write, where a human explicitly chose the name for their own,
+            about-to-be-public organization (``OrganizationService
+            .create_organization``). Every other caller -- notably
+            ``Organization.save()``'s own fallback for a row left with no
+            explicit slug -- passes ``False``, going straight to the opaque
+            ``org-<token>`` form instead. See the plan's Guiding Decisions for
+            why the model-level default changed from name-derived to opaque.
 
     Returns:
         A slug that passes ``validate_organization_slug`` and that
@@ -129,9 +145,10 @@ def derive_organization_slug(
             ``MAX_DISAMBIGUATION_ATTEMPTS`` times, which cannot happen for a
             distinct ``fallback_token`` and means the predicate is lying.
     """
-    for candidate in _candidates(slugify(name)):
-        if not slug_exists(candidate):
-            return candidate
+    if disclose_name:
+        for candidate in _candidates(slugify(name)):
+            if not slug_exists(candidate):
+                return candidate
 
     token = fallback_token or secrets.token_hex(_FALLBACK_TOKEN_BYTES)
     for candidate in _candidates(f"org-{token}"):

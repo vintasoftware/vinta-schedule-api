@@ -11,37 +11,46 @@ from tenancy.querysets import (
 )
 
 
-class OrganizationMembershipManager(SingleOrganizationUnscopedManager):
+class OrganizationMembershipManager(
+    SingleOrganizationUnscopedManager.from_queryset(  # type: ignore[misc]
+        OrganizationMembershipQuerySet
+    )
+):
     """Manager for OrganizationMembership with domain-specific query methods.
 
-    Inherits ``SingleOrganizationUnscopedManager``, **not** ``models.Manager``
-    and **not** the scoped ``SingleOrganizationModelManager``. Two reasons, and
-    both are load-bearing:
+    Built from ``SingleOrganizationUnscopedManager.from_queryset(
+    OrganizationMembershipQuerySet)``, **not** ``models.Manager`` and **not**
+    the scoped ``SingleOrganizationModelManager``. Two reasons, and both are
+    load-bearing:
 
     * **Unscoped.** A membership is how an organization gets *selected*, so
       scoping the membership table to the selected organization is circular.
-      ``AbstractOrganizationMembership`` sets its own ``objects`` to this class
-      for exactly that reason; replacing it with a scoped manager would empty
-      ``user.memberships`` (listing the organizations a user belongs to),
-      first-membership provisioning at signup, and every invitation-time "is
-      this user already a member" check -- all of which run before anything has
-      been selected. Django builds the reverse accessors from
-      ``_default_manager.__class__``, so the mistake would propagate to
-      ``user.memberships`` and ``organization.memberships`` too.
+      ``AbstractOrganizationMembership`` sets its own ``objects`` to
+      ``SingleOrganizationUnscopedManager`` for exactly that reason; replacing
+      it with a scoped manager would empty ``user.memberships`` (listing the
+      organizations a user belongs to), first-membership provisioning at
+      signup, and every invitation-time "is this user already a member" check
+      -- all of which run before anything has been selected. Django builds the
+      reverse accessors from ``_default_manager.__class__``, so the mistake
+      would propagate to ``user.memberships`` and ``organization.memberships``
+      too.
     * **Still organization-aware.** Being the unscoped manager does not mean
       losing the scoping *methods*: ``filter_by_organization(org)`` and
       ``for_current_organization()`` come along, so a caller that does want one
       organization says so explicitly.
 
-    ``get_queryset`` returns ``OrganizationMembershipQuerySet``, which subclasses
-    the package's ``SingleOrganizationQuerySet`` -- the methods
-    ``Manager.from_queryset`` copied onto this class all delegate to
-    ``self.get_queryset()``, so returning a plain ``QuerySet`` here would break
-    them.
+    Routing through ``from_queryset`` (rather than inheriting the plain
+    ``SingleOrganizationUnscopedManager`` and overriding ``get_queryset``) keeps
+    ``_queryset_class`` pointed at ``OrganizationMembershipQuerySet`` itself --
+    the class the base manager's generated ``get_queryset`` builds
+    (``self._queryset_class(model=self.model, using=self._db,
+    hints=self._hints)``) -- instead of leaving it on the package's
+    ``SingleOrganizationQuerySet`` while a hand-written override silently
+    returned the right subclass without ``hints``. Django reads
+    ``_queryset_class`` in more than one place (e.g. ``Manager._clone()``),
+    and dropping ``hints`` matters for db-routing scenarios ``get_queryset()``
+    otherwise threads through.
     """
-
-    def get_queryset(self) -> OrganizationMembershipQuerySet:
-        return OrganizationMembershipQuerySet(self.model, using=self._db)
 
     def occupying_a_seat(self, organization_ids: Sequence[int]) -> OrganizationMembershipQuerySet:
         """Wraps :meth:`OrganizationMembershipQuerySet.occupying_a_seat`."""

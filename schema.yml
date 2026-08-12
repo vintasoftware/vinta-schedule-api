@@ -18523,6 +18523,11 @@ components:
         slug:
           type: string
           nullable: true
+          description: Public, URL-safe identifier used by the organization's branded
+            login page and by brandingForTenant. Always set (NOT NULL, unique) --
+            auto-derived on creation if left blank. Format, reserved-word, and confusable-character
+            rules live in tenancy.slug_validation and are enforced by each write surface
+            (REST serializer, admin form, GraphQL input), not here.
           maxLength: 63
         should_sync_rooms:
           type: boolean
@@ -18683,6 +18688,11 @@ components:
         slug:
           type: string
           readOnly: true
+          description: Public, URL-safe identifier used by the organization's branded
+            login page and by brandingForTenant. Always set (NOT NULL, unique) --
+            auto-derived on creation if left blank. Format, reserved-word, and confusable-character
+            rules live in tenancy.slug_validation and are enforced by each write surface
+            (REST serializer, admin form, GraphQL input), not here.
       required:
       - id
       - name
@@ -19838,6 +19848,11 @@ components:
         slug:
           type: string
           nullable: true
+          description: Public, URL-safe identifier used by the organization's branded
+            login page and by brandingForTenant. Always set (NOT NULL, unique) --
+            auto-derived on creation if left blank. Format, reserved-word, and confusable-character
+            rules live in tenancy.slug_validation and are enforced by each write surface
+            (REST serializer, admin form, GraphQL input), not here.
           maxLength: 63
         should_sync_rooms:
           type: boolean

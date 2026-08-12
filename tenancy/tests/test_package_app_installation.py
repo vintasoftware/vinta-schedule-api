@@ -16,7 +16,11 @@ loudly if it is resolved wrongly at some later date:
 * **Admin collision.** ``organizations/admin.py`` registers whatever those two
   settings resolve to, which is ours, and ``admin.site.register`` refuses a model
   it already knows. Resolved by ``tenancy/admin.py`` unregistering the package's
-  registration before installing its own (see that module's docstring).
+  registration for both models before installing its own for ``Organization`` --
+  ``OrganizationMembership`` is left with no Django-admin surface at all, since
+  the package's ``OrganizationMembershipAdmin`` carries none of the seat-limit /
+  last-admin-protection rules the REST viewset enforces (see that module's
+  docstring).
 """
 
 from django.apps import apps
@@ -121,16 +125,14 @@ class TestAdminRegistration:
     def test_the_packages_organization_admin_is_not_registered(self):
         assert not isinstance(admin.site._registry[Organization], package_admin.OrganizationAdmin)
 
-    def test_the_package_still_provides_the_membership_admin(self):
-        """``OrganizationMembership`` has no ``ModelAdmin`` of ours, so there is
-        nothing to collide with and the package's -- which ``select_related``s
-        the user and organization and prefetches groups precisely to keep its
-        changelist from N+1-ing on ``__str__`` -- is left in place."""
-        assert admin.site.is_registered(OrganizationMembership)
-        assert isinstance(
-            admin.site._registry[OrganizationMembership],
-            package_admin.OrganizationMembershipAdmin,
-        )
+    def test_the_package_membership_admin_is_not_registered(self):
+        """``OrganizationMembership`` has no ``ModelAdmin`` of ours, but the
+        package's own ``OrganizationMembershipAdmin`` is not adopted either --
+        it gives staff unrestricted add/change/delete over memberships, with
+        none of the seat-limit / last-active-admin rules the REST viewset
+        enforces. Unregistered rather than left in place; a real membership
+        admin (if any) is deferred to Phase 3."""
+        assert not admin.site.is_registered(OrganizationMembership)
 
     @override_settings(SHARED_SCHEMA_ORGANIZATIONS={"ORGANIZATION_RETRIEVERS": []})
     def test_the_registration_survives_override_settings(self):
@@ -162,10 +164,7 @@ class TestAdminRegistration:
         admin.autodiscover()
 
         assert type(admin.site._registry[Organization]) is TenancyOrganizationAdmin
-        assert isinstance(
-            admin.site._registry[OrganizationMembership],
-            package_admin.OrganizationMembershipAdmin,
-        )
+        assert not admin.site.is_registered(OrganizationMembership)
 
     def test_admin_checks_pass(self):
         """``manage.py check --deploy`` runs these; asserted here so an admin
