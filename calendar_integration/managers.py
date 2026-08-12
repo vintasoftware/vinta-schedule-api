@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING
 from django.db import transaction
 from django.utils import timezone
 
+from organizations.managers import SingleOrganizationModelManager
+
 from calendar_integration.exceptions import (
     InvalidTokenError,
     TokenAlreadyUsedError,
@@ -12,6 +14,8 @@ from calendar_integration.exceptions import (
     TokenRevokedError,
 )
 from calendar_integration.querysets import (
+    AvailableTimeQuerySet,
+    BlockedTimeQuerySet,
     BookingPolicyQuerySet,
     CalendarEventGroupSelectionQuerySet,
     CalendarEventQuerySet,
@@ -25,19 +29,108 @@ from calendar_integration.querysets import (
     ExternalEventChangeRequestQuerySet,
     RecurringQuerySetMixin,
 )
-from tenancy.managers import BaseOrganizationModelManager
 
 
 if TYPE_CHECKING:
     from calendar_integration.models import BookingPolicy, CalendarManagementToken
-    from calendar_integration.querysets import AvailableTimeQuerySet, BlockedTimeQuerySet
     from tenancy.models import OrganizationMembership as OrganizationMembershipType
+
+
+class OrganizationScopedManager(SingleOrganizationModelManager):
+    """Default manager for every organization-scoped model in this app.
+
+    Reads are the package's: ``objects`` scopes to the organization bound to
+    the current context, and under ``STRICT_ORGANIZATION_FILTER`` an unbound
+    read raises instead of quietly returning nothing.
+
+    Writes are not. ``create`` / ``get_or_create`` / ``update_or_create`` /
+    ``bulk_create`` are generated onto the manager from ``QuerySet``, so they
+    all route through ``get_queryset()`` and inherit that refusal -- but the
+    scope they are refusing to resolve has no effect on what they do:
+    ``QuerySet.create`` does not carry the queryset's filters onto the new row,
+    and ``bulk_create`` takes fully-built instances. Refusing
+    ``Calendar.objects.create(organization=org, ...)`` -- which is how every
+    write in this codebase is spelled, and which was *required* to name its
+    organization under the manager this replaces -- would reject a statement
+    that is already unambiguous.
+
+    So a write that names its organization goes to the unscoped queryset, and a
+    write that does not still goes through the scoped one: either the context
+    supplies the organization (and ``SingleOrganizationModelMixin.save()``
+    stamps it) or nothing does and it raises, exactly as a read would.
+
+    Related-object access is not scoped either -- see :meth:`get_queryset`.
+    """
+
+    #: Ways a caller can name the organization on a write. ``organization_id``
+    #: is accepted because ``create(organization_id=...)`` is as explicit as
+    #: passing the instance and appears throughout the services.
+    _ORGANIZATION_KWARGS = ("organization", "organization_id")
+
+    def get_queryset(self, *args, **kwargs):
+        """Scope to the bound organization -- unless this is a related manager.
+
+        Django builds the reverse accessor for a relation
+        (``event.attendances``, ``calendar.syncs``, ``group.slots``) by
+        subclassing the target model's ``_default_manager`` class, so without
+        this every one of them would demand a bound organization on top of the
+        parent row it is already restricted to.
+
+        There is nothing for the context to add there, and something for it to
+        take away:
+
+        * The queryset is filtered to one parent instance, and for a relation
+          declared with ``OrganizationSafeForeignKey`` that filter is on
+          ``(<name>_fk, organization)`` -- the organization is in the ``WHERE``
+          clause already, taken from the parent row rather than from ambient
+          state. A second, ambient organization condition can only ever be
+          redundant (same organization) or empty the result (different one),
+          and the second case means the caller already holds an object from an
+          organization it is not scoped to, which is the bug -- reported at the
+          traversal instead of where it happened.
+        * Django itself takes this position for *forward* relations, which go
+          through ``_base_manager`` precisely so a related object can always be
+          retrieved; the reverse side using ``_default_manager`` is the
+          documented exception, with a documented warning that a filtering
+          default manager hides rows.
+
+        Detected by ``instance``, which Django's generated related managers set
+        in ``__init__`` and a plain model manager never has.
+        """
+        if getattr(self, "instance", None) is not None:
+            return self.get_original_queryset(*args, **kwargs)
+        return super().get_queryset(*args, **kwargs)
+
+    def _names_an_organization(self, kwargs: dict) -> bool:
+        return any(kwargs.get(name) is not None for name in self._ORGANIZATION_KWARGS)
+
+    def create(self, **kwargs):
+        if self._names_an_organization(kwargs):
+            return self.unscoped().create(**kwargs)
+        return super().create(**kwargs)
+
+    def get_or_create(self, defaults=None, **kwargs):
+        if self._names_an_organization(kwargs) or self._names_an_organization(defaults or {}):
+            return self.unscoped().get_or_create(defaults=defaults, **kwargs)
+        return super().get_or_create(defaults=defaults, **kwargs)
+
+    def update_or_create(self, defaults=None, **kwargs):
+        if self._names_an_organization(kwargs) or self._names_an_organization(defaults or {}):
+            return self.unscoped().update_or_create(defaults=defaults, **kwargs)
+        return super().update_or_create(defaults=defaults, **kwargs)
+
+    def bulk_create(self, objs, *args, **kwargs):
+        # Always unscoped: every object carries its own ``organization``, and an
+        # object that does not fails the column's NOT NULL rather than silently
+        # landing in whichever organization happened to be bound. ``save()``'s
+        # context fallback is not involved -- ``bulk_create`` does not call it.
+        return self.unscoped().bulk_create(objs, *args, **kwargs)
 
 
 class RecurringManagerMixin:
     """
     Mixin for managers that provides recurring functionality.
-    Should be used with managers that inherit from BaseOrganizationManager.
+    Should be used with managers built from ``SingleOrganizationModelManager``.
     The QuerySet should also inherit from RecurringQuerySetMixin.
     """
 
@@ -102,13 +195,10 @@ class RecurringManagerMixin:
         )
 
 
-class CalendarManager(BaseOrganizationModelManager):
+class CalendarManager(OrganizationScopedManager.from_queryset(CalendarQuerySet)):  # type: ignore[misc]
     """
     Custom manager for Calendar model to handle specific queries.
     """
-
-    def get_queryset(self) -> CalendarQuerySet:
-        return CalendarQuerySet(self.model, using=self._db)
 
     def live_of_type(self, calendar_type: str) -> CalendarQuerySet:
         """Wraps :meth:`CalendarQuerySet.live_of_type`."""
@@ -169,11 +259,10 @@ class CalendarManager(BaseOrganizationModelManager):
         return self.get_queryset().annotate_effective_policy()
 
 
-class CalendarEventManager(BaseOrganizationModelManager, RecurringManagerMixin):
+class CalendarEventManager(  # type: ignore[misc]
+    OrganizationScopedManager.from_queryset(CalendarEventQuerySet), RecurringManagerMixin
+):
     """Custom manager for CalendarEvent model to handle specific queries."""
-
-    def get_queryset(self) -> CalendarEventQuerySet:
-        return CalendarEventQuerySet(self.model, using=self._db)
 
     def occurrence_bearing_masters_in_range(
         self, start: datetime.datetime, end: datetime.datetime
@@ -182,11 +271,8 @@ class CalendarEventManager(BaseOrganizationModelManager, RecurringManagerMixin):
         return self.get_queryset().occurrence_bearing_masters_in_range(start, end)
 
 
-class CalendarSyncManager(BaseOrganizationModelManager):
+class CalendarSyncManager(OrganizationScopedManager.from_queryset(CalendarSyncQuerySet)):  # type: ignore[misc]
     """Custom manager for CalendarSync model to handle specific queries."""
-
-    def get_queryset(self) -> CalendarSyncQuerySet:
-        return CalendarSyncQuerySet(self.model, using=self._db)
 
     def get_not_started_calendar_sync(self, calendar_sync_id: int):
         """
@@ -197,7 +283,9 @@ class CalendarSyncManager(BaseOrganizationModelManager):
         return self.get_queryset().get_not_started_calendar_sync(calendar_sync_id=calendar_sync_id)
 
 
-class BlockedTimeManager(BaseOrganizationModelManager, RecurringManagerMixin):
+class BlockedTimeManager(  # type: ignore[misc]
+    OrganizationScopedManager.from_queryset(BlockedTimeQuerySet), RecurringManagerMixin
+):
     """Custom manager for BlockedTime model to handle specific queries.
 
     ``group_slot`` scoping (``CALENDAR_GROUP_SCOPED_AVAILABILITY`` Phase 0):
@@ -206,25 +294,41 @@ class BlockedTimeManager(BaseOrganizationModelManager, RecurringManagerMixin):
     existing call site's implicit expectation. Group-scoped rows are reachable
     only through :meth:`for_group_slot` or :meth:`unscoped`, both explicit
     opt-in accessors.
+
+    Group-slot scoping is applied to all three of the package's *scoping* entry
+    points, not just ``get_queryset``. ``filter_by_organization`` and
+    ``exclude_by_organization`` start from the **unscoped** queryset by design
+    (reaching another organization's rows is the only reason to call them), so
+    inheriting them unchanged would have made the single most common call in
+    this codebase — ``BlockedTime.objects.filter_by_organization(org)`` — start
+    returning group-scoped rows it has never returned. ``unscoped()`` is
+    deliberately *not* overridden: the package's version already means exactly
+    what this manager's own ``unscoped()`` used to (every row, no filter of any
+    kind), so the two names collapsed into one with no call site change.
     """
 
-    def get_queryset(self) -> "BlockedTimeQuerySet":
-        from calendar_integration.querysets import BlockedTimeQuerySet
+    def get_queryset(self, *args, **kwargs) -> "BlockedTimeQuerySet":
+        return super().get_queryset(*args, **kwargs).base_rows_only()
 
-        return BlockedTimeQuerySet(self.model, using=self._db).base_rows_only()
+    def filter_by_organization(self, organization, *args, **kwargs) -> "BlockedTimeQuerySet":
+        return super().filter_by_organization(organization, *args, **kwargs).base_rows_only()
 
-    def unscoped(self) -> "BlockedTimeQuerySet":
-        """Escape hatch: every row regardless of ``group_slot`` — admin and migrations only."""
-        from calendar_integration.querysets import BlockedTimeQuerySet
-
-        return BlockedTimeQuerySet(self.model, using=self._db)
+    def exclude_by_organization(self, organization, *args, **kwargs) -> "BlockedTimeQuerySet":
+        return super().exclude_by_organization(organization, *args, **kwargs).base_rows_only()
 
     def for_group_slot(self, group_slot_id: int) -> "BlockedTimeQuerySet":
-        """Explicit opt-in: only the blocked-time rows scoped to one ``CalendarGroupSlot``."""
+        """Explicit opt-in: only the blocked-time rows scoped to one ``CalendarGroupSlot``.
+
+        Deliberately cross-organization (it starts from ``unscoped()``): every
+        caller narrows with ``filter_by_organization`` on the returned queryset,
+        which is where the tenant boundary is drawn.
+        """
         return self.unscoped().for_group_slot(group_slot_id)
 
 
-class AvailableTimeManager(BaseOrganizationModelManager, RecurringManagerMixin):
+class AvailableTimeManager(  # type: ignore[misc]
+    OrganizationScopedManager.from_queryset(AvailableTimeQuerySet), RecurringManagerMixin
+):
     """Custom manager for AvailableTime model to handle specific queries.
 
     ``group_slot`` scoping (``CALENDAR_GROUP_SCOPED_AVAILABILITY`` Phase 0):
@@ -233,21 +337,28 @@ class AvailableTimeManager(BaseOrganizationModelManager, RecurringManagerMixin):
     existing call site's implicit expectation. Group-scoped rows are reachable
     only through :meth:`for_group_slot` or :meth:`unscoped`, both explicit
     opt-in accessors.
+
+    See :class:`BlockedTimeManager` for why the group-slot filter is applied to
+    ``filter_by_organization`` / ``exclude_by_organization`` as well as to
+    ``get_queryset``, and why ``unscoped()`` is left to the package.
     """
 
-    def get_queryset(self) -> "AvailableTimeQuerySet":
-        from calendar_integration.querysets import AvailableTimeQuerySet
+    def get_queryset(self, *args, **kwargs) -> "AvailableTimeQuerySet":
+        return super().get_queryset(*args, **kwargs).base_rows_only()
 
-        return AvailableTimeQuerySet(self.model, using=self._db).base_rows_only()
+    def filter_by_organization(self, organization, *args, **kwargs) -> "AvailableTimeQuerySet":
+        return super().filter_by_organization(organization, *args, **kwargs).base_rows_only()
 
-    def unscoped(self) -> "AvailableTimeQuerySet":
-        """Escape hatch: every row regardless of ``group_slot`` — admin and migrations only."""
-        from calendar_integration.querysets import AvailableTimeQuerySet
-
-        return AvailableTimeQuerySet(self.model, using=self._db)
+    def exclude_by_organization(self, organization, *args, **kwargs) -> "AvailableTimeQuerySet":
+        return super().exclude_by_organization(organization, *args, **kwargs).base_rows_only()
 
     def for_group_slot(self, group_slot_id: int) -> "AvailableTimeQuerySet":
-        """Explicit opt-in: only the availability rows scoped to one ``CalendarGroupSlot``."""
+        """Explicit opt-in: only the availability rows scoped to one ``CalendarGroupSlot``.
+
+        Deliberately cross-organization (it starts from ``unscoped()``): every
+        caller narrows with ``filter_by_organization`` on the returned queryset,
+        which is where the tenant boundary is drawn.
+        """
         return self.unscoped().for_group_slot(group_slot_id)
 
     def only_user_authored(self):
@@ -255,11 +366,8 @@ class AvailableTimeManager(BaseOrganizationModelManager, RecurringManagerMixin):
         return self.get_queryset().only_user_authored()
 
 
-class CalendarGroupManager(BaseOrganizationModelManager):
+class CalendarGroupManager(OrganizationScopedManager.from_queryset(CalendarGroupQuerySet)):  # type: ignore[misc]
     """Custom manager for CalendarGroup model to handle specific queries."""
-
-    def get_queryset(self) -> CalendarGroupQuerySet:
-        return CalendarGroupQuerySet(self.model, using=self._db)
 
     def only_member_of(self, membership_user_id: int) -> CalendarGroupQuerySet:
         """Wraps :meth:`CalendarGroupQuerySet.only_member_of`."""
@@ -296,43 +404,36 @@ class CalendarGroupManager(BaseOrganizationModelManager):
         return self.get_queryset().annotate_effective_policy()
 
 
-class CalendarGroupSlotManager(BaseOrganizationModelManager):
+class CalendarGroupSlotManager(OrganizationScopedManager.from_queryset(CalendarGroupSlotQuerySet)):  # type: ignore[misc]
     """Custom manager for CalendarGroupSlot model to handle specific queries."""
 
-    def get_queryset(self) -> CalendarGroupSlotQuerySet:
-        return CalendarGroupSlotQuerySet(self.model, using=self._db)
 
-
-class CalendarGroupSlotMembershipManager(BaseOrganizationModelManager):
+class CalendarGroupSlotMembershipManager(
+    OrganizationScopedManager.from_queryset(CalendarGroupSlotMembershipQuerySet)
+):  # type: ignore[misc]
     """Custom manager for CalendarGroupSlotMembership model to handle specific queries."""
 
-    def get_queryset(self) -> CalendarGroupSlotMembershipQuerySet:
-        return CalendarGroupSlotMembershipQuerySet(self.model, using=self._db)
 
-
-class CalendarEventGroupSelectionManager(BaseOrganizationModelManager):
+class CalendarEventGroupSelectionManager(
+    OrganizationScopedManager.from_queryset(CalendarEventGroupSelectionQuerySet)
+):  # type: ignore[misc]
     """Custom manager for CalendarEventGroupSelection model to handle specific queries."""
 
-    def get_queryset(self) -> CalendarEventGroupSelectionQuerySet:
-        return CalendarEventGroupSelectionQuerySet(self.model, using=self._db)
 
-
-class CalendarGroupSlotQuotaRuleManager(BaseOrganizationModelManager):
+class CalendarGroupSlotQuotaRuleManager(
+    OrganizationScopedManager.from_queryset(CalendarGroupSlotQuotaRuleQuerySet)
+):  # type: ignore[misc]
     """Custom manager for CalendarGroupSlotQuotaRule model to handle specific queries."""
-
-    def get_queryset(self) -> CalendarGroupSlotQuotaRuleQuerySet:
-        return CalendarGroupSlotQuotaRuleQuerySet(self.model, using=self._db)
 
     def for_group_slot(self, group_slot_id: int) -> CalendarGroupSlotQuotaRuleQuerySet:
         """Wraps :meth:`CalendarGroupSlotQuotaRuleQuerySet.for_group_slot`."""
         return self.get_queryset().for_group_slot(group_slot_id)
 
 
-class CalendarManagementTokenManager(BaseOrganizationModelManager):
+class CalendarManagementTokenManager(
+    OrganizationScopedManager.from_queryset(CalendarManagementTokenQuerySet)
+):  # type: ignore[misc]
     """Manager for CalendarManagementToken with lifecycle-aware query methods."""
-
-    def get_queryset(self) -> CalendarManagementTokenQuerySet:
-        return CalendarManagementTokenQuerySet(self.model, using=self._db)
 
     def active(self) -> CalendarManagementTokenQuerySet:
         """Return tokens that are not used, not revoked, and not expired."""
@@ -363,9 +464,13 @@ class CalendarManagementTokenManager(BaseOrganizationModelManager):
         with transaction.atomic():
             # Re-fetch under a row-level lock to serialise concurrent consume calls.
             try:
+                # ``filter_by_organization`` rather than the implicit scope:
+                # ``consume`` is reached from the public token endpoints, which
+                # authenticate by token rather than by member, so nothing has
+                # bound an organization -- the token's own organization is the
+                # one to scope to, and it is what the lookup must match.
                 locked = (
-                    self.get_queryset()
-                    .filter(organization_id=token.organization_id)
+                    self.filter_by_organization(token.organization_id)
                     .select_for_update()
                     .get(pk=token.pk)
                 )
@@ -408,11 +513,10 @@ class CalendarManagementTokenManager(BaseOrganizationModelManager):
         return None
 
 
-class ExternalEventChangeRequestManager(BaseOrganizationModelManager):
+class ExternalEventChangeRequestManager(
+    OrganizationScopedManager.from_queryset(ExternalEventChangeRequestQuerySet)
+):  # type: ignore[misc]
     """Manager for ExternalEventChangeRequest with domain-specific query methods."""
-
-    def get_queryset(self) -> ExternalEventChangeRequestQuerySet:
-        return ExternalEventChangeRequestQuerySet(self.model, using=self._db)
 
     def resolvable_by(
         self, membership: "OrganizationMembershipType"
@@ -424,7 +528,7 @@ class ExternalEventChangeRequestManager(BaseOrganizationModelManager):
         return self.get_queryset().resolvable_by(membership)
 
 
-class BookingPolicyManager(BaseOrganizationModelManager):
+class BookingPolicyManager(OrganizationScopedManager.from_queryset(BookingPolicyQuerySet)):  # type: ignore[misc]
     """Manager for BookingPolicy exposing the per-target lookups the resolver uses.
 
     A policy is attached to exactly one target (calendar / membership / calendar
@@ -432,9 +536,6 @@ class BookingPolicyManager(BaseOrganizationModelManager):
     (or ``None``) for a given target, all scoped through the inherited
     organization filter.
     """
-
-    def get_queryset(self) -> BookingPolicyQuerySet:
-        return BookingPolicyQuerySet(self.model, using=self._db)
 
     def for_target(
         self,
@@ -463,7 +564,7 @@ class BookingPolicyManager(BaseOrganizationModelManager):
                 "or calendar_group_id."
             )
 
-        queryset = self.get_queryset().filter_by_organization(organization_id)
+        queryset = self.filter_by_organization(organization_id)
         if calendar_id is not None:
             queryset = queryset.for_calendar(calendar_id)
         elif membership_user_id is not None:
@@ -479,4 +580,4 @@ class BookingPolicyManager(BaseOrganizationModelManager):
         Scoped to ``organization_id`` via ``filter_by_organization`` (required —
         the base queryset refuses to evaluate without an organization filter).
         """
-        return self.get_queryset().filter_by_organization(organization_id).org_default().first()
+        return self.filter_by_organization(organization_id).org_default().first()

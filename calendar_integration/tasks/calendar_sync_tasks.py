@@ -126,9 +126,7 @@ def import_account_calendars_task(
                 account = None
         else:
             account = (
-                GoogleCalendarServiceAccount.objects.filter_by_organization(
-                    organization_id=organization_id
-                )
+                GoogleCalendarServiceAccount.objects.filter_by_organization(organization_id)
                 .filter(id=account_id)
                 .first()
             )
@@ -163,7 +161,7 @@ def sync_calendar_task(
             return
 
         calendar_sync = CalendarSync.objects.filter_by_organization(
-            organization_id=organization_id
+            organization_id
         ).get_not_started_calendar_sync(calendar_sync_id)
         if account_type == "social_account":
             social_account = SocialAccount.objects.filter(id=account_id).first()
@@ -173,9 +171,7 @@ def sync_calendar_task(
                 account = None
         else:
             account = (
-                GoogleCalendarServiceAccount.objects.filter_by_organization(
-                    organization_id=organization_id
-                )
+                GoogleCalendarServiceAccount.objects.filter_by_organization(organization_id)
                 .filter(id=account_id)
                 .first()
             )
@@ -212,9 +208,7 @@ def import_organization_calendar_resources_task(
             return
 
         import_workflow_state = (
-            CalendarOrganizationResourcesImport.objects.filter_by_organization(
-                organization_id=organization_id
-            )
+            CalendarOrganizationResourcesImport.objects.filter_by_organization(organization_id)
             .filter(
                 id=import_workflow_state_id,
                 status=CalendarOrganizationResourceImportStatus.NOT_STARTED,
@@ -233,9 +227,7 @@ def import_organization_calendar_resources_task(
                 account = None
         else:
             account = (
-                GoogleCalendarServiceAccount.objects.filter_by_organization(
-                    organization_id=organization_id
-                )
+                GoogleCalendarServiceAccount.objects.filter_by_organization(organization_id)
                 .filter(id=account_id)
                 .first()
             )

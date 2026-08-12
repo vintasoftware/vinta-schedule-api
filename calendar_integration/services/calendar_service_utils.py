@@ -290,13 +290,13 @@ def serialize_event_data_input(
     attendances_users_by_id = {u.id: u for u in User.objects.filter(id__in=member_user_ids)}
     existing_attendances_by_user_id = {
         a.membership_user_id: a
-        for a in EventAttendance.objects.filter(
+        for a in EventAttendance.objects.filter_by_organization(organization.id).filter(
             event=event, membership_user_id__in=new_attendance_user_ids
         )
     }
     existing_external_attendances_by_attendee_id = {
         a.external_attendee.id: a
-        for a in EventExternalAttendance.objects.filter(
+        for a in EventExternalAttendance.objects.filter_by_organization(organization.id).filter(
             event=event, external_attendee__id__in=new_external_attendances_attendee_ids
         )
     }
@@ -389,13 +389,16 @@ def grant_calendar_owner_permissions(
 
     for owner in calendar_owners:
         # Check if user already has a token for this calendar
-        existing_token = CalendarManagementToken.objects.filter(
-            membership_user_id=owner.id,
-            calendar_fk_id=calendar.id,
-            organization_id=calendar.organization_id,
-            event_fk_id__isnull=True,
-            revoked_at__isnull=True,
-        ).first()
+        existing_token = (
+            CalendarManagementToken.objects.filter_by_organization(calendar.organization_id)
+            .filter(
+                membership_user_id=owner.id,
+                calendar_fk_id=calendar.id,
+                event_fk_id__isnull=True,
+                revoked_at__isnull=True,
+            )
+            .first()
+        )
 
         if not existing_token:
             permission_service.create_calendar_owner_token(
@@ -429,12 +432,15 @@ def grant_event_attendee_permissions(
         if attendee_user is None:
             continue
         # Check if user already has a token for this event
-        existing_token = CalendarManagementToken.objects.filter(
-            membership_user_id=attendee_user.id,
-            event_fk_id=event.id,
-            organization_id=event.organization_id,
-            revoked_at__isnull=True,
-        ).first()
+        existing_token = (
+            CalendarManagementToken.objects.filter_by_organization(event.organization_id)
+            .filter(
+                membership_user_id=attendee_user.id,
+                event_fk_id=event.id,
+                revoked_at__isnull=True,
+            )
+            .first()
+        )
 
         if not existing_token:
             permission_service.create_attendee_token(
@@ -448,12 +454,15 @@ def grant_event_attendee_permissions(
         event.organization_id
     ):
         # Check if external attendee already has a token for this event
-        existing_token = CalendarManagementToken.objects.filter(
-            organization_id=event.organization_id,
-            external_attendee_fk_id=external_attendance.external_attendee_fk_id,
-            event_fk_id=event.id,
-            revoked_at__isnull=True,
-        ).first()
+        existing_token = (
+            CalendarManagementToken.objects.filter_by_organization(event.organization_id)
+            .filter(
+                external_attendee_fk_id=external_attendance.external_attendee_fk_id,
+                event_fk_id=event.id,
+                revoked_at__isnull=True,
+            )
+            .first()
+        )
 
         if not existing_token:
             permission_service.create_external_attendee_update_token(
@@ -503,7 +512,8 @@ def get_calendar_by_external_id(
     if calendar_adapter:
         query_kwargs["provider"] = calendar_adapter.provider
 
-    result = Calendar.objects.get(**query_kwargs)
+    organization_id = query_kwargs.pop("organization_id")
+    result = Calendar.objects.filter_by_organization(organization_id).get(**query_kwargs)
     cache[cache_key] = result
     return result
 
@@ -523,9 +533,6 @@ def get_calendar_by_id(
     if cache_key in cache:
         return cache[cache_key]
 
-    result = Calendar.objects.get(
-        id=calendar_id,
-        organization_id=organization.id,
-    )
+    result = Calendar.objects.filter_by_organization(organization.id).get(id=calendar_id)
     cache[cache_key] = result
     return result

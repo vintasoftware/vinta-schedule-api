@@ -21,6 +21,8 @@ from django.db.models import (
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 
+from organizations.querysets import SingleOrganizationQuerySet
+
 from calendar_integration.constants import (
     CalendarSyncStatus,
     CalendarType,
@@ -35,7 +37,6 @@ from calendar_integration.database_functions import (
     GetEventOccurrencesJSON,
     GetEventOccurrencesWithBulkModificationsJSON,
 )
-from tenancy.querysets import BaseOrganizationModelQuerySet
 
 
 if TYPE_CHECKING:
@@ -44,7 +45,32 @@ if TYPE_CHECKING:
     from tenancy.models import OrganizationMembership as OrganizationMembershipType
 
 
-class CalendarManagementTokenQuerySet(BaseOrganizationModelQuerySet):
+class OrganizationScopedQuerySet(SingleOrganizationQuerySet):
+    """Base queryset for every organization-scoped model in this app.
+
+    The package's ``SingleOrganizationQuerySet`` supplies the scoping
+    (``filter_by_organization`` / ``exclude_by_organization`` /
+    ``for_current_organization``), the organization-safe relation handling in
+    ``update`` / ``bulk_update``, and the paged-read join split. This subclass
+    adds back the one guard the retired ``BaseOrganizationModelQuerySet`` had
+    that the package does not: a bulk ``update()`` may not rewrite
+    ``organization``.
+
+    That guard is not redundant with the safe relations. Those make a *read*
+    across organizations return nothing; nothing stops a write from moving rows
+    wholesale into another tenant, and ``queryset.update(organization=other)``
+    is the one statement that does it in a single round trip with no instance
+    to check. Moving a row between organizations is not an operation this
+    codebase has, so refusing it is free.
+    """
+
+    def update(self, **kwargs):
+        if "organization" in kwargs or "organization_id" in kwargs:
+            raise ValueError("`organization` cannot be updated.")
+        return super().update(**kwargs)
+
+
+class CalendarManagementTokenQuerySet(OrganizationScopedQuerySet):
     """QuerySet for CalendarManagementToken with lifecycle-aware filtering."""
 
     def active(self) -> "CalendarManagementTokenQuerySet":
@@ -64,7 +90,7 @@ class CalendarManagementTokenQuerySet(BaseOrganizationModelQuerySet):
 
 if TYPE_CHECKING:
     # Type-checking-only base so mypy resolves `self.filter(...)` below — at
-    # runtime this mixin is only ever combined with `BaseOrganizationModelQuerySet`
+    # runtime this mixin is only ever combined with `OrganizationScopedQuerySet`
     # subclasses (which already provide `filter`), never instantiated alone.
     _GroupSlotScopedQuerySetBase = models.QuerySet
 else:
@@ -106,7 +132,7 @@ class GroupSlotScopedQuerySetMixin(_GroupSlotScopedQuerySetBase):
 class RecurringQuerySetMixin:
     """
     Mixin for querysets that provides recurring functionality.
-    Should be used with querysets that inherit from BaseOrganizationModelQuerySet.
+    Should be used with querysets that inherit from OrganizationScopedQuerySet.
     """
 
     def annotate_recurring_occurrences_on_date_range(
@@ -206,7 +232,7 @@ class RecurringQuerySetMixin:
         return self.none()  # type: ignore
 
 
-class CalendarQuerySet(BaseOrganizationModelQuerySet):
+class CalendarQuerySet(OrganizationScopedQuerySet):
     """
     Custom QuerySet for Calendar model to handle specific queries.
     """
@@ -319,13 +345,22 @@ class CalendarQuerySet(BaseOrganizationModelQuerySet):
         """
         from calendar_integration.models import CalendarSync
 
+        # ``unscoped()``: the organization is supplied by the correlation
+        # (``organization_id=OuterRef("organization_id")`` below), not by the
+        # context. This queryset is *built* while the caller is chaining
+        # (typically unbound, after an explicit ``filter_by_organization``) and
+        # only *runs* as a prefetch restricted to the parent calendars, which
+        # were already scoped. Going through ``objects`` would demand a second,
+        # context-bound organization here and raise under
+        # ``STRICT_ORGANIZATION_FILTER``.
         return self.prefetch_related(
             Prefetch(
                 "syncs",
-                CalendarSync.objects.filter(
+                CalendarSync.objects.unscoped().filter(
                     should_update_events=True,
                     id__in=Subquery(
-                        CalendarSync.objects.filter(
+                        CalendarSync.objects.unscoped()
+                        .filter(
                             should_update_events=True,
                             calendar_fk_id=OuterRef("calendar_fk_id"),
                             organization_id=OuterRef("organization_id"),
@@ -337,26 +372,6 @@ class CalendarQuerySet(BaseOrganizationModelQuerySet):
                 to_attr="_latest_sync",
             )
         )
-
-    def update(self, **kwargs):
-        # find model fields that are CalendarOrganizationForeignKey
-        foreign_key_fields_in_kwargs = [
-            field.name
-            for field in self._meta.get_fields()
-            if (
-                self.model.is_field_organization_foreign_key(field)
-                and (field.name in kwargs.keys() or f"{field.name}_id" in kwargs.keys())
-            )
-        ]
-
-        for field_name in foreign_key_fields_in_kwargs:
-            if field_name in kwargs.keys() and not kwargs.get(f"{field_name}_fk", None):
-                kwargs[f"{field_name}_fk"] = kwargs.pop(field_name)
-                continue
-            if f"{field_name}_id" in kwargs.keys() and not kwargs.get(f"{field_name}_fk_id", None):
-                kwargs[f"{field_name}_fk_id"] = kwargs.pop(f"{field_name}_id")
-                continue
-        return super().update(**kwargs)
 
     def only_calendars_available_in_ranges(
         self, ranges: Iterable[tuple[datetime.datetime, datetime.datetime]]
@@ -390,13 +405,25 @@ class CalendarQuerySet(BaseOrganizationModelQuerySet):
         if not ranges:
             return self.none()
 
+        # Every subquery below is correlated to the outer calendar row
+        # (``calendar_fk_id=OuterRef("id")``), which is itself organization-scoped
+        # by the caller -- so the organization comes from the correlation, not
+        # from the context, and these go through ``unscoped()`` rather than
+        # ``objects`` (which would demand a bound organization and raise under
+        # ``STRICT_ORGANIZATION_FILTER`` while the queryset is being built).
+        # ``base_rows_only()`` is re-applied by hand on the two group-scopable
+        # models because it is ``AvailableTimeManager`` / ``BlockedTimeManager``
+        # that adds it, and ``unscoped()`` bypasses the manager: a group-scoped
+        # window or block must never narrow *base* availability.
         queries = []
         for start_datetime, end_datetime in ranges:
             # For managed calendars: must have available time exactly matching the range
             managed_query = Q(
                 manage_available_windows=True,
                 id__in=Subquery(
-                    AvailableTime.objects.filter(
+                    AvailableTime.objects.unscoped()
+                    .base_rows_only()
+                    .filter(
                         calendar_fk_id=OuterRef("id"),
                         start_time__lte=start_datetime,
                         end_time__gte=end_datetime,
@@ -407,13 +434,15 @@ class CalendarQuerySet(BaseOrganizationModelQuerySet):
             )
 
             if with_bulk_modifications:
-                events_qs = CalendarEvent.objects.annotate_recurring_occurrences_with_bulk_modifications_on_date_range(
+                events_qs = CalendarEvent.objects.unscoped().annotate_recurring_occurrences_with_bulk_modifications_on_date_range(
                     start_datetime, end_datetime
                 )
                 recurring_occurrences_field = "recurring_occurrences"
             else:
-                events_qs = CalendarEvent.objects.annotate_recurring_occurrences_on_date_range(
-                    start_datetime, end_datetime
+                events_qs = (
+                    CalendarEvent.objects.unscoped().annotate_recurring_occurrences_on_date_range(
+                        start_datetime, end_datetime
+                    )
                 )
                 recurring_occurrences_field = "recurring_occurrences"
 
@@ -436,7 +465,9 @@ class CalendarQuerySet(BaseOrganizationModelQuerySet):
                 )
                 | Q(
                     id__in=Subquery(
-                        BlockedTime.objects.filter(
+                        BlockedTime.objects.unscoped()
+                        .base_rows_only()
+                        .filter(
                             Q(start_time__range=(start_datetime, end_datetime))
                             | Q(end_time__range=(start_datetime, end_datetime))
                             | Q(start_time__lte=start_datetime, end_time__gte=end_datetime),
@@ -515,7 +546,7 @@ def _owning_membership_uid_expression(calendar_id_ref: OuterRef, org_id_ref: Out
     from calendar_integration.models import CalendarOwnership
 
     owners = (
-        CalendarOwnership.objects.get_queryset()
+        CalendarOwnership.objects.unscoped()
         .filter(organization_id=org_id_ref, calendar_fk_id=calendar_id_ref)
         .exclude(membership_user_id__isnull=True)
     )
@@ -560,17 +591,17 @@ def _winning_calendar_policy_id_expression(
     from calendar_integration.models import BookingPolicy
 
     calendar_policy_id = (
-        BookingPolicy.objects.get_queryset()
+        BookingPolicy.objects.unscoped()
         .filter(organization_id=org_id_ref, calendar_fk_id=calendar_id_ref)
         .values("id")[:1]
     )
     membership_policy_id = (
-        BookingPolicy.objects.get_queryset()
+        BookingPolicy.objects.unscoped()
         .filter(organization_id=org_id_ref, membership_user_id=membership_uid_ref)
         .values("id")[:1]
     )
     org_default_policy_id = (
-        BookingPolicy.objects.get_queryset()
+        BookingPolicy.objects.unscoped()
         .filter(organization_id=org_id_ref, is_organization_default=True)
         .values("id")[:1]
     )
@@ -594,7 +625,7 @@ def _policy_field_subqueries(winning_policy_id_ref: OuterRef, org_id_ref: OuterR
 
     def _field(column: str) -> Subquery:
         return Subquery(
-            BookingPolicy.objects.get_queryset()
+            BookingPolicy.objects.unscoped()
             .filter(organization_id=org_id_ref, id=winning_policy_id_ref)
             .values(column)[:1],
             output_field=IntegerField(),
@@ -608,7 +639,7 @@ def _policy_field_subqueries(winning_policy_id_ref: OuterRef, org_id_ref: OuterR
     }
 
 
-class CalendarEventQuerySet(BaseOrganizationModelQuerySet, RecurringQuerySetMixin):
+class CalendarEventQuerySet(OrganizationScopedQuerySet, RecurringQuerySetMixin):
     """
     Custom QuerySet for CalendarEvent model to handle specific queries.
     """
@@ -735,7 +766,7 @@ class CalendarEventQuerySet(BaseOrganizationModelQuerySet, RecurringQuerySetMixi
         )
 
 
-class CalendarSyncQuerySet(BaseOrganizationModelQuerySet):
+class CalendarSyncQuerySet(OrganizationScopedQuerySet):
     """
     Custom QuerySet for CalendarSync model to handle specific queries.
     """
@@ -750,7 +781,7 @@ class CalendarSyncQuerySet(BaseOrganizationModelQuerySet):
 
 
 class BlockedTimeQuerySet(
-    BaseOrganizationModelQuerySet, RecurringQuerySetMixin, GroupSlotScopedQuerySetMixin
+    OrganizationScopedQuerySet, RecurringQuerySetMixin, GroupSlotScopedQuerySetMixin
 ):
     """
     Custom QuerySet for BlockedTime model to handle specific queries.
@@ -825,7 +856,7 @@ class BlockedTimeQuerySet(
         )
 
 
-class CalendarGroupQuerySet(BaseOrganizationModelQuerySet):
+class CalendarGroupQuerySet(OrganizationScopedQuerySet):
     """
     Custom QuerySet for CalendarGroup model to handle specific queries.
     """
@@ -886,11 +917,11 @@ class CalendarGroupQuerySet(BaseOrganizationModelQuerySet):
         qs = self
         for start_datetime, end_datetime in ranges:
             available_calendar_ids = getattr(
-                Calendar.objects.get_queryset().filter(organization_id=OuterRef("organization_id")),
+                Calendar.objects.unscoped().filter(organization_id=OuterRef("organization_id")),
                 calendar_method,
             )([(start_datetime, end_datetime)]).values("id")
             unsatisfied_slot = (
-                CalendarGroupSlot.objects.get_queryset()
+                CalendarGroupSlot.objects.unscoped()
                 .filter(group_fk_id=OuterRef("id"))
                 .annotate(
                     available_in_slot=Count(
@@ -935,7 +966,7 @@ class CalendarGroupQuerySet(BaseOrganizationModelQuerySet):
         # present, ALL four fields are read from it, never mixed with the
         # participant aggregate).
         group_policy_id = Subquery(
-            BookingPolicy.objects.get_queryset()
+            BookingPolicy.objects.unscoped()
             .filter(organization_id=org_ref, calendar_group_fk_id=group_ref)
             .values("id")[:1],
             output_field=IntegerField(),
@@ -943,7 +974,7 @@ class CalendarGroupQuerySet(BaseOrganizationModelQuerySet):
 
         def _group_policy_field(column: str) -> Subquery:
             return Subquery(
-                BookingPolicy.objects.get_queryset()
+                BookingPolicy.objects.unscoped()
                 .filter(
                     organization_id=OuterRef("organization_id"),
                     id=OuterRef("_group_policy_id"),
@@ -960,7 +991,7 @@ class CalendarGroupQuerySet(BaseOrganizationModelQuerySet):
             # effective policy is resolved through the single-calendar chain,
             # correlated to the membership row's own calendar + org.
             return (
-                CalendarGroupSlotMembership.objects.get_queryset()
+                CalendarGroupSlotMembership.objects.unscoped()
                 .filter(
                     organization_id=OuterRef("organization_id"),
                     slot_fk__group_fk_id=OuterRef("pk"),
@@ -981,7 +1012,7 @@ class CalendarGroupQuerySet(BaseOrganizationModelQuerySet):
 
         def _participant_field(column: str):
             return Subquery(
-                BookingPolicy.objects.get_queryset()
+                BookingPolicy.objects.unscoped()
                 .filter(
                     organization_id=OuterRef("organization_id"),
                     id=OuterRef("_p_policy_id"),
@@ -1032,25 +1063,25 @@ class CalendarGroupQuerySet(BaseOrganizationModelQuerySet):
         )
 
 
-class CalendarGroupSlotQuerySet(BaseOrganizationModelQuerySet):
+class CalendarGroupSlotQuerySet(OrganizationScopedQuerySet):
     """
     Custom QuerySet for CalendarGroupSlot model to handle specific queries.
     """
 
 
-class CalendarGroupSlotMembershipQuerySet(BaseOrganizationModelQuerySet):
+class CalendarGroupSlotMembershipQuerySet(OrganizationScopedQuerySet):
     """
     Custom QuerySet for CalendarGroupSlotMembership model to handle specific queries.
     """
 
 
-class CalendarEventGroupSelectionQuerySet(BaseOrganizationModelQuerySet):
+class CalendarEventGroupSelectionQuerySet(OrganizationScopedQuerySet):
     """
     Custom QuerySet for CalendarEventGroupSelection model to handle specific queries.
     """
 
 
-class CalendarGroupSlotQuotaRuleQuerySet(BaseOrganizationModelQuerySet):
+class CalendarGroupSlotQuotaRuleQuerySet(OrganizationScopedQuerySet):
     """Custom QuerySet for CalendarGroupSlotQuotaRule model to handle specific queries."""
 
     def for_group_slot(self, group_slot_id: int) -> "CalendarGroupSlotQuotaRuleQuerySet":
@@ -1063,7 +1094,7 @@ class CalendarGroupSlotQuotaRuleQuerySet(BaseOrganizationModelQuerySet):
 
 
 class AvailableTimeQuerySet(
-    BaseOrganizationModelQuerySet, RecurringQuerySetMixin, GroupSlotScopedQuerySetMixin
+    OrganizationScopedQuerySet, RecurringQuerySetMixin, GroupSlotScopedQuerySetMixin
 ):
     """
     Custom QuerySet for AvailableTime model to handle specific queries.
@@ -1152,7 +1183,7 @@ class AvailableTimeQuerySet(
         )
 
 
-class ExternalEventChangeRequestQuerySet(BaseOrganizationModelQuerySet):
+class ExternalEventChangeRequestQuerySet(OrganizationScopedQuerySet):
     """QuerySet for ExternalEventChangeRequest."""
 
     def pending(self) -> "ExternalEventChangeRequestQuerySet":
@@ -1197,16 +1228,23 @@ class ExternalEventChangeRequestQuerySet(BaseOrganizationModelQuerySet):
             return self
 
         # Non-admins: restrict to requests whose event they attend.
-        attendee_event_ids = EventAttendance.objects.filter(
-            organization_id=membership.organization_id,
-            membership_user_id=membership.user_id,
-            membership__is_active=True,
-        ).values("event_fk_id")
+        # ``filter_by_organization`` rather than the implicit scope: this runs
+        # while the caller is still chaining (nothing bound), and the
+        # organization it must use is the *membership's*, which is the value
+        # actually being authorized against.
+        attendee_event_ids = (
+            EventAttendance.objects.filter_by_organization(membership.organization_id)
+            .filter(
+                membership_user_id=membership.user_id,
+                membership__is_active=True,
+            )
+            .values("event_fk_id")
+        )
 
         return self.filter(event_fk_id__in=attendee_event_ids)
 
 
-class BookingPolicyQuerySet(BaseOrganizationModelQuerySet):
+class BookingPolicyQuerySet(OrganizationScopedQuerySet):
     """QuerySet for :class:`~calendar_integration.models.BookingPolicy`.
 
     A ``BookingPolicy`` is attached to exactly one target: a calendar, an owning

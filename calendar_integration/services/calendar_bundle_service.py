@@ -357,10 +357,9 @@ class CalendarBundleService:
         desired_ids = {cal.id for cal in child_calendars_list}
 
         existing_relationships = list(
-            ChildrenCalendarRelationship.objects.filter(
-                bundle_calendar=bundle_calendar,
-                organization=context.organization,
-            )
+            ChildrenCalendarRelationship.objects.filter_by_organization(
+                context.organization
+            ).filter(bundle_calendar=bundle_calendar)
         )
         existing_ids = {rel.child_calendar_fk_id for rel in existing_relationships}
 
@@ -602,9 +601,9 @@ class CalendarBundleService:
         )
 
         # Update all representation events
-        representation_events = CalendarEvent.objects.filter(
-            organization_id=context.organization.id, bundle_primary_event=bundle_event
-        )
+        representation_events = CalendarEvent.objects.filter_by_organization(
+            context.organization.id
+        ).filter(bundle_primary_event=bundle_event)
 
         for representation_event in representation_events:
             representation_data = CalendarEventInputData(
@@ -670,16 +669,16 @@ class CalendarBundleService:
         self._audit_bundle_write(AuditAction.DELETE, bundle_event)
 
         # Delete all representation events
-        representation_events = CalendarEvent.objects.filter(
-            organization_id=context.organization.id, bundle_primary_event=bundle_event
-        )
+        representation_events = CalendarEvent.objects.filter_by_organization(
+            context.organization.id
+        ).filter(bundle_primary_event=bundle_event)
 
         for representation_event in representation_events:
             self._host.delete_event(representation_event.calendar.id, representation_event.id)
 
         # Delete all blocked time representations
-        BlockedTime.objects.filter(
-            organization_id=context.organization.id, bundle_primary_event=bundle_event
+        BlockedTime.objects.filter_by_organization(context.organization.id).filter(
+            bundle_primary_event=bundle_event
         ).delete()
 
         # Delete the primary event
@@ -737,11 +736,11 @@ class CalendarBundleService:
         if not is_initialized_or_authenticated_calendar_service(context):
             raise
 
-        primary_relationship = ChildrenCalendarRelationship.objects.filter(
-            bundle_calendar=bundle_calendar,
-            is_primary=True,
-            organization=context.organization,
-        ).first()
+        primary_relationship = (
+            ChildrenCalendarRelationship.objects.filter_by_organization(context.organization)
+            .filter(bundle_calendar=bundle_calendar, is_primary=True)
+            .first()
+        )
 
         if not primary_relationship:
             raise ValueError("Bundle calendar has no designated primary child calendar")

@@ -305,7 +305,7 @@ class CalendarBundleCreateSerializer(VirtualModelSerializer):
             many=True,
             queryset=(
                 Calendar.objects.filter_by_organization(
-                    organization_id=active_membership.organization_id
+                    active_membership.organization_id
                 ).exclude_inactive()
                 if active_membership
                 else Calendar.original_manager.none()
@@ -314,7 +314,7 @@ class CalendarBundleCreateSerializer(VirtualModelSerializer):
         self.fields["primary_calendar"] = serializers.PrimaryKeyRelatedField(
             queryset=(
                 Calendar.objects.filter_by_organization(
-                    organization_id=active_membership.organization_id
+                    active_membership.organization_id
                 ).exclude_inactive()
                 if active_membership
                 else Calendar.original_manager.none()
@@ -398,14 +398,13 @@ class CalendarBundleUpdateSerializer(serializers.Serializer):
             existing_child_ids = []
             if bundle:
                 existing_child_ids = list(
-                    ChildrenCalendarRelationship.objects.filter(
-                        bundle_calendar=bundle,
-                        organization_id=org_id,
-                    ).values_list("child_calendar_fk_id", flat=True)
+                    ChildrenCalendarRelationship.objects.filter_by_organization(org_id)
+                    .filter(bundle_calendar=bundle)
+                    .values_list("child_calendar_fk_id", flat=True)
                 )
 
             # Build the queryset: (active OR in existing_child_ids) AND org-scoped
-            qs = Calendar.objects.filter_by_organization(organization_id=org_id).filter(
+            qs = Calendar.objects.filter_by_organization(org_id).filter(
                 ~Q(visibility=CalendarVisibility.INACTIVE) | Q(id__in=existing_child_ids)
             )
         else:
@@ -1502,7 +1501,7 @@ class BlockedTimeSerializer(VirtualModelSerializer):
 
         self.fields["calendar"] = serializers.PrimaryKeyRelatedField(
             queryset=(
-                Calendar.objects.filter_by_organization(organization_id=membership.organization_id)
+                Calendar.objects.filter_by_organization(membership.organization_id)
                 if membership
                 else Calendar.original_manager.none()
             ),
@@ -1750,7 +1749,7 @@ class AvailableTimeSerializer(VirtualModelSerializer):
 
         self.fields["calendar"] = serializers.PrimaryKeyRelatedField(
             queryset=(
-                Calendar.objects.filter_by_organization(organization_id=membership.organization_id)
+                Calendar.objects.filter_by_organization(membership.organization_id)
                 if membership
                 else Calendar.original_manager.none()
             ),
@@ -2048,7 +2047,7 @@ class AvailableTimeBatchSerializer(serializers.Serializer):
         )
         self.fields["calendar"] = serializers.PrimaryKeyRelatedField(
             queryset=(
-                Calendar.objects.filter_by_organization(organization_id=membership.organization_id)
+                Calendar.objects.filter_by_organization(membership.organization_id)
                 if membership
                 else Calendar.original_manager.none()
             ),

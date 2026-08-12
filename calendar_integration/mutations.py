@@ -178,7 +178,9 @@ class CalendarWebhookMutations:
             from calendar_integration.models import Calendar
 
             try:
-                calendar = Calendar.objects.get(id=input.calendar_id, organization=organization)
+                calendar = Calendar.objects.filter_by_organization(organization).get(
+                    id=input.calendar_id
+                )
             except Calendar.DoesNotExist:
                 return WebhookSubscriptionResult(success=False, error_message="Calendar not found")
 

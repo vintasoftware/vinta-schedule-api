@@ -840,10 +840,10 @@ class CalendarEventService:
             raise
         self._check_not_restricted()
 
-        event = CalendarEvent.objects.select_related("calendar").get(
-            calendar_fk_id=calendar_id,
-            id=event_id,
-            organization_id=context.organization.id,
+        event = (
+            CalendarEvent.objects.filter_by_organization(context.organization.id)
+            .select_related("calendar")
+            .get(calendar_fk_id=calendar_id, id=event_id)
         )
 
         # When True, authorization is granted by the public-token write allowance
@@ -1707,22 +1707,17 @@ class CalendarEventService:
             raise
 
         base_qs = (
-            CalendarEvent.objects.annotate_recurring_occurrences_on_date_range(start_date, end_date)
+            CalendarEvent.objects.filter_by_organization(calendar.organization_id)
+            .annotate_recurring_occurrences_on_date_range(start_date, end_date)
             .select_related("recurrence_rule")
             .filter(
                 parent_recurring_object__isnull=True,  # Master events only
             )
         )
         if calendar.calendar_type == CalendarType.BUNDLE:
-            base_qs = base_qs.filter(
-                organization_id=calendar.organization_id,
-                calendar__in=calendar.bundle_children.all(),
-            )
+            base_qs = base_qs.filter(calendar__in=calendar.bundle_children.all())
         else:
-            base_qs = base_qs.filter(
-                organization_id=calendar.organization_id,
-                calendar=calendar,
-            )
+            base_qs = base_qs.filter(calendar=calendar)
 
         # Get non-recurring events within the date range
         non_recurring_events = base_qs.filter(
@@ -1834,11 +1829,11 @@ class CalendarEventService:
         org_id = self._context.organization.id
 
         base_qs = (
-            CalendarEvent.objects.annotate_recurring_occurrences_on_date_range(start_date, end_date)
+            CalendarEvent.objects.filter_by_organization(org_id)
+            .annotate_recurring_occurrences_on_date_range(start_date, end_date)
             .select_related("recurrence_rule")
             .filter(
                 parent_recurring_object__isnull=True,  # Master events only
-                organization_id=org_id,
                 calendar_fk__in=id_set,
             )
         )
@@ -1924,10 +1919,10 @@ class CalendarEventService:
             raise
         self._check_not_restricted()
 
-        event = CalendarEvent.objects.select_related("calendar").get(
-            calendar_fk_id=calendar_id,
-            id=event_id,
-            organization_id=context.organization.id,
+        event = (
+            CalendarEvent.objects.filter_by_organization(context.organization.id)
+            .select_related("calendar")
+            .get(calendar_fk_id=calendar_id, id=event_id)
         )
         # When True, authorization is granted by the public-token write allowance
         # (org-wide or owner-scoped) and the subsequent permission-service check is

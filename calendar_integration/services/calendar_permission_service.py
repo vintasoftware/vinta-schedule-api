@@ -140,9 +140,9 @@ class CalendarPermissionService:
 
         try:
             token = (
-                CalendarManagementToken.objects.prefetch_related("permissions")
+                CalendarManagementToken.objects.filter_by_organization(organization_id)
+                .prefetch_related("permissions")
                 .select_related("calendar", "event")
-                .filter(organization_id=organization_id)
                 .get(id=token_id, revoked_at__isnull=True)
             )
         except CalendarManagementToken.DoesNotExist as e:
@@ -173,9 +173,9 @@ class CalendarPermissionService:
             if event_id is not None:
                 # Looking for event-specific token
                 self.token = (
-                    CalendarManagementToken.objects.prefetch_related("permissions")
+                    CalendarManagementToken.objects.filter_by_organization(organization_id)
+                    .prefetch_related("permissions")
                     .select_related("calendar", "event")
-                    .filter(organization_id=organization_id)
                     .get(
                         event_fk_id=event_id,
                         membership_user_id=user.id,
@@ -185,9 +185,9 @@ class CalendarPermissionService:
             else:
                 # Looking for calendar-level token
                 self.token = (
-                    CalendarManagementToken.objects.prefetch_related("permissions")
+                    CalendarManagementToken.objects.filter_by_organization(organization_id)
+                    .prefetch_related("permissions")
                     .select_related("calendar", "event")
-                    .filter(organization_id=organization_id)
                     .get(
                         calendar_fk_id=calendar_id,
                         event_fk_id__isnull=True,
@@ -820,10 +820,10 @@ class CalendarPermissionService:
             # Look up by id alone — no org filter.  This is safe because:
             #   1. The integer id alone is useless without the secret token string.
             #   2. The constant-time hash verify below is the actual gate.
-            # We use ``original_manager`` (the plain Django Manager defined on
-            # OrganizationModel) to bypass the tenant-required guard that
-            # CalendarManagementToken.objects enforces — the org is derived FROM
-            # the token, not passed in.
+            # We use ``original_manager`` (the unscoped manager the package's
+            # ``SingleOrganizationModelMixin`` provides) to bypass the implicit
+            # organization scope that CalendarManagementToken.objects applies —
+            # the org is derived FROM the token, not passed in.
             token = (
                 CalendarManagementToken.original_manager.select_related(
                     "calendar",

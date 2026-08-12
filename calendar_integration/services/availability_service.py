@@ -209,11 +209,12 @@ class AvailabilityService:
         blocked_times = list(blocked_times)
         events = list(events)
 
-        available_time_windows = AvailableTime.objects.filter(
+        available_time_windows = AvailableTime.objects.filter_by_organization(
+            context.organization.id
+        ).filter(
             calendar_fk_id=calendar_id,
             start_time__gte=start_time,
             end_time__lte=end_time,
-            organization_id=context.organization.id,
         )
 
         available_time_windows_to_delete: list[int] = []
@@ -713,12 +714,10 @@ class AvailabilityService:
             raise
 
         base_qs = (
-            AvailableTime.objects.annotate_recurring_occurrences_on_date_range(
-                start_date, end_date, overlap=True
-            )
+            AvailableTime.objects.filter_by_organization(calendar.organization_id)
+            .annotate_recurring_occurrences_on_date_range(start_date, end_date, overlap=True)
             .select_related("recurrence_rule")
             .filter(
-                organization_id=calendar.organization_id,
                 calendar=calendar,
                 parent_recurring_object__isnull=True,  # Master times only
             )
@@ -901,12 +900,10 @@ class AvailabilityService:
             calendars_to_query.extend(bundle_children)
 
         base_qs = (
-            BlockedTime.objects.annotate_recurring_occurrences_on_date_range(
-                start_date, end_date, overlap=True
-            )
+            BlockedTime.objects.filter_by_organization(calendar.organization_id)
+            .annotate_recurring_occurrences_on_date_range(start_date, end_date, overlap=True)
             .select_related("recurrence_rule")
             .filter(
-                organization_id=calendar.organization_id,
                 calendar__in=calendars_to_query,
                 parent_recurring_object__isnull=True,  # Master times only
             )

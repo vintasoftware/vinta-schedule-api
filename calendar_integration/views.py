@@ -174,7 +174,7 @@ class CalendarViewSet(VintaScheduleModelViewSet):
     """
 
     permission_classes = (CalendarAvailabilityPermission,)
-    queryset = Calendar.objects.all()
+    queryset = Calendar.objects.unscoped()
     serializer_class = CalendarSerializer
     filterset_class = CalendarFilterSet
 
@@ -885,7 +885,7 @@ class CalendarEventViewSet(VintaScheduleModelViewSet):
 
     filterset_class = CalendarEventFilterSet
     permission_classes = (CalendarEventPermission,)
-    queryset = CalendarEvent.objects.all()
+    queryset = CalendarEvent.objects.unscoped()
     serializer_class = CalendarEventSerializer
 
     def get_queryset(self):
@@ -1283,7 +1283,7 @@ class BlockedTimeViewSet(VintaScheduleModelViewSet):
     """
 
     permission_classes = (CalendarAvailabilityPermission,)
-    queryset = BlockedTime.objects.all()
+    queryset = BlockedTime.objects.unscoped()
     serializer_class = BlockedTimeSerializer
     filterset_class = BlockedTimeFilterSet
 
@@ -1524,7 +1524,7 @@ class AvailableTimeViewSet(VintaScheduleModelViewSet):
     """
 
     permission_classes = (CalendarAvailabilityPermission,)
-    queryset = AvailableTime.objects.all()
+    queryset = AvailableTime.objects.unscoped()
     serializer_class = AvailableTimeSerializer
     filterset_class = AvailableTimeFilterSet
 
@@ -2149,7 +2149,7 @@ class GroupScopedQuotaRuleViewSet(VintaScheduleModelViewSet):
     """
 
     permission_classes = (GroupScopedQuotaRulePermission,)
-    queryset = CalendarGroupSlotQuotaRule.objects.all()
+    queryset = CalendarGroupSlotQuotaRule.objects.unscoped()
     serializer_class = GroupScopedQuotaRuleSerializer
     # PUT is intentionally unsupported: the underlying service is a partial
     # update by design (only provided fields change), so only PATCH applies.
@@ -2303,7 +2303,7 @@ class CalendarGroupViewSet(VintaScheduleModelViewSet):
     """
 
     permission_classes = (CalendarGroupPermission,)
-    queryset = CalendarGroup.objects.all()
+    queryset = CalendarGroup.objects.unscoped()
     serializer_class = CalendarGroupSerializer
     filterset_class = CalendarGroupFilterSet
 
@@ -2587,7 +2587,7 @@ class BookingPolicyViewSet(VintaScheduleModelViewSet):
     """
 
     permission_classes = (BookingPolicyPermission,)
-    queryset = BookingPolicy.objects.all()
+    queryset = BookingPolicy.objects.unscoped()
     serializer_class = BookingPolicySerializer
 
     def get_queryset(self):
@@ -2769,7 +2769,7 @@ class ExternalEventChangeRequestViewSet(ReadOnlyVintaScheduleModelViewSet):
     """
 
     permission_classes = (ExternalEventChangeRequestPermission,)
-    queryset = ExternalEventChangeRequest.objects.all()
+    queryset = ExternalEventChangeRequest.objects.unscoped()
     serializer_class = ExternalEventChangeRequestSerializer
     filterset_class = ExternalEventChangeRequestFilterSet
     http_method_names = ("get", "post", "head", "options")

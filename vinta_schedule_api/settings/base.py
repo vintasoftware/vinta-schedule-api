@@ -106,8 +106,17 @@ SHARED_SCHEMA_ORGANIZATIONS = {
     # exactly the cross-tenant write the whole migration exists to prevent.
     # ``None`` makes the fallback a no-op instead of a wasted query.
     "DEFAULT_ORGANIZATION_SLUG": None,
-    # NOTE: STRICT_ORGANIZATION_FILTER is deliberately absent -- it is Phase 2a's,
-    # and turning it on before the models flip would gate nothing.
+    # A query against a scoped model with no organization bound raises
+    # ``OrganizationNotFoundError`` instead of quietly returning nothing.
+    # The package defaults this off because an unscoped *read* leaks nothing --
+    # but "returns no rows" and "forgot to bind an organization" are
+    # indistinguishable in a Celery task or a management command, which is
+    # exactly where this codebase's scoped reads run furthest from a request.
+    # Loud is the point: every call site that must cross organizations says so
+    # with ``original_manager`` / ``unscoped()``, and every call site that knows
+    # its organization says so with ``filter_by_organization(...)`` (which
+    # bypasses the context by design). What is left over is the bug.
+    "STRICT_ORGANIZATION_FILTER": True,
 }
 
 MIDDLEWARE = [

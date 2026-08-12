@@ -76,7 +76,7 @@ class TokenCalendarEventViewSet(TokenAuthenticationMixin, NoListVintaScheduleMod
     """
 
     serializer_class = CalendarEventSerializer
-    queryset = CalendarEvent.objects.all()
+    queryset = CalendarEvent.objects.unscoped()
     authentication_classes = tuple()  # Disable default authentication - we handle it manually
     permission_classes = tuple()  # Disable default permissions - we handle it manually
 

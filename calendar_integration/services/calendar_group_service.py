@@ -854,10 +854,11 @@ class CalendarGroupService:
             update_fields.append("timezone")
         if rrule_string is not _UNCHANGED:
             # ``None`` clears the recurrence (non-recurring); a string sets/replaces it.
-            window.recurrence_rule = self._create_recurrence_rule_if_needed(rrule_string)
-            # Assigning through the ForeignObject property name ("recurrence_rule")
-            # sets the underlying concrete column ("recurrence_rule_fk"); `save`'s
-            # `update_fields` must name the concrete field.
+            # Assigned to the *concrete* field, not to the safe relation: assigning
+            # ``None`` through ``recurrence_rule`` writes every column the relation
+            # joins on, which includes ``organization`` -- clearing the recurrence
+            # would also clear the row's organization.
+            window.recurrence_rule_fk = self._create_recurrence_rule_if_needed(rrule_string)
             update_fields.append("recurrence_rule_fk")
 
         if update_fields:
@@ -1443,10 +1444,11 @@ class CalendarGroupService:
             update_fields.append("reason")
         if rrule_string is not _UNCHANGED:
             # ``None`` clears the recurrence (non-recurring); a string sets/replaces it.
-            block.recurrence_rule = self._create_recurrence_rule_if_needed(rrule_string)
-            # Assigning through the ForeignObject property name ("recurrence_rule")
-            # sets the underlying concrete column ("recurrence_rule_fk"); `save`'s
-            # `update_fields` must name the concrete field.
+            # Assigned to the *concrete* field, not to the safe relation: assigning
+            # ``None`` through ``recurrence_rule`` writes every column the relation
+            # joins on, which includes ``organization`` -- clearing the recurrence
+            # would also clear the row's organization.
+            block.recurrence_rule_fk = self._create_recurrence_rule_if_needed(rrule_string)
             update_fields.append("recurrence_rule_fk")
 
         if update_fields:
