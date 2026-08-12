@@ -116,22 +116,24 @@ class OrganizationSerializer(VirtualModelSerializer):
     google_service_account = serializers.SerializerMethodField()
 
     # Explicitly declared as CharField (rather than left to ModelSerializer
-    # auto-build, and NOT as SlugField) so we control allow_null/allow_blank/
-    # required ourselves and, more importantly, so DRF does NOT auto-attach a
-    # model-derived UniqueValidator or the SlugField's ASCII-only
-    # RegexValidator: both would run before validate_slug() below.  The
-    # UniqueValidator would compare a blank submission's raw "" against other
-    # organizations' "" — colliding two orgs that both left the slug unset.
-    # The RegexValidator would preempt the confusables/reserved-word rules in
-    # validate_slug(), which is the sole source of format/confusable/reserved
-    # validation. validate_slug() normalizes blank/None to None (matching the
-    # model's NULL-when-unset contract) and performs the uniqueness check
-    # itself, after normalization.
+    # auto-build) so we control allow_null/allow_blank/required ourselves and,
+    # more importantly, so DRF does NOT auto-attach a model-derived
+    # UniqueValidator: it would run before validate_slug() below, which performs
+    # the uniqueness check itself with a message naming the conflicting value.
+    # ``max_length`` is pinned to SLUG_MAX_LENGTH rather than inherited from the
+    # model: the column is varchar(255) (inherited from the package's
+    # ``AbstractOrganization``) but the rules cap a *written* slug at 63.
+    # ``allow_blank``/``allow_null`` are kept so a blank submission reaches
+    # validate_slug(), which refuses it on update ("cannot be cleared") and
+    # treats it as "pick one for me" on create.
     slug = serializers.CharField(
         required=False,
         allow_null=True,
         allow_blank=True,
         max_length=SLUG_MAX_LENGTH,
+        help_text=(
+            "Public, URL-safe identifier used by the organization's branded login page and by brandingForTenant. Always set: an organization saved without one is given an opaque ``org-<token>`` slug, and the database refuses a blank value. Mutable, but not clearable -- changing it orphans previously-issued branded login URLs, which then fall back to the default identity rather than erroring. Format, reserved-word, and confusable-character rules live in organizations.slug_validation and are enforced by each write surface (REST serializer, admin form, GraphQL input), not on the model."
+        ),
     )
 
     # ``get_google_service_account`` issues exactly one bounded, org-scoped query
@@ -181,14 +183,28 @@ class OrganizationSerializer(VirtualModelSerializer):
     def validate_slug(self, value: str | None) -> str | None:
         """Validate format/reserved-word/confusable rules, then uniqueness.
 
-        A blank or missing slug normalizes to ``None`` — the model's NULL-when-unset
-        contract (a Postgres unique index admits any number of NULLs, but two
-        organizations both stored as ``""`` would collide). Uniqueness is checked
-        here, against the shared queryset, excluding the instance being updated, so
-        a collision returns 400 naming the conflicting value rather than a 500 from
-        the DB's unique-index integrity error.
+        A blank or ``null`` slug on **update** is refused: ``slug`` is NOT NULL
+        and the ``organization_slug_not_blank`` check constraint rejects ``""``,
+        so there is nothing sensible to write. It is refused rather than ignored
+        because silently ignoring it would let a client believe it had cleared
+        the organization's public identifier — and, since ``Organization.save()``
+        mints a replacement for an empty slug, the row would end up with a
+        *different* slug rather than the one the client can see. Omitting the
+        field entirely still means "leave it alone".
+
+        A blank slug on **create** is accepted and means "pick one for me":
+        ``OrganizationService.create_organization`` derives it from the name.
+
+        Uniqueness is checked here, against the shared queryset, excluding the
+        instance being updated, so a collision returns 400 naming the conflicting
+        value rather than a 500 from the DB's unique-index integrity error.
         """
         if not value:
+            if self.instance is not None:
+                raise serializers.ValidationError(
+                    "Slug cannot be cleared once set. Send a new slug, or omit the "
+                    "field to leave it unchanged."
+                )
             return None
 
         try:
@@ -326,7 +342,7 @@ class CurrentMembershipSerializer(serializers.ModelSerializer):
         than restating the two-condition check, so this tracks the same gate
         that governs ``GET /branding/`` (see
         ``OrganizationBrandingView._check_branding_read_gate``) rather than
-        the three-condition write gate.
+        the write gate.
         """
         return is_branding_eligible_organization(obj.organization)
 
@@ -345,6 +361,17 @@ class OrganizationBriefSerializer(serializers.ModelSerializer):
         model = Organization
         fields = ("id", "name", "slug")
         read_only_fields = ("id", "name", "slug")
+        # ``slug`` is inherited from the package's ``AbstractOrganization``,
+        # which declares no ``help_text`` -- so without this the OpenAPI schema
+        # would describe the organization's public identifier with nothing at
+        # all. Kept in step with ``OrganizationSerializer.slug`` above.
+        extra_kwargs = {  # noqa: RUF012
+            "slug": {
+                "help_text": (
+                    "Public, URL-safe identifier used by the organization's branded login page and by brandingForTenant. Always set: an organization saved without one is given an opaque ``org-<token>`` slug, and the database refuses a blank value. Mutable, but not clearable -- changing it orphans previously-issued branded login URLs, which then fall back to the default identity rather than erroring. Format, reserved-word, and confusable-character rules live in organizations.slug_validation and are enforced by each write surface (REST serializer, admin form, GraphQL input), not on the model."
+                )
+            }
+        }
 
 
 class _MyMembershipListSerializer(serializers.ListSerializer):

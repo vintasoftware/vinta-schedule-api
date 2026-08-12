@@ -157,8 +157,8 @@ def _apply_input_slug(organization: Organization, slug: str) -> None:
     uniqueness excluding ``organization`` itself, and persist it immediately.
 
     Called from ``update_branding`` when ``UpdateBrandingInput.slug`` is
-    supplied, BEFORE the write gate's slug condition is evaluated -- see that
-    mutation's docstring. The caller wraps this call in ``transaction.atomic()``:
+    supplied -- see that mutation's docstring. The caller wraps this call in
+    ``transaction.atomic()``:
     an invalid or colliding slug raises ``GraphQLError`` here, and because that
     propagates out of the atomic block, the slug write (and anything else the
     block did) is rolled back rather than partially applied.
@@ -1507,12 +1507,13 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
            organization-slug rules and a uniqueness check (excluding the acting
            org itself) and applies it to the acting org BEFORE step 2 -- see
            ``UpdateBrandingInput.slug``'s docstring and ``_apply_input_slug``.
-        2. Evaluates the shared branding write gate -- parentless, entitled,
-           slug-set (``organizations.permissions.evaluate_branding_write_gate``).
+        2. Evaluates the shared branding write gate -- parentless and entitled
+           (``organizations.permissions.evaluate_branding_write_gate``; its
+           third, slug-set condition is retired -- see that function).
            Replaces the old ``can_invite_organizations``-only check
-           (``assert_org_can_invite``): a reseller is not exempt from any of
-           the three conditions. Raises a distinguishable ``GraphQLError`` per
-           failed condition.
+           (``assert_org_can_invite``): a reseller is not exempt from either
+           condition. Raises a distinguishable ``GraphQLError`` per failed
+           condition.
         3. Validates app_name: non-empty and max 120 characters.
         4. Validates primary_color and secondary_color format (#RRGGBB or #RRGGBBAA).
         5. Validates redirect_url: HTTPS scheme, no wildcard, no path-prefix pattern
@@ -1550,10 +1551,17 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         )
 
         with transaction.atomic():
-            # Slug application happens BEFORE the gate is evaluated so a
-            # partner-API caller can satisfy the gate's slug precondition and
-            # set branding in one call.
-            if input.slug:
+            # ``None`` means "leave the slug alone". An explicit ``""`` is
+            # refused rather than treated as omitted: the column is NOT NULL and
+            # the ``organization_slug_not_blank`` constraint rejects a blank
+            # value, so silently ignoring it would tell the caller it had
+            # cleared an identifier that is in fact unchanged.
+            if input.slug is not None:
+                if not input.slug.strip():
+                    raise GraphQLError(
+                        "Slug cannot be cleared. Send a new slug, or omit the field to "
+                        "leave it unchanged."
+                    )
                 _apply_input_slug(acting_org, input.slug)
 
             gate_reason = evaluate_branding_write_gate(acting_org)

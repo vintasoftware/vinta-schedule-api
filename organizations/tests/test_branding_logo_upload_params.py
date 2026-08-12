@@ -50,9 +50,14 @@ def eligible_org():
 
 
 @pytest.fixture
-def no_slug_org():
-    """Parentless and entitled, but no slug -- logo upload must still be admitted
-    (uploads happen before the slug/branding write on form submit)."""
+def second_eligible_org():
+    """A second parentless, entitled organization.
+
+    This used to be a ``no_slug_org``: parentless and entitled but deliberately
+    slug-less, pinning that logo upload goes through the eligibility gate rather
+    than the (then three-condition) write gate. ``Organization.slug`` is NOT
+    NULL now, so that state is unreachable -- what the fixture still buys is a
+    second eligible organization that is not the one every other test uses."""
     return baker.make(Organization, can_invite_organizations=False, parent=None)
 
 
@@ -86,11 +91,11 @@ def eligible_org_member(eligible_org):
 
 
 @pytest.fixture
-def no_slug_org_admin(user, no_slug_org):
+def second_eligible_org_admin(user, second_eligible_org):
     return baker.make(
         OrganizationMembership,
         user=user,
-        organization=no_slug_org,
+        organization=second_eligible_org,
         role=OrganizationRole.ADMIN,
         is_active=True,
     )
@@ -200,15 +205,14 @@ class TestOrganizationBrandingLogoUploadParamsView:
         assert "access_key_id" not in data
         assert "session_token" not in data
 
-    def test_admin_of_a_no_slug_org_still_gets_signed_params(
-        self, client, user, no_slug_org, no_slug_org_admin
+    def test_admin_of_any_eligible_org_gets_signed_params(
+        self, client, user, second_eligible_org, second_eligible_org_admin
     ):
-        """Logo upload uses the two-condition eligibility gate, not the
-        three-condition write gate -- a slug-less-but-otherwise-eligible org
-        must still be able to upload a logo (the slug/branding write happens
-        later, on form submit)."""
+        """Logo upload goes through the eligibility gate (parentless and
+        entitled), not the branding write gate -- uploads happen on file-picker
+        change, before the branding write on form submit."""
         client.force_authenticate(user)
-        client.credentials(HTTP_X_ORGANIZATION_ID=str(no_slug_org.id))
+        client.credentials(HTTP_X_ORGANIZATION_ID=str(second_eligible_org.id))
 
         response = client.post(UPLOAD_PARAMS_URL, data=VALID_PAYLOAD, format="json")
         assert_response_status_code(response, status.HTTP_200_OK)

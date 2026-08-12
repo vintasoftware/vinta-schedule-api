@@ -8,13 +8,25 @@ from django.db.models import Q
 from django.db.models.query import QuerySet
 from django.utils import timezone
 
+from vinta_orgs.querysets import SingleOrganizationQuerySet
+
 
 if TYPE_CHECKING:
     from users.models import User
 
 
-class OrganizationMembershipQuerySet(QuerySet):
-    """QuerySet for OrganizationMembership with domain-specific filtering methods."""
+class OrganizationMembershipQuerySet(SingleOrganizationQuerySet):
+    """QuerySet for OrganizationMembership with domain-specific filtering methods.
+
+    Built on the package's ``SingleOrganizationQuerySet`` rather than a plain
+    ``QuerySet`` so that ``filter_by_organization(...)`` /
+    ``for_current_organization()`` chain off it the same way they do off every
+    other organization-scoped model. It does **not** scope implicitly -- that
+    is a property of the *manager* (see
+    ``organizations.managers.OrganizationMembershipManager``), and a membership
+    is the row you read to decide which organization to select, so scoping it
+    to the selected organization would be circular.
+    """
 
     def occupying_a_seat(self, organization_ids: Sequence[int]) -> OrganizationMembershipQuerySet:
         """Memberships in ``organization_ids`` that consume a licensed seat.

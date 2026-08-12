@@ -120,9 +120,9 @@ class UpdateBrandingInput:
 
     Updates branding on the acting org. Always upserts (creates if missing,
     updates if exists). Cannot target another org's tree. The acting org must
-    pass the shared branding write gate (parentless, entitled, slug-set --
+    pass the shared branding write gate (parentless and entitled --
     ``organizations.permissions.evaluate_branding_write_gate``); a reseller is
-    not exempt from any of those three conditions.
+    not exempt from either condition.
 
     ``logo_url`` is write-only despite the name (kept for symmetry with the REST
     serializer's field): it accepts the S3 key returned by
@@ -133,15 +133,15 @@ class UpdateBrandingInput:
     ``slug``: optional. When supplied, it is validated with the same shared
     rules the organization REST endpoint uses (``organizations.slug_validation
     .validate_organization_slug``, plus a uniqueness check excluding the acting
-    org itself) and applied to the acting organization BEFORE the write gate's
-    slug condition is evaluated -- so a partner-API caller can satisfy the
-    slug precondition and set branding in a single call, rather than needing a
-    separate organization-update mutation that does not exist on this surface.
-    When omitted (``None``), the acting organization's already-stored slug
-    must satisfy the gate on its own. The slug write and the branding upsert
-    land in one transaction: an invalid or colliding slug, or a
-    field-validation failure anywhere else in this input, rejects the whole
-    call and leaves the organization's slug unchanged.
+    org itself) and applied to the acting organization -- so a partner-API
+    caller can rename its public identifier and set branding in a single call,
+    rather than needing a separate organization-update mutation that does not
+    exist on this surface. When omitted (``None``) the organization's slug is
+    left alone; an explicit empty string is **refused**, because a slug cannot
+    be cleared (it is NOT NULL, and the database rejects a blank one). The slug
+    write and the branding upsert land in one transaction: an invalid, blank or
+    colliding slug, or a field-validation failure anywhere else in this input,
+    rejects the whole call and leaves the organization's slug unchanged.
     """
 
     app_name: str

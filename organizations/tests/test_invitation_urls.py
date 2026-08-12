@@ -29,9 +29,18 @@ class TestBuildInvitationAcceptUrl:
 
         assert url == "https://frontend.example.com/auth/accept-invite/?token=tok123"
 
-    def test_branding_root_with_no_slug_uses_the_plain_template(self, settings, db):
+    def test_branding_root_with_no_slug_uses_the_plain_template(self, settings):
+        """The slug-less fallback branch, driven by an **unsaved** instance.
+
+        ``Organization.slug`` is NOT NULL with a ``save()``-time fallback and an
+        ``organization_slug_not_blank`` check constraint, so no persisted
+        organization can reach this branch any more. The branch is kept (the
+        function's contract still promises the plain template for a slug-less
+        root) and covered the only way it still can be, rather than deleted on
+        the strength of an invariant enforced two modules away.
+        """
         settings.HEADLESS_FRONTEND_URLS = ACCEPT_URLS
-        org = baker.make(Organization, slug=None)
+        org = Organization(name="Unsaved Org", slug="")
 
         url = build_invitation_accept_url(org, "tok123")
 

@@ -6,9 +6,10 @@ from django.conf import settings
 from django.core.exceptions import FieldDoesNotExist, ObjectDoesNotExist
 from django.db import models
 
+from vinta_orgs.models import AbstractOrganization, AbstractOrganizationMembership
+
 from common.fields import (
     OrganizationMembershipForeignKey,
-    SafeCompositePrimaryKey,
     TenantSafeForeignKey,
     TenantSafeOneToOneField,
 )
@@ -18,7 +19,7 @@ from organizations.managers import (
     OrganizationInvitationManager,
     OrganizationMembershipManager,
 )
-from organizations.slug_validation import SLUG_MAX_LENGTH
+from organizations.slug_generation import derive_organization_slug
 from payments.billing_constants import Entitlement
 from payments.entitlement_cache import has_entitlement_cached
 from s3direct_overrides.model_fields import S3DirectImageField
@@ -70,7 +71,7 @@ def get_active_organization_membership(
     # Off-request path (management commands, Celery tasks, direct test calls):
     # fall back to the single active membership query. Stable ordering ensures
     # determinism if a user somehow ends up with two active memberships here.
-    return user.organization_memberships.filter(is_active=True).order_by("created").first()  # type: ignore[union-attr]
+    return user.memberships.filter(is_active=True).order_by("created").first()  # type: ignore[union-attr]
 
 
 class ExternalEventUpdatePolicy(models.TextChoices):
@@ -100,12 +101,31 @@ class WeekStart(models.TextChoices):
     SUNDAY = "sunday", "Sunday"
 
 
-class Organization(BaseModel):
+class Organization(AbstractOrganization):
     """
     Represents a calendar organization.
+
+    Inherited from ``vinta_orgs.models.AbstractOrganization``: ``name``,
+    ``slug`` (NOT NULL, unique), ``created`` and ``modified``. ``name`` is not
+    redeclared -- the base already declares exactly the field we had.
+
+    ``slug`` is inherited rather than overridden, which is what makes it NOT
+    NULL. Two consequences worth knowing:
+
+    * The column is now ``varchar(255)`` rather than ``varchar(63)``. The
+      *rules* did not move: ``organizations.slug_validation`` still caps a
+      written slug at ``SLUG_MAX_LENGTH`` (63) and still owns the format,
+      reserved-word and confusable checks at every write surface.
+    * A blank slug is refused by the database, not merely by ``save()`` -- see
+      the ``organization_slug_not_blank`` constraint below. That is what
+      retires ``evaluate_branding_write_gate``'s ``NO_SLUG`` condition
+      permanently rather than leaving it merely hard to reach.
+
+    ``BaseModel``'s ``meta`` JSONField and its ``db_index`` on
+    ``created`` / ``modified`` are gone with the base-class change: ``meta`` was
+    never read on this model and neither timestamp is queried by range.
     """
 
-    name = models.CharField(max_length=255)
     should_sync_rooms = models.BooleanField(
         default=False, help_text="Whether to sync rooms for this organization."
     )
@@ -148,36 +168,52 @@ class Organization(BaseModel):
             "Enables the whole reseller capability bundle."
         ),
     )
-    slug = models.SlugField(
-        max_length=SLUG_MAX_LENGTH,
-        unique=True,
-        null=True,
-        blank=True,
-        default=None,
-        help_text=(
-            "Public, URL-safe identifier used by the organization's branded login page "
-            "and by brandingForTenant. Optional until the organization sets one "
-            "self-serve; stored as NULL (never empty string) when unset — default=None "
-            "keeps a field left blank in a form/serializer NULL rather than '', which "
-            "is what lets the unique index admit any number of organizations with no "
-            "slug. Mutable after set: changing it orphans previously-issued branded "
-            "login URLs, which then fall back to the default identity rather than "
-            "erroring. Format, reserved-word, and confusable-character rules live in "
-            "organizations.slug_validation and are enforced by each write surface "
-            "(REST serializer, admin form, GraphQL input), not here."
-        ),
-    )
 
-    class Meta:
+    class Meta(AbstractOrganization.Meta):
+        # No ``db_table``. Our app label is still ``organizations`` (the package
+        # labels its own app ``vinta_orgs``), so Django's default already
+        # resolves to ``organizations_organization`` -- the table this model has
+        # always used. organizations/tests/test_app_identity.py pins that.
         constraints: ClassVar = [
             models.UniqueConstraint(
                 fields=["parent", "name"],
                 name="uniq_org_name_per_parent",
             ),
+            # ``slug`` is NOT NULL, but NOT NULL alone still admits ``''`` --
+            # and an empty slug is not a slug: it would collide on the unique
+            # index with any other blank row and it would resurrect the
+            # branding gate's retired ``NO_SLUG`` state through any write that
+            # goes around ``save()`` (``queryset.update(slug="")``, raw SQL, a
+            # data migration). Refused in the database so no write surface has
+            # to remember.
+            models.CheckConstraint(
+                condition=~models.Q(slug=""),
+                name="organization_slug_not_blank",
+            ),
         ]
 
-    def __str__(self):
-        return self.name
+    def save(self, *args, **kwargs):
+        """Fill in an **opaque** slug when the caller left one out.
+
+        ``org-<token>``, never ``slugify(name)``: the slug is public, so a
+        name-derived default would publish the organization's name for every
+        row saved without an explicit slug from this point on. Name derivation
+        is opt-in and currently has exactly one runtime caller,
+        ``OrganizationService.create_organization``, which computes and passes
+        the slug itself -- see ``organizations.slug_generation``.
+
+        Skipped entirely when ``update_fields`` is given and does not mention
+        ``slug``: deriving one there would mutate the in-memory instance and
+        never persist it, so the object and the row would disagree.
+        """
+        update_fields = kwargs.get("update_fields")
+        if not self.slug and (update_fields is None or "slug" in update_fields):
+            self.slug = derive_organization_slug(
+                self.name,
+                slug_exists=lambda candidate: Organization.objects.filter(slug=candidate).exists(),
+                disclose_name=False,
+            )
+        return super().save(*args, **kwargs)
 
     def is_reseller(self) -> bool:
         """Return True if this org can invite/create other organizations."""
@@ -243,7 +279,7 @@ class OrganizationRole(models.TextChoices):
     ADMIN = "admin", "Admin"
 
 
-class OrganizationMembership(BaseModel):
+class OrganizationMembership(AbstractOrganizationMembership):
     """
     Represents a membership of a user in a calendar organization.
     This is used to link users to their respective calendar organizations.
@@ -264,21 +300,26 @@ class OrganizationMembership(BaseModel):
         single-membership user it returns that membership; for a multi-org user it
         resolves the active org from the ``X-Organization-Id`` header.
 
-        Never read ``user.organization_memberships`` directly in permission /
+        Never read ``user.memberships`` directly in permission /
         scoping code — always go through ``get_active_organization_membership`` so
         the resolution stays in one place.
+
+    Inherited from ``vinta_orgs.models.AbstractOrganizationMembership``:
+    ``organization`` and ``user`` (both ``related_name="memberships"`` --
+    the user-side accessor used to be ``memberships``), the
+    ``groups`` / ``permissions`` many-to-many relations to ``auth.Group`` /
+    ``auth.Permission``, and ``created`` / ``modified``. The two M2Ms exist and
+    are empty: nothing reads them until Phase 3, and every authorization
+    decision still reads ``role`` / ``is_billing_owner``.
+
+    The primary key is a surrogate ``id`` again. The composite
+    ``(user, organization)`` primary key it replaces is incompatible with a
+    ``ManyToManyField``, which the two inherited relations are.
+    ``uniq_membership_user_organization`` is kept -- it is a *constraint*, and
+    the five raw-SQL composite PROTECT FKs in ``calendar_integration`` bind to
+    it rather than to the primary key, so they survive the swap untouched.
     """
 
-    user = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name="organization_memberships",
-    )
-    organization = models.ForeignKey(
-        Organization,
-        on_delete=models.CASCADE,
-        related_name="memberships",
-    )
     role = models.CharField(
         max_length=20,
         choices=OrganizationRole,
@@ -312,22 +353,24 @@ class OrganizationMembership(BaseModel):
         ),
     )
 
-    # Composite primary key on (user, organization) — a membership's identity is the
-    # (user, org) pair. The implicit ``id`` BigAutoField is dropped; this composite
-    # key replaces it. The legacy ``uniq_membership_user_organization`` unique
-    # constraint is kept (it is what the three raw-SQL calendar PROTECT FKs bind to);
-    # it is redundant with the composite-PK unique index but kept so the FKs need no
-    # rebind.
-    #
-    # ``SafeCompositePrimaryKey`` (not stock ``models.CompositePrimaryKey``) is used so
-    # class-level ``OrganizationMembership.pk`` access does not crash third-party model
-    # introspection (e.g. ``django_virtual_models``' method discovery). See
-    # ``common.fields.SafeCompositePrimaryKey``.
-    pk = SafeCompositePrimaryKey("user", "organization")
+    # ``ClassVar`` because the base declares its own ``objects`` as one, and
+    # mypy refuses to let an instance variable shadow a class variable. This
+    # narrows the base's ``SingleOrganizationUnscopedManager`` to a subclass of
+    # it -- the domain methods are added, the unscoped behaviour is kept.
+    objects: ClassVar[OrganizationMembershipManager] = OrganizationMembershipManager()
 
-    objects: OrganizationMembershipManager = OrganizationMembershipManager()
-
-    class Meta:
+    class Meta(AbstractOrganizationMembership.Meta):
+        # No ``db_table`` -- see ``Organization.Meta``.
+        #
+        # ``unique_together`` is emptied deliberately. The base declares
+        # ``[('user', 'organization')]``, which would build a *second* unique
+        # index over the same two columns next to the
+        # ``uniq_membership_user_organization`` constraint below. That
+        # constraint is the one five raw-SQL composite FKs point at, so it is
+        # the one that must survive verbatim; a duplicate buys nothing and
+        # costs an index on every write.
+        unique_together: ClassVar = []
+        default_manager_name = "objects"
         constraints: ClassVar = [
             models.UniqueConstraint(
                 fields=["user", "organization"],
@@ -336,6 +379,8 @@ class OrganizationMembership(BaseModel):
         ]
 
     def __str__(self):
+        # Overrides the base, which renders every group name and therefore
+        # costs a query per row anywhere a membership is stringified.
         return f"{self.user} in {self.organization}"
 
     @property

@@ -12,11 +12,10 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.viewsets import ModelViewSet, ViewSetMixin
 
+from common.constants import ACTIVE_ORG_HEADER
+
 
 logger = logging.getLogger(__name__)
-
-#: Header name used to select the active organization for a request.
-ACTIVE_ORG_HEADER = "X-Organization-Id"
 
 
 class TenantScopedViewMixin:
@@ -163,7 +162,7 @@ class TenantScopedViewMixin:
             if org_id_header:
                 # Header present and is a valid integer: try to find a matching active membership.
                 matching = (
-                    user.organization_memberships.filter(  # type: ignore[union-attr]
+                    user.memberships.filter(  # type: ignore[union-attr]
                         is_active=True,
                         organization_id=org_id_header,
                     )
@@ -202,7 +201,7 @@ class TenantScopedViewMixin:
                 # rejected with 400 (unless the view opts out via
                 # ``active_org_resolution_optional``); zero memberships → gated.
                 active_memberships = list(
-                    user.organization_memberships.filter(  # type: ignore[union-attr]
+                    user.memberships.filter(  # type: ignore[union-attr]
                         is_active=True,
                     )
                     .select_related("organization")

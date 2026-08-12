@@ -22,11 +22,42 @@ from django.contrib import admin
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.http import HttpRequest
 
+# Imported for its registration side effect, so the unregistration below runs
+# after it no matter which order ``admin.autodiscover()`` reaches the two apps
+# in. Without this, ours could be imported first and the package's
+# ``admin.site.register`` would then raise ``AlreadyRegistered``.
+import vinta_orgs.admin  # noqa: F401
 from dependency_injector.wiring import Provide, inject
 
-from organizations.models import Organization, OrganizationBranding
+from organizations.models import Organization, OrganizationBranding, OrganizationMembership
+from organizations.slug_generation import opaque_organization_slug
 from organizations.slug_validation import validate_organization_slug
 from payments.services.subscription_service import SubscriptionService
+
+
+# ``vinta_orgs.admin`` registers a ``ModelAdmin`` against whatever
+# ``ORGANIZATION_MODEL`` / ``ORGANIZATION_MEMBERSHIP_MODEL`` name -- which, since
+# this project swapped both, means *our* models. Both registrations are dropped
+# here, using the supported ``unregister`` call the package's own admin module
+# points projects at.
+#
+# This is an authorization change, not tidying:
+#
+# * ``OrganizationMembershipAdmin`` exposes ``role``, ``is_billing_owner`` and
+#   ``groups`` as plain, staff-editable fields, with none of the rules the REST
+#   viewset enforces -- the seat limit, and the refusal to demote the last
+#   active admin in an organization. Any staff user with the change permission
+#   could grant themselves organization admin or billing ownership in a single
+#   form post. It is left unregistered outright; a membership admin that
+#   carries those rules is Phase 3's, not this phase's.
+# * ``OrganizationAdmin`` is replaced (below) rather than merely dropped: ours
+#   validates the slug, refuses a parent cycle, and puts every new organization
+#   on a billing plan. The package's also inlines ``OrganizationSite``, which we
+#   do not use at all (domain-based tenancy is a Non-goal).
+for _package_registered_model in (Organization, OrganizationMembership):
+    if admin.site.is_registered(_package_registered_model):
+        admin.site.unregister(_package_registered_model)
+del _package_registered_model
 
 
 class OrganizationAdminForm(forms.ModelForm):
@@ -41,12 +72,10 @@ class OrganizationAdminForm(forms.ModelForm):
     immutability, is what protects the rule.
     """
 
-    # Explicitly declared as CharField (rather than left to ModelForm
-    # auto-build from Organization.slug's models.SlugField, and NOT as
-    # forms.SlugField) so Django does NOT auto-attach the SlugField's
-    # ASCII-only RegexValidator: it would run before clean_slug() below and
-    # preempt the confusables/reserved-word rules, which are the sole source
-    # of format/confusable/reserved validation on this form.
+    # Explicitly declared, and ``required=False`` where the model field is not,
+    # so a blank submission reaches ``clean_slug`` below (which mints an opaque
+    # slug on create and refuses the clear on update) instead of being rejected
+    # by the auto-built field with a bare "This field is required."
     slug = forms.CharField(required=False)
 
     class Meta:
@@ -61,17 +90,34 @@ class OrganizationAdminForm(forms.ModelForm):
             "can_invite_organizations",
         )
 
-    def clean_slug(self) -> str | None:
+    def clean_slug(self) -> str:
         """Run the shared slug rules, then check uniqueness against the DB.
 
-        A blank submission normalizes to ``None`` (the model's NULL-when-unset
-        contract) before the uniqueness check — otherwise two organizations both
-        left blank would collide on the stored empty string, which is not the
-        "multiple NULLs coexist" behavior the field is nullable for.
+        ``slug`` is NOT NULL and the ``organization_slug_not_blank`` check
+        constraint refuses ``""``, so a blank submission has to resolve to
+        *something*:
+
+        * On an existing organization it is refused. Clearing the slug is not a
+          supported operation -- and because ``Organization.save()`` mints a
+          replacement for an empty slug, silently accepting it would swap the
+          organization's public identifier for a different one rather than
+          removing it, orphaning every branded login URL already issued.
+        * On a new organization it mints an **opaque** ``org-<token>`` slug.
+          Deliberately not ``slugify(name)``: the slug is public, and an
+          operator creating an organization on someone's behalf has not
+          consented to publishing its name. The organization can pick a
+          readable slug itself later.
         """
         value = self.cleaned_data.get("slug")
         if not value:
-            return None
+            if self.instance.pk is not None:
+                raise forms.ValidationError(
+                    "Slug cannot be cleared once set. Enter a new slug, or leave this "
+                    "field as it was."
+                )
+            return opaque_organization_slug(
+                slug_exists=lambda candidate: Organization.objects.filter(slug=candidate).exists()
+            )
 
         try:
             validate_organization_slug(value)

@@ -492,12 +492,13 @@ class TestOrganizationSlugUpdate:
         self, auth_client, user, organization_with_membership
     ):
         """A non-admin member is refused (IsOrganizationAdmin gates the whole update)."""
+        before = organization_with_membership.slug
         url = reverse("api:Organizations-detail", kwargs={"pk": organization_with_membership.pk})
         response = auth_client.patch(url, {"slug": "member-org"}, format="json")
 
         assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
         organization_with_membership.refresh_from_db()
-        assert organization_with_membership.slug is None
+        assert organization_with_membership.slug == before
 
     def test_duplicate_slug_returns_400_naming_the_collision(self):
         """A second organization claiming a taken slug gets 400, not a 500."""
@@ -506,6 +507,7 @@ class TestOrganizationSlugUpdate:
         existing.save()
 
         organization = OrganizationTestFactory.create_organization(name="Second Org")
+        before = organization.slug
         _user, client = self._make_admin_client(organization)
 
         url = reverse("api:Organizations-detail", kwargs={"pk": organization.pk})
@@ -516,7 +518,7 @@ class TestOrganizationSlugUpdate:
         assert "slug" in body
         assert "taken-slug" in body["slug"][0]
         organization.refresh_from_db()
-        assert organization.slug is None
+        assert organization.slug == before
 
     def test_changing_an_existing_slug_succeeds(self):
         """An admin can change an already-set slug to a new unique value."""
@@ -543,8 +545,14 @@ class TestOrganizationSlugUpdate:
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
         assert "reserved" in response.json()["slug"][0]
 
-    def test_blank_slug_clears_to_none(self):
-        """Submitting a blank slug clears it to NULL rather than storing ''."""
+    def test_blank_slug_is_refused_rather_than_clearing_or_replacing_the_slug(self):
+        """``slug`` is NOT NULL, so a blank submission has nothing to write.
+
+        Refused rather than ignored: ``Organization.save()`` mints a replacement
+        for a blank slug, so accepting it would swap the organization's public
+        identifier for a different one -- orphaning every branded login URL
+        already issued -- while telling the caller it had cleared it.
+        """
         organization = OrganizationTestFactory.create_organization(name="Clear Org")
         organization.slug = "clearable"
         organization.save()
@@ -553,9 +561,10 @@ class TestOrganizationSlugUpdate:
         url = reverse("api:Organizations-detail", kwargs={"pk": organization.pk})
         response = client.patch(url, {"slug": ""}, format="json")
 
-        assert_response_status_code(response, status.HTTP_200_OK)
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "cannot be cleared" in response.json()["slug"][0]
         organization.refresh_from_db()
-        assert organization.slug is None
+        assert organization.slug == "clearable"
 
     def test_confusable_slug_returns_400_naming_the_confusable_rule(self):
         """A mixed-script lookalike slug is rejected by the confusables rule, not
@@ -565,6 +574,7 @@ class TestOrganizationSlugUpdate:
         the generic DRF message before the confusable-specific one is reached).
         """
         organization = OrganizationTestFactory.create_organization(name="Confusable Org")
+        before = organization.slug
         _user, client = self._make_admin_client(organization)
 
         url = reverse("api:Organizations-detail", kwargs={"pk": organization.pk})
@@ -580,13 +590,14 @@ class TestOrganizationSlugUpdate:
         assert "non-ASCII character" in message
         assert "lookalike" in message
         organization.refresh_from_db()
-        assert organization.slug is None
+        assert organization.slug == before
 
     def test_super_route_slug_is_rejected_as_reserved(self):
         """The real admin path segment ``super`` (see ``vinta_schedule_api/urls.py``)
         is rejected as reserved, naming the reserved-word rule.
         """
         organization = OrganizationTestFactory.create_organization(name="Super Org")
+        before = organization.slug
         _user, client = self._make_admin_client(organization)
 
         url = reverse("api:Organizations-detail", kwargs={"pk": organization.pk})
@@ -595,7 +606,7 @@ class TestOrganizationSlugUpdate:
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
         assert "reserved" in response.json()["slug"][0]
         organization.refresh_from_db()
-        assert organization.slug is None
+        assert organization.slug == before
 
 
 @pytest.mark.django_db
@@ -1674,7 +1685,7 @@ class TestOrganizationMembershipViewSet:
         results = response.json()["results"]
         # Should only see 1 member (the admin from org1)
         assert len(results) == 1
-        assert results[0]["user_id"] == user.organization_memberships.get().user_id
+        assert results[0]["user_id"] == user.memberships.get().user_id
 
     def test_retrieve_member_admin_success(self, auth_client, user):
         """Test that admin can retrieve a specific member"""
@@ -3769,18 +3780,20 @@ class TestOrganizationMineAction:
         assert role_by_org[org_a.id] == OrganizationRole.ADMIN
         assert role_by_org[org_b.id] == OrganizationRole.MEMBER
 
-        # Verify the membership objects that were created are retrievable from the DB
-        # by composite PK — confirming the (user_id, organization_id) identity is
-        # persisted correctly by the composite PK.
+        # Verify the membership objects that were created are retrievable from the
+        # DB by their (user, organization) identity. That pair is no longer the
+        # primary key -- the composite PK was unwound in Phase 1 of the
+        # vinta-django-orgs migration -- but it is still unique, enforced by
+        # ``uniq_membership_user_organization``.
         assert (
             OrganizationMembership.objects.get(
-                pk=(membership_a.user_id, membership_a.organization_id)
+                user_id=membership_a.user_id, organization_id=membership_a.organization_id
             )
             == membership_a
         )
         assert (
             OrganizationMembership.objects.get(
-                pk=(membership_b.user_id, membership_b.organization_id)
+                user_id=membership_b.user_id, organization_id=membership_b.organization_id
             )
             == membership_b
         )

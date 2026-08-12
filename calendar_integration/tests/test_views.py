@@ -4043,7 +4043,7 @@ class TestBlockedTimeViewSet:
 
         # Create a recurring blocked time
         recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
-            organization=user.organization_memberships.get().organization,
+            organization=user.memberships.get().organization,
             frequency=RecurrenceFrequency.WEEKLY,
         )
 
@@ -4086,7 +4086,7 @@ class TestBlockedTimeViewSet:
 
         # Create a recurring blocked time
         recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
-            organization=user.organization_memberships.get().organization,
+            organization=user.memberships.get().organization,
             frequency=RecurrenceFrequency.WEEKLY,
         )
 
@@ -4162,7 +4162,7 @@ class TestBlockedTimeViewSet:
 
         # Create a recurring blocked time
         recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
-            organization=user.organization_memberships.get().organization,
+            organization=user.memberships.get().organization,
             frequency=RecurrenceFrequency.WEEKLY,
         )
 
@@ -4209,7 +4209,7 @@ class TestBlockedTimeViewSet:
 
         # Create a recurring blocked time
         recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
-            organization=user.organization_memberships.get().organization,
+            organization=user.memberships.get().organization,
             frequency=RecurrenceFrequency.WEEKLY,
         )
 
@@ -4260,7 +4260,7 @@ class TestBlockedTimeViewSet:
 
         # Create a recurring blocked time
         recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
-            organization=user.organization_memberships.get().organization,
+            organization=user.memberships.get().organization,
             frequency=RecurrenceFrequency.WEEKLY,
         )
 
@@ -4301,7 +4301,7 @@ class TestBlockedTimeViewSet:
 
         # Create a recurring blocked time
         recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
-            organization=user.organization_memberships.get().organization,
+            organization=user.memberships.get().organization,
             frequency=RecurrenceFrequency.WEEKLY,
         )
 
@@ -4370,7 +4370,7 @@ class TestBlockedTimeViewSet:
 
         # Create a recurring blocked time
         recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
-            organization=user.organization_memberships.get().organization,
+            organization=user.memberships.get().organization,
             frequency=RecurrenceFrequency.WEEKLY,
         )
 
@@ -4820,7 +4820,7 @@ class TestAvailableTimeViewSet:
 
         # Create a recurring available time
         recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
-            organization=user.organization_memberships.get().organization,
+            organization=user.memberships.get().organization,
             frequency=RecurrenceFrequency.WEEKLY,
         )
 
@@ -4866,7 +4866,7 @@ class TestAvailableTimeViewSet:
 
         # Create a recurring available time
         recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
-            organization=user.organization_memberships.get().organization,
+            organization=user.memberships.get().organization,
             frequency=RecurrenceFrequency.WEEKLY,
         )
 
@@ -4945,7 +4945,7 @@ class TestAvailableTimeViewSet:
 
         # Create a recurring available time
         recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
-            organization=user.organization_memberships.get().organization,
+            organization=user.memberships.get().organization,
             frequency=RecurrenceFrequency.WEEKLY,
         )
 
@@ -4995,7 +4995,7 @@ class TestAvailableTimeViewSet:
 
         # Create a recurring available time
         recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
-            organization=user.organization_memberships.get().organization,
+            organization=user.memberships.get().organization,
             frequency=RecurrenceFrequency.WEEKLY,
         )
 
@@ -5046,7 +5046,7 @@ class TestAvailableTimeViewSet:
 
         # Create a recurring available time
         recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
-            organization=user.organization_memberships.get().organization,
+            organization=user.memberships.get().organization,
             frequency=RecurrenceFrequency.WEEKLY,
         )
 
@@ -5090,7 +5090,7 @@ class TestAvailableTimeViewSet:
 
         # Create a recurring available time
         recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
-            organization=user.organization_memberships.get().organization,
+            organization=user.memberships.get().organization,
             frequency=RecurrenceFrequency.WEEKLY,
         )
 
@@ -5163,7 +5163,7 @@ class TestAvailableTimeViewSet:
 
         # Create a recurring available time
         recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
-            organization=user.organization_memberships.get().organization,
+            organization=user.memberships.get().organization,
             frequency=RecurrenceFrequency.WEEKLY,
         )
 

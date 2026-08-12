@@ -28,6 +28,22 @@ class UserAlreadyHasMembershipError(ValidationError):
     default_code = "user_already_has_membership"
 
 
+class OrganizationSlugCollisionError(ValidationError):
+    """Raised when organization creation lost the race for its derived slug
+    repeatedly.
+
+    ``OrganizationService.create_organization`` derives a slug from the name,
+    then inserts; a concurrent creation can claim the same value in between. The
+    insert is retried on a fresh savepoint with a re-derived slug, so reaching
+    this means several concurrent callers all lost in a row -- a 400 the client
+    can retry, rather than the raw ``IntegrityError`` that would otherwise
+    escape and abort the whole creation transaction.
+    """
+
+    default_detail = "Could not allocate a unique slug for this organization. Please retry."
+    default_code = "organization_slug_collision"
+
+
 class OrganizationHasParentBrandingError(PermissionDenied):
     """Raised by the branding write gate (``organizations.permissions.
     evaluate_branding_write_gate``) when the acting organization has a parent.
