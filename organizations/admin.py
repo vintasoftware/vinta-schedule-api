@@ -1,3 +1,20 @@
+"""Admin for ``Organization`` and ``OrganizationBranding`` -- intentionally cross-organization.
+
+Phase 0 of the vinta-django-orgs migration
+(``ai-plans/2026-08-12-VINTA_DJANGO_ORGS_MIGRATION_IMPLEMENTATION_PLAN.md``) asks every
+admin here to route its org-scoped querysets through ``original_manager`` rather than
+binding an ``organization_context``, so the cross-org intent is written down rather than
+inferred (see ``audit/admin.py::AuditAdmin.get_queryset`` for the precedent this mirrors).
+There is nothing to change in *this* file to satisfy that: neither ``Organization`` nor
+``OrganizationBranding`` is an ``OrganizationModel`` subclass -- ``Organization`` is the
+tenant itself, and ``OrganizationBranding`` is a plain ``models.Model`` keyed on it -- so
+every ``.objects`` query below (``Organization.objects.filter(slug=...)`` in
+``OrganizationAdminForm.clean_slug``, and the admin's own unfiltered changelist queries)
+already runs on Django's stock, unscoped manager, not
+``organizations.managers.BaseOrganizationModelManager``. This note exists so that fact is
+recorded rather than silently assumed.
+"""
+
 from typing import Annotated, Any
 
 from django import forms

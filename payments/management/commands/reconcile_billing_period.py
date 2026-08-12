@@ -17,6 +17,7 @@ from typing import Any
 from django.core.management.base import BaseCommand, CommandError, CommandParser
 from django.utils import timezone
 
+from common.organization_context import organization_context
 from payments.models import MeteredOccurrence, Subscription
 from payments.services.subscription_service import resolve_settlement_period
 
@@ -71,11 +72,20 @@ class Command(BaseCommand):
             raise CommandError("DI container is not wired.")
         metering_service = container.metering_service()
 
-        period_start, period_end = resolve_settlement_period(subscription, moment)
-        report = metering_service.reconcile_period(subscription, moment)
-        overage_total = MeteredOccurrence.objects.for_billing_period(
-            subscription.pk, period_start
-        ).overage_total()
+        # Bound to the subscription's own organization, the single-organization
+        # boundary for this per-subscription command. `metering_service
+        # .reconcile_period` recomputes expected occurrences via `MeteringService
+        # .expand_occurrence_identities`, which reads `CalendarEvent` across the
+        # subscription's whole pooled reseller subtree (`organization_id__in=...`,
+        # not the bound organization alone) -- see `payments/tasks.py`'s module
+        # docstring for why that pooled read is deliberately out of scope for a
+        # single-organization binding in this migration.
+        with organization_context(subscription.organization):
+            period_start, period_end = resolve_settlement_period(subscription, moment)
+            report = metering_service.reconcile_period(subscription, moment)
+            overage_total = MeteredOccurrence.objects.for_billing_period(
+                subscription.pk, period_start
+            ).overage_total()
 
         self.stdout.write(
             f"Subscription {subscription.pk} — period "

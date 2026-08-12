@@ -5,6 +5,7 @@ from typing import Any
 from django.core.management.base import BaseCommand, CommandParser
 
 from calendar_integration.services.webhook_analytics_service import WebhookAnalyticsService
+from common.organization_context import organization_context
 from organizations.models import Organization
 
 
@@ -51,37 +52,41 @@ class Command(BaseCommand):
         total_deleted = 0
 
         for org in organizations:
-            analytics_service = WebhookAnalyticsService(org)
+            # One binding per organization per iteration (not once for the
+            # whole fan-out): each `WebhookAnalyticsService` / count query
+            # below belongs to exactly this iteration's organization.
+            with organization_context(org):
+                analytics_service = WebhookAnalyticsService(org)
 
-            if dry_run:
-                # Count what would be deleted
-                import datetime
+                if dry_run:
+                    # Count what would be deleted
+                    import datetime
 
-                from calendar_integration.models import CalendarWebhookEvent
+                    from calendar_integration.models import CalendarWebhookEvent
 
-                cutoff_date = datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(
-                    days=days_to_keep
-                )
+                    cutoff_date = datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(
+                        days=days_to_keep
+                    )
 
-                count_to_delete = CalendarWebhookEvent.objects.filter(
-                    organization=org, created__lt=cutoff_date
-                ).count()
+                    count_to_delete = CalendarWebhookEvent.objects.filter(
+                        organization=org, created__lt=cutoff_date
+                    ).count()
 
-                self.stdout.write(
-                    f"Organization {org.name} (ID: {org.id}): "
-                    f"Would delete {count_to_delete} events older than {days_to_keep} days"
-                )
-                total_deleted += count_to_delete
-            else:
-                deleted_count = analytics_service.cleanup_old_webhook_events(
-                    days_to_keep=days_to_keep
-                )
-                total_deleted += deleted_count
+                    self.stdout.write(
+                        f"Organization {org.name} (ID: {org.id}): "
+                        f"Would delete {count_to_delete} events older than {days_to_keep} days"
+                    )
+                    total_deleted += count_to_delete
+                else:
+                    deleted_count = analytics_service.cleanup_old_webhook_events(
+                        days_to_keep=days_to_keep
+                    )
+                    total_deleted += deleted_count
 
-                self.stdout.write(
-                    f"Organization {org.name} (ID: {org.id}): "
-                    f"Deleted {deleted_count} webhook events older than {days_to_keep} days"
-                )
+                    self.stdout.write(
+                        f"Organization {org.name} (ID: {org.id}): "
+                        f"Deleted {deleted_count} webhook events older than {days_to_keep} days"
+                    )
 
         if dry_run:
             self.stdout.write(
