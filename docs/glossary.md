@@ -148,7 +148,7 @@ fully booked. When `False`, anything that isn't a `CalendarEvent` or
 The multi-tenant boundary. Every `Calendar`, event, and ancillary row
 belongs to exactly one `Organization` and is filtered by it through
 `OrganizationModel` / `OrganizationForeignKey` (defined in
-[organizations/models.py](../organizations/models.py)).
+[tenancy/models.py](../tenancy/models.py)).
 
 ### Organization Membership
 

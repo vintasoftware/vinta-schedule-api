@@ -23,7 +23,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='organization',
             name='tier',
-            field=models.ForeignKey(null=True, on_delete=django.db.models.deletion.CASCADE, related_name='tenancy', to='tenancy.organizationtier'),
+            field=models.ForeignKey(null=True, on_delete=django.db.models.deletion.CASCADE, related_name='organizations', to='tenancy.organizationtier'),
         ),
         migrations.AddField(
             model_name='subscriptionplan',

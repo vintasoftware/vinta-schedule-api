@@ -9,7 +9,7 @@ Single Django project, multiple installed apps under the repo root:
 - `vinta_schedule_api/` — Django project (settings, urls, wsgi/asgi).
 - `accounts/` — account-level concerns above per-user.
 - `users/` — user model + factories + auth-adjacent code.
-- `organizations/` — tenant model. Backbone of the multi-tenancy contract.
+- `tenancy/` — tenant model. Backbone of the multi-tenancy contract.
 - `common/` — shared abstract models, custom managers / querysets / fields, view utils, raw-SQL migration framework.
 - `di_core/` — dependency-injector containers; every service registers here.
 - `calendar_integration/` — calendar provider integrations, recurrence calculation, calendar bundles, availability.
@@ -172,7 +172,7 @@ Custom DB-defined code is versioned via the framework in `common/raw_sql_migrati
 
 ## Multi-Tenancy
 
-Tenancy is enforced at the manager layer via `organizations` + `common`. Every model that holds tenant-scoped data inherits from the `OrganizationModel` abstract base.
+Tenancy is enforced at the manager layer via `tenancy` + `common`. Every model that holds tenant-scoped data inherits from the `OrganizationModel` abstract base.
 
 - **Foreign keys to tenant-scoped models** use `OrganizationForeignKey` / `OrganizationOneToOneField` (from `common/`). These fields create **two** Django fields under the hood: a concrete field named `<name>_fk` (the actual FK column) and a `ForeignObject` named `<name>` that joins on both the FK and the organization FK. Queries through `<name>` automatically include the tenant scope.
 - Foreign keys to non-tenant-scoped models use stock Django fields (`models.ForeignKey`, `models.OneToOneField`).

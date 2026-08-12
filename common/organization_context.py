@@ -26,7 +26,7 @@ type aliases — mirrors ``organizations.state`` in the installed package
 *previous* organization rather than clearing it), so a later phase can swap
 this module's *body* to a one-line re-export:
 
-    from tenancy.state import (  # noqa: F401
+    from organizations.state import (  # noqa: F401
         OrganizationOrSlug,
         OrganizationToken,
         clear_current_organization,

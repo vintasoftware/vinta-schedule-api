@@ -208,16 +208,16 @@ Acceptance: every Celery task and management command that touches an org-scoped 
 
 ---
 
-### Phase 1a — Install the package and rename our app to `tenancy`
+### Phase 1a — Rename our app to `tenancy`, keep the package uninstalled
 
-**Goal**: `vinta-django-orgs` is installed and our app answers to `tenancy`, with every table still at its old name and every model still behaving exactly as before.
+**Goal**: our app answers to `tenancy`, with every table still at its old name and every model still behaving exactly as before. Nothing in the repo imports `vinta-django-orgs` yet, so its Django app is *not* installed this phase — that install is deferred to Phase 1c, which is the first phase that actually needs the package's abstract bases (see that phase's Changes list). Installing the app here bought nothing and forced the settings-level `SHARED_SCHEMA_ORGANIZATIONS` / swappable-model / admin-double-registration work to land as a Phase 1a deviation; it is corrected here so the phase matches its stated goal.
 
 **Feature flag**: none.
 
 Changes:
 
-1. `@pyproject.toml`: add `vinta-django-orgs>=0.1.1,<0.2`. Pin the minor — the package is `0.1.1` and Development Status `Alpha`, so a minor bump may move the abstract bases.
-2. `@vinta_schedule_api/settings/base.py`: add `organizations.apps.OrganizationsConfig` to `INSTALLED_APPS`; rename `organizations` to `tenancy` in `INTERNAL_INSTALLED_APPS`. Add the `SHARED_SCHEMA_ORGANIZATIONS` dict with `ORGANIZATION_RETRIEVERS` pointing at our retriever (written in Phase 1b) and every non-goal retriever omitted.
+1. `@pyproject.toml`: add `vinta-django-orgs>=0.1.1,<0.2`. Pin the minor — the package is `0.1.1` and Development Status `Alpha`, so a minor bump may move the abstract bases. Declaring the dependency (and syncing `uv.lock`) is harmless on its own and Phase 1c needs it; only *installing its Django app* is deferred.
+2. `@vinta_schedule_api/settings/base.py`: rename `organizations` to `tenancy` in `INTERNAL_INSTALLED_APPS`. The package's app is not added to `INSTALLED_APPS` this phase.
 3. `git mv organizations/ tenancy/`, and add `label = "tenancy"` to its `AppConfig`.
 4. Pin `db_table` on every model in `tenancy/models.py` to its current `organizations_*` name.
 5. Mechanical sweep: 367 `from organizations...` imports and 223 non-migration `"organizations.X"` string references become `tenancy`. The 72 in-migration references are Phase 1b's problem, not this one.
@@ -233,29 +233,32 @@ Tests:
 
 **Reusable skills**: `add-env-var` is not needed (no new env vars). None otherwise.
 
-Acceptance: `grep -rn "from organizations" --include="*.py" tenancy/ calendar_integration/ payments/ audit/ webhooks/ public_api/ users/ accounts/ common/` returns only imports of the *package*, the suite is green, and no table was renamed.
+Acceptance: `grep -rn "from organizations" --include="*.py" tenancy/ calendar_integration/ payments/ audit/ webhooks/ public_api/ users/ accounts/ common/` returns no hits (the package's app is not installed yet, so there is nothing to import it from), the suite is green, and no table was renamed.
 
 ---
 
-### Phase 1b — Move the migration graph, content types, and swappable settings
+### Phase 1b — Move the migration graph and content types
 
-**Goal**: Django's migration state and `django_content_type` agree that our models live in `tenancy`, and the package knows to use them.
+**Goal**: Django's migration state and `django_content_type` agree that our models live in `tenancy`.
 
 **Feature flag**: none.
 
+**Note**: `ORGANIZATION_MODEL` / `ORGANIZATION_MEMBERSHIP_MODEL` and `SHARED_SCHEMA_ORGANIZATIONS` are **not** set in this phase — Phase 1c owns them, bundled with installing the package's Django app (see that phase's Changes list and the Phase 1a fixer note recorded in the tracking file). Setting a swappable-model target without the app installed to resolve it exercises nothing, so the two move together.
+
 Changes:
 
-1. `@vinta_schedule_api/settings/base.py`: `ORGANIZATION_MODEL = "tenancy.Organization"`, `ORGANIZATION_MEMBERSHIP_MODEL = "tenancy.OrganizationMembership"`. These are top-level settings, not keys inside `SHARED_SCHEMA_ORGANIZATIONS` — Django's `Meta.swappable` reads them with a plain `getattr`.
-2. Rewrite the 72 in-migration `organizations.` references across the 79 migrations that carry them, and add `migrations.swappable_dependency(settings.ORGANIZATION_MODEL)` where the autodetector now requires it.
-3. Data migration: update `django_content_type.app_label` from `organizations` to `tenancy` for our models, and repoint the `auth_permission` rows that reference them. Idempotent — matches on the old label and no-ops if already moved.
-4. Write `common/org_retrievers.py::retrieve_by_x_organization_id`, reading the header by integer PK, and register it as the sole entry in `ORGANIZATION_RETRIEVERS`. Not yet consulted by anything — `TenantScopedViewMixin` starts using it in Phase 2b.
-5. Add `OrganizationMiddleware` to `MIDDLEWARE`? **No** — deliberately omitted. Context binding happens in `TenantScopedViewMixin`, after authentication. Recorded here because its absence is a decision, not an oversight.
+1. Rewrite the 72 in-migration `organizations.` references across the 79 migrations that carry them. `migrations.swappable_dependency(...)` calls, if the autodetector requires any, follow once `Organization` actually declares `swappable = "ORGANIZATION_MODEL"` (Phase 1c reparents it onto `AbstractOrganization`) — re-check this step against the autodetector's actual output rather than assuming it applies here.
+2. Data migration: update `django_content_type.app_label` from `organizations` to `tenancy` for our models, and repoint the `auth_permission` rows that reference them. Idempotent — matches on the old label and no-ops if already moved.
+3. Write `common/org_retrievers.py::retrieve_by_x_organization_id`, reading the header by integer PK. Not yet registered in `ORGANIZATION_RETRIEVERS` (that list lives inside `SHARED_SCHEMA_ORGANIZATIONS`, created in Phase 1c) and not yet consulted by anything — `TenantScopedViewMixin` starts using it in Phase 2b.
+4. Add `OrganizationMiddleware` to `MIDDLEWARE`? **No** — deliberately omitted. Context binding happens in `TenantScopedViewMixin`, after authentication. Recorded here because its absence is a decision, not an oversight.
+5. **Audit `subject_type` backfill.** `audit/services.py::AuditService.subject_from_instance` persists `subject_type=f"{meta.app_label}.{instance.__class__.__name__}"`. Every write from `tenancy/services.py`, `tenancy/views.py`, and `public_api/mutations.py` stored `organizations.*` before Phase 1a's app rename and stores `tenancy.*` after it — `AuditRepository.query()` filters on that exact string, so audit history silently splits into two namespaces the moment Phase 1a ships, and pre-rename rows fall out of every subject-type-filtered query. Add an idempotent data migration (paired with change 2's content-type migration, same `add-migration` pass): `UPDATE audit SET subject_type = replace(subject_type, 'organizations.', 'tenancy.') WHERE subject_type LIKE 'organizations.%'`. Idempotent — matches on the old prefix and no-ops if already moved. Carried forward from the Phase 1a review; see `ai-plans/TRACKING_VINTA_DJANGO_ORGS_MIGRATION.md`.
 
 Spec use-case: shared scaffolding — no use-case yet.
 
 Tests:
 - **Integration**: `tenancy/tests/test_content_type_migration.py` — the data migration is idempotent across two runs and leaves no `organizations`-labelled content type for our models.
 - **Integration**: `common/tests/test_org_retrievers.py` — the retriever resolves a valid header, returns `None` on a missing or non-integer one, and does not raise on an unknown PK.
+- **Integration**: `audit/tests/test_subject_type_migration.py` — a pre-rename `Audit` row with `subject_type="organizations.Organization"` (and similar) becomes `"tenancy.Organization"` after the migration, re-running the migration changes nothing, and a row that never had the `organizations.` prefix is left untouched.
 
 **Suggested AI model**: Tier 3. Migration-graph surgery across 79 files with cross-app dependencies; the autodetector's complaints require reading the graph, not pattern-matching.
 
@@ -275,12 +278,14 @@ Acceptance: `migrate` runs clean from zero on an empty database *and* from the p
 
 Changes:
 
-1. Remove `pk = SafeCompositePrimaryKey("user", "organization")` from `OrganizationMembership`; add back a surrogate `id`. Keep the `uniq_membership_user_organization` constraint — the raw-SQL PROTECT FKs target it and must not be touched.
-2. Reparent both models onto `AbstractOrganization` / `AbstractOrganizationMembership` as shown in **Data Model Changes**. Drop `meta` and the two timestamp indexes.
-3. `OrganizationMembershipManager` inherits `SingleOrganizationUnscopedManager`; set `default_manager_name = "objects"`. Getting this wrong scopes `user.memberships` and breaks every pre-selection lookup.
-4. Rename the user-side reverse accessor: `user.organization_memberships` becomes `user.memberships` at every call site.
-5. Slug backfill data migration: `slugify(name)`, numeric disambiguator on collision, `org-<pk>` fallback when the derived value fails `tenancy/slug_validation.py`. Then `ALTER COLUMN slug SET NOT NULL`.
-6. `role` and `is_billing_owner` stay on the model, untouched and still read by every permission class. Nothing about authorization changes in this phase.
+1. `@vinta_schedule_api/settings/base.py`: add `organizations.apps.OrganizationsConfig` to `INSTALLED_APPS` (kept separate from `INTERNAL_INSTALLED_APPS`, which drives di_core's DI wiring and names only this project's apps). Set `ORGANIZATION_MODEL = "tenancy.Organization"` and `ORGANIZATION_MEMBERSHIP_MODEL = "tenancy.OrganizationMembership"` so the package's own, identically-table-named models are `_meta.swapped` rather than colliding with ours (`models.E028`) or leaving a phantom CASCADE relation on `User.delete()`. Add the `SHARED_SCHEMA_ORGANIZATIONS` dict with `ORGANIZATION_RETRIEVERS` pointing at our retriever (written in this phase or Phase 1b — see that phase) and every non-goal retriever omitted.
+2. Resolve the admin double-registration with a supported call rather than a `sys.modules` patch: after `django.contrib.admin.autodiscover()` has run (or via the relevant `AppConfig.ready()`), `admin.site.unregister(get_organization_membership_model())` / `admin.site.unregister(get_organization_model())` for whichever of the package's own admin registrations collide with `tenancy/admin.py`'s existing `ModelAdmin` registrations, then leave ours in place. No `sys.modules["organizations.admin"]` stub.
+3. Remove `pk = SafeCompositePrimaryKey("user", "organization")` from `OrganizationMembership`; add back a surrogate `id`. Keep the `uniq_membership_user_organization` constraint — the raw-SQL PROTECT FKs target it and must not be touched.
+4. Reparent both models onto `AbstractOrganization` / `AbstractOrganizationMembership` as shown in **Data Model Changes**. Drop `meta` and the two timestamp indexes.
+5. `OrganizationMembershipManager` inherits `SingleOrganizationUnscopedManager`; set `default_manager_name = "objects"`. Getting this wrong scopes `user.memberships` and breaks every pre-selection lookup.
+6. Rename the user-side reverse accessor: `user.organization_memberships` becomes `user.memberships` at every call site.
+7. Slug backfill data migration: `slugify(name)`, numeric disambiguator on collision, `org-<pk>` fallback when the derived value fails `tenancy/slug_validation.py`. Then `ALTER COLUMN slug SET NOT NULL`.
+8. `role` and `is_billing_owner` stay on the model, untouched and still read by every permission class. Nothing about authorization changes in this phase.
 
 Spec use-case: shared scaffolding — no use-case yet.
 
@@ -527,10 +532,12 @@ Acceptance: the grep in change 4 returns nothing outside migrations, the suite i
 - [vinta_schedule_api/settings/base.py](vinta_schedule_api/settings/base.py)
 - 72 in-migration references across 79 migrations in `calendar_integration`, `payments`, `audit`, `webhooks`, `public_api`, `users`
 - `@tenancy/migrations/00XX_move_content_types.py` (new)
+- `@audit/migrations/00XX_backfill_subject_type_namespace.py` (new)
 - `@common/org_retrievers.py` (new)
-- `@tenancy/tests/test_content_type_migration.py`, `@common/tests/test_org_retrievers.py` (new)
+- `@tenancy/tests/test_content_type_migration.py`, `@common/tests/test_org_retrievers.py`, `@audit/tests/test_subject_type_migration.py` (new)
 
 **Phase 1c**
+- [vinta_schedule_api/settings/base.py](vinta_schedule_api/settings/base.py) — install the package's app, `ORGANIZATION_MODEL` / `ORGANIZATION_MEMBERSHIP_MODEL`, `SHARED_SCHEMA_ORGANIZATIONS`, admin double-registration fix
 - [organizations/models.py](organizations/models.py) → `tenancy/models.py`, [organizations/managers.py](organizations/managers.py), [organizations/querysets.py](organizations/querysets.py)
 - `@tenancy/migrations/00XX_unwind_composite_pk.py`, `@tenancy/migrations/00XX_backfill_slugs.py` (new)
 - `user.organization_memberships` call sites across `tenancy`, `payments`, `calendar_integration`, `public_api`

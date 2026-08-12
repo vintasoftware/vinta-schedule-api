@@ -43,6 +43,10 @@ class Migration(migrations.Migration):
             ],
             options={
                 'abstract': False,
+                # Pinned from the moment of creation so a later app-label rename
+                # (tenancy) never implies a table rename -- see Phase 1a of the
+                # vinta-django-orgs migration.
+                'db_table': 'organizations_organizationtier',
             },
         ),
         migrations.CreateModel(
@@ -59,6 +63,10 @@ class Migration(migrations.Migration):
             ],
             options={
                 'abstract': False,
+                # Pinned from the moment of creation so a later app-label rename
+                # (tenancy) never implies a table rename -- see Phase 1a of the
+                # vinta-django-orgs migration.
+                'db_table': 'organizations_subscriptionplan',
             },
         ),
         migrations.CreateModel(
