@@ -18,7 +18,7 @@ The OpenAPI schema export (`schema.yml`) is gated by a pre-commit hook + CI. Aft
    - Read-only listing → `ReadOnlyModelViewSet`.
    - One-off action (POST without a model) → `APIView` or a `@action` on an existing viewset.
 2. **Which model does it expose?**
-   - Tenant-scoped (`OrganizationModel`) → use `Model.objects.filter_by_organization(...)` in `get_queryset()`.
+   - Tenant-scoped (`SingleOrganizationModelMixin`) → use `Model.objects.filter_by_organization(...)` in `get_queryset()`.
    - Shared → standard queryset; still confirm with the team.
 3. **What auth + permission classes?** Existing pattern: per-resource permission class in `<app>/permissions.py` (e.g. `CalendarAvailabilityPermission`) layered on top of DRF's session / JWT auth.
 4. **Does the serializer need a virtual model?** If the response includes nested or aggregate data that would N+1, yes — define it in `<app>/virtual_models.py` and reference it from the serializer.

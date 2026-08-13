@@ -3,7 +3,7 @@ schema_version: 1
 name: implementer
 description: |
   Default coder for one phase of an ai-plans/ implementation plan in the Vinta Schedule API
-  codebase (Django 6 + DRF + Strawberry GraphQL, multi-tenant via OrganizationModel,
+  codebase (Django 6 + DRF + Strawberry GraphQL, multi-tenant via SingleOrganizationModelMixin,
   Postgres with raw-SQL migration framework, DI via dependency-injector, Celery).
   Reads AGENTS.md + the phase body, executes Changes / Tests / Acceptance, runs the inner
   loop + outer gate, reports back. Never branches, pushes, or opens PRs (the orchestrator
@@ -30,14 +30,14 @@ body: |
 
   ## Conventions (load-bearing — repeated from AGENTS.md)
 
-  - **Multi-tenancy is mandatory.** Tenant-scoped models inherit from `OrganizationModel`.
+  - **Multi-tenancy is mandatory.** Tenant-scoped models inherit from `SingleOrganizationModelMixin`.
     Every query against them must filter by organization. **Never bypass the model
     manager** — no `Model._meta.default_manager.get_queryset()`, no raw `Model.objects.raw(...)`
     that skips the organization clause, no `cursor.execute` reads from tenant tables
     without the org filter. The manager raises on missing org filter; bypassing it
     defeats the safety net.
-  - **Foreign keys to tenant-scoped models** use `OrganizationForeignKey` /
-    `OrganizationOneToOneField` from `common/`. These create a `<name>_fk` concrete field
+  - **Foreign keys to tenant-scoped models** use `OrganizationSafeForeignKey` /
+    `OrganizationSafeOneToOneField` from `common/`. These create a `<name>_fk` concrete field
     plus a `ForeignObject` named `<name>` that joins on both FK and organization. Query
     through `<name>`. Non-tenant-scoped FKs use stock Django fields.
   - **No complex querysets inline.** All non-trivial query logic lives on managers /
