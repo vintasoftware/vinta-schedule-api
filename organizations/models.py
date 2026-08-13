@@ -185,6 +185,19 @@ class Organization(AbstractOrganization):
                 name="organization_slug_not_blank",
             ),
         ]
+        # Two of the four capability permissions from the plan's permission
+        # catalog (``organizations.permission_catalog``). Named for what the
+        # holder may *do*, not for the model-CRUD triples ``auth.Permission``
+        # defaults to -- see that module's header.
+        #
+        # Declaring them here only makes ``post_migrate`` create the
+        # ``auth_permission`` rows; nothing reads them until Phase 4. The
+        # ``AlterModelOptions`` migration this generates emits no SQL and
+        # touches no existing permission row or grant.
+        permissions: ClassVar = [
+            ("manage_organization", "Can manage the organization's settings"),
+            ("manage_branding", "Can manage the organization's branding"),
+        ]
 
     def save(self, *args: Any, **kwargs: Any) -> None:
         """Fill in an **opaque** slug when the caller left one out.
@@ -286,9 +299,24 @@ class OrganizationMembership(AbstractOrganizationMembership):
     ``organization`` and ``user`` (both ``related_name="memberships"`` --
     the user-side accessor used to be ``memberships``), the
     ``groups`` / ``permissions`` many-to-many relations to ``auth.Group`` /
-    ``auth.Permission``, and ``created`` / ``modified``. The two M2Ms exist and
-    are empty: nothing reads them until Phase 3, and every authorization
-    decision still reads ``role`` / ``is_billing_owner``.
+    ``auth.Permission``, and ``created`` / ``modified``.
+
+    ``groups`` now carries the three seeded groups from
+    ``organizations.permission_catalog`` -- backfilled from ``role`` /
+    ``is_billing_owner`` by migration ``0029`` and kept in step by
+    ``organizations.services.sync_membership_groups_from_role``. Two consumers
+    exist: ``vinta_orgs.auth_backends.OrganizationModelBackend`` (which is what
+    makes ``user.has_perm(...)`` answer per-organization) and
+    ``OrganizationMembershipQuerySet.billing_recipients``. **No permission class
+    reads it yet** -- every authorization decision still reads ``role`` /
+    ``is_billing_owner`` until Phase 4. ``permissions`` remains empty and unread.
+
+    Both M2Ms use auto-created through tables with no ``organization`` column,
+    which the repo's usual rule for a many-to-many on a scoped model forbids.
+    They are the package's own fields, and the exception is sound here: the
+    traversal always starts from a *membership*, and a membership row is unique
+    per ``(user, organization)`` -- so the organization is already pinned by the
+    row the join starts from. Nothing reaches these tables from the group side.
 
     The primary key is a surrogate ``id`` again. The composite
     ``(user, organization)`` primary key it replaces is incompatible with a
@@ -354,6 +382,11 @@ class OrganizationMembership(AbstractOrganizationMembership):
                 fields=["user", "organization"],
                 name="uniq_membership_user_organization",
             ),
+        ]
+        # The membership half of the capability catalog -- see
+        # ``organizations.permission_catalog`` and ``Organization.Meta`` above.
+        permissions: ClassVar = [
+            ("manage_members", "Can manage the organization's members"),
         ]
 
     def __str__(self):

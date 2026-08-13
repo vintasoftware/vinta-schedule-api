@@ -30,6 +30,7 @@ from model_bakery import baker
 from vintasend.constants import NotificationTypes
 
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.services import sync_membership_groups_from_role
 from payments.billing_constants import BillingState, LimitedResource, LimitKind
 from payments.constants import PaymentProviders
 from payments.exceptions import (
@@ -153,16 +154,22 @@ def _subscription_for(
 def _add_admin_membership(organization: Organization) -> OrganizationMembership:
     """A recipient for ``DunningService``'s notifications --
     ``OrganizationMembershipQuerySet.billing_recipients`` reads active
-    admin/billing-owner memberships, and a bare ``baker.make(Organization, ...)``
-    (unlike ``OrganizationService.create_organization``) creates none on its
-    own."""
-    return baker.make(
+    memberships holding ``payments.manage_billing``, and a bare
+    ``baker.make(Organization, ...)`` (unlike
+    ``OrganizationService.create_organization``) creates none on its own.
+
+    ``sync_membership_groups_from_role`` is what every live write path calls to
+    keep the groups in step with ``role``; ``baker.make`` bypasses it, so this
+    calls it by hand. Phase 6 deletes the shim and this call with it."""
+    membership = baker.make(
         OrganizationMembership,
         organization=organization,
         user=baker.make(User),
         role=OrganizationRole.ADMIN,
         is_active=True,
     )
+    sync_membership_groups_from_role(membership)
+    return membership
 
 
 def _seed_members(organization: Organization, count: int) -> None:

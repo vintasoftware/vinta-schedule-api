@@ -296,6 +296,22 @@ class Subscription(BaseModel):
     add_ons: "RelatedManager[SubscriptionAddOn]"
     payments: "RelatedManager[Payment]"
 
+    class Meta(BaseModel.Meta):
+        # The billing half of the capability catalog
+        # (``organizations.permission_catalog``). Declared on ``Subscription``
+        # rather than on ``Organization`` because the subscription is the object
+        # the capability acts on -- changing the plan, buying add-ons, managing
+        # the payment method. ``organizations.manage_billing`` would have read
+        # as an organization-settings permission.
+        #
+        # Nothing reads it yet: ``IsBillingOwnerOrAdmin`` still checks
+        # ``role`` / ``is_billing_owner`` until Phase 4. The one consumer added
+        # in Phase 3 is ``OrganizationMembershipQuerySet.billing_recipients``,
+        # which is a notification-recipient query, not an authorization gate.
+        permissions: ClassVar = [
+            ("manage_billing", "Can manage the organization's billing"),
+        ]
+
     def __str__(self):
         return (
             f"{self.id} - {self.status} - {self.current_period_start} - {self.current_period_end}"

@@ -189,6 +189,36 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
+# Spelled out for the first time here. It was previously left at Django's implicit
+# default, which is exactly the first entry -- so this list *adds* the second
+# backend and changes nothing else.
+#
+# ``ModelBackend`` is kept rather than replaced even though
+# ``OrganizationModelBackend`` subclasses it and would answer every
+# authentication call identically: a live session records the dotted path of the
+# backend that authenticated it (``_auth_user_backend``), and
+# ``django.contrib.auth.get_user`` logs the session out when that path is no
+# longer in this list. Dropping the default entry would therefore sign out every
+# existing session on deploy for no gain.
+#
+# What the second backend adds is *permissions*, not authentication:
+# ``OrganizationModelBackend.get_all_permissions`` unions the user's global
+# permissions with the ones their ``OrganizationMembership`` in the
+# **currently-bound** organization carries (``vinta_orgs.state``'s contextvar,
+# which ``TenantScopedViewMixin`` / ``PublicApiSystemUserMiddleware`` bind for the
+# duration of a request). With nothing bound the organization half is empty, so an
+# unbound path answers exactly what ``ModelBackend`` alone answered.
+#
+# The two backends share cache attribute names on the user object
+# (``_perm_cache``, ``_user_perm_cache``, ``_group_perm_cache``) -- deliberate and
+# safe, because both fill them with the same *global* permission set;
+# organization permissions live in separate, organization-keyed caches
+# (``_organization_*_perm_cache``) that the stock backend never touches.
+AUTHENTICATION_BACKENDS = [
+    "django.contrib.auth.backends.ModelBackend",
+    "vinta_orgs.auth_backends.OrganizationModelBackend",
+]
+
 REST_FRAMEWORK = {
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.LimitOffsetPagination",
     "PAGE_SIZE": 10,

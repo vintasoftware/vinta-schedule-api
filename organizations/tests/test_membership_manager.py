@@ -22,6 +22,7 @@ from vinta_orgs.state import organization_context
 from organizations.managers import OrganizationMembershipManager
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
 from organizations.querysets import OrganizationMembershipQuerySet
+from organizations.services import sync_membership_groups_from_role
 from users.models import User
 
 
@@ -132,6 +133,12 @@ class TestDomainMethodsSurvivedTheManagerChange:
         assert list(seats) == [active]
 
     def test_billing_recipients_returns_admins_and_billing_owners(self):
+        """``billing_recipients`` reads ``payments.manage_billing`` as of Phase 3,
+        not ``role`` / ``is_billing_owner`` -- so a membership written straight
+        through ``objects.create`` (which performs no dual-write) has to be put
+        in its groups the way ``OrganizationService`` does. The switch itself is
+        covered in ``payments/tests/test_dunning_recipients.py``; this stays a
+        test that the *manager* still exposes the method."""
         organization = baker.make(Organization)
         admin = OrganizationMembership.objects.create(
             user=baker.make(User), organization=organization, role=OrganizationRole.ADMIN
@@ -142,9 +149,11 @@ class TestDomainMethodsSurvivedTheManagerChange:
             role=OrganizationRole.MEMBER,
             is_billing_owner=True,
         )
-        OrganizationMembership.objects.create(
+        plain_member = OrganizationMembership.objects.create(
             user=baker.make(User), organization=organization, role=OrganizationRole.MEMBER
         )
+        for membership in (admin, billing_owner, plain_member):
+            sync_membership_groups_from_role(membership)
 
         recipients = OrganizationMembership.objects.billing_recipients(organization.id)
 
