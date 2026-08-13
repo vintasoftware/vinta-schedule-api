@@ -554,7 +554,7 @@ Carry-forwards:
 ### Phase 6 — Drop `role` / `is_billing_owner` and delete the old tenancy layer
 
 - **Branch**: `plan/vinta-django-orgs-migration/phase-6` off `phase-5`
-- **Commit**: `PHASE6SHA` (implement, Tier 1 — escalated in practice; see below)
+- **Commit**: `73639c4` (implement, Tier 1 — escalated in practice; see below)
 
 **"Mechanical deletion once the greps are clean" understated it by a lot.** The
 plan rated this Tier 1. Three things in it were not mechanical: two production
