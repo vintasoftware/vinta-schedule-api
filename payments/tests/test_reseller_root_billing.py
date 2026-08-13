@@ -94,6 +94,41 @@ class TestActingResellerRoot:
         with organization_context(descendant):
             assert self.permission.has_object_permission(_request(user), None, descendant) is True
 
+    def test_the_binding_a_request_actually_produces(self, reseller_root, descendant):
+        """Bound = the caller's own organization, target = a descendant.
+
+        Every other case in this class binds the **descendant** while the
+        caller's only membership is in the root. Since Phase 3.5 that state
+        cannot arise on the request path: ``X-Organization-Id`` naming an
+        organization the caller does not belong to is a 403, and
+        ``_active_membership`` is resolved from the same header -- so
+        ``membership.organization`` *is* the bound organization, always. Those
+        cases exercise the slow path (rebind, one query); this one exercises the
+        fast path (``has_organization_permission`` sees the organization it is
+        asked about already bound, and neither rebinds nor queries), which is
+        the one every real request takes. Same answer, different route to it.
+
+        (Whether any REST caller passes a *descendant* as ``obj`` at all is a
+        separate question -- every one of them passes
+        ``resolve_billing_root(acting)``, which is an ancestor-or-self. The
+        branch is kept because it states a rule about the subtree that outlives
+        the current call sites.)
+        """
+        user = baker.make(User)
+        make_membership(user=user, organization=reseller_root, role=OrganizationRole.ADMIN)
+        _acting_from(user, reseller_root)
+
+        with organization_context(reseller_root):
+            assert self.permission.has_object_permission(_request(user), None, descendant) is True
+            # The control: the same binding, a plain member, refused. Without it
+            # the assertion above would also hold against a branch that admitted
+            # everyone whose bound organization happened to be a reseller root.
+            plain = baker.make(User)
+            make_membership(user=plain, organization=reseller_root, role=OrganizationRole.MEMBER)
+            _acting_from(plain, reseller_root)
+
+            assert self.permission.has_object_permission(_request(plain), None, descendant) is False
+
     def test_a_bare_has_perm_under_that_binding_would_have_said_no(self, reseller_root, descendant):
         """Why the branch cannot be a plain ``user.has_perm(...)``.
 

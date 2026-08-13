@@ -22,11 +22,14 @@ source tree on every run, so a new test written the old way fails here rather
 than years later in an audit.
 
 **The escape hatch** is a ``# groups-deliberately-absent`` comment on the
-construction. Four modules use it, each because the group-less state is the
-subject rather than an accident: the Phase 3 backfill migration test (which
-builds pre-backfill rows through historical models), the auth-backend test
-(which assigns groups by name to reach states the role mapping cannot produce),
-and the two that pin "a role with no group buys nothing".
+construction. Every user of it is enumerated in
+``test_no_other_module_uses_the_opt_out`` at the bottom of this module -- that
+list, not this paragraph, is the count. Each earns it because the group-less
+state is the subject rather than an accident: the Phase 3 backfill migration
+test (which builds pre-backfill rows through historical models), the
+auth-backend test (which assigns groups by name to reach states the role
+mapping cannot produce), the ones that pin "a role with no group buys nothing",
+and this module, whose fixtures are source text rather than rows.
 
 Sanctioned spellings, all in ``organizations/tests/helpers.py``:
 ``make_membership`` / ``make_admin_membership`` / ``make_billing_owner_membership``
@@ -56,13 +59,21 @@ CONSTRUCTOR_METHODS = frozenset(
 PRIVILEGE_KWARGS = frozenset({"role", "is_billing_owner"})
 
 
-def _test_modules() -> list[pathlib.Path]:
+def _test_modules(repo_root: pathlib.Path = REPO_ROOT) -> list[pathlib.Path]:
+    """Every module a test fixture can be built in.
+
+    ``factories.py`` is in scope alongside ``tests/`` and ``conftest.py``: the
+    per-app factory modules (``calendar_integration/factories.py``,
+    ``audit/factories.py``) build memberships for tests exactly the way a
+    ``conftest`` fixture does, and live outside any ``tests`` package, so the
+    original path filter could not reach them.
+    """
     paths = []
-    for path in sorted(REPO_ROOT.rglob("*.py")):
-        parts = path.relative_to(REPO_ROOT).parts
+    for path in sorted(repo_root.rglob("*.py")):
+        parts = path.relative_to(repo_root).parts
         if ".venv" in parts or "migrations" in parts or "node_modules" in parts:
             continue
-        if "tests" in parts or path.name == "conftest.py":
+        if "tests" in parts or path.name in {"conftest.py", "factories.py"}:
             paths.append(path)
     return paths
 
@@ -112,18 +123,59 @@ def _privilege_kwargs(call: ast.Call) -> list[str]:
     return found
 
 
+def _privilege_fields(call: ast.Call) -> list[str]:
+    """The privileged field *names* in a ``bulk_update`` field list.
+
+    ``bulk_update(rows, ["role"])`` writes the column straight past ``save()``
+    and names it positionally, so ``_privilege_kwargs`` -- which reads keywords
+    -- sees nothing at all. The new value lives on the model instances rather
+    than in the call, so there is no literal to judge: naming the field is taken
+    as privileged, in keeping with the over-flag bias stated above.
+    """
+    found: list[str] = []
+    candidates = [*call.args, *(kw.value for kw in call.keywords if kw.arg == "fields")]
+    for candidate in candidates:
+        if not isinstance(candidate, ast.List | ast.Tuple):
+            continue
+        for element in candidate.elts:
+            if (
+                isinstance(element, ast.Constant)
+                and isinstance(element.value, str)
+                and element.value in PRIVILEGE_KWARGS
+            ):
+                found.append(element.value)
+    return found
+
+
+def _names_the_membership_model(call: ast.Call) -> bool:
+    """``(OrganizationMembership, ...)`` / ``(_model=OrganizationMembership)``."""
+    if call.args and _names_membership(call.args[0]):
+        return True
+    return any(kw.arg == "_model" and _names_membership(kw.value) for kw in call.keywords)
+
+
 def _constructor_kind(call: ast.Call) -> str | None:
     func = call.func
+    if isinstance(func, ast.Name):
+        # A bare name, two shapes:
+        #  * ``from model_bakery.baker import make`` -- the same constructor the
+        #    ``baker.make`` branch below matches, one import away from invisible
+        #    to an attribute-only scan. Any bare call naming the membership model
+        #    positionally qualifies; a sanctioned helper never does (they take
+        #    ``user=`` / ``organization=``).
+        #  * ``OrganizationMembership(role=...)`` -- an unsaved instance, which is
+        #    how the objects handed to ``bulk_create`` are built.
+        if func.id == "OrganizationMembership":
+            return "OrganizationMembership(...)"
+        if _names_the_membership_model(call):
+            return f"{func.id}(OrganizationMembership, ...)"
+        return None
     if not isinstance(func, ast.Attribute):
         return None
     if func.attr in {"make", "prepare"} and isinstance(func.value, ast.Name):
         if func.value.id != "baker":
             return None
-        if call.args and _names_membership(call.args[0]):
-            return "baker.make"
-        if any(kw.arg == "_model" and _names_membership(kw.value) for kw in call.keywords):
-            return "baker.make"
-        return None
+        return "baker.make" if _names_the_membership_model(call) else None
     if func.attr in {"update", "bulk_update"}:
         # ``queryset.update(role=...)`` writes past ``save()`` and so past the
         # dual-write. Flagged whatever the receiver is: the kwarg names are
@@ -142,18 +194,47 @@ def _constructor_kind(call: ast.Call) -> str | None:
     return None
 
 
-def _sync_targets(tree: ast.Module) -> set[str]:
-    """Names handed to a group-sync call anywhere in the module."""
-    names: set[str] = set()
+def _scope_of(tree: ast.Module) -> dict[int, ast.AST | None]:
+    """Each node's nearest enclosing function, or ``None`` for module level.
+
+    The scan's "this membership's groups were seen to" exemption is keyed on a
+    *variable name*, and ``membership`` is the commonest name in these files. A
+    module-wide exemption therefore let one function's synced ``membership``
+    silently vouch for a different, never-synced ``membership`` in a function
+    fifty lines away -- the exemption is only meaningful where the two
+    statements can actually be about the same object.
+
+    A nested function is its own scope, so a membership built in an enclosing
+    function and synced only inside a closure is flagged. That is the
+    over-flagging direction, which costs one helper call.
+    """
+    scopes: dict[int, ast.AST | None] = {id(tree): None}
+
+    def descend(node: ast.AST, scope: ast.AST | None) -> None:
+        for child in ast.iter_child_nodes(node):
+            child_scope = (
+                child if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef) else scope
+            )
+            scopes[id(child)] = child_scope
+            descend(child, child_scope)
+
+    descend(tree, None)
+    return scopes
+
+
+def _sync_targets(tree: ast.Module, scopes: dict[int, ast.AST | None]) -> dict[int, set[str]]:
+    """Names handed to a group-sync call, keyed by the scope it happened in."""
+    names: dict[int, set[str]] = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             if node.func.id not in SYNC_CALLS:
                 continue
+            scope = names.setdefault(id(scopes.get(id(node))), set())
             for arg in node.args:
                 if isinstance(arg, ast.Name):
-                    names.add(arg.id)
+                    scope.add(arg.id)
                 elif isinstance(arg, ast.Attribute) and isinstance(arg.value, ast.Name):
-                    names.add(arg.value.id)
+                    scope.add(arg.value.id)
     return names
 
 
@@ -185,18 +266,22 @@ def _bound_names(statement: ast.AST) -> set[str]:
     return names
 
 
-def _offenders(path: pathlib.Path) -> list[str]:
+def _offenders(path: pathlib.Path, repo_root: pathlib.Path = REPO_ROOT) -> list[str]:
     source = path.read_text()
     if "OrganizationMembership" not in source and "role" not in source:
         return []
     tree = ast.parse(source, str(path))
     lines = source.splitlines()
     wrapped = _wrapped_call_ids(tree)
-    synced = _sync_targets(tree)
+    scopes = _scope_of(tree)
+    synced = _sync_targets(tree, scopes)
 
     accounted: set[int] = set()
     for statement in ast.walk(tree):
-        if isinstance(statement, ast.Assign | ast.AugAssign) and _bound_names(statement) & synced:
+        if not isinstance(statement, ast.Assign | ast.AugAssign):
+            continue
+        in_scope = synced.get(id(scopes.get(id(statement))), set())
+        if _bound_names(statement) & in_scope:
             accounted.update(id(node) for node in ast.walk(statement))
 
     def marked(node: ast.AST) -> bool:
@@ -206,7 +291,7 @@ def _offenders(path: pathlib.Path) -> list[str]:
         end = getattr(node, "end_lineno", start)
         return DELIBERATE in "\n".join(lines[start - 1 : end])
 
-    relative = path.relative_to(REPO_ROOT)
+    relative = path.relative_to(repo_root)
     offenders: list[str] = []
     for node in ast.walk(tree):
         if id(node) in wrapped or id(node) in accounted or marked(node):
@@ -216,6 +301,8 @@ def _offenders(path: pathlib.Path) -> list[str]:
             if kind is None:
                 continue
             hits = _privilege_kwargs(node)
+            if kind.endswith("bulk_update"):
+                hits += _privilege_fields(node)
             if hits:
                 offenders.append(f"{relative}:{node.lineno}: {kind}({', '.join(hits)}=...)")
         elif isinstance(node, ast.Assign | ast.AugAssign):
@@ -245,30 +332,58 @@ def test_no_test_builds_a_privileged_membership_without_its_groups():
     )
 
 
+#: One line per shape the scan must catch, so a failure names the shape that
+#: stopped being caught rather than a count that moved.
+OFFENDING_SHAPES = {
+    "baker.make": (
+        "    baker.make(\n        OrganizationMembership, user=None, role=OrganizationRole.ADMIN\n    )"
+    ),
+    "bare baker make import": "    make(OrganizationMembership, user=None, role='admin')",
+    "objects.create": "    OrganizationMembership.objects.create(user=None, is_billing_owner=True)",
+    "attribute assignment": "    m.role = OrganizationRole.ADMIN",
+    "queryset.update": "    OrganizationMembership.objects.filter(pk=1).update(role='admin')",
+    "update_or_create defaults": (
+        "    OrganizationMembership.objects.update_or_create(\n"
+        "        user=None, defaults={'role': OrganizationRole.ADMIN}\n"
+        "    )"
+    ),
+    "bulk_update field list": "    OrganizationMembership.objects.bulk_update(rows, ['role'])",
+    "bare constructor": "    OrganizationMembership(user=None, role=OrganizationRole.ADMIN)",
+    "sync in a different function": (
+        "    membership = OrganizationMembership.objects.create(user=None, role='admin')"
+    ),
+}
+
+
 def test_the_scan_would_catch_a_new_offender(tmp_path):
     """The guard's own regression test: a mutant module must be flagged.
 
     Without this, a scan that silently stopped matching -- a renamed helper, a
     changed AST shape, a typo in a method name -- would report success forever,
     which is the same failure mode the guard exists to prevent, one level up.
+
+    Every shape in ``OFFENDING_SHAPES`` is asserted **individually**, because a
+    single module asserted by count lets one shape stop being caught while
+    another starts being caught twice. The last shape is the module-scope hole:
+    a ``membership`` synced inside ``test_other`` must not vouch for the
+    ``membership`` built in ``test_x``.
     """
-    offending = tmp_path / "tests" / "test_mutant.py"
-    offending.parent.mkdir(parents=True)
-    offending.write_text(
-        "from model_bakery import baker\n"
-        "from organizations.models import OrganizationMembership, OrganizationRole\n"
-        "def test_x():\n"
-        "    baker.make(\n"
-        "        OrganizationMembership, user=None, role=OrganizationRole.ADMIN\n"
-        "    )\n"
-        "    OrganizationMembership.objects.create(user=None, is_billing_owner=True)\n"
-        "    m.role = OrganizationRole.ADMIN\n"
-        "    OrganizationMembership.objects.filter(pk=1).update(role='admin')\n"
-    )
+    for name, body in OFFENDING_SHAPES.items():
+        offending = tmp_path / name.replace(" ", "_") / "tests" / "test_mutant.py"
+        offending.parent.mkdir(parents=True)
+        offending.write_text(
+            "from model_bakery import baker\n"
+            "from model_bakery.baker import make\n"
+            "from organizations.models import OrganizationMembership, OrganizationRole\n"
+            "from organizations.tests.helpers import grant_membership_groups\n"
+            "def test_x():\n"
+            f"{body}\n"
+            "def test_other():\n"
+            "    membership = make_membership(user=None, role='admin')\n"
+            "    grant_membership_groups(membership)\n"
+        )
 
-    found = _offenders_in(offending)
-
-    assert len(found) == 4, found
+        assert _offenders_in(offending), f"{name} is no longer caught"
 
 
 def test_the_scan_accepts_every_sanctioned_spelling(tmp_path):
@@ -287,20 +402,22 @@ def test_the_scan_accepts_every_sanctioned_spelling(tmp_path):
         "        OrganizationMembership, user=None, role='admin'\n"
         "    )\n"
         "    baker.make(OrganizationMembership, user=None, role=OrganizationRole.MEMBER)\n"
+        "def test_y():\n"
+        "    membership = OrganizationMembership.objects.create(user=None, role='admin')\n"
+        "    grant_membership_groups(membership)\n"
     )
 
     assert _offenders_in(accepted) == []
 
 
 def _offenders_in(path: pathlib.Path) -> list[str]:
-    """``_offenders`` against a path outside the repo, for the two tests above."""
-    global REPO_ROOT  # noqa: PLW0603 -- restored immediately below
-    original = REPO_ROOT
-    REPO_ROOT = path.parents[1]
-    try:
-        return _offenders(path)
-    finally:
-        REPO_ROOT = original
+    """``_offenders`` against a path outside the repo, for the two tests above.
+
+    Takes the root as an argument rather than rebinding the module-level
+    ``REPO_ROOT``: the rebinding made these two tests order-sensitive against
+    anything else reading it, for nothing more than a relative path in a message.
+    """
+    return _offenders(path, repo_root=path.parents[1])
 
 
 @pytest.mark.parametrize(

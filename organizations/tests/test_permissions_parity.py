@@ -43,16 +43,22 @@ states are the ones that distinguish the old rule from the new one:
   shape (the dual-write and the backfill both prevent it) but the shape a test
   fixture produces by accident, so it is pinned rather than left to surprise.
 
-Two deliberate outcome changes are pinned here as decisions rather than left to
-be discovered; both are argued in ``organizations/authorization.py``:
+**Where a grant may come from** is asserted as explicitly as the outcomes, in
+``TestOnlyAMembershipGrants``: authorization here is answered from an active
+membership in the organization named, and from nothing else. The three shapes
+that would otherwise leak -- a global ``user_permissions`` grant, membership of
+the global ``organization_admin`` ``auth.Group`` (which ``users/admin.py``'s
+group picker lists on the *user* form), and ``is_superuser`` -- were all inert
+under ``role`` / ``is_billing_owner``, so admitting any of them would be a
+widening, not a migration. See ``organizations/authorization.py``.
 
-* a superuser now passes every check (``PermissionsMixin.has_perm``
-  short-circuits before any backend runs);
-* an inactive *user* passes none.
+One deliberate outcome change is pinned here as a decision rather than left to
+be discovered, and is argued in that same module: an inactive *user* passes
+nothing.
 """
 
 from django.contrib.auth import get_user_model
-from django.contrib.auth.models import AnonymousUser, Permission
+from django.contrib.auth.models import AnonymousUser, Group, Permission
 from django.http import Http404
 
 import pytest
@@ -61,6 +67,7 @@ from rest_framework.test import APIRequestFactory
 
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.models import (
+    BookingPolicy,
     Calendar,
     CalendarGroup,
     CalendarGroupSlot,
@@ -88,6 +95,7 @@ from organizations.models import (
     OrganizationMembership,
     OrganizationRole,
 )
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.permissions import (
     IsBillingOwnerOrAdmin,
     IsOrganizationAdmin,
@@ -400,27 +408,13 @@ class TestIsOrganizationAdminParity:
     def test_an_unauthenticated_caller_is_refused(self, factory):
         assert self.permission.has_permission(request_for(factory, None), _View("list")) is False
 
-    def test_a_superuser_passes_and_that_is_a_decision(self, factory, organization):
-        """Named, not stumbled into -- see ``organizations/authorization.py``.
-
-        ``PermissionsMixin.has_perm`` short-circuits ``is_superuser`` before any
-        backend runs, so a superuser holding *any* active membership now passes
-        a gate ``role == ADMIN`` refused them. It grants nothing new: a
-        superuser already reaches every tenant's data through the Django admin.
-        """
-        superuser = baker.make(User, is_superuser=True, is_active=True)
-        make_membership(user=superuser, organization=organization, role=OrganizationRole.MEMBER)
-        acting_in(superuser, organization)
-
-        assert (
-            self.permission.has_permission(request_for(factory, superuser), _View("list")) is True
-        )
-
     def test_a_global_grant_still_needs_a_membership(self, factory, organization):
-        """``has_perm`` unions global permissions in, so a Django-admin-assigned
-        ``organizations.manage_members`` would admit a caller who belongs to no
-        organization -- if the active-membership check in front of it were ever
-        dropped. Pinned so dropping it is a red test."""
+        """A Django-admin-assigned ``organizations.manage_members`` on a caller
+        who belongs to no organization admits nothing. Two independent things
+        stop it -- the active-membership check in this class, and the fact that
+        the grant is not resolved from a membership at all
+        (``TestOnlyAMembershipGrants`` below covers the second on its own).
+        Pinned so dropping either is a red test."""
         outsider = baker.make(User)
         outsider.user_permissions.add(Permission.objects.get(codename="manage_members"))
 
@@ -529,8 +523,10 @@ class TestBookingPolicyPermissionParity:
     Only the ``membership.is_admin`` short-circuit in ``has_permission`` moved.
     The per-target decision still lives in ``BookingPolicyPermissionService``,
     which is a service rather than a permission class and is therefore out of
-    this phase's scope -- it still reads ``membership.is_admin``, kept in step
-    by the dual-write until Phase 6.
+    this phase's scope -- but it no longer *derives* privilege: this class hands
+    it the answer it already computed (``is_privileged``), so the two cannot
+    disagree about the same caller. The service's remaining
+    ``membership.is_admin`` readers elsewhere stay until Phase 6.
     """
 
     def test_reads_stay_open_to_a_plain_member(
@@ -570,24 +566,25 @@ class TestBookingPolicyPermissionParity:
 
         assert booking_policy_permission.has_permission(request, _View("create")) is False
 
-    def test_an_ungrouped_admin_still_passes_through_the_service(
+    def test_an_ungrouped_admin_is_refused_by_the_service_too(
         self, factory, booking_policy_permission, ungrouped_admin, organization
     ):
-        """The one place the two representations are still visibly separate.
+        """The two representations no longer disagree on this path.
 
-        This class's own short-circuit reads ``organizations.manage_members`` as
-        of Phase 4 and so does *not* fire for a membership carrying no groups.
-        The create path then falls through to
-        ``BookingPolicyPermissionService.can_member_manage_target``, which is a
-        **service** rather than a permission class -- out of Phase 4's scope --
-        and still reads ``membership.is_admin``. So the caller is admitted after
-        all, by the role column.
+        This class's short-circuit reads ``organizations.manage_members`` as of
+        Phase 4, so it does not fire for a membership carrying no groups. The
+        create path then falls through to
+        ``BookingPolicyPermissionService.can_member_manage_target``, which used
+        to re-derive privilege from ``membership.is_admin`` and admit the caller
+        after all -- by the role column, one line below a gate that had just
+        refused them by permission. It now takes the *same* answer the class
+        computed, passed in as ``is_privileged``, so a caller refused at
+        ``has_permission`` is refused at ``has_object_permission`` as well and
+        cannot create a policy they are then unable to edit.
 
-        Unreachable in production: the dual-write and the Phase 3 backfill keep
-        role and groups in step, so no live membership can be admin by one and
-        not the other. Pinned rather than asserted away because Phase 6 drops
-        the column this last read depends on, and this is the test that will go
-        red when it does.
+        The membership shape itself stays unreachable in production (the
+        dual-write and the Phase 3 backfill keep role and groups in step); what
+        is pinned here is which of the two representations decides.
         """
         group = CalendarGroup.objects.create(organization=organization, name="Pool 2")
         acting_in(ungrouped_admin, organization)
@@ -595,7 +592,43 @@ class TestBookingPolicyPermissionParity:
             factory, ungrouped_admin, method="post", data={"calendar_group": group.id}
         )
 
-        assert booking_policy_permission.has_permission(request, _View("create")) is True
+        assert booking_policy_permission.has_permission(request, _View("create")) is False
+
+    def test_privilege_by_permission_alone_survives_to_the_object_gate(
+        self, factory, booking_policy_permission, member, organization
+    ):
+        """Create and update must agree about the same caller.
+
+        A membership carrying the admin group while its ``role`` column still
+        says MEMBER is the mirror image of ``ungrouped_admin`` -- and the half
+        Phase 5 makes reachable, since clients assign groups directly from then
+        on. Such a caller passed ``has_permission``'s capability short-circuit
+        and was then refused by the service on ``has_object_permission``, which
+        re-derived privilege from the column: they could create a group policy
+        and not edit the row they had just created. Both ends now read the same
+        answer.
+        """
+        membership = OrganizationMembership.objects.get(user=member, organization=organization)
+        membership.groups.add(Group.objects.get(name=GROUP_ORGANIZATION_ADMIN))
+        group = CalendarGroup.objects.create(organization=organization, name="Pool 3")
+        acting_in(member, organization)
+
+        assert (
+            booking_policy_permission.has_permission(
+                request_for(factory, member, method="post", data={"calendar_group": group.id}),
+                _View("create"),
+            )
+            is True
+        )
+
+        policy = BookingPolicy.objects.create(organization=organization, calendar_group=group)
+
+        assert (
+            booking_policy_permission.has_object_permission(
+                request_for(factory, member, method="patch"), _View("partial_update"), policy
+            )
+            is True
+        )
 
     def test_an_unauthenticated_caller_is_refused_outright(
         self, factory, booking_policy_permission
@@ -952,6 +985,140 @@ class TestGroupScopedRouteGatesParity:
             )
             is False
         )
+
+
+# ---------------------------------------------------------------------------
+# Where a grant may come from: an active membership in the organization named
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestOnlyAMembershipGrants:
+    """Three grants that were inert under ``role`` and must stay inert.
+
+    ``user.has_perm`` answers from the **union** of the organization half with a
+    global half (``user.user_permissions`` plus the user's own ``auth.Group``
+    rows), after ``PermissionsMixin`` short-circuits ``is_superuser`` ahead of
+    every backend. None of the three is a statement about the organization
+    named, and none of them satisfied ``membership.role == ADMIN``. So
+    ``organizations.authorization.has_organization_permission`` asks the
+    membership half alone
+    (``OrganizationModelBackend.get_membership_permissions``), and this class is
+    what keeps it doing so: put ``user.has_perm(permission)`` back in that helper
+    and every row below turns green-to-red.
+
+    Each row is a live escalation path, not a hypothetical:
+
+    * a single ``user_permissions`` row on a plain member;
+    * ``users/admin.py`` puts ``groups`` in ``filter_horizontal`` on the *user*
+      form and leaves ``GroupAdmin`` registered, so the seeded, global
+      ``organization_admin`` group is one click away in the picker -- and it
+      carries ``manage_members`` / ``manage_organization`` / ``manage_branding``
+      / ``manage_billing``;
+    * a superuser whose only membership is a plain one. "They already reach
+      everything through the Django admin" is not an argument on
+      ``IsBillingOwnerOrAdmin``: passing it changes a plan, buys an add-on or
+      cancels a subscription **at Stripe / MercadoPago**.
+    """
+
+    admin_permission = IsOrganizationAdmin()
+    billing_permission = IsBillingOwnerOrAdmin()
+
+    def test_a_global_user_permission_does_not_make_a_member_an_admin(
+        self, factory, member, organization
+    ):
+        member.user_permissions.add(Permission.objects.get(codename="manage_members"))
+        acting_in(member, organization)
+
+        assert (
+            self.admin_permission.has_permission(request_for(factory, member), _View("list"))
+            is False
+        )
+        assert member.is_organization_admin(organization) is False
+
+    def test_the_global_organization_admin_group_does_not_either(
+        self, factory, member, organization, other_organization
+    ):
+        """The group Phase 3 seeded is a plain global ``auth.Group``. Adding a
+        *user* to it must grant nothing anywhere -- including in organizations
+        they have never been a member of."""
+        member.groups.add(Group.objects.get(name=GROUP_ORGANIZATION_ADMIN))
+        acting_in(member, organization)
+
+        assert (
+            self.admin_permission.has_permission(request_for(factory, member), _View("list"))
+            is False
+        )
+        assert member.is_organization_admin(organization) is False
+        assert member.is_organization_admin(other_organization) is False
+
+    def test_a_global_grant_does_not_reach_the_billing_endpoints(
+        self, factory, member, organization
+    ):
+        """Same shape on the surface that spends money."""
+        member.user_permissions.add(Permission.objects.get(codename="manage_billing"))
+        acting_in(member, organization)
+
+        assert (
+            self.billing_permission.has_permission(request_for(factory, member), _View()) is False
+        )
+        assert (
+            self.billing_permission.has_object_permission(
+                request_for(factory, member), _View(), organization
+            )
+            is False
+        )
+
+    def test_a_superuser_holding_a_plain_membership_is_still_a_plain_member(
+        self, factory, organization
+    ):
+        superuser = baker.make(User, is_superuser=True, is_active=True)
+        make_membership(user=superuser, organization=organization, role=OrganizationRole.MEMBER)
+        acting_in(superuser, organization)
+
+        assert (
+            self.admin_permission.has_permission(request_for(factory, superuser), _View("list"))
+            is False
+        )
+        assert (
+            self.billing_permission.has_object_permission(
+                request_for(factory, superuser), _View(), organization
+            )
+            is False
+        )
+        assert superuser.is_organization_admin(organization) is False
+
+    def test_a_superuser_with_an_admin_membership_passes_on_that_membership(
+        self, factory, organization
+    ):
+        """The control. Without it every assertion above would also hold against
+        a helper that refused superusers outright, which is not the rule --
+        the rule is that a superuser is answered from their memberships like
+        anybody else."""
+        superuser = baker.make(User, is_superuser=True, is_active=True)
+        make_membership(user=superuser, organization=organization, role=OrganizationRole.ADMIN)
+        acting_in(superuser, organization)
+
+        assert (
+            self.admin_permission.has_permission(request_for(factory, superuser), _View("list"))
+            is True
+        )
+        assert superuser.is_organization_admin(organization) is True
+
+    def test_is_organization_admin_is_false_where_there_is_no_membership(
+        self, admin, organization, other_organization
+    ):
+        """``is_organization_admin`` is asked with an organization the caller may
+        have no relationship to at all -- ``IsOrganizationAdmin
+        .has_object_permission`` and ``CalendarPermissionService`` both do it.
+        Every current caller happens to guard it first; the method must be
+        membership-bounded on its own regardless, because that is what its
+        docstring promises and what ``role == ADMIN`` structurally was."""
+        admin.groups.add(Group.objects.get(name=GROUP_ORGANIZATION_ADMIN))
+
+        assert admin.is_organization_admin(organization) is True
+        assert admin.is_organization_admin(other_organization) is False
+        assert admin.is_organization_admin(other_organization.id) is False
 
 
 # ---------------------------------------------------------------------------

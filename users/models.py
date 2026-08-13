@@ -49,9 +49,17 @@ class User(AbstractBaseUser, PermissionsMixin, BaseModel):
         Reads `organizations.manage_members` rather than `role == ADMIN` (Phase
         4 of the vinta-django-orgs migration). The outcome is unchanged for
         every membership the system writes: the `organization_admin` group
-        carries that permission and nothing else grants it. The membership's
-        own `is_active` gate is still enforced, one layer down, by
-        `organizations.auth_backends.OrganizationModelBackend`.
+        carries that permission and nothing else grants it.
+
+        Still membership-bounded, which is what the "iff" above is worth: the
+        permission is resolved from an active membership in `organization`
+        alone, so neither a global `user_permissions` grant, nor membership of
+        the global `organization_admin` group, nor `is_superuser` answers
+        `True` here for an organization this user does not belong to. See
+        `organizations.authorization.has_organization_permission`, which owns
+        that rule, and `organizations.auth_backends.OrganizationModelBackend`,
+        which enforces the membership's own `is_active` gate one layer further
+        down.
 
         Imported inside the method to avoid a circular import at module load.
         """

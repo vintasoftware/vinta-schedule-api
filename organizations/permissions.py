@@ -342,9 +342,16 @@ class IsOrganizationAdmin(BasePermission):
 
     Phase 4 of the vinta-django-orgs migration replaced `membership.is_admin` with
     the permission. The active-membership check in front of it is **not** redundant
-    and must stay: it is what keeps a global grant of `organizations.manage_members`
-    (a Django-admin-assigned user permission, which `has_perm` unions in) from
-    admitting a caller who belongs to no organization at all.
+    and must stay: it is what supplies the organization the capability is asked
+    about. `has_permission` runs before any object is known, so the caller's own
+    resolved organization is the only one it can name.
+
+    A global grant -- a Django-admin-assigned `organizations.manage_members`, or
+    membership of the seeded global `organization_admin` group -- admits nobody
+    here either, and that is enforced one layer down rather than by this class:
+    `has_organization_permission` resolves the capability from an active
+    membership in the named organization alone. See
+    `organizations/authorization.py`.
     """
 
     def has_permission(self, request, view) -> bool:
@@ -492,13 +499,15 @@ class IsBillingOwnerOrAdmin(BasePermission):
     ) -> bool:
         """The hand-written half of this class -- see the class docstring.
 
-        ``membership.organization`` is named explicitly in the permission check
-        because it is precisely *not* the organization bound to the request:
-        this branch exists for the case where the caller acts from an ancestor
-        over a descendant, and the auth backend, keyed on the bound
-        organization, structurally cannot see a grant held in an ancestor. A
-        bare ``user.has_perm(...)`` here would silently ask about the wrong
-        organization.
+        The organization that differs from the bound one here is
+        ``target_organization``, not ``membership.organization``: since Phase
+        3.5 the active membership is resolved from ``X-Organization-Id``, so
+        ``membership.organization`` **is** the bound organization and this check
+        takes ``has_organization_permission``'s no-rebinding, no-query fast
+        path. It is named explicitly all the same, because that is the question
+        this branch asks -- "may the caller manage billing *where they act*,
+        which is an ancestor of the object" -- and because nothing about that
+        question depends on the two coinciding.
         """
         if not has_organization_permission(user, MANAGE_BILLING, membership.organization):
             return False
