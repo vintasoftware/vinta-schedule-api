@@ -33,6 +33,7 @@ from common.utils.view_utils import (
     ReadOnlyVintaScheduleModelViewSet,
     TenantScopedViewMixin,
 )
+from organizations.authorization import has_organization_permission
 from organizations.branding_logo import (
     BRANDING_LOGO_KEY_PREFIX,
     DEFAULT_LOGO_ASSET_PATH,
@@ -65,6 +66,11 @@ from organizations.models import (
     OrganizationRole,
     resolve_branding_for_display,
 )
+from organizations.permission_catalog import (
+    MANAGE_MEMBERS,
+    membership_state_for_groups,
+    permissions_for_groups,
+)
 from organizations.permissions import (
     BRANDING_GATE_EXCEPTIONS,
     BrandingWriteGateReason,
@@ -76,6 +82,7 @@ from organizations.permissions import (
 )
 from organizations.serializers import (
     AcceptInvitationSerializer,
+    AssignMembershipGroupsSerializer,
     CurrentMembershipSerializer,
     GoogleServiceAccountWriteSerializer,
     MyMembershipSerializer,
@@ -87,7 +94,6 @@ from organizations.serializers import (
     OrganizationSerializer,
     ServiceAccountReadSerializer,
     ServiceAccountWriteSerializer,
-    UpdateMembershipRoleSerializer,
 )
 from organizations.services import OrganizationService, sync_membership_groups_from_role
 from payments.services.entitlement_service import EntitlementService
@@ -314,7 +320,7 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
         return Response(return_serializer.data)
 
     @extend_schema(
-        summary="Current organization + role for the authenticated user",
+        summary="Current organization + permissions for the authenticated user",
         responses={
             200: CurrentMembershipSerializer,
             404: OpenApiResponse(description="No organization membership (gated user)"),
@@ -322,7 +328,7 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
     )
     @action(detail=False, methods=["get"], url_path="current", permission_classes=[IsAuthenticated])
     def current(self, request):
-        """Return the caller's organization and role.
+        """Return the caller's organization and the capabilities they hold in it.
 
         HTTP 200 — the user is onboarded (has a membership).
         HTTP 404 — the user is gated (no membership yet).
@@ -722,7 +728,8 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
     - `deactivate`: POST to disable a member (prevent self-deactivation and
       protect the last active admin).
     - `reactivate`: POST to re-enable a member.
-    - `update-role`: POST to change a member's role (protect the last active admin).
+    - `groups`: POST to set a member's groups, and with them their capabilities
+      (protects the last member who can manage members).
     """
 
     queryset = OrganizationMembership.objects.select_related("user", "user__profile")
@@ -853,66 +860,100 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     @extend_schema(
-        summary="Update an organization member's role",
-        request=UpdateMembershipRoleSerializer,
+        summary="Set an organization member's groups",
+        request=AssignMembershipGroupsSerializer,
         responses={
             200: OrganizationMembershipSerializer,
-            400: OpenApiResponse(description="Invalid role or would demote the last active admin"),
+            400: OpenApiResponse(
+                description=(
+                    "Unknown group name, empty group list, or the assignment would "
+                    "leave the organization with nobody who can manage members"
+                )
+            ),
             403: OpenApiResponse(description="Not an admin"),
             404: OpenApiResponse(description="Member not found or cross-org"),
         },
     )
-    @action(detail=True, methods=["post"], url_path="update-role")
-    def update_role(self, request, user_id=None):
-        """Update a member's role (member <-> admin).
+    @action(detail=True, methods=["post"], url_path="groups")
+    def assign_groups(self, request, user_id=None):
+        """Replace a member's groups, and with them the capabilities they hold.
+
+        Replaces the former ``update-role`` action. The request names *groups*
+        -- the one write where a group name is the natural input, since
+        assigning a group is the act of choosing one -- and the response
+        reports the resulting *permissions*, which is what every authorization
+        check actually reads.
 
         Guards:
-        - Cannot demote the last active admin (org lockout prevention).
 
-        Idempotency: setting the role to its current value is a no-op success.
+        - **The organization keeps at least one member who can manage
+          members.** Restated from "cannot demote the last active admin": the
+          rule counts by capability (``organizations.manage_members``) rather
+          than by the ``role`` column, so it holds for any future group that
+          carries the capability and does not depend on a representation the
+          API no longer exposes.
+        - A restricted organization may not write at all. See ``deactivate``
+          above for why the check is here rather than in
+          ``OrganizationService``.
+
+        Idempotency: assigning the groups a member already holds is a no-op
+        success, including for the sole administrator re-assigning
+        ``organization_admin`` to themselves -- the guard fires on *losing* the
+        capability, not on writing it again.
         """
         target = (
             self.get_object()
         )  # Permission checks via IsOrganizationAdmin.has_object_permission
 
-        # A restricted organization may not write, including changing a member's
-        # role. See ``deactivate`` above for why this is checked directly here
-        # rather than in ``OrganizationService``.
         self.organization_service.entitlement_service.check_not_restricted(target.organization)
 
-        serializer = UpdateMembershipRoleSerializer(data=request.data)
+        serializer = AssignMembershipGroupsSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        new_role = serializer.validated_data["role"]
+        requested_groups = serializer.validated_data["groups"]
 
-        # Guard: prevent demoting the last active admin (org lockout prevention).
-        if target.is_admin and new_role != OrganizationRole.ADMIN:
-            org_id = target.organization_id
-            other_active_admin_count = (
+        # Guard: the organization must keep somebody who can manage members.
+        #
+        # Asked in three parts, in the cheap-first order: does the assignment
+        # *remove* the capability (no query at all), did the target actually
+        # hold it (resolved the same way every permission class resolves it),
+        # and is anybody else left holding it.
+        keeps_manage_members = MANAGE_MEMBERS in permissions_for_groups(requested_groups)
+        if not keeps_manage_members and has_organization_permission(
+            target.user, MANAGE_MEMBERS, target.organization
+        ):
+            others_who_can_manage_members = (
                 OrganizationMembership.objects.filter(
-                    organization_id=org_id,
-                    role=OrganizationRole.ADMIN,
+                    organization_id=target.organization_id,
                     is_active=True,
                 )
-                # Composite PK (user, organization): exclude the target by its user_id
-                # within the already org-scoped filter.
+                # A membership is identified by ``(user, organization)``; the
+                # filter above is already organization-scoped.
                 .exclude(user_id=target.user_id)
+                .holding_permission(MANAGE_MEMBERS)
                 .count()
             )
-            if other_active_admin_count == 0:
+            if others_who_can_manage_members == 0:
                 raise ValidationError(
-                    detail="Cannot demote the last active admin of the organization."
+                    detail=(
+                        "Cannot remove the last active member who can manage members "
+                        "from the organization."
+                    )
                 )
 
-        # Update (idempotent: no-op if role unchanged)
-        target.role = new_role
-        target.save(update_fields=["role"])
-        # Dual-write, deleted in Phase 6 -- see
-        # ``organizations.services.sync_membership_groups_from_role``. This is
-        # the only live path that *changes* a role rather than setting it at
-        # creation, so it is the one place where the two representations could
-        # drift apart in opposite directions (a demoted admin keeping
-        # ``organization_admin``). Phase 5 replaces this endpoint with a
-        # group-assignment one and the call goes with it.
+        # TEMPORARY DUAL-WRITE, deleted in Phase 6 with the two columns. The
+        # write goes through ``role`` / ``is_billing_owner`` and then back out
+        # through ``sync_membership_groups_from_role`` rather than straight to
+        # ``target.groups``, for two reasons: the columns are still read
+        # outside the permission classes (``public_api.scoping``,
+        # ``calendar_integration``), so leaving them stale would authorize the
+        # member differently depending on which reader asked; and routing
+        # through the same shim every other membership write uses is what
+        # *canonicalises* the stored group set, so no request body can persist
+        # a combination the shim would later overwrite.
+        is_admin, is_billing_owner = membership_state_for_groups(requested_groups)
+        target.role = OrganizationRole.ADMIN if is_admin else OrganizationRole.MEMBER
+        target.is_billing_owner = is_billing_owner
+        target.save(update_fields=["role", "is_billing_owner"])
         sync_membership_groups_from_role(target)
 
         # Return the updated membership

@@ -71,6 +71,22 @@ class BrandingEntitlementRequiredError(PermissionDenied):
     default_code = "branding_entitlement_required"
 
 
+class OrganizationGroupNotAssignableError(Exception):
+    """Raised when a caller asks to assign a group that cannot be assigned there.
+
+    Two cases, both refusals rather than silent no-ops: a name that is not one
+    of the seeded groups at all, and ``organization_billing_owner`` on an
+    *invitation*, which has no column to carry it until the membership exists
+    (see ``organizations.permission_catalog.INVITABLE_GROUPS``).
+
+    Plain ``Exception`` (not a DRF ``ValidationError``) for the same reason as
+    ``BrandingLogoUploadRejectedError`` below: its caller is the GraphQL
+    invitation mutation, which renders it as a ``GraphQLError``. The REST
+    group-assignment endpoint does not use it -- its request serializer
+    refuses an unknown group with a field error naming the valid choices.
+    """
+
+
 class BrandingLogoUploadRejectedError(Exception):
     """Raised when a requested branding-logo upload violates the ``branding_logos``
     S3Direct destination's content-type allowlist or size limit.

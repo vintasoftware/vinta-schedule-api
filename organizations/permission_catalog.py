@@ -38,6 +38,11 @@ from django.db import transaction
 
 
 logger = logging.getLogger(__name__)
+from typing import TYPE_CHECKING
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 
 #: ``OrganizationMembership`` -- may add, remove, deactivate and re-group members.
@@ -164,3 +169,77 @@ def seed_organization_groups() -> list[Group]:
             groups.append(group)
 
     return groups
+def membership_state_for_groups(group_names: Iterable[str]) -> tuple[bool, bool]:
+    """The ``(is_admin, is_billing_owner)`` a membership in ``group_names`` has.
+
+    The inverse of :func:`groups_for_membership_state`, and the write half of
+    ``POST /organization-members/{user_id}/groups/``: the API accepts group
+    names, the two columns are still live until Phase 6 drops them, and they
+    must not disagree. Round-tripping a result back through
+    ``groups_for_membership_state`` is what canonicalises the stored group set
+    -- so ``["organization_admin", "organization_member"]`` stores the admin
+    group alone, exactly as a promotion through the old ``role`` column did.
+
+    Any name that is not one of the two capability groups (including
+    ``organization_member``, which carries no permission) contributes nothing;
+    validating that the caller named a *known* group is the request
+    serializer's job, not this function's.
+    """
+    names = set(group_names)
+    return (GROUP_ORGANIZATION_ADMIN in names, GROUP_ORGANIZATION_BILLING_OWNER in names)
+
+
+#: The groups an *invitation* may carry. Narrower than the full set on purpose:
+#: an invitation persists its future membership's state in a single ``role``
+#: column with no billing-owner half, so ``organization_billing_owner`` has
+#: nowhere to live until the invitation is accepted. Refused explicitly rather
+#: than silently dropped -- a caller who asked for it would otherwise believe
+#: they had granted it.
+INVITABLE_GROUPS: tuple[str, ...] = (GROUP_ORGANIZATION_MEMBER, GROUP_ORGANIZATION_ADMIN)
+
+
+def role_for_invitation_groups(group_names: Iterable[str]) -> str:
+    """The ``OrganizationRole`` value an invitation naming ``group_names`` stores.
+
+    The public GraphQL invitation input accepts group names; the invitation row
+    still records a ``role`` until Phase 6 of the vinta-django-orgs migration
+    drops the column, and the membership created on acceptance is put in the
+    matching groups by ``organizations.services``. This is the one translation
+    between the two, kept here beside the mapping it inverts rather than inline
+    in the mutation.
+
+    :raises OrganizationGroupNotAssignableError: for a name that is not a
+        seeded group, and for ``organization_billing_owner`` (see
+        ``INVITABLE_GROUPS``). Both are refusals, not silent no-ops.
+    """
+    # Imported here rather than at module scope: ``organizations.exceptions``
+    # imports from ``rest_framework``, and this module is imported by data
+    # migrations' test helpers and by ``public_api`` types that have no reason
+    # to pull DRF in.
+    from organizations.exceptions import OrganizationGroupNotAssignableError
+    from organizations.models import OrganizationRole
+
+    names = list(group_names)
+    unusable = [name for name in names if name not in INVITABLE_GROUPS]
+    if unusable:
+        raise OrganizationGroupNotAssignableError(
+            f"Cannot assign {', '.join(sorted(unusable))} to an invitation. "
+            f"Allowed groups: {', '.join(INVITABLE_GROUPS)}."
+        )
+    if GROUP_ORGANIZATION_ADMIN in names:
+        return OrganizationRole.ADMIN
+    return OrganizationRole.MEMBER
+
+
+def permissions_for_groups(group_names: Iterable[str]) -> frozenset[str]:
+    """Every ``"app_label.codename"`` the named seeded groups carry between them.
+
+    Answers "would a membership in these groups hold this capability" without a
+    query -- which is what the last-admin guard needs *before* it writes, to
+    decide whether the assignment about to happen removes
+    ``organizations.manage_members`` from its target. Unknown names contribute
+    nothing.
+    """
+    return frozenset(
+        permission for name in group_names for permission in GROUP_PERMISSIONS.get(name, ())
+    )
