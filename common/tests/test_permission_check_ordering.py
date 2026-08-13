@@ -136,6 +136,34 @@ def admin_here_member_there(
     return user
 
 
+@pytest.fixture
+def member_here_admin_there(
+    user: Any, older_organization: Organization, newer_organization: Organization
+) -> Any:
+    """The mirror of ``admin_here_member_there``: plain member of the
+    organization created first, admin of the second.
+
+    This is the one direction in which the reorder turns a previously-refused
+    request into a served one. The old fallback (``order_by("created")``, the
+    membership created first) answers ``older_organization`` -- a plain
+    membership -- so the old ordering's gate refused a request naming
+    ``newer_organization``, even though the caller administers it.
+    """
+    OrganizationMembership.objects.create(
+        user=user,
+        organization=older_organization,
+        role=OrganizationRole.MEMBER,
+        is_active=True,
+    )
+    OrganizationMembership.objects.create(
+        user=user,
+        organization=newer_organization,
+        role=OrganizationRole.ADMIN,
+        is_active=True,
+    )
+    return user
+
+
 @pytest.mark.django_db
 class TestTheAdminGateFollowsTheHeader:
     def test_a_request_naming_the_organization_they_only_belong_to_is_refused(
@@ -185,6 +213,24 @@ class TestTheAdminGateFollowsTheHeader:
         assert response.status_code == status.HTTP_200_OK
         assert AdminGatedProbeView.organization_seen_by_the_body == newer_organization.pk
 
+    def test_a_plain_member_of_their_oldest_organization_who_administers_the_named_one_is_admitted(
+        self, member_here_admin_there: Any, newer_organization: Organization
+    ) -> None:
+        """The admit direction, and the only one of the two Phase 3.5 flips a
+        served request the old ordering refused. The caller is a plain member
+        of the organization the old fallback would have answered
+        (``older_organization``) and admin of the organization the header
+        names (``newer_organization``). The old ordering read the fallback --
+        a non-admin membership -- and returned 403; the reorder reads the
+        resolved membership and returns 200.
+        """
+        response = _dispatch(
+            AdminGatedProbeView, member_here_admin_there, str(newer_organization.pk)
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert AdminGatedProbeView.organization_seen_by_the_body == newer_organization.pk
+
 
 @pytest.mark.django_db
 class TestRestoringTheOldOrderingReopensIt:
@@ -207,3 +253,18 @@ class TestRestoringTheOldOrderingReopensIt:
         # And the body it admitted acted on the organization the caller is only
         # a plain member of -- the gate said yes about the *other* one.
         assert OldOrderingAdminGatedProbeView.organization_seen_by_the_body == newer_organization.pk
+
+    def test_the_pre_phase_3_5_ordering_refuses_the_admit_direction_too(
+        self, member_here_admin_there: Any, newer_organization: Organization
+    ) -> None:
+        """The admit-direction mirror. If this did not refuse the request
+        ``test_a_plain_member_of_their_oldest_organization_who_administers_the_named_one_is_admitted``
+        admits, that admission would be coming from somewhere other than the
+        reorder.
+        """
+        response = _dispatch(
+            OldOrderingAdminGatedProbeView, member_here_admin_there, str(newer_organization.pk)
+        )
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+        assert OldOrderingAdminGatedProbeView.organization_seen_by_the_body is None

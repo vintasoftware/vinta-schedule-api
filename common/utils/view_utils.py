@@ -256,13 +256,15 @@ class TenantScopedViewMixin:
     def _resolve_active_organization(self, request: Request) -> None:  # noqa: C901
         """Resolve ``X-Organization-Id`` → membership and stash on ``request`` + user.
 
-        This method is extracted from ``initial()`` so tests can call it in isolation
-        and so subclasses can override or extend it without touching ``initial()``.
+        This method is extracted from ``perform_authentication()`` so tests can
+        call it in isolation and so subclasses can override or extend it
+        without touching ``perform_authentication()``.
 
         It touches nothing but the request and its user -- in particular it does
         **not** bind the organization to the context. Binding is
-        ``initial()``'s (and ``CreateModelMixin.create``'s) job, because only a
-        caller inside ``dispatch`` has the ``finally`` that releases it again.
+        ``perform_authentication()``'s (and ``CreateModelMixin.create``'s) job,
+        because only a caller inside ``dispatch`` has the ``finally`` that
+        releases it again.
         """
         # Lazily import to avoid a circular import (organizations → common → organizations).
         from organizations.models import OrganizationMembership  # noqa: PLC0415
@@ -568,12 +570,14 @@ class CreateModelMixin(RefetchReturnInstanceAfterWriteMixin, mixins.CreateModelM
 
         # A service may have created the user's first membership during perform_create
         # (e.g. OrganizationService.create_organization), making the stash set in
-        # TenantScopedViewMixin.initial() stale. Re-resolve so the post-create re-fetch
-        # honors the X-Organization-Id header (and any newly-created membership) instead
-        # of silently dropping to the header-blind single-membership fallback.
+        # TenantScopedViewMixin.perform_authentication() stale. Re-resolve so the
+        # post-create re-fetch honors the X-Organization-Id header (and any
+        # newly-created membership) instead of silently dropping to the
+        # header-blind single-membership fallback.
         # Re-bind too: the re-fetch below reads through organization-scoped default
-        # managers, and leaving the context on the organization ``initial()`` resolved
-        # would scope it to a different one than the stash the same lines consult.
+        # managers, and leaving the context on the organization
+        # ``perform_authentication()`` resolved would scope it to a different one
+        # than the stash the same lines consult.
         # ``_bind_active_organization`` releases the first binding before taking the
         # second, so ``dispatch``'s ``finally`` still restores the pre-request value.
         if hasattr(self, "_resolve_active_organization"):

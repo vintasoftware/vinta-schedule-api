@@ -111,8 +111,8 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
     #:
     #: The ``create`` action is also exempt so that a member with existing
     #: memberships can POST /organizations/ without a header. Without
-    #: this exemption, the multi-org 400 would fire in ``initial()`` before
-    #: ``perform_create`` runs, and the post-create re-resolve in
+    #: this exemption, the multi-org 400 would fire in ``perform_authentication()``
+    #: before ``perform_create`` runs, and the post-create re-resolve in
     #: ``CreateModelMixin.create`` would again raise 400 (the user now has one
     #: more membership than before the write).
     #:

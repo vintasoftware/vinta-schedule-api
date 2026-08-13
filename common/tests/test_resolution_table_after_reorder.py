@@ -29,6 +29,8 @@ from django.contrib.auth import get_user_model
 
 import pytest
 from rest_framework import status
+from rest_framework.authentication import BaseAuthentication
+from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.test import APIRequestFactory, force_authenticate
@@ -36,7 +38,8 @@ from rest_framework.views import APIView
 from rest_framework.viewsets import ViewSet
 
 from common.utils.view_utils import TenantScopedViewMixin
-from organizations.models import Organization, OrganizationMembership
+from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.permissions import IsOrganizationAdmin
 
 
 User = get_user_model()
@@ -80,6 +83,17 @@ class PerActionProbeViewSet(_RecordingMixin, TenantScopedViewMixin, ViewSet):
         return Response({"ok": True})
 
 
+class AdminGatedResolutionProbeView(_RecordingMixin, TenantScopedViewMixin, APIView):
+    """``IsOrganizationAdmin`` instead of the project default -- the shape of
+    every mixin endpoint the 403-to-400 flip in Finding 3 is about."""
+
+    permission_classes = (IsOrganizationAdmin,)
+
+    def get(self, request: Any, *args: Any, **kwargs: Any) -> Response:
+        self._record(request)
+        return Response({"ok": True})
+
+
 class OpenProbeView(AuthenticatedProbeView):
     """Reachable without credentials -- the control for the 401 tests below.
 
@@ -90,6 +104,34 @@ class OpenProbeView(AuthenticatedProbeView):
 
     authentication_classes = ()  # type: ignore[assignment]
     permission_classes = (AllowAny,)
+
+
+class _AlwaysFailsAuthentication(BaseAuthentication):
+    """A bad credential, not merely an absent one -- raises before
+    ``request.user`` is ever set.
+
+    Implements ``authenticate_header`` (as ``JWTAuthentication``, the project's
+    real authentication class, does) so DRF answers **401** for the raised
+    exception rather than **403**: ``APIView.handle_exception`` downgrades
+    ``AuthenticationFailed`` to a 403 when no authentication class on the view
+    offers a challenge header, which would otherwise make this test assert the
+    wrong status for the wrong reason.
+    """
+
+    def authenticate(self, request: Any) -> Any:
+        raise AuthenticationFailed("bad credentials")
+
+    def authenticate_header(self, request: Any) -> str:
+        return "Bearer"
+
+
+class BadCredentialProbeView(AuthenticatedProbeView):
+    """Same mixin, same resolver -- but every request fails authentication
+    with a raised exception rather than resolving to ``AnonymousUser``. The
+    control for ``super().perform_authentication`` raising out of the mixin's
+    override before the resolver's second line ever runs."""
+
+    authentication_classes = (_AlwaysFailsAuthentication,)
 
 
 def _dispatch(view_class: Any, user: Any = None, header: str | None = None, **initkwargs: Any):
@@ -139,6 +181,17 @@ class TestZeroActiveMemberships:
         response = _dispatch(AuthenticatedProbeView, user)
 
         assert response.status_code == status.HTTP_200_OK
+        assert AuthenticatedProbeView.resolved is None
+
+    def test_a_non_integer_header_is_treated_as_absent_too(self, user: Any) -> None:
+        """The ``any | present, non-integer`` row, at the ``0`` membership
+        count -- the table's note says a non-integer header falls through to
+        the absent-header rule for every membership count, and 0 is the one
+        the other two ``TestXActiveMembership*`` classes don't reach."""
+        response = _dispatch(AuthenticatedProbeView, user, header="not-an-integer")
+
+        assert response.status_code == status.HTTP_200_OK
+        assert AuthenticatedProbeView.ran is True
         assert AuthenticatedProbeView.resolved is None
 
 
@@ -237,6 +290,32 @@ class TestTwoOrMoreActiveMemberships:
 
 
 @pytest.mark.django_db
+class TestTheResolverPrecedesEvenADenyingPermissionClass:
+    """The other live consequence of the reorder, on every mixin endpoint whose
+    permission class is not ``IsAuthenticated``: the ``2+ / absent`` row now
+    raises *before* ``IsOrganizationAdmin.has_permission`` gets a chance to run
+    -- so a non-admin, multi-organization caller who omits the header is
+    answered the resolver's ambiguity 400, not the permission class's 403.
+    Pre-3.5, ``check_permissions`` ran first and this exact request was a 403.
+    """
+
+    def test_a_non_admin_multi_organization_caller_with_no_header_is_400_not_403(
+        self, user: Any, org_a: Organization, org_b: Organization
+    ) -> None:
+        OrganizationMembership.objects.create(
+            user=user, organization=org_a, role=OrganizationRole.MEMBER, is_active=True
+        )
+        OrganizationMembership.objects.create(
+            user=user, organization=org_b, role=OrganizationRole.MEMBER, is_active=True
+        )
+
+        response = _dispatch(AdminGatedResolutionProbeView, user)
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert AdminGatedResolutionProbeView.ran is False
+
+
+@pytest.mark.django_db
 class TestTheOptOuts:
     def test_the_class_level_opt_out_suppresses_the_400(
         self, user: Any, org_a: Organization, org_b: Organization
@@ -258,6 +337,34 @@ class TestTheOptOuts:
 
         assert response.status_code == status.HTTP_200_OK
         assert OptOutProbeView.resolved is None
+
+    def test_the_class_level_opt_out_with_zero_memberships_is_still_gated(
+        self, user: Any, org_a: Organization
+    ) -> None:
+        """The opt-out with no memberships at all. Without it this exact
+        request is the 403 row (``TestZeroActiveMemberships
+        .test_a_header_naming_any_organization_is_403``); the opt-out
+        suppresses that too, resolving to gated rather than refusing."""
+        response = _dispatch(OptOutProbeView, user, header=str(org_a.pk))
+
+        assert response.status_code == status.HTTP_200_OK
+        assert OptOutProbeView.ran is True
+        assert OptOutProbeView.resolved is None
+
+    def test_the_class_level_opt_out_still_resolves_a_matching_header(
+        self, user: Any, org_a: Organization, org_b: Organization
+    ) -> None:
+        """The opt-out only suppresses the 400/403 rows -- it does not gate a
+        request that would have resolved cleanly anyway. A 2+ membership
+        caller whose header names an org they actually belong to still
+        resolves to it, not to ``None``."""
+        _membership(user, org_a)
+        _membership(user, org_b)
+
+        response = _dispatch(OptOutProbeView, user, header=str(org_b.pk))
+
+        assert response.status_code == status.HTTP_200_OK
+        assert OptOutProbeView.resolved == org_b.pk
 
     def test_the_per_action_opt_out_applies_to_the_listed_action_only(
         self, user: Any, org_a: Organization, org_b: Organization
@@ -282,6 +389,23 @@ class TestTheOptOuts:
         )
 
         assert response.status_code == status.HTTP_200_OK
+        assert PerActionProbeViewSet.resolved is None
+
+    def test_the_per_action_opt_out_also_suppresses_the_400_for_a_non_integer_header(
+        self, user: Any, org_a: Organization, org_b: Organization
+    ) -> None:
+        """A non-integer header falls through to the absent-header rule (see
+        ``TestTwoOrMoreActiveMemberships.test_a_non_integer_header_is_400_too``),
+        so the opted-out action must suppress that 400 exactly as it suppresses
+        the literal absent-header one."""
+        _membership(user, org_a)
+        _membership(user, org_b)
+
+        lenient = _dispatch(
+            PerActionProbeViewSet, user, header="not-an-integer", actions={"get": "lenient"}
+        )
+
+        assert lenient.status_code == status.HTTP_200_OK
         assert PerActionProbeViewSet.resolved is None
 
 
@@ -328,6 +452,23 @@ class TestUnauthenticatedIsAnsweredFirst:
 
         assert forbidden.status_code == status.HTTP_403_FORBIDDEN
         assert ambiguous.status_code == status.HTTP_400_BAD_REQUEST
+
+    def test_a_bad_credential_is_401_before_the_resolver_ever_runs(
+        self, user: Any, org_a: Organization, org_b: Organization
+    ) -> None:
+        """The other branch off ``super().perform_authentication``: a *raised*
+        ``AuthenticationFailed`` (a bad credential, not merely a missing one)
+        must also reach the caller as 401 before the resolver's ambiguous-header
+        400 gets a chance to run. ``user`` has the two active memberships that
+        make the 400 row live -- proof that they were never consulted, not that
+        there was nothing to be ambiguous about.
+        """
+        _membership(user, org_a)
+        _membership(user, org_b)
+
+        response = _dispatch(BadCredentialProbeView, user=None)
+
+        assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
     def test_the_resolver_itself_does_nothing_for_an_anonymous_request(
         self, db: Any, org_a: Organization

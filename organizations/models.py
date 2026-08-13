@@ -41,10 +41,13 @@ def get_active_organization_membership(
         if not membership:
             return <empty queryset / clean denial>
 
-    On the DRF request path, ``TenantScopedViewMixin.initial()``
-    resolves the active membership from the ``X-Organization-Id`` header and
-    stashes it on ``user._active_membership``. This helper reads the stash so
-    the ~60 existing call sites are automatically header-aware without change.
+    On the DRF request path, ``TenantScopedViewMixin.perform_authentication()``
+    resolves the active membership from the ``X-Organization-Id`` header --
+    between authentication and ``check_permissions`` -- and stashes it on
+    ``user._active_membership``, so a permission class asked at
+    ``has_permission`` time reads the resolved membership, not the oldest one.
+    This helper reads the stash so the ~60 existing call sites are
+    automatically header-aware without change.
 
     Off the DRF request path (management commands, Celery tasks, tests that
     bypass views), ``_active_membership`` is absent and the helper falls back
