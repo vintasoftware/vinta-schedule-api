@@ -49,6 +49,7 @@ from common.fields import OrganizationMembershipForeignKey
 from common.managers import OrganizationScopedManager
 from common.models import BaseModel, SafeRelationNullInitMixin
 from organizations.models import Organization, OrganizationMembership
+from organizations.tests.helpers import grant_membership_groups
 
 
 User = get_user_model()
@@ -323,8 +324,10 @@ class TestOrganizationMembershipForeignKeyBehavior:
 
         user = User.objects.create_user(email="role@example.com", password="pw")  # type: ignore[attr-defined]
         org = Organization.objects.create(name="Test Org Role")
-        OrganizationMembership.objects.create(
-            user=user, organization=org, role=OrganizationRole.ADMIN
+        grant_membership_groups(
+            OrganizationMembership.objects.create(
+                user=user, organization=org, role=OrganizationRole.ADMIN
+            )
         )
 
         host = probe_host_table.objects.create(

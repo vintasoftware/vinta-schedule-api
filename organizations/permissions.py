@@ -7,17 +7,17 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import BasePermission
 from vinta_orgs.mixins import SingleOrganizationModelMixin
 
+from organizations.authorization import has_organization_permission
 from organizations.exceptions import (
     BrandingEntitlementRequiredError,
     OrganizationHasParentBrandingError,
-    OrganizationSlugRequiredForBrandingError,
 )
 from organizations.models import (
     Organization,
     OrganizationInvitation,
     OrganizationMembership,
-    OrganizationRole,
 )
+from organizations.permission_catalog import MANAGE_BILLING, MANAGE_BRANDING, MANAGE_MEMBERS
 from payments.billing_constants import Entitlement
 from payments.entitlement_cache import has_entitlement_cached
 from payments.services.entitlement_service import EntitlementService
@@ -140,22 +140,21 @@ class BrandingWriteGateReason(enum.Enum):
       as fixable by the organization itself.
     - ``NOT_ENTITLED`` -- a billing state. The organization's plan does not
       include white-label branding; fixable by upgrading.
-    - ``NO_SLUG`` -- **retired, and unreachable.** It used to mean "otherwise
-      eligible but has not picked a public slug yet". ``Organization.slug`` is
-      now NOT NULL, refused when blank by the ``organization_slug_not_blank``
-      check constraint, and filled in by ``Organization.save()`` when a caller
-      leaves it out -- so no organization that exists can be missing one, and
-      the rule it expressed is gone as a product rule, not merely as code. Kept
-      dead-with-reason rather than deleted here because it is still part of this
-      enum's published contract (``BRANDING_GATE_EXCEPTIONS`` still maps it, and
-      ``check_branding_read_eligibility`` still admits it); Phase 4 of the
-      vinta-django-orgs migration plan deletes all three together.
+
+    There were three failure reasons until Phase 4 of the vinta-django-orgs
+    migration. ``NO_SLUG`` -- "otherwise eligible but has not picked a public
+    slug yet" -- was retired as a product rule in Phase 1, when ``slug`` became
+    NOT NULL with a ``save()``-time fallback and the ``organization_slug_not_blank``
+    check constraint made it unreachable for any organization that can exist;
+    it was kept dead-with-reason for one phase because it was still part of this
+    enum's published contract, and deleted here along with its
+    ``BRANDING_GATE_EXCEPTIONS`` entry and
+    ``OrganizationSlugRequiredForBrandingError``.
     """
 
     OK = "ok"
     HAS_PARENT = "has_parent"
     NOT_ENTITLED = "not_entitled"
-    NO_SLUG = "no_slug"
 
 
 def evaluate_branding_write_gate(organization: Organization | None) -> BrandingWriteGateReason:
@@ -173,35 +172,27 @@ def evaluate_branding_write_gate(organization: Organization | None) -> BrandingW
     Checked in this order -- parent, then entitlement -- so the permanent case
     is never masked by a fixable one.
 
-    **The third condition, "and has picked a public slug", is retired** (Phase 1
-    of the vinta-django-orgs migration; see that plan's "Slug precondition for
-    branding writes is retired" Guiding Decision). ``Organization.slug`` became
-    NOT NULL with a ``save()``-time fallback and an
-    ``organization_slug_not_blank`` check constraint, so no persisted
-    organization can fail it and no write surface -- supported or not, including
-    a raw ``queryset.update(slug="")`` -- can manufacture one that does. The
-    branch below is kept, unreachable and stated as such, only because
-    ``BrandingWriteGateReason.NO_SLUG`` is still part of this module's published
-    contract; Phase 4 removes the branch, the enum member, its
+    **A third condition, "and has picked a public slug", was retired** in
+    Phase 1 of the vinta-django-orgs migration (see that plan's "Slug
+    precondition for branding writes is retired" Guiding Decision) and its
+    last remnants -- the branch, ``BrandingWriteGateReason.NO_SLUG``, its
     ``BRANDING_GATE_EXCEPTIONS`` entry and
-    ``OrganizationSlugRequiredForBrandingError`` together.
+    ``OrganizationSlugRequiredForBrandingError`` -- deleted in Phase 4.
+    ``Organization.slug`` is NOT NULL with a ``save()``-time fallback and an
+    ``organization_slug_not_blank`` check constraint, so no organization that
+    exists can fail it and no write surface -- supported or not, including a raw
+    ``queryset.update(slug="")`` -- can manufacture one that does.
     """
     if organization is None or organization.parent_id is not None:
         return BrandingWriteGateReason.HAS_PARENT
     if not _organization_holds_white_label_branding(organization):
         return BrandingWriteGateReason.NOT_ENTITLED
-    if not organization.slug:
-        # Unreachable for any persisted organization -- see the docstring. An
-        # unsaved, in-memory ``Organization()`` is the only value that still
-        # reaches it, which is what the remaining unit coverage exercises.
-        return BrandingWriteGateReason.NO_SLUG
     return BrandingWriteGateReason.OK
 
 
 BRANDING_GATE_EXCEPTIONS: dict[BrandingWriteGateReason, type[PermissionDenied]] = {
     BrandingWriteGateReason.HAS_PARENT: OrganizationHasParentBrandingError,
     BrandingWriteGateReason.NOT_ENTITLED: BrandingEntitlementRequiredError,
-    BrandingWriteGateReason.NO_SLUG: OrganizationSlugRequiredForBrandingError,
 }
 
 
@@ -210,22 +201,23 @@ def check_branding_read_eligibility(organization: Organization | None) -> None:
     shared by every branding read-adjacent surface: ``OrganizationBrandingView.get``
     and ``OrganizationBrandingLogoUploadParamsView.post`` (``organizations/views.py``).
 
-    Derives its reason from ``evaluate_branding_write_gate`` and additionally
-    admits ``NO_SLUG``. That allowance is now **vacuous**: the write gate can no
-    longer return ``NO_SLUG`` for any persisted organization (see its
-    docstring), so the two gates admit exactly the same set. It is kept until
-    Phase 4 retires the enum member, at which point this reduces to "raise on
-    anything but ``OK``".
+    Derives its reason from ``evaluate_branding_write_gate``: anything but
+    ``OK`` raises. It used to additionally admit ``NO_SLUG``, which kept a
+    read-side surface open to an organization the write gate refused; that
+    reason is gone (see the write gate), so the two now admit exactly the same
+    set. The split is kept because the two answer different questions and a
+    future condition may again apply to only one of them.
     """
     reason = evaluate_branding_write_gate(organization)
-    if reason in (BrandingWriteGateReason.OK, BrandingWriteGateReason.NO_SLUG):
+    if reason is BrandingWriteGateReason.OK:
         return
     raise BRANDING_GATE_EXCEPTIONS[reason]()
 
 
 def user_administers_branding_eligible_organization(user: "User | None") -> bool:
-    """True iff ``user`` holds an active ADMIN membership in at least one
-    branding-eligible organization (see ``is_branding_eligible_organization``).
+    """True iff ``user`` holds an active membership carrying
+    ``organizations.manage_branding`` in at least one branding-eligible
+    organization (see ``is_branding_eligible_organization``).
 
     User-granularity rather than organization-granularity, deliberately: this is
     the ``auth`` callable for the ``branding_logos`` S3Direct destination
@@ -244,15 +236,25 @@ def user_administers_branding_eligible_organization(user: "User | None") -> bool
     ``is_branding_eligible_organization`` directly against the acting
     organization, which it always knows, so it gets the tighter, org-specific
     check instead of this coarser one.
+
+    The role half became ``organizations.manage_branding`` in Phase 4 of the
+    vinta-django-orgs migration; the entitlement half
+    (``is_branding_eligible_organization``) is untouched. The permission is
+    asked per membership, naming that membership's organization -- there is no
+    bound organization on the s3direct signing path at all, so a check that
+    relied on the ambient binding would refuse every caller.
     """
     if user is None or not getattr(user, "is_authenticated", False):
         return False
-    admin_memberships = OrganizationMembership.objects.active_for_user(user).filter(
-        role=OrganizationRole.ADMIN
-    )
+    # ``active_for_user`` already ``select_related``s the organization.
+    memberships = OrganizationMembership.objects.active_for_user(user)
     return any(
-        is_branding_eligible_organization(membership.organization)
-        for membership in admin_memberships
+        # Permission first: it is the cheaper half (one query per organization,
+        # cached on the user by organization pk) and it short-circuits the
+        # entitlement lookup for organizations the caller cannot brand anyway.
+        has_organization_permission(user, MANAGE_BRANDING, membership.organization)
+        and is_branding_eligible_organization(membership.organization)
+        for membership in memberships
     )
 
 
@@ -329,13 +331,20 @@ class IsOrganizationAdmin(BasePermission):
     """
     Permission for admin-only endpoints within an organization.
 
-    - `has_permission`: requires an authenticated user with an active ADMIN organization
-      membership. This gate enforces the admin role at the collection level (list, create).
+    - `has_permission`: requires an authenticated user with an active organization
+      membership carrying `organizations.manage_members`. This gate enforces the admin
+      capability at the collection level (list, create).
     - `has_object_permission`: additionally enforces that the object's organization matches
       the membership organization and delegates the "is this user an admin of this object's org"
       decision to `User.is_organization_admin(organization_id)` so the rule has a single
       implementation. Handles both Organization instances and organization-scoped
       (`SingleOrganizationModelMixin`) subclasses.
+
+    Phase 4 of the vinta-django-orgs migration replaced `membership.is_admin` with
+    the permission. The active-membership check in front of it is **not** redundant
+    and must stay: it is what keeps a global grant of `organizations.manage_members`
+    (a Django-admin-assigned user permission, which `has_perm` unions in) from
+    admitting a caller who belongs to no organization at all.
     """
 
     def has_permission(self, request, view) -> bool:
@@ -343,7 +352,9 @@ class IsOrganizationAdmin(BasePermission):
         if not user or not user.is_authenticated:
             return False
         membership = request.organization_membership
-        return membership is not None and membership.is_admin
+        return membership is not None and has_organization_permission(
+            user, MANAGE_MEMBERS, membership.organization
+        )
 
     def has_object_permission(self, request, view, obj) -> bool:
         membership = request.organization_membership
@@ -364,11 +375,11 @@ class IsOrganizationAdmin(BasePermission):
             else:
                 return False
 
-        # Membership org must match object org; user must be an admin
+        # Membership org must match object org; user must hold the admin permission.
         if membership.organization_id != obj_organization_id:
             return False
 
-        return request.user.is_organization_admin(membership.organization_id)
+        return has_organization_permission(request.user, MANAGE_MEMBERS, membership.organization)
 
 
 class IsBillingOwnerOrAdmin(BasePermission):
@@ -394,17 +405,16 @@ class IsBillingOwnerOrAdmin(BasePermission):
     ``request.organization_membership`` are now both correct
     inside ``has_permission``.)
 
-    - ``has_permission``: coarse gate -- an active membership that is ``ADMIN``
-      **or** has ``is_billing_owner=True``, in *some* organization. Does not by
-      itself decide *which* organization; that is ``has_object_permission``'s job.
+    - ``has_permission``: coarse gate -- an active membership carrying
+      ``payments.manage_billing`` in *some* organization. Does not by itself
+      decide *which* organization; that is ``has_object_permission``'s job.
     - ``has_object_permission``: the real gate, against ``obj`` (an
       ``Organization`` -- the resolved billing root). Grants access when either:
 
-      1. The caller's active membership is in ``obj`` itself and is
-         ``ADMIN``-or-billing-owner — the two roles the plan names as allowed to
-         manage billing.
-      2. An **acting reseller root**: the caller's active membership is
-         ``ADMIN``-or-billing-owner in some *other* organization that both (a)
+      1. The caller's active membership is in ``obj`` itself and carries
+         ``payments.manage_billing``.
+      2. An **acting reseller root**: the caller's active membership carries
+         ``payments.manage_billing`` in some *other* organization that both (a)
          can invite/create organizations (``can_invite_organizations``) and (b)
          has ``obj`` within its subtree — the same subtree relationship
          ``resolve_billing_root`` pools usage against, so a root that pays for a
@@ -417,6 +427,18 @@ class IsBillingOwnerOrAdmin(BasePermission):
          re-deriving it a second time or coupling this REST layer to a GraphQL
          error type.
 
+    Phase 4 of the vinta-django-orgs migration replaced
+    ``membership.is_admin or membership.is_billing_owner`` with
+    ``payments.manage_billing`` (the ``organization_admin`` and
+    ``organization_billing_owner`` groups both carry it, which is what makes the
+    two spellings the same set). **Branch 2 keeps its bespoke walk**, per the
+    plan's "Four rules stay hand-written" Guiding Decision: the auth backend
+    resolves permissions for the *bound* organization only, and the grant this
+    branch looks for is held in an ancestor of it. The permission is therefore
+    asked with that ancestor named explicitly (see
+    ``organizations.authorization.has_organization_permission``); nothing else
+    about the branch changed.
+
     Read-only billing endpoints (usage, plan catalog, subscription detail) are
     intentionally **not** gated by this class — they stay open to any
     authenticated member, mirroring ``BillingProfileViewSet``'s reads-open,
@@ -428,9 +450,12 @@ class IsBillingOwnerOrAdmin(BasePermission):
         if not user or not user.is_authenticated:
             return False
         membership = request.organization_membership
-        return membership is not None and (membership.is_admin or membership.is_billing_owner)
+        return membership is not None and has_organization_permission(
+            user, MANAGE_BILLING, membership.organization
+        )
 
     def has_object_permission(self, request, view, obj) -> bool:
+        user: User = request.user
         membership = request.organization_membership
         if membership is None:
             return False
@@ -438,12 +463,12 @@ class IsBillingOwnerOrAdmin(BasePermission):
         if target_organization is None:
             return False
 
-        if membership.organization_id == target_organization.id and (
-            membership.is_admin or membership.is_billing_owner
+        if membership.organization_id == target_organization.id and has_organization_permission(
+            user, MANAGE_BILLING, target_organization
         ):
             return True
 
-        return self._acting_reseller_root_permits(membership, target_organization)
+        return self._acting_reseller_root_permits(user, membership, target_organization)
 
     def _resolve_target_organization(self, obj) -> Organization | None:
         """``obj`` is either the ``Organization`` (billing root) directly, or a
@@ -460,9 +485,22 @@ class IsBillingOwnerOrAdmin(BasePermission):
         return getattr(subscription, "organization", None)
 
     def _acting_reseller_root_permits(
-        self, membership: OrganizationMembership, target_organization: Organization
+        self,
+        user: "User",
+        membership: OrganizationMembership,
+        target_organization: Organization,
     ) -> bool:
-        if not (membership.is_admin or membership.is_billing_owner):
+        """The hand-written half of this class -- see the class docstring.
+
+        ``membership.organization`` is named explicitly in the permission check
+        because it is precisely *not* the organization bound to the request:
+        this branch exists for the case where the caller acts from an ancestor
+        over a descendant, and the auth backend, keyed on the bound
+        organization, structurally cannot see a grant held in an ancestor. A
+        bare ``user.has_perm(...)`` here would silently ask about the wrong
+        organization.
+        """
+        if not has_organization_permission(user, MANAGE_BILLING, membership.organization):
             return False
         if not membership.organization.can_invite_organizations:
             return False

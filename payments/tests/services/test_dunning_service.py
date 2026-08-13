@@ -31,6 +31,7 @@ from vintasend.constants import NotificationTypes
 
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
 from organizations.services import sync_membership_groups_from_role
+from organizations.tests.helpers import make_membership
 from payments.billing_constants import BillingState, LimitedResource, LimitKind
 from payments.constants import PaymentProviders
 from payments.exceptions import (
@@ -161,8 +162,7 @@ def _add_admin_membership(organization: Organization) -> OrganizationMembership:
     ``sync_membership_groups_from_role`` is what every live write path calls to
     keep the groups in step with ``role``; ``baker.make`` bypasses it, so this
     calls it by hand. Phase 6 deletes the shim and this call with it."""
-    membership = baker.make(
-        OrganizationMembership,
+    membership = make_membership(
         organization=organization,
         user=baker.make(User),
         role=OrganizationRole.ADMIN,

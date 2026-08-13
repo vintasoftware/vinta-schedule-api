@@ -21,6 +21,7 @@ from rest_framework.test import APIClient
 
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
 from organizations.services import OrganizationService
+from organizations.tests.helpers import make_membership
 from payments.billing_constants import BillingInterval, BillingState, LimitedResource, LimitKind
 from payments.constants import PaymentProviders
 from payments.exceptions import OverLimitError
@@ -122,8 +123,7 @@ def billing_profile(organization):
 
 @pytest.fixture
 def admin_membership(user, organization):
-    return baker.make(
-        OrganizationMembership,
+    return make_membership(
         user=user,
         organization=organization,
         role=OrganizationRole.ADMIN,
@@ -133,8 +133,7 @@ def admin_membership(user, organization):
 
 @pytest.fixture
 def billing_owner_membership(user, organization):
-    return baker.make(
-        OrganizationMembership,
+    return make_membership(
         user=user,
         organization=organization,
         role=OrganizationRole.MEMBER,
@@ -453,8 +452,7 @@ class TestPermissions:
         root_plan = make_complete_plan({LimitedResource.ORGANIZATION_MEMBERS: 1})
         SubscriptionService().create_subscription_for_organization(reseller_root, plan=root_plan)
         # The caller is an ADMIN of the child only -- the coarse check passes.
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=child,
             role=OrganizationRole.ADMIN,
@@ -483,8 +481,7 @@ class TestPermissions:
         child = baker.make(Organization, parent=reseller_root, can_invite_organizations=False)
         root_plan = make_complete_plan({LimitedResource.RESOURCE_CALENDARS: 3})
         SubscriptionService().create_subscription_for_organization(reseller_root, plan=root_plan)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=child,
             role=OrganizationRole.ADMIN,

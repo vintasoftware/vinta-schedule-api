@@ -18,6 +18,7 @@ from organizations.models import (
     OrganizationMembership,
     OrganizationRole,
 )
+from organizations.tests.helpers import make_membership
 from payments.billing_constants import BillingState, Entitlement
 from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
 
@@ -117,8 +118,7 @@ def parented_org(eligible_org):
 @pytest.fixture
 def reseller_org_admin(user, reseller_org):
     """Create an admin membership for the user in the reseller org."""
-    return baker.make(
-        OrganizationMembership,
+    return make_membership(
         user=user,
         organization=reseller_org,
         role=OrganizationRole.ADMIN,
@@ -129,8 +129,7 @@ def reseller_org_admin(user, reseller_org):
 @pytest.fixture
 def eligible_org_admin(user, eligible_org):
     """Create an admin membership for the user in the eligible (non-reseller) org."""
-    return baker.make(
-        OrganizationMembership,
+    return make_membership(
         user=user,
         organization=eligible_org,
         role=OrganizationRole.ADMIN,
@@ -155,8 +154,7 @@ def eligible_org_member(eligible_org):
 @pytest.fixture
 def parented_org_admin(user, parented_org):
     """Create an admin membership for the user in the parented org."""
-    return baker.make(
-        OrganizationMembership,
+    return make_membership(
         user=user,
         organization=parented_org,
         role=OrganizationRole.ADMIN,
@@ -634,15 +632,13 @@ class TestOrganizationBrandingViewSet:
         )
 
         # Create memberships: reseller_a first so it is the "oldest".
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=reseller_a,
             role=OrganizationRole.ADMIN,
             is_active=True,
         )
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=reseller_b,
             role=OrganizationRole.ADMIN,
@@ -717,15 +713,13 @@ class TestOrganizationBrandingViewSet:
             Organization, can_invite_organizations=True, slug="reseller-b-multi-2"
         )
 
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=reseller_a,
             role=OrganizationRole.ADMIN,
             is_active=True,
         )
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=reseller_b,
             role=OrganizationRole.ADMIN,
@@ -966,8 +960,7 @@ class TestBrandingWriteGateAllMethods:
     def test_free_plan_org_gets_403(self, client, user):
         """Parentless and slugged, but not entitled -- the billing-state refusal."""
         org = _make_unentitled_org(parent=None, slug="free-plan-org")
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=org,
             role=OrganizationRole.ADMIN,
@@ -1000,8 +993,7 @@ class TestBrandingWriteGateAllMethods:
         to reach that 403 through any supported write path.
         """
         unentitled_org = _make_unentitled_org(parent=None, slug="unentitled-reason-org")
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=unentitled_org,
             role=OrganizationRole.ADMIN,
@@ -1085,8 +1077,7 @@ class TestCanManageBrandingOnMembershipPayload:
         assert entry["can_manage_branding"] is True
 
     def test_parented_org_reports_false(self, client, user, parented_org):
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=parented_org,
             role=OrganizationRole.ADMIN,
@@ -1107,8 +1098,7 @@ class TestCanManageBrandingOnMembershipPayload:
     @pytest.mark.no_auto_subscription
     def test_free_plan_org_reports_false(self, client, user):
         free_org = _make_unentitled_org(parent=None, slug="free-cap-org")
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=free_org,
             role=OrganizationRole.ADMIN,
@@ -1160,8 +1150,7 @@ class TestCanManageBrandingOnMembershipPayload:
                     can_invite_organizations=False,
                     slug=f"batch-org-{organization_count}-{index}",
                 )
-                baker.make(
-                    OrganizationMembership,
+                make_membership(
                     user=caller,
                     organization=org,
                     role=OrganizationRole.ADMIN,

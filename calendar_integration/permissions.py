@@ -53,7 +53,13 @@ class BookingPolicyPermission(BasePermission):
         membership = request.organization_membership
         if membership is None:
             return False
-        if membership.is_admin:
+        # ``organizations.manage_members`` -- the same capability
+        # ``User.is_organization_admin`` reads -- replaced ``membership.is_admin``
+        # in Phase 4 of the vinta-django-orgs migration. The organization is named
+        # explicitly rather than left to the ambient binding, because that is what
+        # the attribute it replaces meant: a statement about
+        # ``membership.organization``.
+        if request.user.is_organization_admin(membership.organization):
             return True
 
         # Detail writes (update/delete) are gated per-object in

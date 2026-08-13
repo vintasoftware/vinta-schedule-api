@@ -9,6 +9,7 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.tests.helpers import make_membership
 from public_api.constants import PROVIDER_SCOPED_RESOURCES, PublicAPIResources
 from public_api.models import ResourceAccess, SystemUser
 from users.models import Profile
@@ -46,8 +47,7 @@ def admin_user(organization):
     """A User with an ADMIN membership in *organization*."""
     user = baker.make(User, email="admin@example.com")
     baker.make(Profile, user=user)
-    baker.make(
-        OrganizationMembership,
+    make_membership(
         user=user,
         organization=organization,
         role=OrganizationRole.ADMIN,
@@ -1671,15 +1671,13 @@ class TestSystemUserTokenViewSetHonoursTheOrganizationHeader:
     def two_org_admin(self, organization, other_organization):
         user = baker.make(User, email="two-org-admin@example.com")
         baker.make(Profile, user=user)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
             role=OrganizationRole.ADMIN,
             is_active=True,
         )
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=other_organization,
             role=OrganizationRole.ADMIN,
@@ -1781,8 +1779,7 @@ class TestSystemUserTokenViewSetHonoursTheOrganizationHeader:
         """
         user = baker.make(User, email="admin-here-member-there@example.com")
         baker.make(Profile, user=user)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
             role=OrganizationRole.ADMIN,
@@ -1841,8 +1838,7 @@ class TestSystemUserTokenViewSetHonoursTheOrganizationHeader:
             role=OrganizationRole.MEMBER,
             is_active=True,
         )
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=other_organization,
             role=OrganizationRole.ADMIN,

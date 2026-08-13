@@ -45,6 +45,7 @@ from calendar_integration.models import (
     ExternalEventChangeRequest,
 )
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.tests.helpers import grant_membership_groups
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess
 from public_api.services import PublicAPIAuthService
@@ -129,11 +130,13 @@ def _make_org_with_member(*, is_admin: bool = False) -> tuple[Organization, Orga
     """Create an organization and one active member."""
     user = UserFactory().create_user()
     org = baker.make(Organization, name=f"Org-{uuid.uuid4().hex[:6]}")
-    membership = OrganizationMembership.objects.create(
-        user=user,
-        organization=org,
-        role=OrganizationRole.ADMIN if is_admin else OrganizationRole.MEMBER,
-        is_active=True,
+    membership = grant_membership_groups(
+        OrganizationMembership.objects.create(
+            user=user,
+            organization=org,
+            role=OrganizationRole.ADMIN if is_admin else OrganizationRole.MEMBER,
+            is_active=True,
+        )
     )
     return org, membership
 

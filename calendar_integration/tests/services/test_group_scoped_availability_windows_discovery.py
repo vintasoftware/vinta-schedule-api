@@ -41,6 +41,7 @@ from calendar_integration.services.dataclasses import (
     CalendarGroupSlotSelectionInputData,
 )
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.tests.helpers import grant_membership_groups
 from users.models import Profile, User
 
 
@@ -83,8 +84,10 @@ def audit_service():
 def admin_user(db: Any, organization: Organization) -> User:
     u = User.objects.create_user(email="admin@example.com", password="pass")
     Profile.objects.create(user=u)
-    OrganizationMembership.objects.create(
-        user=u, organization=organization, role=OrganizationRole.ADMIN
+    grant_membership_groups(
+        OrganizationMembership.objects.create(
+            user=u, organization=organization, role=OrganizationRole.ADMIN
+        )
     )
     return u
 

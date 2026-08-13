@@ -51,6 +51,7 @@ from organizations.models import (
     OrganizationMembership,
     OrganizationRole,
 )
+from organizations.tests.helpers import grant_membership_groups
 from payments.billing_constants import LimitedResource
 from payments.exceptions import InapplicableInvitationExclusionError
 from payments.models import MeteredOccurrence, Subscription
@@ -75,8 +76,10 @@ def organization(db: Any) -> Organization:
 def user(db: Any, organization: Organization) -> User:
     account = User.objects.create_user(email="usage_counters@example.com", password="pass")
     Profile.objects.create(user=account)
-    OrganizationMembership.objects.create(
-        user=account, organization=organization, role=OrganizationRole.ADMIN
+    grant_membership_groups(
+        OrganizationMembership.objects.create(
+            user=account, organization=organization, role=OrganizationRole.ADMIN
+        )
     )
     return account
 

@@ -35,6 +35,7 @@ from organizations.models import (
     OrganizationMembership,
     OrganizationRole,
 )
+from organizations.tests.helpers import make_membership
 from users.factories import UserFactory
 from users.models import User
 
@@ -123,8 +124,7 @@ class TestEmailSignupReachesTheOrganizationDestination:
             redirect_url="https://scheduling.acme.example.com/app",
         )
         user = User.objects.get(email=email)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
             role=OrganizationRole.ADMIN,
@@ -297,8 +297,7 @@ class TestMiddlewareLeavesEverythingElseAlone:
     def test_rest_endpoints_are_untouched(self):
         user = UserFactory().create_user(email="rest-caller@example.com")
         organization = baker.make(Organization)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
             role=OrganizationRole.ADMIN,

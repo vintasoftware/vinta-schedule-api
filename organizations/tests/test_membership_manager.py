@@ -197,10 +197,13 @@ class TestDomainMethodsSurvivedTheManagerChange:
         covered in ``payments/tests/test_dunning_recipients.py``; this stays a
         test that the *manager* still exposes the method."""
         organization = baker.make(Organization)
-        admin = OrganizationMembership.objects.create(
-            user=baker.make(User), organization=organization, role=OrganizationRole.ADMIN
+        admin = OrganizationMembership.objects.create(  # groups-deliberately-absent
+            # Synced explicitly below, which is what this test is about.
+            user=baker.make(User),
+            organization=organization,
+            role=OrganizationRole.ADMIN,
         )
-        billing_owner = OrganizationMembership.objects.create(
+        billing_owner = OrganizationMembership.objects.create(  # groups-deliberately-absent
             user=baker.make(User),
             organization=organization,
             role=OrganizationRole.MEMBER,

@@ -28,6 +28,7 @@ from audit.services import AuditService
 from audit.tasks import persist_audit_record
 from audit.types import ActorSnapshot, AuditRecordData, SubjectRef
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.tests.helpers import grant_membership_groups
 
 
 # ---------------------------------------------------------------------------
@@ -79,8 +80,10 @@ class TestPersistAuditRecordTask:
     def test_persists_membership_actor(self) -> None:
         org = baker.make(Organization)
         user = baker.make("users.User")
-        membership = OrganizationMembership.objects.create(
-            user=user, organization=org, role=OrganizationRole.ADMIN
+        membership = grant_membership_groups(
+            OrganizationMembership.objects.create(
+                user=user, organization=org, role=OrganizationRole.ADMIN
+            )
         )
         data = AuditRecordData(
             organization_id=org.pk,
@@ -253,6 +256,7 @@ class TestSnapshotAtEmitProof:
         # Step 3: change role to ADMIN in the DB AFTER the snapshot was built.
         membership.role = OrganizationRole.ADMIN
         membership.save(update_fields=["role"])
+        grant_membership_groups(membership)
 
         # Confirm the DB now has ADMIN.
         membership.refresh_from_db()

@@ -38,6 +38,7 @@ from rest_framework.test import APIClient
 
 from calendar_integration.constants import CalendarProvider
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.tests.helpers import make_membership
 from payments.billing_constants import BillingState, Entitlement
 from payments.exceptions import OverLimitError
 from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
@@ -240,8 +241,7 @@ def _admin_membership(organization: Organization) -> OrganizationMembership:
     from users.factories import UserFactory
 
     user = UserFactory().create_user()
-    return baker.make(
-        OrganizationMembership,
+    return make_membership(
         user=user,
         organization=organization,
         role=OrganizationRole.ADMIN,

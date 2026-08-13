@@ -31,6 +31,7 @@ from organizations.models import (
     OrganizationRole,
 )
 from organizations.services import OrganizationService
+from organizations.tests.helpers import make_membership
 from payments.billing_constants import BillingState, Entitlement, LimitedResource, LimitKind
 from payments.exceptions import OverLimitError
 from payments.models import (
@@ -132,8 +133,7 @@ class TestInviteBlockedIdenticallyAcrossRestAndGraphQL:
     def test_rest_invite_is_blocked_with_the_shared_over_limit_body(self):
         admin = baker.make(get_user_model(), email="rest-admin@example.com")
         organization = _organization_with_seat_limit(seat_limit=1, existing_active_members=0)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin,
             organization=organization,
             role=OrganizationRole.ADMIN,
@@ -198,8 +198,7 @@ class TestInviteBlockedIdenticallyAcrossRestAndGraphQL:
         directly against each other, which is the actual contract."""
         admin = baker.make(get_user_model(), email="compare-admin@example.com")
         rest_org = _organization_with_seat_limit(seat_limit=1, existing_active_members=0)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin,
             organization=rest_org,
             role=OrganizationRole.ADMIN,
@@ -408,8 +407,7 @@ class TestReactivationBlockedAtTheLimit:
     def test_reactivate_is_blocked_at_the_seat_limit(self):
         admin = baker.make(get_user_model(), email="reactivate-admin@example.com")
         organization = _organization_with_seat_limit(seat_limit=1, existing_active_members=0)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin,
             organization=organization,
             role=OrganizationRole.ADMIN,
@@ -440,8 +438,7 @@ class TestReactivationBlockedAtTheLimit:
         does not push the organization past."""
         admin = baker.make(get_user_model(), email="reactivate-admin2@example.com")
         organization = _organization_with_seat_limit(seat_limit=1, existing_active_members=0)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin,
             organization=organization,
             role=OrganizationRole.ADMIN,
@@ -478,8 +475,7 @@ class TestResendAtTheCeiling:
         # members + 1 pending invite at limit 5" scenario.
         admin = baker.make(get_user_model(), email="resend-admin@example.com")
         organization = _organization_with_seat_limit(seat_limit=2, existing_active_members=0)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin,
             organization=organization,
             role=OrganizationRole.ADMIN,

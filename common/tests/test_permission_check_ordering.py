@@ -44,6 +44,7 @@ from organizations.models import (
     OrganizationRole,
 )
 from organizations.permissions import IsOrganizationAdmin
+from organizations.tests.helpers import grant_membership_groups
 
 
 User = get_user_model()
@@ -122,11 +123,13 @@ def admin_here_member_there(
     ``order_by("created")`` is what the old fallback used, and the memberships
     are created in this order, so the fallback answers ``older_organization``.
     """
-    OrganizationMembership.objects.create(
-        user=user,
-        organization=older_organization,
-        role=OrganizationRole.ADMIN,
-        is_active=True,
+    grant_membership_groups(
+        OrganizationMembership.objects.create(
+            user=user,
+            organization=older_organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
     )
     OrganizationMembership.objects.create(
         user=user,
@@ -156,11 +159,13 @@ def member_here_admin_there(
         role=OrganizationRole.MEMBER,
         is_active=True,
     )
-    OrganizationMembership.objects.create(
-        user=user,
-        organization=newer_organization,
-        role=OrganizationRole.ADMIN,
-        is_active=True,
+    grant_membership_groups(
+        OrganizationMembership.objects.create(
+            user=user,
+            organization=newer_organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
     )
     return user
 
@@ -202,11 +207,13 @@ class TestTheAdminGateFollowsTheHeader:
         off the same resolution makes that impossible.
         """
         for organization in (older_organization, newer_organization):
-            OrganizationMembership.objects.create(
-                user=user,
-                organization=organization,
-                role=OrganizationRole.ADMIN,
-                is_active=True,
+            grant_membership_groups(
+                OrganizationMembership.objects.create(
+                    user=user,
+                    organization=organization,
+                    role=OrganizationRole.ADMIN,
+                    is_active=True,
+                )
             )
 
         response = _dispatch(AdminGatedProbeView, user, str(newer_organization.pk))

@@ -18,6 +18,7 @@ from organizations.models import (
     OrganizationRole,
     WeekStart,
 )
+from organizations.tests.helpers import grant_membership_groups
 
 
 User = get_user_model()
@@ -317,8 +318,10 @@ class TestMultiOrgMembership:
         org_admin = baker.make(Organization)
         org_member = baker.make(Organization)
 
-        OrganizationMembership.objects.create(
-            user=user, organization=org_admin, role=OrganizationRole.ADMIN, is_active=True
+        grant_membership_groups(
+            OrganizationMembership.objects.create(
+                user=user, organization=org_admin, role=OrganizationRole.ADMIN, is_active=True
+            )
         )
         OrganizationMembership.objects.create(
             user=user, organization=org_member, role=OrganizationRole.MEMBER, is_active=True
@@ -332,8 +335,10 @@ class TestMultiOrgMembership:
         user = baker.make(User)
         org = baker.make(Organization)
 
-        OrganizationMembership.objects.create(
-            user=user, organization=org, role=OrganizationRole.ADMIN, is_active=False
+        grant_membership_groups(
+            OrganizationMembership.objects.create(
+                user=user, organization=org, role=OrganizationRole.ADMIN, is_active=False
+            )
         )
 
         assert user.is_organization_admin(org) is False

@@ -120,8 +120,13 @@ def _membership(
     role: str = OrganizationRole.MEMBER,
     is_active: bool = True,
 ) -> OrganizationMembership:
-    membership = OrganizationMembership.objects.create(
-        user=user, organization=organization, role=role, is_active=is_active
+    membership = OrganizationMembership.objects.create(  # groups-deliberately-absent
+        # This module assigns the group by name on the next line, deliberately,
+        # so it can exercise a group the role mapping would not have produced.
+        user=user,
+        organization=organization,
+        role=role,
+        is_active=is_active,
     )
     membership.groups.add(Group.objects.get(name=group_name))
     return membership

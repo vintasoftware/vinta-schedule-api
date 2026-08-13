@@ -20,6 +20,7 @@ from organizations.models import (
     OrganizationRole,
 )
 from organizations.services import OrganizationService
+from organizations.tests.helpers import make_membership
 
 
 def _payloads(mock_task) -> list[dict]:
@@ -64,8 +65,7 @@ class TestOrganizationServiceAudit:
     def test_invite_user_records_create(self, django_capture_on_commit_callbacks) -> None:
         org = baker.make(Organization)
         inviter = baker.make("users.User")
-        baker.make(
-            "organizations.OrganizationMembership",
+        make_membership(
             user=inviter,
             organization=org,
             role=OrganizationRole.ADMIN,

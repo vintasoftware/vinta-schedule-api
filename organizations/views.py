@@ -1094,8 +1094,10 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
         **eligibility** gate (parentless, entitled) used for GET.
 
         Delegates to ``organizations.permissions.check_branding_read_eligibility``,
-        shared with ``OrganizationBrandingLogoUploadParamsView`` -- see that
-        function's docstring for why ``NO_SLUG`` is admitted here."""
+        shared with ``OrganizationBrandingLogoUploadParamsView``. That gate used
+        to admit one reason more than the write gate (``NO_SLUG``, retired in
+        Phase 1 and deleted in Phase 4); the two now admit the same set, and the
+        split is kept only because they answer different questions."""
         user = self.request.user
         if not user.is_authenticated:
             raise PermissionDenied("No active organization membership.")

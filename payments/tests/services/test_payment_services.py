@@ -7,6 +7,7 @@ from model_bakery import baker
 
 from audit.constants import AuditAction
 from organizations.models import Organization
+from organizations.tests.helpers import grant_membership_groups
 from payments.billing_constants import BillingInterval, BillingState
 from payments.constants import (
     PaymentProviders,
@@ -1418,10 +1419,12 @@ def test_set_payment_provider_records_actor_from_user(
     from organizations.models import OrganizationMembership, OrganizationRole
 
     staff_user = baker.make("users.User")
-    membership = OrganizationMembership.objects.create(
-        user=staff_user,
-        organization=billing_profile.organization,
-        role=OrganizationRole.ADMIN,
+    membership = grant_membership_groups(
+        OrganizationMembership.objects.create(
+            user=staff_user,
+            organization=billing_profile.organization,
+            role=OrganizationRole.ADMIN,
+        )
     )
 
     with patch("audit.services.persist_audit_record") as mock_task:

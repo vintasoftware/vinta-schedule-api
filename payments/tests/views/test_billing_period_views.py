@@ -21,7 +21,8 @@ import pytest
 from model_bakery import baker
 from rest_framework import status
 
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationRole
+from organizations.tests.helpers import make_membership
 from payments.billing_constants import BillingInterval
 from payments.models import BillingPeriodResourceUsage, BillingPeriodSummary, Payment
 
@@ -90,8 +91,7 @@ def child_admin_membership(user, child: Organization):
     """The caller authenticates as an admin of the *child*, not the root, to
     prove list/retrieve resolve to the pooled billing root's statements
     rather than only ones addressed to the caller's own organization."""
-    return baker.make(
-        OrganizationMembership,
+    return make_membership(
         organization=child,
         user=user,
         role=OrganizationRole.ADMIN,

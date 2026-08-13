@@ -208,7 +208,7 @@ class TestTheBackfillMapsEveryCombination:
 
     @staticmethod
     def _membership(organization, *, role, is_billing_owner):
-        return OrganizationMembership.objects.create(
+        return OrganizationMembership.objects.create(  # groups-deliberately-absent: the state the backfill exists to fix
             user=baker.make(User),
             organization=organization,
             role=role,
@@ -256,7 +256,7 @@ class TestTheBackfillMapsEveryCombination:
         deactivated admin keeps its role today and keeps its group here; the
         gate that ignores it lives in the resolver, not in the group."""
         organization = baker.make(Organization, name="Inactive Co", slug="inactive-co")
-        membership = OrganizationMembership.objects.create(
+        membership = OrganizationMembership.objects.create(  # groups-deliberately-absent: the state the backfill exists to fix
             user=baker.make(User),
             organization=organization,
             role=OrganizationRole.ADMIN,
@@ -318,7 +318,7 @@ class TestTheBackfillsReverse:
     def test_it_detaches_only_the_three_seeded_groups(self):
         organization = baker.make(Organization, name="Reverse Co", slug="reverse-co")
         unrelated = Group.objects.create(name="another_unrelated_group")
-        membership = OrganizationMembership.objects.create(
+        membership = OrganizationMembership.objects.create(  # groups-deliberately-absent: the state the backfill exists to fix
             user=baker.make(User), organization=organization, role=OrganizationRole.ADMIN
         )
         membership.groups.add(unrelated)
@@ -345,7 +345,7 @@ class TestTheBackfillsReverse:
         *forward* is the direction that cannot proceed without the groups.
         """
         organization = baker.make(Organization, name="Gone Co", slug="gone-co")
-        membership = OrganizationMembership.objects.create(
+        membership = OrganizationMembership.objects.create(  # groups-deliberately-absent: the state the backfill exists to fix
             user=baker.make(User), organization=organization, role=OrganizationRole.ADMIN
         )
         _run_backfill()

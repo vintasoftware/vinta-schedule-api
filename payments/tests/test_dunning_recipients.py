@@ -50,7 +50,9 @@ def _membership(
     ``role`` / ``is_billing_owner`` until Phase 6 retires the columns, and every
     application path that creates or re-roles a membership calls it.
     """
-    membership = OrganizationMembership.objects.create(
+    membership = OrganizationMembership.objects.create(  # groups-deliberately-absent
+        # Synced on the next line -- this helper exists to spell the dual-write
+        # out rather than hide it behind ``organizations.tests.helpers``.
         user=baker.make(User),
         organization=organization,
         role=role,
@@ -141,8 +143,10 @@ class TestWhoReceivesBilling:
         ``role=ADMIN`` on a row nothing put in a group buys nothing now. Pinned
         so the dependency is visible rather than assumed."""
         organization = baker.make(Organization, name="Ungrouped Co", slug="ungrouped-co")
-        ungrouped = OrganizationMembership.objects.create(
-            user=baker.make(User), organization=organization, role=OrganizationRole.ADMIN
+        ungrouped = OrganizationMembership.objects.create(  # groups-deliberately-absent
+            user=baker.make(User),
+            organization=organization,
+            role=OrganizationRole.ADMIN,
         )
 
         recipients = set(OrganizationMembership.objects.billing_recipients(organization.id))

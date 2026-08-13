@@ -20,6 +20,7 @@ from audit.repositories import DjangoORMAuditRepository
 from audit.services import AuditService
 from audit.types import SubjectRef
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.tests.helpers import grant_membership_groups
 
 
 # ---------------------------------------------------------------------------
@@ -257,8 +258,10 @@ class TestActorFromUser:
     def test_membership_actor_when_user_is_member(self) -> None:
         org = baker.make(Organization)
         user = baker.make("users.User")
-        membership = OrganizationMembership.objects.create(
-            user=user, organization=org, role=OrganizationRole.ADMIN
+        membership = grant_membership_groups(
+            OrganizationMembership.objects.create(
+                user=user, organization=org, role=OrganizationRole.ADMIN
+            )
         )
 
         snapshot = AuditService.actor_from_user(user, org.pk)
@@ -413,8 +416,10 @@ class TestRecordEnqueues:
         service = make_service()
         org = baker.make(Organization)
         user = baker.make("users.User")
-        membership = OrganizationMembership.objects.create(
-            user=user, organization=org, role=OrganizationRole.ADMIN
+        membership = grant_membership_groups(
+            OrganizationMembership.objects.create(
+                user=user, organization=org, role=OrganizationRole.ADMIN
+            )
         )
         actor = AuditService.actor_from_membership(membership)
         subject = make_subject()

@@ -29,6 +29,7 @@ from calendar_integration.models import (
     CalendarOwnership,
 )
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.tests.helpers import grant_membership_groups
 from users.factories import UserFactory
 
 
@@ -41,11 +42,13 @@ def _make_org_with_member(*, is_admin: bool = False) -> tuple[Organization, Orga
     """Return a fresh org + membership."""
     user = UserFactory().create_user()
     org = baker.make(Organization, name="Test Org")
-    membership = OrganizationMembership.objects.create(
-        user=user,
-        organization=org,
-        role=OrganizationRole.ADMIN if is_admin else OrganizationRole.MEMBER,
-        is_active=True,
+    membership = grant_membership_groups(
+        OrganizationMembership.objects.create(
+            user=user,
+            organization=org,
+            role=OrganizationRole.ADMIN if is_admin else OrganizationRole.MEMBER,
+            is_active=True,
+        )
     )
     return org, membership
 
