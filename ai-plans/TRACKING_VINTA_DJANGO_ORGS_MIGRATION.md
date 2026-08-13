@@ -54,7 +54,7 @@ Verified after fixing: host surface and container surface both load Django and b
 | 1 | Adopt the abstract bases, unwind the composite PK, backfill slugs | 4 | reviewer 4, fixer 3 | ✅ done | `plan/vinta-django-orgs-migration/phase-1` | phase-0 | see below |
 | 2a | Flip `calendar_integration` onto the mixin and safe relations | 4 | reviewer 4 | ✅ done | `plan/vinta-django-orgs-migration/phase-2a` | phase-1 | see below |
 | 2b | Flip the remaining scoped models, bind on the request path | 3 | reviewer 4 | ✅ done | `plan/vinta-django-orgs-migration/phase-2b` | phase-2a | see below |
-| 3 | Groups, permissions, and the organization auth backend | 3 | — | ⏳ pending | — | phase-2b | — |
+| 3 | Groups, permissions, and the organization auth backend | 3 | — | ✅ done | `plan/vinta-django-orgs-migration/phase-3` | phase-2b | see below |
 | 4 | Migrate the permission classes to `has_perm` | 4 | reviewer 4 | ⏳ pending | — | phase-3 | — |
 | 5 | Expose permissions on REST and GraphQL, drop `role` | 3 | — | ⏳ pending | — | phase-4 | — |
 | 6 | Drop `role` / `is_billing_owner` and delete the old tenancy layer | 1 | — | ⏳ pending | — | phase-5 | — |
@@ -306,9 +306,50 @@ Carry-forward facts:
 - **Stale `OrganizationModel` prose** survives in `calendar_integration/`, `payments/`, `legal/`, `scripts/one_off/` — references to a class that no longer exists. Cheap cleanup for Phase 6's grep.
 - **`AGENTS.md`'s Multi-Tenancy section was rewritten** and then corrected in review: its "only these three spellings are allowed" rule had omitted the two escape hatches the same commit introduced, and its "requests bind automatically" claim was false for ~12 DRF views outside the `*VintaScheduleModelViewSet` bases.
 
+### Phase 3 — Groups, permissions, and the organization auth backend
+
+- **Branch**: `plan/vinta-django-orgs-migration/phase-3` off `phase-2b`
+- **Commits**: `116395e` (implement, Tier 4) · review fixes folded in by the conductor
+- **Review**: reviewer Tier 3 (project default — the plan sets no override for this phase, and the phase provably changes no authorization outcome). **No BLOCKERs.** Two SHOULD-FIX and one non-applicable NIT.
+
+**The contract held: no authorization outcome changed.** Verified three independent ways rather than asserted — zero permission-class files in the diff (`organizations/`, `calendar_integration/`, `public_api/`, `users/` all byte-identical); a repo-wide grep for `has_perm` / `has_module_perms` / `get_all_permissions` / `PermissionRequiredMixin` / `permission_required` / `DjangoModelPermissions` / `{{ perms. }}` / admin `has_*_permission` overrides / strawberry `permission_classes=` finding **no production call site at all**; and Django admin — the one place Django itself calls `has_perm` — binding no organization, since `PublicApiSystemUserMiddleware` binds `None` for every non-`/graphql/` path.
+
+**What landed**: four capability permissions as `Meta.permissions` on `Organization`, `OrganizationMembership`, `Subscription`; `vinta_orgs.auth_backends.OrganizationModelBackend` in `AUTHENTICATION_BACKENDS`; migrations `0027`–`0029` (options, seed, backfill) plus `payments 0022`; the `sync_membership_groups_from_role` dual-write shim; `billing_recipients` switched to the permission-shaped query.
+
+**Permission-creation ordering — the trap this phase had to solve.** `create_permissions` is a `post_migrate` receiver, and `post_migrate` fires only after the *entire* migrate run. So on a database built from zero, no `auth_permission` row — and no `django_content_type` row — exists while **any** `RunPython` step runs, wherever it sits in the graph. Migration `0028` therefore does `create_permissions`' job for its own four rows, keyed on `(content_type, codename)` — the same key `create_permissions` de-duplicates on, so the later `post_migrate` finds them and creates nothing. Proved on a genuinely empty database, and re-asserted inside the suite.
+
+**`Meta.permissions` changed nothing on disk**: `sqlmigrate` emits `(no-op)` for both `AlterModelOptions` migrations. Verified empirically by planting a probe group holding all four pre-existing `organizations.organization` grants, migrating, and diffing — 96 rows unchanged with the same ids, 4 appended, the probe's grants intact.
+
+**Auth backend caching**: three global caches sharing `ModelBackend`'s attribute names (safe — both fill them with the same content) and three organization caches **keyed by organization pk**. A bound-organization change within one process therefore cannot serve a stale set; a new binding is a new key. Pinned by a test walking A → B → A → unbound on one user instance.
+
+**`billing_recipients`** is the phase's one behavioral query change. Now filters `groups__permissions__codename="manage_billing"` **and** `content_type__app_label="payments"` in a single `filter()` (so both bind to the same permission row), plus `.distinct()` — genuinely required, since membership → group → permission is two chained M2Ms and an admin who is also `is_billing_owner` sits in both qualifying groups. Both existing consumers already appended `.values_list(...).distinct()` and were shielded; a future one would not have been. Parity pinned without self-comparison: the test recomputes the *old* rule as a Python predicate over already-fetched attributes rather than a second ORM trip, and asserts `0 < len(recipients) < len(everyone)` so the expectation cannot be vacuously all-or-nothing.
+
+**Review fixes applied by the conductor:**
+1. *The one dual-write call site outside `services.py` had no coverage.* `update_role` (`organizations/views.py:920`) is the only live path that *changes* a role after creation — omitting the shim there would leave a demoted admin holding `organization_admin`, exactly the drift the shim exists to prevent and exactly what Phase 4 would then read. Added group assertions to the promote and demote tests, and **mutation-tested them**: replacing the shim call with `pass` turns both red; reverted, both pass.
+2. *Plan-text correction.* The plan named `organizations.auth_backends.OrganizationModelBackend`, which was the **package's** path under `0.1.1`. The 2026-08-12 amendment sweep converted our own app's paths but missed this one package reference. The implementer correctly used `vinta_orgs.auth_backends`; the plan text is now fixed rather than the code.
+
+**Deliberate deviations, both sound:**
+- **`update_role` dual-writes** although the phase's 6-item list named only `services.py` — justified above.
+- **`AUTHENTICATION_BACKENDS` was previously unset** (implicit Django default). Declared as `ModelBackend` first, org backend second, rather than replacing: `auth.get_user` drops any session whose recorded `_auth_user_backend` path is no longer in the list, so replacing would sign out every live session. The reviewer confirmed `OrganizationModelBackend` inherits `ModelBackend.authenticate` unchanged, so ordering cannot change who authenticates.
+- **Migrations carry frozen literal copies** of the catalog rather than importing it, per AGENTS.md. A test checks migration copy, live catalog, and `Meta.permissions` against a third set of literals, so drift is loud.
+
+**Gate**: ruff clean, `check --deploy` unchanged, `makemigrations --check` clean, mypy **293** (exactly baseline), full suite **5679 passed / 2 known flakes** (both pass alone; effective 5681 = 5638 + 43 new), `migrate` clean from zero with the seed verified and a second run a no-op, `schema.yml` byte-identical.
+
+Carry-forward facts — **two authorization landmines Phase 4 must handle deliberately:**
+
+- **⚠️ `OrganizationModelBackend._get_membership` does not filter `is_active`.** An inactive membership resolves its group permissions. Today every role check routes through `get_active_organization_membership`, which treats a deactivated member exactly like a non-member — so **a mechanical `has_perm` swap in Phase 4 would grant a deactivated admin full admin rights.** `has_perm` will not carry the `is_active` gate; Phase 4 must keep it somewhere (in the resolver, or by clearing groups on deactivation). Pinned as observed behavior in `TestTwoBehavioursPhase4MustHandleDeliberately`.
+- **⚠️ `check_permissions` runs before the organization resolver** — Phase 2b's carry-forward, still open, still undecided. Phase 4 rewrites all ~15 affected classes and is the natural place to land it, but Phase 4 as planned changes *what* is checked, not *when*.
+
+Other carry-forwards:
+
+- **A superuser's `get_all_permissions()` under a bound organization is the entire catalog**, not four capabilities. No outcome change today (`PermissionsMixin.has_perm` short-circuits superusers), but **Phase 5 reports this list on the API surface**. Pinned.
+- **`billing_recipients` now depends on the backfill and dual-write having run.** A `role=ADMIN` row that nothing put in a group receives no dunning. Pinned by `test_a_membership_with_no_groups_at_all_is_not_a_recipient` so the dependency is visible rather than assumed. The reviewer independently grepped every production `OrganizationMembership` creation and confirmed all four shim call sites are complete.
+- **`OrganizationMembership.permissions` (the direct per-membership grant) stays empty and unread.** `billing_recipients` reads groups only, so a membership granted `manage_billing` directly could write billing (from Phase 4) but not receive dunning. Nothing writes that M2M today.
+- **Five test-helper modules now call the shim**, because `baker.make(OrganizationMembership, role=ADMIN)` produces no groups and 16 pre-existing tests went red on the `billing_recipients` switch. The reviewer confirmed these preserve intent rather than paper over a behavior change. **Phase 4 will hit this at much larger scale** — it needs admin memberships to carry groups across ~180 test modules. A `post_save` signal would cover every write path including baker; the implementer deliberately did not reach for one, flagging it as a design decision above this phase. **Phase 4 should decide early.**
+
 ## Current phase
 
-Phase 3 — groups, permissions, and the organization auth backend, based on `phase-2b`. **Read Phase 2b's first carry-forward before Phase 4**: the `check_permissions`-before-resolver ordering is an open authorization defect across ~15 permission classes, and Phase 4 rewrites exactly those classes.
+Phase 4 — migrate the permission classes to `has_perm`. **Blocked on two decisions**, both recorded above as Phase 3 carry-forwards: the `is_active` gap in the auth backend (a mechanical swap grants deactivated admins full rights) and the `check_permissions`-before-resolver ordering. Also decide the test-fixture strategy before starting — ~180 test modules need admin memberships carrying groups.
 
 ## Deferred phases
 

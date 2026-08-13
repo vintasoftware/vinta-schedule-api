@@ -328,7 +328,7 @@ Acceptance: all 34 models scope implicitly under strict mode, the resolution tab
 Changes:
 
 1. Declare the four custom permissions from the **Permission catalog** as `Meta.permissions` on `Organization`, `OrganizationMembership`, and `Subscription`.
-2. Add `organizations.auth_backends.OrganizationModelBackend` to `AUTHENTICATION_BACKENDS`. It unions global and per-organization permissions and keys the org half on `get_current_organization()` — which Phase 2b now guarantees is bound during a request.
+2. Add `vinta_orgs.auth_backends.OrganizationModelBackend` to `AUTHENTICATION_BACKENDS`. (Corrected 2026-08-12: the original text read `organizations.auth_backends`, which was the *package's* path under `0.1.1`. The amendment sweep converted our own app's paths but missed this one package reference — the class is the package's, not a repo-owned module.) It unions global and per-organization permissions and keys the org half on `get_current_organization()` — which Phase 2b now guarantees is bound during a request.
 3. Data migration: seed the three global groups and their permission mappings.
 4. Data migration: assign groups from existing state — `role == ADMIN` → `organization_admin`, `is_billing_owner` → `organization_billing_owner`, everything else → `organization_member`. Idempotent; `role` and `is_billing_owner` are read, not written.
 5. `@organizations/services.py`: membership and invitation creation assigns groups *in addition to* setting `role`, so both representations stay consistent until Phase 6 drops one.
