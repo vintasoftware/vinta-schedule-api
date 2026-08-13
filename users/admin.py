@@ -19,6 +19,18 @@ class CustomUserAdmin(UserAdmin):
         "user_permissions",
     )
 
+    def get_form(self, request, obj=None, **kwargs):
+        """Stash ``obj`` on ``request`` so ``formfield_for_manytomany`` can see it.
+
+        ``ModelAdmin.get_form`` never forwards the object being edited down to
+        ``formfield_for_manytomany`` -- the ``formfield_callback`` it builds
+        only carries ``request``. Attaching it to the request (rather than
+        ``self``, which is a single ``ModelAdmin`` instance shared by every
+        concurrent request) keeps this request-scoped.
+        """
+        request._organization_seeded_groups_obj = obj
+        return super().get_form(request, obj, **kwargs)
+
     def formfield_for_manytomany(self, db_field, request, **kwargs):
         """Keep the organization groups out of the *user*-level group picker.
 
@@ -44,9 +56,23 @@ class CustomUserAdmin(UserAdmin):
         assignment of a seeded group is left on the row rather than silently
         dropped -- it is inert either way, and removing data from a form the
         operator did not touch is worse than leaving it.
+
+        That "left on the row" promise has teeth here: ``ModelMultipleChoiceField``
+        only renders (and, on save, only keeps -- ``ModelForm.save_m2m`` calls
+        ``.set()`` on the submitted set) options present in the field's
+        ``queryset``. Excluding the seeded groups outright would silently strip
+        an existing assignment the moment the form is saved for any other
+        reason. So the exclusion applies to *new* choices only; a seeded group
+        the object being edited already holds is unioned back in. The add form
+        has no ``obj``, so it gets the plain exclusion.
         """
         if db_field.name == "groups":
-            kwargs["queryset"] = Group.objects.exclude(name__in=tuple(GROUP_PERMISSIONS))
+            excluded_names = tuple(GROUP_PERMISSIONS)
+            queryset = Group.objects.exclude(name__in=excluded_names)
+            obj = getattr(request, "_organization_seeded_groups_obj", None)
+            if obj is not None:
+                queryset = queryset | Group.objects.filter(name__in=excluded_names, user=obj)
+            kwargs["queryset"] = queryset
         return super().formfield_for_manytomany(db_field, request, **kwargs)
 
     fieldsets = (

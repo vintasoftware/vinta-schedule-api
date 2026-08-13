@@ -2004,6 +2004,52 @@ class TestOrganizationMembershipViewSet:
         other_admin.refresh_from_db()
         assert other_admin.is_active is False
 
+    def test_a_member_holding_manage_members_directly_counts_as_a_remaining_admin(
+        self, auth_client, user
+    ):
+        """The last-admin guard must count by capability, the same way
+        ``assign_groups``'s does -- not by the ``role`` column.
+
+        The caller holds ``organizations.manage_members`` through a direct
+        per-membership grant rather than the ``organization_admin`` group, so
+        ``role`` is ``MEMBER``. A guard counting ``role=ADMIN`` rows would not
+        see the caller as a remaining administrator and would refuse to
+        deactivate the sole ``role=ADMIN`` membership -- exactly the
+        divergence between ``deactivate`` and ``assign_groups`` this guard was
+        made to close.
+        """
+        from django.contrib.auth.models import Permission
+        from django.contrib.contenttypes.models import ContentType
+
+        organization = OrganizationTestFactory.create_organization(name="Test Org")
+        caller_membership = make_membership(
+            user=user,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+        caller_membership.permissions.add(
+            Permission.objects.get(
+                codename="manage_members",
+                content_type=ContentType.objects.get_for_model(OrganizationMembership),
+            )
+        )
+
+        target_admin = make_membership(
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+
+        url = reverse(
+            "api:OrganizationMembers-deactivate", kwargs={"user_id": target_admin.user_id}
+        )
+        response = auth_client.post(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        target_admin.refresh_from_db()
+        assert target_admin.is_active is False
+
     def test_deactivate_non_admin_forbidden(self, auth_client, user):
         """Test that non-admin member cannot deactivate another member"""
         organization = OrganizationTestFactory.create_organization(name="Test Org")

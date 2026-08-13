@@ -806,20 +806,26 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
         # guard above blocks the only path that could drop the org to zero admins
         # (requester attempting to deactivate themselves). Retained to protect any future
         # non-self deactivation paths (e.g., bulk action or service-layer call).
-        if target.is_admin:
-            org_id = target.organization_id
-            other_active_admin_count = (
+        #
+        # Counts by capability (``organizations.manage_members``), the same way
+        # ``assign_groups`` below does, rather than by the ``role`` column: a
+        # direct per-membership grant of the permission makes its holder a
+        # remaining administrator just as much as the ``organization_admin``
+        # group does, and the two guards must agree on what "the last admin"
+        # means.
+        if has_organization_permission(target.user, MANAGE_MEMBERS, target.organization):
+            other_holders_of_manage_members = (
                 OrganizationMembership.objects.filter(
-                    organization_id=org_id,
-                    role=target.role,  # Same role filter (ADMIN)
+                    organization_id=target.organization_id,
                     is_active=True,
                 )
                 # Composite PK (user, organization): exclude the target by its user_id
                 # within the already org-scoped filter.
                 .exclude(user_id=target.user_id)
+                .holding_permission(MANAGE_MEMBERS)
                 .count()
             )
-            if other_active_admin_count == 0:
+            if other_holders_of_manage_members == 0:
                 raise ValidationError(
                     detail="Cannot deactivate the last active admin of the organization."
                 )
