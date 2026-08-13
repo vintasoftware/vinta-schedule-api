@@ -55,6 +55,18 @@ for a ``varchar`` length change unless it can prove the change is a widening of
 the same type, which it can here (``varchar(n)`` to ``varchar(m)`` with
 ``m > n`` is exempt from the rewrite since 9.2), so it takes the lock briefly and
 returns. Invitations are a low-volume table regardless.
+
+Rolling-deploy compatibility
+----------------------------
+Deliberately **not** two-phase, which is the other half of the lock question
+``add-migration``'s pitfalls name. Both the column drops and the invitation
+rename are breaking for any process still running the old code -- old workers
+would ``SELECT role`` against a table that no longer has it -- and the standard
+remedy (ship the code that stops reading the columns, deploy, then drop in a
+later release) is skipped on purpose, under the plan's **Pre-launch posture**
+Guiding Decision: there are no production tenants, so there is no window during
+which old and new code both serve traffic. If that assumption ever stops
+holding, this migration is the shape to split, not to re-run.
 """
 
 from django.db import migrations, models

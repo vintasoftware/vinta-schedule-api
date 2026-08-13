@@ -41,6 +41,7 @@ from calendar_integration.services.external_event_change_request_service import 
     ExternalEventChangeRequestService,
 )
 from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import grant_membership_groups
 from users.models import Profile, User
 
@@ -116,7 +117,7 @@ def admin_membership(organization: Organization) -> OrganizationMembership:
         user=user,
         organization=organization,
     )
-    grant_membership_groups(membership)
+    grant_membership_groups(membership, [GROUP_ORGANIZATION_ADMIN])
     return membership
 
 
@@ -291,7 +292,7 @@ def test_update_request_deduplicates_attendee_who_is_also_admin(
         user=user,
         organization=organization,
     )
-    grant_membership_groups(admin_attendee)
+    grant_membership_groups(admin_attendee, [GROUP_ORGANIZATION_ADMIN])
     create_event_attendance(event=event, user=user)
 
     with _patch_on_commit():
@@ -392,7 +393,7 @@ def test_delete_request_deduplicates_attendee_who_is_also_admin(
         user=user,
         organization=organization,
     )
-    grant_membership_groups(admin_attendee)
+    grant_membership_groups(admin_attendee, [GROUP_ORGANIZATION_ADMIN])
     create_event_attendance(event=event, user=user)
 
     with _patch_on_commit():

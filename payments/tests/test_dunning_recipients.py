@@ -17,10 +17,17 @@ starts writing it (``test_a_direct_manage_billing_grant_is_a_recipient_too``).
 
 **The expectations here are literal.** Deriving them from the filter under test
 would make every assertion true by construction. Each test names the users it
-expects by the variable that created them, and ``_old_rule`` re-computes the
-pre-Phase-3 rule as a plain Python predicate over the *groups* those columns were
-backfilled into -- a genuinely independent expression of it rather than a second
-call into the ORM path under test.
+expects by the variable that created them, and
+``_capability_groups_predicate`` restates the rule as a plain Python membership
+test over an already-fetched row's group *names* -- a genuinely independent
+expression of it rather than a second call into the ORM path under test.
+
+It is named for what it does rather than for the columns it descends from, and
+that is the honest name now: with ``role`` and ``is_billing_owner`` gone it can
+no longer be a restatement of the *pre*-Phase-3 rule, only of the current one in
+a different idiom. Read it as an independent oracle, **not** as parity evidence
+against the flat-column era -- nothing in this repo can produce that era's state
+any more.
 
 The parity class that pinned the Phase 3 dual-write is gone with Phase 6: there
 is one representation now, so there is nothing left for two writes to keep in
@@ -68,14 +75,18 @@ def _membership(
     return membership
 
 
-def _old_rule(membership: OrganizationMembership) -> bool:
-    """The pre-Phase-3 rule, restated over the groups its columns became.
+def _capability_groups_predicate(membership: OrganizationMembership) -> bool:
+    """Active, and in ``organization_admin`` or ``organization_billing_owner``.
 
-    The disjunction those two columns expressed is, after the Phase 3 backfill,
-    "belongs to ``organization_admin`` or ``organization_billing_owner``".
     Independent of the queryset under test on purpose: it walks an
-    already-fetched row's group names instead of going back through the
-    permission join, so agreeing with it is evidence rather than a tautology.
+    already-fetched row's group *names* instead of going back through the
+    ``groups -> permissions -> codename`` join ``billing_recipients`` uses, so
+    agreeing with it is evidence rather than a tautology.
+
+    Descended from the pre-Phase-3 ``role``/``is_billing_owner`` disjunction, but
+    no longer a restatement *of* it -- Phase 6 dropped both columns, so this is a
+    second expression of the current rule rather than parity evidence against the
+    previous one. See the module docstring.
     """
     names = set(membership.groups.values_list("name", flat=True))
     return membership.is_active and bool(
@@ -109,8 +120,14 @@ class TestWhoReceivesBilling:
         assert inactive_admin not in recipients
         assert inactive_billing_owner not in recipients
 
-    def test_it_matches_the_rule_it_replaced(self):
-        """Parity, checked against the old rule expressed independently."""
+    def test_it_matches_an_independent_reading_of_the_group_names(self):
+        """The permission join agrees with a direct read of the group names.
+
+        Not parity against the pre-Phase-3 columns -- those are gone, and nothing
+        here can produce their state. Two independent expressions of the *current*
+        rule, one through ``groups -> permissions -> codename`` and one over
+        already-fetched names.
+        """
         organization = baker.make(Organization, name="Parity Co", slug="parity-co")
         everyone = [
             _membership(organization, groups=(GROUP_ORGANIZATION_ADMIN,)),
@@ -127,7 +144,9 @@ class TestWhoReceivesBilling:
 
         recipients = set(OrganizationMembership.objects.billing_recipients(organization.id))
 
-        assert recipients == {membership for membership in everyone if _old_rule(membership)}
+        assert recipients == {
+            membership for membership in everyone if _capability_groups_predicate(membership)
+        }
         # And that expectation is not vacuously everything or nothing.
         assert 0 < len(recipients) < len(everyone)
 

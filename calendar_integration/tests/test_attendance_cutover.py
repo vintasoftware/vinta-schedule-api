@@ -31,6 +31,7 @@ from calendar_integration.serializers import (
 )
 from calendar_integration.services.calendar_service_utils import resolve_member_user_ids
 from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import grant_membership_groups
 
 
@@ -138,7 +139,8 @@ def test_attendance_serializer_membership_field_shape(organization, event):
         OrganizationMembership.objects.create(
             user=user,
             organization=organization,
-        )
+        ),
+        [GROUP_ORGANIZATION_ADMIN],
     )
     _make_attendance(event, organization, membership_user_id=user.id)
 

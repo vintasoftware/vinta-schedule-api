@@ -50,6 +50,7 @@ from organizations.models import (
     OrganizationInvitation,
     OrganizationMembership,
 )
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import grant_membership_groups
 from payments.billing_constants import LimitedResource
 from payments.exceptions import InapplicableInvitationExclusionError
@@ -79,7 +80,8 @@ def user(db: Any, organization: Organization) -> User:
         OrganizationMembership.objects.create(
             user=account,
             organization=organization,
-        )
+        ),
+        [GROUP_ORGANIZATION_ADMIN],
     )
     return account
 

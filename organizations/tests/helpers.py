@@ -89,7 +89,7 @@ def make_billing_owner_membership(
 
 def grant_membership_groups(
     membership: OrganizationMembership,
-    groups: Iterable[str] = (GROUP_ORGANIZATION_ADMIN,),
+    groups: Iterable[str],
 ) -> OrganizationMembership:
     """Put an already-built membership in ``groups``.
 
@@ -97,6 +97,18 @@ def grant_membership_groups(
     by a service under test, or one whose capabilities a test changes after
     creation, which is what the live re-grouping path does through the same
     writer.
+
+    ``groups`` is **required and has no default**, unlike ``make_membership``'s.
+    That asymmetry is deliberate. This function used to read a membership's
+    ``role`` column and derive the groups from it, so the capability was named
+    at the *creation* call it wrapped; when Phase 6 dropped the column, giving
+    the parameter a default silently moved that decision here. Whichever default
+    were chosen would be wrong for some caller and wrong *silently*, because no
+    assertion reads the groups directly -- exactly how
+    ``organizations/tests/test_org_resolution.py``'s ten member fixtures became
+    ten admins under a ``(GROUP_ORGANIZATION_ADMIN,)`` default without a single
+    test going red. A caller that has to type the capability out cannot get one
+    it did not ask for.
     """
     assign_membership_groups(membership, groups)
     return membership

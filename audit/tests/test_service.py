@@ -21,6 +21,7 @@ from audit.services import AuditService
 from audit.types import SubjectRef
 from organizations.authorization import MEMBERSHIP_ROLE_LABEL_ADMIN, MEMBERSHIP_ROLE_LABEL_MEMBER
 from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import grant_membership_groups
 
 
@@ -265,7 +266,8 @@ class TestActorFromUser:
             OrganizationMembership.objects.create(
                 user=user,
                 organization=org,
-            )
+            ),
+            [GROUP_ORGANIZATION_ADMIN],
         )
 
         snapshot = AuditService.actor_from_user(user, org.pk)
@@ -425,7 +427,8 @@ class TestRecordEnqueues:
             OrganizationMembership.objects.create(
                 user=user,
                 organization=org,
-            )
+            ),
+            [GROUP_ORGANIZATION_ADMIN],
         )
         actor = AuditService.actor_from_membership(membership)
         subject = make_subject()

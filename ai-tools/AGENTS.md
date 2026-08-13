@@ -130,7 +130,7 @@ This is enforced by convention, not the type system; a PR that direct-imports a 
 - Defined per app in `<app>/managers.py` + `<app>/querysets.py`.
 - Querysets are chainable + composable. Managers expose domain-specific methods (e.g. `for_organization(...)`, `with_availability(...)`).
 - **Hard rule:** never construct a complex queryset inline inside a service, view, or serializer. The query logic belongs on the manager / queryset. If you find yourself chaining 3+ filters or annotating across joins inline, move it to a manager method.
-- **Hard rule:** for `OrganizationModel` subclasses, never bypass the model manager (no `Model._meta.default_manager.get_queryset()`, no raw `Model.objects.raw(...)` that skips the organization filter, no direct `cursor.execute` that reads from tenant tables without the organization clause). The manager raises if the organization filter is missing — bypassing it bypasses the safety net.
+- **Hard rule:** for tenant-scoped models (the `SingleOrganizationModelMixin` subclasses described under [Multi-Tenancy](#multi-tenancy)), never bypass the model manager (no `Model._meta.default_manager.get_queryset()`, no raw `Model.objects.raw(...)` that skips the organization filter, no direct `cursor.execute` that reads from tenant tables without the organization clause). The manager raises if the organization filter is missing — bypassing it bypasses the safety net.
 - Examples: `calendar_integration/managers.py`, `calendar_integration/querysets.py`.
 
 ### Django Virtual Models (`<app>/virtual_models.py`)

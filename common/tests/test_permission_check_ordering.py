@@ -42,6 +42,7 @@ from organizations.models import (
     Organization,
     OrganizationMembership,
 )
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.permissions import IsOrganizationAdmin
 from organizations.tests.helpers import grant_membership_groups
 
@@ -127,7 +128,8 @@ def admin_here_member_there(
             user=user,
             organization=older_organization,
             is_active=True,
-        )
+        ),
+        [GROUP_ORGANIZATION_ADMIN],
     )
     OrganizationMembership.objects.create(
         user=user,
@@ -160,7 +162,8 @@ def member_here_admin_there(
             user=user,
             organization=newer_organization,
             is_active=True,
-        )
+        ),
+        [GROUP_ORGANIZATION_ADMIN],
     )
     return user
 
@@ -207,7 +210,8 @@ class TestTheAdminGateFollowsTheHeader:
                     user=user,
                     organization=organization,
                     is_active=True,
-                )
+                ),
+                [GROUP_ORGANIZATION_ADMIN],
             )
 
         response = _dispatch(AdminGatedProbeView, user, str(newer_organization.pk))

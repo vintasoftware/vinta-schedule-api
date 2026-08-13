@@ -213,6 +213,15 @@ def membership_holds_permission(membership: OrganizationMembership, permission: 
     row. Under the group catalog this replaces, ``role == ADMIN`` and
     "holds ``organizations.manage_members``" are the same set, because
     ``organization_admin`` is the only seeded group carrying it.
+
+    **Precondition: ``membership`` is saved.** The lookup is by ``pk``, so an
+    unsaved row filters on ``pk=None``, matches nothing, and returns ``False`` --
+    "holds no permission", indistinguishable from a real denial. The
+    ``membership.is_admin`` property this replaced answered from memory and so
+    had no such precondition. No caller passes an unsaved membership today (all
+    three resolve theirs from the database), which is why this is documented
+    rather than enforced; a caller that starts building memberships in memory
+    must assign groups and save before asking.
     """
     from organizations.models import OrganizationMembership as MembershipModel
 
@@ -245,8 +254,17 @@ def membership_role_label(membership: OrganizationMembership) -> str:
     for that. This exists only so the two surfaces that publish a role *name*
     (see :data:`MEMBERSHIP_ROLE_LABEL_ADMIN`) keep publishing the same names.
 
-    Costs one query per call, where the column cost none. Both callers already
-    write a row per call, and neither is in a loop over memberships.
+    Costs one query per call, where the column cost none. Three callers, not
+    two: the webhook payload builder, the ``audit.Audit`` row writer
+    (``AuditService.actor_from_membership``), and -- indirectly --
+    ``AuditService.actor_from_user``, which delegates to
+    ``actor_from_membership`` and is itself reached from
+    ``actor_from_user_or_token``. Each writes a row per call, so the extra query
+    is proportionate *per call*; what it is not proportionate to is a caller
+    that builds one actor snapshot per row in a loop. Hoist the snapshot out of
+    the loop instead of reaching past this function --
+    ``CalendarGroupService._delete_group_scoped_rows_for_removed_calendars``
+    is the worked example.
     """
     if membership_holds_permission(membership, _MANAGE_MEMBERS):
         return MEMBERSHIP_ROLE_LABEL_ADMIN

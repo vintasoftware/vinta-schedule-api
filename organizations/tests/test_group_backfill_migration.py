@@ -26,7 +26,11 @@ Three things are pinned here:
 2. **Every combination of the two flat columns maps to the right groups**,
    asserted against the migration's own ``target_group_names``. Phase 6 dropped
    both columns, so no live model carries them and the forward cannot be driven
-   over rows any more; the reverse, which reads no column, still is.
+   over rows *from here*; the reverse, which reads no column, still is. The loop
+   that applies the mapping to rows -- and with it idempotency, additivity and
+   inactive-membership handling -- is driven with ``MigrationExecutor`` in
+   ``organizations/tests/test_membership_group_migration_executor.py``, which
+   pays the cost this module declines to.
 3. **The migration's frozen literals still agree with the live catalog.** The
    migrations deliberately do not import ``organizations.permission_catalog``
    (a data migration must keep meaning what it meant when written), so the two
@@ -218,12 +222,17 @@ class TestTheMappingTheBackfillApplied:
     Asserted against ``target_group_names``, the migration's own pure function,
     rather than by running the backfill over rows. Phase 6 dropped the two
     columns, so no live model carries them any more and the only way to build the
-    input state would be to drive ``MigrationExecutor`` back to ``0029`` -- which
-    would buy nothing here and would put this module into the migration-executor
-    flake class the module header exists to stay out of. The migration keeps
-    working where it still runs (a ``migrate`` from a pre-Phase-6 database, where
-    the historical model *does* carry both columns); what this pins is the
-    mapping it applies.
+    input state is to drive ``MigrationExecutor`` back to ``0028`` -- which would
+    put this module into the migration-executor flake class the module header
+    exists to stay out of. What this class pins is the *mapping*; the loop that
+    applies it -- and the three properties that go with row writing, idempotency,
+    additivity and inactive-membership handling -- is pinned over real rows in
+    ``organizations/tests/test_membership_group_migration_executor.py``. Nothing
+    is left uncovered here on purpose; the split is by cost, not by scope.
+
+    The fourth case this class used to carry, "the backfill does not write
+    ``role`` / ``is_billing_owner``", is genuinely obsolete rather than relocated:
+    ``0030`` dropped both columns, so there is nothing left to write.
     """
 
     def test_all_four_combinations(self):

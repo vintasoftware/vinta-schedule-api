@@ -27,7 +27,11 @@ from organizations.models import (
     Organization,
     OrganizationMembership,
 )
-from organizations.permission_catalog import GROUP_ORGANIZATION_MEMBER, MANAGE_MEMBERS
+from organizations.permission_catalog import (
+    GROUP_ORGANIZATION_ADMIN,
+    GROUP_ORGANIZATION_MEMBER,
+    MANAGE_MEMBERS,
+)
 from organizations.tests.helpers import grant_membership_groups
 from users.models import User
 
@@ -76,7 +80,8 @@ def test_membership_in_the_admin_group_holds_manage_members(organization):
         OrganizationMembership.objects.create(
             user=user,
             organization=organization,
-        )
+        ),
+        [GROUP_ORGANIZATION_ADMIN],
     )
     assert membership_holds_permission(membership, MANAGE_MEMBERS) is True
 
@@ -91,7 +96,8 @@ def test_user_is_organization_admin_true_for_admin(organization):
         OrganizationMembership.objects.create(
             user=user,
             organization=organization,
-        )
+        ),
+        [GROUP_ORGANIZATION_ADMIN],
     )
     assert user.is_organization_admin(organization) is True
     # Also accepts an id directly.
@@ -115,7 +121,8 @@ def test_user_is_organization_admin_false_for_other_org(organization, other_org)
         OrganizationMembership.objects.create(
             user=user,
             organization=organization,
-        )
+        ),
+        [GROUP_ORGANIZATION_ADMIN],
     )
     # Admin in `organization`, no membership in `other_org` → False
     assert user.is_organization_admin(other_org) is False
@@ -137,7 +144,8 @@ def test_admin_can_manage_group_without_ownership(organization, group):
         OrganizationMembership.objects.create(
             user=admin,
             organization=organization,
-        )
+        ),
+        [GROUP_ORGANIZATION_ADMIN],
     )
     # Intentionally no CalendarOwnership → before the admin override was added, this was False.
     svc = CalendarPermissionService()
@@ -151,7 +159,8 @@ def test_admin_of_other_org_cannot_manage_group(organization, other_org, group):
         OrganizationMembership.objects.create(
             user=admin_elsewhere,
             organization=other_org,
-        )
+        ),
+        [GROUP_ORGANIZATION_ADMIN],
     )
     svc = CalendarPermissionService()
     assert svc.can_manage_calendar_group(user=admin_elsewhere, group=group) is False
@@ -164,7 +173,8 @@ def test_demoted_admin_cannot_manage_group(organization, group):
         OrganizationMembership.objects.create(
             user=user,
             organization=organization,
-        )
+        ),
+        [GROUP_ORGANIZATION_ADMIN],
     )
     svc = CalendarPermissionService()
     assert svc.can_manage_calendar_group(user=user, group=group) is True
@@ -190,7 +200,8 @@ def test_calendar_group_permission_passes_for_admin_without_ownership(organizati
         OrganizationMembership.objects.create(
             user=admin,
             organization=organization,
-        )
+        ),
+        [GROUP_ORGANIZATION_ADMIN],
     )
     perm = CalendarGroupPermission(calendar_permission_service=CalendarPermissionService())
     request = Mock()

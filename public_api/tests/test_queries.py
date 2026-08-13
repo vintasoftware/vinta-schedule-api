@@ -34,6 +34,7 @@ from calendar_integration.services.dataclasses import (
 )
 from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
 from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import grant_membership_groups
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess, SystemUser
@@ -4710,7 +4711,7 @@ class TestCalendarOwnersField:
         )
         OrganizationMembership.objects.get_or_create(user=user_b, organization=organization)
 
-        grant_membership_groups(_membership)
+        grant_membership_groups(_membership, [GROUP_ORGANIZATION_ADMIN])
         ownership_a = baker.make(
             CalendarOwnership,
             calendar=calendar,

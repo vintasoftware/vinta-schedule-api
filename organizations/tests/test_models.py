@@ -17,6 +17,7 @@ from organizations.models import (
     OrganizationMembership,
     WeekStart,
 )
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import grant_membership_groups
 
 
@@ -316,7 +317,10 @@ class TestMultiOrgMembership:
         org_member = baker.make(Organization)
 
         grant_membership_groups(
-            OrganizationMembership.objects.create(user=user, organization=org_admin, is_active=True)
+            OrganizationMembership.objects.create(
+                user=user, organization=org_admin, is_active=True
+            ),
+            [GROUP_ORGANIZATION_ADMIN],
         )
         OrganizationMembership.objects.create(user=user, organization=org_member, is_active=True)
 
@@ -329,7 +333,8 @@ class TestMultiOrgMembership:
         org = baker.make(Organization)
 
         grant_membership_groups(
-            OrganizationMembership.objects.create(user=user, organization=org, is_active=False)
+            OrganizationMembership.objects.create(user=user, organization=org, is_active=False),
+            [GROUP_ORGANIZATION_ADMIN],
         )
 
         assert user.is_organization_admin(org) is False

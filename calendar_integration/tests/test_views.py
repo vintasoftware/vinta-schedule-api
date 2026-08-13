@@ -3383,7 +3383,7 @@ class TestCalendarViewSetOwnerScoping:
         # A ``queryset.update(role=...)`` used to be enough. The admin decision
         # reads ``organizations.manage_members`` through the membership's
         # groups, so promotion is a group assignment and nothing else.
-        grant_membership_groups(membership)
+        grant_membership_groups(membership, [GROUP_ORGANIZATION_ADMIN])
 
     @staticmethod
     def _own_calendar(user, organization):

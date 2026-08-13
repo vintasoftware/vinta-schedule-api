@@ -56,6 +56,7 @@ from calendar_integration.services.external_event_change_request_service import 
     ExternalEventChangeRequestService,
 )
 from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import grant_membership_groups
 from users.models import Profile, User
 
@@ -101,7 +102,7 @@ def admin_membership(organization: Organization) -> OrganizationMembership:
         user=user,
         organization=organization,
     )
-    grant_membership_groups(membership)
+    grant_membership_groups(membership, [GROUP_ORGANIZATION_ADMIN])
     return membership
 
 

@@ -1,6 +1,6 @@
 ---
 name: add-model
-description: Add a new Django model in the Vinta Schedule API, following the project's multi-tenancy contract (OrganizationModel inheritance, OrganizationForeignKey for tenant-scoped relations), custom manager + queryset pattern, admin registration, and factory for tests. Use when adding a tenant-scoped or shared model to any app (accounts, calendar_integration, organizations, payments, public_api, webhooks, etc.). Skip for ad-hoc through-tables that don't deserve a manager; use a plain `class Meta` model + comment for those.
+description: Add a new Django model in the Vinta Schedule API, following the project's multi-tenancy contract (SingleOrganizationModelMixin inheritance, OrganizationSafeForeignKey for tenant-scoped relations), custom manager + queryset pattern, admin registration, and factory for tests. Use when adding a tenant-scoped or shared model to any app (accounts, calendar_integration, organizations, payments, public_api, webhooks, etc.). Skip for ad-hoc through-tables that don't deserve a manager; use a plain `class Meta` model + comment for those.
 ---
 
 # Add Model
@@ -12,18 +12,18 @@ See [AGENTS.md → Multi-Tenancy](../../AGENTS.md#multi-tenancy), [AGENTS.md →
 Answer before writing the model:
 
 1. **Tenant-scoped or shared?**
-   - Tenant-scoped (per-organization) → inherit from `OrganizationModel`. Almost everything user-facing.
+   - Tenant-scoped (per-organization) → inherit `SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel`. Almost everything user-facing.
    - Shared (one row across all orgs) → inherit from `django.db.models.Model` or a project base in `common/models.py`. Example: `Organization` itself, system-wide configuration, country / currency reference data.
    - In doubt → tenant-scoped. Sharing a model across tenants later is harder than tenant-isolating it later.
 
 2. **Which app does it belong in?** Use the existing app whose domain the model belongs to. New top-level domain → new app, but confirm with the team before creating one.
 
 3. **Which existing model does it relate to?** Walk the FK / OneToOne / M2M graph. For each relation:
-   - Other side is tenant-scoped → use `OrganizationForeignKey` / `OrganizationOneToOneField` from `common/`. These generate the `<name>_fk` concrete column + the `<name>` `ForeignObject` join that includes the org clause.
+   - Other side is tenant-scoped → use `OrganizationSafeForeignKey` / `OrganizationSafeOneToOneField` from `common/fields.py`. These generate the `<name>_fk` concrete column + the `<name>` `ForeignObject` join that includes the org clause.
    - Other side is shared → use stock `models.ForeignKey` / `models.OneToOneField`.
-   - M2M to a tenant-scoped model → use the through= explicit-through-model pattern with `OrganizationForeignKey` on both sides.
+   - M2M to a tenant-scoped model → use the through= explicit-through-model pattern with `OrganizationSafeForeignKey` on both sides.
 
-4. **Does the model need a custom manager + queryset?** Default `OrganizationModel.objects` already enforces the org filter. You need a custom one when:
+4. **Does the model need a custom manager + queryset?** A declared `objects = OrganizationScopedManager()` already enforces the org filter. You need a custom one when:
    - There are domain-specific filter methods to expose (`for_active(...)`, `with_availability(...)`).
    - Reads commonly need a specific `select_related` / `prefetch_related` annotation.
    - A virtual model for DRF serialization will rely on a specific shape.
@@ -43,14 +43,16 @@ For a tenant-scoped model `Foo` in app `bars`:
    ```python
    from django.db import models
 
-   from common.models import OrganizationModel
-   from common.fields import OrganizationForeignKey
+   from vinta_orgs.mixins import SingleOrganizationModelMixin
+
+   from common.fields import OrganizationSafeForeignKey
+   from common.models import BaseModel, SafeRelationNullInitMixin
 
    from bars.managers import FooManager
 
-   class Foo(OrganizationModel):
+   class Foo(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel):
        name = models.CharField(max_length=200)
-       parent = OrganizationForeignKey(
+       parent = OrganizationSafeForeignKey(
            "bars.Parent",
            on_delete=models.CASCADE,
            related_name="foos",
@@ -97,15 +99,15 @@ For a tenant-scoped model `Foo` in app `bars`:
 3. **`bars/managers.py`** — manager (use `from_queryset` so chainable methods are also manager methods):
 
    ```python
-   from common.managers import OrganizationManager
+   from common.managers import OrganizationScopedManager
 
    from bars.querysets import FooQuerySet
 
 
-   FooManager = OrganizationManager.from_queryset(FooQuerySet)
+   FooManager = OrganizationScopedManager.from_queryset(FooQuerySet)
    ```
 
-   `OrganizationManager` is the project base that raises on missing org filter. Subclass / `from_queryset` it — never plain `models.Manager`.
+   `OrganizationScopedManager` is the project base that raises on missing org filter. Subclass / `from_queryset` it — never plain `models.Manager`, and never a hand-rolled `get_queryset` returning a custom queryset, which skips the scoping entirely.
 
 4. **`bars/admin.py`** — admin registration:
 
@@ -159,10 +161,10 @@ For a tenant-scoped model `Foo` in app `bars`:
 
 ## Pitfalls
 
-- **`models.ForeignKey` to another tenant-scoped model.** Reads through `obj.parent` will not include the organization clause; queries leak across tenants under joins. Use `OrganizationForeignKey`.
-- **Naming the concrete field manually instead of via `OrganizationForeignKey`.** The framework names the concrete column `<name>_fk`; manual naming desyncs the `ForeignObject` join.
+- **`models.ForeignKey` to another tenant-scoped model.** Reads through `obj.parent` will not include the organization clause; queries leak across tenants under joins. Use `OrganizationSafeForeignKey`.
+- **Naming the concrete field manually instead of via `OrganizationSafeForeignKey`.** The framework names the concrete column `<name>_fk`; manual naming desyncs the `ForeignObject` join.
 - **Forgetting `organization` in a `UniqueConstraint`.** Migration applies fine on a single-tenant DB. Production has multiple tenants → first collision raises `IntegrityError` at runtime, not at migrate-time.
-- **Custom manager that doesn't inherit `OrganizationManager`.** Loses the missing-org-filter guard. Easy to spot in review — every tenant-scoped model's manager must trace back to `OrganizationManager`.
+- **Custom manager that doesn't inherit `OrganizationScopedManager`.** Loses the missing-org-filter guard. Easy to spot in review — every tenant-scoped model's manager must trace back to `OrganizationScopedManager`.
 - **Querying through the `<name>_fk` concrete column directly** (e.g. `.filter(parent_fk=42)`). This skips the org clause. Use `.filter(parent=parent_obj)` or `.filter(parent_id=42)` through the `ForeignObject`.
 - **Touching `Model._meta.default_manager` to bypass the missing-filter check** "just for this script". Use a real manager method that takes the org explicitly.
 - **Skipping the admin.** Admin pages are also tenant-aware via Django's session-scoped staff context; missing admin = no operational visibility.
@@ -183,11 +185,11 @@ docker compose run --rm api uv run pytest bars/tests/ -n auto
 ```
 
 Spot-checks:
-- [ ] Model inherits from `OrganizationModel` (or explicitly justified shared).
-- [ ] Every FK / OneToOne to a tenant-scoped target uses `OrganizationForeignKey` / `OrganizationOneToOneField`.
+- [ ] Model inherits `SingleOrganizationModelMixin` (or explicitly justified shared).
+- [ ] Every FK / OneToOne to a tenant-scoped target uses `OrganizationSafeForeignKey` / `OrganizationSafeOneToOneField`.
 - [ ] Every unique constraint includes `organization`.
 - [ ] Every composite index leads with `organization`.
-- [ ] Custom manager inherits from / uses `OrganizationManager`.
+- [ ] Custom manager inherits from / uses `OrganizationScopedManager`.
 - [ ] Querysets are chainable + composable.
 - [ ] Admin registered with org-aware filters.
 - [ ] Factory requires `organization` (no default).

@@ -27,6 +27,7 @@ from calendar_integration.services.calendar_service_context import CalendarServi
 from calendar_integration.services.recurrence_manager import RecurrenceManager
 from calendar_integration.tests.services.test_availability_service import FakeHost
 from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import grant_membership_groups
 from users.models import Profile, User
 
@@ -58,7 +59,8 @@ def user(db: Any, organization: Organization) -> User:
         OrganizationMembership.objects.create(
             user=u,
             organization=organization,
-        )
+        ),
+        [GROUP_ORGANIZATION_ADMIN],
     )
     return u
 

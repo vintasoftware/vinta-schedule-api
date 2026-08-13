@@ -37,6 +37,7 @@ from calendar_integration.models import (
     CalendarGroupSlotMembership,
 )
 from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import grant_membership_groups
 from users.factories import UserFactory
 
@@ -92,7 +93,8 @@ def organization() -> Organization:
 def admin_membership(organization: Organization) -> OrganizationMembership:
     user = UserFactory().create_user()
     return grant_membership_groups(
-        OrganizationMembership.objects.create(user=user, organization=organization, is_active=True)
+        OrganizationMembership.objects.create(user=user, organization=organization, is_active=True),
+        [GROUP_ORGANIZATION_ADMIN],
     )
 
 

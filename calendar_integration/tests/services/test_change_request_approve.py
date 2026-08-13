@@ -47,7 +47,7 @@ from calendar_integration.services.external_event_change_request_service import 
 )
 from organizations.authorization import membership_holds_permission
 from organizations.models import Organization, OrganizationMembership
-from organizations.permission_catalog import MANAGE_MEMBERS
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN, MANAGE_MEMBERS
 from organizations.tests.helpers import grant_membership_groups
 from users.models import Profile, User
 
@@ -93,7 +93,7 @@ def admin_membership(organization: Organization) -> OrganizationMembership:
         user=user,
         organization=organization,
     )
-    grant_membership_groups(membership)
+    grant_membership_groups(membership, [GROUP_ORGANIZATION_ADMIN])
     return membership
 
 
@@ -460,7 +460,7 @@ def test_can_resolve_returns_false_for_different_org(
         user=user,
         organization=other_org,
     )
-    grant_membership_groups(other_membership)
+    grant_membership_groups(other_membership, [GROUP_ORGANIZATION_ADMIN])
 
     change_request = create_external_event_change_request(
         event=event,

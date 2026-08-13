@@ -40,6 +40,7 @@ from calendar_integration.services.dataclasses import (
     CalendarGroupSlotInputData,
 )
 from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import grant_membership_groups
 from users.models import Profile, User
 
@@ -86,7 +87,8 @@ def admin_user(db: Any, organization: Organization) -> User:
         OrganizationMembership.objects.create(
             user=u,
             organization=organization,
-        )
+        ),
+        [GROUP_ORGANIZATION_ADMIN],
     )
     return u
 

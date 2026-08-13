@@ -460,23 +460,30 @@ class CalendarGroupService:
         delete) when no ``audit_service`` is bound.
         """
         rows = list(queryset)
-        for row in rows:
-            if self.audit_service is None or self.organization is None:
-                break
+        if rows and self.audit_service is not None and self.organization is not None:
             user_or_token = getattr(self.calendar_service, "user_or_token", None)
             permission_service = getattr(self.calendar_service, "calendar_permission_service", None)
-            self.audit_service.record(
-                organization_id=self.organization.id,
-                action=AuditAction.DELETE,
-                actor=self.audit_service.actor_from_user_or_token(
-                    user_or_token,
-                    self.organization.id,
-                    single_use_token=resolve_acting_single_use_token(
-                        user_or_token, permission_service
-                    ),
-                ),
-                subject=self.audit_service.subject_from_instance(row),
+            # One actor snapshot for every row. ``user_or_token``, the
+            # organization and the permission service are all loop-invariant, and
+            # ``ActorSnapshot`` is frozen, so the answer cannot differ between
+            # iterations -- but building it per row cost a membership lookup
+            # *plus*, since Phase 6, the permission query behind
+            # ``membership_role_label`` (which derives the published role name
+            # from the group catalog now that the ``role`` column is gone). That
+            # made a delete of N rows issue 2N round trips for one unchanging
+            # value; hoisting it also removes the pre-existing N+1 underneath.
+            actor = self.audit_service.actor_from_user_or_token(
+                user_or_token,
+                self.organization.id,
+                single_use_token=resolve_acting_single_use_token(user_or_token, permission_service),
             )
+            for row in rows:
+                self.audit_service.record(
+                    organization_id=self.organization.id,
+                    action=AuditAction.DELETE,
+                    actor=actor,
+                    subject=self.audit_service.subject_from_instance(row),
+                )
         queryset.delete()
 
     def _reconcile_slot(

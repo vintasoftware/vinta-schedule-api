@@ -27,6 +27,7 @@ from calendar_integration.serializers import (
 )
 from calendar_integration.services.calendar_service import CalendarService
 from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import grant_membership_groups
 
 
@@ -178,7 +179,8 @@ def test_ownership_serializer_membership_field_shape(organization, calendar):
         OrganizationMembership.objects.create(
             user=user,
             organization=organization,
-        )
+        ),
+        [GROUP_ORGANIZATION_ADMIN],
     )
     ownership = _resolved_ownership(
         organization, create_calendar_ownership(calendar=calendar, user=user)

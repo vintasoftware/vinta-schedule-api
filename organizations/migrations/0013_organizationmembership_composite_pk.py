@@ -98,10 +98,12 @@ declared ``common.fields.SafeCompositePrimaryKey``, a ``CompositePrimaryKey``
 subclass whose only difference was a descriptor tolerating class-level ``Model.pk``
 access. Phase 6 deleted that class along with the rest of the bespoke tenancy
 layer, so this migration now names Django's stock ``models.CompositePrimaryKey``.
-The two deconstruct to the same field arguments and differ only in a Python-level
-descriptor, which no migration -- forward or reverse -- reads; and ``0023`` removes
-this virtual field again, so the end state is identical either way. Edited rather
-than kept alive because the alternative was retaining a deleted class purely so an
+The two carry identical field *arguments*; ``Field.deconstruct()`` also returns an
+import path, and that part does differ. It is immaterial here for two reasons: no
+migration -- forward or reverse -- reads the descriptor the path resolves to, and
+``0023`` removes this virtual field from the state again, so the field is gone
+before any state comparison reaches the final model. Edited rather than kept alive
+because the alternative was retaining a deleted class purely so an
 already-superseded migration could import it.
 """
 

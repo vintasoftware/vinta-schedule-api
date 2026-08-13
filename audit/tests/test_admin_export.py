@@ -15,6 +15,7 @@ from audit.constants import AuditAction, AuditActorType
 from audit.models import Audit, AuditAffectedMembership
 from organizations.authorization import MEMBERSHIP_ROLE_LABEL_ADMIN
 from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import grant_membership_groups
 
 
@@ -425,7 +426,8 @@ class TestAuditAdminExportSerialization:
             OrganizationMembership.objects.create(
                 organization=org,
                 user=user,
-            )
+            ),
+            [GROUP_ORGANIZATION_ADMIN],
         )
 
     def test_diff_serializes_as_json_string(self, admin_client, org):

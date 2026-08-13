@@ -105,16 +105,6 @@ def _group_counts_by_organization(queryset: QuerySet[Any]) -> dict[int, int]:
     # model declares ``Meta.ordering`` either), so this is defensive today — but
     # it means a later, unrelated ``Meta.ordering`` addition on any of those
     # models can no longer mis-bill every customer through this path.
-    #
-    # ``Count("pk")``: on ``OrganizationMembership`` (composite primary key,
-    # ``SafeCompositePrimaryKey("user", "organization")``), Django 6 rewrites the
-    # ``ColPairs`` source to its first column, so this becomes ``COUNT(user_id)``
-    # — correct, but as a side effect of a Django internal, not a documented
-    # contract. The same rewrite raises ``ValueError("COUNT(DISTINCT) doesn't
-    # support composite primary keys")`` the moment ``distinct=True`` is added.
-    # Do not add ``distinct=True`` "defensively": no chain feeding this function
-    # has a row-multiplying join, so it is not needed, and it would turn this
-    # into a 500 on every seat check.
     return {
         row["organization_id"]: row["usage_count"]
         for row in queryset.order_by().values("organization_id").annotate(usage_count=Count("pk"))

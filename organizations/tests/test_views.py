@@ -3742,7 +3742,8 @@ class TestOrganizationMineAction:
                 user=user,
                 organization=org_a,
                 is_active=True,
-            )
+            ),
+            [GROUP_ORGANIZATION_ADMIN],
         )
         membership_b = OrganizationMembership.objects.create(
             user=user,
@@ -3828,7 +3829,8 @@ class TestOrganizationMineAction:
                 user=user,
                 organization=org,
                 is_active=True,
-            )
+            ),
+            [GROUP_ORGANIZATION_ADMIN],
         )
 
         client = APIClient()
@@ -3946,7 +3948,8 @@ class TestOrganizationMineAction:
                 user=user,
                 organization=org_a,
                 is_active=True,
-            )
+            ),
+            [GROUP_ORGANIZATION_ADMIN],
         )
         OrganizationMembership.objects.create(
             user=user,
@@ -3993,7 +3996,8 @@ class TestOrganizationMineAction:
                 user=user,
                 organization=org_a,
                 is_active=True,
-            )
+            ),
+            [GROUP_ORGANIZATION_ADMIN],
         )
         OrganizationMembership.objects.create(
             user=user,
@@ -4118,7 +4122,8 @@ class TestCreateAdditionalOrganization:
                 user=user,
                 organization=org_a,
                 is_active=True,
-            )
+            ),
+            [GROUP_ORGANIZATION_ADMIN],
         )
 
         client = APIClient()
@@ -4147,7 +4152,8 @@ class TestCreateAdditionalOrganization:
                 user=user,
                 organization=org_a,
                 is_active=True,
-            )
+            ),
+            [GROUP_ORGANIZATION_ADMIN],
         )
 
         client = APIClient()
@@ -4175,7 +4181,8 @@ class TestCreateAdditionalOrganization:
                 user=user,
                 organization=org_a,
                 is_active=True,
-            )
+            ),
+            [GROUP_ORGANIZATION_ADMIN],
         )
 
         client = APIClient()
@@ -4206,7 +4213,8 @@ class TestCreateAdditionalOrganization:
                 user=user,
                 organization=org_a,
                 is_active=True,
-            )
+            ),
+            [GROUP_ORGANIZATION_ADMIN],
         )
         OrganizationMembership.objects.create(
             user=user,

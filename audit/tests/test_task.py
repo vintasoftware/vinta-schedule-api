@@ -90,7 +90,8 @@ class TestPersistAuditRecordTask:
             OrganizationMembership.objects.create(
                 user=user,
                 organization=org,
-            )
+            ),
+            [GROUP_ORGANIZATION_ADMIN],
         )
         data = AuditRecordData(
             organization_id=org.pk,
