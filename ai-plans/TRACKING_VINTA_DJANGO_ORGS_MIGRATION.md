@@ -43,7 +43,7 @@ Verified after fixing: host surface and container surface both load Django and b
 
 ## Phases
 
-8 phases across 6 layers after the 2026-08-12 amendment (was 10 across 7). No cross-repo phases. No flag-removal phase.
+9 phases after the 2026-08-13 insertion of Phase 3.5 (8 after the 2026-08-12 amendment, 10 originally). No cross-repo phases. No flag-removal phase.
 
 | Phase | Title | Impl tier | Review override | Status | Branch | Base | PR |
 |---|---|---|---|---|---|---|---|
@@ -55,7 +55,8 @@ Verified after fixing: host surface and container surface both load Django and b
 | 2a | Flip `calendar_integration` onto the mixin and safe relations | 4 | reviewer 4 | ✅ done | `plan/vinta-django-orgs-migration/phase-2a` | phase-1 | see below |
 | 2b | Flip the remaining scoped models, bind on the request path | 3 | reviewer 4 | ✅ done | `plan/vinta-django-orgs-migration/phase-2b` | phase-2a | see below |
 | 3 | Groups, permissions, and the organization auth backend | 3 | — | ✅ done | `plan/vinta-django-orgs-migration/phase-3` | phase-2b | see below |
-| 4 | Migrate the permission classes to `has_perm` | 4 | reviewer 4 | ⏳ pending | — | phase-3 | — |
+| 3.5 | Make the authorization substrate correct before migrating onto it | 4 | reviewer 4 | ⏳ pending | — | phase-3 | — |
+| 4 | Migrate the permission classes to `has_perm` | 4 | reviewer 4 | ⏳ pending | — | phase-3.5 | — |
 | 5 | Expose permissions on REST and GraphQL, drop `role` | 3 | — | ⏳ pending | — | phase-4 | — |
 | 6 | Drop `role` / `is_billing_owner` and delete the old tenancy layer | 1 | — | ⏳ pending | — | phase-5 | — |
 
@@ -347,9 +348,17 @@ Other carry-forwards:
 - **`OrganizationMembership.permissions` (the direct per-membership grant) stays empty and unread.** `billing_recipients` reads groups only, so a membership granted `manage_billing` directly could write billing (from Phase 4) but not receive dunning. Nothing writes that M2M today.
 - **Five test-helper modules now call the shim**, because `baker.make(OrganizationMembership, role=ADMIN)` produces no groups and 16 pre-existing tests went red on the `billing_recipients` switch. The reviewer confirmed these preserve intent rather than paper over a behavior change. **Phase 4 will hit this at much larger scale** — it needs admin memberships to carry groups across ~180 test modules. A `post_save` signal would cover every write path including baker; the implementer deliberately did not reach for one, flagging it as a design decision above this phase. **Phase 4 should decide early.**
 
+## Decisions taken 2026-08-13
+
+All three questions blocking Phase 4 were put to the user and answered:
+
+1. **The `check_permissions`-before-resolver ordering gets its own phase**, inserted as **Phase 3.5** before Phase 4 — not folded into Phase 4, and not deferred. Rationale: "when the check runs" and "what is checked" stay separately reviewable, each with its own parity matrix.
+2. **The `is_active` gate lives in a repo-owned `OrganizationModelBackend` subclass**, not in group-clearing on deactivation. One place, cannot be forgotten by a current or future deactivation path, and reactivation needs no restore step. Also landed in Phase 3.5.
+3. **Phase 4's test fixtures use a shared helper updated per module**, not a `post_save` signal. The signal would have covered every write path including `baker.make`, but it is a production behaviour change made to serve tests and Phase 6 would have had to unpick it. Recorded in Phase 4's Changes list; the sweep must be exhaustive because the failure mode is a test that silently asserts the wrong thing.
+
 ## Current phase
 
-Phase 4 — migrate the permission classes to `has_perm`. **Blocked on two decisions**, both recorded above as Phase 3 carry-forwards: the `is_active` gap in the auth backend (a mechanical swap grants deactivated admins full rights) and the `check_permissions`-before-resolver ordering. Also decide the test-fixture strategy before starting — ~180 test modules need admin memberships carrying groups.
+Phase 3.5 — make the authorization substrate correct before migrating onto it. Based on `phase-3`.
 
 ## Deferred phases
 

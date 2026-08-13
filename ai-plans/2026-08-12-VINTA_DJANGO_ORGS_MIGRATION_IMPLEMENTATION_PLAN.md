@@ -349,6 +349,39 @@ Acceptance: `user.has_perm("payments.manage_billing")` is `True` under a bound o
 
 ---
 
+### Phase 3.5 — Make the authorization substrate correct before migrating onto it
+
+**Goal**: `has_perm` becomes a *safe* thing for Phase 4 to read. Two defects would otherwise be silently inherited by a mechanical swap: permission checks that run before the organization is resolved, and an auth backend that answers for deactivated memberships. No permission class changes what it *reads* in this phase — only when the check runs and what the backend is willing to resolve.
+
+**Inserted 2026-08-13** (decimal id, so no existing phase is renumbered). Both defects were found during Phases 2b and 3 and are recorded in `ai-plans/TRACKING_VINTA_DJANGO_ORGS_MIGRATION.md`. The `check_permissions` ordering is **pre-existing** — not caused by this migration — but Phase 4 rewrites exactly the classes it affects, so shipping Phase 4 on top of it would bake it in.
+
+**Feature flag**: none.
+
+Changes:
+
+1. **Reorder `TenantScopedViewMixin.initial()` to authenticate → resolve → `check_permissions`.** Today it calls `super().initial()` (which runs authentication *and* `check_permissions`) and only then `_resolve_active_organization()`. So every permission class calling `get_active_organization_membership(user)` at `has_permission` time finds `_active_membership` unset and falls through to `user.memberships.filter(is_active=True).order_by("created").first()` — the user's **oldest** membership — while `get_queryset` answers from `X-Organization-Id`. A user who is an admin of an older organization A and a plain member of B can therefore pass a collection-level `IsOrganizationAdmin` gate while the queryset serves B. ~15 call sites across `@organizations/permissions.py`, `@calendar_integration/permissions.py`, `@public_api/permissions.py`, `@users/permissions.py` are affected. Phase 2b already closed this for `/public-api-tokens/` specifically (adding the mixin there would otherwise have *widened* access) — that local fix should collapse into the general one.
+2. **Preserve the 401 boundary.** Authentication must still run first, and an unauthenticated request must still get 401 rather than a 400 from organization resolution. Resolution failures (400 on ambiguity, 403 on non-member) must keep their current codes for authenticated callers. The whole resolution table from `@common/utils/view_utils.py` is the contract.
+3. **Gate the auth backend on `is_active` via a repo-owned subclass.** `vinta_orgs.auth_backends.OrganizationModelBackend._get_membership` does not filter `is_active`, so an inactive membership resolves its group permissions. Every role check today routes through `get_active_organization_membership`, which treats a deactivated member exactly like a non-member — so a mechanical `has_perm` swap in Phase 4 would grant a deactivated admin full admin rights. Subclass the backend in `organizations/auth_backends.py`, filter `is_active=True` in `_get_membership`, and point `AUTHENTICATION_BACKENDS` at ours. Chosen over clearing groups on deactivation because the gate then lives in one place and cannot be forgotten by a current or future deactivation path — and because reactivation would otherwise have to restore them.
+4. **Do not change what any permission class reads.** `membership.is_admin` / `is_billing_owner` stay. This phase moves *when* the check runs and *what the backend will resolve*; Phase 4 moves *what is checked*.
+
+Spec use-case: shared scaffolding — no use-case yet.
+
+Tests:
+- **Integration**: `common/tests/test_permission_check_ordering.py` — for a user who is an admin of organization A and a plain member of B, a request naming B is refused by `IsOrganizationAdmin`; the same request naming A is admitted. Mutation-test it: restoring the old ordering must turn it red, or it proves nothing.
+- **Integration**: `common/tests/test_resolution_table_after_reorder.py` — the full existing table still holds (0 / 1 / 2+ memberships × header present / absent / non-member × per-action opt-outs), and 401 still precedes 400/403 for an unauthenticated caller.
+- **Unit**: `organizations/tests/test_permission_backend.py` — extend with the `is_active` gate: a deactivated admin resolves **no** organization permissions, reactivation restores them, and the global half of the union is unaffected.
+- The existing suite passes. A test that changes status code expectations must say why in its diff.
+
+**Suggested AI model**: Tier 4 (IDs in [resources/ai-models.yaml](../.claude/skills/plan-feature/resources/ai-models.yaml)). Reordering authentication, resolution, and authorization moves 400/403/401 boundaries across every tenant-facing endpoint; the failure mode is a widened grant that no test names.
+
+**Review models**: reviewer Tier 4 — every finding here is an authorization defect, and the reorder's blast radius is the whole API.
+
+**Reusable skills**: none.
+
+Acceptance: a permission class asked at `has_permission` time sees the organization named by `X-Organization-Id` rather than the caller's oldest membership; a deactivated membership resolves no permissions; the full resolution table is unchanged for every case that was already correct; and the suite is green.
+
+---
+
 ### Phase 4 — Migrate the permission classes to `has_perm`
 
 **Goal**: authorization decisions read permissions instead of `role` / `is_billing_owner`, with identical outcomes.
@@ -362,6 +395,7 @@ Changes:
 3. Both branding gates keep their entitlement logic; only the role half becomes `organizations.manage_branding`. `user_administers_branding_eligible_organization` (the S3Direct `auth` callable) iterates permitted memberships instead of `role=ADMIN` ones.
 4. `@users/models.py::is_organization_admin(organization)` becomes a `has_perm` wrapper, keeping its signature so `@calendar_integration/permissions.py` needs no change beyond what it inherits.
 5. Sweep the remaining classes across `@calendar_integration/permissions.py` (7 classes), `@public_api/permissions.py` (2), `@users/permissions.py` (1).
+7. **Test fixtures**: `baker.make(OrganizationMembership, role=ADMIN)` produces no groups, so every test that builds an admin membership and then exercises a permission class needs groups assigned. **Decision (2026-08-13): a shared test helper, updated per module** — not a `post_save` signal. The signal would have covered every write path including baker, but it is a production behaviour change made to serve tests, and Phase 6 would have had to unpick it. The cost is that every test module creating an admin membership must be found and updated, and the failure mode is a test that silently asserts the wrong thing — so the sweep must be exhaustive and the helper must be the only sanctioned way to build a privileged membership in tests.
 6. Delete the dead-with-reason `BrandingWriteGateReason.NO_SLUG` (and its `BRANDING_GATE_EXCEPTIONS` entry and the `if not organization.slug` check in `evaluate_branding_write_gate`) from `@organizations/permissions.py` — retired in Phase 1 (see the plan's Guiding Decisions "Slug precondition for branding writes is retired" row) once `organization_slug_not_blank` made it permanently unreachable through any supported write path. `OrganizationSlugRequiredForBrandingError` in `@organizations/exceptions.py` goes with it once nothing references it.
 
 Spec use-case: shared scaffolding — no use-case yet.
@@ -534,3 +568,5 @@ Acceptance: the grep in change 4 returns nothing outside migrations, the suite i
   **Branches**: `plan/vinta-django-orgs-migration/phase-1a`, `phase-1b`, and `phase-1c` are abandoned in place for audit and their PRs (#255, #256, #257) closed unmerged; a new `phase-1` branches off `phase-0`. Nothing had been merged to `main`, no branch had more than one author, and no PR carried a review — which is what made withdrawing cheaper than building forward on top of a rename we no longer wanted. In-flight Phase 2a work was preserved on `salvage/phase-2a-pre-amend` before any rewrite.
 
   **What must not come back.** The withdrawn artifacts are named explicitly in the **App-label collision — none** Guiding Decision and in Phase 1's collapse note, and `organizations/tests/test_app_identity.py` is the regression gate: it asserts our app label and every table name, so a future change that reintroduces a rename or a table move fails loudly rather than quietly re-earning Phase 1b.
+
+- **2026-08-13** — Inserted **Phase 3.5**, "Make the authorization substrate correct before migrating onto it", between Phases 3 and 4. It carries two defects found during implementation: the `check_permissions`-before-resolver ordering (surfaced in Phase 2b, pre-existing, ~15 permission-class call sites) and the auth backend's missing `is_active` filter (surfaced in Phase 3, which pinned it as observed behaviour). Both would have been silently inherited by Phase 4's mechanical `has_perm` swap — the first lets an admin-elsewhere pass a gate for an organization they are only a member of, the second would grant a deactivated admin full rights. Given its own phase rather than folded into Phase 4 so that "when the check runs" and "what is checked" stay separately reviewable, each with its own parity matrix. Also recorded Phase 4's test-fixture decision (shared helper, not a `post_save` signal). Affected phases: 3.5 (new), 4 (fixture note). No branches force-pushed.
