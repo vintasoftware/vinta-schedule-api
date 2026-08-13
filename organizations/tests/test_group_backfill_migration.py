@@ -307,3 +307,44 @@ class TestTheBackfillsReverse:
         BACKFILL_MIGRATION.unassign_membership_groups(global_apps, connection.schema_editor())
 
         assert _group_names(membership) == {"another_unrelated_group"}
+
+    def test_it_is_a_no_op_when_the_groups_are_already_gone(self):
+        """The reverse must tolerate ``0028`` having already been reversed.
+
+        Django runs this reverse whenever *anything* downstream of ``0028`` is
+        unapplied -- including stepping ``payments`` backwards, because
+        ``payments.0022`` is one of ``0028``'s dependencies. A test that walks
+        another app's migrations therefore drags this reverse along, and by then
+        ``0028``'s own reverse may already have deleted the groups.
+
+        This is the shape that failed on CI: the reverse raised
+        ``SeededGroupsMissingError`` and took two unrelated migration tests down
+        with it. Nothing to detach is a completed no-op, not an error -- the
+        *forward* is the direction that cannot proceed without the groups.
+        """
+        organization = baker.make(Organization, name="Gone Co", slug="gone-co")
+        membership = OrganizationMembership.objects.create(
+            user=baker.make(User), organization=organization, role=OrganizationRole.ADMIN
+        )
+        _run_backfill()
+        assert _group_names(membership) == {"organization_admin"}
+
+        # Exactly what ``0028``'s reverse does, and what leaves the database in
+        # the state CI hit.
+        Group.objects.filter(name__in=list(CATALOG_GROUP_PERMISSIONS)).delete()
+
+        BACKFILL_MIGRATION.unassign_membership_groups(global_apps, connection.schema_editor())
+
+        assert _group_names(membership) == set()
+
+    def test_the_forward_still_refuses_when_the_groups_are_missing(self):
+        """The tolerance above is one-directional, and this is the control for it.
+
+        Forward is about to assign memberships to groups; a missing group means
+        ``0028`` did not do its job, and silently assigning nothing would leave
+        every membership ungrouped and ``billing_recipients`` returning no one.
+        """
+        Group.objects.filter(name__in=list(CATALOG_GROUP_PERMISSIONS)).delete()
+
+        with pytest.raises(BACKFILL_MIGRATION.SeededGroupsMissingError):
+            _run_backfill()

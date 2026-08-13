@@ -67,13 +67,32 @@ def target_group_names(role, is_billing_owner):
     return names
 
 
-def _group_ids(apps, db_alias):
+def _group_ids(apps, db_alias, *, required: bool):
+    """Resolve the three seeded groups to their ids.
+
+    ``required`` is the whole point of the parameter, and the two callers want
+    opposite things:
+
+    *Forward* cannot proceed without them -- it is about to assign memberships
+    to groups, and a missing group means ``0028`` did not do its job. Raising is
+    the only honest answer; silently assigning nothing would leave every
+    membership ungrouped and ``billing_recipients`` returning no one.
+
+    *Reverse* must tolerate their absence. It detaches groups from memberships,
+    so "the groups are not there" means the work it exists to undo is already
+    undone -- a completed no-op, not a failure. Raising there turns a benign
+    state into a hard error, and it does so on a path Django runs whenever
+    *anything* downstream is unapplied: a test that steps another app's
+    migrations backwards drags this reverse along with it (``payments.0022`` is
+    a real dependency of ``0028``), and it should not have to care whether the
+    groups happen to exist at that moment.
+    """
     Group = apps.get_model("auth", "Group")
     group_ids = dict(
         Group.objects.using(db_alias).filter(name__in=SEEDED_GROUPS).values_list("name", "id")
     )
     missing = [name for name in SEEDED_GROUPS if name not in group_ids]
-    if missing:
+    if missing and required:
         raise SeededGroupsMissingError(
             f"0028_seed_permission_groups did not leave these groups behind: {missing}"
         )
@@ -83,7 +102,7 @@ def _group_ids(apps, db_alias):
 def backfill_membership_groups(apps, schema_editor):
     Membership = apps.get_model("organizations", "OrganizationMembership")
     db_alias = schema_editor.connection.alias
-    group_ids = _group_ids(apps, db_alias)
+    group_ids = _group_ids(apps, db_alias, required=True)
     through = Membership.groups.through
 
     pending = []
@@ -111,10 +130,19 @@ def unassign_membership_groups(apps, schema_editor):
     A plain mirror of the forward operation against current state, the way a
     Django migration reverse normally works -- not "only what the forward
     touched", which nothing records.
+
+    Tolerates the groups already being gone. ``0028``'s own reverse deletes
+    them, so any backwards plan that reaches past this migration will have
+    removed them by the time a *later* backwards plan runs -- and Django runs
+    this reverse whenever anything downstream of ``0028`` is unapplied, which
+    includes stepping ``payments`` backwards, since ``payments.0022`` is one of
+    ``0028``'s dependencies. With nothing to detach there is nothing to do.
     """
     Membership = apps.get_model("organizations", "OrganizationMembership")
     db_alias = schema_editor.connection.alias
-    group_ids = _group_ids(apps, db_alias)
+    group_ids = _group_ids(apps, db_alias, required=False)
+    if not group_ids:
+        return
     through = Membership.groups.through
 
     through.objects.using(db_alias).filter(group_id__in=list(group_ids.values())).delete()
