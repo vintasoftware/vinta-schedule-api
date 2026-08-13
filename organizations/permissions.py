@@ -465,7 +465,7 @@ class IsBillingOwnerOrAdmin(BasePermission):
          policy for direct callers without describing current endpoint behavior.
 
     Phase 4 of the vinta-django-orgs migration replaced
-    ``membership.is_admin or membership.is_billing_owner`` with
+    the flat two-column disjunction with
     ``payments.manage_billing`` (the ``organization_admin`` and
     ``organization_billing_owner`` groups both carry it, which is what makes the
     two spellings the same set). **Branch 2 keeps its bespoke walk**, per the

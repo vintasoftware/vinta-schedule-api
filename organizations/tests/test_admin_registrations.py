@@ -6,13 +6,13 @@ both, means *our* models. ``organizations/admin.py`` unregisters both before
 registering its own.
 
 This is an authorization surface, not cosmetics. The package's
-``OrganizationMembershipAdmin`` exposes ``role``, ``is_billing_owner`` and
-``groups`` as plain, staff-editable fields, with none of the rules the REST
-viewset enforces: the seat limit, and the refusal to demote the last active
-admin in an organization. Left registered, any staff user holding the change
-permission could grant themselves organization admin or billing ownership in one
-form post, and none of the audit or webhook side effects the service layer emits
-would fire.
+``OrganizationMembershipAdmin`` exposes ``groups`` and ``permissions`` as plain,
+staff-editable fields, with none of the rules the REST viewset enforces: the
+seat limit, and the refusal to demote the last member who can manage members.
+Those two relations are the *entire* authorization surface of a membership, so
+left registered, any staff user holding the change permission could grant
+themselves organization admin or billing management in one form post, and none
+of the audit or webhook side effects the service layer emits would fire.
 """
 
 from django.contrib import admin
@@ -40,13 +40,14 @@ class TestMembershipHasNoAdminSurface:
         registered = {type(model_admin) for model_admin in admin.site._registry.values()}
         assert OrganizationMembershipAdmin not in registered
 
-    def test_no_registered_admin_exposes_role_is_billing_owner_or_groups(self):
+    def test_no_registered_admin_exposes_the_capability_relations(self):
         """Belt and braces, phrased as the property that actually matters.
 
-        If a membership admin is ever registered -- here or in a later phase --
-        it must not put these three fields in a form with no rules attached.
+        If a membership admin is ever registered -- here or later -- it must not
+        put the two relations that carry every capability into a form with no
+        rules attached.
         """
-        forbidden = {"role", "is_billing_owner", "groups", "permissions"}
+        forbidden = {"groups", "permissions"}
 
         for model, model_admin in admin.site._registry.items():
             if model is not OrganizationMembership:

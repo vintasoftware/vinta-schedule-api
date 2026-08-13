@@ -13,6 +13,7 @@ from organizations.managers import (
     OrganizationInvitationManager,
     OrganizationMembershipManager,
 )
+from organizations.permission_catalog import GROUP_ORGANIZATION_MEMBER, INVITABLE_GROUPS
 from organizations.slug_generation import derive_organization_slug
 from payments.billing_constants import Entitlement
 from payments.entitlement_cache import has_entitlement_cached
@@ -209,18 +210,6 @@ class Organization(AbstractOrganization):
         return None
 
 
-class OrganizationRole(models.TextChoices):
-    """Role a user holds within an organization.
-
-    A flat two-role model — enough for current permission needs. Richer
-    hierarchies (e.g. owner/admin/member) can be layered later without a
-    disruptive migration.
-    """
-
-    MEMBER = "member", "Member"
-    ADMIN = "admin", "Admin"
-
-
 class OrganizationMembership(AbstractOrganizationMembership):
     """
     Represents a membership of a user in a calendar organization.
@@ -253,15 +242,20 @@ class OrganizationMembership(AbstractOrganizationMembership):
     ``groups`` / ``permissions`` many-to-many relations to ``auth.Group`` /
     ``auth.Permission``, and ``created`` / ``modified``.
 
-    ``groups`` now carries the three seeded groups from
-    ``organizations.permission_catalog`` -- backfilled from ``role`` /
-    ``is_billing_owner`` by migration ``0029`` and kept in step by
-    ``organizations.services.sync_membership_groups_from_role``. Two consumers
-    exist: ``vinta_orgs.auth_backends.OrganizationModelBackend`` (which is what
-    makes ``user.has_perm(...)`` answer per-organization) and
-    ``OrganizationMembershipQuerySet.billing_recipients``. **No permission class
-    reads it yet** -- every authorization decision still reads ``role`` /
-    ``is_billing_owner`` until Phase 4. ``permissions`` remains empty and unread.
+    ``groups`` carries the three seeded groups from
+    ``organizations.permission_catalog`` and is **the** representation of what a
+    membership may do. It was backfilled from the two flat columns it replaced by
+    migration ``0029``; those columns were dropped in Phase 6 of the
+    vinta-django-orgs migration (``0030``), leaving one representation.
+    ``organizations.services.assign_membership_groups`` is the single write
+    path. Readers: ``organizations.auth_backends.OrganizationModelBackend``
+    (which is what makes ``user.has_perm(...)`` answer per-organization),
+    ``OrganizationMembershipQuerySet.holding_permission`` /
+    ``billing_recipients``, and
+    ``organizations.auth_backends.resolve_membership_permissions`` (the API's
+    read projection). ``permissions`` -- the per-membership direct grant --
+    remains unwritten, but every one of those readers unions it in, so a row
+    written by hand into that table does grant the capability.
 
     Both M2Ms use auto-created through tables with no ``organization`` column,
     which the repo's usual rule for a many-to-many on a scoped model forbids.
@@ -278,16 +272,6 @@ class OrganizationMembership(AbstractOrganizationMembership):
     it rather than to the primary key, so they survive the swap untouched.
     """
 
-    role = models.CharField(
-        max_length=20,
-        choices=OrganizationRole,
-        default=OrganizationRole.MEMBER,
-        help_text=(
-            "Role the user holds in this organization. Admins can manage "
-            "organization-scoped resources (e.g. CalendarGroups) regardless of "
-            "direct ownership."
-        ),
-    )
     is_active = models.BooleanField(
         default=True,
         db_default=True,
@@ -296,18 +280,8 @@ class OrganizationMembership(AbstractOrganizationMembership):
             "Whether this membership is active. Inactive memberships are treated as "
             "gated: the user still has a row but loses all tenant-scoped access until "
             "reactivated. Use this to disable a user without deleting their membership "
-            "record (which would lose role/history). Default True keeps every existing "
-            "read unchanged."
-        ),
-    )
-    is_billing_owner = models.BooleanField(
-        default=False,
-        db_default=False,
-        help_text=(
-            "Whether this membership may manage the organization's billing (change "
-            "plan, purchase add-ons, manage payment method) in addition to admins. "
-            "This flag only marks the membership; the permission check that reads it "
-            "is IsBillingOwnerOrAdmin."
+            "record (which would lose their groups and history). Default True keeps "
+            "every existing read unchanged."
         ),
     )
 
@@ -346,11 +320,6 @@ class OrganizationMembership(AbstractOrganizationMembership):
         # costs a query per row anywhere a membership is stringified.
         return f"{self.user} in {self.organization}"
 
-    @property
-    def is_admin(self) -> bool:
-        """True if this membership confers admin rights in the organization."""
-        return self.role == OrganizationRole.ADMIN
-
 
 class OrganizationInvitation(BaseModel):
     """
@@ -361,6 +330,13 @@ class OrganizationInvitation(BaseModel):
     may hold concurrent pending invitations in different organizations (multi-org invite
     accept). A duplicate invite to the *same* org is still rejected by the
     ``uniq_invitation_email_organization`` constraint.
+
+    ``group`` replaced a ``role`` column in Phase 6 of the vinta-django-orgs
+    migration. It holds a *single* seeded group name rather than a list, because
+    an invitation confers at most one of ``INVITABLE_GROUPS`` -- a many-to-many
+    would be a table and a join for one enumerated value, and
+    ``organization_billing_owner`` is refused at invitation time regardless (see
+    ``organizations.permission_catalog.INVITABLE_GROUPS``).
     """
 
     objects: OrganizationInvitationManager = OrganizationInvitationManager()
@@ -380,13 +356,14 @@ class OrganizationInvitation(BaseModel):
         null=True,
         blank=True,
     )
-    role = models.CharField(
-        max_length=20,
-        choices=OrganizationRole,
-        default=OrganizationRole.MEMBER,
+    group = models.CharField(
+        max_length=50,
+        choices=[(name, name) for name in INVITABLE_GROUPS],
+        default=GROUP_ORGANIZATION_MEMBER,
         help_text=(
-            "Role the invited user should receive on accepting the invitation. "
-            "Defaults to MEMBER. Admin invitations must be explicit."
+            "Seeded group the membership created on acceptance joins. Defaults "
+            "to 'organization_member', which confers no capability; admin "
+            "invitations must name 'organization_admin' explicitly."
         ),
     )
     accepted_at = models.DateTimeField(null=True, blank=True)

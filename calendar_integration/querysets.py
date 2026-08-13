@@ -1182,8 +1182,8 @@ class ExternalEventChangeRequestQuerySet(OrganizationScopedQuerySet):
 
         Eligibility rules (mirroring ``ExternalEventChangeRequestService.can_resolve``):
 
-        - **Admin** (``membership.is_admin``): sees all change requests in the
-          organization.
+        - **Admin** (the membership holds ``organizations.manage_members``):
+          sees all change requests in the organization.
         - **Member-attendee**: sees only requests whose target event has an
           ``EventAttendance`` row for this membership (matched by ``membership_user_id``
           so the ForeignObject join is honoured).
@@ -1200,8 +1200,14 @@ class ExternalEventChangeRequestQuerySet(OrganizationScopedQuerySet):
             change requests the membership can resolve.
         """
         from calendar_integration.models import EventAttendance  # noqa: PLC0415
+        from organizations.authorization import membership_holds_permission  # noqa: PLC0415
+        from organizations.permission_catalog import MANAGE_MEMBERS  # noqa: PLC0415
 
-        if membership.is_admin:
+        # ``membership.is_admin`` until Phase 6 of the vinta-django-orgs
+        # migration dropped the ``role`` column it read. Same set: the
+        # ``organization_admin`` group every admin membership was backfilled
+        # into is the only seeded group carrying ``manage_members``.
+        if membership_holds_permission(membership, MANAGE_MEMBERS):
             return self
 
         # Non-admins: restrict to requests whose event they attend.

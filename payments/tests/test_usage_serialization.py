@@ -25,7 +25,8 @@ from rest_framework.test import APIClient
 
 from calendar_integration.constants import CalendarType
 from calendar_integration.models import Calendar
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import make_membership
 from payments.billing_constants import BillingState, LimitedResource, LimitKind
 from payments.models import BillingPlan, PlanLimit, SubscriptionAddOn
@@ -69,7 +70,7 @@ class TestUnlimitedResourceSerializesAsNull:
         make_membership(
             organization=organization,
             user=user,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         plan = make_complete_plan({LimitedResource.RESOURCE_CALENDARS: None})
@@ -105,7 +106,7 @@ class TestResellerChildReportsPooledRootFigures:
         make_membership(
             organization=child,
             user=user,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         # ...and three more members on the child.
@@ -148,13 +149,13 @@ class TestResellerChildReportsPooledRootFigures:
         make_membership(
             organization=root,
             user=root_user,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         make_membership(
             organization=child,
             user=user,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
@@ -184,7 +185,7 @@ class TestRestrictedOrganizationCanStillReadUsage:
         make_membership(
             organization=organization,
             user=user,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         plan = make_complete_plan({LimitedResource.RESOURCE_CALENDARS: 5})
@@ -311,7 +312,7 @@ class TestPlanAddOnDecompositionInvariant:
         make_membership(
             organization=organization,
             user=user,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         plan = make_complete_plan({LimitedResource.CALENDAR_GROUPS: 5})
@@ -355,7 +356,7 @@ class TestAddOnPurchasedOnUnlimitedPlan:
         make_membership(
             organization=organization,
             user=user,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         plan = make_complete_plan({LimitedResource.CALENDAR_GROUPS: None})

@@ -15,7 +15,6 @@ from organizations.models import (
     ExternalEventUpdatePolicy,
     Organization,
     OrganizationMembership,
-    OrganizationRole,
     WeekStart,
 )
 from organizations.tests.helpers import grant_membership_groups
@@ -80,7 +79,6 @@ class TestInactiveMembershipGating:
             OrganizationMembership,
             user=user,
             organization=org,
-            role=OrganizationRole.MEMBER,
             is_active=False,
         )
         client = APIClient()
@@ -97,7 +95,6 @@ class TestInactiveMembershipGating:
             OrganizationMembership,
             user=user,
             organization=org,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
         client = APIClient()
@@ -319,13 +316,9 @@ class TestMultiOrgMembership:
         org_member = baker.make(Organization)
 
         grant_membership_groups(
-            OrganizationMembership.objects.create(
-                user=user, organization=org_admin, role=OrganizationRole.ADMIN, is_active=True
-            )
+            OrganizationMembership.objects.create(user=user, organization=org_admin, is_active=True)
         )
-        OrganizationMembership.objects.create(
-            user=user, organization=org_member, role=OrganizationRole.MEMBER, is_active=True
-        )
+        OrganizationMembership.objects.create(user=user, organization=org_member, is_active=True)
 
         assert user.is_organization_admin(org_admin) is True
         assert user.is_organization_admin(org_member) is False
@@ -336,9 +329,7 @@ class TestMultiOrgMembership:
         org = baker.make(Organization)
 
         grant_membership_groups(
-            OrganizationMembership.objects.create(
-                user=user, organization=org, role=OrganizationRole.ADMIN, is_active=False
-            )
+            OrganizationMembership.objects.create(user=user, organization=org, is_active=False)
         )
 
         assert user.is_organization_admin(org) is False

@@ -8,8 +8,8 @@ from common.organization_services import memberships
 from organizations.models import (
     Organization,
     OrganizationMembership,
-    OrganizationRole,
 )
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.permissions import IsOrganizationAdmin
 from organizations.tests.helpers import make_membership
 
@@ -41,7 +41,7 @@ class TestIsOrganizationAdminPermission:
         make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
         return user
 
@@ -54,7 +54,6 @@ class TestIsOrganizationAdminPermission:
             OrganizationMembership,
             user=user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
         return user
 
@@ -71,7 +70,7 @@ class TestIsOrganizationAdminPermission:
         make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
         return user
 
@@ -139,7 +138,7 @@ class TestIsOrganizationAdminPermission:
     def test_has_object_permission_with_organization_model_subclass(
         self, factory, admin_user, permission, view_mock
     ):
-        """Admin user should have object permission for OrganizationModel subclasses."""
+        """Admin user should have object permission for organization-scoped models."""
         from calendar_integration.models import Calendar
 
         org = admin_user.memberships.get().organization
@@ -150,7 +149,7 @@ class TestIsOrganizationAdminPermission:
     def test_has_object_permission_member_with_organization_model_subclass(
         self, factory, member_user, permission, view_mock
     ):
-        """Member user should not have object permission for OrganizationModel subclasses."""
+        """Member user should not have object permission for organization-scoped models."""
         from calendar_integration.models import Calendar
 
         org = member_user.memberships.get().organization
@@ -161,7 +160,7 @@ class TestIsOrganizationAdminPermission:
     def test_has_object_permission_cross_org_organization_model(
         self, factory, admin_user, permission, view_mock
     ):
-        """Admin user should not have object permission for OrganizationModel in different org."""
+        """Admin user should not have object permission for an organization-scoped model in a different org."""
         from calendar_integration.models import Calendar
 
         different_org = baker.make(Organization)
@@ -176,7 +175,7 @@ class TestIsOrganizationAdminPermission:
         make_membership(
             user=user,
             organization=org,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=False,
         )
         request = _request_for_user(factory, user)
@@ -189,7 +188,7 @@ class TestIsOrganizationAdminPermission:
         make_membership(
             user=user,
             organization=org,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=False,
         )
         request = _request_for_user(factory, user)
@@ -203,7 +202,6 @@ class TestIsOrganizationAdminPermission:
             OrganizationMembership,
             user=user,
             organization=org,
-            role=OrganizationRole.MEMBER,
             is_active=False,
         )
         request = _request_for_user(factory, user)
@@ -217,7 +215,6 @@ class TestIsOrganizationAdminPermission:
             OrganizationMembership,
             user=user,
             organization=org,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
         request = _request_for_user(factory, user)

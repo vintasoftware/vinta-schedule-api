@@ -48,7 +48,7 @@ class _Kind:
 
     key: str
     # Typed `Any` rather than `type[Model]`: both are read through
-    # `original_manager`, which the OrganizationModel machinery attaches
+    # `original_manager`, which the organization-scoping machinery attaches
     # dynamically and mypy therefore cannot see on a `type` annotation.
     parent_model: Any
     record_model: Any
@@ -276,7 +276,7 @@ class RepairUntruncatedRecurringParents(BaseOneOffScript[RepairTarget]):
         # (same pattern as `organizations/admin.py`'s explicit
         # `original_manager` usage). `_delete_phantom_metered` also reads
         # `Subscription`/`MeteredOccurrence` via `.objects`, but both are
-        # plain `BaseModel` (not `OrganizationModel` -- see `payments/tasks
+        # plain `BaseModel` (not organization-scoped -- see `payments/tasks
         # .py`'s module docstring), so those calls need no organization
         # context either way.
         with transaction.atomic():

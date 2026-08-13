@@ -20,8 +20,8 @@ from organizations.models import (
     Organization,
     OrganizationBranding,
     OrganizationMembership,
-    OrganizationRole,
 )
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import make_membership
 from payments.billing_constants import BillingState, Entitlement
 from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
@@ -125,7 +125,7 @@ def reseller_org_admin(user, reseller_org):
     return make_membership(
         user=user,
         organization=reseller_org,
-        role=OrganizationRole.ADMIN,
+        groups=[GROUP_ORGANIZATION_ADMIN],
         is_active=True,
     )
 
@@ -136,7 +136,7 @@ def eligible_org_admin(user, eligible_org):
     return make_membership(
         user=user,
         organization=eligible_org,
-        role=OrganizationRole.ADMIN,
+        groups=[GROUP_ORGANIZATION_ADMIN],
         is_active=True,
     )
 
@@ -149,7 +149,6 @@ def eligible_org_member(eligible_org):
         OrganizationMembership,
         user=member,
         organization=eligible_org,
-        role=OrganizationRole.MEMBER,
         is_active=True,
     )
     return member
@@ -161,7 +160,7 @@ def parented_org_admin(user, parented_org):
     return make_membership(
         user=user,
         organization=parented_org,
-        role=OrganizationRole.ADMIN,
+        groups=[GROUP_ORGANIZATION_ADMIN],
         is_active=True,
     )
 
@@ -174,7 +173,6 @@ def reseller_org_member(reseller_org):
         OrganizationMembership,
         user=member,
         organization=reseller_org,
-        role=OrganizationRole.MEMBER,
         is_active=True,
     )
     return member
@@ -725,13 +723,13 @@ class TestOrganizationBrandingViewSet:
         make_membership(
             user=user,
             organization=reseller_a,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         make_membership(
             user=user,
             organization=reseller_b,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
@@ -806,13 +804,13 @@ class TestOrganizationBrandingViewSet:
         make_membership(
             user=user,
             organization=reseller_a,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         make_membership(
             user=user,
             organization=reseller_b,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
@@ -1053,7 +1051,7 @@ class TestBrandingWriteGateAllMethods:
         make_membership(
             user=user,
             organization=org,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         client.force_authenticate(user)
@@ -1086,7 +1084,7 @@ class TestBrandingWriteGateAllMethods:
         make_membership(
             user=user,
             organization=unentitled_org,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         client.force_authenticate(user)
@@ -1170,7 +1168,7 @@ class TestCanManageBrandingOnMembershipPayload:
         make_membership(
             user=user,
             organization=parented_org,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         client.force_authenticate(user)
@@ -1191,7 +1189,7 @@ class TestCanManageBrandingOnMembershipPayload:
         make_membership(
             user=user,
             organization=free_org,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         client.force_authenticate(user)
@@ -1244,7 +1242,7 @@ class TestCanManageBrandingOnMembershipPayload:
                 make_membership(
                     user=caller,
                     organization=org,
-                    role=OrganizationRole.ADMIN,
+                    groups=[GROUP_ORGANIZATION_ADMIN],
                     is_active=True,
                 )
             local_client = APIClient()

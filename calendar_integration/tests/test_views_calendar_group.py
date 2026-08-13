@@ -27,7 +27,7 @@ from calendar_integration.models import (
     CalendarGroupSlotMembership,
     CalendarManagementToken,
 )
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
 from organizations.tests.helpers import grant_membership_groups
 
 
@@ -75,8 +75,6 @@ def admin_user(user, organization):
     `auth_client` -- in any test that expects a write to succeed.
     """
     membership = OrganizationMembership.objects.get(user=user, organization=organization)
-    membership.role = OrganizationRole.ADMIN
-    membership.save(update_fields=["role"])
     grant_membership_groups(membership)
     return user
 

@@ -258,8 +258,8 @@ class TestAuditTenantCorrectness:
     def test_cross_org_audit_affected_membership_persists_without_rejection(self) -> None:
         """Cross-org link (audit from org A, membership from org B) persists at the DB layer.
 
-        Empirical finding: OrganizationModel.save() and BaseOrganizationModelManager.create()
-        do not validate that audit_fk and membership_user_id belong to the same organization
+        Empirical finding: neither ``SingleOrganizationModelMixin.save()`` nor the scoped
+        manager's ``create()`` validates that audit_fk and membership_user_id belong to the same organization
         as the AuditAffectedMembership row.  The concrete column (membership_user_id) still
         holds the org-B user_id, and the row is stored successfully.
 

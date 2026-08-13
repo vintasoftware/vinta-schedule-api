@@ -344,7 +344,10 @@ class TestTheMineEndpoint:
 class TestTheMemberListEndpoint:
     """``GET /organization-members/`` -- who the members are, and what they may do."""
 
-    def test_rows_carry_permissions_and_neither_role_nor_is_billing_owner(self, auth_client, user):
+    def test_rows_carry_permissions_and_no_role_shaped_key(self, auth_client, user):
+        """Phase 5 dropped the two flat keys from this payload; Phase 6 dropped
+        the columns behind them, so the assertion below is now about the shape a
+        client can rely on rather than about a field being filtered out."""
         organization = baker.make(Organization, name="Acme Inc")
         make_admin_membership(user=user, organization=organization)
         plain = make_membership(user=baker.make(User), organization=organization)
@@ -357,7 +360,6 @@ class TestTheMemberListEndpoint:
         assert response.status_code == status.HTTP_200_OK
         rows = {row["user_id"]: row for row in response.json()["results"]}
         assert "role" not in rows[user.id]
-        assert "is_billing_owner" not in rows[user.id]
         assert sorted(rows[user.id]["permissions"]) == ADMIN_PERMISSIONS
         assert rows[plain.user_id]["permissions"] == []
 

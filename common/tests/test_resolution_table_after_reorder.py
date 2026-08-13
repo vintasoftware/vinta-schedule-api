@@ -69,7 +69,7 @@ from vinta_orgs.resolution import UNRESOLVED_ORGANIZATION, OrganizationSelection
 
 from common.organization_services import memberships
 from common.utils.view_utils import TenantScopedViewMixin
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
 from organizations.permissions import IsOrganizationAdmin
 
 
@@ -619,12 +619,8 @@ class TestTheResolverPrecedesEvenADenyingPermissionClass:
     def test_a_non_admin_multi_organization_caller_with_no_header_is_400_not_403(
         self, user: Any, org_a: Organization, org_b: Organization
     ) -> None:
-        OrganizationMembership.objects.create(
-            user=user, organization=org_a, role=OrganizationRole.MEMBER, is_active=True
-        )
-        OrganizationMembership.objects.create(
-            user=user, organization=org_b, role=OrganizationRole.MEMBER, is_active=True
-        )
+        OrganizationMembership.objects.create(user=user, organization=org_a, is_active=True)
+        OrganizationMembership.objects.create(user=user, organization=org_b, is_active=True)
 
         response = _dispatch(AdminGatedResolutionProbeView, user)
 

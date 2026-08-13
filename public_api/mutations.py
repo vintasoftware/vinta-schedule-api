@@ -74,7 +74,7 @@ from organizations.models import (
     OrganizationMembership,
     resolve_branding_for_display,
 )
-from organizations.permission_catalog import role_for_invitation_groups
+from organizations.permission_catalog import group_for_invitation_groups
 from organizations.permissions import (
     BrandingWriteGateReason,
     evaluate_branding_write_gate,
@@ -1229,13 +1229,13 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         # Tenant-isolation guard: target must be the acting org or a descendant
         assert_target_in_subtree(acting_org, target_org)
 
-        # Groups in, role stored. The membership created on acceptance is put
-        # in the matching groups by ``OrganizationService``; the ``role``
-        # column disappears in Phase 6 and this translation with it. Refuses an
-        # unknown group, and refuses ``organization_billing_owner``, which an
-        # invitation has nowhere to store.
+        # A list in, one group stored: the invitation row holds a single
+        # group name, which ``OrganizationService`` puts the membership created
+        # on acceptance into. Refuses an unknown group, and refuses
+        # ``organization_billing_owner``, which an invitation has nowhere to
+        # store.
         try:
-            invited_role = role_for_invitation_groups(input.groups)
+            invited_group = group_for_invitation_groups(input.groups)
         except OrganizationGroupNotAssignableError as exc:
             raise GraphQLError(str(exc)) from exc
 
@@ -1276,7 +1276,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
                 last_name="",
                 organization=target_org,
                 invited_by=None,
-                role=invited_role,
+                group=invited_group,
                 send_email=input.send_email,
             )
         except OverLimitError as exc:

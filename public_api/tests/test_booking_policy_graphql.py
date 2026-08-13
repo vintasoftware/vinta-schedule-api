@@ -25,7 +25,7 @@ from calendar_integration.models import (
     CalendarGroup,
     CalendarOwnership,
 )
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess
 from public_api.services import PublicAPIAuthService
@@ -932,9 +932,7 @@ def _scoped_setup(integration_name: str = "scoped_bp"):
     scoped to a member's own calendars/membership, with the BOOKING_POLICY grant."""
     org = baker.make(Organization, name="Scoped BP Org")
     user = UserFactory().create_user()
-    membership = OrganizationMembership.objects.create(
-        user=user, organization=org, role=OrganizationRole.MEMBER, is_active=True
-    )
+    membership = OrganizationMembership.objects.create(user=user, organization=org, is_active=True)
     auth_service = PublicAPIAuthService()
     system_user, token = auth_service.create_system_user(
         integration_name=integration_name, organization=org, scoped_to_membership=membership
@@ -1143,7 +1141,7 @@ class TestBookingPolicyOwnerScoping:
         create_booking_policy(organization=org, is_organization_default=True, lead_time_seconds=15)
         other_user = UserFactory().create_user()
         other_membership = OrganizationMembership.objects.create(
-            user=other_user, organization=org, role=OrganizationRole.MEMBER, is_active=True
+            user=other_user, organization=org, is_active=True
         )
         other_cal = _own_cal(org, other_membership, "scoped-q-other")
         create_booking_policy(calendar=other_cal, lead_time_seconds=45)

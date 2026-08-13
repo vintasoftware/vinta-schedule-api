@@ -28,8 +28,8 @@ from organizations.models import (
     Organization,
     OrganizationInvitation,
     OrganizationMembership,
-    OrganizationRole,
 )
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.services import OrganizationService
 from organizations.tests.helpers import make_membership
 from payments.billing_constants import BillingState, Entitlement, LimitedResource, LimitKind
@@ -142,7 +142,7 @@ class TestInviteBlockedIdenticallyAcrossRestAndGraphQL:
         make_membership(
             user=admin,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         client = APIClient()
@@ -207,7 +207,7 @@ class TestInviteBlockedIdenticallyAcrossRestAndGraphQL:
         make_membership(
             user=admin,
             organization=rest_org,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         rest_client = APIClient()
@@ -416,13 +416,12 @@ class TestReactivationBlockedAtTheLimit:
         make_membership(
             user=admin,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         inactive_member = baker.make(
             OrganizationMembership,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=False,
         )
         client = APIClient()
@@ -447,13 +446,12 @@ class TestReactivationBlockedAtTheLimit:
         make_membership(
             user=admin,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         already_active_member = baker.make(
             OrganizationMembership,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
         client = APIClient()
@@ -484,7 +482,7 @@ class TestResendAtTheCeiling:
         make_membership(
             user=admin,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         pending_invitation = baker.make(

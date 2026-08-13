@@ -40,7 +40,7 @@ from calendar_integration.models import Calendar, CalendarEvent
 from calendar_integration.services.external_event_change_request_service import (
     ExternalEventChangeRequestService,
 )
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
 from organizations.tests.helpers import grant_membership_groups
 from users.models import Profile, User
 
@@ -104,7 +104,6 @@ def attendee_membership(organization: Organization) -> OrganizationMembership:
     membership, _ = OrganizationMembership.objects.get_or_create(
         user=user,
         organization=organization,
-        defaults={"role": OrganizationRole.MEMBER},
     )
     return membership
 
@@ -116,7 +115,6 @@ def admin_membership(organization: Organization) -> OrganizationMembership:
     membership, _ = OrganizationMembership.objects.get_or_create(
         user=user,
         organization=organization,
-        defaults={"role": OrganizationRole.ADMIN},
     )
     grant_membership_groups(membership)
     return membership
@@ -129,7 +127,6 @@ def ineligible_membership(organization: Organization) -> OrganizationMembership:
     membership, _ = OrganizationMembership.objects.get_or_create(
         user=user,
         organization=organization,
-        defaults={"role": OrganizationRole.MEMBER},
     )
     return membership
 
@@ -293,7 +290,6 @@ def test_update_request_deduplicates_attendee_who_is_also_admin(
     admin_attendee, _ = OrganizationMembership.objects.get_or_create(
         user=user,
         organization=organization,
-        defaults={"role": OrganizationRole.ADMIN},
     )
     grant_membership_groups(admin_attendee)
     create_event_attendance(event=event, user=user)
@@ -395,7 +391,6 @@ def test_delete_request_deduplicates_attendee_who_is_also_admin(
     admin_attendee, _ = OrganizationMembership.objects.get_or_create(
         user=user,
         organization=organization,
-        defaults={"role": OrganizationRole.ADMIN},
     )
     grant_membership_groups(admin_attendee)
     create_event_attendance(event=event, user=user)

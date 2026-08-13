@@ -727,7 +727,7 @@ class EntitlementService:
         The entry point every guarded create/update/delete method that does not
         already route through ``check_limit`` / ``check_postpaid_allowance``
         (which fold ``is_billing_root_restricted`` in directly, see their
-        docstrings) calls before writing an ``OrganizationModel`` row on a guarded
+        docstrings) calls before writing an organization-scoped row on a guarded
         resource. See ``is_billing_root_restricted`` for what "restricted" means
         and why it is defined exactly once.
         """

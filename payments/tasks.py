@@ -39,7 +39,7 @@ from vinta_schedule_api.celery import app
 
 logger = logging.getLogger(__name__)
 
-#: `payments` models are plain ``BaseModel`` (not ``OrganizationModel`` --
+#: `payments` models are plain ``BaseModel`` (not organization-scoped --
 #: see the plan's "Open Questions": billing is read at the billing root,
 #: often an ancestor of a single organization, so binding one is
 #: deliberately out of scope for this migration). What each per-subscription

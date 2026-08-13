@@ -31,9 +31,8 @@ from common.utils.view_utils import TenantScopedViewMixin
 from organizations.models import (
     Organization,
     OrganizationMembership,
-    OrganizationRole,
 )
-from organizations.tests.helpers import grant_membership_groups
+from organizations.tests.helpers import grant_membership_groups, make_membership
 
 
 User = get_user_model()
@@ -51,7 +50,6 @@ def _make_membership(
     user: User,  # type: ignore[valid-type]
     org: Organization,
     *,
-    role: str = OrganizationRole.MEMBER,
     is_active: bool = True,
 ) -> OrganizationMembership:
     """Create an OrganizationMembership directly (bypassing the invite flow)."""
@@ -59,7 +57,6 @@ def _make_membership(
         OrganizationMembership.objects.create(
             user=user,
             organization=org,
-            role=role,
             is_active=is_active,
         )
     )
@@ -778,7 +775,7 @@ class TestADeactivatedAdminIsRefusedThroughTheRealStack:
         org_a: Organization,
     ) -> None:
         """Same user, same client, same URL, same header -- only ``is_active`` moves."""
-        membership = _make_membership(user, org_a, role=OrganizationRole.ADMIN)
+        membership = _make_membership(user, org_a)
         client = _auth_client_for(user)
         url = reverse("api:OrganizationMembers-list")
 
@@ -807,12 +804,13 @@ class TestADeactivatedAdminIsRefusedThroughTheRealStack:
     ) -> None:
         """The discriminator between the two ways this endpoint says 403.
 
-        Without it, the test above would pass on a build where ``is_active`` were
-        ignored and ``role`` alone did all the refusing. Here the membership is
-        active and the *role* is what is wrong, so resolution succeeds and
-        ``IsOrganizationAdmin`` answers -- a different body for the same code.
+        Without it, the test above would pass on a build where ``is_active``
+        were ignored and the capability alone did all the refusing. Here the
+        membership is active and carries no capability, so resolution succeeds
+        and ``IsOrganizationAdmin`` answers -- a different body for the same
+        code.
         """
-        _make_membership(user, org_a, role=OrganizationRole.MEMBER)
+        make_membership(user=user, organization=org_a)
         client = _auth_client_for(user)
         url = reverse("api:OrganizationMembers-list")
 

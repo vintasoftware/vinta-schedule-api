@@ -45,7 +45,9 @@ from calendar_integration.models import Calendar, CalendarEvent, ExternalEventCh
 from calendar_integration.services.external_event_change_request_service import (
     ExternalEventChangeRequestService,
 )
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.authorization import membership_holds_permission
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import MANAGE_MEMBERS
 from organizations.tests.helpers import grant_membership_groups
 from users.models import Profile, User
 
@@ -78,7 +80,6 @@ def attendee_membership(organization: Organization) -> OrganizationMembership:
     membership, _ = OrganizationMembership.objects.get_or_create(
         user=user,
         organization=organization,
-        defaults={"role": OrganizationRole.MEMBER},
     )
     return membership
 
@@ -91,7 +92,6 @@ def admin_membership(organization: Organization) -> OrganizationMembership:
     membership, _ = OrganizationMembership.objects.get_or_create(
         user=user,
         organization=organization,
-        defaults={"role": OrganizationRole.ADMIN},
     )
     grant_membership_groups(membership)
     return membership
@@ -105,7 +105,6 @@ def ineligible_membership(organization: Organization) -> OrganizationMembership:
     membership, _ = OrganizationMembership.objects.get_or_create(
         user=user,
         organization=organization,
-        defaults={"role": OrganizationRole.MEMBER},
     )
     return membership
 
@@ -199,7 +198,8 @@ def test_admin_approves_update_request_for_any_event(
     admin_membership: OrganizationMembership,
 ) -> None:
     """Admin (not an attendee) can approve an UPDATE request for any event in the org."""
-    assert admin_membership.is_admin  # sanity check
+    # sanity check
+    assert membership_holds_permission(admin_membership, MANAGE_MEMBERS)
 
     change_request = create_external_event_change_request(
         event=event,
@@ -459,7 +459,6 @@ def test_can_resolve_returns_false_for_different_org(
     other_membership, _ = OrganizationMembership.objects.get_or_create(
         user=user,
         organization=other_org,
-        defaults={"role": OrganizationRole.ADMIN},  # even admin in another org
     )
     grant_membership_groups(other_membership)
 

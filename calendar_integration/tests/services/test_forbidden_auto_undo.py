@@ -542,7 +542,6 @@ def test_forbidden_update_preserves_attendees_and_recurrence_in_adapter_input(
     OrganizationMembership.objects.get_or_create(
         user=user,
         organization=organization_forbidden,
-        defaults={"role": "member"},
     )
     create_event_attendance(event=existing, user=user, status="accepted")
     # External attendee.

@@ -13,16 +13,16 @@ from rest_framework.test import APIClient
 from calendar_integration.models import GoogleCalendarServiceAccount
 from common.organization_context import get_current_organization
 from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
+from organizations.authorization import membership_holds_permission
 from organizations.exceptions import InvalidInvitationTokenError
 from organizations.models import (
     ExternalEventUpdatePolicy,
     Organization,
     OrganizationInvitation,
     OrganizationMembership,
-    OrganizationRole,
     WeekStart,
 )
-from organizations.permission_catalog import MANAGE_MEMBERS
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN, MANAGE_MEMBERS
 from organizations.tests.helpers import grant_membership_groups, make_membership
 from organizations.views import OrganizationViewSet
 from payments.billing_constants import BillingState
@@ -201,7 +201,7 @@ class TestOrganizationViewSet:
         assert_response_status_code(response, status.HTTP_201_CREATED)
         membership = OrganizationMembership.objects.get(user=user)
         assert membership.organization.name == "JWT Org"
-        assert membership.role == OrganizationRole.ADMIN
+        assert membership_holds_permission(membership, MANAGE_MEMBERS)
 
     @patch("organizations.views.OrganizationViewSet.get_queryset")
     @patch("organizations.services.OrganizationService.create_organization")
@@ -260,10 +260,10 @@ class TestOrganizationViewSet:
         # Creator must now have TWO active memberships.
         assert OrganizationMembership.objects.filter(user=user, is_active=True).count() == 2
 
-        # The new org's membership must be ADMIN.
+        # The new org's membership must administer it.
         new_org_id = response_data["id"]
         new_membership = OrganizationMembership.objects.get(user=user, organization_id=new_org_id)
-        assert new_membership.role == OrganizationRole.ADMIN
+        assert membership_holds_permission(new_membership, MANAGE_MEMBERS)
 
     def test_create_organization_binds_the_new_organization(
         self, auth_client, user, organization_with_membership
@@ -361,7 +361,7 @@ class TestOrganizationViewSet:
         make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         admin_client = APIClient()
@@ -391,7 +391,6 @@ class TestOrganizationViewSet:
         membership = make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
         membership.permissions.add(
@@ -420,7 +419,7 @@ class TestOrganizationViewSet:
         make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         admin_client = APIClient()
@@ -449,7 +448,7 @@ class TestOrganizationViewSet:
         make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         admin_client = APIClient()
@@ -468,7 +467,7 @@ class TestOrganizationViewSet:
         make_membership(
             user=user,
             organization=own_org,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         other_org = OrganizationTestFactory.create_organization(name="Other Org")
@@ -548,7 +547,7 @@ class TestOrganizationSlugUpdate:
         make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         client = APIClient()
@@ -835,7 +834,7 @@ class TestCurrentMembershipAction:
         make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
 
         url = reverse("api:Organizations-current")
@@ -855,7 +854,6 @@ class TestCurrentMembershipAction:
             OrganizationMembership,
             user=user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
 
         url = reverse("api:Organizations-current")
@@ -893,7 +891,6 @@ class TestCurrentMembershipAction:
             OrganizationMembership,
             user=user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
 
         url = reverse("api:Organizations-current")
@@ -1663,7 +1660,7 @@ class TestOrganizationMembershipViewSet:
         admin_membership = make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
@@ -1671,13 +1668,11 @@ class TestOrganizationMembershipViewSet:
         baker.make(
             OrganizationMembership,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
         inactive_member = baker.make(
             OrganizationMembership,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=False,
         )
 
@@ -1725,7 +1720,6 @@ class TestOrganizationMembershipViewSet:
             OrganizationMembership,
             user=user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -1749,7 +1743,7 @@ class TestOrganizationMembershipViewSet:
         make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=False,
         )
 
@@ -1765,7 +1759,7 @@ class TestOrganizationMembershipViewSet:
         make_membership(
             user=user,
             organization=org1,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
@@ -1774,7 +1768,6 @@ class TestOrganizationMembershipViewSet:
         baker.make(
             OrganizationMembership,
             organization=org2,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -1793,14 +1786,13 @@ class TestOrganizationMembershipViewSet:
         make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
         member = baker.make(
             OrganizationMembership,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -1821,7 +1813,7 @@ class TestOrganizationMembershipViewSet:
         make_membership(
             user=user,
             organization=org1,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
@@ -1829,7 +1821,6 @@ class TestOrganizationMembershipViewSet:
         member_in_org2 = baker.make(
             OrganizationMembership,
             organization=org2,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -1845,14 +1836,12 @@ class TestOrganizationMembershipViewSet:
             OrganizationMembership,
             user=user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
         other_member = baker.make(
             OrganizationMembership,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -1869,7 +1858,7 @@ class TestOrganizationMembershipViewSet:
         make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
@@ -1883,7 +1872,6 @@ class TestOrganizationMembershipViewSet:
             OrganizationMembership,
             user=member_user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -1902,21 +1890,20 @@ class TestOrganizationMembershipViewSet:
         make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
         # Create another admin so we can safely deactivate without triggering last-admin guard
         make_membership(
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
         target_member = baker.make(
             OrganizationMembership,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -1940,14 +1927,13 @@ class TestOrganizationMembershipViewSet:
         make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
         target_member = baker.make(
             OrganizationMembership,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=False,
         )
 
@@ -1966,14 +1952,14 @@ class TestOrganizationMembershipViewSet:
         admin_membership = make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
         # Create another admin to prevent last-admin guard interference
         make_membership(
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
@@ -1999,7 +1985,7 @@ class TestOrganizationMembershipViewSet:
         sole_admin_membership = make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
@@ -2025,14 +2011,14 @@ class TestOrganizationMembershipViewSet:
         make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
         # Create another admin so we can safely deactivate without hitting the last-admin guard
         other_admin = make_membership(
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
@@ -2065,7 +2051,6 @@ class TestOrganizationMembershipViewSet:
         caller_membership = make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
         caller_membership.permissions.add(
@@ -2077,7 +2062,7 @@ class TestOrganizationMembershipViewSet:
 
         target_admin = make_membership(
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
@@ -2097,14 +2082,12 @@ class TestOrganizationMembershipViewSet:
             OrganizationMembership,
             user=user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
         target_member = baker.make(
             OrganizationMembership,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -2121,7 +2104,7 @@ class TestOrganizationMembershipViewSet:
         make_membership(
             user=user,
             organization=org1,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
@@ -2129,7 +2112,6 @@ class TestOrganizationMembershipViewSet:
         member_in_org2 = baker.make(
             OrganizationMembership,
             organization=org2,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -2150,7 +2132,7 @@ class TestOrganizationMembershipViewSet:
         make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
@@ -2159,7 +2141,6 @@ class TestOrganizationMembershipViewSet:
             OrganizationMembership,
             user=target_user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -2188,14 +2169,13 @@ class TestOrganizationMembershipViewSet:
         make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
         target_member = baker.make(
             OrganizationMembership,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=False,
         )
 
@@ -2219,14 +2199,13 @@ class TestOrganizationMembershipViewSet:
         make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
         target_member = baker.make(
             OrganizationMembership,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -2246,14 +2225,12 @@ class TestOrganizationMembershipViewSet:
             OrganizationMembership,
             user=user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
         target_member = baker.make(
             OrganizationMembership,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=False,
         )
 
@@ -2270,7 +2247,7 @@ class TestOrganizationMembershipViewSet:
         make_membership(
             user=user,
             organization=org1,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
@@ -2278,7 +2255,6 @@ class TestOrganizationMembershipViewSet:
         member_in_org2 = baker.make(
             OrganizationMembership,
             organization=org2,
-            role=OrganizationRole.MEMBER,
             is_active=False,
         )
 
@@ -2299,7 +2275,7 @@ class TestOrganizationMembershipViewSet:
         make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
@@ -2308,7 +2284,6 @@ class TestOrganizationMembershipViewSet:
             OrganizationMembership,
             user=target_user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=False,
         )
 
@@ -2347,7 +2322,7 @@ class TestOrganizationMembershipViewSet:
         make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         return organization
@@ -2363,7 +2338,6 @@ class TestOrganizationMembershipViewSet:
             OrganizationMembership,
             user=member_user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -2504,7 +2478,7 @@ class TestSyncRoomsAction:
         make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         client = APIClient()
@@ -2594,7 +2568,6 @@ class TestSyncRoomsAction:
             OrganizationMembership,
             user=user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
         client = APIClient()
@@ -2661,7 +2634,7 @@ class TestShouldSyncRoomsTransition:
         make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         client = APIClient()
@@ -2748,7 +2721,6 @@ class TestShouldSyncRoomsTransition:
             OrganizationMembership,
             user=user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
         client = APIClient()
@@ -2853,7 +2825,7 @@ class TestPhase18ServiceAccountConfig:
         make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         client = APIClient()
@@ -3007,7 +2979,6 @@ class TestPhase18ServiceAccountConfig:
             OrganizationMembership,
             user=user,
             organization=org,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
         url = reverse("api:Organizations-detail", kwargs={"pk": org.pk})
@@ -3020,7 +2991,7 @@ class TestPhase18ServiceAccountConfig:
         make_membership(
             user=user,
             organization=own_org,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         other_org = baker.make(Organization, name="Other Org")
@@ -3054,7 +3025,7 @@ class TestPhase18SyncRoomsTrigger:
         make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         client = APIClient()
@@ -3122,7 +3093,7 @@ class TestPhase18TransitionWithNoCredentials:
         make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         client = APIClient()
@@ -3273,7 +3244,7 @@ class TestPhase20ServiceAccountCRUD:
         make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         client = APIClient()
@@ -3317,7 +3288,6 @@ class TestPhase20ServiceAccountCRUD:
         membership = make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
         membership.permissions.add(
@@ -3500,7 +3470,6 @@ class TestPhase20ServiceAccountCRUD:
             OrganizationMembership,
             user=user,
             organization=org,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
         client = APIClient()
@@ -3533,7 +3502,7 @@ class TestPhase20ServiceAccountCRUD:
 class TestPhase11ServiceAccountRestrictedGuard:
     """A ``RESTRICTED`` organization cannot write its service account.
 
-    ``GoogleCalendarServiceAccount`` is an ``OrganizationModel`` subclass, so
+    ``GoogleCalendarServiceAccount`` is organization-scoped, so
     create/rotate/delete of the org-level service account are real user-initiated
     writes that the restricted-state check must block -- consulting the same
     ``EntitlementService.check_not_restricted`` helper every other blocked write
@@ -3545,7 +3514,7 @@ class TestPhase11ServiceAccountRestrictedGuard:
         make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         client = APIClient()
@@ -3659,7 +3628,7 @@ class TestPhase20SyncAllCalendars:
         make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         client = APIClient()
@@ -3712,7 +3681,6 @@ class TestPhase20SyncAllCalendars:
             OrganizationMembership,
             user=user,
             organization=org,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
         client = APIClient()
@@ -3773,14 +3741,12 @@ class TestOrganizationMineAction:
             OrganizationMembership.objects.create(
                 user=user,
                 organization=org_a,
-                role=OrganizationRole.ADMIN,
                 is_active=True,
             )
         )
         membership_b = OrganizationMembership.objects.create(
             user=user,
             organization=org_b,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -3828,7 +3794,6 @@ class TestOrganizationMineAction:
         OrganizationMembership.objects.create(
             user=user,
             organization=org,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -3862,7 +3827,6 @@ class TestOrganizationMineAction:
             OrganizationMembership.objects.create(
                 user=user,
                 organization=org,
-                role=OrganizationRole.ADMIN,
                 is_active=True,
             )
         )
@@ -3881,7 +3845,6 @@ class TestOrganizationMineAction:
         OrganizationMembership.objects.create(
             user=user,
             organization=org,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -3904,13 +3867,11 @@ class TestOrganizationMineAction:
         OrganizationMembership.objects.create(
             user=user,
             organization=active_org,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
         OrganizationMembership.objects.create(
             user=user,
             organization=inactive_org,
-            role=OrganizationRole.MEMBER,
             is_active=False,
         )
 
@@ -3930,7 +3891,6 @@ class TestOrganizationMineAction:
         OrganizationMembership.objects.create(
             user=user,
             organization=org,
-            role=OrganizationRole.MEMBER,
             is_active=False,
         )
 
@@ -3958,7 +3918,6 @@ class TestOrganizationMineAction:
         OrganizationMembership.objects.create(
             user=user,
             organization=own_org,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -3986,14 +3945,12 @@ class TestOrganizationMineAction:
             OrganizationMembership.objects.create(
                 user=user,
                 organization=org_a,
-                role=OrganizationRole.ADMIN,
                 is_active=True,
             )
         )
         OrganizationMembership.objects.create(
             user=user,
             organization=org_b,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -4035,14 +3992,12 @@ class TestOrganizationMineAction:
             OrganizationMembership.objects.create(
                 user=user,
                 organization=org_a,
-                role=OrganizationRole.ADMIN,
                 is_active=True,
             )
         )
         OrganizationMembership.objects.create(
             user=user,
             organization=org_b,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -4065,7 +4020,7 @@ class TestOrganizationWeekStart:
         make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         admin_client = APIClient()
@@ -4085,7 +4040,7 @@ class TestOrganizationWeekStart:
         make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         admin_client = APIClient()
@@ -4110,7 +4065,6 @@ class TestOrganizationWeekStart:
             OrganizationMembership,
             user=user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -4130,7 +4084,7 @@ class TestOrganizationWeekStart:
         make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         admin_client = APIClient()
@@ -4163,7 +4117,6 @@ class TestCreateAdditionalOrganization:
             OrganizationMembership.objects.create(
                 user=user,
                 organization=org_a,
-                role=OrganizationRole.ADMIN,
                 is_active=True,
             )
         )
@@ -4182,9 +4135,9 @@ class TestCreateAdditionalOrganization:
         # Creator now has TWO active memberships
         assert OrganizationMembership.objects.filter(user=user, is_active=True).count() == 2
 
-        # The new membership must be ADMIN
+        # The new membership must administer the organization
         new_membership = OrganizationMembership.objects.get(user=user, organization_id=body["id"])
-        assert new_membership.role == OrganizationRole.ADMIN
+        assert membership_holds_permission(new_membership, MANAGE_MEMBERS)
 
     def test_member_with_one_existing_org_mine_lists_both_after_create(self, user):
         """After creating org C, GET /organizations/mine/ lists both A and C."""
@@ -4193,7 +4146,6 @@ class TestCreateAdditionalOrganization:
             OrganizationMembership.objects.create(
                 user=user,
                 organization=org_a,
-                role=OrganizationRole.ADMIN,
                 is_active=True,
             )
         )
@@ -4222,7 +4174,6 @@ class TestCreateAdditionalOrganization:
             OrganizationMembership.objects.create(
                 user=user,
                 organization=org_a,
-                role=OrganizationRole.ADMIN,
                 is_active=True,
             )
         )
@@ -4254,14 +4205,12 @@ class TestCreateAdditionalOrganization:
             OrganizationMembership.objects.create(
                 user=user,
                 organization=org_a,
-                role=OrganizationRole.ADMIN,
                 is_active=True,
             )
         )
         OrganizationMembership.objects.create(
             user=user,
             organization=org_b,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -4279,9 +4228,9 @@ class TestCreateAdditionalOrganization:
         # User now has THREE active memberships
         assert OrganizationMembership.objects.filter(user=user, is_active=True).count() == 3
 
-        # New membership is ADMIN
+        # The new membership administers the organization
         new_membership = OrganizationMembership.objects.get(user=user, organization_id=body["id"])
-        assert new_membership.role == OrganizationRole.ADMIN
+        assert membership_holds_permission(new_membership, MANAGE_MEMBERS)
 
     def test_gated_user_first_org_create_still_works(self, user):
         """Regression: a gated user (0 memberships) can still create their first org → 201."""
@@ -4301,7 +4250,7 @@ class TestCreateAdditionalOrganization:
         # Now the user has exactly one membership
         assert OrganizationMembership.objects.filter(user=user, is_active=True).count() == 1
         membership = OrganizationMembership.objects.get(user=user)
-        assert membership.role == OrganizationRole.ADMIN
+        assert membership_holds_permission(membership, MANAGE_MEMBERS)
 
     def test_unauthenticated_post_returns_401(self, anonymous_client):
         """Unauthenticated POST /organizations/ must still return 401 (no regression)."""

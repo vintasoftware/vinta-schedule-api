@@ -92,11 +92,20 @@ Restores the previous schema exactly: drop the composite PK, re-add ``id`` as a
 ``BigAutoField`` shape). ``uniq_membership_user_organization`` is untouched
 throughout, so the 3 calendar FKs remain valid across both directions. The state
 half reverses to ``RemoveField(pk)`` + ``AddField(id)``.
+
+**Historical edit (Phase 6, vinta-django-orgs migration).** The state half below
+declared ``common.fields.SafeCompositePrimaryKey``, a ``CompositePrimaryKey``
+subclass whose only difference was a descriptor tolerating class-level ``Model.pk``
+access. Phase 6 deleted that class along with the rest of the bespoke tenancy
+layer, so this migration now names Django's stock ``models.CompositePrimaryKey``.
+The two deconstruct to the same field arguments and differ only in a Python-level
+descriptor, which no migration -- forward or reverse -- reads; and ``0023`` removes
+this virtual field again, so the end state is identical either way. Edited rather
+than kept alive because the alternative was retaining a deleted class purely so an
+already-superseded migration could import it.
 """
 
-from django.db import migrations
-
-import common.fields
+from django.db import migrations, models
 
 
 # ``organizations_organizationmembership_pkey`` is Postgres's deterministic default
@@ -153,7 +162,7 @@ class Migration(migrations.Migration):
                 migrations.AddField(
                     model_name="organizationmembership",
                     name="pk",
-                    field=common.fields.SafeCompositePrimaryKey(
+                    field=models.CompositePrimaryKey(
                         "user",
                         "organization",
                         blank=True,

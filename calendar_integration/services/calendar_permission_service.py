@@ -820,8 +820,8 @@ class CalendarPermissionService:
             # Look up by id alone — no org filter.  This is safe because:
             #   1. The integer id alone is useless without the secret token string.
             #   2. The constant-time hash verify below is the actual gate.
-            # We use ``original_manager`` (the plain Django Manager defined on
-            # OrganizationModel) to bypass the tenant-required guard that
+            # We use ``original_manager`` (the unscoped manager
+            # ``SingleOrganizationModelMixin`` attaches) to bypass the guard that
             # CalendarManagementToken.objects enforces — the org is derived FROM
             # the token, not passed in.
             token = (

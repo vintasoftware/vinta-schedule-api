@@ -46,7 +46,7 @@ class MeteredOccurrenceQuerySet(QuerySet):
     def for_organizations(self, organization_ids: Sequence[int]) -> MeteredOccurrenceQuerySet:
         """Restrict to a pooled billing subtree.
 
-        ``MeteredOccurrence`` is not an ``OrganizationModel`` (see the model
+        ``MeteredOccurrence`` is not organization-scoped (see the model
         docstring), so this is an ordinary filter — but every usage read still has
         to be organization-scoped, and going through a named method keeps that
         visible at the call site.
@@ -85,7 +85,7 @@ class BillingPeriodSummaryQuerySet(QuerySet):
     def for_organizations(self, organization_ids: Sequence[int]) -> BillingPeriodSummaryQuerySet:
         """Restrict to a pooled billing subtree.
 
-        ``BillingPeriodSummary`` is not an ``OrganizationModel`` (see the model
+        ``BillingPeriodSummary`` is not organization-scoped (see the model
         docstring), so this is an ordinary filter — but every read is still
         organization-scoped, and going through a named method keeps that visible at
         the call site. Mirrors ``MeteredOccurrenceQuerySet.for_organizations``.

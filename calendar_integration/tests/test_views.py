@@ -34,7 +34,8 @@ from calendar_integration.services.dataclasses import (
     AvailableTimeWindow,
     UnavailableTimeWindow,
 )
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import grant_membership_groups, make_membership
 
 
@@ -656,7 +657,7 @@ class TestCalendarEventViewSet:
         make_membership(
             user=admin_user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
 
         # Source calendar owner
@@ -665,7 +666,6 @@ class TestCalendarEventViewSet:
             OrganizationMembership,
             user=source_owner,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
         CalendarIntegrationTestFactory.create_calendar_ownership(source_owner, calendar)
 
@@ -731,7 +731,7 @@ class TestCalendarEventViewSet:
         make_membership(
             user=admin_user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
 
         # Mock calendar service
@@ -762,7 +762,6 @@ class TestCalendarEventViewSet:
             OrganizationMembership,
             user=member_user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
 
         target_calendar = CalendarIntegrationTestFactory.create_calendar(organization=organization)
@@ -782,7 +781,7 @@ class TestCalendarEventViewSet:
         make_membership(
             user=admin_user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
 
         other_org = CalendarIntegrationTestFactory.create_organization(name="Other Org")
@@ -806,7 +805,7 @@ class TestCalendarEventViewSet:
         make_membership(
             user=admin_user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
 
         source_owner = baker.make(User)
@@ -814,7 +813,6 @@ class TestCalendarEventViewSet:
             OrganizationMembership,
             user=source_owner,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
         CalendarIntegrationTestFactory.create_calendar_ownership(source_owner, calendar)
 
@@ -835,7 +833,7 @@ class TestCalendarEventViewSet:
         make_membership(
             user=admin_user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
 
         source_owner = baker.make(User)
@@ -843,7 +841,6 @@ class TestCalendarEventViewSet:
             OrganizationMembership,
             user=source_owner,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
         CalendarIntegrationTestFactory.create_calendar_ownership(source_owner, calendar)
 
@@ -865,7 +862,7 @@ class TestCalendarEventViewSet:
         make_membership(
             user=admin_user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
 
         source_owner = baker.make(User)
@@ -873,7 +870,6 @@ class TestCalendarEventViewSet:
             OrganizationMembership,
             user=source_owner,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
         CalendarIntegrationTestFactory.create_calendar_ownership(source_owner, calendar)
 
@@ -898,7 +894,7 @@ class TestCalendarEventViewSet:
         make_membership(
             user=admin_user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
 
         source_owner = baker.make(User)
@@ -906,7 +902,6 @@ class TestCalendarEventViewSet:
             OrganizationMembership,
             user=source_owner,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
         CalendarIntegrationTestFactory.create_calendar_ownership(source_owner, calendar)
         # Intentionally do NOT create a SocialAccount for source_owner
@@ -937,7 +932,7 @@ class TestCalendarEventViewSet:
         make_membership(
             user=admin_user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
 
         # Orphan ownership: membership_user_id is NULL so the membership-scoped
@@ -2134,7 +2129,7 @@ class TestCalendarViewSet:
         make_membership(
             user=admin_user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
 
         created_calendar = CalendarIntegrationTestFactory.create_calendar(
@@ -2187,7 +2182,7 @@ class TestCalendarViewSet:
         make_membership(
             user=admin_user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
         resource = CalendarIntegrationTestFactory.create_calendar(
             organization=organization,
@@ -2213,7 +2208,7 @@ class TestCalendarViewSet:
         make_membership(
             user=admin_user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
         personal = CalendarIntegrationTestFactory.create_calendar(
             organization=organization,
@@ -2953,7 +2948,7 @@ class TestCalendarViewSet:
         make_membership(
             user=admin_user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
 
         # Create calendar owner (different user)
@@ -2962,7 +2957,6 @@ class TestCalendarViewSet:
             OrganizationMembership,
             user=calendar_owner,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
 
         # Create calendar ownership linking owner to calendar
@@ -3040,7 +3034,6 @@ class TestCalendarViewSet:
             OrganizationMembership,
             user=member_user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
 
         # Create calendar owner (another user)
@@ -3049,7 +3042,6 @@ class TestCalendarViewSet:
             OrganizationMembership,
             user=calendar_owner,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
 
         # Create calendar ownership
@@ -3081,7 +3073,7 @@ class TestCalendarViewSet:
         make_membership(
             user=admin_user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
 
         # Create calendar in different organization
@@ -3114,7 +3106,7 @@ class TestCalendarViewSet:
         make_membership(
             user=admin_user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
 
         # Create calendar owner
@@ -3123,7 +3115,6 @@ class TestCalendarViewSet:
             OrganizationMembership,
             user=calendar_owner,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
 
         # Create calendar ownership
@@ -3159,7 +3150,7 @@ class TestCalendarViewSet:
         make_membership(
             user=admin_user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
 
         # Create calendar with no ownership
@@ -3194,7 +3185,7 @@ class TestCalendarViewSet:
         make_membership(
             user=admin_user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
 
         calendar = CalendarIntegrationTestFactory.create_calendar(organization=organization)
@@ -3233,7 +3224,7 @@ class TestCalendarViewSet:
         make_membership(
             user=admin_user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
 
         # Create calendar owner
@@ -3242,7 +3233,6 @@ class TestCalendarViewSet:
             OrganizationMembership,
             user=calendar_owner,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
 
         # Create calendar ownership
@@ -3291,7 +3281,7 @@ class TestCalendarViewSet:
         make_membership(
             user=admin_user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
 
         # Create calendar owner
@@ -3300,7 +3290,6 @@ class TestCalendarViewSet:
             OrganizationMembership,
             user=calendar_owner,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
 
         # Create calendar and ownership
@@ -3391,13 +3380,9 @@ class TestCalendarViewSetOwnerScoping:
     @staticmethod
     def _make_admin(user, organization):
         membership = OrganizationMembership.objects.get(user=user, organization=organization)
-        membership.role = OrganizationRole.ADMIN
-        membership.save(update_fields=["role"])
-        # A ``queryset.update()`` used to be enough. It is not any more: the
-        # admin decision reads ``organizations.manage_members`` through the
-        # membership's groups (Phase 4 of the vinta-django-orgs migration), and
-        # ``update()`` writes the column straight past the dual-write shim every
-        # live re-roling path calls.
+        # A ``queryset.update(role=...)`` used to be enough. The admin decision
+        # reads ``organizations.manage_members`` through the membership's
+        # groups, so promotion is a group assignment and nothing else.
         grant_membership_groups(membership)
 
     @staticmethod
@@ -5401,7 +5386,7 @@ class TestCalendarBundleUpdateAction:
         make_membership(
             user=admin,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
         client = APIClient()
         client.force_authenticate(user=admin)
@@ -5417,7 +5402,6 @@ class TestCalendarBundleUpdateAction:
             OrganizationMembership,
             user=member,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
         client = APIClient()
         client.force_authenticate(user=member)
@@ -5776,7 +5760,7 @@ class TestCalendarDisableGating:
         make_membership(
             user=admin,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
         client = APIClient()
         client.force_authenticate(user=admin)
@@ -5792,7 +5776,6 @@ class TestCalendarDisableGating:
             OrganizationMembership,
             user=member,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
         client = APIClient()
         client.force_authenticate(user=member)
@@ -5909,7 +5892,6 @@ class TestCalendarDisableGating:
             OrganizationMembership,
             user=owner,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
         personal = CalendarIntegrationTestFactory.create_calendar(
             organization=organization,
@@ -5933,7 +5915,6 @@ class TestCalendarDisableGating:
             OrganizationMembership,
             user=other_user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
         personal = CalendarIntegrationTestFactory.create_calendar(
             organization=organization,
@@ -6154,7 +6135,6 @@ class TestCalendarEventDownloadICS:
             OrganizationMembership,
             user=member_user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
 
         # Calendar owned by someone else — member_user has NO CalendarOwnership on it.

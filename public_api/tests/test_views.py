@@ -8,7 +8,8 @@ from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
 
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import make_membership
 from public_api.constants import PROVIDER_SCOPED_RESOURCES, PublicAPIResources
 from public_api.models import ResourceAccess, SystemUser
@@ -50,7 +51,7 @@ def admin_user(organization):
     make_membership(
         user=user,
         organization=organization,
-        role=OrganizationRole.ADMIN,
+        groups=[GROUP_ORGANIZATION_ADMIN],
         is_active=True,
     )
     return user
@@ -65,7 +66,6 @@ def member_user(organization):
         OrganizationMembership,
         user=user,
         organization=organization,
-        role=OrganizationRole.MEMBER,
         is_active=True,
     )
     return user
@@ -490,7 +490,6 @@ class TestSystemUserTokenViewSetList:
             OrganizationMembership,
             user=owner_user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -1257,7 +1256,6 @@ class TestSystemUserTokenViewSetScopedCreate:
             OrganizationMembership,
             user=user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
         return user
@@ -1271,7 +1269,6 @@ class TestSystemUserTokenViewSetScopedCreate:
             OrganizationMembership,
             user=user,
             organization=other_organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
         return user
@@ -1459,7 +1456,6 @@ class TestSystemUserTokenViewSetScopedCreate:
             OrganizationMembership,
             user=replacement_user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -1499,7 +1495,6 @@ class TestSystemUserTokenViewSetScopedCreate:
             OrganizationMembership,
             user=replacement_user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -1551,7 +1546,6 @@ class TestSystemUserTokenUpdateEscalationGuard:
             OrganizationMembership,
             user=user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
         return user
@@ -1674,13 +1668,13 @@ class TestSystemUserTokenViewSetHonoursTheOrganizationHeader:
         make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         make_membership(
             user=user,
             organization=other_organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         return user
@@ -1782,14 +1776,13 @@ class TestSystemUserTokenViewSetHonoursTheOrganizationHeader:
         make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         baker.make(
             OrganizationMembership,
             user=user,
             organization=other_organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
         client = APIClient()
@@ -1835,13 +1828,12 @@ class TestSystemUserTokenViewSetHonoursTheOrganizationHeader:
             OrganizationMembership,
             user=user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
         make_membership(
             user=user,
             organization=other_organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         client = APIClient()

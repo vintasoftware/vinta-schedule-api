@@ -4,6 +4,7 @@ from django.db import transaction
 
 from dependency_injector.wiring import Provide, inject
 
+from organizations.authorization import membership_role_label
 from organizations.models import OrganizationMembership
 from webhooks.constants import WebhookEventType
 from webhooks.services.payloads import OrganizationMemberCreatedWebhookPayload
@@ -28,7 +29,11 @@ class WebhookMembershipSideEffectsService:
             "email": membership.user.email,
             "organization_id": membership.organization_id,
             "organization_name": membership.organization.name,
-            "membership_role": membership.role,
+            # Derived from ``organizations.manage_members`` since Phase 6 of the
+            # vinta-django-orgs migration dropped ``role``. The two published
+            # values are unchanged on purpose: this is a partner-visible payload
+            # and no handoff announced a new spelling.
+            "membership_role": membership_role_label(membership),
         }
 
     def on_member_created(self, membership: OrganizationMembership) -> None:
@@ -38,9 +43,11 @@ class WebhookMembershipSideEffectsService:
 
         Args:
             membership: The newly created OrganizationMembership. Must have
-                ``user``, ``organization``, and ``role`` accessible (i.e. already
-                saved to the DB and related objects pre-loaded or accessible via
-                FK lookup). The membership identity in the payload is the
+                ``user``, ``organization``, and ``groups`` accessible (i.e.
+                already saved to the DB and related objects pre-loaded or
+                accessible via FK lookup) -- and its groups must already be
+                assigned, since ``membership_role`` is derived from them. The
+                membership identity in the payload is the
                 ``(user_id, organization_id)`` pair — no scalar membership id.
         """
         if not membership.is_active:

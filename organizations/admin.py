@@ -43,13 +43,14 @@ from payments.services.subscription_service import SubscriptionService
 #
 # This is an authorization change, not tidying:
 #
-# * ``OrganizationMembershipAdmin`` exposes ``role``, ``is_billing_owner`` and
-#   ``groups`` as plain, staff-editable fields, with none of the rules the REST
-#   viewset enforces -- the seat limit, and the refusal to demote the last
-#   active admin in an organization. Any staff user with the change permission
-#   could grant themselves organization admin or billing ownership in a single
-#   form post. It is left unregistered outright; a membership admin that
-#   carries those rules is Phase 3's, not this phase's.
+# * ``OrganizationMembershipAdmin`` exposes ``groups`` and ``permissions`` as
+#   plain, staff-editable fields, with none of the rules the REST viewset
+#   enforces -- the seat limit, and the refusal to demote the last member who
+#   can manage members. Those two relations are now the *entire* authorization
+#   surface of a membership, so any staff user with the change permission could
+#   grant themselves organization admin or billing management in a single form
+#   post. It is left unregistered outright; a membership admin that carries
+#   those rules is not this phase's.
 # * ``OrganizationAdmin`` is replaced (below) rather than merely dropped: ours
 #   validates the slug, refuses a parent cycle, and puts every new organization
 #   on a billing plan. The package's also inlines ``OrganizationSite``, which we

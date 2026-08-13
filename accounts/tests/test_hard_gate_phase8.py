@@ -19,7 +19,8 @@ from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
 
-from organizations.models import Organization, OrganizationRole
+from organizations.models import Organization
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import make_membership
 from users.models import Profile, User
 
@@ -51,7 +52,7 @@ def _make_member(email: str) -> tuple[User, Organization, APIClient]:
     user = baker.make(User, email=email, is_active=True)
     Profile.objects.get_or_create(user=user, defaults={"first_name": "Member", "last_name": "User"})
     org = baker.make(Organization, name="Member Org")
-    make_membership(user=user, organization=org, role=OrganizationRole.ADMIN)
+    make_membership(user=user, organization=org, groups=[GROUP_ORGANIZATION_ADMIN])
     user.refresh_from_db()
     client = APIClient()
     client.force_authenticate(user=user)

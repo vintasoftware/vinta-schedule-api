@@ -64,8 +64,8 @@ def _is_organization_scoped(model: type[Model] | None) -> bool:
     """Is ``model`` one of the models this project scopes per organization?
 
     One base now answers it: Phase 2b finished moving every scoped model onto the
-    package's ``SingleOrganizationModelMixin``, so the retired
-    ``organizations.OrganizationModel`` half of this check is gone with the class.
+    package's ``SingleOrganizationModelMixin``, so the bespoke half of this check
+    is gone with the class it named.
     """
     if model is None:
         return False

@@ -49,7 +49,6 @@ from common.fields import OrganizationMembershipForeignKey
 from common.managers import OrganizationScopedManager
 from common.models import BaseModel, SafeRelationNullInitMixin
 from organizations.models import Organization, OrganizationMembership
-from organizations.tests.helpers import grant_membership_groups
 
 
 User = get_user_model()
@@ -318,25 +317,34 @@ class TestOrganizationMembershipForeignKeyBehavior:
             )
         assert len(hosts) == 1
 
-    def test_filter_traversal_via_membership_role(self, probe_host_table):
-        """filter(membership__role='admin') returns the host row for an admin member."""
-        from organizations.models import OrganizationRole
+    def test_filter_traversal_via_a_membership_column(self, probe_host_table):
+        """``filter(membership__<field>=...)`` discriminates on the joined row.
 
-        user = User.objects.create_user(email="role@example.com", password="pw")  # type: ignore[attr-defined]
+        Used to filter on ``membership__role``; ``role`` is gone, and
+        ``membership__groups__name`` is not a usable substitute *here* --
+        this class is ``transaction=True``, which truncates ``auth_group``
+        between tests and takes the three seeded groups with it, so a
+        group-shaped assertion would silently match nothing. ``is_active`` is a
+        plain column on the same joined row and exercises the same join.
+
+        Two rows, so the filter has to actually discriminate rather than return
+        everything.
+        """
+        active_user = User.objects.create_user(email="active@example.com", password="pw")  # type: ignore[attr-defined]
+        inactive_user = User.objects.create_user(email="inactive@example.com", password="pw")  # type: ignore[attr-defined]
         org = Organization.objects.create(name="Test Org Role")
-        grant_membership_groups(
-            OrganizationMembership.objects.create(
-                user=user, organization=org, role=OrganizationRole.ADMIN
-            )
-        )
+        OrganizationMembership.objects.create(user=active_user, organization=org, is_active=True)
+        OrganizationMembership.objects.create(user=inactive_user, organization=org, is_active=False)
 
-        host = probe_host_table.objects.create(
+        active_host = probe_host_table.objects.create(
             organization=org,
-            membership_user_id=user.pk,
+            membership_user_id=active_user.pk,
+        )
+        probe_host_table.objects.create(
+            organization=org,
+            membership_user_id=inactive_user.pk,
         )
 
-        qs = probe_host_table.objects.filter_by_organization(org).filter(
-            membership__role=OrganizationRole.ADMIN
-        )
+        qs = probe_host_table.objects.filter_by_organization(org).filter(membership__is_active=True)
         assert qs.count() == 1
-        assert qs.first().pk == host.pk
+        assert qs.first().pk == active_host.pk

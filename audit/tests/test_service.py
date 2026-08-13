@@ -19,7 +19,8 @@ from audit.constants import AuditAction, AuditActorType
 from audit.repositories import DjangoORMAuditRepository
 from audit.services import AuditService
 from audit.types import SubjectRef
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.authorization import MEMBERSHIP_ROLE_LABEL_ADMIN, MEMBERSHIP_ROLE_LABEL_MEMBER
+from organizations.models import Organization, OrganizationMembership
 from organizations.tests.helpers import grant_membership_groups
 
 
@@ -58,7 +59,8 @@ class TestActorFromMembership:
         org = baker.make(Organization)
         user = baker.make("users.User")
         membership = OrganizationMembership.objects.create(
-            user=user, organization=org, role=OrganizationRole.MEMBER
+            user=user,
+            organization=org,
         )
 
         snapshot = AuditService.actor_from_membership(membership)
@@ -79,12 +81,13 @@ class TestActorFromMembership:
         org = baker.make(Organization)
         user = baker.make("users.User")
         membership = OrganizationMembership.objects.create(
-            user=user, organization=org, role=OrganizationRole.MEMBER
+            user=user,
+            organization=org,
         )
 
         snapshot = AuditService.actor_from_membership(membership)
 
-        assert snapshot.actor_role == OrganizationRole.MEMBER
+        assert snapshot.actor_role == MEMBERSHIP_ROLE_LABEL_MEMBER
 
     def test_no_system_user_scopes(self) -> None:
         org = baker.make(Organization)
@@ -260,7 +263,8 @@ class TestActorFromUser:
         user = baker.make("users.User")
         membership = grant_membership_groups(
             OrganizationMembership.objects.create(
-                user=user, organization=org, role=OrganizationRole.ADMIN
+                user=user,
+                organization=org,
             )
         )
 
@@ -268,7 +272,7 @@ class TestActorFromUser:
 
         assert snapshot.actor_type == AuditActorType.MEMBERSHIP
         assert snapshot.actor_id == membership.user_id
-        assert snapshot.actor_role == OrganizationRole.ADMIN
+        assert snapshot.actor_role == MEMBERSHIP_ROLE_LABEL_ADMIN
 
     def test_system_actor_when_user_not_member(self) -> None:
         org = baker.make(Organization)
@@ -288,7 +292,8 @@ class TestActorFromUserOrToken:
         org = baker.make(Organization)
         user = baker.make("users.User")
         OrganizationMembership.objects.create(
-            user=user, organization=org, role=OrganizationRole.MEMBER
+            user=user,
+            organization=org,
         )
 
         snapshot = AuditService.actor_from_user_or_token(user, org.pk)
@@ -418,7 +423,8 @@ class TestRecordEnqueues:
         user = baker.make("users.User")
         membership = grant_membership_groups(
             OrganizationMembership.objects.create(
-                user=user, organization=org, role=OrganizationRole.ADMIN
+                user=user,
+                organization=org,
             )
         )
         actor = AuditService.actor_from_membership(membership)
@@ -436,7 +442,7 @@ class TestRecordEnqueues:
         payload = mock_task.delay.call_args[0][0]
         assert payload["actor"]["actor_type"] == AuditActorType.MEMBERSHIP
         assert payload["actor"]["actor_id"] == membership.user_id
-        assert payload["actor"]["actor_role"] == OrganizationRole.ADMIN
+        assert payload["actor"]["actor_role"] == MEMBERSHIP_ROLE_LABEL_ADMIN
 
     def test_payload_has_correct_subject_fields(self, django_capture_on_commit_callbacks) -> None:
         service = make_service()

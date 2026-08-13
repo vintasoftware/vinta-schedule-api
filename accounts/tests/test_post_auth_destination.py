@@ -33,8 +33,8 @@ from organizations.models import (
     Organization,
     OrganizationBranding,
     OrganizationMembership,
-    OrganizationRole,
 )
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import make_membership
 from users.factories import UserFactory
 from users.models import User
@@ -127,7 +127,7 @@ class TestEmailSignupReachesTheOrganizationDestination:
         make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
@@ -199,7 +199,6 @@ class TestLoginReachesTheOrganizationDestination:
             OrganizationMembership,
             user=user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -225,7 +224,6 @@ class TestLoginReachesTheOrganizationDestination:
             OrganizationMembership,
             user=user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -267,7 +265,6 @@ class TestLoginReachesTheOrganizationDestination:
             OrganizationMembership,
             user=user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -300,7 +297,7 @@ class TestMiddlewareLeavesEverythingElseAlone:
         make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         client = APIClient()

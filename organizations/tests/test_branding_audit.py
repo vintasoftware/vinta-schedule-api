@@ -16,11 +16,12 @@ from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
 
+from organizations.authorization import MEMBERSHIP_ROLE_LABEL_ADMIN
 from organizations.models import (
     Organization,
     OrganizationBranding,
-    OrganizationRole,
 )
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import make_membership
 from users.factories import UserFactory
 
@@ -51,7 +52,7 @@ def admin_user(eligible_org):
     make_membership(
         user=user,
         organization=eligible_org,
-        role=OrganizationRole.ADMIN,
+        groups=[GROUP_ORGANIZATION_ADMIN],
         is_active=True,
     )
     return user
@@ -93,7 +94,7 @@ class TestOrganizationBrandingViewAudit:
         assert record["subject"]["subject_type"] == "organizations.OrganizationBranding"
         assert record["actor"]["actor_type"] == "membership"
         assert record["actor"]["actor_id"] == admin_user.id
-        assert record["actor"]["actor_role"] == OrganizationRole.ADMIN
+        assert record["actor"]["actor_role"] == MEMBERSHIP_ROLE_LABEL_ADMIN
         assert record["diff"] is None
 
     def test_put_over_existing_row_records_update_with_diff_of_changed_fields_only(
@@ -176,7 +177,7 @@ class TestOrganizationBrandingViewAudit:
         make_membership(
             user=user,
             organization=child_org,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         self._authed_client(client, user, child_org)

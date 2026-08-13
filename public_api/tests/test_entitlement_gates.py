@@ -37,7 +37,8 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from calendar_integration.constants import CalendarProvider
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import make_membership
 from payments.billing_constants import BillingState, Entitlement
 from payments.exceptions import OverLimitError
@@ -244,7 +245,7 @@ def _admin_membership(organization: Organization) -> OrganizationMembership:
     return make_membership(
         user=user,
         organization=organization,
-        role=OrganizationRole.ADMIN,
+        groups=[GROUP_ORGANIZATION_ADMIN],
         is_active=True,
     )
 

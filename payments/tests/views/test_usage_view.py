@@ -31,7 +31,8 @@ from rest_framework import status
 
 from calendar_integration.constants import CalendarType
 from calendar_integration.models import AvailableTime, Calendar, CalendarGroup
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import make_membership
 from payments.billing_constants import BillingState, LimitedResource, LimitKind
 from payments.models import BillingPlan, MeteredOccurrence, PlanLimit
@@ -198,7 +199,7 @@ def admin_membership(organization, user):
     return make_membership(
         organization=organization,
         user=user,
-        role=OrganizationRole.ADMIN,
+        groups=[GROUP_ORGANIZATION_ADMIN],
         is_active=True,
     )
 
@@ -325,7 +326,7 @@ class TestPooledAttributionOmitsNonContributors:
         make_membership(
             organization=contributing_child,
             user=user,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         for i in range(2):
@@ -404,7 +405,7 @@ class TestEstimatedOverageTotal:
         make_membership(
             organization=contributing_child,
             user=user,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
@@ -447,7 +448,7 @@ class TestNoSubscriptionOrganization:
         make_membership(
             organization=free_organization,
             user=user,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
@@ -501,7 +502,7 @@ class TestRootResolutionAndSubtreeWalkHappenOnce:
         make_membership(
             organization=child,
             user=user,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 

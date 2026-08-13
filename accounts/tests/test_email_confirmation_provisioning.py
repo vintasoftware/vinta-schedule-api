@@ -22,7 +22,9 @@ from allauth.account.adapter import get_adapter
 from allauth.account.models import EmailAddress
 from model_bakery import baker
 
+from organizations.authorization import membership_holds_permission
 from organizations.models import Organization, OrganizationInvitation, OrganizationMembership
+from organizations.permission_catalog import MANAGE_MEMBERS
 from users.factories import UserFactory
 
 
@@ -72,7 +74,7 @@ class TestProvisionOnEmailConfirmation:
         assert OrganizationMembership.objects.filter(user=user).count() == 1
         membership = OrganizationMembership.objects.get(user=user)
         assert membership.organization.name == "Alice's Workshop"
-        assert membership.role == "admin"
+        assert membership_holds_permission(membership, MANAGE_MEMBERS)
 
         # pending_organization_name was cleared.
         profile.refresh_from_db()
@@ -156,7 +158,7 @@ class TestProvisionOnEmailConfirmation:
         assert OrganizationMembership.objects.filter(user=invited_user).count() == 1
         membership = OrganizationMembership.objects.get(user=invited_user)
         assert membership.organization == org
-        assert membership.role == "member"
+        assert not membership_holds_permission(membership, MANAGE_MEMBERS)
 
         # No new org was created.
         assert Organization.objects.count() == 1
@@ -259,7 +261,7 @@ class TestProvisioningWaitsForEveryVerification:
 
         membership = OrganizationMembership.objects.get(user=user)
         assert membership.organization == org
-        assert membership.role == "member"
+        assert not membership_holds_permission(membership, MANAGE_MEMBERS)
         invitation.refresh_from_db()
         assert invitation.accepted_at is not None
         assert invitation.membership_user_id == membership.user_id

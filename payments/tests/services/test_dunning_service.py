@@ -29,8 +29,8 @@ import pytest
 from model_bakery import baker
 from vintasend.constants import NotificationTypes
 
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
-from organizations.services import sync_membership_groups_from_role
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import make_membership
 from payments.billing_constants import BillingState, LimitedResource, LimitKind
 from payments.constants import PaymentProviders
@@ -159,16 +159,14 @@ def _add_admin_membership(organization: Organization) -> OrganizationMembership:
     ``baker.make(Organization, ...)`` (unlike
     ``OrganizationService.create_organization``) creates none on its own.
 
-    ``sync_membership_groups_from_role`` is what every live write path calls to
-    keep the groups in step with ``role``; ``baker.make`` bypasses it, so this
-    calls it by hand. Phase 6 deletes the shim and this call with it."""
+    A membership holds ``manage_billing`` only through its groups, and
+    ``make_membership`` is what assigns them."""
     membership = make_membership(
         organization=organization,
         user=baker.make(User),
-        role=OrganizationRole.ADMIN,
+        groups=[GROUP_ORGANIZATION_ADMIN],
         is_active=True,
     )
-    sync_membership_groups_from_role(membership)
     return membership
 
 
@@ -182,7 +180,6 @@ def _seed_members(organization: Organization, count: int) -> None:
             OrganizationMembership,
             organization=organization,
             user=baker.make(User),
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 

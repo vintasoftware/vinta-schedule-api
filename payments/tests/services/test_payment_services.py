@@ -6,6 +6,7 @@ import pytest
 from model_bakery import baker
 
 from audit.constants import AuditAction
+from organizations.authorization import MEMBERSHIP_ROLE_LABEL_ADMIN
 from organizations.models import Organization
 from organizations.tests.helpers import grant_membership_groups
 from payments.billing_constants import BillingInterval, BillingState
@@ -1416,14 +1417,13 @@ def test_set_payment_provider_records_actor_from_user(
     ``request.user``) must name that staff member in the audit entry as a
     MEMBERSHIP actor, not the generic SYSTEM actor every other caller gets."""
     from audit.constants import AuditActorType
-    from organizations.models import OrganizationMembership, OrganizationRole
+    from organizations.models import OrganizationMembership
 
     staff_user = baker.make("users.User")
     membership = grant_membership_groups(
         OrganizationMembership.objects.create(
             user=staff_user,
             organization=billing_profile.organization,
-            role=OrganizationRole.ADMIN,
         )
     )
 
@@ -1437,7 +1437,7 @@ def test_set_payment_provider_records_actor_from_user(
     payload = mock_task.delay.call_args_list[0].args[0]
     assert payload["actor"]["actor_type"] == AuditActorType.MEMBERSHIP
     assert payload["actor"]["actor_id"] == membership.user_id
-    assert payload["actor"]["actor_role"] == OrganizationRole.ADMIN
+    assert payload["actor"]["actor_role"] == MEMBERSHIP_ROLE_LABEL_ADMIN
 
 
 @pytest.mark.django_db

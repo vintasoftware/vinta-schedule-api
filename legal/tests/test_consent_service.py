@@ -15,7 +15,7 @@ from legal.exceptions import NoPolicyDocumentError
 from legal.factories import PolicyDocumentFactory, UserConsentFactory
 from legal.models import ConsentSource, PolicyDocumentType, UserConsent
 from legal.services import ConsentService
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
 from users.models import User
 
 
@@ -108,7 +108,8 @@ class TestRecordConsent:
         user: User = baker.make(User)
         org = baker.make(Organization)
         OrganizationMembership.objects.create(
-            user=user, organization=org, role=OrganizationRole.MEMBER
+            user=user,
+            organization=org,
         )
         PolicyDocumentFactory().create(document_type=PolicyDocumentType.SMS_CONSENT, version=1)
         service = ConsentService()
@@ -156,7 +157,6 @@ class TestRecordConsent:
             OrganizationMembership.objects.create(
                 user=user,
                 organization=baker.make(Organization),
-                role=OrganizationRole.MEMBER,
             )
         PolicyDocumentFactory().create(document_type=PolicyDocumentType.SMS_CONSENT, version=1)
         audit_service = Mock()

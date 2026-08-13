@@ -175,7 +175,7 @@ class BookingPolicyService:
         no membership policy can be attached to them).
         """
         # Filter to ownerships that belong to this org and have a real membership.
-        # We read through the CalendarOwnership manager which is an OrganizationModel
+        # We read through the CalendarOwnership manager, which is organization-scoped,
         # so we must use filter_by_organization.
         ownerships = list(
             CalendarOwnership.objects.filter_by_organization(self.organization.id)  # type: ignore[union-attr]

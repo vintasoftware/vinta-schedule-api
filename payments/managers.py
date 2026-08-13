@@ -81,7 +81,7 @@ class MeteredOccurrenceManager(Manager):
     """Manager for the post-paid occurrence ledger.
 
     A plain ``Manager`` for the same reason as ``ProviderWebhookEventManager``:
-    ``MeteredOccurrence`` is not an ``OrganizationModel``, because billing reads
+    ``MeteredOccurrence`` is not organization-scoped, because billing reads
     legitimately cross organizations (summing a reseller subtree's usage, sweeping
     every subscription at cycle close). See the model docstring.
     """
@@ -102,7 +102,7 @@ class BillingPeriodSummaryManager(Manager):
     """Manager for ``BillingPeriodSummary``, the closed-period statement ledger.
 
     A plain ``Manager`` for the same reason as ``MeteredOccurrenceManager``:
-    ``BillingPeriodSummary`` is not an ``OrganizationModel``, because billing reads
+    ``BillingPeriodSummary`` is not organization-scoped, because billing reads
     legitimately cross organizations (a reseller root reading its whole subtree's
     statement history). See the model docstring.
 

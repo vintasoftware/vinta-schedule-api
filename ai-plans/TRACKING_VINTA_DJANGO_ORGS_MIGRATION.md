@@ -4,7 +4,7 @@
 - **Plan**: [ai-plans/2026-08-12-VINTA_DJANGO_ORGS_MIGRATION_IMPLEMENTATION_PLAN.md](2026-08-12-VINTA_DJANGO_ORGS_MIGRATION_IMPLEMENTATION_PLAN.md)
 - **Plan id**: `VINTA_DJANGO_ORGS_MIGRATION` (kebab: `vinta-django-orgs-migration`)
 - **Started**: 2026-08-12
-- **Last updated**: 2026-08-12
+- **Last updated**: 2026-08-13
 - **Feature flag**: none — the plan's Guiding Decisions justify the omission (no flag module in this repo; an app rename and a default-manager swap resolve at class-definition and migration time and cannot be gated per-request). There is consequently no flag-removal phase.
 
 ## run_options
@@ -79,7 +79,7 @@ Every "known flake" mention below this point predates this correction. They are 
 | 3.5 | Make the authorization substrate correct before migrating onto it | 4 | reviewer 4 | ✅ done | `plan/vinta-django-orgs-migration/phase-3.5` | phase-3 | see below |
 | 4 | Migrate the permission classes to `has_perm` | 4 | reviewer 4 | ✅ done | `plan/vinta-django-orgs-migration/phase-4` | `chore/prune-package-tests` | see below |
 | 5 | Expose permissions on REST and GraphQL, drop `role` | 3 | — | ✅ done | `plan/vinta-django-orgs-migration/phase-5` | phase-4 | see below |
-| 6 | Drop `role` / `is_billing_owner` and delete the old tenancy layer | 1 | — | ⏳ pending | — | phase-5 | — |
+| 6 | Drop `role` / `is_billing_owner` and delete the old tenancy layer | 1 | — | ✅ done | `plan/vinta-django-orgs-migration/phase-6` | phase-5 | see below |
 
 ## Amendment — 2026-08-12: package `0.2.0`, app rename withdrawn
 
@@ -551,6 +551,201 @@ Carry-forwards:
 - **The new endpoint can set *and clear* `is_billing_owner`**, which no API could do before. Not a widening: strictly less than `organization_admin`, which the same caller could already grant.
 - **`role_for_invitation_groups`'s late import is load-bearing** — verified. `organizations.models.OrganizationRole` raises `ImproperlyConfigured` if imported eagerly without `django.setup()`, and `permission_catalog` is imported by data-migration test helpers and DRF-agnostic `public_api` types.
 
+### Phase 6 — Drop `role` / `is_billing_owner` and delete the old tenancy layer
+
+- **Branch**: `plan/vinta-django-orgs-migration/phase-6` off `phase-5`
+- **Commit**: `PHASE6SHA` (implement, Tier 1 — escalated in practice; see below)
+
+**"Mechanical deletion once the greps are clean" understated it by a lot.** The
+plan rated this Tier 1. Three things in it were not mechanical: two production
+readers of `membership.role` that no carry-forward had named, an
+`OrganizationInvitation.role` column with nowhere to go once the enum was
+deleted, and a shared-migration-state defect that only exists *because* this
+phase adds the first schema migration downstream of `payments.0022`.
+
+**What landed**: migration `0030` (drop both columns; rename
+`OrganizationInvitation.role` -> `group` and remap its two values);
+`OrganizationRole`, `is_admin`, and the `sync_membership_groups_from_role`
+dual-write deleted; `assign_membership_groups` in its place as the single write
+path; `canonical_groups` replacing the `groups_for_membership_state` /
+`membership_state_for_groups` pair; `membership_holds_permission` and
+`membership_role_label` added to `organizations/authorization.py`; the four dead
+classes deleted from `common/fields.py`; ~350 fixture sites converted across 80
+test modules.
+
+**The five named call sites, and two nobody had named.**
+
+| Site | Read | Now reads |
+|---|---|---|
+| `public_api/scoping.py:50` | `membership.is_admin` | `membership_holds_permission(membership, MANAGE_MEMBERS)` |
+| `calendar_integration/querysets.py:1204` | `membership.is_admin` | same |
+| `external_event_change_request_service.py:503` | `membership.is_admin` | same |
+| `external_event_change_request_service.py:273` | `filter(role=ADMIN)` — **unlisted** | `.holding_permission(MANAGE_MEMBERS)` |
+| `organizations/services.py` | the dual-write shim | deleted; `assign_membership_groups` |
+| `webhooks/services/webhook_membership_side_effects.py:31` | `membership.role` — **unlisted** | `membership_role_label(membership)` |
+| `audit/services.py:76` | `membership.role` — **unlisted** | `membership_role_label(membership)` |
+
+`booking_policy_permission_service.py`, named in the brief, **held no reader at
+all** — Phase 4 removed the last one and only the module docstring still
+mentioned `is_admin`. The brief's count was one too high and two too low.
+
+The last two are the interesting ones: neither is an authorization read. The
+webhook payload's `membership_role` is a partner-visible field and
+`audit.Audit.actor_role` is a snapshot column with `"admin"` / `"member"` rows
+already on disk that `AuditRepository.query` matches exactly. Both keep their
+published values, derived from `organizations.manage_members` instead of the
+column — writing a new spelling would have split audit history in two silently,
+which is the exact trap the withdrawn app rename was withdrawn to avoid.
+
+**`membership_holds_permission` is not a fourth implementation.** It is
+`OrganizationMembershipQuerySet.holding_permission` narrowed to one row — one
+query, no new predicate, guaranteed to agree with the last-admin guard. It
+deliberately does *not* route through `has_organization_permission`: that takes a
+`user`, so it applies the backend's `user.is_active` gate and needs
+`membership.user` loaded, and `membership.is_admin` applied neither. Routing
+through it would have been a behaviour change dressed as a refactor.
+
+**`OrganizationInvitation.role` went, as `group`.** The column records which
+capability set the invitee receives on acceptance — real information, and the
+only remaining consumer of a role vocabulary. Dropping it would have silently
+demoted every pending admin invitation; keeping it would have needed a `choices`
+enum this phase exists to delete. Renamed to `group` holding a seeded group name,
+with a two-row value remap in the same migration. A single `CharField` rather
+than an M2M: an invitation carries at most one of `INVITABLE_GROUPS`. **No wire
+impact** — `role` was never on any REST or GraphQL invitation payload (Phase 5's
+handoff already documented `groups` on `createInvitation`), so no handoff update.
+
+**`sqlmigrate` review.** `0030` emits exactly: `RENAME COLUMN role TO "group"`,
+`ALTER COLUMN "group" TYPE varchar(50)`, two `DROP COLUMN`s, and `(no-op)` for
+the `is_active` `help_text` change. **No `DROP INDEX` or `DROP CONSTRAINT`
+anywhere** — the Phase 2a `_alter_field` failure class needs an `AlterField` on a
+column that participates in a `Meta.constraints` entry, and neither altered column
+does. Verified on a fresh database:
+`uniq_membership_user_organization` survives as a `UNIQUE CONSTRAINT` with all
+five raw-SQL PROTECT FKs still bound to it; both invitation constraints survive
+the rename, including the *partial* `uniq_invitation_membership_user_per_org`
+(stored as an index, which is the shape Phase 2a lost one of); and Phase 2a's
+`bookingpolicy_uniq_org_default` is still there.
+
+**A real defect the column drop surfaced, fixed here.** Two tests drive
+`MigrationExecutor` backwards over the shared per-worker database and restore only
+*their own app's* head in `finally`. Stepping `payments` back to `0019` unapplies
+every migration that depends on a later `payments` one — `organizations.0027`
+onwards reach `payments.0022` — and migrating forward to `payments.0020`
+re-applies only `payments`. That was invisible while the collateral migrations
+were data-only. `0030` is the first schema migration in that set, so the reverse
+*restored a NOT NULL `role` column no live model writes* and every membership
+insert in every later test in that worker failed with `NotNullViolation`. Five
+failures across two modules, in two apps neither test names. Both `finally`
+blocks now restore `executor.loader.graph.leaf_nodes()`. **This is the
+"still open" fragility the 2026-08-13 correction section predicted would hide the
+next defect the same way** — it did, and this time the diagnosis started from
+"passes alone, fails in a suite = interference", not from load.
+
+**The fixture sweep was automated, and the automation had a bug.** ~350 sites
+were rewritten by an AST-driven script under two rules: helper calls map
+`role=`/`is_billing_owner=` to `groups=[...]`; everything else naming
+`OrganizationMembership` simply drops the kwarg (an unprivileged row is the same
+shape, and a privileged one was already followed by `grant_membership_groups`).
+That second rule is wrong for three `_make_org_with_member(*, is_admin)` helpers
+whose deleted kwarg was `ADMIN if is_admin else MEMBER` and whose
+`grant_membership_groups` call then unconditionally granted admin — turning every
+`is_admin=False` fixture into an admin. Two of the three surfaced as red tests;
+the third would not have. Found by re-scanning the *pre-change* files for every
+sync call whose argument construction was not literally `ADMIN`, which found
+exactly those three and nothing else.
+
+**Tests removed, and what still covers them:**
+
+| Removed | Why | Replacement cover |
+|---|---|---|
+| `organizations/tests/test_privileged_membership_fixtures.py` (whole module) | It guarded against "privileged by column, unprivileged by permission" — a shape that needs two representations. With one, `baker.make(OrganizationMembership)` is simply an unprivileged membership and a test that wanted an admin goes **red**, loudly. | The failure it prevented is no longer silent. |
+| `test_group_assignment_endpoint.py::test_the_columns_the_rest_of_the_codebase_still_reads_are_written_too` | Pinned the dual-write in the direction the endpoint ran it. | Nothing to pin — the endpoint writes groups directly. |
+| `test_dunning_recipients.py::TestTheDualWriteKeepsTheTwoRepresentationsInStep` | Same. | Rewritten as `TestReGroupingRemovesCapabilities`: what those tests actually protected is that `assign_membership_groups` writes a *set*, so a demotion removes the dunning seat rather than only adding one. All three cases kept. |
+| `test_group_backfill_migration.py::TestTheBackfillMapsEveryCombination` (DB-driven half) | Drove the forward backfill through `global_apps`, which no longer carries the columns. | `TestTheMappingTheBackfillApplied` asserts the same four cells against the migration's own `target_group_names`, plus a new "every cell names only seeded groups" case. The reverse tests are kept and still DB-driven (the reverse reads no dropped column), including the CI-defect regression. |
+| `test_membership_api_surface.py`'s `is_billing_owner` half | Structurally impossible to emit once the column is gone; the `role` half is kept as a client-contract statement. | — |
+
+Also converted rather than removed: `common/tests/test_fields.py`'s
+`filter(membership__role=...)` traversal test. It became
+`membership__is_active`, **not** `membership__groups__name` — that class is
+`transaction=True`, which truncates `auth_group` between tests and takes the three
+seeded groups with it, so a group-shaped assertion there matches nothing and
+passes vacuously in the deny direction. Worth knowing before writing any
+group-based assertion in a `transaction=True` class.
+
+**Gate**: ruff / format clean, `makemigrations --check` clean, `check --deploy`
+byte-identical to baseline (5 pre-existing warnings), mypy **291** (exactly the
+Phase 5 baseline), `schema.yml` regenerated (one `help_text` string),
+`schema-auth.yml` byte-identical. Scoped suites **5,858 passed / 0 failed** across
+two serial groups (`calendar_integration` 2,042; everything else 3,816), zero
+`Timeout (>10`, zero `AssertionError`. `migrate` clean from zero on a fresh
+database, and `0030` steps backwards and forwards again. Full suite gated on CI
+per the machine-load note.
+
+**The three carry-forward decisions:**
+
+1. **`IsBillingOwnerOrAdmin`'s reseller-root branch: KEPT.** It is unreachable
+   *as a grant* through today's callers, but that is a property of the callers,
+   not of the rule: every REST caller passes `resolve_billing_root(organization)`
+   (an ancestor-or-self) where the branch needs a descendant. The rule itself —
+   "a reseller root that pays for a descendant's capacity may manage its
+   billing" — is correct and is one of the four the plan's **Four rules stay
+   hand-written** decision names. Deleting it would take its dedicated test with
+   it, so the next view that hands a descendant to `check_object_permissions`
+   would lose the grant with nothing going red. Dead-by-construction is worth
+   deleting; dead-by-caller-convention is one PR from being alive.
+2. **Branding views stay on `IsOrganizationAdmin`: NOT MOVED.** Phase 5's trigger
+   ("the moment a group can carry `manage_branding` alone") has not fired and
+   cannot fire without the per-organization group layer, which is an explicit
+   plan Non-goal. Moving the gate to `manage_branding` is a *widening* in shape —
+   a member holding `manage_branding` but not `manage_members` would newly pass —
+   and this phase's contract is deletion with no authorization outcome change,
+   with no parity-matrix budget. It belongs with the change that makes the
+   trigger real.
+3. **Stale `OrganizationModel` prose: CLEANED**, in every `*.py` file. The `.md`
+   tooling docs (`AGENTS.md`, `ai-tools/skills/*`, `.claude|.cursor|.github`
+   agent definitions, `docs/glossary.md`) still name it; they are outside item 4's
+   `--include="*.py"` grep and outside this phase's brief. Worth a separate
+   docs pass — `ai-tools/skills/add-model/SKILL.md` still tells an implementer to
+   `from common.models import OrganizationModel`, which no longer exists.
+
+**Item 4's grep is clean**: `grep -rn "OrganizationRole\|is_billing_owner\|OrganizationModel\b" --include="*.py" .`
+excluding `.venv` and `*/migrations/*` returns **nothing**.
+
+Carry-forwards:
+
+- **`OrganizationMembershipForeignKey` was not reparented, deliberately.** The
+  phase brief said it "now has no base class to inherit from, so reparent it onto
+  the package's field classes"; that misreads the plan, which says it "extends
+  `models.Field` directly and needs no reparenting". `models.Field` is Django's
+  and was never one of the four deleted classes. Reparenting onto
+  `OrganizationSafeRelation` would mean overriding every attribute (different
+  concrete column name and type, different `to_fields`, `DO_NOTHING`) and would
+  lose django-stubs' `Field`-subclass model-attribute typing. Recorded in the
+  module docstring so it is not re-litigated.
+- **Migration `0013` was edited.** It declared `common.fields.SafeCompositePrimaryKey`
+  in its state half; that class is deleted, so the migration named a missing
+  import and the graph would not load. Repointed at `models.CompositePrimaryKey`
+  (identical deconstruction; the two differ only in a Python descriptor no
+  migration reads, and `0023` removes the field again). The alternative was
+  keeping a deleted class alive so an already-superseded migration could import
+  it.
+- **`0030`'s reverse restores the columns but not their values.** There is
+  nothing to restore them from, and guessing from the groups would invent
+  history. It is offered for steppability, not as a data-safe undo — every
+  membership comes back as `role='member', is_billing_owner=False`, so re-running
+  `0029` forward after a reverse would then put every membership in
+  `organization_member`. Documented in the migration header.
+- **Two `MigrationExecutor` tests now restore the whole graph**, which is correct
+  but slower and still leaves the underlying fragility: nothing *prevents* the
+  next such test from restoring only its own app. A fixture that snapshots and
+  restores the graph would.
+- **`assign_membership_groups` still silently no-ops when the seeded groups are
+  absent**, inherited from the shim. On a migrated database that cannot happen;
+  on one where it did, the symptom is a refused authorization rather than a
+  failed write. Unchanged by design, restated here because it is now the *only*
+  write path.
+
 ## Decisions taken 2026-08-13
 
 All three questions blocking Phase 4 were put to the user and answered:
@@ -561,7 +756,18 @@ All three questions blocking Phase 4 were put to the user and answered:
 
 ## Current phase
 
-Phase 6 — drop `role` / `is_billing_owner` and delete the old tenancy layer. Based on `phase-5`. Read Phase 4's and Phase 5's carry-forwards first: four `membership.is_admin` readers survive outside the permission classes and each breaks on the column drop, and `IsBillingOwnerOrAdmin`'s reseller-root branch is unreachable as a grant and may be collapsible. The substrate is now correct: permission checks see the resolved organization, and a deactivated membership resolves nothing. Use the corrected call-site count (two of the four files named in the plan body hold no membership reads), and the shared-test-helper fixture approach recorded under **Decisions taken 2026-08-13**.
+_(none — Phase 6 was the last. The plan is complete.)_
+
+Three items are left open and are **not** part of this plan:
+
+1. **`.md` tooling docs still name `OrganizationModel`** — `AGENTS.md`, every
+   `ai-tools/skills/*`, the `.claude` / `.cursor` / `.github` agent definitions,
+   `docs/glossary.md`, `.github/copilot-instructions.md`. `add-model/SKILL.md`
+   instructs an implementer to import a class that no longer exists. A docs pass.
+2. **The branding views' gate**, with its trigger stated in Phase 5's and Phase
+   6's carry-forwards. It belongs with the per-organization group layer.
+3. **`MigrationExecutor` tests restoring a partial graph.** Fixed at both current
+   sites; nothing prevents a third.
 
 ## Deferred phases
 

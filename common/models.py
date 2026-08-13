@@ -101,7 +101,7 @@ class SafeRelationNullInitMixin(models.Model):
     ``None`` carries no organization to copy, so rewriting that one case onto the
     concrete field loses nothing and leaves the rest of the package's behaviour
     intact. This restores, for the one value where the package's choice is
-    destructive, what the retired ``OrganizationModel`` did for every value.
+    destructive, what the retired bespoke tenancy base did for every value.
 
     Which relations qualify is decided by
     :func:`get_organization_bearing_relations`, not by the package's

@@ -18,7 +18,10 @@ from organizations.models import (
     OrganizationBranding,
     OrganizationInvitation,
     OrganizationMembership,
-    OrganizationRole,
+)
+from organizations.permission_catalog import (
+    GROUP_ORGANIZATION_ADMIN,
+    GROUP_ORGANIZATION_MEMBER,
 )
 from payments.billing_constants import BillingState, Entitlement
 from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
@@ -467,13 +470,13 @@ class TestCreateInvitationMutation:
         assert data["data"]["createInvitation"]["token"] is None
         assert data["data"]["createInvitation"]["inviteUrl"] is None
 
-        # Verify invite_user_to_organization was called with MEMBER role -- the
-        # translation of the ``groups`` default, ``["organization_member"]``.
+        # Verify invite_user_to_organization was called with the member group --
+        # the narrowing of the ``groups`` default, ``["organization_member"]``.
         mock_invite.assert_called_once()
         call_kwargs = mock_invite.call_args.kwargs
         assert call_kwargs["email"] == user_email
         assert call_kwargs["organization"] == child_org
-        assert call_kwargs["role"] == OrganizationRole.MEMBER
+        assert call_kwargs["group"] == GROUP_ORGANIZATION_MEMBER
         assert call_kwargs["invited_by"] is None
 
     def test_create_invitation_with_explicit_admin_group(self):
@@ -517,7 +520,7 @@ class TestCreateInvitationMutation:
 
         mock_invite.assert_called_once()
         call_kwargs = mock_invite.call_args.kwargs
-        assert call_kwargs["role"] == OrganizationRole.ADMIN
+        assert call_kwargs["group"] == GROUP_ORGANIZATION_ADMIN
 
     def test_create_invitation_already_active_member_returns_error(self):
         """createInvitation for an already-active member of the target org → typed error."""
