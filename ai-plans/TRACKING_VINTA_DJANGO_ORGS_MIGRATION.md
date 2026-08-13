@@ -78,7 +78,7 @@ Every "known flake" mention below this point predates this correction. They are 
 | 3 | Groups, permissions, and the organization auth backend | 3 | — | ✅ done | `plan/vinta-django-orgs-migration/phase-3` | phase-2b | see below |
 | 3.5 | Make the authorization substrate correct before migrating onto it | 4 | reviewer 4 | ✅ done | `plan/vinta-django-orgs-migration/phase-3.5` | phase-3 | see below |
 | 4 | Migrate the permission classes to `has_perm` | 4 | reviewer 4 | ✅ done | `plan/vinta-django-orgs-migration/phase-4` | `chore/prune-package-tests` | see below |
-| 5 | Expose permissions on REST and GraphQL, drop `role` | 3 | — | ⏳ pending | — | phase-4 | — |
+| 5 | Expose permissions on REST and GraphQL, drop `role` | 3 | — | ✅ done | `plan/vinta-django-orgs-migration/phase-5` | phase-4 | see below |
 | 6 | Drop `role` / `is_billing_owner` and delete the old tenancy layer | 1 | — | ⏳ pending | — | phase-5 | — |
 
 ## Amendment — 2026-08-12: package `0.2.0`, app rename withdrawn
@@ -524,6 +524,33 @@ Carry-forwards:
 - **Four `membership.is_admin` readers survive outside the permission classes** — `booking_policy_permission_service.py` (system_user adapters only, after this phase), `calendar_integration/querysets.py:1204`, `external_event_change_request_service.py:503`, `public_api/scoping.py:50`. Phase 6's column drop breaks each. The member adapters no longer derive privilege at all: `is_privileged` is now a required keyword, so no call site can silently fall back.
 - **Branding views still gate on `IsOrganizationAdmin`** (`organizations.manage_members`), not `manage_branding`. Equivalent for every real membership since `organization_admin` carries both. A deliberate Phase 5 decision if the surfaces should diverge.
 
+### Phase 5 — Expose permissions on REST and GraphQL, drop `role` from the API
+
+- **Branch**: `plan/vinta-django-orgs-migration/phase-5` off `phase-4`
+- **Commits**: `78fd848` (implement, Tier 3) · `7093540` (handoff moved to a tracked path) · `7ae3f60` (review fixes)
+- **Review**: reviewer Tier 3 (project default). **One BLOCKER**, two SHOULD-FIX, one NIT.
+
+**The BLOCKER was caused by a carry-forward this phase chose to close.** Hiding the three seeded groups from the Django user form's `groups` picker introduced **silent data loss**: `ModelMultipleChoiceField` renders only options in the narrowed queryset, and `ModelForm.save_m2m()` calls `.set(cleaned_data)` — so any ordinary, unrelated edit to a user who already held `organization_admin` removed that assignment. The method's own docstring claimed the opposite, and the test asserted only on the widget queryset, never on a save. The reviewer proved it end-to-end through the real admin change form. Fixed by unioning back any seeded group the edited object already holds; `ModelAdmin.get_form` does not forward `obj` that far, so it is stashed on the *request* rather than on the shared `ModelAdmin` singleton. Round-trip tested and mutation-tested.
+
+**`deactivate`'s last-admin guard was silently over-restrictive.** It still counted `role=ADMIN` while the new `assign_groups` guard counted `holding_permission(MANAGE_MEMBERS)` — so the two endpoints that both claim to protect the last administrator disagreed about what one *is*. Old code returned **400 and blocked a safe deactivation** when the remaining administrator held `manage_members` by direct grant. Now routed through the same queryset method.
+
+**The permission list does not leak, and that was the phase's main risk.** Publishing a permission list is the same escalation class Phase 4's review closed, this time as an information disclosure. `organizations/auth_backends.py::resolve_membership_permissions` is a *second* implementation (the backend answers one `(user, org)` pair; a page spans N users), reading only the membership's direct grant plus its groups' permissions, gated on `membership.is_active` and `user.is_active` — never `user.user_permissions`, global `user.groups`, `get_all_permissions`, or the package's superuser branch. `TestTheBatchResolverAgreesWithTheBackend` diffs the two implementations across seven divergence-prone states, so they cannot drift apart silently. Three named leak tests discriminate, with a control asserting a superuser's `get_all_permissions()` really is the whole catalog so they cannot pass vacuously.
+
+**`role` is gone from every response**, enforced by a gate rather than a sweep: `TestNoPublishedResponseCarriesRole` walks both YAML schemas for `properties.role` **and** introspects the strawberry type map. It found two `calendar_integration` GraphQL types and `ResolvedByMembershipGraphQLType` the implementer had missed. `schema.yml` went 38 → 10 `role` occurrences, all prose (verified).
+
+**The handoff had to move.** `handoff-to-client` writes to `.vinta-ai-workflows/client-handoffs/`, which `.gitignore:53` excludes — two earlier handoffs were committed there and *subsequently* ignored, so the exclusion is deliberate. A client deliverable that exists on one machine is not delivered. Moved to `ai-plans/2026-08-13-MEMBERSHIP_PERMISSIONS_CLIENT_HANDOFF.md`, following the tracked precedent of `2026-07-04-SMS_MFA_CONSENT_FRONTEND_HANDOFF.md`. 7 breaking changes, per-operation before/after payloads, and a `role → permissions` mapping table with three traps spelled out.
+
+**Deviation, now documented in the plan**: `permissions` was added to the member-list serializer, where the plan's bullet said only to *drop* `role`. Sound — the endpoint is `IsOrganizationAdmin`-gated, and without it an admin datatable could not tell who the admins are — but it was undocumented.
+
+**Gate**: ruff / format clean, mypy **291** (below the 293 baseline), `makemigrations --check` clean, `check --deploy` byte-identical, both schemas regenerate to the committed files. Scoped suites ~5,866 passed across five groups plus 213 on the fix pass; zero timeouts, zero `AssertionError`. Full suite gated on CI.
+
+Carry-forwards:
+
+- **The branding views still gate on `IsOrganizationAdmin`** (`organizations.manage_members`) rather than `manage_branding`. Deliberately left: this phase's contract is representation, and Phase 4 owned authorization with its parity matrix. Unobservable today — `organization_admin` is the only group carrying `manage_branding` and it also carries `manage_members`, no API path can grant one without the other, and direct per-membership grants are unwritten. **The trigger condition is explicit: the moment a group can carry `manage_branding` alone, the published capability becomes a lie and the gate must move.** That is exactly what the per-organization group layer would do.
+- **`organization_billing_owner` is refused at invitation time and accepted at assignment time** — an invitation row has no column for it. Asymmetric on purpose, refused loudly rather than silently dropped, documented in the handoff.
+- **The new endpoint can set *and clear* `is_billing_owner`**, which no API could do before. Not a widening: strictly less than `organization_admin`, which the same caller could already grant.
+- **`role_for_invitation_groups`'s late import is load-bearing** — verified. `organizations.models.OrganizationRole` raises `ImproperlyConfigured` if imported eagerly without `django.setup()`, and `permission_catalog` is imported by data-migration test helpers and DRF-agnostic `public_api` types.
+
 ## Decisions taken 2026-08-13
 
 All three questions blocking Phase 4 were put to the user and answered:
@@ -534,7 +561,7 @@ All three questions blocking Phase 4 were put to the user and answered:
 
 ## Current phase
 
-Phase 5 — expose permissions on REST and GraphQL, drop `role` from the API. Based on `phase-4`. The substrate is now correct: permission checks see the resolved organization, and a deactivated membership resolves nothing. Use the corrected call-site count (two of the four files named in the plan body hold no membership reads), and the shared-test-helper fixture approach recorded under **Decisions taken 2026-08-13**.
+Phase 6 — drop `role` / `is_billing_owner` and delete the old tenancy layer. Based on `phase-5`. Read Phase 4's and Phase 5's carry-forwards first: four `membership.is_admin` readers survive outside the permission classes and each breaks on the column drop, and `IsBillingOwnerOrAdmin`'s reseller-root branch is unreachable as a grant and may be collapsible. The substrate is now correct: permission checks see the resolved organization, and a deactivated membership resolves nothing. Use the corrected call-site count (two of the four files named in the plan body hold no membership reads), and the shared-test-helper fixture approach recorded under **Decisions taken 2026-08-13**.
 
 ## Deferred phases
 
