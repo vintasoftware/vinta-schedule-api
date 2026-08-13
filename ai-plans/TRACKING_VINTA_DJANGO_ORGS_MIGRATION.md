@@ -91,6 +91,30 @@ Every "known flake" mention below this point predates this correction. They are 
 | 5 | Expose permissions on REST and GraphQL, drop `role` | 3 | — | ✅ done | `plan/vinta-django-orgs-migration/phase-5` | phase-4 | see below |
 | 6 | Drop `role` / `is_billing_owner` and delete the old tenancy layer | 1 | — | ✅ done | `plan/vinta-django-orgs-migration/phase-6` | phase-5 | see below |
 
+## CI — the whole stack is green (2026-08-13)
+
+Every PR in the stack passes its `Build` check. CI is the authoritative gate for
+this plan: local full-suite runs were declined throughout because the machine sat
+at load ~19 with 32 containers from other worktrees, making local runs ~4× slower
+than CI against a 10-second per-test timeout — slow and broken were
+indistinguishable locally.
+
+| PR | Phase | Build |
+|---|---|---|
+| #254 | 0 | ✅ pass |
+| #258 | 1 | ✅ pass |
+| #259 | 2a | ✅ pass |
+| #260 | 2b | ✅ pass |
+| #261 | 3 | ✅ pass |
+| #262 | 3.5 | ✅ pass |
+| #263 | test hygiene (`chore/prune-package-tests`) | ✅ pass |
+| #264 | 4 | ✅ pass |
+| #265 | 5 | ✅ pass |
+| #266 | 6 | ✅ pass |
+
+#266 went green on `065d3c4`, the transactional-flush repair described under the
+correction above. Nothing else in the stack needed a re-run.
+
 ## Amendment — 2026-08-12: package `0.2.0`, app rename withdrawn
 
 `vinta-django-orgs` `0.2.0` renames its own Python packages and Django app labels from `organizations` / `organizations_custom_data` to `vinta_orgs` / `vinta_orgs_custom_data`. The label collision that Phase 1a existed to resolve — and that Phase 1b existed to clean up after — no longer exists. Ran `/amend-plan`; the user chose **collapse the 1x layer into a single Phase 1** and **preserve the in-flight Phase 2a work**.
