@@ -1396,7 +1396,9 @@ class TestSystemUserTokenViewSetScopedCreate:
             "scoped_to_user": provider_user.id,
         }
         admin_client.post(self._url(), payload, format="json")
-        assert not SystemUser.objects.filter(integration_name="over_grant_no_create").exists()
+        assert not SystemUser.original_manager.filter(
+            integration_name="over_grant_no_create"
+        ).exists()
 
     def test_owner_outside_org_returns_400(self, admin_client, organization, outside_user):
         """Owner from a different org yields 400 (cross-org mint rejected)."""
@@ -1418,7 +1420,9 @@ class TestSystemUserTokenViewSetScopedCreate:
             "scoped_to_user": outside_user.id,
         }
         admin_client.post(self._url(), payload, format="json")
-        assert not SystemUser.objects.filter(integration_name="cross_org_no_create").exists()
+        assert not SystemUser.original_manager.filter(
+            integration_name="cross_org_no_create"
+        ).exists()
 
     def test_nonexistent_owner_id_returns_400(self, admin_client, organization):
         """A scoped_to_user id that does not exist in the DB yields 400."""
@@ -1438,7 +1442,7 @@ class TestSystemUserTokenViewSetScopedCreate:
             "scoped_to_user": 999999999,
         }
         admin_client.post(self._url(), payload, format="json")
-        assert not SystemUser.objects.filter(
+        assert not SystemUser.original_manager.filter(
             integration_name="nonexistent_owner_no_create"
         ).exists()
 

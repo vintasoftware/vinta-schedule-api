@@ -93,13 +93,17 @@ class DjangoORMAuditRepository(AuditRepository):
 
     Uses Audit.original_manager (unscoped) for all reads so that staff admin
     context (which has no active-membership tenant scope) can read across
-    organisations. Reads are then explicitly filtered by organization_id when
-    the caller supplies one.
+    organisations -- and so that a read never depends on an organization being
+    bound to the context, which under STRICT_ORGANIZATION_FILTER would raise
+    rather than return nothing. Reads are then explicitly filtered by
+    organization_id when the caller supplies one.
 
-    Writes use Audit.objects.create (the tenant-scoped manager) with an
-    explicit organization_id= / organization= kwarg, which satisfies the
-    BaseOrganizationModelManager.create guard. The through-table rows are
-    bulk-created via the same scoped manager passing organization_id explicitly.
+    Writes use Audit.objects.create with an explicit organization_id= kwarg.
+    OrganizationScopedManager.create routes a write that names its organization
+    around the implicit scope, so the row lands where the caller said even when
+    a different organization -- or none -- is bound. The through-table rows are
+    bulk-created the same way (bulk_create is always unscoped: every instance
+    carries its own organization).
     """
 
     # ------------------------------------------------------------------
@@ -132,9 +136,9 @@ class DjangoORMAuditRepository(AuditRepository):
 
         with transaction.atomic():
             # Create the Audit row.
-            # Audit.objects.create requires organization_id or organization to be
-            # supplied (BaseOrganizationModelManager.create guard). We pass
-            # organization_id=data.organization_id which satisfies that check.
+            # organization_id= is what keeps this write independent of whatever
+            # organization happens to be bound: it names the scope, so the
+            # manager skips the implicit one entirely.
             # Normalize diff: empty dict → None so diff__isnull reflects has_diff.
             audit = Audit.objects.create(
                 organization_id=data.organization_id,

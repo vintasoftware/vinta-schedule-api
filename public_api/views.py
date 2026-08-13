@@ -67,15 +67,25 @@ class SystemUserTokenViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet)
         Prefetches available_resources (related_name on ResourceAccess.system_user FK)
         to avoid N+1 queries when serializing available_resources.
         """
+        # ``filter_by_organization(...)`` rather than the implicit scope: this
+        # viewset is a plain DRF ``GenericViewSet``, not one of the
+        # ``TenantScopedViewMixin`` bases, so nothing binds an organization on
+        # this request and ``objects.filter(...)`` would raise under
+        # ``STRICT_ORGANIZATION_FILTER`` before reaching the narrowing. The
+        # narrowing is the one it always was -- ``IsOrganizationAdmin`` plus the
+        # caller's own membership. (``objects.none()`` needs no organization; the
+        # package builds it off the unscoped queryset precisely because an empty
+        # result can leak nothing.)
         user = self.request.user
         if not user.is_authenticated:
             return SystemUser.objects.none()
         membership = get_active_organization_membership(user)
         if membership:
-            return SystemUser.objects.filter(
-                organization_id=membership.organization_id,
-                deleted_at__isnull=True,
-            ).prefetch_related("available_resources")
+            return (
+                SystemUser.objects.filter_by_organization(membership.organization_id)
+                .filter(deleted_at__isnull=True)
+                .prefetch_related("available_resources")
+            )
         return SystemUser.objects.none()
 
     def get_serializer_class(self):  # type: ignore[override]

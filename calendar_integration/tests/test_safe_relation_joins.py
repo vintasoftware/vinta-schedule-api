@@ -183,3 +183,67 @@ class TestTheSameHoldsForANestedRelation:
         assert attendance_of_b.event_fk_id == event_of_a.pk
         assert not EventAttendance.original_manager.filter(event=event_of_a).exists()
         assert EventAttendance.original_manager.filter(event_fk=event_of_a).exists()
+
+
+class TestTheManyToManyJoinsOnTheOrganizationToo:
+    """``CalendarEvent.external_attendees`` goes through the *scoped* through model.
+
+    It was the last many-to-many on a scoped model with an auto-created through
+    table -- two bare key columns, no ``organization`` -- so its join carried no
+    organization and the related manager a many-to-many builds does not add one
+    (see ``common.managers.OrganizationScopedManager``). Phase 2b repointed it at
+    ``EventExternalAttendance`` with ``through_fields`` naming the safe relations,
+    which puts the organization into both hops' ``ON`` clause.
+
+    Same construction as the rest of this file: the cross-organization row is
+    written at the column level, because no supported write path can produce it.
+    """
+
+    def test_a_cross_organization_attendance_is_not_traversed(
+        self, organization_a, organization_b, calendar_a
+    ):
+        from calendar_integration.models import EventExternalAttendance, ExternalAttendee
+
+        event_of_a = CalendarEvent.objects.create(
+            organization=organization_a,
+            calendar=calendar_a,
+            title="A's event",
+            start_time_tz_unaware=datetime.datetime(2025, 6, 22, 10, 0),
+            end_time_tz_unaware=datetime.datetime(2025, 6, 22, 11, 0),
+            timezone="UTC",
+        )
+        attendee_of_a = ExternalAttendee.objects.create(
+            organization=organization_a, email="guest@example.com", name="Guest"
+        )
+        attendee_of_b = ExternalAttendee.objects.create(
+            organization=organization_b, email="intruder@example.com", name="Intruder"
+        )
+
+        # The legitimate row: same organization on all three.
+        EventExternalAttendance.objects.create(
+            organization=organization_a,
+            event=event_of_a,
+            external_attendee_fk=attendee_of_a,
+        )
+        # The cross-organization row: keys point at A's event and B's attendee,
+        # and the through row itself belongs to B.
+        intruder_link = EventExternalAttendance.objects.create(
+            organization=organization_b,
+            external_attendee_fk=attendee_of_b,
+        )
+        EventExternalAttendance.original_manager.filter(pk=intruder_link.pk).update(
+            event_fk_id=event_of_a.pk
+        )
+
+        # Control: the concrete keys *do* reach both rows, so the assertions
+        # below cannot pass merely because the intruder row is absent.
+        assert (
+            EventExternalAttendance.original_manager.filter(event_fk_id=event_of_a.pk).count() == 2  # noqa: PLR2004
+        )
+
+        assert list(event_of_a.external_attendees.all()) == [attendee_of_a]
+        assert list(event_of_a.external_attendances.all()) == [
+            EventExternalAttendance.original_manager.get(
+                event_fk_id=event_of_a.pk, organization=organization_a
+            )
+        ]

@@ -145,6 +145,33 @@ class SafeRelationNullInitMixin(models.Model):
         super().__setattr__(name, value)
 
 
+class UnscopedUniqueChecksMixin(models.Model):
+    """Run Django's uniqueness pre-check across every organization.
+
+    Mix into an organization-scoped model that is edited through a ``ModelForm``
+    (today: the ``SystemUser`` admin). ``ModelForm._post_clean`` calls
+    ``full_clean()`` / ``validate_unique()``, which probe through
+    ``_default_manager`` -- the scoped manager -- and so raise
+    ``OrganizationNotFoundError`` wherever no organization is bound, and would
+    under-report a clash if one were. See
+    :func:`common.managers.unscoped_default_manager` for the full argument.
+
+    Not folded into every scoped model: nothing else in this project runs
+    ``full_clean()`` on one (DRF serializers do their own validation and never
+    call it), and a mixin on 34 models that changes behaviour for one is harder
+    to reason about than a mixin on the one that needs it.
+    """
+
+    class Meta:
+        abstract = True
+
+    def validate_unique(self, exclude: Any = None) -> None:
+        from common.managers import unscoped_default_manager
+
+        with unscoped_default_manager():
+            super().validate_unique(exclude=exclude)
+
+
 class IndexedTimeStampedModel(models.Model):
     created = AutoCreatedField(_("created"), db_index=True)
     modified = AutoLastModifiedField(_("modified"), db_index=True)

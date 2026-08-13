@@ -63,19 +63,16 @@ _STATEMENT_BY_COMPILER = {
 def _is_organization_scoped(model: type[Model] | None) -> bool:
     """Is ``model`` one of the models this project scopes per organization?
 
-    Both bases are checked: ``calendar_integration`` moved to the package's
-    ``SingleOrganizationModelMixin`` in Phase 2a, and ``audit`` / ``webhooks`` /
-    ``public_api`` / ``organizations`` still sit on ``OrganizationModel`` until
-    Phase 2b.
+    One base now answers it: Phase 2b finished moving every scoped model onto the
+    package's ``SingleOrganizationModelMixin``, so the retired
+    ``organizations.OrganizationModel`` half of this check is gone with the class.
     """
     if model is None:
         return False
 
     from vinta_orgs.mixins import SingleOrganizationModelMixin
 
-    from organizations.models import OrganizationModel
-
-    return issubclass(model, SingleOrganizationModelMixin | OrganizationModel)
+    return issubclass(model, SingleOrganizationModelMixin)
 
 
 #: The compilers whose statements may be addressed by primary key alone --

@@ -1266,24 +1266,34 @@ class CalendarEvent(RecurringMixin):
         through_fields=("event", "membership"),
         blank=True,
     )
-    # KNOWN GAP (carried into Phase 2b of the vinta-django-orgs migration).
-    # This is the one many-to-many on a scoped model with an *auto-created*
-    # through table: ``calendar_integration_calendarevent_external_attendees``
-    # has ``calendarevent_id`` and ``externalattendee_id`` and no
-    # ``organization`` column, so the join carries no organization and the
-    # related manager it builds is not organization-scoped either (see
-    # ``common.managers.OrganizationScopedManager``). A row in that table
-    # pairing this organization's event with another organization's
-    # ``ExternalAttendee`` would be read back through ``event.external_attendees``
-    # -- and it is exposed publicly at ``calendar_integration/graphql.py``.
+    # Routed through ``EventExternalAttendance`` (Phase 2b of the
+    # vinta-django-orgs migration) -- it used to have an *auto-created* through
+    # table, ``calendar_integration_calendarevent_external_attendees``, holding
+    # ``calendarevent_id`` and ``externalattendee_id`` and no ``organization``
+    # column. That join carried no organization, and neither does the related
+    # manager a many-to-many builds (see
+    # ``common.managers.OrganizationScopedManager``), so a row pairing this
+    # organization's event with another organization's ``ExternalAttendee``
+    # would have been read straight back out -- through a field exposed
+    # publicly at ``calendar_integration/graphql.py``.
     #
-    # Nothing writes the table today (``EventExternalAttendance`` is the
-    # organization-scoped through model every write path actually uses, and it is
-    # what ``external_attendances`` reads), so there is no leak to fix here yet.
-    # Replacing this field with an explicit organization-scoped through model is
-    # an API contract decision -- it is a public GraphQL field -- and is
-    # deliberately out of scope for a fix pass.
-    external_attendees = models.ManyToManyField(ExternalAttendee, related_name="calendar_events")
+    # It was never a live leak, and that is the same fact that made it safe to
+    # repoint: nothing has ever written that table (``EventExternalAttendance``
+    # is what every write path uses, and what ``external_attendances`` reads), so
+    # it was empty and this field answered ``[]`` for every event regardless of
+    # its attendees. Naming the scoped through model gives both hops an
+    # organization-matched ``ON`` clause -- ``event`` and ``external_attendee``
+    # are both ``OrganizationSafeForeignKey`` -- and, as a side effect, makes the
+    # field return the attendees it always claimed to. Same shape as
+    # ``attendee_memberships`` above and ``Calendar.memberships``:
+    # ``through_fields`` names the safe relations, never the ``_fk`` columns.
+    external_attendees = models.ManyToManyField(
+        ExternalAttendee,
+        related_name="calendar_events",
+        through=EventExternalAttendance,
+        through_fields=("event", "external_attendee"),
+        blank=True,
+    )
     resources = models.ManyToManyField(
         Calendar,
         related_name="allocated_events",

@@ -270,8 +270,8 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
             if sa_data is not None:
                 # A RESTRICTED organization may not write, and the service-account
                 # upsert below is a real user-initiated write on an
-                # ``OrganizationModel`` (``GoogleCalendarServiceAccount``) -- block it
-                # here, the same check every other blocked write consults.
+                # organization-scoped model (``GoogleCalendarServiceAccount``) --
+                # block it here, the same check every other blocked write consults.
                 self.organization_service.entitlement_service.check_not_restricted(instance)
                 GoogleCalendarServiceAccount.objects.filter_by_organization(instance.id).filter(
                     calendar_fk__isnull=True

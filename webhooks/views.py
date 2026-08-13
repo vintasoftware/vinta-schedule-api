@@ -20,7 +20,12 @@ class WebhookConfigurationViewSet(VintaScheduleModelViewSet):
     Provides full CRUD operations: create, retrieve, update, partial_update, destroy, and list.
     """
 
-    queryset = WebhookConfiguration.objects.all()
+    # ``unscoped()``, not ``objects.all()``: a class attribute is evaluated at
+    # *import* time, long before any request has bound an organization, and under
+    # ``STRICT_ORGANIZATION_FILTER`` the scoped manager raises there rather than
+    # at first use. ``get_queryset()`` below narrows it to the caller's
+    # organization, which is the only place the narrowing was ever done.
+    queryset = WebhookConfiguration.objects.unscoped()
     serializer_class = WebhookConfigurationSerializer
 
     def get_queryset(self):
@@ -52,7 +57,9 @@ class WebhookEventViewSet(ReadOnlyVintaScheduleModelViewSet):
     Provides read-only operations (list, retrieve) and a custom retry action.
     """
 
-    queryset = WebhookEvent.objects.all()
+    # ``unscoped()`` for the same reason as ``WebhookConfigurationViewSet`` --
+    # see the comment there. Narrowed per request in ``get_queryset()``.
+    queryset = WebhookEvent.objects.unscoped()
     serializer_class = WebhookEventSerializer
 
     @inject

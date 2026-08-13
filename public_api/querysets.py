@@ -1,7 +1,7 @@
-from organizations.querysets import BaseOrganizationModelQuerySet
+from common.querysets import OrganizationScopedQuerySet
 
 
-class SystemUserQuerySet(BaseOrganizationModelQuerySet):
+class SystemUserQuerySet(OrganizationScopedQuerySet):
     """QuerySet for SystemUser with domain-specific filtering methods."""
 
     def live(self) -> "SystemUserQuerySet":

@@ -1,12 +1,18 @@
+from typing import ClassVar
+
 from django.db import models
 
-from organizations.models import OrganizationForeignKey, OrganizationModel
+from vinta_orgs.mixins import SingleOrganizationModelMixin
+
+from common.fields import OrganizationSafeForeignKey
+from common.managers import OrganizationScopedManager
+from common.models import BaseModel, SafeRelationNullInitMixin
 from webhooks.constants import WebhookEventType, WebhookStatus
 from webhooks.managers import WebhookConfigurationManager
 
 
-class WebhookConfiguration(OrganizationModel):
-    objects: WebhookConfigurationManager = WebhookConfigurationManager()
+class WebhookConfiguration(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel):
+    objects: ClassVar[WebhookConfigurationManager] = WebhookConfigurationManager()
 
     event_type = models.CharField(
         max_length=255,
@@ -21,8 +27,10 @@ class WebhookConfiguration(OrganizationModel):
         return f"WebhookConfiguration(id={self.id}, event_type={self.event_type}, url={self.url})"
 
 
-class WebhookEvent(OrganizationModel):
-    configuration = OrganizationForeignKey(WebhookConfiguration, on_delete=models.CASCADE)
+class WebhookEvent(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel):
+    objects: ClassVar[OrganizationScopedManager] = OrganizationScopedManager()
+
+    configuration = OrganizationSafeForeignKey(WebhookConfiguration, on_delete=models.CASCADE)
     event_type = models.CharField(max_length=255, choices=WebhookEventType)
     url = models.URLField(max_length=2000)
     status = models.CharField(
@@ -36,7 +44,7 @@ class WebhookEvent(OrganizationModel):
     response_body = models.JSONField(null=True, blank=True)
     response_headers = models.JSONField(null=True, blank=True)
 
-    main_event = OrganizationForeignKey(
+    main_event = OrganizationSafeForeignKey(
         "self",
         on_delete=models.CASCADE,
         null=True,

@@ -6,12 +6,12 @@ admin here to route its org-scoped querysets through ``original_manager`` rather
 binding an ``organization_context``, so the cross-org intent is written down rather than
 inferred (see ``audit/admin.py::AuditAdmin.get_queryset`` for the precedent this mirrors).
 There is nothing to change in *this* file to satisfy that: neither ``Organization`` nor
-``OrganizationBranding`` is an ``OrganizationModel`` subclass -- ``Organization`` is the
-tenant itself, and ``OrganizationBranding`` is a plain ``models.Model`` keyed on it -- so
-every ``.objects`` query below (``Organization.objects.filter(slug=...)`` in
-``OrganizationAdminForm.clean_slug``, and the admin's own unfiltered changelist queries)
-already runs on Django's stock, unscoped manager, not
-``organizations.managers.BaseOrganizationModelManager``. This note exists so that fact is
+``OrganizationBranding`` is organization-scoped -- ``Organization`` is the tenant itself,
+and ``OrganizationBranding`` is a plain ``models.Model`` keyed on it, so neither inherits
+``vinta_orgs.mixins.SingleOrganizationModelMixin``. Every ``.objects`` query below
+(``Organization.objects.filter(slug=...)`` in ``OrganizationAdminForm.clean_slug``, and
+the admin's own unfiltered changelist queries) therefore already runs on Django's stock,
+unscoped manager rather than on a context-scoped one. This note exists so that fact is
 recorded rather than silently assumed.
 """
 

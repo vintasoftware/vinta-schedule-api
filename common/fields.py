@@ -284,7 +284,7 @@ class OrganizationMembershipForeignKey(models.Field):
 
     Usage::
 
-        class MyModel(OrganizationModel):
+        class MyModel(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel):
             membership = OrganizationMembershipForeignKey(
                 on_delete=models.PROTECT,
                 related_name="my_models",
