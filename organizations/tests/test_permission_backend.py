@@ -1,37 +1,53 @@
-"""Our wiring of ``vinta_orgs.auth_backends.OrganizationModelBackend``.
+"""``OrganizationModelBackend``: what ``has_perm`` answers, and in which organization.
 
-**Amended for package ``0.3.0``.** This module used to also pin the backend's
-own resolution mechanics (organization isolation, the global/organization
-union, per-organization caching) -- properties of the package, not of this
-repo, that would hold identically against a stock package install with any
-membership model and any permission catalog. Per the standard the
-``chore/prune-package-tests`` branch set -- a test that would pass against a
-stock package install belongs upstream, not here -- those are gone; what is
-left is scoped to **our** wiring:
+The backend (``vinta_orgs.auth_backends.OrganizationModelBackend``, added to
+``AUTHENTICATION_BACKENDS`` in this phase) unions two independent sources:
 
-* that our ``AUTHENTICATION_BACKENDS`` entry is the package's class,
-  unsubclassed, in the right order, resolving against *our* concrete
-  ``OrganizationMembership`` model (``TestAuthenticationBackendsWiring``);
-* that the three groups and four capability permissions *our* migrations seed
-  are the ones actually present (``TestTheSeededGroupsExist``);
-* that ``has_perm`` resolves *our* catalog correctly through that wiring for
-  the roles this codebase cares about (``TestAnAdminMembershipUnderItsOwnOrganization``);
-* the one regression this amendment itself creates: a deactivated membership
-  used to still resolve its group permissions under ``0.2.0`` (this repo's
-  auth backend did not filter ``is_active``, and that was pinned here as
-  observed behaviour Phase 4 would have had to handle deliberately).
-  ``0.3.0`` fixes it upstream -- ``is_active`` now filters *inside*
-  ``OrganizationModelBackend._get_membership`` -- so the assertion inverts
-  from "still resolves" to "resolves nothing"
-  (``TestADeactivatedMembershipResolvesNoPermissions``).
+* the user's **global** permissions -- ``user.user_permissions`` and
+  ``user.groups``, exactly what the stock ``ModelBackend`` answers, organization
+  or no organization;
+* the permissions their ``OrganizationMembership`` carries in the organization
+  bound to the current ``vinta_orgs.state`` contextvar -- and *only* that
+  organization.
+
+The second half is what this module is really about. A membership's groups must
+be invisible from any other organization, and invisible with nothing bound;
+otherwise a user who administers organization A silently administers B.
+
+**Amended for package ``0.3.0``.** Two things changed here, and nothing else:
+
+* ``TestAuthenticationBackendsWiring`` was added, pinning that our
+  ``AUTHENTICATION_BACKENDS`` entry is the package's class, unsubclassed, in
+  the right order, resolving against *our* concrete ``OrganizationMembership``
+  model. ``0.3.0`` filters ``is_active`` inside the package's own
+  ``_get_membership``, so the repo-owned subclass Phase 3.5 had planned is not
+  written at all -- and this is what would catch one being reintroduced.
+* ``TestADeactivatedMembershipResolvesNoPermissions`` inverted. Under ``0.2.0``
+  a deactivated membership still resolved its group permissions, and that was
+  pinned here as *observed* behaviour Phase 4 would have had to handle
+  deliberately; ``0.3.0`` fixes it upstream, so the assertion is now that it
+  resolves nothing.
+
+The isolation, union and caching classes below were **not** pruned: they pin
+that *our* concrete membership model and *our* catalog resolve correctly
+through that wiring, which a stock package install says nothing about. The one
+thing the ``0.3.0`` commit did delete was a mutation control that reached into
+the package's ``_get_membership``; it is restored below
+(``TestTheIsolationAssertionCanFail``), because the non-vacuity proof is worth
+more than the tests it proves.
 
 **Nothing in the application reads any of this yet.** Every permission class
 still checks ``role`` / ``is_billing_owner``; Phase 4 is what migrates them.
+These tests pin the foundation Phase 4 will stand on.
 """
 
 from __future__ import annotations
 
+import importlib
+
+from django.apps import apps as global_apps
 from django.contrib.auth.models import Group, Permission
+from django.db import connection
 
 import pytest
 from model_bakery import baker
@@ -49,6 +65,13 @@ from organizations.permission_catalog import (
     MANAGE_ORGANIZATION,
 )
 from users.models import User
+
+
+# Migration module names start with a digit, so they can only be reached through
+# ``importlib``. Reached here because ``TestTheSeededGroupsExist`` drives the
+# seed itself rather than reading whatever happens to be in the database -- see
+# that class's docstring.
+SEED_MIGRATION = importlib.import_module("organizations.migrations.0028_seed_permission_groups")
 
 
 # Pinned as literals rather than read off ``GROUP_PERMISSIONS``: the point is
@@ -132,12 +155,34 @@ class TestAuthenticationBackendsWiring:
 
 @pytest.mark.django_db
 class TestTheSeededGroupsExist:
-    """The migrations ran and left the catalog behind.
+    """``0028_seed_permission_groups`` leaves the catalog behind.
 
-    Every other class here depends on this, and the failure mode without it is
+    Every other class here depends on it, and the failure mode without it is
     "the admin has no permissions", which reads like a backend bug rather than a
     missing seed.
+
+    **Driven, not observed.** The root ``conftest.py`` registers
+    ``vinta_orgs.testing``, whose autouse ``seeded_organization_groups`` fixture
+    reseeds these exact three groups before every test with a database (it has
+    to: a transactional test's flush wipes them for the rest of the worker's
+    session). That fixture recreates precisely the state asserted below, so
+    reading the ambient database here would pass even if ``0028`` were deleted
+    outright. The fixture below therefore drops the three groups and calls the
+    *migration's own* seeding function, so what these assertions describe is the
+    migration and nothing else.
     """
+
+    @pytest.fixture(autouse=True)
+    def _seeded_by_the_migration(self):
+        Group.objects.filter(
+            name__in=[
+                GROUP_ORGANIZATION_ADMIN,
+                GROUP_ORGANIZATION_BILLING_OWNER,
+                GROUP_ORGANIZATION_MEMBER,
+            ]
+        ).delete()
+
+        SEED_MIGRATION.seed_permission_groups(global_apps, connection.schema_editor())
 
     def test_the_three_groups_are_present(self):
         names = set(
@@ -301,6 +346,51 @@ class TestTheOrganizationHalfIsConfinedToTheBoundOrganization:
 
 
 @pytest.mark.django_db
+class TestTheIsolationAssertionCanFail:
+    """Proof that the class above is not vacuous.
+
+    ``_get_membership`` is the one place the backend consults the bound
+    organization on the way to a membership's groups. Replacing it with a
+    version that ignores its ``organization`` argument -- the exact defect the
+    isolation tests exist to catch -- must turn those assertions red. If it does
+    not, they were passing for some other reason (an empty group, a missing
+    seed, a user with no membership at all) and prove nothing.
+
+    Deleted by the ``0.3.0`` bump as "package mechanics" and restored here: what
+    it exercises is whether *our* assertions discriminate, which is a fact about
+    this module and not about the package. Keeping the isolation tests while
+    dropping the proof that they can fail is the worst of the two options.
+    """
+
+    def test_a_backend_that_ignores_the_bound_organization_leaks_across_organizations(
+        self, monkeypatch
+    ):
+        def _membership_ignoring_the_organization(self, user_obj, organization):
+            return OrganizationMembership.objects.filter(user=user_obj).order_by("pk").first()
+
+        monkeypatch.setattr(
+            OrganizationModelBackend,
+            "_get_membership",
+            _membership_ignoring_the_organization,
+        )
+
+        user = baker.make(User, is_superuser=False, is_active=True)
+        organization_a = _organization("Alpha", "alpha-mutation")
+        organization_b = _organization("Beta", "beta-mutation")
+        _membership(user, organization_a, GROUP_ORGANIZATION_ADMIN, role=OrganizationRole.ADMIN)
+        _membership(user, organization_b, GROUP_ORGANIZATION_MEMBER)
+
+        with organization_context(organization_b):
+            leaked = _reloaded(user).get_all_permissions()
+
+        # The mutant grants A's four capabilities while B is bound. The
+        # unmutated backend resolves the empty set here -- which is precisely
+        # what ``TestTheOrganizationHalfIsConfinedToTheBoundOrganization``
+        # asserts, so that assertion discriminates.
+        assert leaked == set(ADMIN_PERMISSIONS)
+
+
+@pytest.mark.django_db
 class TestTheUnionWithGlobalPermissions:
     """Global permissions are organization-independent and must survive the union.
 
@@ -388,21 +478,38 @@ class TestADeactivatedMembershipResolvesNoPermissions:
     concrete membership model.
     """
 
-    def test_a_deactivated_admin_resolves_no_group_permissions(self):
+    def test_deactivating_an_admin_membership_takes_its_permissions_away(self):
+        """Both directions, in one test, on one membership.
+
+        "A deactivated admin resolves nothing" is satisfied by *any* reason the
+        set came back empty -- the group never attached, the seed is missing,
+        the user has no membership -- so on its own it proves nothing. Its
+        positive control has to be the same membership a moment earlier, not a
+        similarly-shaped one in another class: ``-n auto`` can schedule two
+        classes on two workers, and a hazard whose repair lives on another
+        worker is not a repair.
+        """
         user = baker.make(User, is_superuser=False, is_active=True)
         organization = _organization("Alpha", "alpha-inactive")
-        _membership(
+        membership = _membership(
             user,
             organization,
             GROUP_ORGANIZATION_ADMIN,
             role=OrganizationRole.ADMIN,
-            is_active=False,
         )
 
         with organization_context(organization):
-            resolved = _reloaded(user).get_all_permissions()
+            while_active = _reloaded(user).get_all_permissions()
 
-        assert resolved.isdisjoint(ADMIN_PERMISSIONS)
+        assert set(ADMIN_PERMISSIONS) <= while_active
+
+        membership.is_active = False
+        membership.save(update_fields=["is_active"])
+
+        with organization_context(organization):
+            once_deactivated = _reloaded(user).get_all_permissions()
+
+        assert once_deactivated == set()
 
 
 @pytest.mark.django_db

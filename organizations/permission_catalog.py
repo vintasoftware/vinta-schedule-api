@@ -31,8 +31,13 @@ silent divergence.
 
 from __future__ import annotations
 
+import logging
+
 from django.contrib.auth.models import Group, Permission
 from django.db import transaction
+
+
+logger = logging.getLogger(__name__)
 
 
 #: ``OrganizationMembership`` -- may add, remove, deactivate and re-group members.
@@ -118,6 +123,21 @@ def seed_organization_groups() -> list[Group]:
     permissions, so a second call -- or a call against an already-seeded
     database -- changes nothing and never revokes a permission a caller added
     on purpose.
+
+    **A missing permission is skipped with a warning rather than raised.** This
+    runs from an *autouse* fixture before every test that has a database, so a
+    renamed or not-yet-created permission raised from here would turn one
+    targeted failure into ``Permission.DoesNotExist`` on the entire suite --
+    one root cause wearing several hundred symptoms, which is precisely the
+    shape this migration already lost four phases to. The tests that exist to
+    notice a missing permission
+    (``organizations/tests/test_group_backfill_migration.py``,
+    ``organizations/tests/test_permission_backend.py``) drive
+    ``0028_seed_permission_groups`` directly rather than this seeder, so they
+    stay red when it matters. Creating the row instead is deliberately *not*
+    what happens here: ``auth_permission`` rows belong to the migration and to
+    ``post_migrate``, and this catalog carries no content type to create one
+    against.
     """
     groups: list[Group] = []
 
@@ -126,9 +146,20 @@ def seed_organization_groups() -> list[Group]:
             group, _ = Group.objects.get_or_create(name=group_name)
             for label in permission_labels:
                 app_label, codename = label.split(".", 1)
-                permission = Permission.objects.get(
-                    content_type__app_label=app_label, codename=codename
-                )
+                try:
+                    permission = Permission.objects.get(
+                        content_type__app_label=app_label, codename=codename
+                    )
+                except Permission.DoesNotExist:
+                    logger.warning(
+                        "Skipping %r while seeding %r: no auth.Permission with "
+                        "content_type__app_label=%r and codename=%r exists.",
+                        label,
+                        group_name,
+                        app_label,
+                        codename,
+                    )
+                    continue
                 group.permissions.add(permission)
             groups.append(group)
 

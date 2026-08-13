@@ -10,11 +10,19 @@ Three things are pinned here:
 1. **The seed survives a migrate from zero.** ``auth.Permission`` rows are
    created by ``post_migrate``, which fires only after the whole migrate run has
    finished -- so nothing existed for ``0028`` to link groups to, and it has to
-   create the permissions itself. The test database every test in this repo runs
-   against *is* a database migrated from zero, so the assertions in
-   ``TestTheSeedSurvivesAMigrateFromZero`` are that proof, not a simulation of
-   it. (``organizations/tests/test_permission_backend.py`` leans on the same
-   fact from the other end.)
+   create the permissions itself. ``TestTheSeedSurvivesAMigrateFromZero`` drops
+   the three groups and calls ``0028``'s own ``seed_permission_groups`` against
+   the live database, then asserts on what that call left behind.
+
+   It used to read the ambient database instead, on the grounds that the test
+   database every test in this repo runs against *is* one migrated from zero.
+   That reasoning stopped holding when the root ``conftest.py`` registered
+   ``vinta_orgs.testing``: its autouse ``seeded_organization_groups`` fixture
+   recreates these three groups and their permission links before every test
+   with a database (it has to -- a transactional test's flush wipes them for the
+   rest of the worker's session), which is exactly the state asserted below. An
+   observed-state assertion would now pass with ``0028`` deleted outright.
+   Driving the migration is what makes it an assertion about the migration.
 2. **Every ``role`` x ``is_billing_owner`` combination maps to the right
    groups**, and re-running the backfill changes nothing.
 3. **The migration's frozen literals still agree with the live catalog.** The
@@ -93,11 +101,25 @@ def _run_backfill() -> None:
     BACKFILL_MIGRATION.backfill_membership_groups(global_apps, connection.schema_editor())
 
 
+def _run_seed() -> None:
+    SEED_MIGRATION.seed_permission_groups(global_apps, connection.schema_editor())
+
+
 @pytest.mark.django_db
 class TestTheSeedSurvivesAMigrateFromZero:
     """``post_migrate`` creates ``auth_permission`` rows *after* every migration
     has run, so on a fresh database ``0028`` finds none and must create its own.
-    This test database was built by exactly that path."""
+
+    Everything below describes what ``0028``'s own ``seed_permission_groups``
+    left behind, not what happens to be in the database when the test starts --
+    see this module's docstring for why that distinction is now load-bearing.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _seeded_by_the_migration(self):
+        Group.objects.filter(name__in=list(EXPECTED_GROUP_PERMISSIONS)).delete()
+
+        _run_seed()
 
     def test_the_three_groups_exist_with_exactly_the_expected_permissions(self):
         for group_name, expected in EXPECTED_GROUP_PERMISSIONS.items():

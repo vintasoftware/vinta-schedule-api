@@ -29,13 +29,18 @@ class OrganizationMembershipQuerySet(_PackageOrganizationMembershipQuerySet):
     def occupying_a_seat(self, organization_ids: Sequence[int]) -> OrganizationMembershipQuerySet:
         """Memberships in ``organization_ids`` that consume a licensed seat.
 
-        Only ``is_active=True`` memberships count: deactivating a member is how a
-        seat is freed, so counting inactive rows would make removal fail to free
+        Only active memberships count: deactivating a member is how a seat is
+        freed, so counting inactive rows would make removal fail to free
         capacity. Lives here rather than in the billing service because
         "``is_active=False`` is this model's soft delete" is a fact about
         ``OrganizationMembership``, not about billing.
+
+        Narrows through the inherited ``active()`` rather than a hand-written
+        ``is_active=True``, for the same reason ``billing_recipients`` does:
+        one spelling of "this membership still grants something", and it is the
+        same one ``OrganizationModelBackend._get_membership`` applies.
         """
-        return self.filter(organization_id__in=organization_ids, is_active=True)
+        return self.filter(organization_id__in=organization_ids).active()
 
     def billing_recipients(self, organization_id: int) -> OrganizationMembershipQuerySet:
         """Active memberships eligible to receive billing/dunning notifications for

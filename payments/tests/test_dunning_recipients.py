@@ -1,10 +1,19 @@
 """``billing_recipients`` after the switch from ``role`` to ``payments.manage_billing``.
 
 Phase 3 replaces ``Q(role=ADMIN) | Q(is_billing_owner=True)`` with
-``filter(groups__permissions__codename="manage_billing", ...)``, so "who may
-write billing" and "who is told about billing" derive from one source. The two
+``active().holding_permission("payments.manage_billing")``, so "who may write
+billing" and "who is told about billing" derive from one source. The two
 consumers are ``DunningService._recipient_user_ids`` and
 ``UsageWarningService._recipient_user_ids``.
+
+``holding_permission`` is the package's
+(``vinta_orgs.querysets.OrganizationMembershipQuerySet``), and it is **wider
+than the hand-written ``groups__permissions`` filter it replaced**: it matches a
+membership's *direct* ``permissions`` grant as well as the permissions its
+``groups`` carry. Nothing in this repo writes that M2M today, so the widening is
+inert -- but it decides who receives email containing billing state, so it is
+pinned in both directions below rather than left to be discovered when something
+starts writing it (``test_a_direct_manage_billing_grant_is_a_recipient_too``).
 
 **The expectations here are literal.** Deriving them from the filter under test
 -- or from the old filter re-expressed through the same queryset -- would make
@@ -140,11 +149,71 @@ class TestWhoReceivesBilling:
 
         assert ungrouped not in recipients
 
+    def test_a_direct_manage_billing_grant_is_a_recipient_too(self):
+        """The one behavioural widening ``holding_permission`` brings.
+
+        The filter it replaced read ``groups__permissions`` only, so a
+        membership holding ``payments.manage_billing`` through the model's own
+        ``permissions`` M2M could write billing from Phase 4 onward and never be
+        told about it. The package's ``holding_permission`` unions both sources
+        -- deliberately, since under-counting is the dangerous direction for the
+        last-administrator guard that reads the same method.
+
+        Nothing writes ``membership.permissions`` yet, which is exactly why this
+        needs a test: the widening is invisible in the suite otherwise, and an
+        upstream change that dropped the direct half would go unnoticed until a
+        dunning email stopped being sent.
+        """
+        from django.contrib.auth.models import Permission
+
+        organization = baker.make(Organization, name="Direct Grant Co", slug="direct-grant-co")
+        manage_billing = Permission.objects.get(
+            content_type__app_label="payments", codename="manage_billing"
+        )
+
+        directly_granted = _membership(organization)
+        directly_granted.permissions.add(manage_billing)
+        plain_member = _membership(organization)
+
+        recipients = set(OrganizationMembership.objects.billing_recipients(organization.id))
+
+        assert recipients == {directly_granted}
+        assert plain_member not in recipients
+        # ...and it is the grant doing the work, not the membership: the same
+        # row is not a recipient once the permission is taken back.
+        directly_granted.permissions.remove(manage_billing)
+        assert set(OrganizationMembership.objects.billing_recipients(organization.id)) == set()
+
+    def test_a_deactivated_membership_with_a_direct_grant_is_still_excluded(self):
+        """``active()`` runs before ``holding_permission()``, so the direct
+        grant does not smuggle a soft-deleted membership back onto the list."""
+        from django.contrib.auth.models import Permission
+
+        organization = baker.make(Organization, name="Direct Gone Co", slug="direct-gone-co")
+        manage_billing = Permission.objects.get(
+            content_type__app_label="payments", codename="manage_billing"
+        )
+        deactivated = _membership(organization, is_active=False)
+        deactivated.permissions.add(manage_billing)
+
+        recipients = set(OrganizationMembership.objects.billing_recipients(organization.id))
+
+        assert recipients == set()
+
     def test_a_manage_billing_from_another_app_does_not_widen_it(self):
-        """The query matches ``content_type__app_label`` alongside the codename,
-        and both lookups sit in one ``filter()`` call so they bind to the same
-        permission row. A ``manage_billing`` declared elsewhere therefore grants
-        nothing here."""
+        """A ``manage_billing`` codename declared on some *other* app's model
+        grants nothing here.
+
+        The guarantee is now
+        ``vinta_orgs.querysets.filter_memberships_holding_permission``'s rather
+        than this file's: it keeps each codename lookup and its
+        ``content_type__app_label`` inside a single ``filter()`` call, so both
+        bind to the same permission row instead of joining twice. Pinned here
+        anyway because our catalog spells its permissions as
+        ``app_label.codename`` strings and depends on that binding -- if it were
+        ever relaxed upstream, this repo's dunning list is where it would first
+        do damage.
+        """
         from django.contrib.auth.models import Permission
         from django.contrib.contenttypes.models import ContentType
 
