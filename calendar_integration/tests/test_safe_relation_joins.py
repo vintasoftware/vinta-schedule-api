@@ -195,8 +195,13 @@ class TestTheManyToManyJoinsOnTheOrganizationToo:
     ``EventExternalAttendance`` with ``through_fields`` naming the safe relations,
     which puts the organization into both hops' ``ON`` clause.
 
-    Same construction as the rest of this file: the cross-organization row is
-    written at the column level, because no supported write path can produce it.
+    Both hops get an intruder. One row is stopped at ``event`` and one at
+    ``external_attendee``: an assertion that only planted the first would pass
+    with ``through_fields`` still naming the concrete ``external_attendee_fk``,
+    which is the column this phase changed.
+
+    Same construction as the rest of this file: the cross-organization rows are
+    written at the column level, because no supported write path can produce them.
     """
 
     def test_a_cross_organization_attendance_is_not_traversed(
@@ -225,8 +230,8 @@ class TestTheManyToManyJoinsOnTheOrganizationToo:
             event=event_of_a,
             external_attendee_fk=attendee_of_a,
         )
-        # The cross-organization row: keys point at A's event and B's attendee,
-        # and the through row itself belongs to B.
+        # Intruder 1 -- excluded at the *first* hop (``event``): the through row
+        # belongs to B while the event it points at belongs to A.
         intruder_link = EventExternalAttendance.objects.create(
             organization=organization_b,
             external_attendee_fk=attendee_of_b,
@@ -234,16 +239,54 @@ class TestTheManyToManyJoinsOnTheOrganizationToo:
         EventExternalAttendance.original_manager.filter(pk=intruder_link.pk).update(
             event_fk_id=event_of_a.pk
         )
-
-        # Control: the concrete keys *do* reach both rows, so the assertions
-        # below cannot pass merely because the intruder row is absent.
-        assert (
-            EventExternalAttendance.original_manager.filter(event_fk_id=event_of_a.pk).count() == 2  # noqa: PLR2004
+        # Intruder 2 -- reaches the first hop and must be stopped at the
+        # *second* (``external_attendee``). The through row belongs to A and
+        # names A's event, so nothing about the ``event`` join excludes it; only
+        # ``through_fields=("event", "external_attendee")`` naming the safe
+        # relation puts ``organization`` into the attendee side's ``ON`` clause
+        # and drops it. Written through ``external_attendee_fk`` -- the concrete
+        # column -- because the safe relation would have copied B's organization
+        # onto the row and turned this back into intruder 1.
+        second_hop_intruder = EventExternalAttendance.objects.create(
+            organization=organization_a,
+            event=event_of_a,
+            external_attendee_fk=attendee_of_b,
         )
 
+        # Control: the concrete keys *do* reach all three rows, so the assertions
+        # below cannot pass merely because the intruder rows are absent. Two of
+        # the three belong to A, so neither is excluded by the implicit scope
+        # either.
+        assert (
+            EventExternalAttendance.original_manager.filter(event_fk_id=event_of_a.pk).count() == 3  # noqa: PLR2004
+        )
+        assert (
+            EventExternalAttendance.objects.filter_by_organization(organization_a)
+            .filter(event_fk_id=event_of_a.pk)
+            .count()
+            == 2  # noqa: PLR2004
+        )
+        assert second_hop_intruder.external_attendee_fk_id == attendee_of_b.pk
+
         assert list(event_of_a.external_attendees.all()) == [attendee_of_a]
-        assert list(event_of_a.external_attendances.all()) == [
+        # ...and the second hop is not traversable on its own either: the row is
+        # visible (it is A's), but the attendee it names is not reachable through
+        # the safe relation.
+        with pytest.raises(ExternalAttendee.DoesNotExist):
+            second_hop_intruder.external_attendee  # noqa: B018 -- the access is the assertion
+        assert not EventExternalAttendance.original_manager.filter(
+            pk=second_hop_intruder.pk, external_attendee=attendee_of_b
+        ).exists()
+        # Control for the line above: the *concrete* column does reach it.
+        assert EventExternalAttendance.original_manager.filter(
+            pk=second_hop_intruder.pk, external_attendee_fk=attendee_of_b
+        ).exists()
+
+        # ``external_attendances`` is the reverse of the first hop, so it lists
+        # both of A's rows -- including the one whose attendee is unreachable.
+        assert set(event_of_a.external_attendances.all()) == {
             EventExternalAttendance.original_manager.get(
-                event_fk_id=event_of_a.pk, organization=organization_a
-            )
-        ]
+                event_fk_id=event_of_a.pk, external_attendee_fk=attendee_of_a
+            ),
+            second_hop_intruder,
+        }

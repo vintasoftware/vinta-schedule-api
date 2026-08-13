@@ -12139,7 +12139,9 @@ paths:
 
         Instead, after ``perform_create`` we look up the just-created membership
         directly and stash it on the request so the re-fetch (via
-        ``get_queryset``) is scoped to the new organization.
+        ``get_queryset``) is scoped to the new organization -- and bind that
+        organization to the context, which is the half of the base mixin's
+        re-resolve that still applies here.
       tags:
       - organizations
       requestBody:
@@ -12182,7 +12184,9 @@ paths:
 
         Instead, after ``perform_create`` we look up the just-created membership
         directly and stash it on the request so the re-fetch (via
-        ``get_queryset``) is scoped to the new organization.
+        ``get_queryset``) is scoped to the new organization -- and bind that
+        organization to the context, which is the half of the base mixin's
+        re-resolve that still applies here.
       parameters:
       - in: path
         name: format
@@ -13977,7 +13981,22 @@ paths:
 
         ``GET /public-api-tokens/`` lists the caller's org tokens without secrets.
         ``GET /public-api-tokens/{id}/`` retrieves a single token without secrets.
+
+        Every route here selects its organization with ``X-Organization-Id``, on the
+        terms the header is documented with everywhere else: optional for a caller
+        with one active membership, required (400) for a caller with two or more, and
+        403 when it names an organization the caller is not an active member of.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - name: limit
         required: false
         in: query
@@ -14017,6 +14036,17 @@ paths:
         - Duplicate ``integration_name`` (unique constraint).
 
         HTTP 403 is returned for non-admin callers; HTTP 401 for unauthenticated.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       tags:
       - public-api-tokens
       requestBody:
@@ -14055,7 +14085,22 @@ paths:
 
         ``GET /public-api-tokens/`` lists the caller's org tokens without secrets.
         ``GET /public-api-tokens/{id}/`` retrieves a single token without secrets.
+
+        Every route here selects its organization with ``X-Organization-Id``, on the
+        terms the header is documented with everywhere else: optional for a caller
+        with one active membership, required (400) for a caller with two or more, and
+        403 when it names an organization the caller is not an active member of.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: format
         schema:
@@ -14103,6 +14148,16 @@ paths:
 
         HTTP 403 is returned for non-admin callers; HTTP 401 for unauthenticated.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: format
         schema:
@@ -14148,7 +14203,22 @@ paths:
 
         ``GET /public-api-tokens/`` lists the caller's org tokens without secrets.
         ``GET /public-api-tokens/{id}/`` retrieves a single token without secrets.
+
+        Every route here selects its organization with ``X-Organization-Id``, on the
+        terms the header is documented with everywhere else: optional for a caller
+        with one active membership, required (400) for a caller with two or more, and
+        403 when it names an organization the caller is not an active member of.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: id
         schema:
@@ -14181,6 +14251,16 @@ paths:
         HTTP 403 is returned for non-admin callers; HTTP 404 if the token does not
         exist or belongs to another organization; HTTP 401 for unauthenticated.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: id
         schema:
@@ -14228,6 +14308,16 @@ paths:
         HTTP 403 is returned for non-admin callers; HTTP 404 if the token does not
         exist or belongs to another organization; HTTP 401 for unauthenticated.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: id
         schema:
@@ -14270,7 +14360,22 @@ paths:
 
         ``GET /public-api-tokens/`` lists the caller's org tokens without secrets.
         ``GET /public-api-tokens/{id}/`` retrieves a single token without secrets.
+
+        Every route here selects its organization with ``X-Organization-Id``, on the
+        terms the header is documented with everywhere else: optional for a caller
+        with one active membership, required (400) for a caller with two or more, and
+        403 when it names an organization the caller is not an active member of.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: format
         schema:
@@ -14310,6 +14415,16 @@ paths:
         HTTP 403 is returned for non-admin callers; HTTP 404 if the token does not
         exist or belongs to another organization; HTTP 401 for unauthenticated.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: format
         schema:
@@ -14364,6 +14479,16 @@ paths:
         HTTP 403 is returned for non-admin callers; HTTP 404 if the token does not
         exist or belongs to another organization; HTTP 401 for unauthenticated.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: format
         schema:
@@ -14412,6 +14537,16 @@ paths:
         HTTP 403 is returned for non-admin callers; HTTP 404 if the token does not
         exist or belongs to another organization; HTTP 401 for unauthenticated.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: id
         schema:
@@ -14453,6 +14588,16 @@ paths:
         HTTP 403 is returned for non-admin callers; HTTP 404 if the token does not
         exist or belongs to another organization; HTTP 401 for unauthenticated.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: format
         schema:

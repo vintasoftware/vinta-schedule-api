@@ -230,6 +230,94 @@ class TestNothingSurvivesTheResponse:
 
 
 @pytest.mark.django_db
+class TestAnOrgLessCredentialMustBeAskedFor:
+    """``organization=None`` is a request, never an oversight.
+
+    ``SystemUser`` is the one scoped model that may hold ``organization=None``,
+    and that row is a token with access to *every* organization. ``save()``
+    therefore skips the mixin's stamp-or-raise -- but only for a caller who wrote
+    the ``None``. Keying the exemption on ``organization_id is None`` instead
+    would have made ``create(integration_name=..., ...)`` with the argument
+    forgotten, inside a request serving one organization, mint a credential for
+    all of them.
+    """
+
+    def test_a_forgotten_organization_raises_instead_of_going_global(
+        self, organization: Organization
+    ) -> None:
+        with (
+            organization_context(organization),
+            pytest.raises(OrganizationNotFoundError, match="was not given"),
+        ):
+            SystemUser(
+                integration_name="forgotten-arg",
+                long_lived_token_hash="forgotten-hash",
+            ).save()
+
+        assert not SystemUser.original_manager.filter(integration_name="forgotten-arg").exists()
+
+    def test_the_manager_refuses_it_too(self, organization: Organization) -> None:
+        """The same row, written the way the services write one."""
+        with (
+            organization_context(organization),
+            pytest.raises(OrganizationNotFoundError, match="was not given"),
+        ):
+            SystemUser.objects.create(
+                integration_name="forgotten-arg-manager",
+                long_lived_token_hash="forgotten-hash",
+            )
+
+        assert not SystemUser.original_manager.filter(
+            integration_name="forgotten-arg-manager"
+        ).exists()
+
+    def test_writing_the_none_out_still_mints_the_global_credential(
+        self, organization: Organization
+    ) -> None:
+        """The sanctioned path, exercised from inside a *bound* context.
+
+        Binding an organization must not narrow a credential that asked for
+        none -- that is the half of the old behaviour worth keeping.
+        """
+        with organization_context(organization):
+            system_user, _token = _auth_service().create_system_user(
+                integration_name="deliberately-org-less",
+                organization=None,
+                bypass_limits=True,
+            )
+
+        system_user.refresh_from_db()
+        assert system_user.organization_id is None
+
+    def test_a_persisted_org_less_row_can_still_be_updated(
+        self, organization: Organization
+    ) -> None:
+        """``revoke``'s ``save(update_fields=[...])`` on a global token.
+
+        The row's organization is a decision already recorded in the database, so
+        re-saving it is not a new org-less write and does not need the marker.
+        """
+        system_user, _token = _auth_service().create_system_user(
+            integration_name="org-less-revoke", organization=None, bypass_limits=True
+        )
+        reloaded = SystemUser.original_manager.get(pk=system_user.pk)
+
+        reloaded.is_active = False
+        reloaded.save(update_fields=["is_active"])
+
+        assert SystemUser.original_manager.get(pk=system_user.pk).is_active is False
+
+    def test_naming_an_organization_is_unaffected(self, organization: Organization) -> None:
+        system_user = SystemUser.objects.create(
+            organization=organization,
+            integration_name="named-organization",
+            long_lived_token_hash="named-hash",
+        )
+
+        assert system_user.organization_id == organization.pk
+
+
+@pytest.mark.django_db
 class TestAnUnboundScopedReadRaisesRatherThanLeaking:
     """Strict mode's whole point, stated on this app's own model.
 

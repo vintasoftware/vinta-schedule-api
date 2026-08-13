@@ -14,6 +14,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.viewsets import GenericViewSet, ViewSet
 
+from common.utils.view_utils import TenantScopedViewMixin
 from organizations.models import get_active_organization_membership
 from organizations.permissions import IsOrganizationAdmin
 from payments.services.entitlement_service import EntitlementService
@@ -35,7 +36,9 @@ from webhooks.constants import WEBHOOK_EVENT_DESCRIPTIONS, WebhookEventType
 logger = logging.getLogger(__name__)
 
 
-class SystemUserTokenViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
+class SystemUserTokenViewSet(
+    TenantScopedViewMixin, ListModelMixin, RetrieveModelMixin, GenericViewSet
+):
     """Admin-only viewset for managing public-API tokens (SystemUser + ResourceAccess rows).
 
     Supports create, list, retrieve, revoke, and editing resource grants.
@@ -46,10 +49,45 @@ class SystemUserTokenViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet)
 
     ``GET /public-api-tokens/`` lists the caller's org tokens without secrets.
     ``GET /public-api-tokens/{id}/`` retrieves a single token without secrets.
+
+    Every route here selects its organization with ``X-Organization-Id``, on the
+    terms the header is documented with everywhere else: optional for a caller
+    with one active membership, required (400) for a caller with two or more, and
+    403 when it names an organization the caller is not an active member of.
     """
+
+    # ``TenantScopedViewMixin``, added in Phase 2b of the vinta-django-orgs
+    # migration. Before it, this was a plain ``GenericViewSet``: nothing stashed
+    # ``request.user._active_membership``, so every
+    # ``get_active_organization_membership`` call below -- the queryset, the
+    # create serializer -- fell through to the caller's *oldest* active
+    # membership, and a multi-organization admin listed and minted the tokens of
+    # an organization the header did not name. The mixin also puts these routes
+    # in front of ``common.openapi.TenantScopedAutoSchema``, which is what
+    # documents the header in ``schema.yml``.
 
     permission_classes = (IsOrganizationAdmin,)
     serializer_class = SystemUserTokenCreateSerializer
+
+    def initial(self, request: Request, *args, **kwargs) -> None:
+        """Resolve the active organization, then check permissions *again*.
+
+        ``APIView.initial`` runs ``check_permissions`` before the mixin's
+        resolver (authentication has to have populated ``request.user`` first),
+        so ``IsOrganizationAdmin.has_permission`` asks
+        ``get_active_organization_membership`` a question the header has not been
+        applied to yet -- it sees the oldest-membership fallback. Everywhere else
+        that only weakens a *narrowing*; here it would let an admin of their
+        oldest organization pass the collection-level gate and then read and mint
+        tokens in a second organization they are a plain member of, because the
+        queryset and the create serializer both re-ask after resolution.
+
+        Re-running ``check_permissions`` once the stash is correct closes that.
+        It is a repeat of a check that has already passed, so it can only ever
+        turn a 200 into a 403, never the other way round.
+        """
+        super().initial(request, *args, **kwargs)
+        self.check_permissions(request)
 
     @inject
     def __init__(
@@ -67,24 +105,25 @@ class SystemUserTokenViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet)
         Prefetches available_resources (related_name on ResourceAccess.system_user FK)
         to avoid N+1 queries when serializing available_resources.
         """
-        # ``filter_by_organization(...)`` rather than the implicit scope: this
-        # viewset is a plain DRF ``GenericViewSet``, not one of the
-        # ``TenantScopedViewMixin`` bases, so nothing binds an organization on
-        # this request and ``objects.filter(...)`` would raise under
-        # ``STRICT_ORGANIZATION_FILTER`` before reaching the narrowing. The
-        # narrowing is the one it always was -- ``IsOrganizationAdmin`` plus the
-        # caller's own membership. (``objects.none()`` needs no organization; the
-        # package builds it off the unscoped queryset precisely because an empty
-        # result can leak nothing.)
+        # The implicit scope, not ``filter_by_organization(...)``:
+        # ``TenantScopedViewMixin`` binds the organization this request resolved,
+        # so ``objects`` is already confined to it and naming it again would only
+        # be a second chance to name the wrong one.
+        #
+        # The membership check stays. It is not the narrowing -- it is the guard
+        # for the rows of the resolution table that bind *nothing*: a caller with
+        # no active membership resolves to gated, and a scoped read with no
+        # organization bound raises ``OrganizationNotFoundError`` under
+        # ``STRICT_ORGANIZATION_FILTER`` rather than returning empty.
+        # (``objects.none()`` needs no organization; the package builds it off the
+        # unscoped queryset precisely because an empty result can leak nothing.)
         user = self.request.user
         if not user.is_authenticated:
             return SystemUser.objects.none()
         membership = get_active_organization_membership(user)
         if membership:
-            return (
-                SystemUser.objects.filter_by_organization(membership.organization_id)
-                .filter(deleted_at__isnull=True)
-                .prefetch_related("available_resources")
+            return SystemUser.objects.filter(deleted_at__isnull=True).prefetch_related(
+                "available_resources"
             )
         return SystemUser.objects.none()
 

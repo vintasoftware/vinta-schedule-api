@@ -1643,3 +1643,170 @@ class TestSystemUserTokenUpdateEscalationGuard:
             )
         )
         assert non_provider_resource in persisted
+
+
+@pytest.mark.django_db
+class TestSystemUserTokenViewSetHonoursTheOrganizationHeader:
+    """``X-Organization-Id`` selects the organization whose tokens are managed.
+
+    This viewset used to be a plain ``GenericViewSet``, outside the
+    ``TenantScopedViewMixin`` bases, so nothing stashed the resolved membership
+    and ``get_active_organization_membership`` fell through to
+    ``memberships.filter(is_active=True).order_by("created").first()``. A
+    multi-organization admin therefore listed -- and minted -- the tokens of
+    their *oldest* membership's organization whatever the header said, and the
+    schema documented these routes as not taking the header at all.
+
+    Every fixture below gives the caller their older membership in
+    ``organization`` and the one under test in ``other_organization``, so a
+    regression to the fallback is visible rather than coincidentally right.
+    """
+
+    LIST_URL = "api:PublicAPITokens-list"
+
+    def _url(self):
+        return reverse(self.LIST_URL)
+
+    @pytest.fixture
+    def two_org_admin(self, organization, other_organization):
+        user = baker.make(User, email="two-org-admin@example.com")
+        baker.make(Profile, user=user)
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=other_organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+        return user
+
+    @pytest.fixture
+    def two_org_admin_client(self, two_org_admin):
+        client = APIClient()
+        client.force_authenticate(user=two_org_admin)
+        return client
+
+    def test_the_header_picks_the_organization_whose_tokens_are_listed(
+        self, two_org_admin_client, organization, other_organization
+    ):
+        oldest_orgs_token = baker.make(
+            SystemUser, organization=organization, integration_name="oldest-org", is_active=True
+        )
+        named_orgs_token = baker.make(
+            SystemUser,
+            organization=other_organization,
+            integration_name="named-org",
+            is_active=True,
+        )
+
+        response = two_org_admin_client.get(
+            self._url(), HTTP_X_ORGANIZATION_ID=str(other_organization.pk)
+        )
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        ids = [token["id"] for token in response.json()["results"]]
+        assert ids == [named_orgs_token.id]
+        assert oldest_orgs_token.id not in ids
+
+    def test_a_created_token_lands_in_the_organization_the_header_names(
+        self, two_org_admin_client, organization, other_organization
+    ):
+        payload = {
+            "integration_name": "header_scoped_integration",
+            "available_resources": [PublicAPIResources.CALENDAR],
+        }
+
+        response = two_org_admin_client.post(
+            self._url(),
+            payload,
+            format="json",
+            HTTP_X_ORGANIZATION_ID=str(other_organization.pk),
+        )
+
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        created = SystemUser.original_manager.get(pk=response.json()["id"])
+        assert created.organization_id == other_organization.pk
+
+    def test_a_multi_organization_caller_without_the_header_is_400(
+        self, two_org_admin_client, organization, other_organization
+    ):
+        """No silent fall-back to the oldest membership: the request is ambiguous."""
+        response = two_org_admin_client.get(self._url())
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_a_header_naming_a_non_member_organization_is_403(
+        self, admin_client, other_organization
+    ):
+        response = admin_client.get(self._url(), HTTP_X_ORGANIZATION_ID=str(other_organization.pk))
+
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+
+    def test_a_single_membership_caller_still_needs_no_header(self, admin_client, organization):
+        """Control: the common case is unchanged."""
+        token = baker.make(
+            SystemUser, organization=organization, integration_name="single-org", is_active=True
+        )
+
+        response = admin_client.get(self._url())
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        assert [entry["id"] for entry in response.json()["results"]] == [token.id]
+
+    def test_being_an_admin_elsewhere_does_not_admit_you_to_the_named_organization(
+        self, organization, other_organization
+    ):
+        """Admin of the *oldest* organization, plain member of the named one.
+
+        ``IsOrganizationAdmin.has_permission`` runs inside ``APIView.initial``,
+        before the resolver -- so it sees the oldest-membership fallback and says
+        yes. Everything after it (the queryset, the create serializer) re-asks
+        once the header has been applied and would answer with the named
+        organization, which is why ``initial`` re-checks permissions.
+        """
+        user = baker.make(User, email="admin-here-member-there@example.com")
+        baker.make(Profile, user=user)
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=other_organization,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+        client = APIClient()
+        client.force_authenticate(user=user)
+        baker.make(
+            SystemUser,
+            organization=other_organization,
+            integration_name="not-yours-to-read",
+            is_active=True,
+        )
+
+        list_response = client.get(self._url(), HTTP_X_ORGANIZATION_ID=str(other_organization.pk))
+        create_response = client.post(
+            self._url(),
+            {
+                "integration_name": "not_yours_to_mint",
+                "available_resources": [PublicAPIResources.CALENDAR],
+            },
+            format="json",
+            HTTP_X_ORGANIZATION_ID=str(other_organization.pk),
+        )
+
+        assert_response_status_code(list_response, status.HTTP_403_FORBIDDEN)
+        assert_response_status_code(create_response, status.HTTP_403_FORBIDDEN)
+        assert not SystemUser.original_manager.filter(integration_name="not_yours_to_mint").exists()

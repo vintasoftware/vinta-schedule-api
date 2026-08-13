@@ -165,9 +165,18 @@ class TenantScopedViewMixin:
             self._unbind_active_organization()
 
     def initial(self, request: Request, *args: Any, **kwargs: Any) -> None:
-        """Run DRF initialisation, then resolve, stash and bind the active org."""
+        """Run DRF initialisation, then resolve, stash and bind the active org.
+
+        The bind lives here, next to ``dispatch``'s ``finally``, rather than
+        inside ``_resolve_active_organization``: the resolver is a pure function
+        of the request that tests and subclasses call in isolation (see its
+        docstring), and a call from outside ``dispatch`` has nothing to release
+        the contextvar it would otherwise set -- leaking an organization into
+        the worker for the rest of the session.
+        """
         super().initial(request, *args, **kwargs)  # type: ignore[misc]
         self._resolve_active_organization(request)
+        self._bind_active_organization(request.organization)  # type: ignore[attr-defined]
 
     def _bind_active_organization(self, organization: Any) -> None:
         """Bind ``organization`` (possibly ``None``) for the rest of this request.
@@ -178,10 +187,13 @@ class TenantScopedViewMixin:
         from whatever ran before; under ``STRICT_ORGANIZATION_FILTER`` an
         unbound scoped read then raises instead of returning someone else's rows.
 
-        Idempotent: ``_resolve_active_organization`` is called a second time by
+        Idempotent: the resolution is re-run and re-bound a second time by
         ``CreateModelMixin.create`` (a service may have created the caller's
         first membership during ``perform_create``), and re-binding without
-        releasing the first token would leak one contextvar frame per call.
+        releasing the first token would leak one contextvar frame per call --
+        and leave the *first* organization bound once ``dispatch``'s ``finally``
+        resets only the second. ``common/tests/test_tenant_scoped_binding.py``
+        dispatches that path so the release is asserted rather than described.
         """
         self._unbind_active_organization()
         self._active_organization_token = set_current_organization(organization)
@@ -206,6 +218,11 @@ class TenantScopedViewMixin:
 
         This method is extracted from ``initial()`` so tests can call it in isolation
         and so subclasses can override or extend it without touching ``initial()``.
+
+        It touches nothing but the request and its user -- in particular it does
+        **not** bind the organization to the context. Binding is
+        ``initial()``'s (and ``CreateModelMixin.create``'s) job, because only a
+        caller inside ``dispatch`` has the ``finally`` that releases it again.
         """
         # Lazily import to avoid a circular import (organizations → common → organizations).
         from organizations.models import OrganizationMembership  # noqa: PLC0415
@@ -316,11 +333,6 @@ class TenantScopedViewMixin:
             # distinguish "DRF request path resolved to gated" from
             # "not on a DRF request at all" (_UNSET sentinel).
             user._active_membership = resolved_membership  # type: ignore[union-attr]
-
-        # ...and bind it, so every organization-scoped model's default manager
-        # scopes to the organization this request resolved. Released in
-        # ``dispatch()``.
-        self._bind_active_organization(request.organization)  # type: ignore[attr-defined]
 
 
 class RefetchReturnInstanceAfterWriteMixin:
@@ -519,8 +531,14 @@ class CreateModelMixin(RefetchReturnInstanceAfterWriteMixin, mixins.CreateModelM
         # TenantScopedViewMixin.initial() stale. Re-resolve so the post-create re-fetch
         # honors the X-Organization-Id header (and any newly-created membership) instead
         # of silently dropping to the header-blind single-membership fallback.
+        # Re-bind too: the re-fetch below reads through organization-scoped default
+        # managers, and leaving the context on the organization ``initial()`` resolved
+        # would scope it to a different one than the stash the same lines consult.
+        # ``_bind_active_organization`` releases the first binding before taking the
+        # second, so ``dispatch``'s ``finally`` still restores the pre-request value.
         if hasattr(self, "_resolve_active_organization"):
             self._resolve_active_organization(request)
+            self._bind_active_organization(request.organization)
 
         # re-fetches the instance so we get annotations, prefetches, and selects
         if hasattr(self, "get_return_queryset"):

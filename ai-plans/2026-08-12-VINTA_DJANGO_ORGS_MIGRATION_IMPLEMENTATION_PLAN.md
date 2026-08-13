@@ -300,7 +300,7 @@ Changes:
 1. Same flip as Phase 2a for the remaining 6 models and 6 relations across `@audit/models.py`, `@webhooks/models.py`, `@public_api/models.py`, `@organizations/models.py`.
 2. `@common/utils/view_utils.py`: after `TenantScopedViewMixin.initial()` resolves the membership, bind the organization to the context and unbind on response. The resolution table (400 on ambiguity, 403 on non-member, per-action opt-outs via `active_org_resolution_optional` / `active_org_optional_actions`) is unchanged — only the binding is new.
 3. `@public_api/middlewares.py::PublicApiSystemUserMiddleware` runs before DRF and resolves a system user; confirm it binds an organization before touching scoped models, or moves its scoped work behind the binding.
-4. Delete `OrganizationModel`, `BaseOrganizationModelManager`, `BaseOrganizationModelQuerySet` from `organizations/`. `@common/fields.py`'s `TenantSafeForeignKey` and friends stay until Phase 6 — `OrganizationMembershipForeignKey` still builds on them.
+4. Delete `OrganizationModel`, `BaseOrganizationModelManager`, `BaseOrganizationModelQuerySet` from `organizations/`. `@common/fields.py`'s `TenantSafeForeignKey` / `TenantSafeOneToOneField` stay until Phase 6, but **not** for the reason first written here: `OrganizationMembershipForeignKey` extends `models.Field` directly, not either of them, and deleting `organizations.OrganizationForeignKey` in this phase removed their last users. They now have **zero** users and are dead code with no dependency holding them — Phase 6 deletes them because Phase 6 owns that deletion, not because anything still builds on them.
 
 Spec use-case: shared scaffolding — no use-case yet.
 
@@ -420,7 +420,7 @@ Acceptance: `grep -rn "role" schema.yml` returns no membership-role field, the g
 Changes:
 
 1. Drop the `role` and `is_billing_owner` columns from `OrganizationMembership`; delete `OrganizationRole`.
-2. Delete from `@common/fields.py`: `TenantSafeForeignKey`, `TenantSafeOneToOneField`, `SafeCompositePrimaryKey`, `_SafeCompositeAttribute`. Keep `OrganizationMembershipForeignKey` (see **Open Questions**), reparented onto the package's field classes.
+2. Delete from `@common/fields.py`: `TenantSafeForeignKey`, `TenantSafeOneToOneField`, `SafeCompositePrimaryKey`, `_SafeCompositeAttribute`. `TenantSafeForeignKey` / `TenantSafeOneToOneField` have had **no users at all** since Phase 2b (see that phase's change 4) — this is a straight deletion, not a migration off them. Keep `OrganizationMembershipForeignKey` (see **Open Questions**); it extends `models.Field` directly and needs no reparenting onto them, only whatever the package's field classes offer.
 3. Delete the compatibility shims left in `@organizations/services.py` that wrote both representations.
 4. `grep -rn "OrganizationRole\|is_billing_owner\|OrganizationModel\b" --include="*.py"` across the repo returns nothing outside migrations.
 5. Remove tests that exercised the dual-write period.

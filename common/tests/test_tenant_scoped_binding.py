@@ -35,6 +35,14 @@ stack. Calling ``View.as_view()(request)`` runs the whole of ``dispatch``
 (``initial`` -> handler -> ``finalize_response`` / ``handle_exception``) with
 nothing above it to clean up after the mixin.
 
+That middleware is registered unconditionally in ``MIDDLEWARE``
+(``settings/base.py``), not only on the public-API routes, so in production it
+is a genuine second guard around every request -- a real leak here would be
+contained by it. That is *why* these tests must bypass it, and it is also why
+its ``with`` block must not be removed on the grounds that DRF's ``finally``
+already covers the request: neither is redundant, and only this file can tell
+you whether the DRF half still works.
+
 **This file was mutation-tested**: with the ``finally`` in
 ``TenantScopedViewMixin.dispatch`` removed, ``TestNoBindingSurvivesTheResponse``
 fails on the ``RuntimeError`` and ``raises-after-binding`` paths (the ones DRF
@@ -47,16 +55,16 @@ from typing import Any
 from django.contrib.auth import get_user_model
 
 import pytest
-from rest_framework import status
+from rest_framework import serializers, status
 from rest_framework.exceptions import NotFound
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.test import APIRequestFactory, force_authenticate
 from rest_framework.views import APIView
-from rest_framework.viewsets import ViewSet
+from rest_framework.viewsets import GenericViewSet, ViewSet
 
 from common.organization_context import get_current_organization, organization_context
-from common.utils.view_utils import TenantScopedViewMixin
+from common.utils.view_utils import CreateModelMixin, TenantScopedViewMixin
 from organizations.models import Organization, OrganizationMembership
 
 
@@ -140,6 +148,48 @@ class UnhandledExceptionView(ProbeView):
         raise RuntimeError("boom")
 
 
+class _OrganizationProbeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Organization
+        fields = ("id", "name")
+
+
+class CreateProbeViewSet(TenantScopedViewMixin, CreateModelMixin, GenericViewSet):
+    """Exercises the *second* bind -- the one ``CreateModelMixin.create`` does.
+
+    ``perform_create`` stands in for ``OrganizationService.create_organization``:
+    it changes the caller's memberships mid-request, which is why that mixin
+    re-resolves at all. The two class attributes record what was bound on either
+    side of that re-resolve.
+    """
+
+    queryset = Organization.objects.all()
+    serializer_class = _OrganizationProbeSerializer
+
+    observed_in_perform_create: Any = None
+    observed_after_the_re_resolve: Any = None
+
+    @staticmethod
+    def _bound_pk() -> Any:
+        organization = get_current_organization()
+        return None if organization is None else organization.pk
+
+    def perform_create(self, serializer: Any) -> None:
+        type(self).observed_in_perform_create = self._bound_pk()
+        organization = serializer.save()
+        # The caller now belongs to the organization they just created, and no
+        # longer to the one the request came in on -- so the re-resolve has a
+        # single, unambiguous, *different* answer with no header involved.
+        user: Any = self.request.user
+        user.memberships.filter(is_active=True).update(is_active=False)
+        OrganizationMembership.objects.create(user=user, organization=organization, is_active=True)
+
+    def get_retrieve_serializer(self, *args: Any, **kwargs: Any) -> Any:
+        # Called after the re-resolve, on the instance the re-fetch just read.
+        type(self).observed_after_the_re_resolve = self._bound_pk()
+        return super().get_retrieve_serializer(*args, **kwargs)
+
+
 class RaisesAfterBindingView(ProbeView):
     """Raises from ``initial()`` *after* the organization has been bound.
 
@@ -166,6 +216,16 @@ def _dispatch(view_class: Any, user: Any, header: str | None = None, **initkwarg
     request = APIRequestFactory().get("/probe/", None, **extra)
     force_authenticate(request, user=user)
     return view_class.as_view(**initkwargs)(request)
+
+
+def _dispatch_create(user: Any, name: str, header: str | None = None) -> Any:
+    """POST to ``CreateProbeViewSet.create``, with no middleware above it."""
+    CreateProbeViewSet.observed_in_perform_create = None
+    CreateProbeViewSet.observed_after_the_re_resolve = None
+    extra: dict[str, Any] = {"HTTP_X_ORGANIZATION_ID": header} if header is not None else {}
+    request = APIRequestFactory().post("/probe/", {"name": name}, format="json", **extra)
+    force_authenticate(request, user=user)
+    return CreateProbeViewSet.as_view({"post": "create"})(request)
 
 
 def _membership(user: Any, organization: Organization, *, is_active: bool = True):
@@ -380,6 +440,104 @@ class TestNoBindingSurvivesTheResponse:
 
         assert response.status_code == status.HTTP_400_BAD_REQUEST
         assert get_current_organization() is None
+
+
+@pytest.mark.django_db
+class TestTheResolverItselfBindsNothing:
+    """``_resolve_active_organization`` is a pure function of the request.
+
+    It is documented as callable in isolation, and four tests in
+    ``organizations/tests/test_org_resolution.py`` take it up on that. A bind
+    performed *there* has no ``finally`` above it: nothing would ever release it,
+    and the organization would stay bound in the xdist worker for the rest of the
+    session. So the bind lives in ``initial()`` and this pins the split.
+    """
+
+    def test_calling_it_outside_dispatch_leaves_the_context_alone(
+        self, user: Any, org_a: Organization
+    ) -> None:
+        _membership(user, org_a)
+        view = ProbeView()
+        request = APIRequestFactory().get("/probe/")
+        force_authenticate(request, user=user)
+        # ``Any``: the resolver's three outputs are stashed on the request
+        # dynamically, so they are invisible to the type checker.
+        drf_request: Any = view.initialize_request(request)
+
+        view._resolve_active_organization(drf_request)
+
+        # It resolved -- so this is not passing because there was nothing to bind.
+        assert drf_request.organization is not None
+        assert drf_request.organization.pk == org_a.pk
+        assert get_current_organization() is None
+
+    def test_an_outer_binding_is_not_disturbed_either(
+        self, user: Any, org_a: Organization, org_b: Organization
+    ) -> None:
+        _membership(user, org_a)
+        view = ProbeView()
+        request = APIRequestFactory().get("/probe/")
+        force_authenticate(request, user=user)
+        drf_request = view.initialize_request(request)
+
+        with organization_context(org_b):
+            view._resolve_active_organization(drf_request)
+            still_bound = get_current_organization()
+
+        assert still_bound is not None
+        assert still_bound.pk == org_b.pk
+
+
+@pytest.mark.django_db
+class TestTheCreateActionRebinds:
+    """``CreateModelMixin.create`` re-resolves *and* re-binds.
+
+    The re-resolve exists because a service may have changed the caller's
+    memberships during ``perform_create``. Everything after it -- the re-fetch
+    through the model's default manager, the retrieve serializer -- then reads
+    the new organization off the request while the context would still hold the
+    old one.
+    """
+
+    def test_the_body_after_the_re_resolve_sees_the_new_organization(
+        self, user: Any, org_a: Organization
+    ) -> None:
+        _membership(user, org_a)
+
+        response = _dispatch_create(user, "Probe Org N")
+
+        assert response.status_code == status.HTTP_201_CREATED, response.data
+        created_id = response.data["id"]
+        assert CreateProbeViewSet.observed_in_perform_create == org_a.pk
+        assert CreateProbeViewSet.observed_after_the_re_resolve == created_id
+        assert created_id != org_a.pk
+
+    def test_the_second_bind_releases_the_first(self, user: Any, org_a: Organization) -> None:
+        """Both bindings are released, not just the most recent one.
+
+        ``_bind_active_organization`` unbinds before it binds, so ``dispatch``'s
+        one ``finally`` is enough. If it stopped doing that, the first token
+        would be dropped on the floor and organization A would still be bound
+        here -- which is a cross-tenant read on the next request the worker
+        serves.
+        """
+        _membership(user, org_a)
+
+        _dispatch_create(user, "Probe Org N")
+
+        assert get_current_organization() is None
+
+    def test_an_outer_binding_survives_the_create(
+        self, user: Any, org_a: Organization, org_b: Organization
+    ) -> None:
+        _membership(user, org_a)
+
+        with organization_context(org_b):
+            _dispatch_create(user, "Probe Org N")
+            still_bound = get_current_organization()
+
+        assert still_bound is not None
+        assert still_bound.pk == org_b.pk
 
 
 @pytest.mark.django_db

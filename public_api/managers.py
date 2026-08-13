@@ -38,6 +38,18 @@ class SystemUserManager(_SystemUserManagerBase):  # type: ignore[misc,valid-type
         path, via ``PublicAPIAuthService.create_system_user`` -- reach the row
         it means to write. ``SystemUser.save()`` carries the matching exception
         for the stamp-or-raise step.
+
+        **The same rule, one frame lower, is what grants that exception.**
+        ``create()`` hands these keyword arguments to ``Model.__init__``, and
+        ``SystemUser.__init__`` records "the organization was written as
+        ``None``" as ``_organization_is_deliberately_none``; ``save()`` skips the
+        mixin's stamp-or-raise for that marker and for nothing else. So the
+        exemption is keyed on the caller's stated intent rather than on the
+        absence of a value, and a forgotten ``organization=`` raises here as it
+        would on any other scoped model. It is recorded in ``__init__`` rather
+        than here so that ``get_or_create`` / ``update_or_create`` (which build
+        the instance on the queryset, below this method) and a direct
+        ``SystemUser(organization=None, ...)`` are covered by the same line.
         """
         if kwargs and any(name in kwargs for name in self._ORGANIZATION_KWARGS):
             return True
