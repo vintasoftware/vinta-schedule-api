@@ -1765,11 +1765,19 @@ class TestSystemUserTokenViewSetHonoursTheOrganizationHeader:
     ):
         """Admin of the *oldest* organization, plain member of the named one.
 
-        ``IsOrganizationAdmin.has_permission`` runs inside ``APIView.initial``,
-        before the resolver -- so it sees the oldest-membership fallback and says
-        yes. Everything after it (the queryset, the create serializer) re-asks
-        once the header has been applied and would answer with the named
-        organization, which is why ``initial`` re-checks permissions.
+        ``IsOrganizationAdmin.has_permission`` used to run before the resolver,
+        so it saw the oldest-membership fallback and said yes -- while
+        everything after it (the queryset, the create serializer) re-asked once
+        the header had been applied and answered with the named organization.
+        This viewset carried a local ``initial()`` override that re-ran
+        ``check_permissions`` to close that.
+
+        Phase 3.5 of the vinta-django-orgs migration made
+        ``TenantScopedViewMixin`` resolve between authentication and
+        ``check_permissions`` for every view on the mixin, and the local
+        override went away. The expectation below is unchanged -- 403 on both
+        the read and the write -- which is the point: the general fix subsumes
+        the local one.
         """
         user = baker.make(User, email="admin-here-member-there@example.com")
         baker.make(Profile, user=user)

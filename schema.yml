@@ -2165,9 +2165,10 @@ paths:
         resolved billing root -- the same two-step dance
         ``SubscriptionViewSet.get_subscription`` and ``AddOnViewSet.create`` already
         perform, and for the same reason their comments document:
-        ``has_permission`` cannot know *which* organization this read is for,
-        because ``request.organization`` is not resolved yet at that point in
-        ``TenantScopedViewMixin.initial()``'s ordering (see
+        ``has_permission`` cannot know *which* organization this read is for: the
+        read is against the billing **root**, which is frequently an ancestor of the
+        organization the request resolved, and only the caller of
+        ``check_object_permissions`` knows which one that is (see
         ``IsBillingOwnerOrAdmin``'s docstring).
       summary: List metered occurrences behind post-paid charges
       parameters:
@@ -2274,9 +2275,10 @@ paths:
         resolved billing root -- the same two-step dance
         ``SubscriptionViewSet.get_subscription`` and ``AddOnViewSet.create`` already
         perform, and for the same reason their comments document:
-        ``has_permission`` cannot know *which* organization this read is for,
-        because ``request.organization`` is not resolved yet at that point in
-        ``TenantScopedViewMixin.initial()``'s ordering (see
+        ``has_permission`` cannot know *which* organization this read is for: the
+        read is against the billing **root**, which is frequently an ancestor of the
+        organization the request resolved, and only the caller of
+        ``check_object_permissions`` knows which one that is (see
         ``IsBillingOwnerOrAdmin``'s docstring).
       summary: List metered occurrences behind post-paid charges
       parameters:

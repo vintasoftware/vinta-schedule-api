@@ -28,9 +28,12 @@ class TenantScopedViewMixin:
 
     This mixin must be included in every base viewset so that all internal REST
     endpoints automatically pick up the ``X-Organization-Id`` header.  The resolver
-    runs **after** ``super().initial()`` so that DRF authentication has already
-    populated ``request.user`` — the JWT user is not available at Django-middleware
-    time.
+    runs **after DRF authentication** — the JWT user is not available at
+    Django-middleware time — and **before ``check_permissions``**, so a
+    permission class is asked about the organization the header names rather
+    than about the caller's oldest membership.  See
+    :meth:`perform_authentication`, which is where that ordering is imposed and
+    why it is imposed there.
 
     After this mixin runs, three attributes are available on every DRF request:
 
@@ -91,7 +94,11 @@ class TenantScopedViewMixin:
 
     Unauthenticated requests pass through untouched (the mixin sets ``None`` on
     all three attributes so downstream code doesn't KeyError); DRF's own
-    authentication / permission stack returns 401 before any business logic runs.
+    authentication / permission stack returns 401 before any business logic
+    runs.  This is what keeps **401 ahead of 400/403**: the resolver's whole
+    body is behind an ``is_authenticated`` check, so none of the rows above can
+    fire for an anonymous caller, and the 401 is raised afterwards by
+    ``check_permissions``.
     """
 
     #: When ``True``, a multi-org caller that omits ``X-Organization-Id`` is *not*
@@ -164,17 +171,50 @@ class TenantScopedViewMixin:
         finally:
             self._unbind_active_organization()
 
-    def initial(self, request: Request, *args: Any, **kwargs: Any) -> None:
-        """Run DRF initialisation, then resolve, stash and bind the active org.
+    def perform_authentication(self, request: Request) -> None:
+        """Authenticate, then resolve, stash and bind the active organization.
 
-        The bind lives here, next to ``dispatch``'s ``finally``, rather than
-        inside ``_resolve_active_organization``: the resolver is a pure function
-        of the request that tests and subclasses call in isolation (see its
-        docstring), and a call from outside ``dispatch`` has nothing to release
-        the contextvar it would otherwise set -- leaking an organization into
-        the worker for the rest of the session.
+        **This is the ordering hook.** ``APIView.initial`` runs, in order:
+        content negotiation, versioning, ``perform_authentication``,
+        ``check_permissions``, ``check_throttles``. Resolution used to happen
+        after the whole of that sequence, which meant every permission class
+        asking ``get_active_organization_membership(user)`` at
+        ``has_permission`` time found ``_active_membership`` unset and fell
+        through to the caller's *oldest* active membership -- while
+        ``get_queryset`` and every ``has_object_permission`` answered from
+        ``X-Organization-Id``. A user who administers an older organization A
+        and is a plain member of B passed a collection-level admin gate for a
+        request that then served B.
+
+        Overriding ``perform_authentication`` -- rather than reimplementing
+        ``initial`` -- puts resolution in the one seam between "``request.user``
+        is now real" and "``check_permissions`` runs", and leaves every other
+        step of ``APIView.initial`` in its original relative order. In
+        particular **authentication still runs first**, so an unauthenticated
+        caller is answered 401 by the permission stack rather than 400/403 by
+        the resolver: the resolver no-ops for an anonymous user (see
+        ``_resolve_active_organization``), and a bad credential raises out of
+        ``super().perform_authentication`` before this method's second line.
+
+        Resolution now also precedes ``check_throttles``, which is the one
+        consequence that is not merely "earlier than permissions": a request
+        that is ambiguous (400) or names a non-member organization (403) is
+        refused before it spends a throttle bucket. Throttling is not an
+        authorization boundary, and refusing a request the resolver cannot even
+        route is strictly better than counting it.
+
+        The bind lives here, on the ``initial()`` path and next to
+        ``dispatch``'s ``finally``, rather than inside
+        ``_resolve_active_organization``: the resolver is a pure function of the
+        request that tests and subclasses call in isolation (see its docstring),
+        and a call from outside ``dispatch`` has nothing to release the
+        contextvar it would otherwise set -- leaking an organization into the
+        worker for the rest of the session. ``perform_authentication`` is called
+        from exactly one place, ``APIView.initial``, which is called from
+        exactly one place, ``APIView.dispatch`` -- the method whose ``finally``
+        releases the binding.
         """
-        super().initial(request, *args, **kwargs)  # type: ignore[misc]
+        super().perform_authentication(request)  # type: ignore[misc]
         self._resolve_active_organization(request)
         self._bind_active_organization(request.organization)  # type: ignore[attr-defined]
 

@@ -382,16 +382,23 @@ class IsBillingOwnerOrAdmin(BasePermission):
     change plan, purchase/cancel an add-on, cancel the subscription.
 
     Split across ``has_permission``/``has_object_permission`` rather than doing
-    everything in ``has_permission``, deliberately: ``TenantScopedViewMixin.initial()``
-    calls ``super().initial()`` (which runs DRF's ``check_permissions()``, and
-    therefore every ``has_permission``) **before** it resolves and stashes
-    ``request.organization`` — the same ordering ``IsOrganizationAdmin`` above
-    already works around by never reading ``request.organization`` in
-    ``has_permission``. ``request.organization`` only becomes reliable once the
-    view body itself runs, which is exactly when ``has_object_permission`` runs
-    too (views call ``check_object_permissions`` explicitly against the
-    resolved billing-root ``Organization``; see ``SubscriptionViewSet`` /
-    ``AddOnViewSet``).
+    everything in ``has_permission``, because the two answer different
+    questions: ``has_permission`` cannot know *which* organization is being
+    billed. The billing endpoints act on the **billing root**, which is
+    frequently an ancestor of the organization the request resolved
+    (``resolve_billing_root``), and the views hand that resolved root to
+    ``check_object_permissions`` explicitly (see ``SubscriptionViewSet`` /
+    ``AddOnViewSet``). So the coarse gate runs first and the real decision runs
+    against ``obj``.
+
+    (Historical note: this split was originally *forced* by an ordering defect —
+    ``TenantScopedViewMixin`` resolved the active organization after DRF had
+    already run ``check_permissions``, so nothing organization-specific was
+    reliable in ``has_permission`` at all. Phase 3.5 of the vinta-django-orgs
+    migration fixed the ordering; the split stays because of the billing-root
+    reason above, which is independent of it. ``request.organization`` and
+    ``get_active_organization_membership(request.user)`` are now both correct
+    inside ``has_permission``.)
 
     - ``has_permission``: coarse gate -- an active membership that is ``ADMIN``
       **or** has ``is_billing_owner=True``, in *some* organization. Does not by
