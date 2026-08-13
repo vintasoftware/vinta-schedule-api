@@ -1,25 +1,25 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
 
 from django.db.models.query import QuerySet
 from django.utils import timezone
 
-from vinta_orgs.querysets import SingleOrganizationQuerySet
+from vinta_orgs.querysets import (
+    OrganizationMembershipQuerySet as _PackageOrganizationMembershipQuerySet,
+)
+
+from organizations.permission_catalog import MANAGE_BILLING
 
 
-if TYPE_CHECKING:
-    from users.models import User
-
-
-class OrganizationMembershipQuerySet(SingleOrganizationQuerySet):
+class OrganizationMembershipQuerySet(_PackageOrganizationMembershipQuerySet):
     """QuerySet for OrganizationMembership with domain-specific filtering methods.
 
-    Built on the package's ``SingleOrganizationQuerySet`` rather than a plain
-    ``QuerySet`` so that ``filter_by_organization(...)`` /
-    ``for_current_organization()`` chain off it the same way they do off every
-    other organization-scoped model. It does **not** scope implicitly -- that
+    Built on the package's own ``OrganizationMembershipQuerySet`` -- not shadowed
+    by a same-named class built on a plainer base -- so ``0.3.0``'s membership
+    lookups (``active()``, ``active_for_user()``, ``holding_permission()``) stay
+    available here rather than being silently replaced by a class of the same
+    name that does not implement them. It does **not** scope implicitly -- that
     is a property of the *manager* (see
     ``organizations.managers.OrganizationMembershipManager``), and a membership
     is the row you read to decide which organization to select, so scoping it
@@ -55,44 +55,21 @@ class OrganizationMembershipQuerySet(SingleOrganizationQuerySet):
         pre-existing membership in the matching group and the dual-write in
         ``organizations.services`` keeps every membership written since in step.
 
-        ``content_type__app_label`` is matched alongside the codename even though
-        ``manage_billing`` is unique across the catalog today -- both lookups sit
-        in one ``filter()`` call, so they bind to the *same* permission row, and a
-        future ``manage_billing`` declared in some other app cannot silently widen
-        who receives dunning.
+        Built on ``holding_permission(...)`` -- the package's own union of a
+        membership's direct ``permissions`` grant with the permissions its
+        ``groups`` carry -- rather than a hand-written ``groups__permissions``
+        filter, so this cannot drift from what
+        ``vinta_orgs.authorization.has_organization_permission`` (Phase 4) and
+        the last-administrator count both read. ``holding_permission`` already
+        matches ``content_type__app_label`` alongside the codename and already
+        calls ``distinct()`` -- see its docstring for why both are necessary.
 
-        ``distinct()`` is not optional: the two chained many-to-many joins
-        (membership -> group -> permission) produce one row per *path*, so a
-        membership in both ``organization_admin`` and
-        ``organization_billing_owner`` -- the shape the backfill writes for an
-        admin who is also flagged ``is_billing_owner`` -- would otherwise appear
-        twice and be notified twice.
-
-        Only *group*-held permissions count. ``OrganizationMembership.permissions``
-        (the per-membership direct grant the package also provides) is empty
-        everywhere in this codebase and nothing writes it; adding it here would
-        mean a second multi-valued join under an ``OR``.
+        ``active()`` narrows to ``is_active=True`` memberships first, for the
+        same reason ``occupying_a_seat`` does: a deactivated member receives no
+        dunning notifications.
         """
         return (
-            self.filter(organization_id=organization_id, is_active=True)
-            .filter(
-                groups__permissions__codename="manage_billing",
-                groups__permissions__content_type__app_label="payments",
-            )
-            .distinct()
-        )
-
-    def active_for_user(self, user: User) -> OrganizationMembershipQuerySet:
-        """Return all active memberships for *user*, with organization pre-fetched.
-
-        Ordered by creation date (oldest first) so the result is deterministic
-        for the org-switcher list.  ``select_related("organization")`` avoids
-        an N+1 when iterating over the returned memberships.
-        """
-        return (
-            self.filter(user=user, is_active=True)
-            .select_related("organization")
-            .order_by("created")
+            self.filter(organization_id=organization_id).active().holding_permission(MANAGE_BILLING)
         )
 
 

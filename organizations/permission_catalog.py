@@ -31,6 +31,9 @@ silent divergence.
 
 from __future__ import annotations
 
+from django.contrib.auth.models import Group, Permission
+from django.db import transaction
+
 
 #: ``OrganizationMembership`` -- may add, remove, deactivate and re-group members.
 MANAGE_MEMBERS = "organizations.manage_members"
@@ -92,3 +95,41 @@ def groups_for_membership_state(*, is_admin: bool, is_billing_owner: bool) -> tu
     if not names:
         names.append(GROUP_ORGANIZATION_MEMBER)
     return tuple(names)
+
+
+def seed_organization_groups() -> list[Group]:
+    """Create (or repair) the three seeded groups from **this module's live catalog**.
+
+    The callable ``SHARED_SCHEMA_ORGANIZATIONS["ORGANIZATION_GROUP_SEEDERS"]``
+    names, so ``vinta_orgs.testing.reseed_organization_groups()`` can put the
+    catalog back after a transactional test flushes ``auth_group`` /
+    ``auth_group_permissions`` -- see that module's docstring for why the
+    repair has to happen at test *setup* rather than teardown.
+
+    Reads ``GROUP_PERMISSIONS`` above -- head state, not
+    ``organizations/migrations/0028_seed_permission_groups.py``'s frozen
+    literals. That migration stays the production path and deliberately keeps
+    its own copy (a data migration must keep meaning what it meant when it was
+    written); this is the same catalog, reachable as a callable, for tests.
+
+    Additive and idempotent, the contract
+    ``vinta_orgs.testing.reseed_organization_groups`` requires of every
+    seeder: ``get_or_create`` for the group, ``add`` (not ``set``) for its
+    permissions, so a second call -- or a call against an already-seeded
+    database -- changes nothing and never revokes a permission a caller added
+    on purpose.
+    """
+    groups: list[Group] = []
+
+    with transaction.atomic():
+        for group_name, permission_labels in GROUP_PERMISSIONS.items():
+            group, _ = Group.objects.get_or_create(name=group_name)
+            for label in permission_labels:
+                app_label, codename = label.split(".", 1)
+                permission = Permission.objects.get(
+                    content_type__app_label=app_label, codename=codename
+                )
+                group.permissions.add(permission)
+            groups.append(group)
+
+    return groups

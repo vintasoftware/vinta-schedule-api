@@ -123,6 +123,21 @@ SHARED_SCHEMA_ORGANIZATIONS = {
     # ``filter_by_organization(...)`` / ``exclude_by_organization(...)`` (which
     # start from the unscoped queryset) and ``original_manager``.
     "STRICT_ORGANIZATION_FILTER": True,
+    # Points ``vinta_orgs.testing.reseed_organization_groups()`` (wired in via
+    # ``pytest_plugins = ["vinta_orgs.testing"]`` in the root ``conftest.py``) at
+    # *our* three seeded groups instead of the package's own
+    # ``organization_owner`` default. Reads the **live** catalog
+    # (``organizations.permission_catalog.GROUP_PERMISSIONS``), not
+    # ``organizations/migrations/0028_seed_permission_groups.py``'s frozen
+    # literals -- the migration is the production path and is deliberately
+    # allowed to drift from the code as it evolves; the seeder must not be.
+    # Without this a ``transaction=True`` test flushes ``auth_group`` /
+    # ``auth_group_permissions`` (data migrations are not replayed by ``flush``)
+    # and every membership built by a later test in that worker's session
+    # silently holds no permission at all.
+    "ORGANIZATION_GROUP_SEEDERS": [
+        "organizations.permission_catalog.seed_organization_groups",
+    ],
 }
 
 MIDDLEWARE = [
@@ -214,6 +229,16 @@ AUTH_PASSWORD_VALIDATORS = [
 # safe, because both fill them with the same *global* permission set;
 # organization permissions live in separate, organization-keyed caches
 # (``_organization_*_perm_cache``) that the stock backend never touches.
+#
+# Registered **unsubclassed**, as the package ships it -- not a repo-owned
+# subclass. Under ``0.2.0`` a deactivated membership still resolved its group
+# permissions (``_get_membership`` did not filter ``is_active``), which would
+# have forced a repo-owned subclass to close before Phase 4 could safely read
+# ``has_perm``. ``0.3.0`` fixes that at the source: ``is_active`` now lives on
+# ``AbstractOrganizationMembership`` and is filtered *inside*
+# ``OrganizationModelBackend._get_membership``, so a deactivated administrator
+# resolves exactly what a non-member resolves -- nothing. See
+# ``organizations/tests/test_permission_backend.py`` for the pinned regression.
 AUTHENTICATION_BACKENDS = [
     "django.contrib.auth.backends.ModelBackend",
     "vinta_orgs.auth_backends.OrganizationModelBackend",

@@ -1,24 +1,32 @@
-"""``OrganizationModelBackend``: what ``has_perm`` answers, and in which organization.
+"""Our wiring of ``vinta_orgs.auth_backends.OrganizationModelBackend``.
 
-The backend (``vinta_orgs.auth_backends.OrganizationModelBackend``, added to
-``AUTHENTICATION_BACKENDS`` in this phase) unions two independent sources:
+**Amended for package ``0.3.0``.** This module used to also pin the backend's
+own resolution mechanics (organization isolation, the global/organization
+union, per-organization caching) -- properties of the package, not of this
+repo, that would hold identically against a stock package install with any
+membership model and any permission catalog. Per the standard the
+``chore/prune-package-tests`` branch set -- a test that would pass against a
+stock package install belongs upstream, not here -- those are gone; what is
+left is scoped to **our** wiring:
 
-* the user's **global** permissions -- ``user.user_permissions`` and
-  ``user.groups``, exactly what the stock ``ModelBackend`` answers, organization
-  or no organization;
-* the permissions their ``OrganizationMembership`` carries in the organization
-  bound to the current ``vinta_orgs.state`` contextvar -- and *only* that
-  organization.
-
-The second half is what this module is really about. A membership's groups must
-be invisible from any other organization, and invisible with nothing bound;
-otherwise a user who administers organization A silently administers B.
+* that our ``AUTHENTICATION_BACKENDS`` entry is the package's class,
+  unsubclassed, in the right order, resolving against *our* concrete
+  ``OrganizationMembership`` model (``TestAuthenticationBackendsWiring``);
+* that the three groups and four capability permissions *our* migrations seed
+  are the ones actually present (``TestTheSeededGroupsExist``);
+* that ``has_perm`` resolves *our* catalog correctly through that wiring for
+  the roles this codebase cares about (``TestAnAdminMembershipUnderItsOwnOrganization``);
+* the one regression this amendment itself creates: a deactivated membership
+  used to still resolve its group permissions under ``0.2.0`` (this repo's
+  auth backend did not filter ``is_active``, and that was pinned here as
+  observed behaviour Phase 4 would have had to handle deliberately).
+  ``0.3.0`` fixes it upstream -- ``is_active`` now filters *inside*
+  ``OrganizationModelBackend._get_membership`` -- so the assertion inverts
+  from "still resolves" to "resolves nothing"
+  (``TestADeactivatedMembershipResolvesNoPermissions``).
 
 **Nothing in the application reads any of this yet.** Every permission class
 still checks ``role`` / ``is_billing_owner``; Phase 4 is what migrates them.
-These tests pin the foundation Phase 4 will stand on -- including the two
-behaviours (below) that Phase 4 has to deal with deliberately rather than
-inherit by accident.
 """
 
 from __future__ import annotations
@@ -81,6 +89,45 @@ def _reloaded(user: User) -> User:
     a fresh instance -- which is also what a real request does.
     """
     return User.objects.get(pk=user.pk)
+
+
+class TestAuthenticationBackendsWiring:
+    """The wiring claim this module exists to pin: our settings, not the
+    package's resolution logic.
+
+    ``django.contrib.auth.backends.ModelBackend`` first (a live session records
+    the dotted path of the backend that authenticated it, and dropping it would
+    sign out every existing session on deploy), the package's
+    ``OrganizationModelBackend`` second -- **unsubclassed**. There is no
+    repo-owned subclass to register instead: ``0.3.0`` filters ``is_active``
+    inside the package's own ``_get_membership``, so Phase 3 registers the
+    package's class directly rather than adding one, and this test is what
+    would catch either a reordering or a reintroduced subclass.
+    """
+
+    def test_lists_the_stock_backend_first_and_the_package_backend_second(self):
+        from django.conf import settings
+
+        assert settings.AUTHENTICATION_BACKENDS == [
+            "django.contrib.auth.backends.ModelBackend",
+            f"{OrganizationModelBackend.__module__}.{OrganizationModelBackend.__qualname__}",
+        ]
+
+    def test_the_package_backend_is_not_subclassed(self):
+        from django.conf import settings
+
+        # The class named in settings *is* the package's own -- not a
+        # same-named repo module shadowing it, and not a subclass of it.
+        assert (
+            settings.AUTHENTICATION_BACKENDS[1]
+            == "vinta_orgs.auth_backends.OrganizationModelBackend"
+        )
+        assert OrganizationModelBackend.__module__ == "vinta_orgs.auth_backends"
+
+    def test_the_membership_model_it_resolves_against_is_ours(self):
+        from vinta_orgs.conf import get_organization_membership_model
+
+        assert get_organization_membership_model() is OrganizationMembership
 
 
 @pytest.mark.django_db
@@ -254,46 +301,6 @@ class TestTheOrganizationHalfIsConfinedToTheBoundOrganization:
 
 
 @pytest.mark.django_db
-class TestTheIsolationAssertionCanFail:
-    """Proof that the class above is not vacuous.
-
-    ``_get_membership`` is the one place the backend consults the bound
-    organization on the way to a membership's groups. Replacing it with a
-    version that ignores its ``organization`` argument -- the exact defect the
-    isolation tests exist to catch -- must turn those assertions red. If it does
-    not, they were passing for some other reason (an empty group, a missing
-    seed, a user with no membership at all) and prove nothing.
-    """
-
-    def test_a_backend_that_ignores_the_bound_organization_leaks_across_organizations(
-        self, monkeypatch
-    ):
-        def _membership_ignoring_the_organization(self, user_obj, organization):
-            return OrganizationMembership.objects.filter(user=user_obj).order_by("pk").first()
-
-        monkeypatch.setattr(
-            OrganizationModelBackend,
-            "_get_membership",
-            _membership_ignoring_the_organization,
-        )
-
-        user = baker.make(User, is_superuser=False, is_active=True)
-        organization_a = _organization("Alpha", "alpha-mutation")
-        organization_b = _organization("Beta", "beta-mutation")
-        _membership(user, organization_a, GROUP_ORGANIZATION_ADMIN, role=OrganizationRole.ADMIN)
-        _membership(user, organization_b, GROUP_ORGANIZATION_MEMBER)
-
-        with organization_context(organization_b):
-            leaked = _reloaded(user).get_all_permissions()
-
-        # The mutant grants A's four capabilities while B is bound. The
-        # unmutated backend resolves the empty set here -- which is precisely
-        # what ``TestTheOrganizationHalfIsConfinedToTheBoundOrganization``
-        # asserts, so that assertion discriminates.
-        assert leaked == set(ADMIN_PERMISSIONS)
-
-
-@pytest.mark.django_db
 class TestTheUnionWithGlobalPermissions:
     """Global permissions are organization-independent and must survive the union.
 
@@ -364,20 +371,24 @@ class TestTheUnionWithGlobalPermissions:
 
 
 @pytest.mark.django_db
-class TestTwoBehavioursPhase4MustHandleDeliberately:
-    """Not defects in this phase -- nothing reads any of this yet -- but both
-    differ from what ``role``-based checks do today, so a mechanical swap in
-    Phase 4 would change an authorization outcome. Pinned here so the change is
-    a decision rather than a surprise."""
+class TestADeactivatedMembershipResolvesNoPermissions:
+    """**Inverted for package ``0.3.0``.**
 
-    def test_an_inactive_membership_still_resolves_its_group_permissions(self):
-        """``OrganizationModelBackend._get_membership`` does not filter
-        ``is_active``. Today every role check goes through
-        ``get_active_organization_membership``, which does -- a deactivated
-        member is treated exactly like a non-member. Phase 4 must keep the
-        ``is_active`` gate somewhere (the resolver, or a membership whose groups
-        are cleared on deactivation); ``has_perm`` alone will not carry it.
-        """
+    Under ``0.2.0`` this asserted the opposite: ``OrganizationModelBackend
+    ._get_membership`` did not filter ``is_active``, so a deactivated
+    membership still resolved its group permissions, and the assertion below
+    was pinned as *observed* behaviour Phase 4 would have had to handle
+    deliberately (clear groups on deactivation, or gate the resolver) rather
+    than inherit by accident from a mechanical ``has_perm`` swap.
+
+    ``0.3.0`` closes the gap at the source: ``is_active`` now filters *inside*
+    ``_get_membership``, so a deactivated administrator resolves exactly what
+    a non-member resolves -- nothing. Phase 4 no longer has to carry this gate
+    itself; the flip below is the regression test for that fix, against *our*
+    concrete membership model.
+    """
+
+    def test_a_deactivated_admin_resolves_no_group_permissions(self):
         user = baker.make(User, is_superuser=False, is_active=True)
         organization = _organization("Alpha", "alpha-inactive")
         _membership(
@@ -391,8 +402,11 @@ class TestTwoBehavioursPhase4MustHandleDeliberately:
         with organization_context(organization):
             resolved = _reloaded(user).get_all_permissions()
 
-        assert set(ADMIN_PERMISSIONS) <= resolved
+        assert resolved.isdisjoint(ADMIN_PERMISSIONS)
 
+
+@pytest.mark.django_db
+class TestASuperuserResolvesEveryPermissionOnceAnOrganizationIsBound:
     def test_a_superuser_resolves_every_permission_once_an_organization_is_bound(self):
         """With an organization bound, the backend answers ``Permission.objects.all()``
         for a superuser even with no membership at all. ``PermissionsMixin.has_perm``
