@@ -9,6 +9,7 @@ from django.http import (
 
 from dependency_injector.wiring import Provide, inject
 
+from common.organization_context import organization_context
 from organizations.models import Organization
 from payments.billing_constants import Entitlement
 from payments.entitlement_cache import entitlement_request_cache, has_entitlement_cached
@@ -137,19 +138,38 @@ class PublicApiSystemUserMiddleware:
                     or self._get_organization_from_request(extended_request)
                 )
 
-            # Entitlement check: an organization without `partner_api` cannot use the
-            # GraphQL API at all, not just individual mutations. Scoped to requests that
-            # actually resolved an authenticated organization above (anonymous / public
-            # GraphQL queries -- e.g. brandingForTenant -- never reach here, since
-            # `public_api_organization` stays None for them), so this can never reject an
-            # unauthenticated request the normal `IsAuthenticated` permission class would
-            # otherwise handle. Bypasses GraphQL execution entirely and returns a real
-            # HTTP 402, rather than the graphql-core-swallowed 200 + `errors` shape a
-            # resolver-level rejection would produce.
-            if extended_request.public_api_organization is not None and not (
-                self._has_partner_api_entitlement(extended_request.public_api_organization)
-            ):
-                error = OverLimitError.from_missing_entitlement(Entitlement.PARTNER_API)
-                return JsonResponse(error.as_error_body(), status=402)
+            # Everything above this line reads only *unscoped* tables, which is
+            # what lets it run before the binding: `check_system_user_token`
+            # resolves the credential through `SystemUser.original_manager` (its
+            # id is globally unique and no organization is known yet), and
+            # `Organization` is the tenant root rather than tenant-scoped data.
+            # Everything below runs bound -- including the entitlement gate,
+            # which is a read on the caller's behalf and belongs inside its
+            # organization even though `payments` models are not themselves
+            # scoped.
+            #
+            # `organization_context` restores the previous binding rather than
+            # clearing it, and does so on the exception path too, so nothing
+            # survives into the next request this worker serves. `None` (an
+            # anonymous public query, or any non-GraphQL request passing through)
+            # is bound explicitly: it must not inherit an ambient organization,
+            # and under `STRICT_ORGANIZATION_FILTER` an unbound scoped read then
+            # raises rather than answering with someone else's rows.
+            with organization_context(extended_request.public_api_organization):
+                # Entitlement check: an organization without `partner_api` cannot use
+                # the GraphQL API at all, not just individual mutations. Scoped to
+                # requests that actually resolved an authenticated organization above
+                # (anonymous / public GraphQL queries -- e.g. brandingForTenant --
+                # never reach here, since `public_api_organization` stays None for
+                # them), so this can never reject an unauthenticated request the
+                # normal `IsAuthenticated` permission class would otherwise handle.
+                # Bypasses GraphQL execution entirely and returns a real HTTP 402,
+                # rather than the graphql-core-swallowed 200 + `errors` shape a
+                # resolver-level rejection would produce.
+                if extended_request.public_api_organization is not None and not (
+                    self._has_partner_api_entitlement(extended_request.public_api_organization)
+                ):
+                    error = OverLimitError.from_missing_entitlement(Entitlement.PARTNER_API)
+                    return JsonResponse(error.as_error_body(), status=402)
 
-            return self.get_response(extended_request)
+                return self.get_response(extended_request)
