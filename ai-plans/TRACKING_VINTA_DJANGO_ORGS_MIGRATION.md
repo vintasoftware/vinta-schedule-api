@@ -41,6 +41,27 @@ The Tier 1 `worktree_prep` delegate reported success but the worktree was not ru
 
 Verified after fixing: host surface and container surface both load Django and both resolve `NAME = vinta_schedule_api_wt_plan_vinta_django_orgs_migration`; `docker compose config` publishes no host ports; the main checkout's stack is still running and its working tree is untouched.
 
+## ⚠️ Correction 2026-08-13 — two "known flakes" were a real defect
+
+**Read this before trusting any flake claim below.** Across Phases 1, 2a, 2b, and 3 this file recorded `organizations/tests/test_slug_backfill.py::TestTheBackfillMigration` and `payments/tests/test_billing_period_summary_model.py::TestBillingPeriodSummaryMigration` as parallel-load timeout flakes. **They were not.** They were signalling a defect in Phase 3's `organizations/migrations/0029_backfill_membership_groups.py`, found when CI failed on the `phase-3` branch and fixed in `4dac0d2`.
+
+**The defect**: `0029`'s *reverse* called `_group_ids`, which raises `SeededGroupsMissingError` when the three seeded groups are absent. Correct forward — it is about to assign memberships to groups, and a missing group means `0028` did not do its job. Wrong in reverse, which *detaches* them: nothing to detach is a completed no-op. And it did not stay local — Django runs that reverse whenever anything downstream of `0028` is unapplied, and `payments.0022` is one of `0028`'s dependencies, so any test stepping `payments` backwards dragged it along. `_group_ids` now takes a keyword-only `required` flag; two tests in `organizations/tests/test_group_backfill_migration.py` pin both directions, and the no-op one fails against the previous form.
+
+**Why the misdiagnosis persisted, which is the more useful lesson**: each failure was re-run in isolation, passed, and was filed as load-induced. **Isolation was exactly the wrong diagnostic.** Both tests drive `MigrationExecutor` against the shared per-worker database, so their failure depends on what an *earlier* test did to that shared migration state — a condition that cannot exist in a single-test run. A test that passes alone and fails in a suite is evidence of *interference*, which may be load or may be shared state; only load was considered.
+
+**Status of the four names on the old list:**
+
+| Test | Verdict |
+|---|---|
+| `test_slug_backfill.py::TestTheBackfillMigration` | **Real defect, fixed.** Not a flake. |
+| `test_billing_period_summary_model.py::TestBillingPeriodSummaryMigration` | **Real defect, fixed.** Not a flake — and it predates this migration, so it was likely mislabelled before this work too. |
+| `test_event_creation_surfaces.py::test_every_module_reaching_the_guard_has_a_probe` | Genuine parallel-load timeout; observed once. |
+| `test_availability_limit_concurrency.py::test_without_the_lock_the_net_zero_race_overshoots` | Genuine parallel-load timeout; observed once. |
+
+**Still open** (not a defect, but the fragility that let one hide): both migration tests manipulate `MigrationExecutor` against the shared per-worker database with no isolation from each other. Phase 3 added a third participant and that is what surfaced this. Worth addressing independently of this migration — the next such defect will hide the same way.
+
+Every "known flake" mention below this point predates this correction. They are left in place as the historical record of what each phase believed at the time; this section supersedes them.
+
 ## Phases
 
 9 phases after the 2026-08-13 insertion of Phase 3.5 (8 after the 2026-08-12 amendment, 10 originally). No cross-repo phases. No flag-removal phase.
@@ -55,7 +76,7 @@ Verified after fixing: host surface and container surface both load Django and b
 | 2a | Flip `calendar_integration` onto the mixin and safe relations | 4 | reviewer 4 | ✅ done | `plan/vinta-django-orgs-migration/phase-2a` | phase-1 | see below |
 | 2b | Flip the remaining scoped models, bind on the request path | 3 | reviewer 4 | ✅ done | `plan/vinta-django-orgs-migration/phase-2b` | phase-2a | see below |
 | 3 | Groups, permissions, and the organization auth backend | 3 | — | ✅ done | `plan/vinta-django-orgs-migration/phase-3` | phase-2b | see below |
-| 3.5 | Make the authorization substrate correct before migrating onto it | 4 | reviewer 4 | ⏳ pending | — | phase-3 | — |
+| 3.5 | Make the authorization substrate correct before migrating onto it | 4 | reviewer 4 | ✅ done | `plan/vinta-django-orgs-migration/phase-3.5` | phase-3 | see below |
 | 4 | Migrate the permission classes to `has_perm` | 4 | reviewer 4 | ⏳ pending | — | phase-3.5 | — |
 | 5 | Expose permissions on REST and GraphQL, drop `role` | 3 | — | ⏳ pending | — | phase-4 | — |
 | 6 | Drop `role` / `is_billing_owner` and delete the old tenancy layer | 1 | — | ⏳ pending | — | phase-5 | — |
@@ -371,6 +392,31 @@ Other carry-forwards:
 **Gate (amendment, current)**: `ruff check` clean · `ruff format --check` 617 files formatted · `makemigrations --check` **No changes detected** · mypy **293** (exactly baseline) · `check --deploy` 5 issues, unchanged · scoped suite `organizations/tests/ payments/tests/ -n auto` **1787 passed**. A first `-n auto` run reported 2 failures (`test_admin_sets_slug_via_patch`, `test_migration_applies_and_reverses_cleanly`); both pass alone and the same run at `--timeout=120` is 1787/1787, so they are `pytest.ini`'s 10-second per-test budget under parallel load, not defects.
 
 **Amended 2026-08-14 — package-owned insert methods.** Removed the application's `OrganizationScopedManager.create()` and `bulk_create()` overrides because `vinta-django-orgs` `0.3.0` now owns their exact unscoped-insert behavior. Kept the application-specific related-manager, lookup, and `bulk_update()` carve-outs; corrected stale ownership comments in `common.managers`, the implicit-scoping tests, and `audit.repositories`. Concrete-model regressions pin inherited method identity, named creates, related-manager creates, and unbound bulk creates. Commits: `ad77bf7` (plan), `f5ede00` (implementation), `a02d8b9` (review fix). Full suite: **5692 passed**; mypy: **293 pre-existing errors, none in changed files**. Reviewer Tier 3: no remaining findings. Branch force-pushed from `dd4b327` to `a02d8b9`.
+### Phase 3.5 — Make the authorization substrate correct before migrating onto it
+
+- **Branch**: `plan/vinta-django-orgs-migration/phase-3.5` off `phase-3` (rebased onto it after the `0029` CI fix landed there)
+- **Commits**: `a965c01` (implement, Tier 4) · `22bb5c9` (review fixes)
+- **Review**: reviewer Tier 4 (plan override). **No BLOCKERs.** Five SHOULD-FIX and six NITs.
+
+**The implementer found a better seam than the phase specified.** The brief said to reorder inside `initial()`. Reimplementing `initial()` would have pushed content negotiation and versioning behind authentication, turning a 406 into a 401 for a bad-`Accept` anonymous request. Instead it overrides **`perform_authentication`** — the one seam between "`request.user` is real" and `check_permissions` — leaving every other step in its original relative order. The reviewer verified `perform_authentication` has exactly one definition and one caller across the whole venv (`rest_framework/views.py:322` and `:420`), that nothing in `strawberry_django` / `dj_rest_auth` / `allauth` / `drf_spectacular` touches it, and that `TenantScopedViewMixin` is first in the MRO of every base viewset and every hand-rolled user.
+
+**The `is_active` gate** is a repo-owned `OrganizationModelBackend` subclass overriding only `_get_membership`, calling `super()` and returning `None` for an inactive row rather than re-issuing the query — so there is one implementation of "which row is this", including the per-organization cache, and a future package change composes instead of silently diverging from a copy. The reviewer confirmed the package's cache is read from exactly one place, so no other path can serve the cached inactive row.
+
+**The review's central finding: the headline claim was true but unearned.** The implementer reported "no status-code expectation changed across 5679 tests." The reviewer established that this held **because nothing tested the cases that moved** — which is precisely this phase's stated failure mode, a widened grant that no test names. Three were unnamed:
+
+1. **The deny→admit direction**, the only direction that turns a previously-refused request into a served one: a plain member of their *oldest* organization who *administers* the one the header names was **403** and is now **200**. The existing fixture made the caller admin of the older organization, so the existing test named a case the old ordering also admitted.
+2. **`/public-api-tokens/`**, where deleting Phase 2b's local `initial()` override changed denial from a *conjunction* of the oldest-membership and resolved-membership checks to the resolved check alone — same admit-direction flip, and the existing test's fixture was admin of both organizations so it could not see it.
+3. **The 403→400 flip** for a non-admin multi-organization caller sending no header, on every mixin endpoint whose permission class is not `IsAuthenticated`. Consistent with the documented header contract, but covered nowhere.
+
+All three are now pinned, the first two mutation-tested against the pre-3.5 ordering using the mutant probe view already in the file. Also filled four missing cells in the resolution table, asserted the `AuthenticationFailed` branch the 401-precedes-400 claim rests on, and fixed the stale `initial()` references left by the move to `perform_authentication`.
+
+**The reviewer verified the three widening-capable shapes independently and found them clean**: `OrganizationManagementPermission`'s membership-inversion is reachable only by `retrieve` and `destroy`, both under strict resolution where the resolved membership is `None` iff the caller has zero active memberships — exactly when the old fallback was also `None` — and no production view sets `active_org_resolution_optional`. `ServiceAccountViewSet` stays header-blind but self-consistent (gate and body both use the off-mixin fallback), so no widening.
+
+Carry-forwards:
+
+- **`payments/views.py:338 BillingProfileViewSet` and `payments/billing_views.py:311` are *on* the mixin**, contrary to Phase 2b's non-mixin list. Correct that list if anything reads it.
+- **The phase body's "~15 call sites across four files" overcounts by two files** — `users/permissions.py` reads no membership at all, and `public_api/permissions.py` holds strawberry permissions on the system-user GraphQL path, which `PublicApiSystemUserMiddleware` binds rather than this mixin. Phase 4's sweep should use the corrected count.
+- **`organizations/views.py:484 ServiceAccountViewSet`** is a non-mixin view carrying `IsOrganizationAdmin`; header-blind, no widening, but no header contract either. Worth a later pass.
 
 #### Phase 3 amendment, 2026-08-15/16 — `vinta-django-orgs` `0.4.0`
 
@@ -404,7 +450,7 @@ All three questions blocking Phase 4 were put to the user and answered:
 
 ## Current phase
 
-Phase 3.5 — make the authorization substrate correct before migrating onto it. Based on `phase-3`.
+Phase 4 — migrate the permission classes to `has_perm`, based on `phase-3.5`. The substrate is now correct: permission checks see the resolved organization, and a deactivated membership resolves nothing. Use the corrected call-site count (two of the four files named in the plan body hold no membership reads), and the shared-test-helper fixture approach recorded under **Decisions taken 2026-08-13**.
 
 ## Deferred phases
 
