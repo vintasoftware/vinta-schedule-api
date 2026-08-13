@@ -77,7 +77,7 @@ Every "known flake" mention below this point predates this correction. They are 
 | 2b | Flip the remaining scoped models, bind on the request path | 3 | reviewer 4 | ✅ done | `plan/vinta-django-orgs-migration/phase-2b` | phase-2a | see below |
 | 3 | Groups, permissions, and the organization auth backend | 3 | — | ✅ done | `plan/vinta-django-orgs-migration/phase-3` | phase-2b | see below |
 | 3.5 | Make the authorization substrate correct before migrating onto it | 4 | reviewer 4 | ✅ done | `plan/vinta-django-orgs-migration/phase-3.5` | phase-3 | see below |
-| 4 | Migrate the permission classes to `has_perm` | 4 | reviewer 4 | ⏳ pending | — | phase-3.5 | — |
+| 4 | Migrate the permission classes to `has_perm` | 4 | reviewer 4 | ✅ done | `plan/vinta-django-orgs-migration/phase-4` | `chore/prune-package-tests` | see below |
 | 5 | Expose permissions on REST and GraphQL, drop `role` | 3 | — | ⏳ pending | — | phase-4 | — |
 | 6 | Drop `role` / `is_billing_owner` and delete the old tenancy layer | 1 | — | ⏳ pending | — | phase-5 | — |
 
@@ -480,6 +480,39 @@ _(Previous gate, amendment as first landed: same numbers, but the scoped suite e
 
 **Gate (amendment, current)**: `ruff check ./` clean · `ruff format --check ./` clean, 620 files · `makemigrations --check` **No changes detected** · mypy **293** (exactly baseline, measured in the container) · `check --deploy` **5 issues, unchanged** · `manage.py spectacular` — **no `schema.yml` diff** · full suite `pytest -n auto` at `pytest.ini`'s default 10-second per-test budget **5711 passed**, no failures and no timeouts.
 
+### Phase 4 — Migrate the permission classes to `has_perm`
+
+- **Branch**: `plan/vinta-django-orgs-migration/phase-4` off `chore/prune-package-tests` (which is off `phase-3.5`)
+- **Commits**: `f785226` (implement, Tier 4) · `2e038ed` (review fixes, fixer Tier 4)
+- **Review**: reviewer Tier 4 (plan override). **Two BLOCKERs**, both privilege escalations, both verified by the reviewer with probe tests before being reported. Five SHOULD-FIX, four NITs. All fixed.
+
+**Both BLOCKERs were the same defect**: the new `has_organization_permission` helper called `user.has_perm`, which unions the **global** permission set with the per-organization one. Two live escalation paths, neither possible under `role` / `is_billing_owner`:
+1. `user_permissions.add(manage_members)` on a plain member passed `IsOrganizationAdmin`.
+2. Phase 3 seeded `organization_admin` as a plain global `auth.Group`, and `users/admin.py` lists it in the user form's `filter_horizontal` group picker — so adding a user there granted all four capabilities in **every organization**.
+
+And `users/models.py::is_organization_admin` lost its membership requirement with it: the old body was structurally membership-bounded (`self.memberships.filter(...)`), the new one asked `has_perm`, whose global half and superuser short-circuit consult no membership. Every current caller happened to be guarded, so nothing leaked — but the next unguarded caller would have been a cross-tenant read.
+
+**The fix resolves the organization half alone, from an active membership in the organization named** (`organizations/auth_backends.py::get_membership_permissions`), excluding three sources that were all inert before: `user.user_permissions`, the user's global `auth.Group` rows, and the superuser branch in the package's `_get_organization_permissions`. Deliberately **not** an override of `_get_organization_permissions` — `has_perm`, the Django admin, and every other `ModelBackend` consumer keep the package's semantics; the narrowing is visible only to this helper.
+
+**The superuser deviation is withdrawn**, and that is parity rather than policy: `role == ADMIN` refused a superuser holding no admin membership, so admitting one was a widening. The original justification ("a superuser already reaches everything through the Django admin") also failed on `IsBillingOwnerOrAdmin`, which gates change-plan, add-on purchase/cancel, and subscription cancellation — all of which call **Stripe or MercadoPago**. The admin edits rows; it does not charge a card.
+
+**Exactly one existing test relied on the old behaviour**, and it was the pinned decision itself. ~3,500 tests across seven apps went green unchanged — evidence the global grants really were inert.
+
+**The new seam is load-bearing, not stylistic.** A bare `user.has_perm(...)` answers for the *bound* organization, and two families ask about a different one: the acting-reseller-root branch (an ancestor) and the ~dozen DRF views not on `TenantScopedViewMixin`, which bind nothing. `ServiceAccountViewSet` is one and carries `IsOrganizationAdmin` — under a bare `has_perm` it would have refused **every** caller.
+
+**The four group-scoped classes** (`CalendarGroupPermission`, `GroupScoped{AvailabilityWindow,BlockedTime,QuotaRule}Permission`) contain no role check to swap — all reach admin-ness through `User.is_organization_admin(<org id>)`. The reviewer independently traced every call site, including through `CalendarPermissionService` and the DI fallback, and confirmed each names the *membership's own* organization, guarded by a prior `membership is None` check plus either an `obj.organization_id != membership.organization_id` gate or a `filter_by_organization` fetch.
+
+**The fixture sweep was done by AST scan, not by test failure** — right, because the failure mode is a test that keeps *passing*. 200 sites across 58 files; three shapes a manual pass missed (`defaults={"role": ADMIN}` in `get_or_create`, post-hoc `.role =`, `queryset.update(role=ADMIN)`). It ships as `organizations/tests/test_privileged_membership_fixtures.py` so it re-derives every run. Review found four blind spots in the *guard* (module-wide rather than function-scoped `accounted`; bare `make(...)` imports; `*/factories.py` out of scope; the mutant test covering 4 shapes not 9) — all closed.
+
+**Gate**: ruff / format clean, mypy **293** exactly baseline, `makemigrations --check` clean, `check --deploy` byte-identical to baseline, `spectacular` diff limited to four corrected strings. Scoped suites 4,834 passed across seven groups, zero `AssertionError`, zero timeouts. **Full suite deliberately not run locally** — the machine is at load ~19 and local runs are ~4× slower than CI; gated on CI instead.
+
+Carry-forwards:
+
+- **`IsBillingOwnerOrAdmin`'s reseller-root branch is unreachable as a grant.** Every REST caller passes `resolve_billing_root(organization)` — an *ancestor-or-self* — to `check_object_permissions`, while `is_target_in_subtree(acting, target)` is true only for `target` == acting or a *descendant*. The intersection is `target == acting == membership.organization`, where branch 1 has already granted on an identical condition. The branch is a correct statement of the subtree rule, but no request can make it decisive, and its dedicated acceptance test protects logic no client reaches. **Phase 6 should decide whether to collapse it.** Not deleted.
+- **The Django user admin still offers the three seeded groups.** `users/admin.py:14-17,29` keeps `groups` in `filter_horizontal` and leaves `GroupAdmin` registered, so the user form still lists `organization_admin` as though it meant something. It now means **nothing** — which is its own trap for whoever clicks it. Worth a Phase 5/6 decision about hiding the seeded groups from the user-side picker.
+- **Four `membership.is_admin` readers survive outside the permission classes** — `booking_policy_permission_service.py` (system_user adapters only, after this phase), `calendar_integration/querysets.py:1204`, `external_event_change_request_service.py:503`, `public_api/scoping.py:50`. Phase 6's column drop breaks each. The member adapters no longer derive privilege at all: `is_privileged` is now a required keyword, so no call site can silently fall back.
+- **Branding views still gate on `IsOrganizationAdmin`** (`organizations.manage_members`), not `manage_branding`. Equivalent for every real membership since `organization_admin` carries both. A deliberate Phase 5 decision if the surfaces should diverge.
+
 ## Decisions taken 2026-08-13
 
 All three questions blocking Phase 4 were put to the user and answered:
@@ -490,7 +523,7 @@ All three questions blocking Phase 4 were put to the user and answered:
 
 ## Current phase
 
-Phase 4 — migrate the permission classes to `has_perm`, based on `phase-3.5`. The substrate is now correct: permission checks see the resolved organization, and a deactivated membership resolves nothing. Use the corrected call-site count (two of the four files named in the plan body hold no membership reads), and the shared-test-helper fixture approach recorded under **Decisions taken 2026-08-13**.
+Phase 5 — expose permissions on REST and GraphQL, drop `role` from the API. Based on `phase-4`. The substrate is now correct: permission checks see the resolved organization, and a deactivated membership resolves nothing. Use the corrected call-site count (two of the four files named in the plan body hold no membership reads), and the shared-test-helper fixture approach recorded under **Decisions taken 2026-08-13**.
 
 ## Deferred phases
 
