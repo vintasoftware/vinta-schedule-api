@@ -32,7 +32,7 @@ class TestWebhookMembershipSideEffectsService:
         """Create WebhookMembershipSideEffectsService with the webhook_service mocked."""
         return WebhookMembershipSideEffectsService(webhook_service=mock_webhook_service)
 
-    def test_on_member_created_enabled_membership_emits_event(
+    def test_on_member_created_active_membership_emits_event(
         self, service, mock_webhook_service, organization, user, django_capture_on_commit_callbacks
     ):
         """on_member_created emits ORGANIZATION_MEMBER_CREATED for an active membership."""

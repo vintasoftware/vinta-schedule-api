@@ -176,7 +176,7 @@ class TestUnscopedReadsWithAnUnrelatedOrganizationBound:
 
 @pytest.mark.django_db
 class TestDomainMethodsSurvivedTheManagerChange:
-    def test_occupying_a_seat_counts_only_enabled_memberships(self):
+    def test_occupying_a_seat_counts_only_active_memberships(self):
         organization = baker.make(Organization)
         active = OrganizationMembership.objects.create(
             user=baker.make(User), organization=organization, is_active=True

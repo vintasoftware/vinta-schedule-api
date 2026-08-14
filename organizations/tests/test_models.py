@@ -118,7 +118,7 @@ class TestInactiveMembershipGating:
         body = response.json()
         assert body["results"] == []
 
-    def test_enabled_membership_sees_calendars(self):
+    def test_active_membership_sees_calendars(self):
         """An active member can see their organization's calendars."""
         from calendar_integration.models import Calendar, CalendarOwnership
 

@@ -3816,7 +3816,7 @@ class TestOrganizationMineAction:
     # Happy paths
     # ------------------------------------------------------------------
 
-    def test_mine_returns_both_enabled_memberships_for_multi_org_user(self, user):
+    def test_mine_returns_both_active_memberships_for_multi_org_user(self, user):
         """Multi-org user without X-Organization-Id header gets 200 with all memberships."""
         org_a = baker.make(Organization, name="Alpha Corp")
         org_b = baker.make(Organization, name="Beta LLC")

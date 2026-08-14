@@ -214,7 +214,7 @@ class TestUsageCounters:
         zero usage forever — i.e. an unenforceable limit that looks enforced."""
         assert set(USAGE_COUNTERS) == {member.value for member in LimitedResource}
 
-    def test_counts_enabled_memberships_and_pending_invitations(
+    def test_counts_active_memberships_and_pending_invitations(
         self, service, organization, subscription
     ):
         baker.make(OrganizationMembership, organization=organization, is_active=True, _quantity=2)
