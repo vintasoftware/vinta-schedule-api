@@ -35,11 +35,11 @@ class ConsentService:
     not per-organization — see ``legal.models.UserConsent``). ``AuditService``,
     however, records business writes against a tenant-scoped ``Audit`` table
     that requires an ``organization_id``. To bridge this, consent grants are
-    audited against the user's *active* organization membership when one
-    exists (resolved by the package); when the
-    user has no organization yet (e.g. mid-signup, before tenant provisioning)
-    the audit emission is skipped — the ``UserConsent`` row itself already
-    carries the audit-grade proof fields (``accepted_at``, exact
+    audited against the user's active organization membership when exactly one
+    exists (resolved by the package); when the user has no organization yet
+    (e.g. mid-signup, before tenant provisioning) or has not selected one from
+    multiple memberships, the audit emission is skipped — the ``UserConsent``
+    row itself already carries the audit-grade proof fields (``accepted_at``, exact
     ``policy_document`` version, ``ip_address``, ``user_agent``, ``source``),
     so consent proof does not depend on the org-scoped audit trail.
     """
@@ -140,14 +140,14 @@ class ConsentService:
     def _audit_consent_created(self, consent: UserConsent) -> None:
         """Emit an AuditService CREATE record for a newly-created UserConsent.
 
-        No-op (with a log line) when the consenting user has no active
+        No-op (with a log line) when the consenting user has no unique active
         organization membership — see the class docstring for why that is
         safe: the ``UserConsent`` row is itself the audit-grade proof.
         """
-        membership = resolve_membership_for_user(consent.user)
+        membership = resolve_membership_for_user(consent.user, strict=False)
         if membership is None:
             logger.info(
-                "Skipping AuditService record for UserConsent %s: user %s has no "
+                "Skipping AuditService record for UserConsent %s: user %s has no unique "
                 "active organization membership.",
                 consent.id,
                 consent.user_id,

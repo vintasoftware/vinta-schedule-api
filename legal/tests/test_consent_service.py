@@ -5,7 +5,7 @@ Audit-emission tests mirror organizations/tests/test_audit.py: patch
 enqueue happens, then inspect the serialized payloads.
 """
 
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from model_bakery import baker
@@ -145,6 +145,31 @@ class TestRecordConsent:
                     source=ConsentSource.SIGNUP_FORM,
                 )
 
+        assert mock_task.delay.call_count == 0
+
+    def test_records_consent_without_audit_when_user_has_multiple_organizations(
+        self, django_capture_on_commit_callbacks
+    ) -> None:
+        """Global consent must not select an arbitrary organization for its optional audit."""
+        user: User = baker.make(User, is_active=True)
+        for _ in range(2):
+            OrganizationMembership.objects.create(
+                user=user,
+                organization=baker.make(Organization),
+                role=OrganizationRole.MEMBER,
+            )
+        PolicyDocumentFactory().create(document_type=PolicyDocumentType.SMS_CONSENT, version=1)
+        service = ConsentService(audit_service=Mock())
+
+        with patch("audit.services.persist_audit_record") as mock_task:
+            with django_capture_on_commit_callbacks(execute=True):
+                consent = service.record_consent(
+                    user,
+                    PolicyDocumentType.SMS_CONSENT,
+                    source=ConsentSource.SIGNUP_FORM,
+                )
+
+        assert UserConsent.objects.filter(pk=consent.pk).exists()
         assert mock_task.delay.call_count == 0
 
 
