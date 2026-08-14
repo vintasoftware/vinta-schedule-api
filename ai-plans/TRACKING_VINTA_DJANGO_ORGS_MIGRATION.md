@@ -64,9 +64,11 @@ Verified after fixing: host surface and container surface both load Django and b
 2. pytest-django orders *all* transactional tests after *all* non-transactional ones, so they run as one block per worker in which only the first sees a seeded database.
 3. Every `MigrationExecutor` test steps `organizations` backwards and restores with `executor.migrate(leaf_nodes())` in a `finally`, which re-runs `0029` **forward**. On a flushed database that forward correctly raises `SeededGroupsMissingError` — **inside the `finally`**. The restore never completes and the worker's database is left mid-graph with `OrganizationMembership.role` NOT NULL back, so every later test that writes a membership dies with an `IntegrityError` naming a column no live model has, in modules with no relationship to the one that broke it.
 
-So the two "unrelated" failing modules were one chain, and `SeededGroupsMissingError` was the forward guard working correctly on a database another test had emptied. **Fix**: `conftest.py`'s autouse `restore_seeded_permission_groups` re-establishes the seeded groups (and their permission links, from `organizations/permission_catalog.py`) at the start of every database test — the same shape as the existing `_reseed_default_billing_plan`, and the only reachable repair point, since the flush happens in pytest-django's finalizer, which runs *after* any conftest fixture's. Pinned by `organizations/tests/test_seeded_permission_group_invariant.py`. This protects all four `MigrationExecutor` participants without any of them opting in, which is the point: repairing it per-consumer is what let one root cause wear three symptoms.
+So the two "unrelated" failing modules were one chain, and `SeededGroupsMissingError` was the forward guard working correctly on a database another test had emptied. **Fix**: ~~`conftest.py`'s autouse `restore_seeded_permission_groups` re-establishes the seeded groups (and their permission links, from `organizations/permission_catalog.py`) at the start of every database test — the same shape as the existing `_reseed_default_billing_plan`, and the only reachable repair point, since the flush happens in pytest-django's finalizer, which runs *after* any conftest fixture's.~~ **Superseded 2026-08-14 by the `0.3.0` amendment (Phase 6, item 0) — the repair is the package's, not a repo-owned fixture.** `vinta_orgs.testing`'s autouse `seeded_organization_groups` does exactly what the struck text describes, is registered by `pytest_plugins = ["vinta_orgs.testing"]` in the root `conftest.py`, and is pointed at *our* catalog by `SHARED_SCHEMA_ORGANIZATIONS["ORGANIZATION_GROUP_SEEDERS"] = ["organizations.permission_catalog.seed_organization_groups"]`. **Nothing about the diagnosis, the mechanism, or the two load-bearing properties changes** — it is still reseed-at-setup (the flush runs inside pytest-django's own finalizer, later than any conftest fixture's teardown), and still reads head state (`GROUP_PERMISSIONS`) rather than `0028`'s frozen literals. What changed is ownership: a test-support hook a stock package install would need too belongs upstream, per the plan's **Package owns the authorization substrate** Guiding Decision. The repo-owned `_reseed_permission_groups` / `_test_uses_the_database` / `_DATABASE_FIXTURES` / `restore_seeded_permission_groups` block (124 lines) was deleted from `conftest.py`. Still pinned by `organizations/tests/test_seeded_permission_group_invariant.py`, which stays repo-owned because what it pins is *our* wiring — that the plugin is registered, that `ORGANIZATION_GROUP_SEEDERS` resolves to our seeder rather than the package's default `organization_owner`-only one, and that the catalog restored is Phase 3's three groups and four capabilities. This protects all four `MigrationExecutor` participants without any of them opting in, which is the point: repairing it per-consumer is what let one root cause wear three symptoms.
 
 **The blast radius was far wider than the four CI failures.** With the repair disabled, `organizations payments common/tests/test_fields.py` run serially gives **364 failures, not 4** — most of them permission-dependent view and webhook tests, because `user.has_perm(...)` resolves through exactly those groups. CI only ever showed four because with ten workers the transactional block at the tail of each worker is short. `--dist load` scheduling, not severity, is what decided which four surfaced.
+
+> **Re-measured 2026-08-14, after the rebase onto the amended stack.** The 364 figure did not reproduce, and the reason is worth recording because it is the same lesson as the misdiagnosis above: **the count is a function of ordering, not of severity.** Re-running the identical command with `vinta_orgs.testing` unregistered gave **2 failures**, both in `test_seeded_permission_group_invariant.py` — the first transactional test to flush landed near the tail of the block, so almost nothing ran after it. Selecting for the documented cascade instead (`test_seat_enforcement test_slug_backfill test_membership_group_migration_executor common/tests/test_fields test_views test_permissions test_billing_period_summary_model`, serial, plugin unregistered) reproduced it exactly: **5 failures**, including three `IntegrityError: null value in column "role"` in `common/tests/test_fields.py` — a module with no relationship to the one that emptied the database. The same command with the plugin registered: **253 passed, 0 failed.** So the mechanism, the cascade, and the cross-module symptom are all confirmed at head; only the headline number is unreproducible, and **no number should be trusted here without naming the selection and the ordering that produced it.** Treat 364 as "one observed ordering", not as the blast radius.
 
 Rejected alternatives: an xdist group for the migration tests (the interference is *within* a worker and sequential — grouping changes nothing, and CI runs the default `--dist load` anyway); a dedicated database for them (expensive, and leaves the other 360 failures latent); relaxing `0029`'s forward guard (it is correct — see above).
 
@@ -114,6 +116,14 @@ indistinguishable locally.
 
 #266 went green on `065d3c4`, the transactional-flush repair described under the
 correction above. Nothing else in the stack needed a re-run.
+
+**Superseded 2026-08-14.** Every SHA in this section predates the `0.3.0`
+rebase. `phase-6` was rebased onto the amended `phase-5`, so ~~`065d3c4`~~ and
+the five commits around it no longer exist under those hashes; the repair that
+made #266 green is now `vinta_orgs.testing`'s fixture rather than the
+repo-owned one that commit added. See the Phase 6 rebase note below for the new
+SHAs. The ✅ column is left as the historical record of what each PR passed at
+the time.
 
 ## Amendment — 2026-08-12: package `0.2.0`, app rename withdrawn
 
@@ -588,7 +598,50 @@ Carry-forwards:
 ### Phase 6 — Drop `role` / `is_billing_owner` and delete the old tenancy layer
 
 - **Branch**: `plan/vinta-django-orgs-migration/phase-6` off `phase-5`
-- **Commit**: `73639c4` (implement, Tier 1 — escalated in practice; see below)
+- **Commit**: ~~`73639c4`~~ **`11d7b6d`** (implement, Tier 1 — escalated in practice; see below)
+
+#### Rebase onto the amended stack — 2026-08-14
+
+Phase 6 was written against the pre-`0.3.0` versions of Phases 3, 3.5, 4 and 5.
+Those were rewritten in place by the 2026-08-13 amendment, so this branch was
+rebased `--onto phase-5`. **Every SHA recorded in this section is superseded**;
+the six commits are now `11d7b6d`, `a0ab1df`, `b8e5077`, `481be19`, `bc6ece7`,
+`47f72fb`, plus one new commit on top carrying the item-0 amendment. No commit
+was dropped and no message changed.
+
+Ten files conflicted on the first commit and two on the third. The resolution
+rule throughout: **the amended side is the truth, Phase 6 contributes its
+intent** — so `organizations/authorization.py` keeps the thin adapter over
+`vinta_orgs.authorization` and *gains* Phase 6's `membership_holds_permission` /
+`membership_role_label`; `organizations/querysets.py` keeps
+`active().holding_permission(...)` and drops only the now-false sentence about
+the dual-write keeping two representations in step;
+`organizations/permission_catalog.py` keeps Phase 3's `seed_organization_groups`
+(the `ORGANIZATION_GROUP_SEEDERS` target) *and* takes Phase 6's
+`canonical_groups` and `group_for_invitation_groups`;
+`common/tests/test_resolution_table_after_reorder.py` keeps the amended
+status-code/body pins and loses only the `OrganizationRole` import.
+
+**One deletion, and it earns it**:
+`organizations/tests/test_privileged_membership_fixtures.py`. Its entire scan is
+keyed on `PRIVILEGE_KWARGS = {"role", "is_billing_owner"}` — with the columns
+gone, `_privilege_kwargs` can never fire and the guard is vacuous, which is a
+worse state than absent. Nothing else was removed. (Consequence worth knowing:
+its two whole-tree AST scans, `test_no_test_builds_a_privileged_membership_without_its_groups`
+and `test_no_other_module_uses_the_opt_out`, were the two tests that regularly
+exceeded the 10s per-test timeout; they no longer run.)
+
+**Five sites the rebase exposed that neither side had covered**, because they
+were added by the amended phases *after* Phase 6's sweep ran: three
+`role=OrganizationRole.*` in `organizations/tests/test_branding_gate_parity.py`
+and two in `organizations/tests/test_org_resolution.py`. Converted the same way
+the sweep converted their neighbours (`groups=[GROUP_ORGANIZATION_ADMIN]`, or
+the helper's `organization_member` default).
+
+**Item 0 of the amended phase body**: the seeded-group repair now comes from
+`vinta_orgs.testing`, and the repo-owned `conftest.py` fixture `bc6ece7` added
+is deleted. See the strikethrough under the 2026-08-13 correction section, and
+the re-measurement of the blast radius alongside it.
 
 **"Mechanical deletion once the greps are clean" understated it by a lot.** The
 plan rated this Tier 1. Three things in it were not mechanical: two production
@@ -704,8 +757,15 @@ Also converted rather than removed: `common/tests/test_fields.py`'s
 `membership__is_active`, **not** `membership__groups__name` — that class is
 `transaction=True`, which truncates `auth_group` between tests and takes the three
 seeded groups with it, so a group-shaped assertion there matches nothing and
-passes vacuously in the deny direction. Worth knowing before writing any
-group-based assertion in a `transaction=True` class.
+passes vacuously in the deny direction. ~~Worth knowing before writing any
+group-based assertion in a `transaction=True` class.~~ **Narrowed 2026-08-14**:
+`vinta_orgs.testing`'s autouse fixture reseeds the three groups at the *start*
+of every database test, so a `transaction=True` class no longer inherits an
+empty `auth_group` from the test before it. The hazard that remains is
+within-test — a group-shaped assertion made *after* something in the same test
+flushes still matches nothing — which is exactly the shape
+`test_seeded_permission_group_invariant.py` exercises deliberately. The
+conversion above stands on its own merits and was not reverted.
 
 **Gate**: ruff / format clean, `makemigrations --check` clean, `check --deploy`
 byte-identical to baseline (5 pre-existing warnings), mypy **291** (exactly the
