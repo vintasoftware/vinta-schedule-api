@@ -28,13 +28,37 @@ otherwise a user who administers organization A silently administers B.
   deliberately; ``0.3.0`` fixes it upstream, so the assertion is now that it
   resolves nothing.
 
-The isolation, union and caching classes below were **not** pruned: they pin
-that *our* concrete membership model and *our* catalog resolve correctly
-through that wiring, which a stock package install says nothing about. The one
-thing the ``0.3.0`` commit did delete was a mutation control that reached into
-the package's ``_get_membership``; it is restored below
+The isolation and caching classes below were **not** pruned: they pin that
+*our* concrete membership model and *our* catalog resolve correctly through
+that wiring, which a stock package install says nothing about. The one thing
+the ``0.3.0`` commit did delete was a mutation control that reached into the
+package's ``_get_membership``; it is restored below
 (``TestTheIsolationAssertionCanFail``), because the non-vacuity proof is worth
 more than the tests it proves.
+
+**``TestTheUnionWithGlobalPermissions`` was pruned** (test-hygiene chore,
+``0.3.0``). It asserted that a global grant (``user.user_permissions`` /
+``user.groups``) survives alongside an organization grant in
+``OrganizationModelBackend.get_all_permissions()`` / ``has_perm()``. Read
+against ``vinta_orgs.auth_backends.OrganizationModelBackend`` itself, that
+union is ``_get_permissions`` unconditionally OR-ing
+``_get_global_permissions`` with ``_get_organization_permissions`` --
+unconditional, with no repo hook into it, so a stock package install with a
+stock concrete membership model exercises exactly the same union. Ownership
+aside, it also pins behaviour our own authorization path is built to *not*
+use: the **Package owns the authorization substrate** decision has Phase 4
+read organization permissions through
+``vinta_orgs.authorization.has_organization_permission(user, permission,
+organization)``, whose ``include_global`` parameter defaults to ``False``
+precisely because the two escalation paths a global grant enables (a direct
+``user_permissions`` grant, and membership of the seeded
+``organization_admin`` group through the Django user-admin picker) must be
+refused by default, not granted. Keeping a test that proves the union
+"works" would pin, as a virtue, exactly the behaviour Phase 4 goes out of its
+way to avoid reading. ``has_perm`` itself is untouched -- it still unions,
+same as stock ``ModelBackend`` -- nothing here removes that; what is removed
+is a test asserting it as *our* invariant when it is neither ours nor one we
+rely on.
 
 **Nothing in the application reads any of this yet.** Every permission class
 still checks ``role`` / ``is_billing_owner``; Phase 4 is what migrates them.
@@ -282,7 +306,20 @@ class TestAnAdminMembershipUnderItsOwnOrganization:
 @pytest.mark.django_db
 class TestTheOrganizationHalfIsConfinedToTheBoundOrganization:
     """The isolation guarantee. See ``TestTheIsolationAssertionCanFail`` below --
-    these assertions are mutation-tested, not merely written."""
+    these assertions are mutation-tested, not merely written.
+
+    **Kept** (test-hygiene chore, ``0.3.0``). The *mechanism* is entirely the
+    package's -- ``_get_membership`` filters on the organization argument, and
+    a stock install proves the same thing about a stock model. What is not the
+    package's is the reason this guarantee is being re-proved at all: this is
+    the migration's central claim (an admin of A must never resolve anything
+    under B), against *our* concrete membership model, *our* catalog, and *our*
+    groups, the same standard that kept
+    ``calendar_integration/tests/test_safe_relation_joins.py``. Isolation is
+    the one property this repo cannot afford to assume transfers unmodified
+    just because the mechanism moved upstream -- it is asserted here, on our
+    fixtures, rather than inferred from the package's own suite running
+    against its own dummy models."""
 
     def test_an_admin_of_a_resolves_nothing_under_b(self):
         user = baker.make(User, is_superuser=False, is_active=True)
@@ -360,6 +397,17 @@ class TestTheIsolationAssertionCanFail:
     it exercises is whether *our* assertions discriminate, which is a fact about
     this module and not about the package. Keeping the isolation tests while
     dropping the proof that they can fail is the worst of the two options.
+
+    **Re-affirmed** (test-hygiene chore). The prune standard here is "would
+    this still pass against a stock package install" -- the monkeypatch below
+    would too, on a stock model, which argues for deletion by the letter of
+    the rule. But that rule exists to catch tests that assert nothing beyond
+    what the package already guarantees; this one asserts something *about
+    the isolation tests in this file*, i.e. that they are not vacuous. Its
+    subject is our test suite's own discriminating power, not the package's
+    behaviour, so the standard does not reach it. Deleting it a second time
+    without addressing that would repeat the exact mistake the first restore
+    corrected.
     """
 
     def test_a_backend_that_ignores_the_bound_organization_leaks_across_organizations(
@@ -388,76 +436,6 @@ class TestTheIsolationAssertionCanFail:
         # what ``TestTheOrganizationHalfIsConfinedToTheBoundOrganization``
         # asserts, so that assertion discriminates.
         assert leaked == set(ADMIN_PERMISSIONS)
-
-
-@pytest.mark.django_db
-class TestTheUnionWithGlobalPermissions:
-    """Global permissions are organization-independent and must survive the union.
-
-    ``OrganizationModelBackend`` shares its global-permission cache attribute
-    names with the stock ``ModelBackend`` (both are in ``AUTHENTICATION_BACKENDS``
-    and both write ``_perm_cache`` / ``_user_perm_cache`` / ``_group_perm_cache``).
-    The two fill them with the same content, but "same content" is a claim worth
-    a test rather than a comment.
-    """
-
-    @staticmethod
-    def _a_global_permission() -> Permission:
-        return Permission.objects.get(
-            content_type__app_label="organizations", codename="add_organizationinvitation"
-        )
-
-    def test_a_direct_global_grant_resolves_with_nothing_bound(self):
-        user = baker.make(User, is_superuser=False, is_active=True)
-        user.user_permissions.add(self._a_global_permission())
-
-        assert _reloaded(user).has_perm("organizations.add_organizationinvitation")
-
-    def test_a_direct_global_grant_resolves_under_every_binding(self):
-        user = baker.make(User, is_superuser=False, is_active=True)
-        organization_a = _organization("Alpha", "alpha-global")
-        organization_b = _organization("Beta", "beta-global")
-        user.user_permissions.add(self._a_global_permission())
-        _membership(user, organization_a, GROUP_ORGANIZATION_ADMIN, role=OrganizationRole.ADMIN)
-
-        reloaded = _reloaded(user)
-        with organization_context(organization_a):
-            assert reloaded.has_perm("organizations.add_organizationinvitation")
-        with organization_context(organization_b):
-            assert reloaded.has_perm("organizations.add_organizationinvitation")
-
-    def test_the_two_halves_are_unioned_not_replaced(self):
-        user = baker.make(User, is_superuser=False, is_active=True)
-        organization = _organization("Alpha", "alpha-union")
-        user.user_permissions.add(self._a_global_permission())
-        _membership(user, organization, GROUP_ORGANIZATION_ADMIN, role=OrganizationRole.ADMIN)
-
-        with organization_context(organization):
-            resolved = _reloaded(user).get_all_permissions()
-
-        assert resolved == {*ADMIN_PERMISSIONS, "organizations.add_organizationinvitation"}
-
-    def test_a_global_django_group_resolves_too(self):
-        """The other global source: ``user.groups``, which is a different M2M
-        from ``membership.groups`` and must not be confused with it."""
-        user = baker.make(User, is_superuser=False, is_active=True)
-        global_group = Group.objects.create(name="global_invite_senders")
-        global_group.permissions.add(self._a_global_permission())
-        user.groups.add(global_group)
-
-        assert _reloaded(user).has_perm("organizations.add_organizationinvitation")
-
-    def test_a_membership_group_is_not_a_global_group(self):
-        """The inverse, and the reason the union is safe: putting a *membership*
-        in ``organization_admin`` must not put the *user* in it globally."""
-        user = baker.make(User, is_superuser=False, is_active=True)
-        organization = _organization("Alpha", "alpha-not-global")
-        _membership(user, organization, GROUP_ORGANIZATION_ADMIN, role=OrganizationRole.ADMIN)
-
-        reloaded = _reloaded(user)
-
-        assert reloaded.groups.count() == 0
-        assert not reloaded.has_perm(MANAGE_MEMBERS)
 
 
 @pytest.mark.django_db
