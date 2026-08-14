@@ -370,6 +370,8 @@ Other carry-forwards:
 
 **Gate (amendment, current)**: `ruff check` clean · `ruff format --check` 617 files formatted · `makemigrations --check` **No changes detected** · mypy **293** (exactly baseline) · `check --deploy` 5 issues, unchanged · scoped suite `organizations/tests/ payments/tests/ -n auto` **1787 passed**. A first `-n auto` run reported 2 failures (`test_admin_sets_slug_via_patch`, `test_migration_applies_and_reverses_cleanly`); both pass alone and the same run at `--timeout=120` is 1787/1787, so they are `pytest.ini`'s 10-second per-test budget under parallel load, not defects.
 
+**Amended 2026-08-14 — package-owned insert methods.** Removed the application's `OrganizationScopedManager.create()` and `bulk_create()` overrides because `vinta-django-orgs` `0.3.0` now owns their exact unscoped-insert behavior. Kept the application-specific related-manager, lookup, and `bulk_update()` carve-outs; corrected stale ownership comments in `common.managers`, the implicit-scoping tests, and `audit.repositories`. Concrete-model regressions pin inherited method identity, named creates, related-manager creates, and unbound bulk creates. Commits: `ad77bf7` (plan), `f5ede00` (implementation), `a02d8b9` (review fix). Full suite: **5692 passed**; mypy: **293 pre-existing errors, none in changed files**. Reviewer Tier 3: no remaining findings. Branch force-pushed from `dd4b327` to `a02d8b9`.
+
 ## Decisions taken 2026-08-13
 
 All three questions blocking Phase 4 were put to the user and answered:
