@@ -483,7 +483,7 @@ _(Previous gate, amendment as first landed: same numbers, but the scoped suite e
 ### Phase 4 — Migrate the permission classes to `has_perm`
 
 - **Branch**: `plan/vinta-django-orgs-migration/phase-4` off `chore/prune-package-tests` (which is off `phase-3.5`)
-- **Commits**: `f785226` (implement, Tier 4) · `2e038ed` (review fixes, fixer Tier 4) · rewire onto `vinta_orgs.authorization` (`0.3.0` amendment; SHAs below). The first two are pre-rebase and no longer resolve on this branch.
+- **Commits**: `f785226` (implement, Tier 4) · `2e038ed` (review fixes, fixer Tier 4) · `50aab2c` (rewire onto `vinta_orgs.authorization`, `0.3.0` amendment). The first two are pre-rebase and no longer resolve on this branch.
 - **Review**: reviewer Tier 4 (plan override). **Two BLOCKERs**, both privilege escalations, both verified by the reviewer with probe tests before being reported. Five SHOULD-FIX, four NITs. All fixed.
 
 **Both BLOCKERs were the same defect**: the new `has_organization_permission` helper called `user.has_perm`, which unions the **global** permission set with the per-organization one. Two live escalation paths, neither possible under `role` / `is_billing_owner`:
