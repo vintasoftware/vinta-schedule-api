@@ -1,27 +1,22 @@
-"""The one authorization case ``has_perm`` alone gets wrong, so it gets its own module.
+"""Low-level regression coverage for the reseller-root billing policy branch.
 
-``IsBillingOwnerOrAdmin`` has two branches. The first asks whether the caller
-may manage billing **in the organization the object belongs to**. The second --
-the acting-reseller-root branch -- asks whether they may manage billing in an
-*ancestor* of it that pays for the descendant's capacity.
+``IsBillingOwnerOrAdmin`` has a direct organization check and an acting-
+reseller-root subtree branch. The latter names the membership organization
+explicitly rather than asking the backend from ambient context.
 
-``vinta_orgs.auth_backends.OrganizationModelBackend`` resolves permissions for
-the organization bound to the current context and for no other. So a bare
-``user.has_perm("payments.manage_billing")`` inside that second branch would ask
-about the bound organization -- the descendant -- and answer ``False`` for a
-caller whose grant is held one level up. The branch would silently stop
-granting: a *narrowing*, which at least fails loudly for the operator it locks
-out, but a regression all the same, and one no other test in the suite would
-catch (see ``payments/tests/views/test_occurrence_ledger_view.py``'s
-``test_root_admin_sees_a_pooled_descendants_rows``, whose own docstring records
-that pooling, not this branch, is what grants it access).
+``vinta_orgs.auth_backends.OrganizationModelBackend`` resolves a bare
+``user.has_perm("payments.manage_billing")`` only for the organization bound to
+the current context. The package header resolver currently always binds that
+same organization as the resolved membership, so no endpoint request can make
+the subtree branch decisive. The tests preserve the branch's direct, low-level
+policy behavior without asserting a request path that does not exist.
 
-Phase 4 of the vinta-django-orgs migration therefore keeps the branch
-hand-written (the plan's "Four rules stay hand-written" Guiding Decision) and
-names the ancestor explicitly through
-``organizations.authorization.has_organization_permission``. The tests below pin
-that: the same call, under the same binding, answers differently depending on
-whether the organization is named.
+Phase 4 keeps this branch hand-written (the plan's "Four rules stay
+hand-written" Guiding Decision) and names the organization explicitly through
+``organizations.authorization.has_organization_permission``. The package header
+resolver cannot currently produce the cross-binding request shape that would
+make this branch decisive, so these are direct, low-level policy tests rather
+than endpoint claims.
 """
 
 from django.contrib.auth import get_user_model
@@ -79,51 +74,23 @@ def _request(user):
     return request
 
 
-def _acting_from(user, organization):
-    """Resolve the caller's membership to ``organization``, as the request path does."""
-    return OrganizationMembership.objects.filter(
-        user=user, organization=organization, is_active=True
-    ).first()
-
-
 @pytest.mark.django_db
 class TestActingResellerRoot:
     permission = IsBillingOwnerOrAdmin()
 
     def test_an_admin_of_the_root_may_manage_a_descendants_billing(self, reseller_root, descendant):
-        """The headline case, in the shape the phase brief names: the bound
-        organization is the **descendant** while the caller's resolved
-        membership -- and their grant -- is in the parent."""
+        """The low-level branch admits a permitted reseller-root membership
+        against a descendant target."""
         user = baker.make(User)
         make_membership(user=user, organization=reseller_root, role=OrganizationRole.ADMIN)
-        _acting_from(user, reseller_root)
 
         with organization_context(descendant):
             assert self.permission.has_object_permission(_request(user), None, descendant) is True
 
     def test_the_binding_a_request_actually_produces(self, reseller_root, descendant):
-        """Bound = the caller's own organization, target = a descendant.
-
-        Every other case in this class binds the **descendant** while the
-        caller's only membership is in the root. Since Phase 3.5 that state
-        cannot arise on the request path: ``X-Organization-Id`` naming an
-        organization the caller does not belong to is a 403, and the request
-        carries the membership resolved from the same header -- so
-        ``membership.organization`` *is* the bound organization, always. Those
-        cases exercise the slow path (rebind, one query); this one exercises the
-        fast path (``has_organization_permission`` sees the organization it is
-        asked about already bound, and neither rebinds nor queries), which is
-        the one every real request takes. Same answer, different route to it.
-
-        (Whether any REST caller passes a *descendant* as ``obj`` at all is a
-        separate question -- every one of them passes
-        ``resolve_billing_root(acting)``, which is an ancestor-or-self. The
-        branch is kept because it states a rule about the subtree that outlives
-        the current call sites.)
-        """
+        """The same low-level policy is true when the root is bound directly."""
         user = baker.make(User)
         make_membership(user=user, organization=reseller_root, role=OrganizationRole.ADMIN)
-        _acting_from(user, reseller_root)
 
         with organization_context(reseller_root):
             assert self.permission.has_object_permission(_request(user), None, descendant) is True
@@ -132,23 +99,13 @@ class TestActingResellerRoot:
             # everyone whose bound organization happened to be a reseller root.
             plain = baker.make(User)
             make_membership(user=plain, organization=reseller_root, role=OrganizationRole.MEMBER)
-            _acting_from(plain, reseller_root)
 
             assert self.permission.has_object_permission(_request(plain), None, descendant) is False
 
     def test_a_bare_has_perm_under_that_binding_would_have_said_no(self, reseller_root, descendant):
-        """Why the branch cannot be a plain ``user.has_perm(...)``.
-
-        Same user, same binding, same instant: asked without naming an
-        organization the answer is ``False``, because the backend resolves
-        against the bound descendant where this caller holds nothing. This is
-        the assertion that makes the previous test's ``True`` mean something
-        rather than merely being true.
-        """
+        """The low-level branch must name the reseller-root organization."""
         user = baker.make(User)
         make_membership(user=user, organization=reseller_root, role=OrganizationRole.ADMIN)
-        _acting_from(user, reseller_root)
-
         with organization_context(descendant):
             assert user.has_perm(MANAGE_BILLING) is False
             assert self.permission.has_object_permission(_request(user), None, descendant) is True
@@ -165,16 +122,12 @@ class TestActingResellerRoot:
             role=OrganizationRole.MEMBER,
             is_billing_owner=True,
         )
-        _acting_from(user, reseller_root)
-
         with organization_context(descendant):
             assert self.permission.has_object_permission(_request(user), None, descendant) is True
 
     def test_the_reach_extends_down_the_whole_subtree(self, reseller_root, descendant, grandchild):
         user = baker.make(User)
         make_membership(user=user, organization=reseller_root, role=OrganizationRole.ADMIN)
-        _acting_from(user, reseller_root)
-
         with organization_context(grandchild):
             assert self.permission.has_object_permission(_request(user), None, grandchild) is True
 
@@ -183,8 +136,6 @@ class TestActingResellerRoot:
         row that catches it having been dropped rather than swapped."""
         user = baker.make(User)
         make_membership(user=user, organization=reseller_root, role=OrganizationRole.MEMBER)
-        _acting_from(user, reseller_root)
-
         with organization_context(descendant):
             assert self.permission.has_object_permission(_request(user), None, descendant) is False
 
@@ -205,8 +156,6 @@ class TestActingResellerRoot:
         admin gets no reach outside it."""
         user = baker.make(User)
         make_membership(user=user, organization=plain_root, role=OrganizationRole.ADMIN)
-        _acting_from(user, plain_root)
-
         with organization_context(descendant):
             assert self.permission.has_object_permission(_request(user), None, descendant) is False
 
@@ -216,8 +165,6 @@ class TestActingResellerRoot:
         and stays so."""
         user = baker.make(User)
         make_membership(user=user, organization=descendant, role=OrganizationRole.ADMIN)
-        _acting_from(user, descendant)
-
         with organization_context(descendant):
             assert (
                 self.permission.has_object_permission(_request(user), None, reseller_root) is False
@@ -230,22 +177,14 @@ class TestActingResellerRoot:
         )
         user = baker.make(User)
         make_membership(user=user, organization=other_root, role=OrganizationRole.ADMIN)
-        _acting_from(user, other_root)
-
         with organization_context(descendant):
             assert self.permission.has_object_permission(_request(user), None, descendant) is False
 
     def test_the_coarse_gate_also_asks_about_the_membership_organization(
         self, reseller_root, descendant
     ):
-        """``has_permission`` runs before any object is known, so it can only ask
-        about the caller's own organization. Under a descendant binding that is
-        still the parent -- pinned because a bare ``has_perm`` here would refuse
-        the request before ``has_object_permission`` ever ran, and the object
-        branch's correctness would then be unobservable."""
+        """The coarse gate checks the membership's explicitly named organization."""
         user = baker.make(User)
         make_membership(user=user, organization=reseller_root, role=OrganizationRole.ADMIN)
-        _acting_from(user, reseller_root)
-
         with organization_context(descendant):
             assert self.permission.has_permission(_request(user), None) is True

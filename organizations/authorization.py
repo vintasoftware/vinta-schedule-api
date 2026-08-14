@@ -30,15 +30,15 @@ context* and for no other, and that is what ``has_perm`` reaches. Every call sit
 this replaces named its organization explicitly -- ``membership.is_admin`` is a
 statement about ``membership.organization``, and
 ``User.is_organization_admin(organization)`` takes the organization as an
-argument. Two of those call sites ask about an organization that is **not** the
-bound one, and a bare ``has_perm`` would answer the wrong question in both:
+argument. The reseller-root branch retains an explicit organization check for
+its low-level subtree policy:
 
 * ``IsBillingOwnerOrAdmin``'s acting-reseller-root branch asks about an
   *ancestor* of the bound organization (the whole point of the branch).
-* Roughly a dozen DRF views are not built on ``TenantScopedViewMixin`` and so
-  bind nothing at all (``AGENTS.md``, Multi-Tenancy). ``ServiceAccountViewSet``
-  is one of them and carries ``IsOrganizationAdmin``; under a bare ``has_perm``
-  it would resolve no organization permissions and refuse *every* caller.
+  The package header resolver cannot currently produce a request whose resolved
+  membership belongs to a different organization from the binding, so this
+  branch is not currently decisive on an endpoint. Keeping the named check
+  preserves the policy without claiming that request shape exists.
 
 *The source of the grant.* ``has_perm`` answers from the **union** of the
 organization half with a global half (``user.user_permissions`` plus the user's

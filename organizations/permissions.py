@@ -434,19 +434,16 @@ class IsBillingOwnerOrAdmin(BasePermission):
 
       1. The caller's active membership is in ``obj`` itself and carries
          ``payments.manage_billing``.
-      2. An **acting reseller root**: the caller's active membership carries
-         ``payments.manage_billing`` in some *other* organization that both (a)
-         can invite/create organizations (``can_invite_organizations``) and (b)
-         has ``obj`` within its subtree — the same subtree relationship
-         ``resolve_billing_root`` pools usage against, so a root that pays for a
-         descendant's capacity may also manage its billing, even when the
-         caller's ``X-Organization-Id``-scoped membership is to the descendant
-         itself (e.g. a support/account-manager membership with no elevated role
-         there). Reuses ``public_api.capabilities.is_target_in_subtree`` — the
-         boolean form of the same subtree-membership walk the reseller bundle's
-         GraphQL mutations use (via ``assert_target_in_subtree``) — rather than
-         re-deriving it a second time or coupling this REST layer to a GraphQL
-         error type.
+      2. An **acting reseller root**: a low-level policy branch for a caller's
+         active membership that carries ``payments.manage_billing``, can
+         invite/create organizations (``can_invite_organizations``), and has
+         ``obj`` within its subtree. It reuses
+         ``public_api.capabilities.is_target_in_subtree`` — the boolean form of
+         the reseller bundle's subtree-membership walk — rather than
+         re-deriving it or coupling this REST layer to a GraphQL error type.
+         The package header resolver currently cannot produce the cross-binding
+         request shape that would make this branch decisive, so it preserves the
+         policy for direct callers without describing current endpoint behavior.
 
     Phase 4 of the vinta-django-orgs migration replaced
     ``membership.is_admin or membership.is_billing_owner`` with
@@ -513,15 +510,11 @@ class IsBillingOwnerOrAdmin(BasePermission):
     ) -> bool:
         """The hand-written half of this class -- see the class docstring.
 
-        The organization that differs from the bound one here is
-        ``target_organization``, not ``membership.organization``: since Phase
-        3.5 the active membership is resolved from ``X-Organization-Id``, so
-        ``membership.organization`` **is** the bound organization and this check
-        takes ``has_organization_permission``'s no-rebinding, no-query fast
-        path. It is named explicitly all the same, because that is the question
-        this branch asks -- "may the caller manage billing *where they act*,
-        which is an ancestor of the object" -- and because nothing about that
-        question depends on the two coinciding.
+        The package header resolver resolves the membership from the selected
+        organization, so this branch is currently not decisive for a request
+        that crosses bindings. It remains an explicit low-level subtree-policy
+        check for direct callers; naming ``membership.organization`` keeps that
+        policy independent of the ambient context.
         """
         if not has_organization_permission(user, MANAGE_BILLING, membership.organization):
             return False

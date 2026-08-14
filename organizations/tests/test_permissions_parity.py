@@ -280,8 +280,6 @@ class TestOrganizationManagementPermission:
     def test_a_deactivated_admin_counts_as_membership_less(
         self, factory, deactivated_admin, organization
     ):
-        acting_in(deactivated_admin, organization)
-
         request = request_for(factory, deactivated_admin)
 
         assert self.permission.has_permission(request, _View("list")) is True
@@ -323,14 +321,9 @@ class TestOrganizationInvitationPermission:
     )
     def test_membership_presence_decides(self, request, factory, organization, caller, expected):
         user = request.getfixturevalue(caller)
-        if caller != "stranger":
-            acting_in(user, organization)
-
         assert self.permission.has_permission(request_for(factory, user), _View()) is expected
 
     def test_a_deactivated_admin_is_refused(self, factory, deactivated_admin, organization):
-        acting_in(deactivated_admin, organization)
-
         assert (
             self.permission.has_permission(request_for(factory, deactivated_admin), _View())
             is False
@@ -371,16 +364,12 @@ class TestIsOrganizationAdminParity:
     )
     def test_collection_level(self, request, factory, organization, caller, expected):
         user = request.getfixturevalue(caller)
-        if caller != "stranger":
-            acting_in(user, organization)
-
         assert self.permission.has_permission(request_for(factory, user), _View("list")) is expected
 
     def test_an_admin_of_another_organization_is_refused_here(
         self, factory, foreign_admin, organization, other_organization
     ):
         """The row a bare ``has_perm`` under an ambient binding gets wrong."""
-        acting_in(foreign_admin, other_organization)
         request = request_for(factory, foreign_admin)
 
         assert (
@@ -471,9 +460,6 @@ class TestIsBillingOwnerOrAdminParity:
     )
     def test_collection_level(self, request, factory, organization, caller, expected):
         user = request.getfixturevalue(caller)
-        if caller != "stranger":
-            acting_in(user, organization)
-
         assert self.permission.has_permission(request_for(factory, user), _View()) is expected
 
     @pytest.mark.parametrize(
@@ -484,8 +470,6 @@ class TestIsBillingOwnerOrAdminParity:
         self, request, factory, organization, caller, expected
     ):
         user = request.getfixturevalue(caller)
-        acting_in(user, organization)
-
         assert (
             self.permission.has_object_permission(request_for(factory, user), _View(), organization)
             is expected
@@ -496,8 +480,6 @@ class TestIsBillingOwnerOrAdminParity:
     ):
         """``other_organization`` is not a reseller root and ``organization`` is
         not in its subtree, so neither branch admits."""
-        acting_in(foreign_admin, other_organization)
-
         assert (
             self.permission.has_object_permission(
                 request_for(factory, foreign_admin), _View(), organization
@@ -511,8 +493,6 @@ class TestIsBillingOwnerOrAdminParity:
         class _CarriesOrganization:
             def __init__(self, org):
                 self.organization = org
-
-        acting_in(admin, organization)
 
         assert (
             self.permission.has_object_permission(
@@ -587,7 +567,6 @@ class TestBookingPolicyPermissionParity:
     def test_a_deactivated_admin_may_not_create(
         self, factory, booking_policy_permission, deactivated_admin, organization
     ):
-        acting_in(deactivated_admin, organization)
         request = request_for(factory, deactivated_admin, method="post", data={})
 
         assert booking_policy_permission.has_permission(request, _View("create")) is False
@@ -613,7 +592,6 @@ class TestBookingPolicyPermissionParity:
         is pinned here is which of the two representations decides.
         """
         group = CalendarGroup.objects.create(organization=organization, name="Pool 2")
-        acting_in(ungrouped_admin, organization)
         request = request_for(
             factory, ungrouped_admin, method="post", data={"calendar_group": group.id}
         )
@@ -637,8 +615,6 @@ class TestBookingPolicyPermissionParity:
         membership = OrganizationMembership.objects.get(user=member, organization=organization)
         membership.groups.add(Group.objects.get(name=GROUP_ORGANIZATION_ADMIN))
         group = CalendarGroup.objects.create(organization=organization, name="Pool 3")
-        acting_in(member, organization)
-
         assert (
             booking_policy_permission.has_permission(
                 request_for(factory, member, method="post", data={"calendar_group": group.id}),
@@ -681,14 +657,9 @@ class TestExternalEventChangeRequestPermissionParity:
     )
     def test_membership_presence_decides(self, request, factory, organization, caller, expected):
         user = request.getfixturevalue(caller)
-        if caller != "stranger":
-            acting_in(user, organization)
-
         assert self.permission.has_permission(request_for(factory, user), _View()) is expected
 
     def test_a_deactivated_admin_is_refused(self, factory, deactivated_admin, organization):
-        acting_in(deactivated_admin, organization)
-
         assert (
             self.permission.has_permission(request_for(factory, deactivated_admin), _View())
             is False
@@ -813,8 +784,6 @@ class TestCalendarGroupPermissionParity:
         self, request, factory, calendar_group_permission, organization, caller, expected
     ):
         user = request.getfixturevalue(caller)
-        acting_in(user, organization)
-
         assert (
             calendar_group_permission.has_permission(
                 request_for(factory, user, method="post"), _View("create")
@@ -963,7 +932,6 @@ class TestGroupScopedRouteGatesParity:
         self, permission_class, factory, deactivated_admin, organization, group_fixture
     ):
         group, slot, _calendar = group_fixture
-        acting_in(deactivated_admin, organization)
         request = request_for(factory, deactivated_admin)
 
         assert (
@@ -1060,8 +1028,6 @@ class TestOnlyAMembershipGrants:
         self, factory, member, organization
     ):
         member.user_permissions.add(Permission.objects.get(codename="manage_members"))
-        acting_in(member, organization)
-
         assert (
             self.admin_permission.has_permission(request_for(factory, member), _View("list"))
             is False
@@ -1075,8 +1041,6 @@ class TestOnlyAMembershipGrants:
         *user* to it must grant nothing anywhere -- including in organizations
         they have never been a member of."""
         member.groups.add(Group.objects.get(name=GROUP_ORGANIZATION_ADMIN))
-        acting_in(member, organization)
-
         assert (
             self.admin_permission.has_permission(request_for(factory, member), _View("list"))
             is False
@@ -1089,8 +1053,6 @@ class TestOnlyAMembershipGrants:
     ):
         """Same shape on the surface that spends money."""
         member.user_permissions.add(Permission.objects.get(codename="manage_billing"))
-        acting_in(member, organization)
-
         assert (
             self.billing_permission.has_permission(request_for(factory, member), _View()) is False
         )
@@ -1106,8 +1068,6 @@ class TestOnlyAMembershipGrants:
     ):
         superuser = baker.make(User, is_superuser=True, is_active=True)
         make_membership(user=superuser, organization=organization, role=OrganizationRole.MEMBER)
-        acting_in(superuser, organization)
-
         assert (
             self.admin_permission.has_permission(request_for(factory, superuser), _View("list"))
             is False
@@ -1129,8 +1089,6 @@ class TestOnlyAMembershipGrants:
         anybody else."""
         superuser = baker.make(User, is_superuser=True, is_active=True)
         make_membership(user=superuser, organization=organization, role=OrganizationRole.ADMIN)
-        acting_in(superuser, organization)
-
         assert (
             self.admin_permission.has_permission(request_for(factory, superuser), _View("list"))
             is True
