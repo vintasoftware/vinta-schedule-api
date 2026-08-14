@@ -279,41 +279,84 @@ class TestPackageOwnedMembershipResolution:
             resolve_membership_for_user(two_org_user)
 
 
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+STATIC_GUARD_PRUNED_DIRS = frozenset({".git", ".venv", "migrations", "node_modules"})
+STATIC_GUARD_SENTINELS = frozenset(
+    {
+        "organizations/models.py",
+        "common/utils/view_utils.py",
+        "organizations/tests/test_org_resolution.py",
+    }
+)
+
+
 def test_application_has_no_legacy_membership_resolver_or_user_stash() -> None:
     """Keep membership resolution on the package request/direct-call seams."""
-    repository_root = Path(__file__).resolve().parents[2]
     removed_resolver = "get_active_" + "organization_membership"
     removed_user_attribute = "_" + "active_membership"
+    scanned_paths: set[str] = set()
     violations: list[str] = []
 
-    for directory, directory_names, file_names in os.walk(repository_root):
+    for directory, directory_names, file_names in os.walk(REPOSITORY_ROOT):
         directory_names[:] = [
-            name
-            for name in directory_names
-            if name not in {".git", ".venv", "migrations", "node_modules"}
+            name for name in directory_names if name not in STATIC_GUARD_PRUNED_DIRS
         ]
         for file_name in file_names:
             if not file_name.endswith(".py"):
                 continue
             path = Path(directory, file_name)
+            relative_path = str(path.relative_to(REPOSITORY_ROOT))
+            scanned_paths.add(relative_path)
             tree = ast.parse(path.read_text(), filename=str(path))
             for node in ast.walk(tree):
+                if (
+                    isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+                    and node.name == removed_resolver
+                ):
+                    violations.append(f"{relative_path}:{node.lineno}: definition")
                 if isinstance(node, ast.ImportFrom) and any(
                     alias.name == removed_resolver for alias in node.names
                 ):
-                    violations.append(f"{path.relative_to(repository_root)}:{node.lineno}: import")
-                if isinstance(node, ast.Call) and (
-                    (isinstance(node.func, ast.Name) and node.func.id == removed_resolver)
-                    or (isinstance(node.func, ast.Attribute) and node.func.attr == removed_resolver)
-                ):
-                    violations.append(f"{path.relative_to(repository_root)}:{node.lineno}: call")
-                if (
-                    isinstance(node, ast.Attribute)
-                    and isinstance(node.ctx, ast.Store)
-                    and node.attr == removed_user_attribute
-                ):
-                    violations.append(f"{path.relative_to(repository_root)}:{node.lineno}: write")
+                    violations.append(f"{relative_path}:{node.lineno}: import")
+                if isinstance(node, ast.Call):
+                    if isinstance(node.func, ast.Name | ast.Attribute) and (
+                        (isinstance(node.func, ast.Name) and node.func.id == removed_resolver)
+                        or (
+                            isinstance(node.func, ast.Attribute)
+                            and node.func.attr == removed_resolver
+                        )
+                    ):
+                        violations.append(f"{relative_path}:{node.lineno}: call")
+                    if (
+                        isinstance(node.func, ast.Name | ast.Attribute)
+                        and (
+                            (
+                                isinstance(node.func, ast.Name)
+                                and node.func.id in {"getattr", "setattr", "delattr"}
+                            )
+                            or (
+                                isinstance(node.func, ast.Attribute)
+                                and node.func.attr in {"getattr", "setattr", "delattr"}
+                            )
+                        )
+                        and len(node.args) >= 2
+                        and isinstance(node.args[1], ast.Constant)
+                        and node.args[1].value in {removed_resolver, removed_user_attribute}
+                    ):
+                        violations.append(
+                            f"{relative_path}:{node.lineno}: dynamic attribute access"
+                        )
+                if isinstance(node, ast.Attribute) and node.attr in {
+                    removed_resolver,
+                    removed_user_attribute,
+                }:
+                    violations.append(f"{relative_path}:{node.lineno}: attribute access")
 
+    missing_sentinels = sorted(STATIC_GUARD_SENTINELS - scanned_paths)
+    assert not missing_sentinels, (
+        "The legacy-membership static guard did not reach known production and test modules; "
+        f"scanned {len(scanned_paths)} files, missing {missing_sentinels}."
+    )
     assert violations == []
 
 
