@@ -64,6 +64,7 @@ from django.http import Http404
 import pytest
 from model_bakery import baker
 from rest_framework.test import APIRequestFactory
+from vinta_orgs import authorization as vinta_orgs_authorization
 
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.models import (
@@ -89,13 +90,19 @@ from calendar_integration.services.booking_policy_permission_service import (
 )
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from common.organization_context import organization_context
+from organizations import authorization
+from organizations.authorization import has_organization_permission
 from organizations.models import (
     Organization,
     OrganizationInvitation,
     OrganizationMembership,
     OrganizationRole,
 )
-from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
+from organizations.permission_catalog import (
+    GROUP_ORGANIZATION_ADMIN,
+    MANAGE_BILLING,
+    MANAGE_MEMBERS,
+)
 from organizations.permissions import (
     IsBillingOwnerOrAdmin,
     IsOrganizationAdmin,
@@ -1002,10 +1009,16 @@ class TestOnlyAMembershipGrants:
     every backend. None of the three is a statement about the organization
     named, and none of them satisfied ``membership.role == ADMIN``. So
     ``organizations.authorization.has_organization_permission`` asks the
-    membership half alone
-    (``OrganizationModelBackend.get_membership_permissions``), and this class is
-    what keeps it doing so: put ``user.has_perm(permission)`` back in that helper
+    membership half alone -- ``vinta_orgs.authorization
+    .has_organization_permission`` with ``include_global`` and
+    ``allow_superuser`` both off -- and this class is what keeps it doing so: put
+    ``user.has_perm(permission)`` back in that helper, or flip either flag on,
     and every row below turns green-to-red.
+
+    This class asserts the escalations through the **permission classes**, which
+    is where they would be exploited. ``TestTheEscalationFlagsStayOff`` below
+    asserts the same three against the helper directly, and additionally proves
+    each flag is load-bearing by flipping it on.
 
     Each row is a live escalation path, not a hypothetical:
 
@@ -1113,12 +1126,128 @@ class TestOnlyAMembershipGrants:
         .has_object_permission`` and ``CalendarPermissionService`` both do it.
         Every current caller happens to guard it first; the method must be
         membership-bounded on its own regardless, because that is what its
-        docstring promises and what ``role == ADMIN`` structurally was."""
+        docstring promises and what ``role == ADMIN`` structurally was.
+
+        Both non-membership shapes are covered: the global group (which
+        ``has_perm`` would union in) and ``is_superuser`` (which
+        ``PermissionsMixin`` would short-circuit ahead of any backend). Both
+        answer ``True`` under a bare ``has_perm`` for an organization the caller
+        has never belonged to, and both must answer ``False`` here."""
         admin.groups.add(Group.objects.get(name=GROUP_ORGANIZATION_ADMIN))
 
         assert admin.is_organization_admin(organization) is True
         assert admin.is_organization_admin(other_organization) is False
         assert admin.is_organization_admin(other_organization.id) is False
+
+        # A superuser who is a member of nothing at all -- the widest shape.
+        superuser = baker.make(User, is_superuser=True, is_active=True)
+
+        assert superuser.is_organization_admin(organization) is False
+        assert superuser.is_organization_admin(organization.id) is False
+
+
+# ---------------------------------------------------------------------------
+# The two escalation flags: off, passed explicitly, and load-bearing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestTheEscalationFlagsStayOff:
+    """``include_global=False`` and ``allow_superuser=False``, asserted not assumed.
+
+    Package ``0.3.0`` owns the rule this repository asks
+    (``vinta_orgs.authorization.has_organization_permission``) and defaults both
+    widening parameters off. **A default is not a guarantee** -- it is a
+    dependency's decision, revisable in a release we do not control, and the two
+    things it would admit are precisely the escalations this phase's review found:
+    a permission granted once in the Django user admin, and one click in that same
+    form's ``groups`` picker, each becoming all four capabilities in *every*
+    organization in the database.
+
+    So ``organizations/authorization.py`` passes both explicitly, and this class
+    pins three separate things, none of which the others imply:
+
+    1. the adapter **passes** them rather than inheriting them -- so an upstream
+       change of default is inert in production, and deleting the kwargs to "rely
+       on the defaults" is red here;
+    2. with them off, each of the three escalation shapes is refused;
+    3. with each one on, the *same* fixture is admitted. That is what makes (2)
+       non-vacuous: without it every assertion in (2) would also hold against a
+       package function that refused everybody, and against a fixture that never
+       carried the grant in the first place.
+
+    The last method is the control in the other direction: both flags off must
+    still admit an ordinary admin.
+    """
+
+    def test_the_adapter_passes_both_flags_rather_than_inheriting_them(
+        self, monkeypatch, member, organization
+    ):
+        recorded: dict[str, object] = {}
+
+        def spy(user, permission, organization, **kwargs):
+            recorded.update(kwargs)
+            return False
+
+        monkeypatch.setattr(vinta_orgs_authorization, "has_organization_permission", spy)
+
+        has_organization_permission(member, MANAGE_MEMBERS, organization)
+
+        assert recorded == {"include_global": False, "allow_superuser": False}
+
+    def test_include_global_is_what_refuses_a_django_admin_granted_permission(
+        self, member, organization
+    ):
+        member.user_permissions.add(Permission.objects.get(codename="manage_members"))
+
+        assert has_organization_permission(member, MANAGE_MEMBERS, organization) is False
+        # The same call with the flag on: the grant is real, and the flag is the
+        # only thing standing between it and every organization.
+        assert (
+            vinta_orgs_authorization.has_organization_permission(
+                member, MANAGE_MEMBERS, organization, include_global=True
+            )
+            is True
+        )
+
+    def test_include_global_is_what_refuses_the_seeded_global_admin_group(
+        self, member, organization, other_organization
+    ):
+        member.groups.add(Group.objects.get(name=GROUP_ORGANIZATION_ADMIN))
+
+        assert has_organization_permission(member, MANAGE_MEMBERS, organization) is False
+        assert has_organization_permission(member, MANAGE_BILLING, organization) is False
+        # Not even in an organization they have never belonged to.
+        assert has_organization_permission(member, MANAGE_MEMBERS, other_organization) is False
+        assert (
+            vinta_orgs_authorization.has_organization_permission(
+                member, MANAGE_MEMBERS, organization, include_global=True
+            )
+            is True
+        )
+
+    def test_allow_superuser_is_what_refuses_a_superuser_holding_no_admin_membership(
+        self, organization
+    ):
+        superuser = baker.make(User, is_superuser=True, is_active=True)
+        make_membership(user=superuser, organization=organization, role=OrganizationRole.MEMBER)
+
+        assert has_organization_permission(superuser, MANAGE_MEMBERS, organization) is False
+        assert has_organization_permission(superuser, MANAGE_BILLING, organization) is False
+        assert (
+            vinta_orgs_authorization.has_organization_permission(
+                superuser, MANAGE_BILLING, organization, allow_superuser=True
+            )
+            is True
+        )
+
+    def test_both_flags_off_still_admits_an_ordinary_admin(self, admin, organization):
+        """The control, in the other direction. Without it every row above is
+        satisfied by an adapter that answers ``False`` unconditionally."""
+        assert has_organization_permission(admin, MANAGE_MEMBERS, organization) is True
+        assert has_organization_permission(admin, MANAGE_BILLING, organization) is True
+        assert authorization.INCLUDE_GLOBAL_PERMISSIONS is False
+        assert authorization.ALLOW_SUPERUSER is False
 
 
 # ---------------------------------------------------------------------------
@@ -1139,9 +1268,13 @@ class TestTheBackendsIsActiveGate:
     is the shape most of ``calendar_integration`` reaches admin-ness through
     (``CalendarPermissionService``, ``calendar_integration/views.py``,
     ``CalendarGroupPermission``'s DI fallback). It names an organization and
-    resolves no membership of its own, so ``has_perm`` is the whole decision --
-    and ``has_perm`` does not carry an ``is_active`` filter. What supplies it is
-    ``organizations.auth_backends.OrganizationModelBackend`` (Phase 3.5).
+    resolves no membership of its own, so the permission lookup is the whole
+    decision -- and ``has_perm`` does not carry an ``is_active`` filter. What
+    supplies it is ``vinta_orgs.auth_backends.OrganizationModelBackend
+    ._get_membership``, which filters ``is_active=True`` as part of the lookup
+    rather than on its result, so the per-organization cache never holds a row
+    nothing may use (package ``0.3.0``; see the plan's **Package owns the
+    authorization substrate** Guiding Decision).
 
     Before Phase 4, ``is_organization_admin`` filtered ``is_active=True`` in its
     own query. This class is what keeps that outcome after the filter moved into

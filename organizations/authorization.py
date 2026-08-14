@@ -6,17 +6,32 @@ Guiding Decisions
 (``ai-plans/2026-08-12-VINTA_DJANGO_ORGS_MIGRATION_IMPLEMENTATION_PLAN.md``).
 The codenames themselves live in ``organizations.permission_catalog``.
 
-**Why a helper rather than a bare ``user.has_perm(...)`` at each call site.**
-Two independent reasons, and each on its own is sufficient.
+**The rule itself is the package's.** ``vinta_orgs.authorization
+.has_organization_permission`` resolves a permission from an *active* membership
+in the organization *named* -- it binds that organization for the duration of the
+lookup, restores the previous binding afterwards, accepts an ``Organization`` or a
+bare pk, and answers ``False`` for an anonymous caller, an inactive user, an
+organization that does not exist and a caller with no active membership in it.
+This repository consumed that rather than keeping the equivalent hand-written
+helper it had, per the plan's **Package owns the authorization substrate**
+Guiding Decision.
+
+**What this module is for**, then, is the two keyword arguments below. They are
+this project's policy, not the package's, and they are spelled out at the one
+call the whole repository goes through so that the policy is a *declaration in
+our code* rather than an inherited default.
+
+*Why not a bare ``user.has_perm(...)`` at each call site.* Two independent
+reasons, and each on its own is sufficient.
 
 *The organization.* ``vinta_orgs.auth_backends.OrganizationModelBackend``
 resolves a membership's permissions for *the organization bound to the current
-context* and for no other. Every call site this replaces named its organization
-explicitly -- ``membership.is_admin`` is a statement about
-``membership.organization``, and ``User.is_organization_admin(organization)``
-takes the organization as an argument. Two of those call sites ask about an
-organization that is **not** the bound one, and a bare ``has_perm`` would answer
-the wrong question in both:
+context* and for no other, and that is what ``has_perm`` reaches. Every call site
+this replaces named its organization explicitly -- ``membership.is_admin`` is a
+statement about ``membership.organization``, and
+``User.is_organization_admin(organization)`` takes the organization as an
+argument. Two of those call sites ask about an organization that is **not** the
+bound one, and a bare ``has_perm`` would answer the wrong question in both:
 
 * ``IsBillingOwnerOrAdmin``'s acting-reseller-root branch asks about an
   *ancestor* of the bound organization (the whole point of the branch).
@@ -29,53 +44,48 @@ the wrong question in both:
 organization half with a global half (``user.user_permissions`` plus the user's
 own ``auth.Group`` rows) and, before any backend runs at all, from
 ``PermissionsMixin``'s superuser short-circuit. Neither of those is a statement
-about the organization named, and neither could grant anything under the
-``role`` / ``is_billing_owner`` columns this phase replaces: a global
+about the organization named, and neither could grant anything under the ``role``
+/ ``is_billing_owner`` columns this phase replaces: a global
 ``organizations.manage_members`` was inert, membership of the seeded
 ``organization_admin`` group (a plain global ``auth.Group``, listed by the user
 form's group picker in ``users/admin.py``) was inert, and a superuser without an
-admin membership did **not** satisfy ``role == ADMIN``. So this helper asks
-``organizations.auth_backends.OrganizationModelBackend.get_membership_permissions``
--- the organization half alone, resolved from an active membership in the named
-organization -- rather than ``user.has_perm``. Identical outcomes is this
-phase's contract, and admitting any of those three would break it.
+admin membership did **not** satisfy ``role == ADMIN``. Identical outcomes is
+this phase's contract, and admitting any of those three would break it -- which
+is why ``INCLUDE_GLOBAL_PERMISSIONS`` and ``ALLOW_SUPERUSER`` below are ``False``
+and are *passed*, not assumed.
 
-The helper binds the named organization for the duration of the check and
-restores the previous binding afterwards. The resolution itself takes the
-organization as an argument and so does not depend on the binding; the binding
-is kept because everything *underneath* it (the membership manager, and any
-future package change to how a membership is looked up) is written against the
-ambient organization. The backend caches per organization pk, so a check against
-a second organization neither reads nor poisons the first one's cached set.
+``has_perm`` itself is untouched: the Django admin and every other
+``ModelBackend`` consumer keep stock semantics. The narrowing is visible only to
+callers of this function.
 
 **One deliberate difference from the role columns this replaces**, named here
 because "identical outcomes" is this migration phase's contract:
 
-* **An inactive *user* passes nothing.** The backend gates on
-  ``user.is_active``; the role checks gated only on ``membership.is_active``.
-  This narrows rather than widens, and is unreachable from the request path
-  (authentication refuses an inactive user first).
+* **An inactive *user* passes nothing.** The package gates on ``user.is_active``;
+  the role checks gated only on ``membership.is_active``. This narrows rather
+  than widens, and is unreachable from the request path (authentication refuses
+  an inactive user first).
 
 A second one was claimed here and is **withdrawn**: "a superuser passes every
-check", justified as granting nothing new because a superuser already reads
-every tenant through the Django admin. It was never true of the code being
-replaced -- ``membership.role == ADMIN`` refused a superuser who held no admin
-membership -- and the "already reaches everything" argument does not survive the
-billing endpoints, where passing ``IsBillingOwnerOrAdmin`` changes a tenant's
-plan, buys an add-on, or cancels a subscription **at Stripe / MercadoPago**. The
-Django admin exposes no such button. A superuser is now answered from their
-memberships like anybody else; pinned by
-``organizations/tests/test_permissions_parity.py``.
+check", justified as granting nothing new because a superuser already reads every
+tenant through the Django admin. It was never true of the code being replaced --
+``membership.role == ADMIN`` refused a superuser who held no admin membership --
+and the "already reaches everything" argument does not survive the billing
+endpoints, where passing ``IsBillingOwnerOrAdmin`` changes a tenant's plan, buys
+an add-on, or cancels a subscription **at Stripe / MercadoPago**. The Django
+admin exposes no such button. A superuser is now answered from their memberships
+like anybody else; pinned by ``organizations/tests/test_permissions_parity.py``.
 
-The *membership*'s ``is_active`` gate is not lost either: the backend resolves
-nothing for a deactivated membership (Phase 3.5). Do not re-add it here.
+The *membership*'s ``is_active`` gate is not lost either: ``0.3.0`` filters it
+inside ``OrganizationModelBackend._get_membership``, so the per-organization
+cache never holds a row nothing is allowed to use. Do not re-add it here.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
-from common.organization_context import get_current_organization, organization_context
+from vinta_orgs import authorization as vinta_orgs_authorization
 
 
 if TYPE_CHECKING:
@@ -83,41 +93,24 @@ if TYPE_CHECKING:
     from users.models import User
 
 
-def _organization_by_pk(organization_pk: int | str) -> Organization | None:
-    """Load the organization to bind when the caller only had its pk.
+#: Whether a grant made outside any organization counts here. **No.**
+#:
+#: ``user.user_permissions`` and the user's own global ``auth.Group`` rows are
+#: not scoped to an organization, so one row added once in the Django user admin
+#: -- or one click in that form's ``groups`` picker, which lists the seeded
+#: ``organization_admin`` group -- would become all four capabilities in *every*
+#: organization in the database. Both were inert under the ``role`` column this
+#: phase replaces, so admitting either is a widening rather than a migration.
+INCLUDE_GLOBAL_PERMISSIONS = False
 
-    Imported lazily: ``users.models`` imports this module, and
-    ``organizations.models`` imports ``users`` indirectly through the swappable
-    membership model.
-
-    ``Organization`` is the tenant root, not tenant-scoped data, so its manager
-    is a plain one and this needs no binding of its own.
-    """
-    from organizations.models import Organization
-
-    return Organization.objects.filter(pk=organization_pk).first()
-
-
-def _holds_through_a_membership(user: User, permission: str, organization: Organization) -> bool:
-    """``permission``, from an active membership in ``organization`` and nowhere else.
-
-    See ``organizations.auth_backends.OrganizationModelBackend
-    .get_membership_permissions`` for what is deliberately *not* consulted (the
-    global permission half, and the superuser short-circuit) and why.
-
-    A fresh backend instance per call is free: the class holds no state, and
-    every cache it fills lives on the ``user`` object, so a second call shares
-    the first one's cached sets. Instantiated directly rather than picked out of
-    ``get_backends()`` because this asks *our* backend a question the
-    ``AUTHENTICATION_BACKENDS`` protocol does not define -- there is no other
-    entry that could answer it.
-
-    Imported lazily for the same reason ``_organization_by_pk`` is: this module
-    is imported from ``users.models``.
-    """
-    from organizations.auth_backends import OrganizationModelBackend
-
-    return permission in OrganizationModelBackend().get_membership_permissions(user, organization)
+#: Whether ``is_superuser`` short-circuits the membership lookup. **No.**
+#:
+#: ``role == ADMIN`` refused a superuser who held no admin membership, so this is
+#: parity, not policy. "They already reach everything through the Django admin"
+#: is not an argument on ``IsBillingOwnerOrAdmin``: passing it changes a plan,
+#: buys an add-on or cancels a subscription at Stripe / MercadoPago, and the
+#: admin exposes no such button.
+ALLOW_SUPERUSER = False
 
 
 def has_organization_permission(
@@ -130,48 +123,25 @@ def has_organization_permission(
 
     ``permission`` is an ``"app_label.codename"`` string from
     ``organizations.permission_catalog``. ``organization`` may be an
-    ``Organization`` or its pk -- the pk form costs one extra query, and only
-    when the organization asked about is not the one already bound.
+    ``Organization``, a ``LazyObject`` standing in for one, or a bare pk -- the pk
+    form costs one extra query, and only when the organization asked about is not
+    the one already bound.
 
     Returns ``False`` for an anonymous caller, for an organization that does not
     exist, and for a caller with no active membership in it -- so a caller can
     pass a resolved-or-``None`` value straight in.
+
+    Restated here in terms of *our* ``Organization`` and ``User`` (the package
+    annotates against its own swappable models and a structural user protocol),
+    the same way ``common.organization_context`` restates ``vinta_orgs.state``.
+    The two module-level constants are passed rather than left to default: what
+    they exclude is the subject of this phase's parity matrix, and a policy that
+    important should not be inherited silently from a dependency's defaults.
     """
-    if user is None or not getattr(user, "is_authenticated", False):
-        return False
-    if organization is None:
-        return False
-
-    # ``hasattr(..., "pk")`` rather than an ``isinstance`` on ``int``: callers
-    # pass an ``Organization``, a ``LazyObject`` standing in for one (which
-    # proxies ``pk``), or a bare pk -- and a pk is not always an ``int``
-    # (``User.is_organization_admin``'s published signature is "instance or id").
-    target: Organization | None
-    if hasattr(organization, "pk"):
-        target = cast("Organization", organization)
-        organization_pk: int | str | None = target.pk
-    else:
-        target = None
-        organization_pk = cast("int | str", organization)
-    if organization_pk is None:
-        return False
-
-    current = get_current_organization()
-    # ``getattr`` rather than ``current.pk``: the bound value may be a
-    # ``SimpleLazyObject`` that resolves to ``None`` (the slug-form binding),
-    # which has no ``pk``. Unreachable from here today; cheaper than relying on
-    # that staying true.
-    if current is not None and str(getattr(current, "pk", None)) == str(organization_pk):
-        # The overwhelmingly common case on the request path:
-        # ``TenantScopedViewMixin`` has already bound the resolved organization
-        # and the permission class is asking about that same one. No rebinding,
-        # no query.
-        return _holds_through_a_membership(user, permission, current)
-
-    if target is None:
-        target = _organization_by_pk(organization_pk)
-    if target is None:
-        return False
-
-    with organization_context(target):
-        return _holds_through_a_membership(user, permission, target)
+    return vinta_orgs_authorization.has_organization_permission(
+        user,
+        permission,
+        organization,
+        include_global=INCLUDE_GLOBAL_PERMISSIONS,
+        allow_superuser=ALLOW_SUPERUSER,
+    )

@@ -55,11 +55,17 @@ class User(AbstractBaseUser, PermissionsMixin, BaseModel):
         permission is resolved from an active membership in `organization`
         alone, so neither a global `user_permissions` grant, nor membership of
         the global `organization_admin` group, nor `is_superuser` answers
-        `True` here for an organization this user does not belong to. See
+        `True` here for an organization this user does not belong to. A bare
+        `user.has_perm("organizations.manage_members")` would answer `True` for
+        all three, and this method is asked about organizations the caller may
+        have no relationship to at all -- so the difference is a cross-tenant
+        read, not a nuance. See
         `organizations.authorization.has_organization_permission`, which owns
-        that rule, and `organizations.auth_backends.OrganizationModelBackend`,
+        that rule (and holds `include_global` / `allow_superuser` off), and
+        `vinta_orgs.auth_backends.OrganizationModelBackend._get_membership`,
         which enforces the membership's own `is_active` gate one layer further
-        down.
+        down. Pinned by
+        `organizations/tests/test_permissions_parity.py::TestOnlyAMembershipGrants`.
 
         Imported inside the method to avoid a circular import at module load.
         """
