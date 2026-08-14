@@ -76,6 +76,33 @@ CONSTRUCTOR_METHODS = frozenset(
 
 PRIVILEGE_KWARGS = frozenset({"role", "is_billing_owner"})
 
+#: Stable files proving that every inclusion route in ``_test_modules`` still works.
+SCAN_ROUTE_SENTINELS = frozenset(
+    {
+        "organizations/tests/test_privileged_membership_fixtures.py",
+        "conftest.py",
+        "audit/factories.py",
+    }
+)
+
+#: Every top-level project app with modules currently selected by ``_test_modules``.
+EXPECTED_SCANNED_APPS = frozenset(
+    {
+        "accounts",
+        "audit",
+        "calendar_integration",
+        "common",
+        "legal",
+        "notifications",
+        "organizations",
+        "payments",
+        "public_api",
+        "s3direct_overrides",
+        "users",
+        "webhooks",
+    }
+)
+
 
 def _test_modules(repo_root: pathlib.Path = REPO_ROOT) -> list[pathlib.Path]:
     """Every module a test fixture can be built in.
@@ -128,14 +155,15 @@ def _scanned_sources() -> tuple[tuple[pathlib.Path, str], ...]:
 def _assert_the_scan_reached_the_repo(sources: tuple[tuple[pathlib.Path, str], ...]) -> None:
     """The anti-vacuity floor: the walk must have found the files we know exist.
 
-    ``OPT_OUT_MODULES`` is the floor rather than a bare count because it is
-    maintained anyway, names two different apps (``organizations`` and
-    ``payments``), and every entry is by definition an in-scope test module. A
-    scan that reaches all seven reached the tree; a count could be met by any
-    seven files.
+    ``OPT_OUT_MODULES`` and ``SCAN_ROUTE_SENTINELS`` are the floor rather than a
+    bare count. The sentinels pin the three independent inclusion routes -- a
+    module under ``tests/``, the root ``conftest.py``, and an app
+    ``factories.py`` -- while the opt-outs pin known test modules across apps.
+    A count could be met by unrelated files after one route was accidentally
+    removed.
     """
     found = {str(path.relative_to(REPO_ROOT)) for path, _ in sources}
-    missing = sorted(set(OPT_OUT_MODULES) - found)
+    missing = sorted((set(OPT_OUT_MODULES) | SCAN_ROUTE_SENTINELS) - found)
 
     assert not missing, (
         "The module scan did not reach modules that are known to exist, so the "
@@ -576,11 +604,18 @@ def test_a_blind_scan_fails_the_floor_instead_of_passing(tmp_path):
 
 def test_the_pruned_walk_still_reaches_every_scanned_app():
     """``PRUNED_DIRS`` prunes during the walk, so an over-broad entry there
-    would quietly shrink the scan. The floor covers two apps; this pins that
-    the walk still spans the tree it is supposed to.
+    would quietly shrink the scan. This pins the complete top-level app surface
+    the walk is supposed to span.
     """
-    scanned = {path.relative_to(REPO_ROOT).parts[0] for path, _ in _scanned_sources()}
+    scanned = {
+        relative.parts[0]
+        for path, _ in _scanned_sources()
+        if len((relative := path.relative_to(REPO_ROOT)).parts) > 1
+    }
+    missing = sorted(EXPECTED_SCANNED_APPS - scanned)
+    unexpected = sorted(scanned - EXPECTED_SCANNED_APPS)
 
-    assert {"organizations", "payments", "calendar_integration", "accounts", "common"} <= scanned, (
-        f"the module walk no longer reaches every app it used to: {sorted(scanned)}"
+    assert scanned == EXPECTED_SCANNED_APPS, (
+        "the module walk no longer reaches the complete expected app surface; "
+        f"missing: {missing}; unexpected: {unexpected}; reached: {sorted(scanned)}"
     )
