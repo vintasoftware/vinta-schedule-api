@@ -62,7 +62,7 @@ class TenantScopedViewMixin(OrganizationScopedAPIViewMixin):
     releases the binding on every exit path, including the ones DRF does not
     funnel through ``finalize_response``. A binding that leaked there would be
     read by the *next* request the worker thread serves. Read that class's
-    docstrings before changing anything here; this subclass exists for the three
+    docstrings before changing anything here; this subclass exists for the two
     things that are *ours*:
 
     1. **The header.** :meth:`get_organization_slug` reads ``X-Organization-Id``
