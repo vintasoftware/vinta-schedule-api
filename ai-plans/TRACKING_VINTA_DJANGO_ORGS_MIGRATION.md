@@ -527,7 +527,7 @@ Carry-forwards:
 ### Phase 5 — Expose permissions on REST and GraphQL, drop `role` from the API
 
 - **Branch**: `plan/vinta-django-orgs-migration/phase-5` off `phase-4`
-- **Commits**: original Phase 5 implementation and review-fix commits were superseded by the 2026-08-14 rebase; `ebce387`, `826f20d`, `85d58d3`, `3bd2153`, `0602822`, and `2f03408` enforce, document, and test the published capability boundaries. The final service-account correction follows in the next commit.
+- **Commits**: original Phase 5 implementation and review-fix commits were superseded by the 2026-08-14 rebase; `ebce387`, `826f20d`, `85d58d3`, `3bd2153`, `0602822`, `2f03408`, and `c13ba1c` enforce, document, and test the published capability boundaries. A final concise API-description correction follows in the next commit.
 - **Review**: reviewer Tier 3 (project default). **One BLOCKER**, two SHOULD-FIX, one NIT.
 
 **The BLOCKER was caused by a carry-forward this phase chose to close.** Hiding the three seeded groups from the Django user form's `groups` picker introduced **silent data loss**: `ModelMultipleChoiceField` renders only options in the narrowed queryset, and `ModelForm.save_m2m()` calls `.set(cleaned_data)` — so any ordinary, unrelated edit to a user who already held `organization_admin` removed that assignment. The method's own docstring claimed the opposite, and the test asserted only on the widget queryset, never on a save. The reviewer proved it end-to-end through the real admin change form. Fixed by unioning back any seeded group the edited object already holds; `ModelAdmin.get_form` does not forward `obj` that far, so it is stashed on the *request* rather than on the shared `ModelAdmin` singleton. Round-trip tested and mutation-tested.

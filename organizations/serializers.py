@@ -405,18 +405,10 @@ class CurrentMembershipSerializer(serializers.ModelSerializer):
     def get_can_manage_branding(self, obj: OrganizationMembership) -> bool:
         """Whether this membership can manage branding.
 
-        Computed as parentless-and-entitled. It once deliberately excluded a
-        third, slug condition (Organization Auth-Area Branding plan, Phase 4
-        Capability signal guiding decision) so an organization missing only a
-        slug still saw the branding page; that condition is now retired, so the
-        exclusion is vacuous and the two checks coincide. Shares
-        ``organizations.permissions.is_branding_eligible_organization`` rather
-        than restating the two-condition check. It also requires this
-        membership's ``organizations.manage_branding`` capability, so it tracks
-        the same ``manage_branding``-plus-eligibility composite that governs
-        ``GET /branding/`` and logo-upload signing (see
-        ``OrganizationBrandingView._check_branding_read_gate``) rather than
-        the write gate.
+        Computed from ``organizations.manage_branding`` plus parentless-and-
+        entitled eligibility. Uses
+        ``organizations.permissions.is_branding_eligible_organization`` for
+        that eligibility, matching ``GET /branding/`` and logo-upload signing.
         """
         return MANAGE_BRANDING in _resolved_permissions(
             self, obj
