@@ -2,10 +2,23 @@
 
 Phase 4 of the vinta-django-orgs migration
 (``ai-plans/2026-08-12-VINTA_DJANGO_ORGS_MIGRATION_IMPLEMENTATION_PLAN.md``)
-swapped ``membership.role`` / ``membership.is_billing_owner`` for
-``user.has_perm(...)`` in every authorization decision. The risk it carries is
-one-directional and silent: a *widened* grant fails no test, because no test
-asserts that a permitted caller is refused.
+swapped ``membership.role`` / ``membership.is_billing_owner`` for an
+organization-named permission check in every **permission class** --
+``organizations.authorization.has_organization_permission``, *not*
+``user.has_perm``, which answers about whichever organization happens to be
+bound and unions in grants that are not about an organization at all (that
+module's docstring argues both). The risk it carries is one-directional and
+silent: a *widened* grant fails no test, because no test asserts that a
+permitted caller is refused.
+
+"Every permission class" is the honest scope, and is narrower than "every
+authorization decision": four ``membership.is_admin`` readers survive outside
+them until Phase 6 drops the columns -- ``public_api/scoping.py:50``,
+``calendar_integration/querysets.py:1204``,
+``calendar_integration/services/external_event_change_request_service.py:503``
+and ``booking_policy_permission_service.py``'s system-user adapters. They are
+enumerated in ``ai-plans/TRACKING_VINTA_DJANGO_ORGS_MIGRATION.md``; nothing in
+this module covers them.
 
 So this module is a matrix, **one test class per permission class**, not one per
 file. Grouping by file would let a widened grant in one class hide behind its
@@ -1163,6 +1176,23 @@ class TestTheEscalationFlagsStayOff:
     a permission granted once in the Django user admin, and one click in that same
     form's ``groups`` picker, each becoming all four capabilities in *every*
     organization in the database.
+
+    **The two are not independent, and ``include_global`` is the larger of
+    them.** The global half is fetched through
+    ``OrganizationModelBackend.get_all_global_permissions``, which applies its
+    own ``is_superuser`` short-circuit (``_get_global_permissions``), so turning
+    ``INCLUDE_GLOBAL_PERMISSIONS`` on re-admits every superuser to all four
+    capabilities in every organization **whatever ``ALLOW_SUPERUSER`` says** --
+    ``ALLOW_SUPERUSER`` guards only the organization half's short-circuit, which
+    never runs once the global one has answered. Mutating each constant in turn
+    shows it as a **strict superset** rather than merely a bigger number:
+    ``ALLOW_SUPERUSER = True`` alone turns 5 rows red,
+    ``INCLUDE_GLOBAL_PERMISSIONS = True`` alone turns 10, and the 10 contain all
+    5 -- including the ``test_allow_superuser_is_what_refuses_...`` row below,
+    whose name would otherwise suggest one flag owns that refusal. Read either
+    constant's comment in
+    ``organizations/authorization.py`` for the same statement at the point of
+    declaration.
 
     So ``organizations/authorization.py`` passes both explicitly, and this class
     pins three separate things, none of which the others imply:

@@ -101,6 +101,21 @@ if TYPE_CHECKING:
 #: ``organization_admin`` group -- would become all four capabilities in *every*
 #: organization in the database. Both were inert under the ``role`` column this
 #: phase replaces, so admitting either is a widening rather than a migration.
+#:
+#: **It also admits every superuser, regardless of ``ALLOW_SUPERUSER`` below.**
+#: The global half is fetched through ``vinta_orgs.auth_backends
+#: .OrganizationModelBackend.get_all_global_permissions``, which applies its own
+#: ``if user_obj.is_superuser: perms = Permission.objects.all()`` short-circuit
+#: (``_get_global_permissions``) -- ``ALLOW_SUPERUSER`` guards only the
+#: *organization* half's short-circuit, and never runs when this one has already
+#: answered. So the two flags are not independent in the widening direction:
+#: turning this one on is strictly the larger change of the two. Mutating each in
+#: turn and running ``organizations/ calendar_integration/ public_api/ users/
+#: payments/ common/`` shows it as a **strict superset**, not merely a bigger
+#: number -- ``ALLOW_SUPERUSER = True`` alone turns 5 rows red,
+#: ``INCLUDE_GLOBAL_PERMISSIONS = True`` alone turns 10, and the 10 contain all
+#: 5. Every superuser escalation ``ALLOW_SUPERUSER`` guards is reachable through
+#: this flag as well.
 INCLUDE_GLOBAL_PERMISSIONS = False
 
 #: Whether ``is_superuser`` short-circuits the membership lookup. **No.**
@@ -110,13 +125,17 @@ INCLUDE_GLOBAL_PERMISSIONS = False
 #: is not an argument on ``IsBillingOwnerOrAdmin``: passing it changes a plan,
 #: buys an add-on or cancels a subscription at Stripe / MercadoPago, and the
 #: admin exposes no such button.
+#:
+#: This flag is **not** on its own what keeps superusers out: it guards the
+#: organization half's short-circuit only, and the global half carries its own.
+#: See ``INCLUDE_GLOBAL_PERMISSIONS`` above -- both must stay ``False``.
 ALLOW_SUPERUSER = False
 
 
 def has_organization_permission(
     user: User | None,
     permission: str,
-    organization: Organization | int | str | None,
+    organization: Organization | int | None,
 ) -> bool:
     """Whether ``user`` holds ``permission`` **through an active membership in
     ``organization``**.
@@ -130,6 +149,14 @@ def has_organization_permission(
     Returns ``False`` for an anonymous caller, for an organization that does not
     exist, and for a caller with no active membership in it -- so a caller can
     pass a resolved-or-``None`` value straight in.
+
+    A pk must be an ``int``, not an arbitrary ``str``. "Does not exist" is
+    answered by ``Organization.objects.filter(pk=...).first()``, and a
+    non-numeric string reaches that as a ``ValueError`` rather than as ``False``
+    -- a 500 out of a permission class. The annotation is narrowed rather than
+    the value coerced: no caller in this repository passes a string, and
+    inventing a coercion here would make the permission layer responsible for
+    validating identifiers the URL/serializer layer already validates.
 
     Restated here in terms of *our* ``Organization`` and ``User`` (the package
     annotates against its own swappable models and a structural user protocol),

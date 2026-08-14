@@ -239,22 +239,33 @@ def user_administers_branding_eligible_organization(user: "User | None") -> bool
 
     The role half became ``organizations.manage_branding`` in Phase 4 of the
     vinta-django-orgs migration; the entitlement half
-    (``is_branding_eligible_organization``) is untouched. The permission is
-    asked per membership, naming that membership's organization -- there is no
-    bound organization on the s3direct signing path at all, so a check that
-    relied on the ambient binding would refuse every caller.
+    (``is_branding_eligible_organization``) is untouched. The permission half is
+    asked of the *database*, through
+    ``OrganizationMembershipQuerySet.holding_permission`` -- the same lookup
+    ``billing_recipients`` uses, and the queryset form of the question
+    ``has_organization_permission`` answers for one ``(user, organization)``
+    pair, so the two agree by construction (both read the union of a
+    membership's own ``permissions`` grant with the permissions its ``groups``
+    carry, and neither consults the global half or the superuser
+    short-circuit). Asking it per membership instead cost one ``_get_membership``
+    plus two permission queries **per organization the caller belongs to**, on a
+    path -- s3direct logo signing -- that has no acting organization to narrow
+    by. There is no bound organization on that path at all, which is why the
+    question has to name organizations explicitly rather than read the ambient
+    binding.
+
+    ``user.is_active`` is checked here rather than inherited: the per-membership
+    form got it from ``has_organization_permission``, and the queryset filters
+    ``membership.is_active`` only.
     """
-    if user is None or not getattr(user, "is_authenticated", False):
+    if user is None or not getattr(user, "is_authenticated", False) or not user.is_active:
         return False
     # ``active_for_user`` already ``select_related``s the organization.
-    memberships = OrganizationMembership.objects.active_for_user(user)
+    memberships = OrganizationMembership.objects.active_for_user(user).holding_permission(
+        MANAGE_BRANDING
+    )
     return any(
-        # Permission first: it is the cheaper half (one query per organization,
-        # cached on the user by organization pk) and it short-circuits the
-        # entitlement lookup for organizations the caller cannot brand anyway.
-        has_organization_permission(user, MANAGE_BRANDING, membership.organization)
-        and is_branding_eligible_organization(membership.organization)
-        for membership in memberships
+        is_branding_eligible_organization(membership.organization) for membership in memberships
     )
 
 
@@ -413,8 +424,11 @@ class IsBillingOwnerOrAdmin(BasePermission):
     inside ``has_permission``.)
 
     - ``has_permission``: coarse gate -- an active membership carrying
-      ``payments.manage_billing`` in *some* organization. Does not by itself
-      decide *which* organization; that is ``has_object_permission``'s job.
+      ``payments.manage_billing`` **in the organization the request resolved**
+      (since Phase 3.5 that is the membership ``X-Organization-Id`` selected,
+      not "some organization"). Coarse all the same, because the organization
+      being *billed* is frequently an ancestor of it; deciding *which*
+      organization is ``has_object_permission``'s job.
     - ``has_object_permission``: the real gate, against ``obj`` (an
       ``Organization`` -- the resolved billing root). Grants access when either:
 

@@ -2,8 +2,15 @@
 
 Since Phase 4 of the vinta-django-orgs migration
 (``ai-plans/2026-08-12-VINTA_DJANGO_ORGS_MIGRATION_IMPLEMENTATION_PLAN.md``)
-every authorization decision reads ``user.has_perm(...)``, which resolves through
-``OrganizationMembership.groups``. Production keeps groups in step with ``role``
+every **permission class** reads an organization-named permission check
+(``organizations.authorization.has_organization_permission``, not
+``user.has_perm``), which resolves through ``OrganizationMembership.groups``.
+Four ``membership.is_admin`` readers survive outside the permission classes
+until Phase 6 drops the columns -- enumerated in
+``ai-plans/TRACKING_VINTA_DJANGO_ORGS_MIGRATION.md``. They still read the
+*column*, so the fixture shape this module bans is precisely the one where they
+and a permission class answer differently about the same caller in the same
+request. Production keeps groups in step with ``role``
 / ``is_billing_owner`` through
 ``organizations.services.sync_membership_groups_from_role``; ``baker.make`` and
 ``objects.create`` do not, so a test written the old way produces a membership
@@ -22,9 +29,9 @@ source tree on every run, so a new test written the old way fails here rather
 than years later in an audit.
 
 **The escape hatch** is a ``# groups-deliberately-absent`` comment on the
-construction. Every user of it is enumerated in
-``test_no_other_module_uses_the_opt_out`` at the bottom of this module -- that
-list, not this paragraph, is the count. Each earns it because the group-less
+construction. Every user of it is enumerated in ``OPT_OUT_MODULES`` at the
+bottom of this module, which both guard tests read -- that list, not this
+paragraph, is the count. Each earns it because the group-less
 state is the subject rather than an accident: the Phase 3 backfill migration
 test (which builds pre-backfill rows through historical models), the
 auth-backend test (which assigns groups by name to reach states the role
@@ -420,20 +427,32 @@ def _offenders_in(path: pathlib.Path) -> list[str]:
     return _offenders(path, repo_root=path.parents[1])
 
 
-@pytest.mark.parametrize(
-    "module",
-    [
-        "organizations/tests/test_group_backfill_migration.py",
-        "organizations/tests/test_permission_backend.py",
-        "organizations/tests/test_membership_manager.py",
-        "payments/tests/test_dunning_recipients.py",
-    ],
-)
-def test_the_opt_out_is_confined_to_the_modules_that_earned_it(module):
-    """The escape hatch is only as good as the list of who uses it.
+#: Every module allowed to carry the opt-out marker, sorted.
+#:
+#: **One literal, read by both tests below**, because the guard used to keep two
+#: and they disagreed: a four-entry ``parametrize`` list beside a seven-entry
+#: exact-match assertion, with ``test_branding_gate_parity.py`` using the marker
+#: while appearing in neither. A guard that can contradict itself is not one.
+#: Adding an eighth user of the marker is a deliberate edit *here* -- which is
+#: where a reviewer will ask why -- and it turns both tests red until it is made.
+OPT_OUT_MODULES = [
+    "organizations/tests/test_branding_gate_parity.py",
+    "organizations/tests/test_group_backfill_migration.py",
+    "organizations/tests/test_membership_manager.py",
+    "organizations/tests/test_permission_backend.py",
+    "organizations/tests/test_permissions_parity.py",
+    "organizations/tests/test_privileged_membership_fixtures.py",
+    "payments/tests/test_dunning_recipients.py",
+]
 
-    Enumerated rather than counted so adding a fifth user of the marker is a
-    deliberate edit to this list -- which is where a reviewer will ask why.
+
+@pytest.mark.parametrize("module", OPT_OUT_MODULES)
+def test_the_opt_out_is_confined_to_the_modules_that_earned_it(module):
+    """The other direction from ``test_no_other_module_uses_the_opt_out``: a
+    module listed above must still *need* the marker.
+
+    One row per module, so a stale entry names itself rather than moving a
+    count.
     """
     source = (REPO_ROOT / module).read_text()
 
@@ -447,12 +466,4 @@ def test_no_other_module_uses_the_opt_out():
         if DELIBERATE in path.read_text()
     )
 
-    assert users == [
-        "organizations/tests/test_branding_gate_parity.py",
-        "organizations/tests/test_group_backfill_migration.py",
-        "organizations/tests/test_membership_manager.py",
-        "organizations/tests/test_permission_backend.py",
-        "organizations/tests/test_permissions_parity.py",
-        "organizations/tests/test_privileged_membership_fixtures.py",
-        "payments/tests/test_dunning_recipients.py",
-    ], users
+    assert users == sorted(OPT_OUT_MODULES), users

@@ -4,13 +4,18 @@
 membership is meant to carry a capability -- which, since Phase 4 of the
 vinta-django-orgs migration
 (``ai-plans/2026-08-12-VINTA_DJANGO_ORGS_MIGRATION_IMPLEMENTATION_PLAN.md``), is
-what every authorization decision reads.
+what every permission class reads.
 
 **Why.** Authorization used to read ``membership.role`` / ``is_billing_owner``
 directly, so ``baker.make(OrganizationMembership, role=ADMIN)`` produced a
-membership that every permission class treated as an admin. Authorization now
-reads ``user.has_perm(...)``, which resolves through
-``OrganizationMembership.groups`` -- and baker assigns no groups. Production
+membership that every permission class treated as an admin. A permission class
+now reads an organization-named permission check
+(``organizations.authorization.has_organization_permission``, not
+``user.has_perm``), which resolves through ``OrganizationMembership.groups`` --
+and baker assigns no groups. Four ``membership.is_admin`` readers survive
+outside the permission classes until Phase 6 drops the columns (enumerated in
+``ai-plans/TRACKING_VINTA_DJANGO_ORGS_MIGRATION.md``), so a raw ``baker.make``
+is *also* the shape where those and a permission class disagree. Production
 keeps the two representations in step through
 ``organizations.services.sync_membership_groups_from_role`` (the Phase 3
 dual-write, deleted in Phase 6 along with the columns); a raw ``baker.make``
