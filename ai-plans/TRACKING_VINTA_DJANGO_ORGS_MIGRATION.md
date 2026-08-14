@@ -395,7 +395,7 @@ Other carry-forwards:
 ### Phase 3.5 — Make the authorization substrate correct before migrating onto it
 
 - **Branch**: `plan/vinta-django-orgs-migration/phase-3.5` off `phase-3` (rebased onto it after the `0029` CI fix landed there; rebased again onto the amended `phase-3` on 2026-08-13)
-- **Commits**: `a965c01` (implement, Tier 4) · `22bb5c9` (review fixes) · rewritten by the rebase onto the amended `phase-3` → `68b979a` + `e5c1988` + `28a010b` · `e0b0abc` (**2026-08-13 amendment**: adopt the package's DRF seam and resolution table)
+- **Commits**: `a965c01` (implement, Tier 4) · `22bb5c9` (review fixes) · rewritten by the rebase onto the amended `phase-3` → `68b979a` + `e5c1988` + `28a010b` · `986a20f` (**2026-08-13 amendment**: adopt the package's DRF seam and resolution table)
 - **Review**: reviewer Tier 4 (plan override). **No BLOCKERs.** Five SHOULD-FIX and six NITs.
 
 > #### ⚠️ Amended 2026-08-13 — package `0.3.0` took over both halves of this phase
