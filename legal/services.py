@@ -15,13 +15,13 @@ import logging
 from typing import Annotated
 
 from dependency_injector.wiring import Provide, inject
+from vinta_orgs.helpers import resolve_membership_for_user
 
 from audit.constants import AuditAction
 from audit.services import AuditService
 from common.utils.phone_utils import normalize_phone_number
 from legal.exceptions import NoPolicyDocumentError
 from legal.models import PolicyDocument, UserConsent
-from organizations.models import get_active_organization_membership
 from users.models import User
 
 
@@ -36,7 +36,7 @@ class ConsentService:
     however, records business writes against a tenant-scoped ``Audit`` table
     that requires an ``organization_id``. To bridge this, consent grants are
     audited against the user's *active* organization membership when one
-    exists (resolved via ``get_active_organization_membership``); when the
+    exists (resolved by the package); when the
     user has no organization yet (e.g. mid-signup, before tenant provisioning)
     the audit emission is skipped — the ``UserConsent`` row itself already
     carries the audit-grade proof fields (``accepted_at``, exact
@@ -144,7 +144,7 @@ class ConsentService:
         organization membership — see the class docstring for why that is
         safe: the ``UserConsent`` row is itself the audit-grade proof.
         """
-        membership = get_active_organization_membership(consent.user)
+        membership = resolve_membership_for_user(consent.user)
         if membership is None:
             logger.info(
                 "Skipping AuditService record for UserConsent %s: user %s has no "

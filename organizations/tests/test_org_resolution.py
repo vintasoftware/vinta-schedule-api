@@ -1,8 +1,8 @@
 """Integration tests for active-org resolution.
 
 Verifies that the ``TenantScopedViewMixin`` resolver correctly resolves the
-active organization from the ``X-Organization-Id`` header and stashes the result
-so ``get_active_organization_membership`` reads it.
+active organization from the ``X-Organization-Id`` header and exposes the
+package-selected membership on the request.
 
 Behaviors covered:
 
@@ -16,6 +16,10 @@ Behaviors covered:
   400 and the 403.
 """
 
+import ast
+import os
+from pathlib import Path
+
 from django.contrib.auth import get_user_model
 from django.urls import reverse
 
@@ -24,13 +28,14 @@ from rest_framework import status
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.request import Request
 from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
+from vinta_orgs.exceptions import AmbiguousOrganizationError
+from vinta_orgs.helpers import resolve_membership_for_user
 
 from common.utils.view_utils import TenantScopedViewMixin
 from organizations.models import (
     Organization,
     OrganizationMembership,
     OrganizationRole,
-    get_active_organization_membership,
 )
 
 
@@ -228,26 +233,21 @@ class TestHeaderAbsentSingleMembership:
 
 
 # ---------------------------------------------------------------------------
-# Tests: get_active_organization_membership stash seam
+# Tests: package-owned membership resolution
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.django_db
-class TestActiveOrgStash:
-    """The resolver stashes the membership on user._active_membership so helpers see it."""
+class TestPackageOwnedMembershipResolution:
+    """Request and off-request callers both use the package's resolution contract."""
 
-    def test_get_active_org_membership_returns_header_resolved_membership(
+    def test_request_path_returns_header_resolved_membership(
         self,
         two_org_user: User,
         org_a: Organization,
         org_b: Organization,  # type: ignore[valid-type]
     ) -> None:
-        """``get_active_organization_membership`` inside a view returns the header-resolved one.
-
-        We assert this end-to-end: the ``current`` action calls the helper internally
-        and returns data for the org named in the header — so if the returned org.id
-        matches the header, the stash seam is working.
-        """
+        """The current action reads the membership the package put on the request."""
         client = _auth_client_for(two_org_user)
         url = reverse("api:Organizations-current")
 
@@ -258,41 +258,63 @@ class TestActiveOrgStash:
                 f"Expected org {org.pk} but got {response.json()['organization']['id']}"
             )
 
-    def test_off_request_fallback_is_unaffected(
+    def test_off_request_single_membership_resolves_directly_with_the_package(
         self,
         user: User,
         org_a: Organization,  # type: ignore[valid-type]
     ) -> None:
-        """Off-DRF-request callers (no _active_membership stash) fall back to DB query.
-
-        Simulates a management command / Celery task calling the helper directly.
-        """
+        """A management command or task may resolve a single membership directly."""
         _make_membership(user, org_a)
-        # user._active_membership is NOT set here — no DRF request, no stash.
-        assert not hasattr(user, "_active_membership")
-
-        membership = get_active_organization_membership(user)
+        membership = resolve_membership_for_user(user)
 
         assert membership is not None
         assert membership.organization_id == org_a.pk
 
-    def test_stash_none_when_gated_is_distinguishable_from_unset(
+    def test_off_request_two_memberships_are_ambiguous(
         self,
-        user: User,  # type: ignore[valid-type]
+        two_org_user: User,  # type: ignore[valid-type]
     ) -> None:
-        """After a DRF request for a gated user, _active_membership is None (not absent).
+        """Without an explicit organization, row age no longer selects a tenant."""
+        with pytest.raises(AmbiguousOrganizationError):
+            resolve_membership_for_user(two_org_user)
 
-        This lets get_active_organization_membership distinguish "DRF request,
-        resolved to gated" from "not on a DRF request at all".
-        """
-        client = _auth_client_for(user)
-        url = reverse("api:Organizations-current")
-        # Gated user — no memberships; current returns 404 but the stash should have None.
-        response = client.get(url)
-        assert response.status_code == status.HTTP_404_NOT_FOUND
-        # The stash check itself is indirect: the helper returned None (gated), which is
-        # the correct outcome. We verify the off-request user object has no stash yet.
-        assert not hasattr(user, "_active_membership")
+
+def test_application_has_no_legacy_membership_resolver_or_user_stash() -> None:
+    """Keep membership resolution on the package request/direct-call seams."""
+    repository_root = Path(__file__).resolve().parents[2]
+    removed_resolver = "get_active_" + "organization_membership"
+    removed_user_attribute = "_" + "active_membership"
+    violations: list[str] = []
+
+    for directory, directory_names, file_names in os.walk(repository_root):
+        directory_names[:] = [
+            name
+            for name in directory_names
+            if name not in {".git", ".venv", "migrations", "node_modules"}
+        ]
+        for file_name in file_names:
+            if not file_name.endswith(".py"):
+                continue
+            path = Path(directory, file_name)
+            tree = ast.parse(path.read_text(), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and any(
+                    alias.name == removed_resolver for alias in node.names
+                ):
+                    violations.append(f"{path.relative_to(repository_root)}:{node.lineno}: import")
+                if isinstance(node, ast.Call) and (
+                    (isinstance(node.func, ast.Name) and node.func.id == removed_resolver)
+                    or (isinstance(node.func, ast.Attribute) and node.func.attr == removed_resolver)
+                ):
+                    violations.append(f"{path.relative_to(repository_root)}:{node.lineno}: call")
+                if (
+                    isinstance(node, ast.Attribute)
+                    and isinstance(node.ctx, ast.Store)
+                    and node.attr == removed_user_attribute
+                ):
+                    violations.append(f"{path.relative_to(repository_root)}:{node.lineno}: write")
+
+    assert violations == []
 
 
 # ---------------------------------------------------------------------------
@@ -375,11 +397,9 @@ class TestCalendarViewSetOrgScoping:
     ) -> None:
         """POST /calendar/ with X-Organization-Id: B creates the calendar under Org B.
 
-        Regression test: before the fix, ``del
-        user._active_membership`` in ``CreateModelMixin.create`` wiped the header-
-        resolved stash so the post-create re-fetch of the queryset fell into the
-        header-blind DB fallback (order_by("created").first() == Org A for this
-        two-org user), causing a cross-org DoesNotExist / 500.
+        Regression test: before the fix, post-create resolution could discard
+        the header-selected membership and fall back to Org A for this two-org
+        user, causing a cross-org DoesNotExist / 500.
 
         The mock service is required because ``CalendarSerializer.create`` delegates
         object creation to the injected ``CalendarService``; the mock returns a real
@@ -772,7 +792,7 @@ class TestADeactivatedAdminIsRefusedThroughTheRealStack:
     ``X-Organization-Id``. Not a unit test of the backend, and not a probe view.
 
     **Which gate answers, exactly.** The 403 below comes from the *resolver* --
-    ``vinta_orgs.helpers.memberships.get_active_memberships`` filters
+    the package's membership queryset filters
     ``is_active=True``, so the header names an organization with no active
     membership behind it and ``resolve_membership_for_user`` raises
     ``OrganizationAccessDeniedError`` before ``IsOrganizationAdmin`` is ever

@@ -1341,7 +1341,7 @@ class TestOrganizationService:
         ):
             yield OrganizationService()
 
-    def test_accept_invitation_calls_on_member_created_for_active_membership(
+    def test_accept_invitation_calls_on_member_created_for_enabled_membership(
         self,
         organization_service_with_webhook_mock,
         mock_webhook_membership_side_effects_service,

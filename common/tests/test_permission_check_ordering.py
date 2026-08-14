@@ -4,12 +4,10 @@
 ``perform_authentication``, ``check_permissions``, ``check_throttles``. Until
 Phase 3.5 of the vinta-django-orgs migration, ``TenantScopedViewMixin`` resolved
 ``X-Organization-Id`` *after* all of that -- so every permission class asking
-``get_active_organization_membership(user)`` at ``has_permission`` time found
-``user._active_membership`` unset and fell through to
-``memberships.filter(is_active=True).order_by("created").first()``: the caller's
-**oldest** active membership. Meanwhile ``get_queryset``,
-``has_object_permission`` and every serializer re-asked *after* resolution and
-answered with the organization the header named.
+the membership helper at ``has_permission`` time fell through to the caller's
+**oldest** active membership. Meanwhile ``get_queryset``, object permissions,
+and serializers re-asked *after* resolution and answered with the organization
+the header named.
 
 The shape that exploits is one user, two organizations: admin of the older one,
 plain member of the newer one. The collection-level admin gate said yes about
@@ -28,7 +26,7 @@ asserts -- so the two together discriminate, rather than one of them merely
 passing.
 """
 
-from typing import Any
+from typing import Any, cast
 
 from django.contrib.auth import get_user_model
 
@@ -44,7 +42,6 @@ from organizations.models import (
     Organization,
     OrganizationMembership,
     OrganizationRole,
-    get_active_organization_membership,
 )
 from organizations.permissions import IsOrganizationAdmin
 
@@ -69,7 +66,7 @@ class AdminGatedProbeView(TenantScopedViewMixin, APIView):
     organization_seen_by_the_body: Any = None
 
     def get(self, request: Any, *args: Any, **kwargs: Any) -> Response:
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         type(self).organization_seen_by_the_body = (
             None if membership is None else membership.organization_id
         )
@@ -80,14 +77,18 @@ class OldOrderingAdminGatedProbeView(AdminGatedProbeView):
     """``AdminGatedProbeView`` with the pre-Phase-3.5 ordering restored.
 
     Not a historical curiosity -- it is the mutant. It reconstructs the exact
-    two lines Phase 3.5 moved: authentication alone in
-    ``perform_authentication`` (so ``check_permissions`` runs with nothing
-    stashed), and resolve-then-bind after the whole of ``super().initial()``.
+    old request state as well as its ordering: authentication records the oldest
+    membership before permissions, and header resolution replaces it only after
+    ``super().initial()``. This makes the historical widened grant observable
+    without retaining the compatibility helper in application code.
     """
 
     def perform_authentication(self, request: Request) -> None:
         # The stock DRF implementation, skipping the mixin's override.
         APIView.perform_authentication(self, request)
+        request.organization_membership = (  # type: ignore[attr-defined]
+            cast("Any", request.user).memberships.filter(is_active=True).order_by("created").first()
+        )
 
     def initial(self, request: Request, *args: Any, **kwargs: Any) -> None:
         super().initial(request, *args, **kwargs)

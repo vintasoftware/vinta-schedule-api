@@ -1651,7 +1651,7 @@ class TestSystemUserTokenViewSetHonoursTheOrganizationHeader:
 
     This viewset used to be a plain ``GenericViewSet``, outside the
     ``TenantScopedViewMixin`` bases, so nothing stashed the resolved membership
-    and ``get_active_organization_membership`` fell through to
+    and membership resolution fell through to
     ``memberships.filter(is_active=True).order_by("created").first()``. A
     multi-organization admin therefore listed -- and minted -- the tokens of
     their *oldest* membership's organization whatever the header said, and the

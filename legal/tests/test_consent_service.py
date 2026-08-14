@@ -102,7 +102,7 @@ class TestRecordConsent:
                 source=ConsentSource.SIGNUP_FORM,
             )
 
-    def test_emits_audit_create_entry_when_user_has_active_membership(
+    def test_emits_audit_create_entry_when_user_has_enabled_membership(
         self, django_capture_on_commit_callbacks
     ) -> None:
         user: User = baker.make(User)

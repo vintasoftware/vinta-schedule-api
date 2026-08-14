@@ -17,6 +17,7 @@ from allauth.socialaccount.adapter import DefaultSocialAccountAdapter
 from allauth.socialaccount.models import SocialLogin
 from allauth.utils import build_absolute_uri
 from dependency_injector.wiring import Provide, inject
+from vinta_orgs.helpers import resolve_membership_for_user
 from vintasend.constants import NotificationTypes
 from vintasend.services.dataclasses import NotificationContextDict
 from vintasend.services.notification_service import NotificationService
@@ -24,7 +25,6 @@ from vintasend.services.notification_service import NotificationService
 from accounts.exceptions import ConsentRequiredError
 from legal.services import ConsentService
 from organizations.exceptions import UserAlreadyHasMembershipError
-from organizations.models import get_active_organization_membership
 from organizations.services import OrganizationService
 from payments.exceptions import OverLimitError
 from users.models import Profile, User
@@ -170,7 +170,7 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):
         ):
             return
 
-        membership = get_active_organization_membership(user)
+        membership = resolve_membership_for_user(user)
         if membership is None:
             return
 

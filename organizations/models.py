@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import Any, ClassVar
 
 from django.conf import settings
 from django.db import models
@@ -17,58 +17,6 @@ from organizations.slug_generation import derive_organization_slug
 from payments.billing_constants import Entitlement
 from payments.entitlement_cache import has_entitlement_cached
 from s3direct_overrides.model_fields import S3DirectImageField
-
-
-if TYPE_CHECKING:
-    from users.models import User
-
-
-# Sentinel distinguishes "not resolved yet" (off-DRF path) from ``None``
-# (resolved-to-gated / resolved-to-no-membership). Must be module-level so
-# the same object identity is checked everywhere.
-_UNSET: object = object()
-
-
-def get_active_organization_membership(
-    user: User | None,
-) -> OrganizationMembership | None:
-    """Return the user's active OrganizationMembership, or None.
-
-    This is the shared helper for all tenant-access checks. Call it wherever
-    a view, permission, or serializer needs to resolve an active membership:
-
-        membership = get_active_organization_membership(request.user)
-        if not membership:
-            return <empty queryset / clean denial>
-
-    On the DRF request path, ``TenantScopedViewMixin.perform_authentication()``
-    resolves the active membership from the ``X-Organization-Id`` header --
-    between authentication and ``check_permissions`` -- and stashes it on
-    ``user._active_membership``, so a permission class asked at
-    ``has_permission`` time reads the resolved membership, not the oldest one.
-    This helper reads the stash so the ~60 existing call sites are
-    automatically header-aware without change.
-
-    Off the DRF request path (management commands, Celery tasks, tests that
-    bypass views), ``_active_membership`` is absent and the helper falls back
-    to the single-membership query so those callers keep working.
-
-    A user with no active memberships returns None (gated). An inactive
-    membership (is_active=False) is treated identically to no membership.
-    """
-    if user is None:
-        return None
-
-    stashed = getattr(user, "_active_membership", _UNSET)
-    if stashed is not _UNSET:
-        # DRF request path: the resolver has already run; trust its result
-        # (may be an OrganizationMembership or None for gated users).
-        return stashed  # type: ignore[return-value]
-
-    # Off-request path (management commands, Celery tasks, direct test calls):
-    # fall back to the single active membership query. Stable ordering ensures
-    # determinism if a user somehow ends up with two active memberships here.
-    return user.memberships.filter(is_active=True).order_by("created").first()  # type: ignore[union-attr]
 
 
 class ExternalEventUpdatePolicy(models.TextChoices):
@@ -280,23 +228,24 @@ class OrganizationMembership(AbstractOrganizationMembership):
 
     Access rule:
         Every authenticated user is in exactly one of two states:
-        1. **Has active membership** — ``get_active_organization_membership(user)``
-           returns an ``OrganizationMembership`` instance and all tenant-scoped
-           endpoints are open to them.
-        2. **Gated (zero active memberships)** — ``get_active_organization_membership``
-           returns ``None``. Only the onboarding endpoints respond:
+        1. **Has active membership** — the package resolver returns an
+           ``OrganizationMembership`` instance and all tenant-scoped endpoints
+           are open to them.
+        2. **Gated (zero active memberships)** — the package resolver returns
+           ``None``. Only the onboarding endpoints respond:
            ``POST /organizations/`` (create own org) and ``POST /invitations/accept``
            (join an invited org). All other tenant-scoped endpoints must return an
            empty queryset or permission denial — never a 500.
 
         A user may hold memberships in multiple organizations.
-        ``get_active_organization_membership`` resolves the *active* one: for a
-        single-membership user it returns that membership; for a multi-org user it
-        resolves the active org from the ``X-Organization-Id`` header.
+        ``resolve_membership_for_user`` resolves the *active* one: for a
+        single-membership user it returns that membership; for a multi-org user
+        the DRF integration resolves the active org from the
+        ``X-Organization-Id`` header and stores it on the request.
 
-        Never read ``user.memberships`` directly in permission /
-        scoping code — always go through ``get_active_organization_membership`` so
-        the resolution stays in one place.
+        Request code reads ``request.organization_membership``. Code outside a
+        request calls ``vinta_orgs.helpers.resolve_membership_for_user``
+        directly so resolution stays owned by the package.
 
     Inherited from ``vinta_orgs.models.AbstractOrganizationMembership``:
     ``organization`` and ``user`` (both ``related_name="memberships"`` --

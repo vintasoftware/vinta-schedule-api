@@ -358,7 +358,7 @@ def test_calendar_group_permission_delegates_to_permission_service(
     organization, clinic_group, managed_calendars
 ):
     owner = User.objects.create_user(email="delegate@example.com")
-    OrganizationMembership.objects.create(user=owner, organization=organization)
+    membership = OrganizationMembership.objects.create(user=owner, organization=organization)
     CalendarOwnership.objects.create(
         organization=organization,
         calendar=managed_calendars["phys_a"],
@@ -368,6 +368,7 @@ def test_calendar_group_permission_delegates_to_permission_service(
     perm = CalendarGroupPermission(calendar_permission_service=CalendarPermissionService())
     request = Mock()
     request.user = owner
+    request.organization_membership = membership
     assert perm.has_permission(request, view=Mock()) is True
     assert perm.has_object_permission(request, view=Mock(), obj=clinic_group) is True
 
@@ -379,7 +380,7 @@ def test_calendar_group_permission_falls_back_when_service_missing(
     """If DI fails to wire the service we don't crash — the permission falls
     back to the inline ownership check and still makes a correct decision."""
     owner = User.objects.create_user(email="fallback@example.com")
-    OrganizationMembership.objects.create(user=owner, organization=organization)
+    membership = OrganizationMembership.objects.create(user=owner, organization=organization)
     CalendarOwnership.objects.create(
         organization=organization,
         calendar=managed_calendars["phys_a"],
@@ -388,4 +389,5 @@ def test_calendar_group_permission_falls_back_when_service_missing(
     perm = CalendarGroupPermission(calendar_permission_service=None)
     request = Mock()
     request.user = owner
+    request.organization_membership = membership
     assert perm.has_object_permission(request, view=Mock(), obj=clinic_group) is True

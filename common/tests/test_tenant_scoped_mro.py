@@ -133,8 +133,7 @@ def test_our_subclass_adds_only_what_is_ours() -> None:
     """``TenantScopedViewMixin`` overrides the two package hooks it is allowed to.
 
     ``get_organization_slug`` (our header) and ``resolve_organization`` (our
-    refusal bodies and the ``_active_membership`` stash) are the whole of this
-    repo's contribution. Reintroducing an ``initial``, ``dispatch`` or
+    refusal bodies) are the whole of this repo's contribution. Reintroducing an ``initial``, ``dispatch`` or
     ``perform_authentication`` override here is the mistake this pins: it would
     take the seam back off the package, which is what Phase 3.5 handed over.
     """

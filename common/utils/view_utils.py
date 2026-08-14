@@ -70,18 +70,11 @@ class TenantScopedViewMixin(OrganizationScopedAPIViewMixin):
        and translates it into the slug the package's resolver matches on.
     2. **The refusal bodies.** :meth:`resolve_organization` restates the 400 and
        the 403 in the wording our clients already match on.
-    3. **The stash.** :meth:`resolve_organization` also writes
-       ``request.user._active_membership``, which
-       ``organizations.models.get_active_organization_membership`` reads -- that
-       is what makes ~60 existing call sites header-aware without being touched.
-
-    After this mixin runs, three attributes are available on every DRF request:
+    After this mixin runs, two attributes are available on every DRF request:
 
     - ``request.organization_membership`` -- the resolved
       ``OrganizationMembership`` or ``None`` (gated / unauthenticated caller).
     - ``request.organization`` -- the resolved ``Organization`` or ``None``.
-    - ``request.user._active_membership`` -- the same value (authenticated
-      callers only).
 
     Resolution table (multi-org with no header -> 400; non-member -> 403). It is
     ``resolve_membership_for_user``'s table, restated in terms of our header:
@@ -216,7 +209,7 @@ class TenantScopedViewMixin(OrganizationScopedAPIViewMixin):
         return slug
 
     def resolve_organization(self, request: Request) -> None:
-        """The package's resolution, with our refusal bodies and our stash.
+        """Run the package's resolution while preserving our refusal bodies.
 
         The package translates ``AmbiguousOrganizationError`` into a DRF
         ``ValidationError`` and ``OrganizationAccessDeniedError`` into a DRF
@@ -225,8 +218,6 @@ class TenantScopedViewMixin(OrganizationScopedAPIViewMixin):
         package and are a wire contract, and a client matching on them must not
         have to care that resolution moved upstream.
 
-        The stash comes after the refusals on purpose: a request that is refused
-        never had a membership to record, exactly as before.
         """
         try:
             super().resolve_organization(request)
@@ -234,13 +225,6 @@ class TenantScopedViewMixin(OrganizationScopedAPIViewMixin):
             raise ValidationError({"detail": AMBIGUOUS_ORGANIZATION_DETAIL}) from exc
         except PermissionDenied as exc:
             raise PermissionDenied(NON_MEMBER_ORGANIZATION_DETAIL) from exc
-
-        user = getattr(request, "user", None)
-        if user is not None and getattr(user, "is_authenticated", False):
-            # Set even when ``None``, so ``get_active_organization_membership``
-            # can tell "the DRF request path resolved to gated" from "not on a
-            # DRF request at all" (its ``_UNSET`` sentinel).
-            user._active_membership = request.organization_membership  # type: ignore[attr-defined]
 
 
 class RefetchReturnInstanceAfterWriteMixin:

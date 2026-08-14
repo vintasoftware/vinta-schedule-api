@@ -15,7 +15,6 @@ from rest_framework.response import Response
 from rest_framework.viewsets import GenericViewSet, ViewSet
 
 from common.utils.view_utils import TenantScopedViewMixin
-from organizations.models import get_active_organization_membership
 from organizations.permissions import IsOrganizationAdmin
 from payments.services.entitlement_service import EntitlementService
 from public_api.constants import PROVIDER_SCOPED_RESOURCES
@@ -57,12 +56,10 @@ class SystemUserTokenViewSet(
     """
 
     # ``TenantScopedViewMixin``, added in Phase 2b of the vinta-django-orgs
-    # migration. Before it, this was a plain ``GenericViewSet``: nothing stashed
-    # ``request.user._active_membership``, so every
-    # ``get_active_organization_membership`` call below -- the queryset, the
-    # create serializer -- fell through to the caller's *oldest* active
-    # membership, and a multi-organization admin listed and minted the tokens of
-    # an organization the header did not name. The mixin also puts these routes
+    # migration. Before it, this was a plain ``GenericViewSet`` and did not
+    # resolve the header before the queryset and create serializer chose a
+    # membership. A multi-organization admin could therefore list and mint the
+    # tokens of an organization the header did not name. The mixin also puts these routes
     # in front of ``common.openapi.TenantScopedAutoSchema``, which is what
     # documents the header in ``schema.yml``.
 
@@ -111,7 +108,7 @@ class SystemUserTokenViewSet(
         user = self.request.user
         if not user.is_authenticated:
             return SystemUser.objects.none()
-        membership = get_active_organization_membership(user)
+        membership = self.request.organization_membership
         if membership:
             return SystemUser.objects.filter(deleted_at__isnull=True).prefetch_related(
                 "available_resources"
