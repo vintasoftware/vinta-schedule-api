@@ -180,6 +180,33 @@ def reseller_org_member(reseller_org):
 class TestOrganizationBrandingViewSet:
     """Test suite for OrganizationBrandingViewSet REST endpoints."""
 
+    def test_direct_branding_permission_admits_and_manage_members_does_not(
+        self, client, user, reseller_org, reseller_org_admin
+    ):
+        """The branding endpoint reads its declared capability, not admin-ness."""
+        from django.contrib.auth.models import Permission
+        from django.contrib.contenttypes.models import ContentType
+
+        reseller_org_admin.groups.clear()
+        branding_permission = Permission.objects.get(
+            codename="manage_branding",
+            content_type=ContentType.objects.get_for_model(Organization),
+        )
+        members_permission = Permission.objects.get(
+            codename="manage_members",
+            content_type=ContentType.objects.get_for_model(OrganizationMembership),
+        )
+        client.force_authenticate(user)
+        client.credentials(HTTP_X_ORGANIZATION_ID=str(reseller_org.id))
+
+        reseller_org_admin.permissions.add(branding_permission)
+        assert_response_status_code(client.get(BRANDING_URL), status.HTTP_404_NOT_FOUND)
+
+        reseller_org_admin.permissions.clear()
+        reseller_org_admin.permissions.add(members_permission)
+        client.force_authenticate(User.objects.get(pk=user.pk))
+        assert_response_status_code(client.get(BRANDING_URL), status.HTTP_403_FORBIDDEN)
+
     def test_retrieve_branding_not_configured_returns_404(
         self, client, user, reseller_org, reseller_org_admin
     ):

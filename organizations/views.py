@@ -129,7 +129,8 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
     def get_permissions(self):
         """
         Override permissions per action:
-        - update / partial_update: admin-only (IsOrganizationAdmin).  An admin
+        - update / partial_update: require ``organizations.manage_organization``.
+          A permitted member
           can only reach their own org because get_queryset is scoped by
           membership, so cross-org attempts return 404.
         - All other actions keep the class-level defaults (IsAuthenticated +
@@ -1058,15 +1059,15 @@ class AcceptInvitationView(generics.CreateAPIView):
 
 @extend_schema(tags=["Branding"])
 class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
-    """Admin-only REST endpoint for managing a parentless, entitled
+    """Capability-gated REST endpoint for managing a parentless, entitled
     organization's branding.
 
     Write gate (Organization Auth-Area Branding plan, Phase 3): PUT/PATCH
     require the acting org to be parentless and hold the
     ``white_label_branding`` entitlement
     (``organizations.permissions.evaluate_branding_write_gate`` -- its third,
-    slug-set condition is retired, see that function), AND the caller must be
-    an org admin (``IsOrganizationAdmin`` permission). Replaces the earlier
+    slug-set condition is retired, see that function), AND the caller must hold
+    ``organizations.manage_branding``. Replaces the earlier
     reseller-only gate (``is_reseller()``) -- any paying, parentless
     organization can now manage its own branding, not just resellers. Each of
     the two failure conditions raises its own ``PermissionDenied`` subclass
@@ -1336,7 +1337,7 @@ class OrganizationBrandingLogoUploadParamsView(TenantScopedViewMixin, views.APIV
     Matches ``OrganizationBrandingView.get``'s read gate.
     """
 
-    permission_classes = (IsOrganizationAdmin,)
+    permission_classes = (CanManageBranding,)
 
     @extend_schema(
         summary="Sign a branding logo upload",
@@ -1345,7 +1346,7 @@ class OrganizationBrandingLogoUploadParamsView(TenantScopedViewMixin, views.APIV
             200: OrganizationBrandingLogoUploadParamsSerializer,
             400: OpenApiResponse(description="Disallowed content type or file size"),
             403: OpenApiResponse(
-                description="Organization has a parent or lacks the entitlement; or not an admin"
+                description="Organization has a parent, lacks the entitlement, or lacks branding permission"
             ),
         },
     )

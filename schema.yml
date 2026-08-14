@@ -4608,8 +4608,8 @@ paths:
         '400':
           description: Disallowed content type or file size
         '403':
-          description: Organization has a parent or lacks the entitlement; or not
-            an admin
+          description: Organization has a parent, lacks the entitlement, or lacks
+            branding permission
   /branding/logo/{org_slug}/:
     get:
       operationId: branding_logo_retrieve
