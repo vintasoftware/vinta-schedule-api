@@ -1116,20 +1116,21 @@ class TestCanManageBrandingOnMembershipPayload:
         [entry] = mine_response.json()
         assert entry["can_manage_branding"] is False
 
-    def test_non_admin_member_of_an_eligible_org_still_reports_true(
+    def test_unpermitted_member_of_an_eligible_org_reports_false(
         self, client, eligible_org, eligible_org_member
     ):
-        """A non-admin member's payload reports the same organization-level
-        capability as an admin's -- `can_manage_branding` is not gated by the
-        caller's own role, only by the organization's eligibility. Write
-        authorization stays role-gated separately, on the branding endpoints
-        themselves (`IsOrganizationAdmin`)."""
+        """The published field is the branding capability plus eligibility.
+
+        The eligible organization alone does not authorize this membership to
+        manage branding; the positive admin case above supplies the capability
+        half of the same contract.
+        """
         client.force_authenticate(eligible_org_member)
         client.credentials(HTTP_X_ORGANIZATION_ID=str(eligible_org.id))
 
         current_response = client.get(self._current_url())
         assert_response_status_code(current_response, status.HTTP_200_OK)
-        assert current_response.json()["can_manage_branding"] is True
+        assert current_response.json()["can_manage_branding"] is False
 
     def test_mine_endpoint_entitlement_queries_do_not_scale_with_membership_count(self):
         """Reviewer finding: the N+1-shaped entitlement lookup on
