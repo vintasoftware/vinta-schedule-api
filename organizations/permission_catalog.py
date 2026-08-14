@@ -241,6 +241,16 @@ def permissions_for_groups(group_names: Iterable[str]) -> frozenset[str]:
     decide whether the assignment about to happen removes
     ``organizations.manage_members`` from its target. Unknown names contribute
     nothing.
+
+    **Groups only, deliberately.** A membership may also hold a capability
+    through its direct ``permissions`` grant, which this endpoint never touches
+    and this function cannot see. So the last-admin guard can refuse a write
+    that would in fact have left the target holding ``manage_members`` directly
+    -- a false 400, not a false permit. That is the safe direction (the
+    dangerous one is clearing the last real administrator), and it is why this
+    disagrees with ``OrganizationMembershipQuerySet.holding_permission``, which
+    unions both sources because *it* is counting who remains. Nothing writes the
+    direct grant today, so the divergence is currently unreachable.
     """
     return frozenset(
         permission for name in group_names for permission in GROUP_PERMISSIONS.get(name, ())
