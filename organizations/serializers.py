@@ -403,7 +403,7 @@ class CurrentMembershipSerializer(serializers.ModelSerializer):
         return _resolved_permissions(self, obj)
 
     def get_can_manage_branding(self, obj: OrganizationMembership) -> bool:
-        """Whether the membership's organization is branding-eligible.
+        """Whether this membership can manage branding.
 
         Computed as parentless-and-entitled. It once deliberately excluded a
         third, slug condition (Organization Auth-Area Branding plan, Phase 4
@@ -411,7 +411,9 @@ class CurrentMembershipSerializer(serializers.ModelSerializer):
         slug still saw the branding page; that condition is now retired, so the
         exclusion is vacuous and the two checks coincide. Shares
         ``organizations.permissions.is_branding_eligible_organization`` rather
-        than restating the two-condition check, so this tracks the same gate
+        than restating the two-condition check. It also requires this
+        membership's ``organizations.manage_branding`` capability, so it tracks
+        the same gate
         that governs ``GET /branding/`` (see
         ``OrganizationBrandingView._check_branding_read_gate``) rather than
         the write gate.
@@ -507,14 +509,13 @@ class MyMembershipSerializer(serializers.ModelSerializer):
         return _resolved_permissions(self, obj)
 
     def get_can_manage_branding(self, obj: OrganizationMembership) -> bool:
-        """Whether this membership's organization is branding-eligible
-        (parentless-and-entitled) -- see
+        """Whether this membership can manage branding: its
+        ``organizations.manage_branding`` capability plus the parentless,
+        entitled organization gate -- see
         ``CurrentMembershipSerializer.get_can_manage_branding`` for the full
-        rationale. Computed per-membership (not per-role): a non-admin
-        member's entry reports the same organization-level capability as an
-        admin's, matching the read gate's own admin-agnostic eligibility
-        check -- role-based write authorization is enforced separately by
-        ``IsOrganizationAdmin`` on the branding endpoints themselves.
+        rationale. Computed per membership, so a permitted member and an
+        unpermitted member in the same eligible organization receive different
+        values.
 
         Reads from the batch ``_MyMembershipListSerializer`` precomputes on the
         shared context when serializing a list (the ``many=True`` path this

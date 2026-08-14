@@ -76,7 +76,7 @@ Notes that matter when you write that code:
 - **`permissions` is organization-scoped.** In `GET /organizations/mine/` each row reports
   the capabilities for *that row's* organization; a user who administers one organization
   and is a plain member of another gets two different arrays in the same response.
-- **`can_manage_branding` is unchanged and is still a separate boolean.** It is the
+- **`can_manage_branding` remains a separate boolean.** It is the
   *composite* of `organizations.manage_branding`, the organization's white-label
   entitlement, and the "has no parent organization" rule. Do not replace it with a
   `permissions.includes("organizations.manage_branding")` check — that would show the
@@ -91,8 +91,8 @@ Notes that matter when you write that code:
   when the caller has no membership (unchanged).
 - **Request:** unchanged. Optional `X-Organization-Id` header (required when the caller has
   two or more active memberships).
-- **Response 200:** `role` removed, `permissions` added. `organization` and
-  `can_manage_branding` unchanged.
+- **Response 200:** `role` removed, `permissions` added. `can_manage_branding`
+  remains the composite of the branding capability, entitlement, and parentless rule.
 
 Before:
 

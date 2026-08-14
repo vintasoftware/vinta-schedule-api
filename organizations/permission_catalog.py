@@ -14,7 +14,7 @@ Two deliberate shapes, both from the plan's Guiding Decisions
 * **The groups are global rows, shared by every organization.** Per-organization
   scoping comes from the *membership* the group hangs off
   (``OrganizationMembership.groups``), not from the group. Every authorization
-  check reads ``user.has_perm("app.codename")``, never a group name, so a
+  check resolves a capability from the active membership, never a group name, so a
   per-organization group layer can be added later without touching a call site.
 
 Nothing in this module is consulted by a permission class yet -- Phase 4 does
@@ -242,15 +242,8 @@ def permissions_for_groups(group_names: Iterable[str]) -> frozenset[str]:
     ``organizations.manage_members`` from its target. Unknown names contribute
     nothing.
 
-    **Groups only, deliberately.** A membership may also hold a capability
-    through its direct ``permissions`` grant, which this endpoint never touches
-    and this function cannot see. So the last-admin guard can refuse a write
-    that would in fact have left the target holding ``manage_members`` directly
-    -- a false 400, not a false permit. That is the safe direction (the
-    dangerous one is clearing the last real administrator), and it is why this
-    disagrees with ``OrganizationMembershipQuerySet.holding_permission``, which
-    unions both sources because *it* is counting who remains. Nothing writes the
-    direct grant today, so the divergence is currently unreachable.
+    **Groups only.** Callers combine this prospective group result with the
+    target's retained direct permissions when they need the post-write answer.
     """
     return frozenset(
         permission for name in group_names for permission in GROUP_PERMISSIONS.get(name, ())

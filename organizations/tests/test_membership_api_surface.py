@@ -171,11 +171,12 @@ class TestTheGlobalHalfStaysOutOfTheResponse:
     def test_membership_of_the_seeded_group_as_a_global_django_group_is_not_reported(
         self, organization
     ):
-        """The exact shape the Django user admin's group picker still offers.
+        """A legacy global user-group assignment remains inert and unpublished.
 
-        ``users/admin.py`` lists ``organization_admin`` in the user form's
-        ``filter_horizontal`` groups widget. Adding a user there grants nothing
-        in any organization (Phase 4), and must therefore be reported nowhere.
+        ``users/admin.py`` no longer offers seeded groups as new choices, but
+        preserves existing assignments during unrelated edits. Such an
+        assignment grants nothing in any organization and must be reported
+        nowhere.
         """
         user = baker.make(User)
         membership = make_membership(user=user, organization=organization)
