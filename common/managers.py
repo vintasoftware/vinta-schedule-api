@@ -103,22 +103,13 @@ class OrganizationScopedManager(SingleOrganizationModelManager):
     without ``through=`` would silently be the second again, which is why the
     distinction is written down here rather than assumed.
 
-    **A write that names its organization is not scoped either.**
-    ``create`` / ``get_or_create`` / ``update_or_create`` / ``bulk_create`` are
-    copied onto the manager from ``QuerySet``, so they route through
-    ``get_queryset()`` and would inherit the refusal -- but the scope they refuse
-    to resolve has no effect on what they do. ``QuerySet.create`` does not carry
-    the queryset's filters onto the new row and ``bulk_create`` takes
-    fully-built instances, so refusing ``Calendar.objects.create(organization=org,
-    ...)`` -- which is how essentially every write in this codebase is spelled,
-    and which the manager this replaces *required* -- would reject a statement
-    that is already unambiguous. A write that does *not* name an organization
-    still goes through the scoped queryset: either the context supplies one (and
-    ``SingleOrganizationModelMixin.save()`` stamps it) or nothing does and it
-    raises, exactly as a read would. "Names its organization" means in the
-    arguments that reach the *lookup* -- ``get_or_create``'s ``defaults`` does
-    not count, because it never reaches the ``get()``; see the comment above
-    those two methods.
+    **The package owns inserts.** ``vinta-django-orgs`` deliberately builds
+    ``create`` and ``bulk_create`` from its original queryset: inserts read no
+    rows, so organization scoping could only reject an otherwise unambiguous
+    write. A create without an organization still relies on
+    ``SingleOrganizationModelMixin.save()`` to use the bound organization or
+    refuse the write. This manager retains the project-specific lookup and
+    update carve-outs below; it does not duplicate the package's insert logic.
     """
 
     #: The ways a caller can name the organization on a write.
@@ -187,11 +178,6 @@ class OrganizationScopedManager(SingleOrganizationModelManager):
             return False
         return any(kwargs.get(name) is not None for name in self._ORGANIZATION_KWARGS)
 
-    def create(self, **kwargs: Any) -> Any:
-        if self._names_an_organization(kwargs):
-            return self.unscoped().create(**kwargs)
-        return super().create(**kwargs)
-
     # ``defaults`` is deliberately *not* consulted by either method below, unlike
     # ``kwargs``. ``defaults`` is only applied to the row these methods create or
     # update; it takes no part in the ``get()`` that runs first. Letting it
@@ -218,18 +204,11 @@ class OrganizationScopedManager(SingleOrganizationModelManager):
             return self.unscoped().update_or_create(defaults=defaults, **kwargs)
         return super().update_or_create(defaults=defaults, **kwargs)
 
-    def bulk_create(self, objs: Any, *args: Any, **kwargs: Any) -> Any:
-        # Always unscoped: every object carries its own ``organization``, and one
-        # that does not fails the column's NOT NULL rather than silently landing
-        # in whichever organization happened to be bound. ``save()``'s context
-        # fallback is not involved -- ``bulk_create`` does not call it.
-        return self.unscoped().bulk_create(objs, *args, **kwargs)
-
     def bulk_update(self, objs: Any, *args: Any, **kwargs: Any) -> Any:
-        # Same reasoning as ``bulk_create``: the statement is addressed to the
-        # primary keys of instances the caller already holds, each carrying its own
-        # organization, so the queryset's scope adds nothing and refusing to
-        # resolve one would reject an unambiguous write.
+        # The statement is addressed to the primary keys of instances the caller
+        # already holds, each carrying its own organization, so the queryset's
+        # scope adds nothing and refusing to resolve one would reject an
+        # unambiguous write.
         return self.unscoped().bulk_update(objs, *args, **kwargs)
 
 

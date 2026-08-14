@@ -10,20 +10,22 @@ Three claims, one per class:
    ``objects.filter_by_organization(...)`` -- still work, and the first two still
    cross organizations.
 
-Plus the two carve-outs this project makes on top of the package (see
-``common.managers.OrganizationScopedManager``): related managers are not scoped
--- reverse foreign keys, many-to-many, and prefetches through either -- and a
-write that names its own organization is not either. "Names" means in the
-arguments that reach the *lookup*: ``get_or_create``/``update_or_create``'s
-``defaults`` does not count, and the last class here is why.
+Plus the project's related-manager carve-out and the package-owned insert
+behaviour (see ``common.managers.OrganizationScopedManager``): reverse foreign
+keys, many-to-many, and prefetches through either are unscoped; package
+``create`` / ``bulk_create`` also allow inserts without an ambient query scope.
+``get_or_create`` / ``update_or_create`` remain project-owned lookup carve-outs,
+where an organization in ``defaults`` does not make the lookup safe.
 """
 
 from __future__ import annotations
 
 import pytest
 from vinta_orgs.exceptions import OrganizationNotFoundError
+from vinta_orgs.managers import SingleOrganizationModelManager
 
 from calendar_integration.models import Calendar, CalendarOwnership, CalendarSync
+from common.managers import OrganizationScopedManager
 from common.organization_context import organization_context
 from organizations.models import Organization, OrganizationMembership
 from users.models import User
@@ -144,7 +146,14 @@ class TestTheDocumentedWaysOut:
             assert list(Calendar.objects.filter_by_organization(organization_a.id)) == [calendar_a]
 
 
-class TestTheProjectsTwoCarveOuts:
+class TestRelatedManagerAndInsertBehaviour:
+    def test_the_application_manager_inherits_the_packages_insert_methods(self):
+        """Keep package ``0.3.0`` as the single owner of insert semantics."""
+        assert "create" not in OrganizationScopedManager.__dict__
+        assert "bulk_create" not in OrganizationScopedManager.__dict__
+        assert OrganizationScopedManager.create is SingleOrganizationModelManager.create
+        assert OrganizationScopedManager.bulk_create is SingleOrganizationModelManager.bulk_create
+
     def test_a_reverse_related_manager_reads_unbound(self, organization_a, calendar_a):
         """A reverse accessor is already restricted to one parent row, and for a
         safe relation that filter carries the parent's organization. Demanding an
@@ -177,6 +186,17 @@ class TestTheProjectsTwoCarveOuts:
         calendar = Calendar.objects.create(name="named", organization=organization_a)
 
         assert calendar.organization_id == organization_a.id
+
+    def test_a_related_manager_create_works_unbound(self, organization_a, calendar_a):
+        sync = calendar_a.syncs.create(
+            organization=organization_a,
+            start_datetime="2025-06-22T00:00:00Z",
+            end_datetime="2025-06-22T23:59:00Z",
+            should_update_events=True,
+        )
+
+        assert sync.organization_id == organization_a.id
+        assert sync.calendar_fk_id == calendar_a.id
 
     def test_a_write_that_names_no_organization_adopts_the_bound_one(self, organization_a):
         """``SingleOrganizationModelMixin.save()`` resolves the organization from
