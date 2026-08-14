@@ -66,7 +66,7 @@ class ConsentService:
         Resolves the latest ``PolicyDocument`` of `document_type` (raises
         ``NoPolicyDocumentError`` when none has ever been published) and
         creates a new, version-pinned ``UserConsent`` row. Emits an
-        ``AuditService`` CREATE record when the user has an active
+        ``AuditService`` CREATE record when the user has exactly one active
         organization membership.
 
         :param user: The user granting consent.
