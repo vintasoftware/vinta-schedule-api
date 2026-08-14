@@ -29,11 +29,9 @@ import pytest
 import yaml
 from model_bakery import baker
 from rest_framework import status
+from vinta_orgs.auth_backends import OrganizationModelBackend
+from vinta_orgs.authorization import resolve_membership_permissions
 
-from organizations.auth_backends import (
-    OrganizationModelBackend,
-    resolve_membership_permissions,
-)
 from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import (
     MANAGE_BILLING,
@@ -63,13 +61,16 @@ def _resolved_by_the_backend(membership: OrganizationMembership) -> list[str]:
     """What ``has_organization_permission`` would answer, for every capability.
 
     Deliberately routed through the backend method the permission classes ask
-    (``OrganizationModelBackend.get_membership_permissions``) rather than
+    (``OrganizationModelBackend.get_organization_permissions``, with
+    ``include_global`` and ``allow_superuser`` left at their default ``False``
+    -- the same defaults ``organizations.authorization`` pins) rather than
     through the batch resolver the serializers use, so the assertion compares
     two independent computations rather than one with itself.
     """
     return sorted(
-        OrganizationModelBackend().get_membership_permissions(
-            membership.user, membership.organization
+        OrganizationModelBackend().get_organization_permissions(
+            membership.user,
+            membership.organization,  # type: ignore[arg-type]  # our Organization vs. the package's swappable-model placeholder
         )
     )
 

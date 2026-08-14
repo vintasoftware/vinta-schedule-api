@@ -32,13 +32,13 @@ silent divergence.
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from django.contrib.auth.models import Group, Permission
 from django.db import transaction
 
 
 logger = logging.getLogger(__name__)
-from typing import TYPE_CHECKING
 
 
 if TYPE_CHECKING:
@@ -169,6 +169,8 @@ def seed_organization_groups() -> list[Group]:
             groups.append(group)
 
     return groups
+
+
 def membership_state_for_groups(group_names: Iterable[str]) -> tuple[bool, bool]:
     """The ``(is_admin, is_billing_owner)`` a membership in ``group_names`` has.
 

@@ -333,6 +333,43 @@ class TestTheLastManageMembersGuard:
 
         assert response.status_code == status.HTTP_200_OK
 
+    def test_a_group_grant_and_a_direct_grant_together_count_the_membership_once(
+        self, organization
+    ):
+        """``holding_permission`` joins two M2Ms with an ``OR`` -- ``distinct()`` pins.
+
+        A membership in ``organization_admin`` *and* directly granted
+        ``manage_members`` satisfies both halves of
+        ``vinta_orgs.querysets.filter_memberships_holding_permission``'s
+        ``Q(permissions=...) | Q(groups__permissions=...)``. Without
+        ``distinct()`` the join would return that one row twice, and
+        ``.count()`` -- what the guard above compares to zero -- would report
+        two members where there is one. That happens to still leave the ``==
+        0`` check unharmed for *this* specific comparison, but the guard reuses
+        this exact queryset method, so a silent regression here is a silent
+        regression there; asserted directly against the queryset rather than
+        through the view so the count itself, not just the view's derived
+        decision, is what is pinned.
+        """
+        from django.contrib.auth.models import Permission
+        from django.contrib.contenttypes.models import ContentType
+
+        doubly_granted = make_admin_membership(user=baker.make(User), organization=organization)
+        doubly_granted.permissions.add(
+            Permission.objects.get(
+                codename="manage_members",
+                content_type=ContentType.objects.get_for_model(OrganizationMembership),
+            )
+        )
+
+        count = (
+            OrganizationMembership.objects.filter(organization_id=organization.id, is_active=True)
+            .holding_permission(MANAGE_MEMBERS)
+            .count()
+        )
+
+        assert count == 1
+
 
 @pytest.mark.django_db
 class TestRejections:

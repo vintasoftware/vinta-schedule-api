@@ -5,10 +5,10 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 
 from dependency_injector.wiring import Provide, inject
 from rest_framework import serializers
+from vinta_orgs.authorization import resolve_membership_permissions
 
 from calendar_integration.models import GoogleCalendarServiceAccount
 from common.utils.serializer_utils import VirtualModelSerializer
-from organizations.auth_backends import resolve_membership_permissions
 from organizations.branding_logo import normalize_uploaded_logo_key, signed_logo_url
 from organizations.exceptions import BrandingLogoUploadRejectedError
 from organizations.models import (
@@ -361,7 +361,7 @@ class _MembershipPermissionsListSerializer(serializers.ListSerializer):
 
     Without this each row would resolve its own permissions, which is one
     membership lookup plus two permission queries *per row*. See
-    ``organizations.auth_backends.resolve_membership_permissions``.
+    ``vinta_orgs.authorization.resolve_membership_permissions``.
     """
 
     def to_representation(self, data):
