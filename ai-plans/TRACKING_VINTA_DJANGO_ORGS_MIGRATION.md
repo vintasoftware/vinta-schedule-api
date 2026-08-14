@@ -776,6 +776,19 @@ two serial groups (`calendar_integration` 2,042; everything else 3,816), zero
 database, and `0030` steps backwards and forwards again. Full suite gated on CI
 per the machine-load note.
 
+**Rebased again 2026-08-14 after the Phase 4 timeout fix**: Phase 6 now sits on
+the repaired Phase 5 tip. Commits 2–8 are patch-identical by `git range-diff`;
+the first differs only because it deletes the larger, newly optimized
+`test_privileged_membership_fixtures.py`, as Phase 6's removal of `role` and
+`is_billing_owner` makes that guard vacuous. Comparing the old and new final
+Phase 6 trees shows only this plan and tracking file changed. The full suite is
+**5,929 passed / 0 failed**; a clean migration followed by the migration-executor
+and seeded-group invariant tests is **5 passed / 0 failed**. Ruff, format,
+`makemigrations --check`, and `check --deploy` are clean. Mypy currently reports
+292 errors in 58 files; because the code tree is identical, the one-error change
+from the recorded 291 is tooling/environment drift rather than a branch change.
+New SHA `517d973`; `plan/vinta-django-orgs-migration/phase-6` force-pushed.
+
 **The three carry-forward decisions:**
 
 1. **`IsBillingOwnerOrAdmin`'s reseller-root branch: KEPT.** It is unreachable
