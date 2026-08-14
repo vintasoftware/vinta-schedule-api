@@ -544,6 +544,8 @@ Carry-forwards:
 
 **Gate**: ruff / format clean, mypy **291** (below the 293 baseline), `makemigrations --check` clean, `check --deploy` byte-identical, both schemas regenerate to the committed files. Scoped suites ~5,866 passed across five groups plus 213 on the fix pass; zero timeouts, zero `AssertionError`. Full suite gated on CI.
 
+**Rebased 2026-08-14 after the Phase 4 timeout fix**: all six Phase 5 commits are patch-identical by `git range-diff`; no conflict or body change. The repaired inherited guard passes in **3.74s under `-n auto`**, and ruff, format, and `check --deploy` are clean. New SHA `c329db4`; `plan/vinta-django-orgs-migration/phase-5` force-pushed.
+
 Carry-forwards:
 
 - **The branding views still gate on `IsOrganizationAdmin`** (`organizations.manage_members`) rather than `manage_branding`. Deliberately left: this phase's contract is representation, and Phase 4 owned authorization with its parity matrix. Unobservable today — `organization_admin` is the only group carrying `manage_branding` and it also carries `manage_members`, no API path can grant one without the other, and direct per-membership grants are unwritten. **The trigger condition is explicit: the moment a group can carry `manage_branding` alone, the published capability becomes a lie and the gate must move.** That is exactly what the per-organization group layer would do.
