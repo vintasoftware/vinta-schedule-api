@@ -413,8 +413,8 @@ class CurrentMembershipSerializer(serializers.ModelSerializer):
         ``organizations.permissions.is_branding_eligible_organization`` rather
         than restating the two-condition check. It also requires this
         membership's ``organizations.manage_branding`` capability, so it tracks
-        the same gate
-        that governs ``GET /branding/`` (see
+        the same ``manage_branding``-plus-eligibility composite that governs
+        ``GET /branding/`` and logo-upload signing (see
         ``OrganizationBrandingView._check_branding_read_gate``) rather than
         the write gate.
         """

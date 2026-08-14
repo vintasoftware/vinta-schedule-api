@@ -4432,8 +4432,8 @@ paths:
                 $ref: '#/components/schemas/OrganizationBranding'
           description: ''
         '403':
-          description: Organization has a parent or lacks the entitlement; or not
-            an admin.
+          description: Organization has a parent, lacks the entitlement, or lacks
+            branding permission.
         '404':
           description: Branding not yet configured
     put:
@@ -4492,8 +4492,8 @@ paths:
         '400':
           description: Invalid input (color format, URL validation)
         '403':
-          description: Organization has a parent or lacks the entitlement; or not
-            an admin
+          description: Organization has a parent, lacks the entitlement, or lacks
+            branding permission
     patch:
       operationId: branding_partial_update
       description: |-
@@ -4543,15 +4543,15 @@ paths:
         '400':
           description: Invalid input (color format, URL validation)
         '403':
-          description: Organization has a parent or lacks the entitlement; or not
-            an admin
+          description: Organization has a parent, lacks the entitlement, or lacks
+            branding permission
         '404':
           description: Branding not yet configured
   /branding/logo-upload-params/:
     post:
       operationId: branding_logo_upload_params_create
       description: |-
-        Signs a ``branding_logos`` S3 upload for the acting organization's admin.
+        Signs a ``branding_logos`` S3 upload for a caller with branding capability.
 
         The shipped ``django-s3direct`` signing view (``POST
         /s3direct/get_upload_params/``) is a plain Django view authenticated only
@@ -4562,7 +4562,7 @@ paths:
         reusing the same ``sign_branding_logo_upload`` signing helper so the S3
         key/credential logic has one implementation.
 
-        Gated on the branding **eligibility** check
+        Gated on ``organizations.manage_branding`` and the branding **eligibility** check
         (``organizations.permissions.check_branding_read_eligibility`` -- parentless
         AND entitled) rather than on the write gate. The two admit the same set now
         that the write gate's slug condition is retired, but the split is kept: the
@@ -17854,8 +17854,8 @@ components:
             ``organizations.permissions.is_branding_eligible_organization`` rather
             than restating the two-condition check. It also requires this
             membership's ``organizations.manage_branding`` capability, so it tracks
-            the same gate
-            that governs ``GET /branding/`` (see
+            the same ``manage_branding``-plus-eligibility composite that governs
+            ``GET /branding/`` and logo-upload signing (see
             ``OrganizationBrandingView._check_branding_read_gate``) rather than
             the write gate.
           readOnly: true

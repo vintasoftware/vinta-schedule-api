@@ -503,7 +503,7 @@ class ServiceAccountViewSet(
     queryset; non-admins get 403; anonymous requests 401.
     """
 
-    permission_classes = (CanManageBranding,)
+    permission_classes = (IsOrganizationAdmin,)
     serializer_class = ServiceAccountReadSerializer
 
     @inject
@@ -546,7 +546,7 @@ class ServiceAccountViewSet(
         """
         membership = request.organization_membership
         if membership is None:
-            # IsOrganizationAdmin already guards this; defensive fallback.
+            # The admin permission already guards this; defensive fallback.
             return Response(
                 {"detail": "No active organization membership."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -1095,7 +1095,7 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
     or makes organization writable.
 
     Tenant-scoping: ``TenantScopedViewMixin`` resolves ``X-Organization-Id``
-    before any handler runs, so multi-org admins always operate on the
+    before any handler runs, so multi-org callers always operate on the
     header-named org. Without the header a multi-org caller receives 400;
     a header naming a non-member org receives 403 — identical to every other
     org-scoped endpoint. ``OrganizationScopedAPIViewMixin
@@ -1131,7 +1131,7 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
         user = self.request.user
         # Narrows AbstractBaseUser | AnonymousUser -> AbstractBaseUser for mypy
         # (matches the pattern in ServiceAccountViewSet.get_queryset above);
-        # IsOrganizationAdmin already blocks anonymous callers before this runs.
+        # CanManageBranding already blocks anonymous callers before this runs.
         if not user.is_authenticated:
             raise PermissionDenied("No active organization membership.")
         membership = cast("Any", self.request).organization_membership
@@ -1175,7 +1175,7 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
         responses={
             200: OrganizationBrandingSerializer,
             403: OpenApiResponse(
-                description="Organization has a parent or lacks the entitlement; or not an admin."
+                description="Organization has a parent, lacks the entitlement, or lacks branding permission."
             ),
             404: OpenApiResponse(description="Branding not yet configured"),
         },
@@ -1200,7 +1200,7 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
             200: OrganizationBrandingSerializer,
             400: OpenApiResponse(description="Invalid input (color format, URL validation)"),
             403: OpenApiResponse(
-                description="Organization has a parent or lacks the entitlement; or not an admin"
+                description="Organization has a parent, lacks the entitlement, or lacks branding permission"
             ),
         },
     )
@@ -1248,7 +1248,7 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
             200: OrganizationBrandingSerializer,
             400: OpenApiResponse(description="Invalid input (color format, URL validation)"),
             403: OpenApiResponse(
-                description="Organization has a parent or lacks the entitlement; or not an admin"
+                description="Organization has a parent, lacks the entitlement, or lacks branding permission"
             ),
             404: OpenApiResponse(description="Branding not yet configured"),
         },
@@ -1317,7 +1317,7 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
 
 @extend_schema(tags=["Branding"])
 class OrganizationBrandingLogoUploadParamsView(TenantScopedViewMixin, views.APIView):
-    """Signs a ``branding_logos`` S3 upload for the acting organization's admin.
+    """Signs a ``branding_logos`` S3 upload for a caller with branding capability.
 
     The shipped ``django-s3direct`` signing view (``POST
     /s3direct/get_upload_params/``) is a plain Django view authenticated only
@@ -1328,7 +1328,7 @@ class OrganizationBrandingLogoUploadParamsView(TenantScopedViewMixin, views.APIV
     reusing the same ``sign_branding_logo_upload`` signing helper so the S3
     key/credential logic has one implementation.
 
-    Gated on the branding **eligibility** check
+    Gated on ``organizations.manage_branding`` and the branding **eligibility** check
     (``organizations.permissions.check_branding_read_eligibility`` -- parentless
     AND entitled) rather than on the write gate. The two admit the same set now
     that the write gate's slug condition is retired, but the split is kept: the

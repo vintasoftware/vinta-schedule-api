@@ -3297,6 +3297,54 @@ class TestPhase20ServiceAccountCRUD:
         assert "private_key_id" not in body
         assert "public_key" not in body
 
+    @pytest.mark.parametrize(
+        ("permission_codename", "permission_model", "operation", "expected_status"),
+        [
+            ("manage_members", OrganizationMembership, "list", status.HTTP_200_OK),
+            ("manage_branding", Organization, "list", status.HTTP_403_FORBIDDEN),
+            ("manage_members", OrganizationMembership, "rotate", status.HTTP_200_OK),
+            ("manage_branding", Organization, "rotate", status.HTTP_403_FORBIDDEN),
+        ],
+    )
+    def test_service_account_uses_manage_members_not_manage_branding(
+        self, user, permission_codename, permission_model, operation, expected_status
+    ):
+        """Credential reads and rotation retain the service-account admin contract."""
+        from django.contrib.auth.models import Permission
+        from django.contrib.contenttypes.models import ContentType
+
+        organization = baker.make(Organization, name="Direct service account capability org")
+        membership = make_membership(
+            user=user,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+        membership.permissions.add(
+            Permission.objects.get(
+                codename=permission_codename,
+                content_type=ContentType.objects.get_for_model(permission_model),
+            )
+        )
+        account = self._create_account(organization)
+        client = APIClient()
+        client.force_authenticate(user=user)
+        client.credentials(HTTP_X_ORGANIZATION_ID=str(organization.id))
+
+        if operation == "list":
+            response = client.get(reverse("api:ServiceAccounts-list"))
+        else:
+            response = client.patch(
+                reverse("api:ServiceAccounts-detail", kwargs={"pk": account.pk}),
+                {"email": "rotated@example.iam.gserviceaccount.com"},
+                format="json",
+            )
+
+        assert response.status_code == expected_status
+        if expected_status == status.HTTP_200_OK and operation == "rotate":
+            account.refresh_from_db()
+            assert account.email == "rotated@example.iam.gserviceaccount.com"
+
     def test_create_returns_201_persists_and_no_secrets(self, user):
         org = baker.make(Organization, name="SA CRUD Org")
         client = self._make_admin(user, org)

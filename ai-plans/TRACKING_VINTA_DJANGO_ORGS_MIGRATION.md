@@ -527,7 +527,7 @@ Carry-forwards:
 ### Phase 5 — Expose permissions on REST and GraphQL, drop `role` from the API
 
 - **Branch**: `plan/vinta-django-orgs-migration/phase-5` off `phase-4`
-- **Commits**: original Phase 5 implementation and review-fix commits were superseded by the 2026-08-14 rebase; `ebce387`, `826f20d`, `85d58d3`, `3bd2153`, and `0602822` enforce and document the published organization and branding capabilities.
+- **Commits**: original Phase 5 implementation and review-fix commits were superseded by the 2026-08-14 rebase; `ebce387`, `826f20d`, `85d58d3`, `3bd2153`, `0602822`, and `2f03408` enforce, document, and test the published capability boundaries. The final service-account correction follows in the next commit.
 - **Review**: reviewer Tier 3 (project default). **One BLOCKER**, two SHOULD-FIX, one NIT.
 
 **The BLOCKER was caused by a carry-forward this phase chose to close.** Hiding the three seeded groups from the Django user form's `groups` picker introduced **silent data loss**: `ModelMultipleChoiceField` renders only options in the narrowed queryset, and `ModelForm.save_m2m()` calls `.set(cleaned_data)` — so any ordinary, unrelated edit to a user who already held `organization_admin` removed that assignment. The method's own docstring claimed the opposite, and the test asserted only on the widget queryset, never on a save. The reviewer proved it end-to-end through the real admin change form. Fixed by unioning back any seeded group the edited object already holds; `ModelAdmin.get_form` does not forward `obj` that far, so it is stashed on the *request* rather than on the shared `ModelAdmin` singleton. Round-trip tested and mutation-tested.
@@ -542,9 +542,9 @@ Carry-forwards:
 
 **Deviation, now documented in the plan**: `permissions` was added to the member-list serializer, where the plan's bullet said only to *drop* `role`. Sound — the endpoint is `IsOrganizationAdmin`-gated, and without it an admin datatable could not tell who the admins are — but it was undocumented.
 
-**Gate**: ruff / format clean, mypy **293** (current baseline), `makemigrations --check` clean, `check --deploy` byte-identical, both schemas regenerate to the committed files. Scoped suites ~5,866 passed across five groups plus 213 on the fix pass; zero timeouts, zero `AssertionError`. Full suite gated on CI.
+**Gate**: ruff / format clean, mypy **292** (exact Phase 5 baseline), `makemigrations --check` clean, `check --deploy` byte-identical, both schemas regenerate to the committed files. Scoped suites ~5,866 passed across five groups plus 213 on the fix pass; zero timeouts, zero `AssertionError`. Full suite gated on CI.
 
-**Rebased 2026-08-14 after the Phase 4 timeout fix**: all six Phase 5 commits are patch-identical by `git range-diff`; no conflict or body change. The repaired inherited guard passes in **3.74s under `-n auto`**, and ruff, format, and `check --deploy` are clean. New SHA `c329db4`; `plan/vinta-django-orgs-migration/phase-5` force-pushed.
+**Rebased and amended 2026-08-14**: the Phase 4 timeout rebase preserved the six Phase 5 commits by `git range-diff`; later review commits corrected the published capability boundaries. The inherited guard passes in **3.74s under `-n auto`**, and the pre-final capability matrix run reported **5,947 passed**. The branch tip is recorded only after the final service-account correction commits.
 
 Carry-forwards:
 
