@@ -52,6 +52,8 @@ from typing import Any
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 
 import pytest
 from rest_framework import status
@@ -657,3 +659,145 @@ class TestUnauthenticatedIsAnsweredFirst:
         assert response.status_code == status.HTTP_200_OK
         assert OpenProbeView.ran is True
         assert OpenProbeView.resolved is None
+
+    def test_an_anonymous_header_bearing_request_reads_no_organization_row(
+        self, db: Any, org_a: Organization
+    ) -> None:
+        """...and it does not pay for a query to do nothing.
+
+        The package evaluates ``get_organization_slug`` **eagerly**, as an
+        argument to ``resolve_membership_for_user``, so it runs *before* that
+        function's ``is_anonymous`` short-circuit. Without the guard at the top
+        of our override, every anonymous request carrying the header would spend
+        an ``Organization`` lookup translating a pk the resolver was then going
+        to ignore -- and, since resolution also precedes ``check_throttles``,
+        would spend it before any throttle bucket was consulted. An
+        unauthenticated pre-throttle database round trip is exactly what a
+        request flood wants.
+
+        Asserted on the view with no authentication classes so the count is the
+        resolver's alone; ``test_no_organization_row_is_read_before_the_401``
+        below makes the same point on the real 401 path, where the count is not
+        purely ours.
+        """
+        with CaptureQueriesContext(connection) as captured:
+            response = _dispatch(OpenProbeView, user=None, header=str(org_a.pk))
+
+        assert response.status_code == status.HTTP_200_OK
+        assert len(captured.captured_queries) == 0, captured.captured_queries
+
+    def test_no_organization_row_is_read_before_the_401(self, db: Any, org_a: Organization) -> None:
+        """The same claim on the path a real caller takes: 401, and no org read.
+
+        ``AuthenticatedProbeView`` carries the project's authentication and
+        permission classes, so a raw query count here would also cover whatever
+        they do. Assert on the table instead: no statement touching
+        ``Organization`` may run for a request that is about to be told it is not
+        logged in.
+        """
+        organization_table = Organization._meta.db_table
+
+        with CaptureQueriesContext(connection) as captured:
+            response = _dispatch(AuthenticatedProbeView, user=None, header=str(org_a.pk))
+
+        assert response.status_code == status.HTTP_401_UNAUTHORIZED
+        touching_organizations = [
+            query["sql"]
+            for query in captured.captured_queries
+            if organization_table in query["sql"]
+        ]
+        assert touching_organizations == []
+
+
+@pytest.mark.django_db
+class TestAHeaderTooWideForThePrimaryKey:
+    """``any | present, integer too wide for the pk column`` -> **403**, never a 500.
+
+    The header is caller-controlled and ``get_organization_slug`` hands whatever
+    ``int()`` accepts straight to ``filter(pk=...)``. ``Organization.pk`` is a
+    ``BigAutoField``, so an integer past ``bigint`` is a value the column
+    provably cannot hold -- and the failure mode worth pinning is that the
+    database is asked anyway. Postgres answers ``NumericValueOutOfRange`` when a
+    parameter is *coerced* to an integer type it overflows, which would surface
+    as a **500** on all ~26 endpoints carrying this mixin, reachable by editing
+    one character of a header.
+
+    It does not happen here, and these tests are what keeps that true rather than
+    incidental: psycopg 3 adapts a Python ``int`` wider than ``bigint`` as
+    ``numeric``, and ``bigint = numeric`` is a legal comparison that simply
+    matches nothing. So the value falls through to the ordinary "names no
+    organization" road -- :data:`UNMATCHABLE_ORGANIZATION_SLUG`, and the same 403
+    as any unused id. A narrowing of the column, a change of driver, or a
+    hand-written cast could each put the 500 back silently; hence the pin rather
+    than a range check in the resolver, which would guard nothing today.
+    """
+
+    @pytest.mark.parametrize(
+        "header",
+        [
+            str(2**63),  # one past ``bigint``
+            str(2**64),
+            "9" * 40,
+            "9" * 4000,  # just under CPython's ``int()`` digit limit
+        ],
+    )
+    def test_an_integer_too_wide_for_the_column_is_the_same_403(
+        self, user: Any, org_a: Organization, header: str
+    ) -> None:
+        _membership(user, org_a)
+
+        response = _dispatch(AuthenticatedProbeView, user, header=header)
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+        assert response.data == {
+            "detail": (
+                "X-Organization-Id header names an organization you are not an active member of."
+            )
+        }
+        assert AuthenticatedProbeView.ran is False
+
+    @pytest.mark.parametrize("header", ["0", "-1", str(-(2**64))])
+    def test_zero_and_negatives_are_the_same_403_too(
+        self, user: Any, org_a: Organization, header: str
+    ) -> None:
+        """A sequence-backed primary key is never <= 0, so these name no
+        organization -- including the ones too negative for the column."""
+        _membership(user, org_a)
+
+        response = _dispatch(AuthenticatedProbeView, user, header=header)
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    def test_a_header_past_the_int_parsing_limit_is_read_as_absent(
+        self, user: Any, org_a: Organization
+    ) -> None:
+        """The upper bound on the input is ``int()``'s, not the resolver's.
+
+        CPython refuses to parse a decimal string longer than
+        ``sys.get_int_max_str_digits()`` (4300 by default), raising ``ValueError``
+        -- which ``get_organization_slug`` already handles as "the caller named
+        nothing". That is what stops a caller from making the process do
+        unbounded integer parsing, so no length check of our own is needed; this
+        test is what says so. Note the answer differs from the row above: absent,
+        not refused, so a single-membership caller resolves and gets 200.
+        """
+        _membership(user, org_a)
+
+        response = _dispatch(AuthenticatedProbeView, user, header="9" * 100_000)
+
+        assert response.status_code == status.HTTP_200_OK
+        assert AuthenticatedProbeView.resolved == org_a.pk
+
+    def test_the_primary_key_column_is_still_the_wide_one(self, db: Any) -> None:
+        """The premise the class rests on, asserted rather than assumed.
+
+        ``bigint`` is why ``2**63`` is "too wide" above and why every legitimate
+        id is comfortably inside the column. Narrowing the primary key would not
+        break the 403 tests -- ``integer = numeric`` compares fine too -- so
+        nothing else here would notice; this is the line that would.
+        """
+        _, ceiling = connection.ops.integer_field_range(
+            Organization._meta.pk.get_internal_type()  # type: ignore[union-attr]
+        )
+
+        assert ceiling == 2**63 - 1

@@ -58,14 +58,13 @@ class TenantScopedAutoSchema(AutoSchema):
         if not isinstance(view, TenantScopedViewMixin):
             return params
 
-        # Check view-level opt-out.
-        if getattr(view, "organization_resolution_optional", False):
-            return params
-
-        # Check per-action opt-out.
-        current_action: str | None = getattr(view, "action", None)
-        optional_actions: tuple[str, ...] = getattr(view, "organization_optional_actions", ())
-        if current_action is not None and current_action in optional_actions:
+        # The opt-out predicate is the package's, asked rather than
+        # re-implemented: it reads the same two attributes plus ``self.action``,
+        # and a ``getattr`` copy of it would go on silently answering "not
+        # opted out" for every operation if either attribute were ever renamed
+        # upstream -- documenting a header on operations that do not enforce it,
+        # with nothing failing.
+        if view.is_organization_resolution_optional():
             return params
 
         params.append(

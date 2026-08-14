@@ -45,7 +45,7 @@ NON_MEMBER_ORGANIZATION_DETAIL = (
 #: ``Organization.slug``'s ``varchar(255)``, so no row can hold it whatever
 #: wrote it; and it contains spaces and capitals, which
 #: ``organizations.slug_validation``'s format rule forbids.
-UNMATCHABLE_ORGANIZATION_SLUG = "X-Organization-Id names no organization. " * 7
+UNMATCHABLE_ORGANIZATION_SLUG = ("X-Organization-Id names no organization. " * 7).strip()
 
 
 class TenantScopedViewMixin(OrganizationScopedAPIViewMixin):
@@ -89,7 +89,7 @@ class TenantScopedViewMixin(OrganizationScopedAPIViewMixin):
     +-----------------------+---------------------------------+------------------------------------------+
     | Memberships (active)  | Header                          | Result                                   |
     +-----------------------+---------------------------------+------------------------------------------+
-    | 0                     | any                             | gated (membership = None)                |
+    | 0                     | absent                          | gated (membership = None)                |
     | 1                     | absent                          | resolve to that membership               |
     | 1                     | present, matches                | resolve to it                            |
     | 2+                    | present, matches member         | resolve to named org                     |
@@ -150,14 +150,29 @@ class TenantScopedViewMixin(OrganizationScopedAPIViewMixin):
           Whether they may *have* it is the package's decision, taken against
           their memberships.
         * **:data:`UNMATCHABLE_ORGANIZATION_SLUG`** -- the caller named an
-          integer that is not an organization. Answering ``None`` here would
-          downgrade a 403 into "no header was sent", which for a
-          single-membership caller quietly succeeds against an organization they
-          never asked for.
+          integer that is not an organization, whether because no row holds it
+          or because it is too wide for the primary key column and no row could.
+          Answering ``None`` here would downgrade a 403 into "no header was
+          sent", which for a single-membership caller quietly succeeds against an
+          organization they never asked for.
+
+        The whole body is skipped for a caller who is not authenticated. The
+        package evaluates this method *eagerly*, as an argument to
+        ``resolve_membership_for_user``, so it runs before that function's
+        ``is_anonymous`` short-circuit -- and resolution as a whole now precedes
+        ``check_throttles``. Without the guard below, an anonymous request
+        carrying a header would spend an ``Organization`` query before the 401
+        and before any throttle bucket was consulted. Returning ``None`` is
+        behaviour-identical: the resolver answers ``None`` for an anonymous user
+        whatever it is handed.
         """
         # Deferred: ``organizations`` imports ``common``, so a module-level
         # import here is a cycle.
         from organizations.models import Organization  # noqa: PLC0415
+
+        user = getattr(request, "user", None)
+        if user is None or not getattr(user, "is_authenticated", False):
+            return None
 
         raw_value: str | None = request.headers.get(ACTIVE_ORG_HEADER)
         if not raw_value:
@@ -173,6 +188,17 @@ class TenantScopedViewMixin(OrganizationScopedAPIViewMixin):
             )
             return None
 
+        # No range check on ``organization_id`` before the lookup, deliberately.
+        # An integer too wide for the ``bigint`` primary key is adapted by
+        # psycopg 3 as ``numeric``, which Postgres compares against ``bigint``
+        # without error and matches nothing -- so it takes the ordinary
+        # "names no organization" road below and is answered 403 like any other
+        # unused id, rather than raising ``NumericValueOutOfRange`` into a 500.
+        # ``int()`` above is what bounds the input: CPython refuses to parse a
+        # string past ``sys.get_int_max_str_digits()``, and that ``ValueError``
+        # is already handled as an absent header.
+        # ``TestAHeaderTooWideForThePrimaryKey`` pins all of this.
+        #
         # ``Organization`` is the tenant root, not tenant-scoped data: it is not
         # organization-scoped, so ``objects`` here is Django's stock manager and
         # this lookup neither needs nor bypasses an organization filter.

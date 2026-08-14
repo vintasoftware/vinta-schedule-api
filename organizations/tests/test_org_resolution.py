@@ -759,3 +759,85 @@ class TestNonMemberOrgHeaderOptOut:
 
         with pytest.raises(PermissionDenied):
             view.resolve_organization(request)  # type: ignore[attr-defined]
+
+
+@pytest.mark.django_db
+class TestADeactivatedAdminIsRefusedThroughTheRealStack:
+    """Deactivating an admin actually revokes their access, end to end.
+
+    Phase 3.5's Tests item 3, asserted the way that item asks for it: a real
+    request, a real routed admin-gated endpoint (``GET /organization-members/``,
+    ``OrganizationMembershipViewSet``, ``permission_classes =
+    (IsOrganizationAdmin,)``), the caller's own organization named in
+    ``X-Organization-Id``. Not a unit test of the backend, and not a probe view.
+
+    **Which gate answers, exactly.** The 403 below comes from the *resolver* --
+    ``vinta_orgs.helpers.memberships.get_active_memberships`` filters
+    ``is_active=True``, so the header names an organization with no active
+    membership behind it and ``resolve_membership_for_user`` raises
+    ``OrganizationAccessDeniedError`` before ``IsOrganizationAdmin`` is ever
+    consulted. It does **not** come from the package's ``OrganizationModelBackend
+    ._get_membership``, the other place ``0.3.0`` put an ``is_active`` filter:
+    nothing in this repository calls ``user.has_perm(...)`` for authorization
+    yet, so that filter is unreachable from any real request until Phase 4
+    migrates the permission classes onto ``has_perm``. Covering it through our
+    stack is recorded as a Phase 4 obligation in
+    ``ai-plans/TRACKING_VINTA_DJANGO_ORGS_MIGRATION.md``;
+    ``organizations/tests/test_permission_backend.py`` unit-tests it meanwhile.
+
+    Both tests below move exactly one field and assert the status code follows,
+    so neither can pass for a reason unrelated to the field it names.
+    """
+
+    def test_deactivating_an_admin_flips_the_same_request_from_200_to_403(
+        self,
+        user: User,  # type: ignore[valid-type]
+        org_a: Organization,
+    ) -> None:
+        """Same user, same client, same URL, same header -- only ``is_active`` moves."""
+        membership = _make_membership(user, org_a, role=OrganizationRole.ADMIN)
+        client = _auth_client_for(user)
+        url = reverse("api:OrganizationMembers-list")
+
+        allowed = client.get(url, HTTP_X_ORGANIZATION_ID=str(org_a.pk))
+        assert allowed.status_code == status.HTTP_200_OK, allowed.content
+
+        membership.is_active = False
+        membership.save(update_fields=["is_active"])
+
+        refused = client.get(url, HTTP_X_ORGANIZATION_ID=str(org_a.pk))
+
+        assert refused.status_code == status.HTTP_403_FORBIDDEN, refused.content
+        # The resolver's wording, not ``IsOrganizationAdmin``'s -- proof that the
+        # deactivated row was refused at resolution rather than admitted to the
+        # permission class and turned down there for some other reason.
+        assert refused.json() == {
+            "detail": (
+                "X-Organization-Id header names an organization you are not an active member of."
+            )
+        }
+
+    def test_an_active_non_admin_is_refused_by_the_permission_class_instead(
+        self,
+        user: User,  # type: ignore[valid-type]
+        org_a: Organization,
+    ) -> None:
+        """The discriminator between the two ways this endpoint says 403.
+
+        Without it, the test above would pass on a build where ``is_active`` were
+        ignored and ``role`` alone did all the refusing. Here the membership is
+        active and the *role* is what is wrong, so resolution succeeds and
+        ``IsOrganizationAdmin`` answers -- a different body for the same code.
+        """
+        _make_membership(user, org_a, role=OrganizationRole.MEMBER)
+        client = _auth_client_for(user)
+        url = reverse("api:OrganizationMembers-list")
+
+        response = client.get(url, HTTP_X_ORGANIZATION_ID=str(org_a.pk))
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN, response.content
+        assert response.json() != {
+            "detail": (
+                "X-Organization-Id header names an organization you are not an active member of."
+            )
+        }
