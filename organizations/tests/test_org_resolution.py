@@ -12,7 +12,7 @@ Behaviors covered:
 * The 0-membership (gated) and single-membership rows are unchanged.
 * Header naming an org the caller is not an active member of (no membership, or
   an inactive membership) → **403** ``PermissionDenied``.
-* A view setting ``active_org_resolution_optional = True`` is exempt from both the
+* A view setting ``organization_resolution_optional = True`` is exempt from both the
   400 and the 403.
 """
 
@@ -564,9 +564,9 @@ class TestMultiOrgNoHeaderRejected:
 
 
 # ---------------------------------------------------------------------------
-# Tests: active_org_resolution_optional opt-out
+# Tests: organization_resolution_optional opt-out
 # ---------------------------------------------------------------------------
-# A concrete view may set ``active_org_resolution_optional = True`` (e.g. the
+# A concrete view may set ``organization_resolution_optional = True`` (e.g. the
 # GET /organizations/mine/ and onboarding flows) so that a multi-org caller with
 # no header is NOT rejected — the resolver falls through to gated (None) instead.
 #
@@ -578,13 +578,13 @@ class TestMultiOrgNoHeaderRejected:
 class _OptOutView(TenantScopedViewMixin):
     """Throwaway view that opts out of the multi-org-no-header 400."""
 
-    active_org_resolution_optional = True
+    organization_resolution_optional = True
 
 
 class _StrictView(TenantScopedViewMixin):
     """Throwaway view that keeps the default (strict) multi-org-no-header 400."""
 
-    active_org_resolution_optional = False
+    organization_resolution_optional = False
 
 
 def _drf_request_for(
@@ -612,7 +612,7 @@ def _drf_request_for(
 
 @pytest.mark.django_db
 class TestActiveOrgResolutionOptionalOptOut:
-    """A view with active_org_resolution_optional = True is exempt from the 400."""
+    """A view with organization_resolution_optional = True is exempt from the 400."""
 
     def test_opt_out_view_does_not_raise_for_multi_org_no_header(
         self,
@@ -620,12 +620,12 @@ class TestActiveOrgResolutionOptionalOptOut:
         org_a: Organization,
         org_b: Organization,
     ) -> None:
-        """active_org_resolution_optional = True → no 400; resolves to gated (None)."""
+        """organization_resolution_optional = True → no 400; resolves to gated (None)."""
         view = _OptOutView()
         request = _drf_request_for(two_org_user)
 
         # Must not raise ValidationError.
-        view._resolve_active_organization(request)  # type: ignore[attr-defined]
+        view.resolve_organization(request)  # type: ignore[attr-defined]
 
         assert request.organization_membership is None  # type: ignore[attr-defined]
         assert request.organization is None  # type: ignore[attr-defined]
@@ -644,7 +644,7 @@ class TestActiveOrgResolutionOptionalOptOut:
         request = _drf_request_for(two_org_user)
 
         with pytest.raises(ValidationError):
-            view._resolve_active_organization(request)  # type: ignore[attr-defined]
+            view.resolve_organization(request)  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------
@@ -654,7 +654,7 @@ class TestActiveOrgResolutionOptionalOptOut:
 # *not* an active member of (org the user has no membership in, or a membership
 # that exists but is inactive) is rejected with 403 PermissionDenied. The
 # malformed-header and absent-header rules are unaffected. A view
-# setting ``active_org_resolution_optional = True`` is exempt from the 403 and
+# setting ``organization_resolution_optional = True`` is exempt from the 403 and
 # resolves to gated (None).
 # ---------------------------------------------------------------------------
 
@@ -724,7 +724,7 @@ class TestNonMemberOrgHeaderRejected:
 
 @pytest.mark.django_db
 class TestNonMemberOrgHeaderOptOut:
-    """A view with active_org_resolution_optional = True is exempt from the 403."""
+    """A view with organization_resolution_optional = True is exempt from the 403."""
 
     def test_opt_out_view_does_not_raise_for_non_member_header(
         self,
@@ -733,12 +733,12 @@ class TestNonMemberOrgHeaderOptOut:
         org_b: Organization,
         org_c: Organization,
     ) -> None:
-        """active_org_resolution_optional = True + non-member header → no 403; gated (None)."""
+        """organization_resolution_optional = True + non-member header → no 403; gated (None)."""
         view = _OptOutView()
         request = _drf_request_for(two_org_user, org_id_header=str(org_c.pk))
 
         # Must not raise PermissionDenied.
-        view._resolve_active_organization(request)  # type: ignore[attr-defined]
+        view.resolve_organization(request)  # type: ignore[attr-defined]
 
         assert request.organization_membership is None  # type: ignore[attr-defined]
         assert request.organization is None  # type: ignore[attr-defined]
@@ -758,4 +758,4 @@ class TestNonMemberOrgHeaderOptOut:
         request = _drf_request_for(two_org_user, org_id_header=str(org_c.pk))
 
         with pytest.raises(PermissionDenied):
-            view._resolve_active_organization(request)  # type: ignore[attr-defined]
+            view.resolve_organization(request)  # type: ignore[attr-defined]

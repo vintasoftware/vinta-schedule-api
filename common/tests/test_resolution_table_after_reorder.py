@@ -2,8 +2,15 @@
 
 Phase 3.5 moved organization resolution from *after* the whole of
 ``APIView.initial`` to between ``perform_authentication`` and
-``check_permissions``. Two things had to survive that move, and this file is
-where each is asserted:
+``check_permissions``, and then handed the seam and the table themselves to
+``vinta_orgs.drf.OrganizationScopedAPIViewMixin`` /
+``vinta_orgs.helpers.memberships.resolve_membership_for_user``. **This file is
+ours and stays ours** even though the package now implements the table: it pins
+the status codes and the response bodies our clients depend on, across the
+pk-to-slug translation and the exception translation -- which is exactly the
+seam a package upgrade can silently move.
+
+Two things had to survive that move, and this file is where each is asserted:
 
 1. **Every row of the table keeps its code.** 0 / 1 / 2+ active memberships,
    crossed with header absent / present-and-matching / present-and-not-a-member
@@ -16,16 +23,35 @@ where each is asserted:
 
 2. **401 still precedes 400 and 403.** Resolution now runs before
    ``check_permissions``, which is the thing that answers 401 for a caller with
-   no credentials. If the resolver were not gated on ``is_authenticated``, an
-   anonymous request would be told which organizations exist (403) or that its
-   caller belongs to several (400) before being told it is not logged in at all.
-   ``TestUnauthenticatedIsAnsweredFirst`` sets up requests that *would* resolve
-   to a 400 or a 403 if the resolver ran for anonymous users, and asserts 401.
+   no credentials. Two independent guarantees keep the 401 in front, and
+   ``TestUnauthenticatedIsAnsweredFirst`` asserts both: a *bad* credential
+   raises out of ``super().perform_authentication`` before the resolver is
+   reached at all, and for a merely *absent* one ``resolve_membership_for_user``
+   short-circuits on ``user.is_anonymous`` rather than consulting the table. Lose
+   either and an anonymous request would be told which organizations exist (403)
+   or that its caller belongs to several (400) before being told it is not
+   logged in.
+
+Two rows carry more weight than the rest, because they are the ones the
+pk-to-slug translation can silently get wrong. Both send a header the package's
+slug lookup will not match, and the *right* answer differs between them:
+
+* **A non-integer header** is "the caller named nothing" -- it must fall through
+  to the absent-header rules (1 -> resolve, 2+ -> 400, 0 -> gated).
+* **An integer naming no organization** is "the caller named something they may
+  not have" -- it must be the same 403 as a header naming a real organization
+  they are not a member of. Answering it as "absent" would let a
+  single-membership caller quietly succeed against an organization they never
+  asked for, and would turn the endpoint into an oracle for which ids exist.
+
+``TestAHeaderNamingNoOrganizationAtAll`` and the ``non-integer`` tests scattered
+through the membership-count classes are the pair that keeps those apart.
 """
 
 from typing import Any
 
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError as DjangoValidationError
 
 import pytest
 from rest_framework import status
@@ -37,9 +63,10 @@ from rest_framework.test import APIRequestFactory, force_authenticate
 from rest_framework.views import APIView
 from rest_framework.viewsets import ViewSet
 
-from common.utils.view_utils import TenantScopedViewMixin
+from common.utils.view_utils import UNMATCHABLE_ORGANIZATION_SLUG, TenantScopedViewMixin
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
 from organizations.permissions import IsOrganizationAdmin
+from organizations.slug_validation import validate_organization_slug
 
 
 User = get_user_model()
@@ -68,11 +95,11 @@ class AuthenticatedProbeView(_RecordingMixin, TenantScopedViewMixin, APIView):
 
 
 class OptOutProbeView(AuthenticatedProbeView):
-    active_org_resolution_optional = True
+    organization_resolution_optional = True
 
 
 class PerActionProbeViewSet(_RecordingMixin, TenantScopedViewMixin, ViewSet):
-    active_org_optional_actions = ("lenient",)
+    organization_optional_actions = ("lenient",)
 
     def strict(self, request: Any, *args: Any, **kwargs: Any) -> Response:
         self._record(request)
@@ -290,6 +317,150 @@ class TestTwoOrMoreActiveMemberships:
 
 
 @pytest.mark.django_db
+class TestAHeaderNamingNoOrganizationAtAll:
+    """``any | present, names no organization`` -> **403**, at every membership count.
+
+    Refused identically to a header naming a real organization the caller is not
+    an active member of, and deliberately so: three different answers for "no
+    such organization" / "not your organization" / "your membership is
+    deactivated" would tell an authenticated caller which ids are taken.
+
+    This is the row the pk-to-slug translation exists for. The package resolves
+    by slug and treats a missing slug as "the caller named nothing"; if
+    ``get_organization_slug`` answered ``None`` here, every assertion below would
+    become a 200 (single membership) or a 400 (several) instead.
+    """
+
+    @staticmethod
+    def _absent_id() -> int:
+        """An id no organization holds. Derived, not hardcoded, so it stays true."""
+        highest = Organization.objects.order_by("-pk").values_list("pk", flat=True).first()
+        return (highest or 0) + 1_000
+
+    def test_with_zero_memberships(self, user: Any) -> None:
+        response = _dispatch(AuthenticatedProbeView, user, header=str(self._absent_id()))
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+        assert AuthenticatedProbeView.ran is False
+
+    def test_with_exactly_one_membership(self, user: Any, org_a: Organization) -> None:
+        """The dangerous one. Read as an absent header, this resolves to
+        organization A and answers 200 -- serving the caller's only organization
+        for a request that explicitly named a different one."""
+        _membership(user, org_a)
+
+        response = _dispatch(AuthenticatedProbeView, user, header=str(self._absent_id()))
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+        assert AuthenticatedProbeView.ran is False
+
+    def test_with_two_memberships(
+        self, user: Any, org_a: Organization, org_b: Organization
+    ) -> None:
+        """403, not the 400 an absent header would have produced here."""
+        _membership(user, org_a)
+        _membership(user, org_b)
+
+        response = _dispatch(AuthenticatedProbeView, user, header=str(self._absent_id()))
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    def test_a_deleted_organization_is_the_same_403(
+        self, user: Any, org_a: Organization, org_b: Organization
+    ) -> None:
+        """The realistic way a header comes to name a missing id: the client
+        cached it and the organization went away underneath."""
+        _membership(user, org_a)
+        stale_id = org_b.pk
+        org_b.delete()
+
+        response = _dispatch(AuthenticatedProbeView, user, header=str(stale_id))
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    def test_the_opt_out_suppresses_it_like_any_other_refusal(
+        self, user: Any, org_a: Organization
+    ) -> None:
+        _membership(user, org_a)
+
+        response = _dispatch(OptOutProbeView, user, header=str(self._absent_id()))
+
+        assert response.status_code == status.HTTP_200_OK
+        assert OptOutProbeView.ran is True
+        assert OptOutProbeView.resolved is None
+
+    def test_the_unmatchable_slug_could_never_name_a_real_organization(self) -> None:
+        """The invariant the 403 above rests on.
+
+        ``get_organization_slug`` returns a sentinel *slug* for a missing id, so
+        the package's ``organization__slug=`` filter is what produces the
+        refusal. If that sentinel could ever equal a stored slug, this row would
+        resolve to somebody else's organization rather than refusing.
+
+        Two independent reasons it cannot, and both are asserted: it is longer
+        than the column, and it violates the slug format rule.
+        """
+        max_length = Organization._meta.get_field("slug").max_length
+
+        assert max_length is not None
+        assert len(UNMATCHABLE_ORGANIZATION_SLUG) > max_length
+        with pytest.raises(DjangoValidationError):
+            validate_organization_slug(UNMATCHABLE_ORGANIZATION_SLUG)
+
+
+@pytest.mark.django_db
+class TestTheRefusalBodiesAreOursNotThePackages:
+    """The bodies, not merely the codes.
+
+    ``vinta_orgs.drf`` translates ``AmbiguousOrganizationError`` into a DRF
+    ``ValidationError`` and ``OrganizationAccessDeniedError`` into a DRF
+    ``PermissionDenied``, each carrying *the package's* message ("Several
+    organizations match this request; name one explicitly." /  "You are not an
+    active member of this organization."). Our clients match on ours, so
+    ``TenantScopedViewMixin.resolve_organization`` puts them back. Pinning only
+    the status code would let a package upgrade rewrite the body silently.
+    """
+
+    def test_the_ambiguity_400(self, user: Any, org_a: Organization, org_b: Organization) -> None:
+        _membership(user, org_a)
+        _membership(user, org_b)
+
+        response = _dispatch(AuthenticatedProbeView, user)
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert response.data == {"detail": "X-Organization-Id header required."}
+
+    def test_the_non_member_403(self, user: Any, org_a: Organization, org_b: Organization) -> None:
+        _membership(user, org_a)
+
+        response = _dispatch(AuthenticatedProbeView, user, header=str(org_b.pk))
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+        assert response.data == {
+            "detail": (
+                "X-Organization-Id header names an organization you are not an active member of."
+            )
+        }
+
+    def test_the_no_such_organization_403_carries_the_same_body(
+        self, user: Any, org_a: Organization
+    ) -> None:
+        """Identical to the row above -- which is the point: the body must not
+        distinguish "does not exist" from "not yours" either."""
+        _membership(user, org_a)
+        absent_id = TestAHeaderNamingNoOrganizationAtAll._absent_id()
+
+        response = _dispatch(AuthenticatedProbeView, user, header=str(absent_id))
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+        assert response.data == {
+            "detail": (
+                "X-Organization-Id header names an organization you are not an active member of."
+            )
+        }
+
+
+@pytest.mark.django_db
 class TestTheResolverPrecedesEvenADenyingPermissionClass:
     """The other live consequence of the reorder, on every mixin endpoint whose
     permission class is not ``IsAuthenticated``: the ``2+ / absent`` row now
@@ -473,8 +644,9 @@ class TestUnauthenticatedIsAnsweredFirst:
     def test_the_resolver_itself_does_nothing_for_an_anonymous_request(
         self, db: Any, org_a: Organization
     ) -> None:
-        """Why the 401 wins: the resolver's whole body is behind an
-        ``is_authenticated`` check, so an anonymous request reaches
+        """Why the 401 wins for an *absent* credential:
+        ``resolve_membership_for_user`` returns ``None`` for an anonymous user
+        before it reads a single membership, so the request reaches
         ``check_permissions`` with nothing raised and nothing resolved.
 
         Asserted on a view with no authentication gate at all, so the 401 is not

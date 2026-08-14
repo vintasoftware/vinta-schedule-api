@@ -96,13 +96,13 @@ class ProbeView(_RecordingMixin, TenantScopedViewMixin, APIView):
 class OptionalProbeView(ProbeView):
     """``ProbeView`` with the class-level opt-out from the 400 and the 403."""
 
-    active_org_resolution_optional = True
+    organization_resolution_optional = True
 
 
 class ProbeViewSet(_RecordingMixin, TenantScopedViewMixin, ViewSet):
-    """Two actions, one of which is listed in ``active_org_optional_actions``."""
+    """Two actions, one of which is listed in ``organization_optional_actions``."""
 
-    active_org_optional_actions = ("lenient",)
+    organization_optional_actions = ("lenient",)
 
     def strict(self, request: Any, *args: Any, **kwargs: Any) -> Response:
         self._observe()
@@ -117,7 +117,7 @@ class AnonymousProbeView(ProbeView):
     """``ProbeView`` reachable without authentication.
 
     The project default is ``IsAuthenticated``, which would answer 401 before
-    ``_resolve_active_organization`` ever runs -- and the row being pinned here
+    ``resolve_organization`` ever runs -- and the row being pinned here
     is what the *resolver* does with an anonymous request, not what the
     permission stack does.
     """
@@ -444,7 +444,7 @@ class TestNoBindingSurvivesTheResponse:
 
 @pytest.mark.django_db
 class TestTheResolverItselfBindsNothing:
-    """``_resolve_active_organization`` is a pure function of the request.
+    """``resolve_organization`` is a pure function of the request.
 
     It is documented as callable in isolation, and four tests in
     ``organizations/tests/test_org_resolution.py`` take it up on that. A bind
@@ -466,7 +466,7 @@ class TestTheResolverItselfBindsNothing:
         # dynamically, so they are invisible to the type checker.
         drf_request: Any = view.initialize_request(request)
 
-        view._resolve_active_organization(drf_request)
+        view.resolve_organization(drf_request)
 
         # It resolved -- so this is not passing because there was nothing to bind.
         assert drf_request.organization is not None
@@ -483,7 +483,7 @@ class TestTheResolverItselfBindsNothing:
         drf_request = view.initialize_request(request)
 
         with organization_context(org_b):
-            view._resolve_active_organization(drf_request)
+            view.resolve_organization(drf_request)
             still_bound = get_current_organization()
 
         assert still_bound is not None
@@ -517,7 +517,7 @@ class TestTheCreateActionRebinds:
     def test_the_second_bind_releases_the_first(self, user: Any, org_a: Organization) -> None:
         """Both bindings are released, not just the most recent one.
 
-        ``_bind_active_organization`` unbinds before it binds, so ``dispatch``'s
+        ``bind_organization`` unbinds before it binds, so ``dispatch``'s
         one ``finally`` is enough. If it stopped doing that, the first token
         would be dropped on the floor and organization A would still be bound
         here -- which is a cross-tenant read on the next request the worker

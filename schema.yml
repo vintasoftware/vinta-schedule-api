@@ -12132,9 +12132,9 @@ paths:
         Overrides ``CreateModelMixin.create`` to handle the post-write refetch
         correctly for members who already have one or more memberships.
 
-        We skip the base mixin's post-write ``_resolve_active_organization`` call
+        We skip the base mixin's post-write ``resolve_organization`` call
         entirely.  For the ``create`` action — exempted via
-        ``active_org_optional_actions = ("mine", "create")`` — that re-resolve
+        ``organization_optional_actions = ("mine", "create")`` — that re-resolve
         would leave a multi-org caller with no ``X-Organization-Id`` header
         resolved to ``None``, making ``get_queryset`` return nothing and causing
         the re-fetch to raise ``DoesNotExist`` / 500.
@@ -12177,9 +12177,9 @@ paths:
         Overrides ``CreateModelMixin.create`` to handle the post-write refetch
         correctly for members who already have one or more memberships.
 
-        We skip the base mixin's post-write ``_resolve_active_organization`` call
+        We skip the base mixin's post-write ``resolve_organization`` call
         entirely.  For the ``create`` action — exempted via
-        ``active_org_optional_actions = ("mine", "create")`` — that re-resolve
+        ``organization_optional_actions = ("mine", "create")`` — that re-resolve
         would leave a multi-org caller with no ``X-Organization-Id`` header
         resolved to ``None``, making ``get_queryset`` return nothing and causing
         the re-fetch to raise ``DoesNotExist`` / 500.

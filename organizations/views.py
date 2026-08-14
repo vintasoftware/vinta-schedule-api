@@ -117,7 +117,7 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
     #: more membership than before the write).
     #:
     #: All other actions keep the standard header enforcement (400 / 403).
-    active_org_optional_actions = ("mine", "create")
+    organization_optional_actions = ("mine", "create")
 
     def get_permissions(self):
         """
@@ -158,9 +158,9 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
         Overrides ``CreateModelMixin.create`` to handle the post-write refetch
         correctly for members who already have one or more memberships.
 
-        We skip the base mixin's post-write ``_resolve_active_organization`` call
+        We skip the base mixin's post-write ``resolve_organization`` call
         entirely.  For the ``create`` action — exempted via
-        ``active_org_optional_actions = ("mine", "create")`` — that re-resolve
+        ``organization_optional_actions = ("mine", "create")`` — that re-resolve
         would leave a multi-org caller with no ``X-Organization-Id`` header
         resolved to ``None``, making ``get_queryset`` return nothing and causing
         the re-fetch to raise ``DoesNotExist`` / 500.
@@ -204,14 +204,14 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
             new_membership.organization if new_membership is not None else None
         )
         # ...and bind what was just stashed. Skipping the base mixin's
-        # post-create ``_resolve_active_organization`` also skips its re-bind, so
+        # post-create ``resolve_organization`` also skips its re-bind, so
         # without this line the context stays on whatever ``initial()`` resolved
         # -- ``None`` for a first-time creator, or organization A for an existing
         # member who sent ``X-Organization-Id: A`` while creating organization B
         # -- while every line below reads the *new* organization off the request.
         # The re-fetch and the serializer would then run through default managers
         # scoped to a different organization than the one being returned.
-        self._bind_active_organization(request.organization)  # type: ignore[attr-defined]
+        self.bind_organization(request.organization)  # type: ignore[attr-defined]
 
         # Re-fetch the instance so any annotations/virtual-model fields on
         # OrganizationVirtualModel are populated.  Mirror the base
@@ -1049,11 +1049,11 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
     before any handler runs, so multi-org admins always operate on the
     header-named org. Without the header a multi-org caller receives 400;
     a header naming a non-member org receives 403 — identical to every other
-    org-scoped endpoint. ``TenantScopedViewMixin._is_active_org_resolution_optional``
-    uses ``getattr(self, "action", None)``, so the absent ``self.action`` attribute
-    (ViewSetMixin is not in the MRO) is safe — ``None`` is never in the default
-    ``active_org_optional_actions = ()`` tuple, so full 400/403 enforcement runs
-    on every HTTP method.
+    org-scoped endpoint. ``OrganizationScopedAPIViewMixin
+    .is_organization_resolution_optional`` uses ``getattr(self, "action", None)``,
+    so the absent ``self.action`` attribute (ViewSetMixin is not in the MRO) is
+    safe — ``None`` is never in the default ``organization_optional_actions = ()``
+    tuple, so full 400/403 enforcement runs on every HTTP method.
     """
 
     permission_classes = (IsOrganizationAdmin,)

@@ -3,8 +3,8 @@
 ``TenantScopedAutoSchema`` extends the default ``AutoSchema`` to inject the
 ``X-Organization-Id`` header parameter on every operation whose view is a
 :class:`~common.utils.view_utils.TenantScopedViewMixin` subclass, unless the
-operation is opted out via ``active_org_resolution_optional`` or
-``active_org_optional_actions``.
+operation is opted out via ``organization_resolution_optional`` or
+``organization_optional_actions``.
 
 This is the centralized mechanism: one class auto-covers every current and
 future ``TenantScopedViewMixin`` route without requiring per-view
@@ -39,8 +39,8 @@ class TenantScopedAutoSchema(AutoSchema):
     For every operation whose view is a :class:`~common.utils.view_utils.TenantScopedViewMixin`
     subclass, this class appends an ``X-Organization-Id`` header parameter to
     the operation's parameter list — **unless** the view or action has opted out
-    of strict org resolution via ``active_org_resolution_optional = True`` or
-    by listing the current action in ``active_org_optional_actions``.
+    of strict org resolution via ``organization_resolution_optional = True`` or
+    by listing the current action in ``organization_optional_actions``.
 
     The ``required`` flag is ``False`` because single-membership callers may
     omit the header.  The description explains the full resolution contract.
@@ -59,12 +59,12 @@ class TenantScopedAutoSchema(AutoSchema):
             return params
 
         # Check view-level opt-out.
-        if getattr(view, "active_org_resolution_optional", False):
+        if getattr(view, "organization_resolution_optional", False):
             return params
 
         # Check per-action opt-out.
         current_action: str | None = getattr(view, "action", None)
-        optional_actions: tuple[str, ...] = getattr(view, "active_org_optional_actions", ())
+        optional_actions: tuple[str, ...] = getattr(view, "organization_optional_actions", ())
         if current_action is not None and current_action in optional_actions:
             return params
 

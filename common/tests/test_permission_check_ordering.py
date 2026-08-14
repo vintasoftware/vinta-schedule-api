@@ -91,8 +91,8 @@ class OldOrderingAdminGatedProbeView(AdminGatedProbeView):
 
     def initial(self, request: Request, *args: Any, **kwargs: Any) -> None:
         super().initial(request, *args, **kwargs)
-        self._resolve_active_organization(request)
-        self._bind_active_organization(request.organization)  # type: ignore[attr-defined]
+        self.resolve_organization(request)
+        self.bind_organization(request.organization)  # type: ignore[attr-defined]
 
 
 def _dispatch(view_class: type[AdminGatedProbeView], user: Any, header: str) -> Any:
