@@ -29,6 +29,7 @@ from django.contrib.auth import get_user_model
 import pytest
 from model_bakery import baker
 from rest_framework.test import APIRequestFactory
+from vinta_orgs.helpers import resolve_membership_for_user
 
 from common.organization_context import organization_context
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
@@ -66,17 +67,23 @@ def plain_root(db):
 
 
 def _request(user):
+    membership = user if isinstance(user, OrganizationMembership) else None
+    if membership is not None:
+        user = membership.user
+    else:
+        membership = resolve_membership_for_user(user)
+
     request = APIRequestFactory().post("/")
     request.user = user
+    request.organization_membership = membership
     return request
 
 
 def _acting_from(user, organization):
     """Resolve the caller's membership to ``organization``, as the request path does."""
-    user._active_membership = OrganizationMembership.objects.filter(
+    return OrganizationMembership.objects.filter(
         user=user, organization=organization, is_active=True
     ).first()
-    return user
 
 
 @pytest.mark.django_db
@@ -100,8 +107,8 @@ class TestActingResellerRoot:
         Every other case in this class binds the **descendant** while the
         caller's only membership is in the root. Since Phase 3.5 that state
         cannot arise on the request path: ``X-Organization-Id`` naming an
-        organization the caller does not belong to is a 403, and
-        ``_active_membership`` is resolved from the same header -- so
+        organization the caller does not belong to is a 403, and the request
+        carries the membership resolved from the same header -- so
         ``membership.organization`` *is* the bound organization, always. Those
         cases exercise the slow path (rebind, one query); this one exercises the
         fast path (``has_organization_permission`` sees the organization it is
@@ -189,10 +196,6 @@ class TestActingResellerRoot:
             role=OrganizationRole.ADMIN,
             is_active=False,
         )
-        user._active_membership = OrganizationMembership.objects.get(
-            user=user, organization=reseller_root
-        )
-
         with organization_context(descendant):
             assert self.permission.has_object_permission(_request(user), None, descendant) is False
 

@@ -40,9 +40,9 @@ states are the ones that distinguish the old rule from the new one:
 * ``member`` -- refused before and after; the row that catches a widening.
 * ``billing owner`` -- allowed on billing surfaces only.
 * ``deactivated admin`` -- refused. Note **where** each row's refusal comes
-  from: in a permission class the resolver refuses first
-  (``get_active_organization_membership`` filters ``is_active`` and hands back
-  ``None``), so those rows do not exercise the auth backend's own gate at all.
+  from: in a permission class the request resolver refuses first (it resolves
+  active memberships only and hands back ``None``), so those rows do not
+  exercise the auth backend's own gate at all.
   ``TestTheBackendsIsActiveGate`` at the end of this module covers the paths
   where that gate *is* the only thing standing between a deactivated admin and
   full rights -- every ``User.is_organization_admin`` caller, which names an
@@ -78,6 +78,7 @@ import pytest
 from model_bakery import baker
 from rest_framework.test import APIRequestFactory
 from vinta_orgs import authorization as vinta_orgs_authorization
+from vinta_orgs.helpers import resolve_membership_for_user
 
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.models import (
@@ -213,26 +214,29 @@ def request_for(factory, user, method="get", data=None):
     reads ``request.data`` (DRF's parsed body), which a bare
     ``APIRequestFactory`` request does not have.
     """
+    membership = user if isinstance(user, OrganizationMembership) else None
+    if membership is not None:
+        user = membership.user
+    elif user is not None:
+        membership = resolve_membership_for_user(user)
+
     request = getattr(factory, method)("/")
     request.user = user
+    request.organization_membership = membership
     request.data = data if data is not None else {}
     return request
 
 
 def acting_in(user, organization):
-    """Pin the caller's resolved membership the way the request path does.
+    """Return the membership the package resolves onto a request.
 
-    ``TenantScopedViewMixin.perform_authentication`` stashes the membership it
-    resolved from ``X-Organization-Id`` on the user, and
-    ``get_active_organization_membership`` reads that stash. Setting it here is
-    what makes these unit-level checks ask the same question a request asks --
-    and, for a caller with memberships in two organizations, the *only* way to
-    say which one they are acting in.
+    Permission classes read ``request.organization_membership``. Passing this
+    result to ``request_for`` models that request contract, including for a
+    caller with memberships in more than one organization.
     """
-    user._active_membership = OrganizationMembership.objects.filter(
+    return OrganizationMembership.objects.filter(
         user=user, organization=organization, is_active=True
     ).first()
-    return user
 
 
 class _View:
@@ -392,19 +396,21 @@ class TestIsOrganizationAdminParity:
     ):
         make_membership(user=admin, organization=other_organization, role=OrganizationRole.MEMBER)
 
-        acting_in(admin, organization)
         assert (
             self.permission.has_object_permission(
-                request_for(factory, admin), _View("retrieve"), organization
+                request_for(factory, acting_in(admin, organization)),
+                _View("retrieve"),
+                organization,
             )
             is True
         )
 
         # Same user, same process, the other organization: a plain member there.
-        acting_in(admin, other_organization)
         assert (
             self.permission.has_object_permission(
-                request_for(factory, admin), _View("retrieve"), other_organization
+                request_for(factory, acting_in(admin, other_organization)),
+                _View("retrieve"),
+                other_organization,
             )
             is False
         )
@@ -1289,10 +1295,10 @@ class TestTheEscalationFlagsStayOff:
 class TestTheBackendsIsActiveGate:
     """Where a deactivated admin's refusal actually comes from.
 
-    Every permission class resolves a membership first, and
-    ``get_active_organization_membership`` filters ``is_active`` -- so in those
-    classes a deactivated admin is refused before ``has_perm`` is ever called,
-    and a row asserting the refusal there proves nothing about the backend.
+    Every permission class resolves a membership from the request first, and
+    that resolver filters ``is_active`` -- so in those classes a deactivated
+    admin is refused before ``has_perm`` is ever called, and a row asserting
+    the refusal there proves nothing about the backend.
 
     ``User.is_organization_admin(organization)`` is the counter-example, and it
     is the shape most of ``calendar_integration`` reaches admin-ness through
