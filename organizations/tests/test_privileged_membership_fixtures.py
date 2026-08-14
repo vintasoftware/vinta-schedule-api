@@ -45,12 +45,23 @@ after a role change.
 """
 
 import ast
+import functools
+import os
 import pathlib
 
 import pytest
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+#: Directories the scan never descends into, pruned *during* the walk.
+#:
+#: Pruning rather than filtering-after is what keeps this module inside the 10s
+#: per-test budget in ``pytest.ini``: the repo holds ~10k ``.py`` files, all but
+#: ~300 of them under ``.venv``, so walking the whole tree and discarding the
+#: rest cost ~5s per call -- and both guard tests below called it. The pruned
+#: walk selects the identical set in ~0.05s.
+PRUNED_DIRS = frozenset({".venv", "migrations", "node_modules"})
 
 #: What the scan accepts as "this membership's groups were seen to".
 SYNC_CALLS = frozenset({"grant_membership_groups", "sync_membership_groups_from_role"})
@@ -74,15 +85,64 @@ def _test_modules(repo_root: pathlib.Path = REPO_ROOT) -> list[pathlib.Path]:
     ``audit/factories.py``) build memberships for tests exactly the way a
     ``conftest`` fixture does, and live outside any ``tests`` package, so the
     original path filter could not reach them.
+
+    ``PRUNED_DIRS`` is applied to ``dirnames`` in place, so the walk never
+    descends into them at all. That is only a speed change: a path under any of
+    those directories carries the directory in ``parts``, so the previous
+    filter-after-walking discarded exactly the same files.
     """
     paths = []
-    for path in sorted(repo_root.rglob("*.py")):
-        parts = path.relative_to(repo_root).parts
-        if ".venv" in parts or "migrations" in parts or "node_modules" in parts:
-            continue
-        if "tests" in parts or path.name in {"conftest.py", "factories.py"}:
-            paths.append(path)
-    return paths
+    for dirpath, dirnames, filenames in os.walk(repo_root):
+        dirnames[:] = [name for name in dirnames if name not in PRUNED_DIRS]
+        directory = pathlib.Path(dirpath)
+        in_tests = "tests" in directory.relative_to(repo_root).parts
+        for filename in filenames:
+            if not filename.endswith(".py"):
+                continue
+            if in_tests or filename in {"conftest.py", "factories.py"}:
+                paths.append(directory / filename)
+    return sorted(paths)
+
+
+@functools.cache
+def _scanned_sources() -> tuple[tuple[pathlib.Path, str], ...]:
+    """Every in-scope module, read from disk **once** for the whole session.
+
+    Both repo-wide guards below need the same ~300 files -- one to parse them,
+    one to grep them for the opt-out marker -- and each used to walk and read
+    the tree independently, which is what pushed the pair past the per-test
+    timeout on CI.
+
+    The cache is only safe because it cannot come back empty unnoticed: a wrong
+    root, a broken glob or an over-eager prune would otherwise turn *both*
+    guards into unconditional passes, which is the exact silent-success failure
+    this module exists to prevent. ``_assert_the_scan_reached_the_repo`` is that
+    floor, and it runs before the value is returned. ``functools.cache`` does
+    not memoize exceptions, so a failing floor keeps failing.
+    """
+    sources = tuple((path, path.read_text()) for path in _test_modules())
+    _assert_the_scan_reached_the_repo(sources)
+    return sources
+
+
+def _assert_the_scan_reached_the_repo(sources: tuple[tuple[pathlib.Path, str], ...]) -> None:
+    """The anti-vacuity floor: the walk must have found the files we know exist.
+
+    ``OPT_OUT_MODULES`` is the floor rather than a bare count because it is
+    maintained anyway, names two different apps (``organizations`` and
+    ``payments``), and every entry is by definition an in-scope test module. A
+    scan that reaches all seven reached the tree; a count could be met by any
+    seven files.
+    """
+    found = {str(path.relative_to(REPO_ROOT)) for path, _ in sources}
+    missing = sorted(set(OPT_OUT_MODULES) - found)
+
+    assert not missing, (
+        "The module scan did not reach modules that are known to exist, so the "
+        "guards in this file would pass without checking anything. Suspect "
+        f"REPO_ROOT ({REPO_ROOT}), PRUNED_DIRS or the path filter in "
+        f"_test_modules.\n\nFound {len(found)} modules; missing: {missing}"
+    )
 
 
 def _names_membership(node: ast.AST) -> bool:
@@ -273,9 +333,25 @@ def _bound_names(statement: ast.AST) -> set[str]:
     return names
 
 
-def _offenders(path: pathlib.Path, repo_root: pathlib.Path = REPO_ROOT) -> list[str]:
-    source = path.read_text()
-    if "OrganizationMembership" not in source and "role" not in source:
+def _offenders(
+    path: pathlib.Path, repo_root: pathlib.Path = REPO_ROOT, source: str | None = None
+) -> list[str]:
+    """``source`` lets the repo-wide guard hand in the text ``_scanned_sources``
+    already read, instead of this function reading the same file a second time.
+    Left optional so the mutant self-tests below, which point at a ``tmp_path``
+    module that is deliberately not in the cache, still exercise this same
+    analysis by path.
+    """
+    if source is None:
+        source = path.read_text()
+    # Every way this function can emit an offender ends at a name in
+    # ``PRIVILEGE_KWARGS``: a keyword argument, a ``defaults`` dict key, a
+    # ``bulk_update`` field string, or an assigned attribute. All four require
+    # the word itself in the source, so a module without one cannot offend and
+    # need not be parsed. This replaces a filter keyed on ``OrganizationMembership
+    # or role``, which parsed 40 more modules for nothing and, in the other
+    # direction, could skip a module that named ``is_billing_owner`` alone.
+    if not any(kwarg in source for kwarg in PRIVILEGE_KWARGS):
         return []
     tree = ast.parse(source, str(path))
     lines = source.splitlines()
@@ -291,7 +367,15 @@ def _offenders(path: pathlib.Path, repo_root: pathlib.Path = REPO_ROOT) -> list[
         if _bound_names(statement) & in_scope:
             accounted.update(id(node) for node in ast.walk(statement))
 
+    # The marker lives in seven modules repo-wide, but ``marked`` below runs a
+    # slice-and-join for every node of every module. Asking the whole source
+    # once first is the same answer -- no line range can hold a marker the file
+    # does not -- and skips ~450k joins across a full scan.
+    has_marker = DELIBERATE in source
+
     def marked(node: ast.AST) -> bool:
+        if not has_marker:
+            return False
         start = getattr(node, "lineno", None)
         if start is None:
             return False
@@ -325,8 +409,8 @@ def _offenders(path: pathlib.Path, repo_root: pathlib.Path = REPO_ROOT) -> list[
 
 def test_no_test_builds_a_privileged_membership_without_its_groups():
     offenders: list[str] = []
-    for path in _test_modules():
-        offenders.extend(_offenders(path))
+    for path, source in _scanned_sources():
+        offenders.extend(_offenders(path, source=source))
 
     assert not offenders, (
         "These test modules build a membership that is privileged by column and "
@@ -454,7 +538,8 @@ def test_the_opt_out_is_confined_to_the_modules_that_earned_it(module):
     One row per module, so a stale entry names itself rather than moving a
     count.
     """
-    source = (REPO_ROOT / module).read_text()
+    sources = {str(path.relative_to(REPO_ROOT)): source for path, source in _scanned_sources()}
+    source = sources[module]
 
     assert DELIBERATE in source, f"{module} no longer needs the opt-out; drop it from this list"
 
@@ -462,8 +547,40 @@ def test_the_opt_out_is_confined_to_the_modules_that_earned_it(module):
 def test_no_other_module_uses_the_opt_out():
     users = sorted(
         str(path.relative_to(REPO_ROOT))
-        for path in _test_modules()
-        if DELIBERATE in path.read_text()
+        for path, source in _scanned_sources()
+        if DELIBERATE in source
     )
 
     assert users == sorted(OPT_OUT_MODULES), users
+
+
+def test_a_blind_scan_fails_the_floor_instead_of_passing(tmp_path):
+    """The cached scan must not be able to report success on nothing.
+
+    ``_scanned_sources`` is read by both repo-wide guards, and both of them
+    phrase success as an absence -- no offenders, no unexpected opt-out. An
+    empty or truncated scan therefore satisfies them *by finding nothing*,
+    which is precisely the silent pass this module exists to catch. So the
+    floor is asserted here directly, on the two ways the scan can go blind.
+    """
+    wrong_root_sources = tuple((path, path.read_text()) for path in _test_modules(tmp_path))
+    with pytest.raises(AssertionError, match="did not reach modules"):
+        _assert_the_scan_reached_the_repo(wrong_root_sources)
+
+    partial = tuple(
+        (path, source) for path, source in _scanned_sources() if "payments" not in str(path)
+    )
+    with pytest.raises(AssertionError, match=r"payments/tests/test_dunning_recipients\.py"):
+        _assert_the_scan_reached_the_repo(partial)
+
+
+def test_the_pruned_walk_still_reaches_every_scanned_app():
+    """``PRUNED_DIRS`` prunes during the walk, so an over-broad entry there
+    would quietly shrink the scan. The floor covers two apps; this pins that
+    the walk still spans the tree it is supposed to.
+    """
+    scanned = {path.relative_to(REPO_ROOT).parts[0] for path, _ in _scanned_sources()}
+
+    assert {"organizations", "payments", "calendar_integration", "accounts", "common"} <= scanned, (
+        f"the module walk no longer reaches every app it used to: {sorted(scanned)}"
+    )
