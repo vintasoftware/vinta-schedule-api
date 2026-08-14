@@ -670,6 +670,24 @@ class TestCanManageBrandingCapabilityField:
         assert CurrentMembershipSerializer(admin_membership).data["can_manage_branding"] is True
         assert CurrentMembershipSerializer(member_membership).data["can_manage_branding"] is False
 
+    def test_direct_branding_permission_is_enough_for_both_serializers(self):
+        from django.contrib.auth.models import Permission
+        from django.contrib.contenttypes.models import ContentType
+
+        org = _org_with_entitlement(
+            Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="direct-branding"
+        )
+        membership = self._membership(org, role=OrganizationRole.MEMBER)
+        membership.permissions.add(
+            Permission.objects.get(
+                codename="manage_branding",
+                content_type=ContentType.objects.get_for_model(Organization),
+            )
+        )
+
+        assert CurrentMembershipSerializer(membership).data["can_manage_branding"] is True
+        assert MyMembershipSerializer(membership).data["can_manage_branding"] is True
+
     def test_tracks_the_shared_helper_rather_than_duplicating_it(self):
         """Every case above is also directly pinned against
         `is_branding_eligible_organization` itself, so a change to the shared

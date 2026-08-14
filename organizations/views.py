@@ -502,7 +502,7 @@ class ServiceAccountViewSet(
     queryset; non-admins get 403; anonymous requests 401.
     """
 
-    permission_classes = (IsOrganizationAdmin,)
+    permission_classes = (CanManageBranding,)
     serializer_class = ServiceAccountReadSerializer
 
     @inject

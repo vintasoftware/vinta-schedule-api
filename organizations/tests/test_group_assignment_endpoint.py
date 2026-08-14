@@ -68,13 +68,13 @@ def admin_client(auth_client, user, organization):
 @pytest.mark.django_db
 class TestAssigningGroups:
     def test_idempotent_assignment_keeps_a_sole_direct_permission_holder(
-        self, admin_client, user, organization
+        self, auth_client, organization
     ):
-        """Replacing groups cannot discard a direct capability grant the write retains."""
+        """A sole direct holder may replace groups without losing that grant."""
         from django.contrib.auth.models import Permission
         from django.contrib.contenttypes.models import ContentType
 
-        target = OrganizationMembership.objects.get(user=user, organization=organization)
+        target = make_membership(user=baker.make(User), organization=organization)
         target.permissions.add(
             Permission.objects.get(
                 codename="manage_members",
@@ -82,11 +82,14 @@ class TestAssigningGroups:
             )
         )
 
-        response = admin_client.post(
-            groups_url(target), {"groups": [GROUP_ORGANIZATION_ADMIN]}, format="json"
+        auth_client.force_authenticate(target.user)
+        response = auth_client.post(
+            groups_url(target), {"groups": [GROUP_ORGANIZATION_MEMBER]}, format="json"
         )
 
         assert response.status_code == status.HTTP_200_OK
+        assert group_names(target) == {GROUP_ORGANIZATION_MEMBER}
+        assert target.permissions.filter(codename="manage_members").exists()
 
     def test_promoting_a_member_grants_every_capability(self, admin_client, organization):
         target = make_membership(user=baker.make(User), organization=organization)
