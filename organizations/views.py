@@ -74,6 +74,8 @@ from organizations.permission_catalog import (
 from organizations.permissions import (
     BRANDING_GATE_EXCEPTIONS,
     BrandingWriteGateReason,
+    CanManageBranding,
+    CanManageOrganization,
     IsOrganizationAdmin,
     OrganizationInvitationPermission,
     OrganizationManagementPermission,
@@ -137,7 +139,7 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
           membership check.
         """
         if self.action in ("update", "partial_update"):
-            return [IsAuthenticated(), IsOrganizationAdmin()]
+            return [IsAuthenticated(), CanManageOrganization()]
         return super().get_permissions()
 
     @inject
@@ -923,7 +925,12 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
         # *remove* the capability (no query at all), did the target actually
         # hold it (resolved the same way every permission class resolves it),
         # and is anybody else left holding it.
-        keeps_manage_members = MANAGE_MEMBERS in permissions_for_groups(requested_groups)
+        keeps_manage_members = (
+            MANAGE_MEMBERS in permissions_for_groups(requested_groups)
+            or target.permissions.filter(
+                codename="manage_members", content_type__app_label="organizations"
+            ).exists()
+        )
         if not keeps_manage_members and has_organization_permission(
             target.user, MANAGE_MEMBERS, target.organization
         ):
@@ -1097,7 +1104,7 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
     tuple, so full 400/403 enforcement runs on every HTTP method.
     """
 
-    permission_classes = (IsOrganizationAdmin,)
+    permission_classes = (CanManageBranding,)
     serializer_class = OrganizationBrandingSerializer
 
     @inject

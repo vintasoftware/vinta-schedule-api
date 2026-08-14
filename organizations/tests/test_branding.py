@@ -659,23 +659,16 @@ class TestCanManageBrandingCapabilityField:
         assert CurrentMembershipSerializer(membership).data["can_manage_branding"] is False
         assert MyMembershipSerializer(membership).data["can_manage_branding"] is False
 
-    def test_non_admin_membership_reports_the_same_org_level_capability(self):
-        """`can_manage_branding` is an organization-level fact, not a per-role
-        one -- a non-admin member's entry reports it identically to an admin's.
-        Write authorization (who may actually POST/PATCH) is a separate,
-        role-based check (`IsOrganizationAdmin`) on the branding endpoints
-        themselves."""
+    def test_entitled_member_without_branding_permission_reports_false(self):
+        """The field is the published composite capability, not eligibility alone."""
         org = _org_with_entitlement(
             Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="member-org-cap"
         )
         admin_membership = self._membership(org, role=OrganizationRole.ADMIN)
         member_membership = self._membership(org, role=OrganizationRole.MEMBER)
 
-        assert (
-            CurrentMembershipSerializer(admin_membership).data["can_manage_branding"]
-            is CurrentMembershipSerializer(member_membership).data["can_manage_branding"]
-            is True
-        )
+        assert CurrentMembershipSerializer(admin_membership).data["can_manage_branding"] is True
+        assert CurrentMembershipSerializer(member_membership).data["can_manage_branding"] is False
 
     def test_tracks_the_shared_helper_rather_than_duplicating_it(self):
         """Every case above is also directly pinned against

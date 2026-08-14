@@ -17,7 +17,7 @@ from organizations.models import (
     OrganizationInvitation,
     OrganizationMembership,
 )
-from organizations.permission_catalog import GROUP_PERMISSIONS
+from organizations.permission_catalog import GROUP_PERMISSIONS, MANAGE_BRANDING
 from organizations.permissions import (
     is_branding_eligible_organization,
     is_branding_eligible_organizations,
@@ -416,7 +416,9 @@ class CurrentMembershipSerializer(serializers.ModelSerializer):
         ``OrganizationBrandingView._check_branding_read_gate``) rather than
         the write gate.
         """
-        return is_branding_eligible_organization(obj.organization)
+        return MANAGE_BRANDING in _resolved_permissions(
+            self, obj
+        ) and is_branding_eligible_organization(obj.organization)
 
 
 class OrganizationBriefSerializer(serializers.ModelSerializer):
@@ -523,9 +525,12 @@ class MyMembershipSerializer(serializers.ModelSerializer):
         for that one organization anyway.
         """
         batch = self.context.get("_can_manage_branding_by_organization_pk")
-        if batch is not None:
-            return batch.get(obj.organization_id, False)
-        return is_branding_eligible_organization(obj.organization)
+        eligible = (
+            batch.get(obj.organization_id, False)
+            if batch is not None
+            else is_branding_eligible_organization(obj.organization)
+        )
+        return MANAGE_BRANDING in _resolved_permissions(self, obj) and eligible
 
 
 class OrganizationMembershipSerializer(serializers.ModelSerializer):
