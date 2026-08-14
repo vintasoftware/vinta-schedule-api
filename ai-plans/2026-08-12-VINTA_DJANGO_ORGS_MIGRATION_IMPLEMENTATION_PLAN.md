@@ -442,6 +442,7 @@ Changes:
 4. `@users/models.py::is_organization_admin(organization)` wraps `has_organization_permission`, keeping its signature so `@calendar_integration/permissions.py` needs no change beyond what it inherits. **It must stay membership-bounded.** The body it replaces was structurally so; `has_perm` is not, and its global half and superuser short-circuit consult no membership at all, so it would answer `True` for organizations the caller does not belong to. Every current caller happens to be guarded, which means the failure would not surface as a test failure — the next unguarded caller would be a cross-tenant read.
 5. Sweep the remaining classes across `@calendar_integration/permissions.py` (7 classes), `@public_api/permissions.py` (2), `@users/permissions.py` (1).
 7. **Test fixtures**: `baker.make(OrganizationMembership, role=ADMIN)` produces no groups, so every test that builds an admin membership and then exercises a permission class needs groups assigned. **Decision (2026-08-13): a shared test helper, updated per module** — not a `post_save` signal. The signal would have covered every write path including baker, but it is a production behaviour change made to serve tests, and Phase 6 would have had to unpick it. The cost is that every test module creating an admin membership must be found and updated, and the failure mode is a test that silently asserts the wrong thing — so the sweep must be exhaustive and the helper must be the only sanctioned way to build a privileged membership in tests.
+   **Amended 2026-08-14 after CI exposed a performance regression:** the exhaustive static guard must prune excluded trees before descending into them, read each candidate source at most once per test session, and carry an anti-vacuity floor that fails if pruning stops reaching the known test surface. The guard must stay within `pytest.ini`'s existing 10-second per-test budget under the full `-n auto` CI run; raising or disabling the timeout is not an acceptable fix.
 6. Delete the dead-with-reason `BrandingWriteGateReason.NO_SLUG` (and its `BRANDING_GATE_EXCEPTIONS` entry and the `if not organization.slug` check in `evaluate_branding_write_gate`) from `@organizations/permissions.py` — retired in Phase 1 (see the plan's Guiding Decisions "Slug precondition for branding writes is retired" row) once `organization_slug_not_blank` made it permanently unreachable through any supported write path. `OrganizationSlugRequiredForBrandingError` in `@organizations/exceptions.py` goes with it once nothing references it.
 
 Spec use-case: shared scaffolding — no use-case yet.
@@ -450,6 +451,7 @@ Tests:
 - **Integration**: `organizations/tests/test_permissions_parity.py` — for each of the 15 permission classes, a matrix of (membership state × target object) yields the same allow/deny as before the change. This is the phase's contract. **It must include the escalation rows**, which are the ones a mechanical swap passes without: a plain member holding the permission via `user_permissions` is refused; a plain member added to the global `organization_admin` group is refused; a superuser with no admin membership is refused. That last one is *parity, not policy* — `role == ADMIN` refused a superuser holding no admin membership, so admitting one would be a widening, and `IsBillingOwnerOrAdmin` gates operations that charge a card at Stripe / MercadoPago rather than merely reading rows the Django admin already exposes. Keep at least two rows that pass under both the old and new implementations, as controls, so the matrix cannot be satisfied by a helper that simply refuses everyone.
 - **Integration**: `payments/tests/test_reseller_root_billing.py` — an admin of a reseller parent may still manage a descendant's billing while the bound organization is the descendant. This is the case `has_perm` alone gets wrong, so it gets its own test.
 - **Integration**: `organizations/tests/test_branding_gate_parity.py` — entitled-but-unpermitted and permitted-but-unentitled both still deny.
+- **Static regression**: `organizations/tests/test_privileged_membership_fixtures.py` — the exhaustive privileged-fixture scan still catches every sanctioned constructor shape, proves its pruned walk reaches the expected apps and opt-out modules, and completes inside the existing 10-second per-test budget both alone and under `-n auto`.
 
 **Suggested AI model**: Tier 4. Fifteen classes, four of which do not fit the model being migrated to; the risk is silently widening a grant.
 
@@ -457,7 +459,7 @@ Tests:
 
 **Reusable skills**: none.
 
-Acceptance: no permission class reads `role` or `is_billing_owner`, the parity matrix is green across all 15 classes, and the reseller-root case still passes.
+Acceptance: no permission class reads `role` or `is_billing_owner`, the parity matrix is green across all 15 classes, the reseller-root case still passes, and the exhaustive privileged-fixture guard remains non-vacuous while completing inside the existing 10-second per-test budget.
 
 ---
 
@@ -616,6 +618,7 @@ Acceptance: the grep in change 4 returns nothing outside migrations, `membership
 ## Amendments
 
 - **2026-08-14** — Removed application implementations already shipped by `vinta-django-orgs` `0.3.0`: scoped-manager `create()` / `bulk_create()`, membership resolution and its user stash, and `membership_holds_permission`. Request-aware code now reads `request.organization_membership`; off-request resolution uses the package directly and no longer silently chooses the oldest active membership. Affected phases: 3, 3.5, 6. Branches force-pushed: `plan/vinta-django-orgs-migration/phase-3`, `plan/vinta-django-orgs-migration/phase-3.5`, `chore/prune-package-tests`, `plan/vinta-django-orgs-migration/phase-4`, `plan/vinta-django-orgs-migration/phase-5`, `plan/vinta-django-orgs-migration/phase-6`.
+- **2026-08-14** — Added a bounded-runtime contract to Phase 4's exhaustive privileged-membership fixture guard after PRs #264 and #265 both exceeded `pytest.ini`'s 10-second per-test timeout. The guard must prune excluded dependency and migration trees before descent, reuse candidate source reads, and prove its scan cannot pass vacuously. Affected phase: 4. Branches force-pushed: `plan/vinta-django-orgs-migration/phase-4`, `plan/vinta-django-orgs-migration/phase-5`, `plan/vinta-django-orgs-migration/phase-6`.
 
 - **2026-08-12** — Retargeted from `vinta-django-orgs` `0.1.1` to `0.2.0`, and **withdrew the `organizations` → `tenancy` app rename entirely**.
 
