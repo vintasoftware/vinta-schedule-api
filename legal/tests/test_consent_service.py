@@ -159,7 +159,8 @@ class TestRecordConsent:
                 role=OrganizationRole.MEMBER,
             )
         PolicyDocumentFactory().create(document_type=PolicyDocumentType.SMS_CONSENT, version=1)
-        service = ConsentService(audit_service=Mock())
+        audit_service = Mock()
+        service = ConsentService(audit_service=audit_service)
 
         with patch("audit.services.persist_audit_record") as mock_task:
             with django_capture_on_commit_callbacks(execute=True):
@@ -170,6 +171,7 @@ class TestRecordConsent:
                 )
 
         assert UserConsent.objects.filter(pk=consent.pk).exists()
+        audit_service.record.assert_not_called()
         assert mock_task.delay.call_count == 0
 
 
