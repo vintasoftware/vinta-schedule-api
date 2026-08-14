@@ -342,9 +342,8 @@ class TestOrganizationViewSet:
     ):
         """Test updating an organization when user has a non-admin membership.
 
-        The organization_with_membership fixture creates a MEMBER-role membership.
-        IsOrganizationAdmin (applied to update/partial_update) rejects non-admin
-        members with 403.
+        The organization_with_membership fixture creates a MEMBER-role membership
+        with no direct capabilities. ``CanManageOrganization`` rejects it with 403.
         """
         url = reverse("api:Organizations-detail", kwargs={"pk": organization_with_membership.pk})
         data = {
@@ -373,6 +372,47 @@ class TestOrganizationViewSet:
 
         assert_response_status_code(response, status.HTTP_200_OK)
         assert response.json()["name"] == "Admin Updated Name"
+
+    @pytest.mark.parametrize(
+        ("permission_codename", "permission_model", "expected_status"),
+        [
+            ("manage_organization", Organization, status.HTTP_200_OK),
+            ("manage_members", OrganizationMembership, status.HTTP_403_FORBIDDEN),
+        ],
+    )
+    def test_patch_organization_requires_manage_organization_exactly(
+        self, user, permission_codename, permission_model, expected_status
+    ):
+        """PATCH reads its declared capability, not the broader admin capability."""
+        from django.contrib.auth.models import Permission
+        from django.contrib.contenttypes.models import ContentType
+
+        organization = OrganizationTestFactory.create_organization(name="Direct Capability Org")
+        membership = make_membership(
+            user=user,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+        membership.permissions.add(
+            Permission.objects.get(
+                codename=permission_codename,
+                content_type=ContentType.objects.get_for_model(permission_model),
+            )
+        )
+        client = APIClient()
+        client.force_authenticate(user=user)
+        client.credentials(HTTP_X_ORGANIZATION_ID=str(organization.id))
+
+        response = client.patch(
+            reverse("api:Organizations-detail", kwargs={"pk": organization.pk}),
+            {"name": "Updated by Direct Capability"},
+            format="json",
+        )
+
+        assert response.status_code == expected_status
+        if expected_status == status.HTTP_200_OK:
+            assert response.json()["name"] == "Updated by Direct Capability"
 
     def test_update_organization_external_event_update_policy(self, user):
         """Admin can PATCH external_event_update_policy alongside should_sync_rooms."""
@@ -531,7 +571,7 @@ class TestOrganizationSlugUpdate:
     def test_non_admin_member_cannot_set_slug(
         self, auth_client, user, organization_with_membership
     ):
-        """A non-admin member is refused (IsOrganizationAdmin gates the whole update)."""
+        """A membership without ``manage_organization`` is refused."""
         before = organization_with_membership.slug
         url = reverse("api:Organizations-detail", kwargs={"pk": organization_with_membership.pk})
         response = auth_client.patch(url, {"slug": "member-org"}, format="json")
@@ -678,7 +718,7 @@ class TestOrganizationPermissions:
         """Test organization permissions when user has a non-admin (MEMBER) membership.
 
         retrieve/delete: still gated by OrganizationManagementPermission → 403.
-        update: gated by IsOrganizationAdmin → non-admin member gets 403.
+        update: gated by ``CanManageOrganization`` → a member without the capability gets 403.
         """
         organization = OrganizationTestFactory.create_organization()
         # create_organization_membership uses baker default role = MEMBER
@@ -689,7 +729,7 @@ class TestOrganizationPermissions:
         response = auth_client.get(url)
         assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
 
-        # Should NOT be able to update — IsOrganizationAdmin blocks non-admin members
+        # Should NOT be able to update — no ``manage_organization`` capability.
         response = auth_client.patch(url, {"name": "Updated Name"}, format="json")
         assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
 
@@ -2609,8 +2649,8 @@ class TestShouldSyncRoomsTransition:
     """Verify the False→True transition in OrganizationViewSet.update fires exactly once.
 
     These tests use a real admin membership — no permission patching.
-    The update/partial_update actions are now gated by IsOrganizationAdmin so
-    the transition trigger is genuinely reachable by an admin PATCH.
+    The update/partial_update actions are now gated by ``CanManageOrganization`` so
+    the transition trigger is genuinely reachable by a permitted PATCH.
     """
 
     def _make_admin_client_and_org(self, user, should_sync_rooms=False):

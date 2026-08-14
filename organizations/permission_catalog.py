@@ -17,9 +17,9 @@ Two deliberate shapes, both from the plan's Guiding Decisions
   check resolves a capability from the active membership, never a group name, so a
   per-organization group layer can be added later without touching a call site.
 
-Nothing in this module is consulted by a permission class yet -- Phase 4 does
-that. The constants exist now so the migration, the services' dual-write and
-the tests all spell the same strings.
+Permission classes and published membership serializers consume these constants,
+so the migration, the services' dual-write, the runtime checks, and the tests
+all spell the same strings.
 
 The migration that seeds these does **not** import this module: a data
 migration must keep working when the live code moves on, so it carries its own

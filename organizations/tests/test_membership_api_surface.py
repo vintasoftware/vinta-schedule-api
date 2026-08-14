@@ -245,6 +245,33 @@ class TestTheCurrentMembershipEndpoint:
 
         assert sorted(response.json()["permissions"]) == _resolved_by_the_backend(membership)
 
+    @pytest.mark.parametrize(
+        ("permission_codename", "permission_model", "expected"),
+        [
+            ("manage_branding", Organization, True),
+            ("manage_members", OrganizationMembership, False),
+        ],
+    )
+    def test_direct_capability_controls_current_branding_signal(
+        self, auth_client, user, permission_codename, permission_model, expected
+    ):
+        from django.contrib.auth.models import Permission
+        from django.contrib.contenttypes.models import ContentType
+
+        organization = baker.make(Organization, name="Eligible direct capability org")
+        membership = make_membership(user=user, organization=organization)
+        membership.permissions.add(
+            Permission.objects.get(
+                codename=permission_codename,
+                content_type=ContentType.objects.get_for_model(permission_model),
+            )
+        )
+
+        response = auth_client.get(reverse("api:Organizations-current"))
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["can_manage_branding"] is expected
+
 
 @pytest.mark.django_db
 class TestTheMineEndpoint:
@@ -263,6 +290,33 @@ class TestTheMineEndpoint:
         assert "role" not in rows[administered.id]
         assert sorted(rows[administered.id]["permissions"]) == ADMIN_PERMISSIONS
         assert rows[joined.id]["permissions"] == []
+
+    @pytest.mark.parametrize(
+        ("permission_codename", "permission_model", "expected"),
+        [
+            ("manage_branding", Organization, True),
+            ("manage_members", OrganizationMembership, False),
+        ],
+    )
+    def test_direct_capability_controls_mine_branding_signal(
+        self, auth_client, user, permission_codename, permission_model, expected
+    ):
+        from django.contrib.auth.models import Permission
+        from django.contrib.contenttypes.models import ContentType
+
+        organization = baker.make(Organization, name="Eligible mine capability org")
+        membership = make_membership(user=user, organization=organization)
+        membership.permissions.add(
+            Permission.objects.get(
+                codename=permission_codename,
+                content_type=ContentType.objects.get_for_model(permission_model),
+            )
+        )
+
+        response = auth_client.get(reverse("api:Organizations-mine"))
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()[0]["can_manage_branding"] is expected
 
     def test_the_batch_does_not_grow_queries_with_the_membership_count(
         self, auth_client, user, django_assert_max_num_queries

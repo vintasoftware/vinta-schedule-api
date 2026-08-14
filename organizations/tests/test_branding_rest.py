@@ -180,10 +180,19 @@ def reseller_org_member(reseller_org):
 class TestOrganizationBrandingViewSet:
     """Test suite for OrganizationBrandingViewSet REST endpoints."""
 
+    @pytest.mark.parametrize(
+        ("method", "expected_status"),
+        [
+            ("get", status.HTTP_404_NOT_FOUND),
+            ("put", status.HTTP_201_CREATED),
+            ("patch", status.HTTP_200_OK),
+            ("post", status.HTTP_200_OK),
+        ],
+    )
     def test_direct_branding_permission_admits_and_manage_members_does_not(
-        self, client, user, reseller_org, reseller_org_admin
+        self, client, user, reseller_org, reseller_org_admin, method, expected_status
     ):
-        """The branding endpoint reads its declared capability, not admin-ness."""
+        """Every branding surface reads its declared capability, not admin-ness."""
         from django.contrib.auth.models import Permission
         from django.contrib.contenttypes.models import ContentType
 
@@ -199,13 +208,50 @@ class TestOrganizationBrandingViewSet:
         client.force_authenticate(user)
         client.credentials(HTTP_X_ORGANIZATION_ID=str(reseller_org.id))
 
+        if method == "patch":
+            baker.make(OrganizationBranding, organization=reseller_org, app_name="Existing")
+
         reseller_org_admin.permissions.add(branding_permission)
-        assert_response_status_code(client.get(BRANDING_URL), status.HTTP_404_NOT_FOUND)
+        if method == "get":
+            response = client.get(BRANDING_URL)
+        elif method == "put":
+            response = client.put(
+                BRANDING_URL,
+                {
+                    "app_name": "Direct Branding",
+                    "primary_color": "#000000",
+                    "secondary_color": "#ffffff",
+                    "support_email": "support@example.com",
+                    "redirect_url": "https://example.com",
+                },
+                format="json",
+            )
+        elif method == "patch":
+            response = client.patch(BRANDING_URL, {"app_name": "Direct Branding"}, format="json")
+        else:
+            response = client.post(
+                reverse("api:branding-logo-upload-params"),
+                {"file_name": "logo.png", "file_type": "image/png", "file_size": 1},
+                format="json",
+            )
+        assert_response_status_code(response, expected_status)
 
         reseller_org_admin.permissions.clear()
         reseller_org_admin.permissions.add(members_permission)
         client.force_authenticate(User.objects.get(pk=user.pk))
-        assert_response_status_code(client.get(BRANDING_URL), status.HTTP_403_FORBIDDEN)
+        if method == "get":
+            response = client.get(BRANDING_URL)
+        elif method == "put":
+            response = client.put(BRANDING_URL, {}, format="json")
+        elif method == "patch":
+            response = client.patch(BRANDING_URL, {"app_name": "Denied"}, format="json")
+        else:
+            response = client.post(
+                reverse("api:branding-logo-upload-params"),
+                {"file_name": "logo.png", "file_type": "image/png", "file_size": 1},
+                format="json",
+            )
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
 
     def test_retrieve_branding_not_configured_returns_404(
         self, client, user, reseller_org, reseller_org_admin

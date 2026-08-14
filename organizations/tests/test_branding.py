@@ -670,7 +670,16 @@ class TestCanManageBrandingCapabilityField:
         assert CurrentMembershipSerializer(admin_membership).data["can_manage_branding"] is True
         assert CurrentMembershipSerializer(member_membership).data["can_manage_branding"] is False
 
-    def test_direct_branding_permission_is_enough_for_both_serializers(self):
+    @pytest.mark.parametrize(
+        ("permission_codename", "permission_model", "expected"),
+        [
+            ("manage_branding", Organization, True),
+            ("manage_members", OrganizationMembership, False),
+        ],
+    )
+    def test_direct_capability_controls_branding_for_both_serializers(
+        self, permission_codename, permission_model, expected
+    ):
         from django.contrib.auth.models import Permission
         from django.contrib.contenttypes.models import ContentType
 
@@ -680,13 +689,13 @@ class TestCanManageBrandingCapabilityField:
         membership = self._membership(org, role=OrganizationRole.MEMBER)
         membership.permissions.add(
             Permission.objects.get(
-                codename="manage_branding",
-                content_type=ContentType.objects.get_for_model(Organization),
+                codename=permission_codename,
+                content_type=ContentType.objects.get_for_model(permission_model),
             )
         )
 
-        assert CurrentMembershipSerializer(membership).data["can_manage_branding"] is True
-        assert MyMembershipSerializer(membership).data["can_manage_branding"] is True
+        assert CurrentMembershipSerializer(membership).data["can_manage_branding"] is expected
+        assert MyMembershipSerializer(membership).data["can_manage_branding"] is expected
 
     def test_tracks_the_shared_helper_rather_than_duplicating_it(self):
         """Every case above is also directly pinned against

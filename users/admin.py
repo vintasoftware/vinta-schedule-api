@@ -45,10 +45,10 @@ class CustomUserAdmin(UserAdmin):
 
         They were listed here, in a picker labelled "Groups", beside the real
         permission controls -- so the obvious way for a staff user to "make
-        somebody an admin" was to tick a box that does nothing. Worse before
-        Phase 4, where the same tick granted every capability in **every**
-        organization; that escalation is closed, and what is left is a control
-        whose only possible outcome is a wrong belief. Membership groups are
+        somebody an admin" was to tick a box that does nothing. The assignment
+        was inert before and after Phase 4 because organization capabilities are
+        resolved from membership groups, not global user groups; what is left is
+        a control whose only possible outcome is a wrong belief. Membership groups are
         assigned through ``POST /organization-members/{user_id}/groups/``.
 
         Only the *widget's* choices are narrowed. Any other ``auth.Group`` a
