@@ -5,6 +5,8 @@ from unittest.mock import MagicMock
 import pytest
 from rest_framework.test import APIClient
 
+from payments.billing_plans_catalog import seed_billing_plans_v1
+
 
 # Repairs the one hazard the package's seeded-group pattern creates on its own:
 # a ``transaction=True`` test flushes ``auth_group`` / ``auth_group_permissions``
@@ -120,7 +122,7 @@ def mock_external_calendar_clients(monkeypatch):
     )
 
 
-def _reseed_default_billing_plan():
+def _reseed_billing_plans():
     """Recreate the ``unlimited`` plan that migration ``0007_seed_billing_plans`` seeds.
 
     ``@pytest.mark.django_db(transaction=True)`` tests run against a real
@@ -133,37 +135,7 @@ def _reseed_default_billing_plan():
     ``PlanLimit`` row for **every** ``LimitedResource`` (``assert_plan_is_complete``
     refuses a plan that omits one) with a NULL ceiling, and every ``Entitlement`` granted.
     """
-    from payments.billing_constants import Entitlement, LimitedResource, LimitKind
-    from payments.models import BillingPlan, PlanEntitlement, PlanLimit
-
-    postpaid = {LimitedResource.EVENT_OCCURRENCES}
-    plan, _ = BillingPlan.objects.update_or_create(
-        slug="unlimited",
-        defaults={
-            "name": "Unlimited",
-            "is_active": True,
-            "is_default_for_new_organizations": True,
-            "monthly_price": 0,
-            "annual_price": None,
-            "currency": "USD",
-            "grace_period_days": None,
-        },
-    )
-    for resource_key in LimitedResource.values:
-        PlanLimit.objects.update_or_create(
-            plan=plan,
-            resource_key=resource_key,
-            defaults={
-                "limit_value": None,
-                "kind": (LimitKind.POSTPAID if resource_key in postpaid else LimitKind.PREPAID),
-                "overage_unit_price": None,
-            },
-        )
-    for entitlement_key in Entitlement.values:
-        PlanEntitlement.objects.update_or_create(
-            plan=plan, entitlement_key=entitlement_key, defaults={"is_enabled": True}
-        )
-    return plan
+    seed_billing_plans_v1()
 
 
 @pytest.fixture(autouse=True)
@@ -217,7 +189,7 @@ def provision_default_subscription(request):
         try:
             subscription_service.create_subscription_for_organization(instance)
         except NoDefaultBillingPlanError:
-            _reseed_default_billing_plan()
+            _reseed_billing_plans()
             subscription_service.create_subscription_for_organization(instance)
 
     post_save.connect(
@@ -229,6 +201,11 @@ def provision_default_subscription(request):
         post_save.disconnect(
             sender=Organization, dispatch_uid="conftest_provision_default_subscription"
         )
+
+
+@pytest.fixture(autouse=True)
+def ensure_seeded_billing_catalog(db):
+    _reseed_billing_plans()
 
 
 @pytest.fixture

@@ -18,10 +18,8 @@ units of headroom, one over five Google children costs 1 -- because a
 ``BlockedTime`` is never billable.
 """
 
-import ast
 import base64
 import datetime
-import pathlib
 from unittest.mock import Mock, patch
 
 from django.db import connection
@@ -35,13 +33,16 @@ from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
 
-from calendar_integration.constants import CalendarProvider, CalendarType
+from calendar_integration.constants import (
+    CalendarProvider,
+    CalendarType,
+    EventManagementPermissions,
+)
 from calendar_integration.models import (
     Calendar,
     CalendarEvent,
     CalendarManagementToken,
     CalendarManagementTokenPermission,
-    EventManagementPermissions,
 )
 from calendar_integration.services.calendar_permission_service import (
     DEFAULT_CALENDAR_OWNER_PERMISSIONS,
@@ -1628,171 +1629,3 @@ class TestSyncRecoversOnceHeadroomIsRestored:
         assert CalendarEvent.original_manager.filter(
             calendar=calendar, external_id="sync-recovers"
         ).exists()
-
-
-# ----------------------------------------------------------------------------------
-# Coverage registry: every module that reaches the guard has a probe here
-# ----------------------------------------------------------------------------------
-
-#: Repository root, for the source walk below.
-_REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
-
-#: The three modules that *implement* the guarded write chain rather than consume it,
-#: excluded from the derived set below. Each has a reason, not a convenience:
-#:
-#: - ``calendar_event_service.py`` holds the guard itself, and its internal
-#:   re-entries into ``create_event`` (``create_recurring_event``, the
-#:   bulk-modification continuation, ``transfer_event``) are covered by
-#:   ``TestInternalCreateEventReentries`` below rather than by a "surface" probe.
-#: - ``calendar_service.py`` is the facade that forwards to it.
-#: - ``calendar_bundle_service.py`` is the fan-out, covered by
-#:   ``TestBundleEventFanOutHeadroom``.
-_GUARD_IMPLEMENTATION_MODULES = {
-    "calendar_integration/services/calendar_event_service.py",
-    "calendar_integration/services/calendar_service.py",
-    "calendar_integration/services/calendar_bundle_service.py",
-}
-
-#: Call names that mean "this module can trip the post-paid guard": the two service
-#: entry points that route into ``CalendarEventService.create_event``, and a direct
-#: call to the guard for a writer (the sync path) that does not go through it.
-_GUARD_REACHING_CALLS = {"create_event", "create_recurring_event", "check_postpaid_allowance"}
-
-#: Receivers whose ``create_event`` is the *provider* adapter's (a Google/Microsoft
-#: API write), not this service's. ``ExternalEventChangeRequestService`` calls
-#: ``write_adapter.create_event`` to re-create an event on the provider after an
-#: undone deletion -- no local ``CalendarEvent`` is created and nothing is metered,
-#: so it is not a guarded surface.
-_ADAPTER_RECEIVER_MARKERS = ("adapter", "client")
-
-
-def _receiver_name(node: ast.Attribute) -> str:
-    """The identifier the guarded call is made *on* (``x.y.create_event`` -> ``y``)."""
-    value = node.value
-    if isinstance(value, ast.Attribute):
-        return value.attr
-    if isinstance(value, ast.Name):
-        return value.id
-    return ""
-
-
-#: Every module the walk below is expected to find, mapped to the test class(es) that
-#: drive it. The **keys are asserted against the source tree**, in both directions --
-#: this is the difference between this test and the hand-written literal it replaced,
-#: which compared a dict in this file against a list in this file and would therefore
-#: have passed unchanged when a seventh entry point appeared.
-GUARDED_SURFACES: dict[str, tuple[type, ...]] = {
-    # REST (`CalendarEventViewSet`) and the token REST surface share one serializer,
-    # which is the module that actually issues the create.
-    "calendar_integration/serializers.py": (TestRestSurface, TestTokenSurface),
-    # `createCalendarEventWithCode` (direct) and `createCalendarGroupEventWithCode`
-    # (via `calendar_group_service`, below).
-    "calendar_integration/mutations.py": (
-        TestBookingCodeEventSurface,
-        TestBookingCodeGroupEventSurface,
-    ),
-    "public_api/mutations.py": (TestPublicApiScheduleEventSurface,),
-    "calendar_integration/services/calendar_group_service.py": (TestBookingCodeGroupEventSurface,),
-    "calendar_integration/services/calendar_sync_service.py": (TestBulkSyncWriterSurface,),
-}
-
-
-def _modules_reaching_the_guard() -> set[str]:
-    """Every module in the tree that can trip the post-paid guard, read out of the
-    source with ``ast`` rather than listed by hand.
-
-    Tests, migrations, factories, and the calendar *adapters* (whose own
-    ``create_event`` talks to Google/Microsoft, not to this service) are excluded, as
-    are the three guard-implementation modules above.
-
-    Scoped to this project's own **first-party Django app packages** (resolved from
-    ``django.apps``, kept to those living under the repo), not a blind ``rglob`` of the
-    repo root. Two reasons, one correctness and one operational: a blind walk would
-    read non-source trees like ``mediafiles`` / ``templates`` / a nested
-    ``.claude/worktrees`` checkout of this same repo -- making the result depend on
-    what else is on disk -- and parsing every one of them is slow enough to trip this
-    test's ``pytest-timeout`` under parallel load. Walking only the app packages is
-    both the correct set and an order of magnitude less work.
-    """
-    from django.apps import apps
-
-    app_dirs: list[pathlib.Path] = []
-    for config in apps.get_app_configs():
-        app_path = pathlib.Path(config.path).resolve()
-        try:
-            app_path.relative_to(_REPO_ROOT)
-        except ValueError:
-            continue  # third-party app installed outside the repo
-        app_dirs.append(app_path)
-
-    found: set[str] = set()
-    for app_dir in app_dirs:
-        for path in app_dir.rglob("*.py"):
-            parts = path.relative_to(_REPO_ROOT).parts
-            relative = path.relative_to(_REPO_ROOT).as_posix()
-            if (
-                any(part.startswith(".") for part in parts)
-                or "tests" in parts
-                or "migrations" in parts
-                or "calendar_adapters" in parts
-                or path.name == "factories.py"
-                or relative in _GUARD_IMPLEMENTATION_MODULES
-            ):
-                continue
-            try:
-                tree = ast.parse(path.read_text(encoding="utf-8"))
-            except (SyntaxError, UnicodeDecodeError):  # pragma: no cover - not our source
-                continue
-            for node in ast.walk(tree):
-                if (
-                    isinstance(node, ast.Call)
-                    and isinstance(node.func, ast.Attribute)
-                    and node.func.attr in _GUARD_REACHING_CALLS
-                    and not any(
-                        marker in _receiver_name(node.func) for marker in _ADAPTER_RECEIVER_MARKERS
-                    )
-                ):
-                    found.add(relative)
-                    break
-    return found
-
-
-def test_every_module_reaching_the_guard_has_a_probe():
-    """Derived from the source tree, and asserted both ways.
-
-    A seventh entry point -- a new viewset, a new mutation, a new service that calls
-    ``create_event`` -- appears in ``discovered`` the moment it is written and fails
-    here until somebody registers a probe for it. And a registration left behind for
-    a module that no longer creates events fails the other assertion, so the registry
-    cannot rot in the direction of *claiming* coverage it no longer has.
-    """
-    discovered = _modules_reaching_the_guard()
-
-    unprobed = discovered - GUARDED_SURFACES.keys()
-    assert not unprobed, (
-        f"These modules reach CalendarEventService.create_event (or the post-paid guard "
-        f"directly) but have no probe in this file: {sorted(unprobed)}. Add one, or add "
-        "the module to _GUARD_IMPLEMENTATION_MODULES with a reason if it implements the "
-        "guarded chain rather than consuming it."
-    )
-
-    stale = GUARDED_SURFACES.keys() - discovered
-    assert not stale, (
-        f"GUARDED_SURFACES registers {sorted(stale)}, which no longer reach the guard. "
-        "Remove the registration, or fix the call path if the surface was meant to stay "
-        "guarded -- otherwise this file reports coverage of a path nothing routes through."
-    )
-
-
-def test_every_registered_surface_has_a_blocked_and_unlimited_probe():
-    """A registered probe class that lost its blocked-path or unlimited-path test
-    would leave the module above nominally covered and actually unchecked."""
-    for module, test_classes in GUARDED_SURFACES.items():
-        for test_class in test_classes:
-            method_names = {m for m in dir(test_class) if m.startswith("test_")}
-            assert any("blocked" in m for m in method_names), (
-                f"{module} -> {test_class.__name__} has no blocked-path test"
-            )
-            assert any("unlimited" in m for m in method_names), (
-                f"{module} -> {test_class.__name__} has no unlimited-plan test"
-            )

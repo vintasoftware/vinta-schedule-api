@@ -32,10 +32,11 @@ silent divergence.
 from __future__ import annotations
 
 import logging
+from functools import reduce
 from typing import TYPE_CHECKING
 
-from django.contrib.auth.models import Group, Permission
 from django.db import transaction
+from django.db.models import F, Q
 
 
 logger = logging.getLogger(__name__)
@@ -44,28 +45,71 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
+    from django.contrib.auth.models import (
+        Group as GroupType,
+    )
+    from django.contrib.auth.models import (
+        Permission as PermissionType,
+    )
+    from django.contrib.contenttypes.models import ContentType as ContentTypeType
+
+
+def _get_permission_with_labels(app_label: str, _model: str, codename: str, _name: str):
+    return f"{app_label}.{codename}"
+
 
 #: ``OrganizationMembership`` -- may add, remove, deactivate and re-group members.
-MANAGE_MEMBERS = "organizations.manage_members"
+MANAGE_MEMBERS_TUPLE = (
+    "organizations",
+    "organizationmembership",
+    "manage_members",
+    "Can manage the organization's members",
+)
 
 #: ``Organization`` -- may change the organization's own settings.
-MANAGE_ORGANIZATION = "organizations.manage_organization"
-
+MANAGE_ORGANIZATION_TUPLE = (
+    "organizations",
+    "organization",
+    "manage_organization",
+    "Can manage the organization's settings",
+)
 #: ``Organization`` -- the *role* half of the branding write gate. The
 #: entitlement half (``white_label_branding``) is a separate, unrelated check;
 #: holding this permission is not on its own enough to write branding.
-MANAGE_BRANDING = "organizations.manage_branding"
+MANAGE_BRANDING_TUPLE = (
+    "organizations",
+    "organization",
+    "manage_branding",
+    "Can manage the organization's branding",
+)
 
 #: ``payments.Subscription`` -- may change the plan, buy add-ons, manage the
 #: payment method. Also what ``billing_recipients`` reads to decide who receives
 #: the dunning ladder, so "who may write billing" and "who is told about it"
 #: derive from one source.
-MANAGE_BILLING = "payments.manage_billing"
+MANAGE_BILLING_TUPLE = (
+    "payments",
+    "subscription",
+    "manage_billing",
+    "Can manage the organization's billing",
+)
+
+MANAGE_MEMBERS = _get_permission_with_labels(*MANAGE_MEMBERS_TUPLE)
+MANAGE_ORGANIZATION = _get_permission_with_labels(*MANAGE_ORGANIZATION_TUPLE)
+MANAGE_BRANDING = _get_permission_with_labels(*MANAGE_BRANDING_TUPLE)
+MANAGE_BILLING = _get_permission_with_labels(*MANAGE_BILLING_TUPLE)
 
 
 GROUP_ORGANIZATION_ADMIN = "organization_admin"
 GROUP_ORGANIZATION_BILLING_OWNER = "organization_billing_owner"
 GROUP_ORGANIZATION_MEMBER = "organization_member"
+
+PERMISSIONS = [
+    MANAGE_ORGANIZATION_TUPLE,
+    MANAGE_BRANDING_TUPLE,
+    MANAGE_MEMBERS_TUPLE,
+    MANAGE_BILLING_TUPLE,
+]
 
 
 #: The seeded mapping. ``organization_member`` is deliberately empty: it exists
@@ -83,6 +127,30 @@ GROUP_PERMISSIONS: dict[str, tuple[str, ...]] = {
     GROUP_ORGANIZATION_BILLING_OWNER: (MANAGE_BILLING,),
     GROUP_ORGANIZATION_MEMBER: (),
 }
+
+
+def _get_permissions_by_app_label(
+    permission_model: type[PermissionType] | None = None, db_alias: str | None = "default"
+) -> dict[str, PermissionType]:
+    if permission_model:
+        Permission = permission_model  # noqa: N806
+    else:
+        from django.contrib.auth.models import Permission
+
+    permissions_query = reduce(
+        lambda x, y: x | y,
+        [
+            Q(content_type__app_label=app_label, codename=codename)
+            for app_label, _, codename, _ in PERMISSIONS
+        ],
+        Q(),
+    )
+    permissions = (
+        Permission.objects.using(db_alias)
+        .filter(permissions_query)
+        .annotate(app_label=F("content_type__app_label"))
+    )
+    return {f"{p.app_label}.{p.codename}": p for p in permissions}
 
 
 def groups_for_membership_state(*, is_admin: bool, is_billing_owner: bool) -> tuple[str, ...]:
@@ -107,7 +175,7 @@ def groups_for_membership_state(*, is_admin: bool, is_billing_owner: bool) -> tu
     return tuple(names)
 
 
-def seed_organization_groups() -> list[Group]:
+def seed_organization_groups() -> list[GroupType]:
     """Create (or repair) the three seeded groups from **this module's live catalog**.
 
     The callable ``SHARED_SCHEMA_ORGANIZATIONS["ORGANIZATION_GROUP_SEEDERS"]``
@@ -144,29 +212,11 @@ def seed_organization_groups() -> list[Group]:
     ``post_migrate``, and this catalog carries no content type to create one
     against.
     """
-    groups: list[Group] = []
+    groups: list[GroupType] = []
 
     with transaction.atomic():
-        for group_name, permission_labels in GROUP_PERMISSIONS.items():
-            group, _ = Group.objects.get_or_create(name=group_name)
-            for label in permission_labels:
-                app_label, codename = label.split(".", 1)
-                try:
-                    permission = Permission.objects.get(
-                        content_type__app_label=app_label, codename=codename
-                    )
-                except Permission.DoesNotExist:
-                    logger.warning(
-                        "Skipping %r while seeding %r: no auth.Permission with "
-                        "content_type__app_label=%r and codename=%r exists.",
-                        label,
-                        group_name,
-                        app_label,
-                        codename,
-                    )
-                    continue
-                group.permissions.add(permission)
-            groups.append(group)
+        seed_permissions_v1()
+        groups = seed_groups_v1()
 
     return groups
 
@@ -248,3 +298,73 @@ def permissions_for_groups(group_names: Iterable[str]) -> frozenset[str]:
     return frozenset(
         permission for name in group_names for permission in GROUP_PERMISSIONS.get(name, ())
     )
+
+
+def seed_permissions_v1(
+    content_type_model: type[ContentTypeType] | None = None,
+    permission_model: type[PermissionType] | None = None,
+    db_alias: str | None = "default",
+):
+    """
+    This function is a historical record. Do not update it, it's beeing
+    called from migrations
+    """
+    if content_type_model:
+        ContentType = content_type_model  # noqa: N806
+    else:
+        from django.contrib.contenttypes.models import ContentType
+
+    if permission_model:
+        Permission = permission_model  # noqa: N806
+    else:
+        from django.contrib.auth.models import Permission
+
+    permissions: list[PermissionType] = []
+    for app_label, model, codename, name in PERMISSIONS:
+        content_type, _ = ContentType.objects.using(db_alias).get_or_create(
+            app_label=app_label, model=model
+        )
+        permission, _ = Permission.objects.using(db_alias).get_or_create(
+            content_type=content_type,
+            codename=codename,
+            defaults={"name": name},
+        )
+        permissions.append(permission)
+
+    return permissions
+
+
+def seed_groups_v1(
+    permission_model: type[PermissionType] | None = None,
+    group_model: type[GroupType] | None = None,
+    db_alias: str | None = "default",
+):
+    """
+    This function is a historical record. Do not update it, it's beeing
+    called from migrations
+    """
+    permissions_by_code = _get_permissions_by_app_label(permission_model, db_alias)
+
+    if group_model:
+        Group = group_model  # noqa: N806
+    else:
+        from django.contrib.auth.models import Group
+
+    groups: list[GroupType] = []
+    for group_name, permission_code in GROUP_PERMISSIONS.items():
+        group, _ = Group.objects.using(db_alias).get_or_create(name=group_name)
+        # ``add`` rather than ``set``: additive and idempotent, and it does not
+        # revoke a grant an operator added on purpose.
+        for code in permission_code:
+            try:
+                group.permissions.add(permissions_by_code[code])
+            except KeyError:
+                logger.warning(
+                    "Skipping %r seeding %r: no auth.Permission found.",
+                    code,
+                    group_name,
+                )
+                continue
+        groups.append(group)
+
+    return groups

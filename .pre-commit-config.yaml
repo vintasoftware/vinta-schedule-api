@@ -58,6 +58,18 @@ repos:
         # Only run missing migration check if migration-generating files have changed:
         files: (.*/?(settings|migrations|models)/.+|.+models\.py|.+constants\.py|.+choices\.py|.+pyproject\.toml)
         pass_filenames: false
+      - id: check-event-guarded-surfaces
+        name: check-event-guarded-surfaces-local
+        entry: uv run python manage.py check_event_guarded_surfaces
+        language: system
+        files: \.(py)$
+        pass_filenames: false
+      - id: check-privileged-membership-fixtures
+        name: check-privileged-membership-fixtures-local
+        entry: uv run python manage.py check_privileged_membership_fixtures
+        language: system
+        files: \.(py)$
+        pass_filenames: false
       - id: backend-schema
         name: backend-schema-local
         entry: uv run python manage.py spectacular --color --file schema.yml

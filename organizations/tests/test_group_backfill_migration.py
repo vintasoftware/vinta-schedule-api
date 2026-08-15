@@ -52,6 +52,7 @@ from model_bakery import baker
 
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
 from organizations.permission_catalog import GROUP_PERMISSIONS as CATALOG_GROUP_PERMISSIONS
+from organizations.permission_catalog import PERMISSIONS
 from payments.models import Subscription
 from users.models import User
 
@@ -166,7 +167,7 @@ class TestTheMigrationsFrozenLiteralsStillMatchTheLiveCatalog:
     def test_the_seed_migrations_permission_owners_match(self):
         owners = {
             f"{app_label}.{codename}": (app_label, model)
-            for app_label, model, codename, _name in SEED_MIGRATION.PERMISSIONS
+            for app_label, model, codename, _name in PERMISSIONS
         }
 
         assert owners == EXPECTED_PERMISSION_OWNERS

@@ -26,9 +26,7 @@ The failure mode is not a red test. A test whose admin membership carries no
 groups sees a *denial*, and a test that asserted a denial for some other reason
 -- a missing entitlement, a wrong organization, a non-owned calendar -- keeps
 passing while proving nothing. That is why the sweep to this helper had to be
-exhaustive, and why
-``organizations/tests/test_privileged_membership_fixtures.py`` scans the repo's
-test modules and fails on any raw privileged ``baker.make`` that comes back.
+exhaustive.
 
 A ``post_save`` signal would have covered every write path including baker's,
 and was deliberately rejected (**Decisions taken 2026-08-13** in the tracking

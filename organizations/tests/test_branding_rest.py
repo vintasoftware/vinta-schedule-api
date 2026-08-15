@@ -1,7 +1,10 @@
 import datetime
 import json
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Permission
+from django.contrib.contenttypes.models import ContentType
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
@@ -11,6 +14,7 @@ import pytest
 from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
+from s3direct.utils import AWSCredentials
 
 from organizations.models import (
     Organization,
@@ -180,6 +184,21 @@ def reseller_org_member(reseller_org):
 class TestOrganizationBrandingViewSet:
     """Test suite for OrganizationBrandingViewSet REST endpoints."""
 
+    @pytest.fixture(autouse=True)
+    def _s3_upload_settings(self, settings):
+        """Only the accepted-upload cases below reach the presigned-URL step --
+        the rejection cases raise before ever needing a bucket/region/endpoint or
+        credentials, so they're unaffected by this fixture."""
+
+        settings.AWS_STORAGE_BUCKET_NAME = "test-bucket"
+        settings.AWS_S3_REGION_NAME = "us-east-1"
+        settings.AWS_S3_ENDPOINT_URL = "https://s3.us-east-1.amazonaws.com"
+        with patch(
+            "organizations.branding_logo.get_aws_credentials",
+            return_value=AWSCredentials(token=None, secret_key="secret", access_key="AKIATEST"),
+        ):
+            yield
+
     @pytest.mark.parametrize(
         ("method", "expected_status"),
         [
@@ -193,8 +212,6 @@ class TestOrganizationBrandingViewSet:
         self, client, user, reseller_org, reseller_org_admin, method, expected_status
     ):
         """Every branding surface reads its declared capability, not admin-ness."""
-        from django.contrib.auth.models import Permission
-        from django.contrib.contenttypes.models import ContentType
 
         reseller_org_admin.groups.clear()
         branding_permission = Permission.objects.get(
@@ -230,7 +247,7 @@ class TestOrganizationBrandingViewSet:
             response = client.patch(BRANDING_URL, {"app_name": "Direct Branding"}, format="json")
         else:
             response = client.post(
-                reverse("api:branding-logo-upload-params"),
+                reverse("branding-logo-upload-params"),
                 {"file_name": "logo.png", "file_type": "image/png", "file_size": 1},
                 format="json",
             )
@@ -247,7 +264,7 @@ class TestOrganizationBrandingViewSet:
             response = client.patch(BRANDING_URL, {"app_name": "Denied"}, format="json")
         else:
             response = client.post(
-                reverse("api:branding-logo-upload-params"),
+                reverse("branding-logo-upload-params"),
                 {"file_name": "logo.png", "file_type": "image/png", "file_size": 1},
                 format="json",
             )
