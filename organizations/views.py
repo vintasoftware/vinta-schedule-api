@@ -20,6 +20,7 @@ from rest_framework.mixins import ListModelMixin, RetrieveModelMixin
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.viewsets import GenericViewSet
+from vinta_orgs.querysets import split_permission_label
 
 from audit.constants import AuditAction
 from audit.diff import compute_diff
@@ -817,17 +818,11 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
         # group does, and the two guards must agree on what "the last admin"
         # means.
         if has_organization_permission(target.user, MANAGE_MEMBERS, target.organization):
-            other_holders_of_manage_members = (
-                OrganizationMembership.objects.filter(
-                    organization_id=target.organization_id,
-                    is_active=True,
-                )
-                # Composite PK (user, organization): exclude the target by its user_id
-                # within the already org-scoped filter.
-                .exclude(user_id=target.user_id)
-                .holding_permission(MANAGE_MEMBERS)
-                .count()
-            )
+            other_holders_of_manage_members = OrganizationMembership.objects.other_members_holding(
+                organization_id=target.organization_id,
+                excluding_user_id=target.user_id,
+                permission=MANAGE_MEMBERS,
+            ).count()
             if other_holders_of_manage_members == 0:
                 raise ValidationError(
                     detail="Cannot deactivate the last active admin of the organization."
@@ -926,26 +921,28 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
         # *remove* the capability (no query at all), did the target actually
         # hold it (resolved the same way every permission class resolves it),
         # and is anybody else left holding it.
+        #
+        # The direct-grant half is spelled from ``MANAGE_MEMBERS`` rather than from a
+        # hand-written ``codename`` / ``app_label`` pair: a rename of the permission
+        # would leave a literal pair matching nothing, and a clause that matches nothing
+        # here reads as "the target holds no direct grant" -- silently widening the
+        # refusal to admins who do hold one.
+        manage_members_app_label, manage_members_codename = split_permission_label(MANAGE_MEMBERS)
         keeps_manage_members = (
             MANAGE_MEMBERS in permissions_for_groups(requested_groups)
             or target.permissions.filter(
-                codename="manage_members", content_type__app_label="organizations"
+                codename=manage_members_codename,
+                content_type__app_label=manage_members_app_label,
             ).exists()
         )
         if not keeps_manage_members and has_organization_permission(
             target.user, MANAGE_MEMBERS, target.organization
         ):
-            others_who_can_manage_members = (
-                OrganizationMembership.objects.filter(
-                    organization_id=target.organization_id,
-                    is_active=True,
-                )
-                # A membership is identified by ``(user, organization)``; the
-                # filter above is already organization-scoped.
-                .exclude(user_id=target.user_id)
-                .holding_permission(MANAGE_MEMBERS)
-                .count()
-            )
+            others_who_can_manage_members = OrganizationMembership.objects.other_members_holding(
+                organization_id=target.organization_id,
+                excluding_user_id=target.user_id,
+                permission=MANAGE_MEMBERS,
+            ).count()
             if others_who_can_manage_members == 0:
                 raise ValidationError(
                     detail=(

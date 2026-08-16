@@ -547,6 +547,55 @@ def _run_mutant_tests() -> list[str]:
                 "was incorrectly reported as an offender."
             )
 
+        errors.extend(_run_floor_mutant_tests())
+
+    return errors
+
+
+def _run_floor_mutant_tests() -> list[str]:
+    """The floor's own regression test: prove it raises rather than passing.
+
+    ``_assert_scan_reached_repo`` is what stops this command reporting success on
+    nothing -- every check below phrases success as an *absence* (no offenders, no
+    unexpected opt-out), so an empty or truncated scan satisfies all of them by
+    finding nothing. That makes the floor the single point where a wrong
+    ``REPO_ROOT``, a broken path filter or an over-eager ``PRUNED_DIRS`` entry turns
+    into a failure instead of a green run, and an unexercised floor is exactly the
+    silent pass it exists to prevent.
+
+    Both ways the scan can go blind are asserted: a walk rooted somewhere that
+    contains none of the known modules, and a real scan with one app's modules
+    dropped out of it.
+    """
+    errors: list[str] = []
+
+    with tempfile.TemporaryDirectory() as empty:
+        wrong_root = tuple((path, path.read_text()) for path in _test_modules(pathlib.Path(empty)))
+
+    try:
+        _assert_scan_reached_repo(wrong_root)
+    except AssertionError:
+        pass
+    else:
+        errors.append(
+            "Anti-vacuity regression: the floor accepted a scan rooted outside the "
+            "repository, so a wrong REPO_ROOT would report success on nothing."
+        )
+
+    partial = tuple(
+        (path, source) for path, source in _scanned_sources() if "payments" not in str(path)
+    )
+
+    try:
+        _assert_scan_reached_repo(partial)
+    except AssertionError:
+        pass
+    else:
+        errors.append(
+            "Anti-vacuity regression: the floor accepted a scan that had lost every "
+            "payments module, so a truncated walk would report success."
+        )
+
     return errors
 
 

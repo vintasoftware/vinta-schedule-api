@@ -70,6 +70,12 @@ repos:
         language: system
         files: \.(py)$
         pass_filenames: false
+      - id: check-legacy-membership-resolution
+        name: check-legacy-membership-resolution-local
+        entry: uv run python manage.py check_legacy_membership_resolution
+        language: system
+        files: \.(py)$
+        pass_filenames: false
       - id: backend-schema
         name: backend-schema-local
         entry: uv run python manage.py spectacular --color --file schema.yml

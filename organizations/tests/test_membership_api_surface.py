@@ -386,9 +386,17 @@ class TestNoPublishedResponseCarriesRole:
     serializer field, a new GraphQL type, or a revert of one of this phase's
     edits all show up here without anybody remembering to add a case.
 
-    ``schema.yml`` is the committed, CI-verified OpenAPI document (a pre-commit
-    hook fails when it is stale), so reading it is equivalent to regenerating
-    it and far cheaper than doing so inside a 10-second test timeout.
+    ``schema.yml`` is the committed OpenAPI document, and reading it is only
+    equivalent to regenerating it while something guarantees it is not stale.
+    The pre-commit hook regenerates the file but does not fail on a change, and
+    it is listed in the workflow's ``SKIP``; the guarantee is the
+    ``OpenAPI schema is up to date`` step in ``.github/workflows/main.yml``,
+    which regenerates and ``git diff --exit-code``s. Without that step a
+    serializer reintroducing ``role`` passes here whenever its author forgot to
+    regenerate -- which is the failure this gate exists to catch.
+
+    Reading the committed file rather than regenerating is what keeps this
+    inside the 10-second per-test budget in ``pytest.ini``.
     """
 
     @pytest.mark.parametrize("schema_name", ["schema.yml", "schema-auth.yml"])

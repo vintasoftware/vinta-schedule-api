@@ -21,7 +21,7 @@ from django.urls import reverse
 
 import pytest
 from rest_framework import status
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.request import Request
 from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
 from vinta_orgs.exceptions import AmbiguousOrganizationError
@@ -577,6 +577,57 @@ class TestMultiOrgNoHeaderRejected:
         response = client.get(url, HTTP_X_ORGANIZATION_ID=str(org_a.pk))
 
         assert response.status_code == status.HTTP_200_OK, response.content
+
+
+# ---------------------------------------------------------------------------
+# Tests: organization_resolution_optional opt-out
+# ---------------------------------------------------------------------------
+# A concrete view may set ``organization_resolution_optional = True`` (e.g. the
+# GET /organizations/mine/ and onboarding flows) so that a multi-org caller with
+# no header is NOT rejected — the resolver falls through to gated (None) instead.
+#
+# We assert the opt-out by driving the mixin's resolver directly with a throwaway
+# view. The 403 half of the same opt-out is asserted in
+# ``TestNonMemberOrgHeaderOptOut`` below; this is the 400 half, and the two
+# refusals have independent branches in the resolver.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestActiveOrgResolutionOptionalOptOut:
+    """A view with organization_resolution_optional = True is exempt from the 400."""
+
+    def test_opt_out_view_does_not_raise_for_multi_org_no_header(
+        self,
+        two_org_user: User,  # type: ignore[valid-type]
+        org_a: Organization,
+        org_b: Organization,
+    ) -> None:
+        """organization_resolution_optional = True → no 400; resolves to gated (None)."""
+        view = _OptOutView()
+        request = _drf_request_for(two_org_user)
+
+        # Must not raise ValidationError.
+        view.resolve_organization(request)  # type: ignore[attr-defined]
+
+        assert request.organization_membership is None  # type: ignore[attr-defined]
+        assert request.organization is None  # type: ignore[attr-defined]
+
+    def test_strict_view_raises_for_multi_org_no_header(
+        self,
+        two_org_user: User,  # type: ignore[valid-type]
+        org_a: Organization,
+        org_b: Organization,
+    ) -> None:
+        """The default (strict) view raises ValidationError for the same input.
+
+        Confirms the opt-out is what suppresses the 400, not some other difference.
+        """
+        view = _StrictView()
+        request = _drf_request_for(two_org_user)
+
+        with pytest.raises(ValidationError):
+            view.resolve_organization(request)  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------
