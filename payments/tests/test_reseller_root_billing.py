@@ -24,9 +24,9 @@ from django.contrib.auth import get_user_model
 import pytest
 from model_bakery import baker
 from rest_framework.test import APIRequestFactory
-from vinta_orgs.helpers import resolve_membership_for_user
 
 from common.organization_context import organization_context
+from common.organization_services import memberships
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
 from organizations.permission_catalog import MANAGE_BILLING
 from organizations.permissions import IsBillingOwnerOrAdmin
@@ -66,7 +66,7 @@ def _request(user):
     if membership is not None:
         user = membership.user
     else:
-        membership = resolve_membership_for_user(user)
+        membership = memberships.resolve_for_user(user)
 
     request = APIRequestFactory().post("/")
     request.user = user

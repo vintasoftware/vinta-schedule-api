@@ -78,7 +78,6 @@ import pytest
 from model_bakery import baker
 from rest_framework.test import APIRequestFactory
 from vinta_orgs import authorization as vinta_orgs_authorization
-from vinta_orgs.helpers import resolve_membership_for_user
 
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.models import (
@@ -104,6 +103,7 @@ from calendar_integration.services.booking_policy_permission_service import (
 )
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from common.organization_context import organization_context
+from common.organization_services import memberships
 from organizations import authorization
 from organizations.authorization import has_organization_permission
 from organizations.models import (
@@ -218,7 +218,7 @@ def request_for(factory, user, method="get", data=None):
     if membership is not None:
         user = membership.user
     elif user is not None:
-        membership = resolve_membership_for_user(user)
+        membership = memberships.resolve_for_user(user)
 
     request = getattr(factory, method)("/")
     request.user = user
