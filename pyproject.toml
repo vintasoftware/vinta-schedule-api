@@ -61,10 +61,12 @@ dependencies = [
     "stripe>=15.3.1,<16",
     # Development Status :: Alpha. The minor is pinned deliberately: 0.1.0 changed
     # `OrganizationMembership.objects` scoping, 0.2.0 renamed both Django app
-    # labels, and 0.3.0 defaulted `STRICT_ORGANIZATION_FILTER` to `True` -- so a
-    # minor bump here has three times carried a breaking change. Re-read the
+    # labels, 0.3.0 defaulted `STRICT_ORGANIZATION_FILTER` to `True`, and 0.4.0
+    # deleted the whole function-based API (`vinta_orgs.helpers`, the module-level
+    # organization-context functions) in favour of class-specialized generics --
+    # so a minor bump here has four times carried a breaking change. Re-read the
     # upstream diff before widening this range.
-    "vinta-django-orgs>=0.3,<0.4",
+    "vinta-django-orgs>=0.4,<0.5",
 ]
 
 [dependency-groups]

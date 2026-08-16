@@ -104,7 +104,16 @@ class TestAnUnboundQueryRaises:
 
         message = str(exc_info.value)
         assert "Calendar" in message
-        assert "organization_context" in message
+        # The message is the package's, and ``0.4.0`` renamed the binding call it
+        # points at: the module-level ``organization_context(...)`` function was
+        # replaced by ``organization_state.context(...)`` on the state object.
+        # ``common.organization_context.organization_context(...)`` -- what this
+        # repo's ~30 binding sites call, and what this file imports -- is a shim
+        # over exactly that method, so a reader who follows the message lands on
+        # the right call either way. Pinned against the package's current
+        # spelling rather than dropped, because "the refusal says how to bind" is
+        # the property worth keeping.
+        assert "organization_state.context" in message
         assert "filter_by_organization" in message
         assert "original_manager" in message
 

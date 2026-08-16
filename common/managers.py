@@ -116,6 +116,10 @@ class OrganizationScopedManager(SingleOrganizationModelManager):
     #: ``organization_id`` is accepted because ``create(organization_id=...)``
     #: is as explicit as passing the instance and is used throughout the
     #: services.
+    #:
+    #: The pair the package's ``_names_an_organization`` hardcodes, restated
+    #: here as a name so ``public_api``'s override (which keys on the *presence*
+    #: of either, not on the value) does not spell the strings a second time.
     _ORGANIZATION_KWARGS = ("organization", "organization_id")
 
     # Return types are ``Any`` throughout: ``Manager.from_queryset`` builds each
@@ -173,10 +177,15 @@ class OrganizationScopedManager(SingleOrganizationModelManager):
         """Drop every row of ``organization``, given either the instance or its id."""
         return super().exclude_by_organization(organization, *args, **kwargs)  # type: ignore[arg-type]
 
-    def _names_an_organization(self, kwargs: dict[str, Any] | None) -> bool:
-        if not kwargs:
-            return False
-        return any(kwargs.get(name) is not None for name in self._ORGANIZATION_KWARGS)
+    # ``_names_an_organization`` is the package's from ``0.4.0`` on, and is
+    # deliberately not re-declared here: ``OrganizationScopedManagerMixin``
+    # shipped the identical predicate (the same two keyword names, the same
+    # ``is not None`` test on the value) as a ``@staticmethod``, so a local copy
+    # would only be a second implementation to keep in step -- and an instance
+    # method cannot override a static one without changing the signature the
+    # package's own ``get_or_create`` / ``update_or_create`` call it through.
+    # ``public_api.managers.SystemUserManager`` overrides it, as a staticmethod,
+    # for the one model where ``organization=None`` is a stated choice.
 
     # ``defaults`` is deliberately *not* consulted by either method below, unlike
     # ``kwargs``. ``defaults`` is only applied to the row these methods create or

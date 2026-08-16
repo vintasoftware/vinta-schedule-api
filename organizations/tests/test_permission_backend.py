@@ -52,8 +52,8 @@ from django.db import connection
 import pytest
 from model_bakery import baker
 from vinta_orgs.auth_backends import OrganizationModelBackend
-from vinta_orgs.state import organization_context
 
+from common.organization_context import organization_context
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
 from organizations.permission_catalog import (
     GROUP_ORGANIZATION_ADMIN,

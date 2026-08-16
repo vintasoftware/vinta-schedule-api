@@ -2189,16 +2189,16 @@ wheels = [
 
 [[package]]
 name = "vinta-django-orgs"
-version = "0.3.0"
+version = "0.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "django" },
     { name = "django-model-utils" },
     { name = "djangorestframework" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/5b/c8/9b536ca0a2bd341f5e4784b6cc9eecf4e78953fa060f91f743169c034051/vinta_django_orgs-0.3.0.tar.gz", hash = "sha256:59017bc7885820409003930e2953ec438d239111e29927bd6cb0fdfe4722b407", size = 111015, upload-time = "2026-08-13T22:08:14.021Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c1/57/da11932fea3a8355aa9578c77173aede7ec59a495497bde364b89ae983a8/vinta_django_orgs-0.4.0.tar.gz", hash = "sha256:8ac7fd1ae72bffd7b5a4d4c05149a5cffaa95b1e338505bdef94ef10fcf2a53e", size = 121621, upload-time = "2026-08-14T20:30:31.973Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5e/2b/68198414865ef2f706d4acc6a48e575de9a73303d6df12d45301f21c5901/vinta_django_orgs-0.3.0-py3-none-any.whl", hash = "sha256:fade8045600dc0e1d8d7f686e431d25445b3bcd3ab4a49c70fb855d4e21ef308", size = 98109, upload-time = "2026-08-13T22:08:12.817Z" },
+    { url = "https://files.pythonhosted.org/packages/94/ee/8e5eae88f0eb88b4fa338954d375a26f75002d24915ad98e7e729251317a/vinta_django_orgs-0.4.0-py3-none-any.whl", hash = "sha256:6bd9c8fe444f15bc9d778cddffc62d5bcc24fef3c55cb0ffcb2796a95c7233c1", size = 102943, upload-time = "2026-08-14T20:30:30.811Z" },
 ]
 
 [[package]]
@@ -2329,7 +2329,7 @@ requires-dist = [
     { name = "strawberry-graphql-django", specifier = ">=0.86.0,<0.87.0" },
     { name = "stripe", specifier = ">=15.3.1,<16" },
     { name = "twilio", specifier = ">=9.6.5,<10" },
-    { name = "vinta-django-orgs", specifier = ">=0.3,<0.4" },
+    { name = "vinta-django-orgs", specifier = ">=0.4,<0.5" },
     { name = "vintasend", specifier = ">=1.2.0,<2" },
     { name = "vintasend-celery", specifier = ">=1.2.0,<2" },
     { name = "vintasend-django", specifier = ">=1.2.1,<2" },

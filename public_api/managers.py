@@ -23,10 +23,11 @@ class SystemUserManager(_SystemUserManagerBase):  # type: ignore[misc,valid-type
     ``SystemUser.original_manager``.
     """
 
-    def _names_an_organization(self, kwargs: dict[str, Any] | None) -> bool:
+    @staticmethod
+    def _names_an_organization(kwargs: dict[str, Any] | None) -> bool:
         """``organization=None`` counts as naming one on this model.
 
-        :class:`~common.managers.OrganizationScopedManager` tests the *value*
+        The package tests the *value*
         (``kwargs.get(name) is not None``) because on every other scoped model a
         ``None`` there is an argument the caller forgot, and routing it through
         the scoped queryset is how it gets an organization -- or a clear error.
@@ -50,7 +51,14 @@ class SystemUserManager(_SystemUserManagerBase):  # type: ignore[misc,valid-type
         than here so that ``get_or_create`` / ``update_or_create`` (which build
         the instance on the queryset, below this method) and a direct
         ``SystemUser(organization=None, ...)`` are covered by the same line.
+
+        **A ``staticmethod`` naming its parent rather than calling ``super()``**,
+        because that is the shape package ``0.4.0`` gave
+        ``OrganizationScopedManagerMixin._names_an_organization``, and the
+        zero-argument ``super()`` needs a first positional argument a static
+        method does not have.
         """
-        if kwargs and any(name in kwargs for name in self._ORGANIZATION_KWARGS):
+        organization_kwargs = OrganizationScopedManager._ORGANIZATION_KWARGS
+        if kwargs and any(name in kwargs for name in organization_kwargs):
             return True
-        return super()._names_an_organization(kwargs)
+        return OrganizationScopedManager._names_an_organization(kwargs)
