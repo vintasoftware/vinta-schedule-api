@@ -23,19 +23,44 @@ from __future__ import annotations
 import pytest
 from model_bakery import baker
 
-from common.organization_services import memberships, organizations
+from common.organization_services import Memberships, Organizations, memberships, organizations
 from organizations.models import Organization, OrganizationMembership
 from users.models import User
 
 
 class TestTheDeclarations:
-    def test_the_organization_service_is_bound_to_our_organization_model(self):
+    """Asserted on the *declarations*, not on the runtime resolution.
+
+    ``organizations.model`` and ``memberships.organization_model`` both come
+    from ``get_organization_model()``, which reads ``ORGANIZATION_MODEL`` and
+    only ``issubclass``-checks the declared ``model_class`` against it. So they
+    answer ``Organization`` whatever ``model_class`` names, as long as it is a
+    superclass -- a settings lookup dressed up as a declaration check. The class
+    attributes are what a wrong declaration actually changes, so they are what
+    is pinned (the same way ``common/tests/test_organization_context.py`` pins
+    ``ProjectOrganizationState.model_class``).
+    """
+
+    def test_the_organization_service_declares_our_organization_model(self):
+        assert Organizations.model_class is Organization
+        # Weaker (it is the settings lookup), but it pins that the declaration
+        # and ``ORGANIZATION_MODEL`` have not been pointed at different classes.
         assert organizations.model is Organization
 
-    def test_the_membership_service_is_bound_to_our_membership_model(self):
+    def test_the_membership_service_declares_our_membership_model(self):
+        assert Memberships.model_class is OrganizationMembership
         assert memberships.model is OrganizationMembership
 
-    def test_the_membership_service_derives_our_organization_model_from_the_fk(self):
+    def test_the_membership_fk_our_organization_model_is_derived_from_points_at_it(self):
+        """``MembershipService`` takes no organization argument on purpose.
+
+        It reads ``model_class``'s ``organization`` foreign key and refuses to
+        construct if the target is not ``ORGANIZATION_MODEL``. That is only safe
+        while the foreign key really does point at our model, so the field is
+        asserted rather than the derived attribute -- which would answer
+        ``Organization`` from settings regardless.
+        """
+        assert OrganizationMembership._meta.get_field("organization").related_model is Organization
         assert memberships.organization_model is Organization
 
 

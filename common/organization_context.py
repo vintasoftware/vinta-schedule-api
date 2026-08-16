@@ -36,8 +36,16 @@ Two consequences worth knowing before you bind an organization:
   ``organization``. Inside an ``organization_context(...)`` block that *adopts*
   the bound organization rather than raising. (``DEFAULT_ORGANIZATION_SLUG`` is
   ``None``, so the second half stays a no-op and an *unbound* save still raises.)
-* Binding by slug is lazy (``SimpleLazyObject``), so a block that never touches
-  a scoped model pays no query.
+* **Binding is lazy; entering a block is not.**
+  :func:`set_current_organization` given a slug (or a ``LazyObject``) stores a
+  ``SimpleLazyObject`` and costs no query until something reads the
+  organization -- which is what makes request binding free for a request that
+  never touches scoped data. Entering an ``organization_context(...)`` block is
+  different: ``OrganizationContext.__enter__`` returns ``self.state.get()``, and
+  ``OrganizationState.get()`` evaluates ``if not organization:`` on the
+  ``LazyObject``, which forces ``_setup()``. So the ``with`` statement itself
+  resolves the organization, and wrapping the argument in a ``SimpleLazyObject``
+  defers nothing.
 """
 
 from __future__ import annotations

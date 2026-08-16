@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Self
 
 from vinta_orgs.querysets import SingleOrganizationQuerySet
-
-from common.exceptions import OrganizationCannotBeUpdatedError
 
 
 if TYPE_CHECKING:
@@ -23,36 +21,19 @@ class OrganizationScopedQuerySet(SingleOrganizationQuerySet):
     ``context.organization.id``, a task argument) -- fetching the row only to
     filter by it would be a query bought for nothing.
 
-    Only the annotation is widened; the bodies are the package's. One behaviour
-    is *added* -- see :meth:`update`.
+    Only the annotation is widened; the bodies are the package's. Nothing else
+    is overridden -- in particular the refusal to move rows between
+    organizations is the package's own: ``SingleOrganizationQuerySet.update``
+    raises ``vinta_orgs.exceptions.OrganizationCannotBeUpdatedError`` when
+    ``organization`` / ``organization_id`` is named (after safe-relation kwargs
+    are rewritten), and honours ``unsafe_organization_update=True``. A local
+    override used to duplicate that check and raise a same-named exception of
+    its own, which both split the ``except`` clause and made the opt-in
+    unreachable through ``.update()``; see ``common/exceptions.py``.
     """
-
-    #: Both spellings of the column a bulk ``UPDATE`` must never write.
-    _ORGANIZATION_UPDATE_KWARGS = ("organization", "organization_id")
 
     def filter_by_organization(self, organization: Organization | int) -> Self:  # type: ignore[override]
         return super().filter_by_organization(organization)  # type: ignore[arg-type]
 
     def exclude_by_organization(self, organization: Organization | int) -> Self:  # type: ignore[override]
         return super().exclude_by_organization(organization)  # type: ignore[arg-type]
-
-    def update(self, **kwargs: Any) -> int:
-        """Refuse to move rows between organizations; otherwise the package's.
-
-        ``BaseOrganizationModelQuerySet.update`` (retired in this phase) raised
-        on ``update(organization=...)`` / ``update(organization_id=...)``, and
-        nothing in the package replaces it: its ``update()`` only takes care
-        *not to write* ``organization`` while rewriting a safe relation's kwargs
-        onto the concrete field, which says nothing about a caller naming the
-        column outright. Without this,
-        ``Calendar.objects.filter_by_organization(a).update(organization_id=b)``
-        relocates rows across the tenant boundary and reports success.
-
-        Refused rather than scoped: a bulk ``UPDATE`` has no instance to take a
-        consistent organization from, so there is no correct value to write --
-        see :class:`common.exceptions.OrganizationCannotBeUpdatedError`.
-        """
-        for name in self._ORGANIZATION_UPDATE_KWARGS:
-            if name in kwargs:
-                raise OrganizationCannotBeUpdatedError()
-        return super().update(**kwargs)

@@ -24,7 +24,6 @@ import logging
 from typing import Annotated
 
 from django.utils import timezone
-from django.utils.functional import SimpleLazyObject
 
 from dependency_injector.wiring import Provide, inject
 
@@ -122,8 +121,7 @@ def meter_subscription_event_occurrences(
         )
         return
 
-    organization = SimpleLazyObject(lambda: subscription.organization)
-    with organization_context(organization):
+    with organization_context(subscription.organization):
         result = metering_service.meter_occurrences_for_period(
             subscription,
             datetime.datetime.fromisoformat(window_start),
@@ -200,9 +198,8 @@ def process_dunning_for_subscription(
             subscription_id,
         )
         return
-    organization = SimpleLazyObject(lambda: subscription.organization)
     try:
-        with organization_context(organization):
+        with organization_context(subscription.organization):
             dunning_service.process_subscription(subscription)
     except Exception:  # noqa: BLE001 - best-effort: never let one tick poison the ladder
         logger.exception(
@@ -262,9 +259,8 @@ def close_subscription_billing_period(
             subscription_id,
         )
         return
-    organization = SimpleLazyObject(lambda: subscription.organization)
     try:
-        with organization_context(organization):
+        with organization_context(subscription.organization):
             closed = cycle_close_service.close_subscription(subscription)
     except Exception:  # noqa: BLE001 - best-effort: never let one close abort the sweep
         logger.exception(
@@ -329,6 +325,5 @@ def check_approaching_limits_for_subscription(
             subscription_id,
         )
         return
-    organization = SimpleLazyObject(lambda: subscription.organization)
-    with organization_context(organization):
+    with organization_context(subscription.organization):
         usage_warning_service.check_subscription(subscription)
