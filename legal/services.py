@@ -15,10 +15,10 @@ import logging
 from typing import Annotated
 
 from dependency_injector.wiring import Provide, inject
-from vinta_orgs.helpers import resolve_membership_for_user
 
 from audit.constants import AuditAction
 from audit.services import AuditService
+from common.organization_services import memberships
 from common.utils.phone_utils import normalize_phone_number
 from legal.exceptions import NoPolicyDocumentError
 from legal.models import PolicyDocument, UserConsent
@@ -144,7 +144,7 @@ class ConsentService:
         organization membership — see the class docstring for why that is
         safe: the ``UserConsent`` row is itself the audit-grade proof.
         """
-        membership = resolve_membership_for_user(consent.user, strict=False)
+        membership = memberships.resolve_for_user(consent.user, strict=False)
         if membership is None:
             logger.info(
                 "Skipping AuditService record for UserConsent %s: user %s has no unique "

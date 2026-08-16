@@ -29,8 +29,8 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.request import Request
 from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
 from vinta_orgs.exceptions import AmbiguousOrganizationError
-from vinta_orgs.helpers import resolve_membership_for_user
 
+from common.organization_services import memberships
 from common.utils.view_utils import TenantScopedViewMixin
 from organizations.models import (
     Organization,
@@ -265,7 +265,7 @@ class TestPackageOwnedMembershipResolution:
     ) -> None:
         """A management command or task may resolve a single membership directly."""
         _make_membership(user, org_a)
-        membership = resolve_membership_for_user(user)
+        membership = memberships.resolve_for_user(user)
 
         assert membership is not None
         assert membership.organization_id == org_a.pk
@@ -276,7 +276,7 @@ class TestPackageOwnedMembershipResolution:
     ) -> None:
         """Without an explicit organization, row age no longer selects a tenant."""
         with pytest.raises(AmbiguousOrganizationError):
-            resolve_membership_for_user(two_org_user)
+            memberships.resolve_for_user(two_org_user)
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -837,7 +837,7 @@ class TestADeactivatedAdminIsRefusedThroughTheRealStack:
     **Which gate answers, exactly.** The 403 below comes from the *resolver* --
     the package's membership queryset filters
     ``is_active=True``, so the header names an organization with no active
-    membership behind it and ``resolve_membership_for_user`` raises
+    membership behind it and ``memberships.resolve_for_user`` raises
     ``OrganizationAccessDeniedError`` before ``IsOrganizationAdmin`` is ever
     consulted. It does **not** come from the package's ``OrganizationModelBackend
     ._get_membership``, the other place ``0.3.0`` put an ``is_active`` filter:

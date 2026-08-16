@@ -17,12 +17,12 @@ from allauth.socialaccount.adapter import DefaultSocialAccountAdapter
 from allauth.socialaccount.models import SocialLogin
 from allauth.utils import build_absolute_uri
 from dependency_injector.wiring import Provide, inject
-from vinta_orgs.helpers import resolve_membership_for_user
 from vintasend.constants import NotificationTypes
 from vintasend.services.dataclasses import NotificationContextDict
 from vintasend.services.notification_service import NotificationService
 
 from accounts.exceptions import ConsentRequiredError
+from common.organization_services import memberships
 from legal.services import ConsentService
 from organizations.exceptions import UserAlreadyHasMembershipError
 from organizations.models import OrganizationMembership
@@ -185,7 +185,7 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):
         account_id = account.id
         organization_id = membership.organization_id if membership is not None else None
         if organization_id is None:
-            resolved_membership = resolve_membership_for_user(user, strict=False)
+            resolved_membership = memberships.resolve_for_user(user, strict=False)
             if resolved_membership is None:
                 return
             organization_id = resolved_membership.organization_id

@@ -9,8 +9,8 @@ import pytest
 from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
-from vinta_orgs.helpers import resolve_membership_for_user
 
+from common.organization_services import memberships
 from organizations.models import (
     ExternalEventUpdatePolicy,
     Organization,
@@ -349,7 +349,7 @@ class TestMultiOrgMembership:
         )
         OrganizationMembership.objects.create(user=user, organization=org_b, is_active=False)
 
-        resolved = resolve_membership_for_user(user)
+        resolved = memberships.resolve_for_user(user)
 
         assert resolved == active
         assert resolved.organization == org_a

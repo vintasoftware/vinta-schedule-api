@@ -145,12 +145,12 @@ class TestSocialGatedOnboarding:
         descriptor), the gating invariant is confirmed by checking the queryset
         is empty rather than expecting RelatedObjectDoesNotExist.
         """
-        from vinta_orgs.helpers import resolve_membership_for_user
+        from common.organization_services import memberships
 
         user = _social_save_user("gated@social.example.com")
 
         assert user.memberships.count() == 0
-        assert resolve_membership_for_user(user) is None
+        assert memberships.resolve_for_user(user) is None
 
     # ------------------------------------------------------------------
     # Scenario 2 — gated user creates org and becomes ADMIN

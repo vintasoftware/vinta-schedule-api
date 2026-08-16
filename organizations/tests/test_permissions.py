@@ -3,8 +3,8 @@ from django.contrib.auth import get_user_model
 import pytest
 from model_bakery import baker
 from rest_framework.test import APIRequestFactory
-from vinta_orgs.helpers import resolve_membership_for_user
 
+from common.organization_services import memberships
 from organizations.models import (
     Organization,
     OrganizationMembership,
@@ -20,7 +20,7 @@ def _request_for_user(factory, user):
     """Build the request state the package mixin provides before permissions run."""
     request = factory.get("/")
     request.user = user
-    request.organization_membership = resolve_membership_for_user(user)
+    request.organization_membership = memberships.resolve_for_user(user)
     return request
 
 

@@ -238,14 +238,14 @@ class OrganizationMembership(AbstractOrganizationMembership):
            empty queryset or permission denial — never a 500.
 
         A user may hold memberships in multiple organizations.
-        ``resolve_membership_for_user`` resolves the *active* one: for a
+        ``memberships.resolve_for_user`` resolves the *active* one: for a
         single-membership user it returns that membership; for a multi-org user
         the DRF integration resolves the active org from the
         ``X-Organization-Id`` header and stores it on the request.
 
         Request code reads ``request.organization_membership``. Code outside a
-        request calls ``vinta_orgs.helpers.resolve_membership_for_user``
-        directly so resolution stays owned by the package.
+        request calls ``common.organization_services.memberships
+        .resolve_for_user`` directly so resolution stays owned by the package.
 
     Inherited from ``vinta_orgs.models.AbstractOrganizationMembership``:
     ``organization`` and ``user`` (both ``related_name="memberships"`` --

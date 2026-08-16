@@ -20,8 +20,7 @@ import logging
 from django.conf import settings
 from django.http import HttpRequest, HttpResponse
 
-from vinta_orgs.helpers import resolve_membership_for_user
-
+from common.organization_services import memberships
 from organizations.models import resolve_branding_for_display
 from users.models import User
 
@@ -68,7 +67,7 @@ def resolve_post_auth_destination(user: User | None) -> str:
     age. Once the frontend selects an organization, tenant-scoped requests use
     the strict request resolver as usual.
     """
-    membership = resolve_membership_for_user(user, strict=False)
+    membership = memberships.resolve_for_user(user, strict=False)
     organization = membership.organization if membership else None
     branding = resolve_branding_for_display(organization)
 
