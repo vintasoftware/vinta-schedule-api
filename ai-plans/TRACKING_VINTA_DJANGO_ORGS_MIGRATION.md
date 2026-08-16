@@ -789,6 +789,77 @@ and seeded-group invariant tests is **5 passed / 0 failed**. Ruff, format,
 from the recorded 291 is tooling/environment drift rather than a branch change.
 New SHA `517d973`; `plan/vinta-django-orgs-migration/phase-6` force-pushed.
 
+**Rebased a third time 2026-08-16, onto the amended Phase 5.** Phase 5 grew a
+capability-enforcement pass, a last-admin guard, frozen-literal seed migrations
+and three relocated AST scans after Phase 6 was written, so seven files
+conflicted on the first commit and `conftest.py` on two later ones. Phase 5 was
+taken as the truth throughout; Phase 6 contributed its intent:
+
+- `organizations/permission_catalog.py` — Phase 5's structure kept whole
+  (`*_TUPLE` constants, derived `_label`, `PERMISSIONS`, `_permissions_by_label`
+  and the runtime seeders `ORGANIZATION_GROUP_SEEDERS` points at, none of which
+  a migration imports). Only the two flat-column translators went:
+  `groups_for_membership_state` and `membership_state_for_groups`.
+  `canonical_groups`, `INVITABLE_GROUPS` and `group_for_invitation_groups`
+  survive, and `0030`'s `role` → `group` rename still agrees with the model's
+  `choices=[(name, name) for name in INVITABLE_GROUPS]` (`makemigrations
+  --check` clean).
+- `organizations/views.py`, `common/tests/test_permission_check_ordering.py`,
+  `organizations/tests/test_org_resolution.py` — Phase 5's guards, enforcement
+  and restored classes kept; the conflicts were the `OrganizationRole` import
+  against a `get_active_organization_membership` import Phase 5 had already
+  deleted (`check_legacy_membership_resolution` forbids the latter). Neither
+  name survives.
+- `organizations/tests/test_permissions_parity.py`,
+  `payments/tests/test_reseller_root_billing.py` — every Phase 5 assertion,
+  docstring and control kept; only `role=`/`is_billing_owner=` became `groups=`.
+  Phase 6's bare `acting_in(...)` / `_acting_from(...)` statements were dropped:
+  Phase 5 rewrote the first into a pure function whose result is passed to
+  `request_for`, and deleted the second. **No test was deleted in this rebase.**
+- `conftest.py` — Phase 6's repo-owned `restore_seeded_permission_groups` block
+  was never applied. Phase 5 already registers `pytest_plugins =
+  ["vinta_orgs.testing"]` and points `ORGANIZATION_GROUP_SEEDERS` at
+  `seed_organization_groups`, which is exactly the end state Phase 6's own
+  follow-up (`take the seeded-group repair from vinta_orgs.testing`) reached by
+  adding 124 lines and removing them again.
+- Three `role=OrganizationRole.MEMBER` call sites Phase 5 added after Phase 6
+  was branched (`organizations/tests/test_branding.py`,
+  `organizations/tests/test_views.py` ×2, `legal/tests/test_consent_service.py`)
+  were converted; they were outside every conflict hunk and would have been
+  `NameError` at collection.
+
+**`check_privileged_membership_fixtures` is deleted, with its CI step and its
+pre-commit hook.** Phase 5 relocated the Phase 4 pytest guard into a management
+command, so the module the table above records as removed is now that command.
+The reasoning is unchanged and is now structural: the scan is keyed on
+`PRIVILEGE_KWARGS = {"role", "is_billing_owner"}`, and with both columns gone
+its pre-filter short-circuits on every module — it could report success forever
+without a possible offender, which is worse than no check. Retargeting it onto
+"a membership built without groups" was rejected: a group-less membership and
+one in `organization_member` are indistinguishable to every permission check, so
+that scan would flag hundreds of correct call sites while proving nothing. The
+invariant it guarded needed two representations that could disagree; one
+survives. `check_legacy_membership_resolution` and
+`check_event_guarded_surfaces` key on nothing that was dropped and stay wired in
+both CI and pre-commit; both pass with a propagating exit code.
+
+Gate on the rebased tip: ruff and `ruff format --check` clean, `makemigrations
+--check` clean, `check --deploy` clean, `schema.yml` regenerates byte-identical,
+mypy **292** (the Phase 5 figure, unmoved), full suite **5,954 passed / 0
+failed** in 156s at the default 10-second `pytest.ini` timeout — no raised
+budget, no timeout.
+
+Item 4's grep needs one correction it did not need when it was first recorded
+below. Excluding `.venv` and `*/migrations/*` it now returns **no live code
+reading either column**, but it is not literally empty: it matches prose in
+three docstrings, and three lines in
+`organizations/tests/test_membership_group_migration_executor.py` — the module
+`9c08e249` added *after* the "returns nothing" claim was written — which writes
+`role` / `is_billing_owner` through `MigrationExecutor`'s **historical** models
+to drive `0029` forward and `0030` across. That is the one place the columns
+must still be nameable, and it is why the module exists. Deleting the guard
+command removed the last hits that were neither prose nor historical.
+
 **The three carry-forward decisions:**
 
 1. **`IsBillingOwnerOrAdmin`'s reseller-root branch: KEPT.** It is unreachable
