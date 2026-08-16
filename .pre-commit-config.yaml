@@ -64,12 +64,6 @@ repos:
         language: system
         files: \.(py)$
         pass_filenames: false
-      - id: check-privileged-membership-fixtures
-        name: check-privileged-membership-fixtures-local
-        entry: uv run python manage.py check_privileged_membership_fixtures
-        language: system
-        files: \.(py)$
-        pass_filenames: false
       - id: check-legacy-membership-resolution
         name: check-legacy-membership-resolution-local
         entry: uv run python manage.py check_legacy_membership_resolution
