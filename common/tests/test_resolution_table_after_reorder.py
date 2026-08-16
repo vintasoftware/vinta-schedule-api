@@ -4,7 +4,7 @@ Phase 3.5 moved organization resolution from *after* the whole of
 ``APIView.initial`` to between ``perform_authentication`` and
 ``check_permissions``, and then handed the seam and the table themselves to
 ``vinta_orgs.drf.OrganizationScopedAPIViewMixin`` /
-``vinta_orgs.helpers.memberships.resolve_membership_for_user``. **This file is
+``common.organization_services.memberships.resolve_for_user``. **This file is
 ours and stays ours** even though the package now implements the table: it pins
 the status codes and the response bodies our clients depend on, across the
 pk-to-slug translation and the exception translation -- which is exactly the
@@ -26,7 +26,7 @@ Two things had to survive that move, and this file is where each is asserted:
    no credentials. Two independent guarantees keep the 401 in front, and
    ``TestUnauthenticatedIsAnsweredFirst`` asserts both: a *bad* credential
    raises out of ``super().perform_authentication`` before the resolver is
-   reached at all, and for a merely *absent* one ``resolve_membership_for_user``
+   reached at all, and for a merely *absent* one ``memberships.resolve_for_user``
    short-circuits on ``user.is_anonymous`` rather than consulting the table. Lose
    either and an anonymous request would be told which organizations exist (403)
    or that its caller belongs to several (400) before being told it is not
@@ -51,8 +51,7 @@ through the membership-count classes are the pair that keeps those apart.
 from typing import Any
 
 from django.contrib.auth import get_user_model
-from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db import connection
+from django.db import connection, models
 from django.test.utils import CaptureQueriesContext
 
 import pytest
@@ -60,15 +59,18 @@ from rest_framework import status
 from rest_framework.authentication import BaseAuthentication
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.permissions import AllowAny
+from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.test import APIRequestFactory, force_authenticate
 from rest_framework.views import APIView
 from rest_framework.viewsets import ViewSet
+from vinta_orgs.exceptions import OrganizationAccessDeniedError
+from vinta_orgs.resolution import UNRESOLVED_ORGANIZATION, OrganizationSelection
 
-from common.utils.view_utils import UNMATCHABLE_ORGANIZATION_SLUG, TenantScopedViewMixin
+from common.organization_services import memberships
+from common.utils.view_utils import TenantScopedViewMixin
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
 from organizations.permissions import IsOrganizationAdmin
-from organizations.slug_validation import validate_organization_slug
 
 
 User = get_user_model()
@@ -161,6 +163,27 @@ class BadCredentialProbeView(AuthenticatedProbeView):
     override before the resolver's second line ever runs."""
 
     authentication_classes = (_AlwaysFailsAuthentication,)
+
+
+class NoSentinelProbeView(AuthenticatedProbeView):
+    """``AuthenticatedProbeView`` with the "not found" sentinel reverted to ``None``.
+
+    Not a historical curiosity -- it is the mutant for the
+    ``present, no such org -> 403`` row, and it is the whole reason that row can
+    be trusted. It differs from ``AuthenticatedProbeView`` in exactly one thing:
+    the answer ``get_organization_slug`` gives when the header's pk names no
+    organization. Everything else -- the header parse, the pk lookup, the
+    package's table, the exception translation -- is shared.
+
+    ``None`` is the answer the package reads as "the caller named nothing", so
+    the mutant is precisely the mistake the sentinel exists to prevent: it must
+    *serve* the request that the real view refuses.
+    """
+
+    def get_organization_slug(self, request: Request) -> OrganizationSelection:
+        selection = super().get_organization_slug(request)
+
+        return None if selection is UNRESOLVED_ORGANIZATION else selection
 
 
 def _dispatch(view_class: Any, user: Any = None, header: str | None = None, **initkwargs: Any):
@@ -330,7 +353,10 @@ class TestAHeaderNamingNoOrganizationAtAll:
     This is the row the pk-to-slug translation exists for. The package resolves
     by slug and treats a missing slug as "the caller named nothing"; if
     ``get_organization_slug`` answered ``None`` here, every assertion below would
-    become a 200 (single membership) or a 400 (several) instead.
+    become a 200 (single membership) or a 400 (several) instead. That claim is
+    not left as prose: ``TestRevertingTheSentinelToNoneReopensIt`` below runs the
+    same requests through a view that does answer ``None``, and asserts the 200
+    and the 400.
     """
 
     @staticmethod
@@ -391,23 +417,141 @@ class TestAHeaderNamingNoOrganizationAtAll:
         assert OptOutProbeView.ran is True
         assert OptOutProbeView.resolved is None
 
-    def test_the_unmatchable_slug_could_never_name_a_real_organization(self) -> None:
-        """The invariant the 403 above rests on.
 
-        ``get_organization_slug`` returns a sentinel *slug* for a missing id, so
-        the package's ``organization__slug=`` filter is what produces the
-        refusal. If that sentinel could ever equal a stored slug, this row would
-        resolve to somebody else's organization rather than refusing.
+@pytest.mark.django_db
+class TestUnresolvedOrganizationIsWhatMakesThatRowRefusable:
+    """The invariant the 403s above rest on, asserted against the package.
 
-        Two independent reasons it cannot, and both are asserted: it is longer
-        than the column, and it violates the slug format rule.
+    ``get_organization_slug`` answers ``UNRESOLVED_ORGANIZATION`` -- ``0.4.0``'s
+    public singleton for "an identifier was supplied and matched nothing" -- for
+    a pk that names no organization. It replaced a 279-character string sentinel
+    this repo invented back when the only thing the resolver would accept was a
+    *slug*, and which therefore had to be argued impossible to store (longer
+    than ``varchar(255)``, and rejected by ``validate_organization_slug``). Those
+    two arguments are gone with the string; what replaces them is stronger,
+    because it pins behaviour rather than a shape:
+
+    1. It is not ``None``, so it is distinguishable from "the caller named
+       nothing" -- the distinction the whole row depends on.
+    2. It is not a ``str``, so no ``Organization.slug`` -- a ``CharField``, whose
+       every value is a string -- can equal it. No length or format argument is
+       needed for a value of the wrong type.
+    3. The package short-circuits on it *by identity*, before it reads a
+       membership, and refuses. Asserted for the single-membership caller
+       specifically: that is the caller for whom ``None`` would have succeeded,
+       so it is the one that shows the sentinel is not merely inert.
+    """
+
+    def test_it_is_distinguishable_from_naming_nothing(self) -> None:
+        assert UNRESOLVED_ORGANIZATION is not None
+
+    def test_no_stored_slug_could_ever_equal_it(self) -> None:
+        """``Organization.slug`` is a ``CharField``; the sentinel is not a string."""
+        assert isinstance(Organization._meta.get_field("slug"), models.CharField)
+        assert not isinstance(UNRESOLVED_ORGANIZATION, str)
+
+    def test_the_resolver_refuses_it_for_a_caller_naming_nothing_would_have_served(
+        self, user: Any, org_a: Organization
+    ) -> None:
+        _membership(user, org_a)
+
+        assert memberships.resolve_for_user(user, None) is not None
+        with pytest.raises(OrganizationAccessDeniedError):
+            memberships.resolve_for_user(user, UNRESOLVED_ORGANIZATION)
+
+    def test_the_resolver_reads_no_membership_row_before_refusing(
+        self, user: Any, org_a: Organization
+    ) -> None:
+        """By identity, not by a query that happens to match nothing.
+
+        A sentinel the resolver had to *look up* would be one schema change away
+        from matching; this one is compared with ``is`` before any SQL runs.
         """
-        max_length = Organization._meta.get_field("slug").max_length
+        _membership(user, org_a)
 
-        assert max_length is not None
-        assert len(UNMATCHABLE_ORGANIZATION_SLUG) > max_length
-        with pytest.raises(DjangoValidationError):
-            validate_organization_slug(UNMATCHABLE_ORGANIZATION_SLUG)
+        with CaptureQueriesContext(connection) as captured:
+            with pytest.raises(OrganizationAccessDeniedError):
+                memberships.resolve_for_user(user, UNRESOLVED_ORGANIZATION)
+
+        assert captured.captured_queries == []
+
+    def test_optional_resolution_turns_it_into_gated_rather_than_refused(
+        self, user: Any, org_a: Organization
+    ) -> None:
+        """The mechanism behind ``test_the_opt_out_suppresses_it_like_any_other_refusal``."""
+        _membership(user, org_a)
+
+        assert memberships.resolve_for_user(user, UNRESOLVED_ORGANIZATION, strict=False) is None
+
+
+@pytest.mark.django_db
+class TestRevertingTheSentinelToNoneReopensIt:
+    """Proof that the class two above is not vacuous.
+
+    ``NoSentinelProbeView`` differs from ``AuthenticatedProbeView`` in nothing
+    but the answer given for a pk that names no organization: ``None`` instead of
+    ``UNRESOLVED_ORGANIZATION``. If it did not *serve* the requests
+    ``TestAHeaderNamingNoOrganizationAtAll`` refuses, those refusals would be
+    coming from somewhere other than the sentinel -- a missing membership, the
+    permission class, an unrelated 403 -- and the row would prove nothing.
+    """
+
+    def test_the_single_membership_caller_is_served_someone_elses_answer(
+        self, user: Any, org_a: Organization
+    ) -> None:
+        """403 -> **200**, resolved against the organization they never named.
+
+        The exact silent widening the sentinel exists to prevent: the header
+        named an organization that does not exist, and the caller is handed
+        their only one instead.
+        """
+        _membership(user, org_a)
+        absent_id = TestAHeaderNamingNoOrganizationAtAll._absent_id()
+
+        response = _dispatch(NoSentinelProbeView, user, header=str(absent_id))
+
+        assert response.status_code == status.HTTP_200_OK
+        assert NoSentinelProbeView.ran is True
+        assert NoSentinelProbeView.resolved == org_a.pk
+
+    def test_the_multi_membership_caller_is_downgraded_to_the_ambiguity_400(
+        self, user: Any, org_a: Organization, org_b: Organization
+    ) -> None:
+        """403 -> **400**. A different code and a different body, both wrong."""
+        _membership(user, org_a)
+        _membership(user, org_b)
+        absent_id = TestAHeaderNamingNoOrganizationAtAll._absent_id()
+
+        response = _dispatch(NoSentinelProbeView, user, header=str(absent_id))
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert response.data == {"detail": "X-Organization-Id header required."}
+
+    def test_the_zero_membership_caller_is_downgraded_to_gated(self, user: Any) -> None:
+        """403 -> **200**, gated. Still an oracle: the refusal disappears."""
+        response = _dispatch(
+            NoSentinelProbeView, user, header=str(TestAHeaderNamingNoOrganizationAtAll._absent_id())
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert NoSentinelProbeView.ran is True
+        assert NoSentinelProbeView.resolved is None
+
+    def test_the_mutant_still_refuses_a_real_organization_it_should(
+        self, user: Any, org_a: Organization, org_b: Organization
+    ) -> None:
+        """The control on the mutant itself.
+
+        It changes *only* the not-found answer. A header naming a real
+        organization the caller does not belong to is still a 403 through it --
+        so the three 200/400 results above are attributable to the sentinel and
+        to nothing else the subclass did.
+        """
+        _membership(user, org_a)
+
+        response = _dispatch(NoSentinelProbeView, user, header=str(org_b.pk))
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
 
 
 @pytest.mark.django_db
@@ -647,7 +791,7 @@ class TestUnauthenticatedIsAnsweredFirst:
         self, db: Any, org_a: Organization
     ) -> None:
         """Why the 401 wins for an *absent* credential:
-        ``resolve_membership_for_user`` returns ``None`` for an anonymous user
+        ``memberships.resolve_for_user`` returns ``None`` for an anonymous user
         before it reads a single membership, so the request reaches
         ``check_permissions`` with nothing raised and nothing resolved.
 
@@ -666,7 +810,7 @@ class TestUnauthenticatedIsAnsweredFirst:
         """...and it does not pay for a query to do nothing.
 
         The package evaluates ``get_organization_slug`` **eagerly**, as an
-        argument to ``resolve_membership_for_user``, so it runs *before* that
+        argument to ``memberships.resolve_for_user``, so it runs *before* that
         function's ``is_anonymous`` short-circuit. Without the guard at the top
         of our override, every anonymous request carrying the header would spend
         an ``Organization`` lookup translating a pk the resolver was then going
@@ -726,7 +870,7 @@ class TestAHeaderTooWideForThePrimaryKey:
     incidental: psycopg 3 adapts a Python ``int`` wider than ``bigint`` as
     ``numeric``, and ``bigint = numeric`` is a legal comparison that simply
     matches nothing. So the value falls through to the ordinary "names no
-    organization" road -- :data:`UNMATCHABLE_ORGANIZATION_SLUG`, and the same 403
+    organization" road -- ``UNRESOLVED_ORGANIZATION``, and the same 403
     as any unused id. A narrowing of the column, a change of driver, or a
     hand-written cast could each put the 500 back silently; hence the pin rather
     than a range check in the resolver, which would guard nothing today.

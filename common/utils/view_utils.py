@@ -11,6 +11,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.viewsets import ModelViewSet, ViewSetMixin
 from vinta_orgs.drf import OrganizationScopedAPIViewMixin
+from vinta_orgs.resolution import UNRESOLVED_ORGANIZATION, OrganizationSelection
 
 from common.constants import ACTIVE_ORG_HEADER
 
@@ -21,7 +22,7 @@ logger = logging.getLogger(__name__)
 #: Body of the ``2+ memberships / no header`` refusal, rendered as
 #: ``400 {"detail": ...}``. Ours, not the package's: clients match on this
 #: string, so it survives the delegation to
-#: ``vinta_orgs.helpers.memberships.resolve_membership_for_user`` verbatim.
+#: ``common.organization_services.memberships.resolve_for_user`` verbatim.
 AMBIGUOUS_ORGANIZATION_DETAIL = "X-Organization-Id header required."
 
 #: Body of the ``header names an organization you do not actively belong to``
@@ -29,23 +30,6 @@ AMBIGUOUS_ORGANIZATION_DETAIL = "X-Organization-Id header required."
 NON_MEMBER_ORGANIZATION_DETAIL = (
     "X-Organization-Id header names an organization you are not an active member of."
 )
-
-#: What :meth:`TenantScopedViewMixin.get_organization_slug` answers when the
-#: header carries an integer that names no organization at all.
-#:
-#: The package resolves by *slug*, and reads ``None`` as "the caller named
-#: nothing" -- which for a caller with one membership resolves to it, and for a
-#: caller with several is a 400. A header naming a non-existent organization
-#: must instead be refused with the same 403 as a header naming a real
-#: organization the caller does not belong to: answering those two differently
-#: turns the endpoint into an oracle for which ids are taken. So the lookup
-#: answers with a slug that provably matches no row, rather than with ``None``.
-#:
-#: "Provably" for two independent reasons: it is longer than
-#: ``Organization.slug``'s ``varchar(255)``, so no row can hold it whatever
-#: wrote it; and it contains spaces and capitals, which
-#: ``organizations.slug_validation``'s format rule forbids.
-UNMATCHABLE_ORGANIZATION_SLUG = ("X-Organization-Id names no organization. " * 7).strip()
 
 
 class TenantScopedViewMixin(OrganizationScopedAPIViewMixin):
@@ -77,7 +61,7 @@ class TenantScopedViewMixin(OrganizationScopedAPIViewMixin):
     - ``request.organization`` -- the resolved ``Organization`` or ``None``.
 
     Resolution table (multi-org with no header -> 400; non-member -> 403). It is
-    ``resolve_membership_for_user``'s table, restated in terms of our header:
+    ``memberships.resolve_for_user``'s table, restated in terms of our header:
 
     +-----------------------+---------------------------------+------------------------------------------+
     | Memberships (active)  | Header                          | Result                                   |
@@ -121,13 +105,13 @@ class TenantScopedViewMixin(OrganizationScopedAPIViewMixin):
     permission stack answers 401 before any business logic runs. **401 stays
     ahead of 400 / 403** for two independent reasons: a bad credential raises
     out of ``super().perform_authentication`` before the resolver is reached at
-    all, and ``resolve_membership_for_user`` returns ``None`` for an anonymous
+    all, and ``memberships.resolve_for_user`` returns ``None`` for an anonymous
     user rather than consulting the table, so no row above can fire without a
     caller.
     """
 
-    def get_organization_slug(self, request: Request) -> str | None:
-        """Translate our ``X-Organization-Id`` header into the slug the package matches on.
+    def get_organization_slug(self, request: Request) -> OrganizationSelection:
+        """Translate our ``X-Organization-Id`` header into what the package resolves on.
 
         This is the package's designated override point: the table, the
         refusals and the binding all stay the package's, and only "what did the
@@ -142,16 +126,29 @@ class TenantScopedViewMixin(OrganizationScopedAPIViewMixin):
         * **A real slug** -- the caller named an organization that exists.
           Whether they may *have* it is the package's decision, taken against
           their memberships.
-        * **:data:`UNMATCHABLE_ORGANIZATION_SLUG`** -- the caller named an
-          integer that is not an organization, whether because no row holds it
-          or because it is too wide for the primary key column and no row could.
-          Answering ``None`` here would downgrade a 403 into "no header was
-          sent", which for a single-membership caller quietly succeeds against an
-          organization they never asked for.
+        * **:data:`~vinta_orgs.resolution.UNRESOLVED_ORGANIZATION`** -- the
+          caller named an integer that is not an organization, whether because
+          no row holds it or because it is too wide for the primary key column
+          and no row could. Answering ``None`` here would downgrade a 403 into
+          "no header was sent", which for a single-membership caller quietly
+          succeeds against an organization they never asked for.
+
+        That third answer is the package's own, not a value we invent. Our
+        header carries an integer *pk* while the resolver matches on *slug*, so
+        "supplied but not found" has no slug to be spelled as; ``0.4.0`` adds
+        the ``UNRESOLVED_ORGANIZATION`` singleton for exactly this shape of
+        retriever. ``resolve_for_user`` compares it by identity before it reads
+        a single row, so it can never collide with a stored slug the way a
+        deliberately-malformed string sentinel had to be argued not to.
+        (Imported from ``vinta_orgs.resolution`` rather than through a
+        project-owned wrapper: that module is a typing leaf with no Django
+        imports, this file already takes the seam itself from ``vinta_orgs.drf``,
+        and a wrapper here would have to be re-imported by the one module that
+        already defers ``organizations.models`` to dodge a cycle.)
 
         The whole body is skipped for a caller who is not authenticated. The
         package evaluates this method *eagerly*, as an argument to
-        ``resolve_membership_for_user``, so it runs before that function's
+        ``memberships.resolve_for_user``, so it runs before that function's
         ``is_anonymous`` short-circuit -- and resolution as a whole now precedes
         ``check_throttles``. Without the guard below, an anonymous request
         carrying a header would spend an ``Organization`` query before the 401
@@ -204,7 +201,7 @@ class TenantScopedViewMixin(OrganizationScopedAPIViewMixin):
                 "non-member organization would be refused.",
                 raw_value,
             )
-            return UNMATCHABLE_ORGANIZATION_SLUG
+            return UNRESOLVED_ORGANIZATION
 
         return slug
 
