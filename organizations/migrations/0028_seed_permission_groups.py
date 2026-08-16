@@ -31,11 +31,37 @@ them); the ``auth_permission`` rows are left alone, because ``post_migrate``
 owns those from ``0027`` onward and would recreate them anyway.
 """
 
-from typing import cast
-
 from django.db import migrations
 
-from organizations.permission_catalog import seed_groups_v1, seed_permissions_v1
+
+# (app_label, model, codename, name) -- frozen copies of the ``Meta.permissions``
+# declared in ``organizations/models.py`` and ``payments/models.py``.
+PERMISSIONS = [
+    (
+        "organizations",
+        "organization",
+        "manage_organization",
+        "Can manage the organization's settings",
+    ),
+    (
+        "organizations",
+        "organization",
+        "manage_branding",
+        "Can manage the organization's branding",
+    ),
+    (
+        "organizations",
+        "organizationmembership",
+        "manage_members",
+        "Can manage the organization's members",
+    ),
+    (
+        "payments",
+        "subscription",
+        "manage_billing",
+        "Can manage the organization's billing",
+    ),
+]
 
 # Group name -> the ``app_label.codename`` permissions it carries.
 #
@@ -59,17 +85,26 @@ def seed_permission_groups(apps, schema_editor):
     ContentType = apps.get_model("contenttypes", "ContentType")
     Permission = apps.get_model("auth", "Permission")
     Group = apps.get_model("auth", "Group")
+    db_alias = schema_editor.connection.alias
 
-    seed_permissions_v1(
-        content_type_model=ContentType,
-        permission_model=Permission,
-        db_alias=cast(str, schema_editor.connection.alias)
-    )
-    seed_groups_v1(
-        permission_model=Permission,
-        group_model=Group,
-        db_alias=cast(str, schema_editor.connection.alias)
-    )
+    permissions_by_label = {}
+    for app_label, model, codename, name in PERMISSIONS:
+        content_type, _ = ContentType.objects.using(db_alias).get_or_create(
+            app_label=app_label, model=model
+        )
+        permission, _ = Permission.objects.using(db_alias).get_or_create(
+            content_type=content_type,
+            codename=codename,
+            defaults={"name": name},
+        )
+        permissions_by_label[f"{app_label}.{codename}"] = permission
+
+    for group_name, permission_labels in GROUP_PERMISSIONS.items():
+        group, _ = Group.objects.using(db_alias).get_or_create(name=group_name)
+        # ``add`` rather than ``set``: additive and idempotent, and it does not
+        # revoke a grant an operator added on purpose.
+        for label in permission_labels:
+            group.permissions.add(permissions_by_label[label])
 
 
 def unseed_permission_groups(apps, schema_editor):

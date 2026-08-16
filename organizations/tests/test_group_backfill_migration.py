@@ -52,7 +52,7 @@ from model_bakery import baker
 
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
 from organizations.permission_catalog import GROUP_PERMISSIONS as CATALOG_GROUP_PERMISSIONS
-from organizations.permission_catalog import PERMISSIONS
+from organizations.permission_catalog import PERMISSIONS as CATALOG_PERMISSIONS
 from payments.models import Subscription
 from users.models import User
 
@@ -165,9 +165,22 @@ class TestTheMigrationsFrozenLiteralsStillMatchTheLiveCatalog:
         assert {name: set(perms) for name, perms in seeded.items()} == EXPECTED_GROUP_PERMISSIONS
 
     def test_the_seed_migrations_permission_owners_match(self):
+        """Reads ``0028``'s own frozen ``PERMISSIONS`` -- reading the live catalog here
+        would compare it with itself and this class would pin nothing."""
         owners = {
             f"{app_label}.{codename}": (app_label, model)
-            for app_label, model, codename, _name in PERMISSIONS
+            for app_label, model, codename, _name in SEED_MIGRATION.PERMISSIONS
+        }
+
+        assert owners == EXPECTED_PERMISSION_OWNERS
+
+    def test_the_live_catalogs_permission_owners_match(self):
+        """The other copy. ``organizations.permission_catalog.PERMISSIONS`` is what the
+        runtime seeder creates rows from, so it can drift from the migration's copy in
+        either direction."""
+        owners = {
+            f"{app_label}.{codename}": (app_label, model)
+            for app_label, model, codename, _name in CATALOG_PERMISSIONS
         }
 
         assert owners == EXPECTED_PERMISSION_OWNERS

@@ -27,11 +27,15 @@ frozen copy of these literals (see ``AGENTS.md`` on data migrations re-deriving
 their logic). ``organizations/tests/test_group_backfill_migration.py`` pins the
 two against the same literals, so a drift is a test failure rather than a
 silent divergence.
+
+The seeders at the bottom of this module are therefore the *runtime* half only:
+``ORGANIZATION_GROUP_SEEDERS`` points at them so a transactional test's flush can
+be repaired from head state, and nothing in ``organizations/migrations/`` calls
+them.
 """
 
 from __future__ import annotations
 
-import logging
 from functools import reduce
 from typing import TYPE_CHECKING
 
@@ -39,22 +43,19 @@ from django.db import transaction
 from django.db.models import F, Q
 
 
-logger = logging.getLogger(__name__)
-
-
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from django.contrib.auth.models import (
-        Group as GroupType,
-    )
-    from django.contrib.auth.models import (
-        Permission as PermissionType,
-    )
-    from django.contrib.contenttypes.models import ContentType as ContentTypeType
+    from django.contrib.auth.models import Group, Permission
 
 
-def _get_permission_with_labels(app_label: str, _model: str, codename: str, _name: str):
+def _label(app_label: str, _model: str, codename: str, _name: str) -> str:
+    """The ``"app_label.codename"`` half of a catalog row.
+
+    Derived rather than written twice: the four constants below are the strings
+    every permission check reads, and the four tuples they come from are what the
+    seeder needs to *create* the row. Spelling both by hand is how they drift.
+    """
     return f"{app_label}.{codename}"
 
 
@@ -94,16 +95,25 @@ MANAGE_BILLING_TUPLE = (
     "Can manage the organization's billing",
 )
 
-MANAGE_MEMBERS = _get_permission_with_labels(*MANAGE_MEMBERS_TUPLE)
-MANAGE_ORGANIZATION = _get_permission_with_labels(*MANAGE_ORGANIZATION_TUPLE)
-MANAGE_BRANDING = _get_permission_with_labels(*MANAGE_BRANDING_TUPLE)
-MANAGE_BILLING = _get_permission_with_labels(*MANAGE_BILLING_TUPLE)
+MANAGE_MEMBERS = _label(*MANAGE_MEMBERS_TUPLE)
+MANAGE_ORGANIZATION = _label(*MANAGE_ORGANIZATION_TUPLE)
+MANAGE_BRANDING = _label(*MANAGE_BRANDING_TUPLE)
+MANAGE_BILLING = _label(*MANAGE_BILLING_TUPLE)
 
 
 GROUP_ORGANIZATION_ADMIN = "organization_admin"
 GROUP_ORGANIZATION_BILLING_OWNER = "organization_billing_owner"
 GROUP_ORGANIZATION_MEMBER = "organization_member"
 
+#: ``(app_label, model, codename, name)`` for each of the four, in the shape
+#: ``auth.Permission`` rows are created from. The four ``*_TUPLE`` constants above
+#: exist for this list: the seeder has to be able to *create* a missing permission
+#: row, and the ``"app_label.codename"`` strings every call site reads carry neither
+#: the model that owns it nor its display name.
+#:
+#: ``organizations/migrations/0028_seed_permission_groups.py`` keeps its own frozen
+#: copy of the same four rows; ``organizations/tests/test_group_backfill_migration.py``
+#: pins both against a third set of literals.
 PERMISSIONS = [
     MANAGE_ORGANIZATION_TUPLE,
     MANAGE_BRANDING_TUPLE,
@@ -129,28 +139,30 @@ GROUP_PERMISSIONS: dict[str, tuple[str, ...]] = {
 }
 
 
-def _get_permissions_by_app_label(
-    permission_model: type[PermissionType] | None = None, db_alias: str | None = "default"
-) -> dict[str, PermissionType]:
-    if permission_model:
-        Permission = permission_model  # noqa: N806
-    else:
-        from django.contrib.auth.models import Permission
+def _permissions_by_label() -> dict[str, Permission]:
+    """The catalog's four ``auth.Permission`` rows, keyed by ``"app_label.codename"``.
+
+    One query rather than four, and each ``Q`` keeps its codename and its app label
+    inside the same clause so both bind to the same row -- the reason
+    ``vinta_orgs.querysets.filter_memberships_holding_permission`` spells it that way
+    too. A codename declared in another app must not satisfy half of the condition.
+    """
+    from django.contrib.auth.models import Permission
 
     permissions_query = reduce(
-        lambda x, y: x | y,
+        lambda left, right: left | right,
         [
             Q(content_type__app_label=app_label, codename=codename)
-            for app_label, _, codename, _ in PERMISSIONS
+            for app_label, _model, codename, _name in PERMISSIONS
         ],
         Q(),
     )
-    permissions = (
-        Permission.objects.using(db_alias)
-        .filter(permissions_query)
-        .annotate(app_label=F("content_type__app_label"))
+    permissions = Permission.objects.filter(permissions_query).annotate(
+        app_label=F("content_type__app_label")
     )
-    return {f"{p.app_label}.{p.codename}": p for p in permissions}
+    return {
+        f"{permission.app_label}.{permission.codename}": permission for permission in permissions
+    }
 
 
 def groups_for_membership_state(*, is_admin: bool, is_billing_owner: bool) -> tuple[str, ...]:
@@ -175,7 +187,7 @@ def groups_for_membership_state(*, is_admin: bool, is_billing_owner: bool) -> tu
     return tuple(names)
 
 
-def seed_organization_groups() -> list[GroupType]:
+def seed_organization_groups() -> list[Group]:
     """Create (or repair) the three seeded groups from **this module's live catalog**.
 
     The callable ``SHARED_SCHEMA_ORGANIZATIONS["ORGANIZATION_GROUP_SEEDERS"]``
@@ -197,26 +209,20 @@ def seed_organization_groups() -> list[GroupType]:
     database -- changes nothing and never revokes a permission a caller added
     on purpose.
 
-    **A missing permission is skipped with a warning rather than raised.** This
-    runs from an *autouse* fixture before every test that has a database, so a
-    renamed or not-yet-created permission raised from here would turn one
-    targeted failure into ``Permission.DoesNotExist`` on the entire suite --
-    one root cause wearing several hundred symptoms, which is precisely the
-    shape this migration already lost four phases to. The tests that exist to
-    notice a missing permission
-    (``organizations/tests/test_group_backfill_migration.py``,
-    ``organizations/tests/test_permission_backend.py``) drive
-    ``0028_seed_permission_groups`` directly rather than this seeder, so they
-    stay red when it matters. Creating the row instead is deliberately *not*
-    what happens here: ``auth_permission`` rows belong to the migration and to
-    ``post_migrate``, and this catalog carries no content type to create one
-    against.
+    **The permission rows are created here too**, by ``seed_capability_permissions``
+    below, rather than looked up and skipped when absent. The flush that destroys the
+    groups also destroys ``auth_permission``; ``post_migrate`` rebuilds those, but a
+    seeder that merely *hoped* it had already run reported success while leaving
+    ``organization_admin`` empty -- a group with no permissions denies everything, and
+    that denial reads as an authorization bug in whichever unrelated module asserts
+    next. Creating the row on the same key ``create_permissions`` de-duplicates on
+    makes the two orders equivalent.
     """
-    groups: list[GroupType] = []
+    groups: list[Group] = []
 
     with transaction.atomic():
-        seed_permissions_v1()
-        groups = seed_groups_v1()
+        seed_capability_permissions()
+        groups = seed_capability_groups()
 
     return groups
 
@@ -300,31 +306,24 @@ def permissions_for_groups(group_names: Iterable[str]) -> frozenset[str]:
     )
 
 
-def seed_permissions_v1(
-    content_type_model: type[ContentTypeType] | None = None,
-    permission_model: type[PermissionType] | None = None,
-    db_alias: str | None = "default",
-):
-    """
-    This function is a historical record. Do not update it, it's beeing
-    called from migrations
-    """
-    if content_type_model:
-        ContentType = content_type_model  # noqa: N806
-    else:
-        from django.contrib.contenttypes.models import ContentType
+def seed_capability_permissions() -> list[Permission]:
+    """Create the catalog's four ``auth.Permission`` rows if they are absent.
 
-    if permission_model:
-        Permission = permission_model  # noqa: N806
-    else:
-        from django.contrib.auth.models import Permission
+    ``get_or_create`` on ``(content_type, codename)`` -- the same key
+    ``django.contrib.auth.management.create_permissions`` de-duplicates on -- so this
+    and ``post_migrate`` can run in either order and produce one row each.
 
-    permissions: list[PermissionType] = []
+    Runtime only. ``organizations/migrations/0028_seed_permission_groups.py`` does the
+    equivalent thing against historical models with its own frozen literals, and does
+    not call this.
+    """
+    from django.contrib.auth.models import Permission
+    from django.contrib.contenttypes.models import ContentType
+
+    permissions: list[Permission] = []
     for app_label, model, codename, name in PERMISSIONS:
-        content_type, _ = ContentType.objects.using(db_alias).get_or_create(
-            app_label=app_label, model=model
-        )
-        permission, _ = Permission.objects.using(db_alias).get_or_create(
+        content_type, _created = ContentType.objects.get_or_create(app_label=app_label, model=model)
+        permission, _created = Permission.objects.get_or_create(
             content_type=content_type,
             codename=codename,
             defaults={"name": name},
@@ -334,37 +333,37 @@ def seed_permissions_v1(
     return permissions
 
 
-def seed_groups_v1(
-    permission_model: type[PermissionType] | None = None,
-    group_model: type[GroupType] | None = None,
-    db_alias: str | None = "default",
-):
-    """
-    This function is a historical record. Do not update it, it's beeing
-    called from migrations
-    """
-    permissions_by_code = _get_permissions_by_app_label(permission_model, db_alias)
+def seed_capability_groups() -> list[Group]:
+    """Create the three seeded groups and attach the permissions they carry.
 
-    if group_model:
-        Group = group_model  # noqa: N806
-    else:
-        from django.contrib.auth.models import Group
+    Call ``seed_capability_permissions`` first (``seed_organization_groups`` does): a
+    label in ``GROUP_PERMISSIONS`` with no matching row **raises**, it is not skipped.
+    Once the rows are created rather than merely hoped for, the only way to reach that
+    branch is a label naming a permission the catalog does not declare -- a bug in this
+    module, not a transient state -- and a seeder that logged and continued would hand
+    back an ``organization_admin`` carrying nothing while reporting success. An empty
+    admin group denies everything, and the denial surfaces as an authorization failure
+    somewhere else entirely.
+    """
+    from django.contrib.auth.models import Group
 
-    groups: list[GroupType] = []
-    for group_name, permission_code in GROUP_PERMISSIONS.items():
-        group, _ = Group.objects.using(db_alias).get_or_create(name=group_name)
+    permissions_by_label = _permissions_by_label()
+
+    groups: list[Group] = []
+    for group_name, labels in GROUP_PERMISSIONS.items():
+        group, _created = Group.objects.get_or_create(name=group_name)
         # ``add`` rather than ``set``: additive and idempotent, and it does not
         # revoke a grant an operator added on purpose.
-        for code in permission_code:
+        for label in labels:
             try:
-                group.permissions.add(permissions_by_code[code])
+                permission = permissions_by_label[label]
             except KeyError:
-                logger.warning(
-                    "Skipping %r seeding %r: no auth.Permission found.",
-                    code,
-                    group_name,
-                )
-                continue
+                raise LookupError(
+                    f"Cannot seed {group_name!r}: no auth.Permission exists for {label!r}. "
+                    "Every label in GROUP_PERMISSIONS must be declared in PERMISSIONS, "
+                    "which seed_capability_permissions() creates the rows from."
+                ) from None
+            group.permissions.add(permission)
         groups.append(group)
 
     return groups

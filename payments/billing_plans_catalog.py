@@ -1,11 +1,28 @@
+"""The **live** billing plan catalog, and the seeder that writes it.
+
+Head state, deliberately separate from
+``payments/migrations/0007_seed_billing_plans.py``. That migration carries its own
+frozen copy of these numbers and does not import this module: a data migration has to
+keep meaning what it meant when it was written (``AGENTS.md`` on data migrations
+re-deriving their logic), and ``free``'s ceilings below are explicitly *placeholders*
+awaiting product. The day somebody supplies the real numbers, an import in ``0007``
+would retroactively change what every fresh ``migrate`` seeds. Two functions, two
+owners: this one is free to move, ``0007`` is not, and the two drifting apart is the
+intended outcome rather than a bug.
+
+Who reads this module:
+
+* ``payments/tests/billing_fixtures.reseed_billing_plans`` and the root
+  ``conftest.py``, to put the catalog back after a ``transaction=True`` test's flush
+  destroyed the rows ``0007`` wrote (see that fixture for the ordering rules).
+* Nothing in production. Production gets its catalog from ``0007`` and, from then on,
+  from the admin.
+"""
+
 from decimal import Decimal
-from typing import TYPE_CHECKING, TypedDict
+from typing import TypedDict
 
 from payments.billing_constants import Entitlement, LimitedResource, LimitKind
-
-
-if TYPE_CHECKING:
-    from django.db.models import Model
 
 
 UNLIMITED_PLAN_SLUG = "unlimited"
@@ -24,7 +41,8 @@ class PlanSetting(TypedDict):
 
 
 # Placeholder ceilings for the `free` plan. Real numbers come from product before any
-# organization is actually rolled onto `free` (see the plan's Open Questions).
+# organization is actually rolled onto `free` (see the plan's Open Questions). Editing
+# them here is safe and expected; `0007`'s copy stays where it is.
 FREE_PLAN_LIMITS: dict[str, PlanSetting] = {
     LimitedResource.ORGANIZATION_MEMBERS: {"limit_value": 5, "overage_unit_price": None},
     LimitedResource.RESOURCE_CALENDARS: {"limit_value": 3, "overage_unit_price": None},
@@ -47,22 +65,20 @@ FREE_PLAN_ENTITLEMENTS: dict[str, bool] = {
 }
 
 
-def seed_billing_plans_v1(
-    billing_plan_model: "type[Model] | None" = None,
-    plan_limit_model: "type[Model] | None" = None,
-    plan_entitlement_model: "type[Model] | None" = None,
-):
-    """
-    This function is a historical record. Do not update it, it's beeing
-    called from migrations
-    """
+def seed_billing_plans() -> None:
+    """Create (or converge) the seeded plans from **this module's live catalog**.
 
-    if billing_plan_model and plan_limit_model and plan_entitlement_model:
-        BillingPlan = billing_plan_model  # noqa: N806
-        PlanLimit = plan_limit_model  # noqa: N806
-        PlanEntitlement = plan_entitlement_model  # noqa: N806
-    else:
-        from payments.models import BillingPlan, PlanEntitlement, PlanLimit
+    ``update_or_create`` throughout, so it is idempotent and repairs a partially
+    destroyed catalog rather than raising on the half that survived.
+
+    Every ``LimitedResource`` member gets a ``PlanLimit`` row on every plan --
+    ``SubscriptionService.assert_plan_is_complete`` refuses a plan that omits one,
+    because an absent row reads as *unlimited* rather than as "not included".
+
+    Runs against the live models on purpose: no historical-model injection seam, since
+    no migration calls this. ``0007`` has its own copy.
+    """
+    from payments.models import BillingPlan, PlanEntitlement, PlanLimit
 
     unlimited_plan, _created = BillingPlan.objects.update_or_create(
         slug=UNLIMITED_PLAN_SLUG,

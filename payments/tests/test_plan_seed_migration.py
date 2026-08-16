@@ -6,6 +6,14 @@ actually produced — not a factory standing in for it. `LimitedResource.values`
 enumerated dynamically (never a hardcoded list) so a limited resource added later is
 caught here if its `unlimited` row goes missing. There is no feature flag: keeping
 every organization on the `unlimited` plan is the rollback path.
+
+That first sentence is only true while nothing reseeds the catalog underneath these
+tests, which is what `no_billing_catalog_reseed` below is for: the root `conftest.py`
+repairs the catalog from live code after a transactional test flushes it, and a repair
+that ran here would recreate exactly what the migration seeds. Every assertion in this
+module would then pass with `0007`'s `RunPython` gutted — which is how it stood before
+the marker existed. The trade is deliberate: with the opt-out these tests would rather
+go red on a flushed database than go green on a synthetic one.
 """
 
 import importlib
@@ -16,6 +24,7 @@ from payments.billing_constants import Entitlement, LimitedResource, LimitKind
 from payments.models import BillingPlan
 
 
+@pytest.mark.no_billing_catalog_reseed
 @pytest.mark.django_db
 class TestPlanSeedMigration:
     def test_unlimited_plan_exists_and_is_default(self):
