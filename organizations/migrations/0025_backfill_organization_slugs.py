@@ -14,9 +14,9 @@ Derivation, per row, in order:
 for it.** The slug is public -- it appears in branded login URLs -- so deriving
 it from the name publishes the name. Accepted here, and only here, because the
 rows this touches predate the slug being mandatory and there is no production
-tenant to disclose anything about (see the plan's "Slug becomes NOT NULL"
-Guiding Decision, whose disclosure trade-off is scoped to exactly this
-backfill). ``Organization.save()``'s runtime fallback deliberately mints the
+tenant to disclose anything about -- that disclosure trade-off is scoped to
+exactly this one-time backfill, made once when ``slug`` became NOT NULL.
+``Organization.save()``'s runtime fallback deliberately mints the
 opaque ``org-<token>`` form instead.
 
 Idempotent: only rows with ``slug IS NULL`` or ``slug = ''`` are touched, so a

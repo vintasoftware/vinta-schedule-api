@@ -1,5 +1,4 @@
-"""Unit tests for ``CalendarGroupSlotQuotaRule`` (Phase 3a of
-CALENDAR_GROUP_SCOPED_AVAILABILITY).
+"""Unit tests for ``CalendarGroupSlotQuotaRule``.
 
 Covers the model's own constraints -- unique per (calendar, slot, period) and
 a positive cap -- plus cascade behavior when the slot (or the group it

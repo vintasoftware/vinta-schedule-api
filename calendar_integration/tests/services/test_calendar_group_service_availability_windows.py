@@ -1,5 +1,4 @@
-"""Tests for group-scoped availability window writes on ``CalendarGroupService``
-(Phase 1a of ``CALENDAR_GROUP_SCOPED_AVAILABILITY``).
+"""Tests for group-scoped availability window writes on ``CalendarGroupService``.
 
 Covers create/update/delete through the explicit group-scoped accessor,
 recurrence + per-window timezone round-trip, audit emission with before/after
@@ -370,7 +369,8 @@ def test_create_group_scoped_availability_window_recurrence_and_timezone_round_t
     # weeks -- must land on Tuesdays and Thursdays only. Annotating BEFORE calling
     # get_occurrences_in_range caches `recurring_occurrences` on the instance, so
     # the read never falls through RecurringMixin's internal re-fetch via the
-    # DEFAULT (base-rows-only) manager -- see the Phase 0 carry-forward note.
+    # DEFAULT (base-rows-only) manager -- see the note on the default manager
+    # excluding group-scoped rows.
     range_start = _utc(2025, 9, 1, 0)
     range_end = _utc(2025, 9, 15, 0)
     master = (
@@ -721,7 +721,7 @@ def test_delete_group_scoped_availability_window_denies_non_owner(
 
 
 # ---------------------------------------------------------------------------
-# Cascade through this service path (schema-enforced by Phase 0)
+# Cascade through this service path (schema-enforced by on_delete=CASCADE)
 # ---------------------------------------------------------------------------
 
 
@@ -746,8 +746,7 @@ def test_deleting_slot_through_update_group_cascades_group_scoped_windows(
 
     # Reconcile the group with no slots at all -- CalendarGroupService.update_group
     # deletes the now-absent "Lead Surgeon" slot, which cascades (on_delete=CASCADE
-    # on AvailableTime.group_slot, established in Phase 0) to every group-scoped
-    # window that referenced it.
+    # on AvailableTime.group_slot) to every group-scoped window that referenced it.
     service.update_group(group.id, CalendarGroupInputData(name=group.name, slots=[]))
 
     assert (

@@ -54,11 +54,10 @@ class BookingPolicyPermission(BasePermission):
         if membership is None:
             return False
         # ``organizations.manage_members`` -- the same capability
-        # ``User.is_organization_admin`` reads -- replaced ``membership.is_admin``
-        # in Phase 4 of the vinta-django-orgs migration. The organization is named
-        # explicitly rather than left to the ambient binding, because that is what
-        # the attribute it replaces meant: a statement about
-        # ``membership.organization``.
+        # ``User.is_organization_admin`` reads -- replaced ``membership.is_admin``.
+        # The organization is named explicitly rather than left to the ambient
+        # binding, because that is what the attribute it replaces meant: a
+        # statement about ``membership.organization``.
         is_privileged = request.user.is_organization_admin(membership.organization)
         if is_privileged:
             return True
@@ -231,28 +230,27 @@ class CalendarGroupPermission(BasePermission):
 class GroupScopedAvailabilityWindowPermission(BasePermission):
     """Route-level group-visibility gate for the group-scoped availability
     window routes nested under a group's slot
-    (``calendar-groups/<group_id>/slots/<slot_id>/availability-windows/...``,
-    CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 1c).
+    (``calendar-groups/<group_id>/slots/<slot_id>/availability-windows/...``).
 
     ``has_permission`` resolves the ``(group_id, slot_id)`` pair from the URL
     once, org-scoped, and stashes it on the view as ``view.group_slot`` so the
     viewset doesn't repeat the query. Visibility uses the same "can this user
     see the group at all" rule as ``CalendarGroupPermission``
     (``CalendarPermissionService.can_view_calendar_group`` — admin, or owns
-    ANY calendar in ANY slot of the group; matches the Phase 1a service tests,
-    where owning a calendar in a *different* slot of the same group is enough
-    to see the group but not enough to manage a calendar the caller doesn't
-    own). A caller who cannot see the ``(group, slot)`` — because it genuinely
-    doesn't exist, belongs to another organization, or they own no calendar
-    anywhere in the group and are not an org admin — gets the exact same
-    ``Http404`` as a caller hitting a URL for a slot that never existed; there
-    is no separate 403 branch to compare it against (spec: "a member cannot
-    learn about groups they are not part of through error messages or
-    listings").
+    ANY calendar in ANY slot of the group; matches the calendar group
+    service's behavior, where owning a calendar in a *different* slot of the
+    same group is enough to see the group but not enough to manage a calendar
+    the caller doesn't own). A caller who cannot see the ``(group, slot)`` —
+    because it genuinely doesn't exist, belongs to another organization, or
+    they own no calendar anywhere in the group and are not an org admin —
+    gets the exact same ``Http404`` as a caller hitting a URL for a slot that
+    never existed; there is no separate 403 branch to compare it against
+    (spec: "a member cannot learn about groups they are not part of through
+    error messages or listings").
 
     This is a coarse, route-level gate only. The fine-grained decision — may
     *this* user write *this specific* calendar's config within the slot —
-    stays where Phase 1a put it: ``CalendarGroupService`` re-checks
+    lives in ``CalendarGroupService``, which re-checks
     ``can_manage_group_scoped_calendar_config`` on every write and raises the
     identically-shaped ``CalendarGroupSlotConfigNotFoundError`` (mapped to the
     same 404 by the view) when a visible member targets a calendar they don't
@@ -308,8 +306,7 @@ class GroupScopedAvailabilityWindowPermission(BasePermission):
 class GroupScopedBlockedTimePermission(BasePermission):
     """Route-level group-visibility gate for the group-scoped blocked time
     routes nested under a group's slot
-    (``calendar-groups/<group_id>/slots/<slot_id>/blocked-times/...``,
-    CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 2b).
+    (``calendar-groups/<group_id>/slots/<slot_id>/blocked-times/...``).
 
     Identical in every respect to ``GroupScopedAvailabilityWindowPermission``
     -- same coarse route-level gate (``can_view_calendar_group``), same
@@ -366,8 +363,7 @@ class GroupScopedBlockedTimePermission(BasePermission):
 class GroupScopedQuotaRulePermission(BasePermission):
     """Route-level group-visibility gate for the group-scoped quota rule
     routes nested under a group's slot
-    (``calendar-groups/<group_id>/slots/<slot_id>/quota-rules/...``,
-    CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 3c).
+    (``calendar-groups/<group_id>/slots/<slot_id>/quota-rules/...``).
 
     Identical in every respect to ``GroupScopedAvailabilityWindowPermission``/
     ``GroupScopedBlockedTimePermission`` -- same coarse route-level gate

@@ -1304,8 +1304,8 @@ class TestGraphQLQueries:
 
         It used to be permanently ``[]``: the many-to-many went through an
         auto-created table with no ``organization`` column, so the join could not
-        be made organization-safe and the field returned nothing. Phase 2b
-        repointed it at ``EventExternalAttendance`` with ``through_fields``
+        be made organization-safe and the field returned nothing. It was
+        repointed at ``EventExternalAttendance`` with ``through_fields``
         naming the safe relations, which is a visible change to this contract --
         pinned here so the decision is auditable from the API surface rather than
         only from the model layer.
@@ -2289,7 +2289,7 @@ class TestBrandingForTenantQuery:
     def test_branding_for_tenant_by_slug_returns_the_organizations_branding(
         self, mock_rate_limiter, anonymous_client
     ):
-        """Phase 5 -- ``brandingForTenant`` resolves by slug as an alternative to
+        """``brandingForTenant`` resolves by slug as an alternative to
         ``tenantId``."""
         mock_rate_limiter.return_value = iter([None])
 
@@ -2597,13 +2597,12 @@ class TestBrandingForTenantQuery:
     def test_branding_for_tenant_by_slug_resolves_a_standalone_entitled_organizations_own_branding(
         self, mock_rate_limiter, anonymous_client
     ):
-        """Phase 8 -- Use-case 3 (a returning user opens the organization-scoped
-        login URL and it resolves that organization's own branding). Every slug
-        test above uses a reseller; this pins the shape that Phase 5 widened
-        ``get_branding_root`` to cover and that most branded organizations will
-        actually have going forward: a parentless, non-reseller, entitled
-        organization resolving to ITS OWN branding row via its own slug, not a
-        reseller ancestor's."""
+        """Covers a returning user opening the organization-scoped login URL and
+        it resolving that organization's own branding. Every slug test above uses
+        a reseller; this pins the shape that ``get_branding_root`` was widened to
+        cover and that most branded organizations will actually have going
+        forward: a parentless, non-reseller, entitled organization resolving to
+        ITS OWN branding row via its own slug, not a reseller ancestor's."""
         mock_rate_limiter.return_value = iter([None])
 
         org = baker.make(
@@ -2652,10 +2651,9 @@ class TestBrandingForTenantQuery:
 
 @pytest.mark.django_db
 class TestValidateReturnUrlRemoved:
-    """``validateReturnUrl`` was deleted along with ``return_url_allowlist`` (Phase 2a
-    of the Organization Auth-Area Branding plan) -- there is no longer a caller-supplied
-    redirect target to validate. Pin its absence from the published schema so it cannot
-    silently reappear."""
+    """``validateReturnUrl`` was deleted along with ``return_url_allowlist`` --
+    there is no longer a caller-supplied redirect target to validate. Pin its
+    absence from the published schema so it cannot silently reappear."""
 
     def test_validate_return_url_errors_as_an_unknown_field(self):
         """Querying the removed field returns a GraphQL validation error, not data."""
@@ -2674,7 +2672,9 @@ class TestValidateReturnUrlRemoved:
         )
 
         body = response.json()
-        assert body.get("errors"), "validateReturnUrl must not resolve — it was removed in Phase 2a"
+        assert body.get("errors"), (
+            "validateReturnUrl must not resolve — it was removed along with return_url_allowlist"
+        )
         assert "validateReturnUrl" in str(body["errors"])
 
     def test_validate_return_url_absent_from_schema_introspection(self):
@@ -6763,9 +6763,9 @@ class TestBrandingForTenantEntitlementDowngrade:
     This class used to also cover ``validateReturnUrl``, which read the *ungated*
     ``resolve_branding`` so a reseller downgrading off the cosmetic
     ``white_label_branding`` entitlement would not lock every tenant in its subtree
-    out of the OAuth return flow. That query is gone (Phase 2a of the Organization
-    Auth-Area Branding plan removed it along with ``return_url_allowlist``); only the
-    cosmetic half of the split remains to test here.
+    out of the OAuth return flow. That query is gone now, removed along with
+    ``return_url_allowlist``; only the cosmetic half of the split remains to test
+    here.
     """
 
     def _post(self, client, query, variables):

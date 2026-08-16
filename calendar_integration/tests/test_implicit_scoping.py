@@ -1,4 +1,5 @@
-"""What ``.objects`` means on a ``calendar_integration`` model after Phase 2a.
+"""What ``.objects`` means on a ``calendar_integration`` model now that these
+models scope to the bound organization implicitly.
 
 Three claims, one per class:
 

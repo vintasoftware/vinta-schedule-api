@@ -256,18 +256,19 @@ class TestUsageMatchesEnforcement:
 
 @pytest.mark.django_db
 class TestBackwardsCompatibility:
-    """**Acceptance criterion for Phase 3.** Every key ``GET /billing/usage/``
-    returned *before* this phase must still be present, with the same type and
-    the same value, against a fixture that predates the change (this module's
-    own auto-seeded ``_seed_every_resource`` fixture, untouched by this phase).
+    """**Backwards-compatibility acceptance criterion.** Every key ``GET
+    /billing/usage/`` returned before the enrichment fields were added must
+    still be present, with the same type and the same value, against a
+    fixture that predates the change (this module's own auto-seeded
+    ``_seed_every_resource`` fixture, untouched by that addition).
 
-    A failure here means an existing caller of the pre-Phase-3 response shape
-    would observe something different -- which is exactly what this phase
-    promises never happens. Do not edit this test to make it pass; if it
-    fails, the view change is wrong.
+    A failure here means an existing caller of the original response shape
+    would observe something different -- which is exactly what this
+    guarantee promises never happens. Do not edit this test to make it pass;
+    if it fails, the view change is wrong.
     """
 
-    def test_every_pre_phase_3_key_is_present_and_unchanged(
+    def test_every_pre_enrichment_key_is_present_and_unchanged(
         self, auth_client, admin_membership, organization, subscription
     ):
         entitlement_service = EntitlementService()
@@ -284,7 +285,8 @@ class TestBackwardsCompatibility:
 
         for resource_key in LimitedResource.values:
             row = rows[resource_key]
-            # Every key this row carried before Phase 3 is still present.
+            # Every key this row carried before the enrichment fields were added
+            # is still present.
             assert {
                 "resource_key",
                 "kind",
@@ -465,7 +467,7 @@ class TestNoSubscriptionOrganization:
 @pytest.mark.django_db
 class TestRestrictedOrganizationCanStillReadEnrichedUsage:
     """The read-never-blocks rule in the viewset docstring extends to every
-    additive Phase 3 field, not just the pre-existing ones -- a RESTRICTED
+    additive enrichment field, not just the pre-existing ones -- a RESTRICTED
     organization needs the plan/period/overage figures to resolve billing at
     least as much as an ACTIVE one does."""
 
@@ -486,7 +488,7 @@ class TestRestrictedOrganizationCanStillReadEnrichedUsage:
 
 @pytest.mark.django_db
 class TestRootResolutionAndSubtreeWalkHappenOnce:
-    """Query-count regression gate for the N+1 fix: before Phase 3, the loop
+    """Query-count regression gate for the N+1 fix: previously, the loop
     over ``LimitedResource`` called ``get_effective_limit``/``get_current_usage``
     per resource, each independently re-walking the ``parent`` chain and
     re-running the subtree BFS -- sixteen root resolutions and eight subtree

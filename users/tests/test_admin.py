@@ -1,8 +1,7 @@
 """The Django user admin does not offer the organization groups.
 
-Carried forward from Phase 4 of the vinta-django-orgs migration and decided
-here: the three seeded ``auth.Group`` rows are meaningful only when they hang
-off an ``OrganizationMembership``. On a *user* they grant nothing, and offering
+Decided here: the three seeded ``auth.Group`` rows are meaningful only when
+they hang off an ``OrganizationMembership``. On a *user* they grant nothing, and offering
 them in the user form's group picker is a control whose only possible outcome
 is a wrong belief about who administers what.
 """

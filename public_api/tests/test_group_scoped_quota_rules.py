@@ -1,5 +1,5 @@
 """Integration tests for the public GraphQL surface of group-scoped quota
-rules (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 3c).
+rules.
 
 Direct mirror of ``test_group_scoped_blocked_times.py`` for quota rules,
 minus the recurrence/reason machinery (quota rules are non-recurring and
@@ -1139,7 +1139,7 @@ class TestGroupScopedQuotaRulesPublicAPI:
 
     def test_existing_group_scoped_blocked_times_query_shape_unchanged(self):
         """Byte-for-byte shape check: the pre-existing groupScopedBlockedTimes
-        query's response is unaffected by this phase's additions."""
+        query's response is unaffected by the group-scoped additions."""
         from calendar_integration.models import BlockedTime
 
         org = self._setup_org()

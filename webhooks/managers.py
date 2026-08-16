@@ -5,7 +5,7 @@ from webhooks.querysets import WebhookConfigurationQuerySet
 # ``from_queryset`` rather than a hand-rolled ``get_queryset`` returning
 # ``WebhookConfigurationQuerySet(self.model, using=self._db)``. Building the
 # queryset directly skips ``OrganizationScopedManager.get_queryset`` entirely, so
-# ``objects`` would *look* scoped while reading every tenant -- the defect Phase 2a
+# ``objects`` would *look* scoped while reading every tenant -- the defect once
 # found in all 12 ``calendar_integration`` managers. Going through
 # ``from_queryset`` also keeps ``_queryset_class`` and the copied queryset methods
 # pointed at the same class.

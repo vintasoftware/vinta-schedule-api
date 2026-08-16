@@ -1,7 +1,7 @@
 """``OrganizationModelBackend``: what ``has_perm`` answers, and in which organization.
 
 The backend (``vinta_orgs.auth_backends.OrganizationModelBackend``, added to
-``AUTHENTICATION_BACKENDS`` in this phase) unions two independent sources:
+``AUTHENTICATION_BACKENDS``) unions two independent sources:
 
 * the user's **global** permissions -- ``user.user_permissions`` and
   ``user.groups``, exactly what the stock ``ModelBackend`` answers, organization
@@ -20,13 +20,14 @@ otherwise a user who administers organization A silently administers B.
   ``AUTHENTICATION_BACKENDS`` entry is the package's class, unsubclassed, in
   the right order, resolving against *our* concrete ``OrganizationMembership``
   model. ``0.3.0`` filters ``is_active`` inside the package's own
-  ``_get_membership``, so the repo-owned subclass Phase 3.5 had planned is not
-  written at all -- and this is what would catch one being reintroduced.
+  ``_get_membership``, so the repo-owned subclass once planned to do that
+  filtering is not written at all -- and this is what would catch one being
+  reintroduced.
 * ``TestADeactivatedMembershipResolvesNoPermissions`` inverted. Under ``0.2.0``
   a deactivated membership still resolved its group permissions, and that was
-  pinned here as *observed* behaviour Phase 4 would have had to handle
-  deliberately; ``0.3.0`` fixes it upstream, so the assertion is now that it
-  resolves nothing.
+  pinned here as *observed* behaviour that migrating the permission classes onto
+  ``has_perm`` would otherwise have had to handle deliberately; ``0.3.0`` fixes
+  it upstream, so the assertion is now that it resolves nothing.
 
 The isolation and caching classes below were **not** pruned: they pin that
 *our* concrete membership model and *our* catalog resolve correctly through
@@ -46,24 +47,25 @@ union is ``_get_permissions`` unconditionally OR-ing
 unconditional, with no repo hook into it, so a stock package install with a
 stock concrete membership model exercises exactly the same union. Ownership
 aside, it also pins behaviour our own authorization path is built to *not*
-use: the **Package owns the authorization substrate** decision has Phase 4
-read organization permissions through
+use: the package owns the authorization substrate, so organization permissions
+are read through
 ``vinta_orgs.authorization.has_organization_permission(user, permission,
 organization)``, whose ``include_global`` parameter defaults to ``False``
 precisely because the two escalation paths a global grant enables (a direct
 ``user_permissions`` grant, and membership of the seeded
 ``organization_admin`` group through the Django user-admin picker) must be
 refused by default, not granted. Keeping a test that proves the union
-"works" would pin, as a virtue, exactly the behaviour Phase 4 goes out of its
-way to avoid reading. ``has_perm`` itself is untouched -- it still unions,
+"works" would pin, as a virtue, exactly the behaviour that organization-scoped
+authorization path goes out of its way to avoid reading. ``has_perm`` itself
+is untouched -- it still unions,
 same as stock ``ModelBackend`` -- nothing here removes that; what is removed
 is a test asserting it as *our* invariant when it is neither ours nor one we
 rely on.
 
 **Nothing in the application read any of this when it was written.** Every
-permission class still checked the two flat columns; Phase 4 is what migrated
-them, and Phase 6 dropped the columns. These tests pin the foundation Phase 4
-stands on.
+permission class still checked the two flat columns at the time; they were
+later migrated onto this backend, and the two columns were dropped after
+that. These tests pin the foundation that migration stands on.
 """
 
 from __future__ import annotations
@@ -151,7 +153,7 @@ class TestAuthenticationBackendsWiring:
     sign out every existing session on deploy), the package's
     ``OrganizationModelBackend`` second -- **unsubclassed**. There is no
     repo-owned subclass to register instead: ``0.3.0`` filters ``is_active``
-    inside the package's own ``_get_membership``, so Phase 3 registers the
+    inside the package's own ``_get_membership``, so settings register the
     package's class directly rather than adding one, and this test is what
     would catch either a reordering or a reintroduced subclass.
     """
@@ -449,15 +451,16 @@ class TestADeactivatedMembershipResolvesNoPermissions:
     Under ``0.2.0`` this asserted the opposite: ``OrganizationModelBackend
     ._get_membership`` did not filter ``is_active``, so a deactivated
     membership still resolved its group permissions, and the assertion below
-    was pinned as *observed* behaviour Phase 4 would have had to handle
-    deliberately (clear groups on deactivation, or gate the resolver) rather
-    than inherit by accident from a mechanical ``has_perm`` swap.
+    was pinned as *observed* behaviour that migrating the permission classes onto
+    ``has_perm`` would otherwise have had to handle deliberately (clear groups
+    on deactivation, or gate the resolver) rather than inherit by accident from
+    a mechanical ``has_perm`` swap.
 
     ``0.3.0`` closes the gap at the source: ``is_active`` now filters *inside*
     ``_get_membership``, so a deactivated administrator resolves exactly what
-    a non-member resolves -- nothing. Phase 4 no longer has to carry this gate
-    itself; the flip below is the regression test for that fix, against *our*
-    concrete membership model.
+    a non-member resolves -- nothing. The permission classes no longer have to
+    carry this gate themselves; the flip below is the regression test for that
+    fix, against *our* concrete membership model.
     """
 
     def test_deactivating_an_admin_membership_takes_its_permissions_away(self):
@@ -500,8 +503,8 @@ class TestASuperuserResolvesEveryPermissionOnceAnOrganizationIsBound:
         for a superuser even with no membership at all. ``PermissionsMixin.has_perm``
         already short-circuits superusers to ``True``, so this changes no outcome --
         it is recorded because ``get_all_permissions()`` is also read directly (the
-        Phase 5 API surface reports it) and a superuser's list is the whole catalog,
-        not four capabilities."""
+        membership API surface reports it) and a superuser's list is the whole
+        catalog, not four capabilities."""
         user = baker.make(User, is_superuser=True, is_active=True)
         organization = _organization("Alpha", "alpha-superuser")
 

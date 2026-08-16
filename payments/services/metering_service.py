@@ -369,8 +369,7 @@ class MeteringService:
         masters = list(
             # ``unscoped()``: metering reads a subscription's *whole* reseller
             # subtree (``organization_ids``, resolved from the billing root), which
-            # no single-organization binding can express -- the plan's Open
-            # Questions row on payments scoping. The tenant boundary is
+            # no single-organization binding can express. The tenant boundary is
             # ``organization_ids`` itself, applied on the next line.
             CalendarEvent.objects.unscoped()
             .occurrence_bearing_masters_in_range(window_start, window_end)

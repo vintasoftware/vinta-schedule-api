@@ -516,12 +516,12 @@ class TestCreateInvitationProvisioning:
         assert invitation.accepted_at is not None
 
     def test_send_email_false_invite_url_carries_the_reseller_ancestor_slug(self, settings):
-        """Organization Auth-Area Branding plan, Phase 5 amendment (2026-08-06): the
-        inviteUrl the sendEmail=false path returns must be keyed on the branding
-        root's slug -- the reseller's, not the invited child org's (which has none)
-        -- exactly like the branded invitation email built by the same-org REST/
-        service path. Otherwise the SPA has no way to resolve the reseller's
-        branding for this invitation before the invitee authenticates."""
+        """The inviteUrl the sendEmail=false path returns must be keyed on the
+        branding root's slug -- the reseller's, not the invited child org's
+        (which has none) -- exactly like the branded invitation email built by
+        the same-org REST/service path. Otherwise the SPA has no way to resolve
+        the reseller's branding for this invitation before the invitee
+        authenticates."""
         settings.HEADLESS_FRONTEND_URLS = {
             "account_accept_invitation": "https://app.example.com/auth/accept-invite/?token={token}",
             "account_accept_invitation_branded": (

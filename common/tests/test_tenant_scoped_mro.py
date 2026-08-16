@@ -1,6 +1,6 @@
 """``OrganizationScopedAPIViewMixin`` wins the MRO, on every view that uses it.
 
-Phase 3.5 handed the resolution seam to the package. The package owns it through
+The package owns the resolution seam through
 two overrides -- ``perform_authentication`` (which resolves and binds, between
 authentication and ``check_permissions``) and ``dispatch`` (whose ``finally``
 releases the binding on every exit path). Both are only reached if the mixin
@@ -135,7 +135,7 @@ def test_our_subclass_adds_only_what_is_ours() -> None:
     ``get_organization_slug`` (our header) and ``resolve_organization`` (our
     refusal bodies) are the whole of this repo's contribution. Reintroducing an ``initial``, ``dispatch`` or
     ``perform_authentication`` override here is the mistake this pins: it would
-    take the seam back off the package, which is what Phase 3.5 handed over.
+    take the resolution seam back off the package.
     """
     overridden = {
         name

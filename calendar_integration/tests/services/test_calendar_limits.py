@@ -314,9 +314,9 @@ class TestCreateAvailableTimeLimit:
 
 @pytest.mark.django_db
 class TestBlockedTimeCountsTowardTheAvailabilityWindowLimit:
-    """Phase 2c: blocked time and availability windows share one
+    """Blocked time and availability windows share one
     ``availability_windows`` ceiling. Blocked-time creation itself is not guarded
-    (unchanged by this phase -- see ``AvailabilityService.create_blocked_time``),
+    (unchanged here -- see ``AvailabilityService.create_blocked_time``),
     but existing blocked time now counts toward the same ceiling an availability
     window creation is checked against, so an organization that has only ever
     authored blocked time can already be at its ceiling the first time it tries to

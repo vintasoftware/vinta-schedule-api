@@ -49,11 +49,12 @@ UPDATE public_api_systemuser AS su
 
 
 class Migration(migrations.Migration):
-    """Phase 7a: convert SystemUser.scoped_to_membership off the real FK.
+    """Convert SystemUser.scoped_to_membership off the real FK.
 
     Replaces the ``scoped_to_membership_fk`` FK (real FK to ``OrganizationMembership.id``)
     with the ``(organization_id, scoped_to_membership_user_id)`` ForeignObject pattern so
-    the per-owner-token scoping relation survives Phase 7b's composite-PK swap. NULL still
+    the per-owner-token scoping relation survives a later swap of
+    ``OrganizationMembership``'s primary key to a composite key. NULL still
     means an organization-wide token.
     """
 

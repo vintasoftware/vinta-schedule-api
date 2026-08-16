@@ -1,4 +1,4 @@
-"""Phase 6 cutover (DB-integrity half): raw-SQL composite PROTECT FK.
+"""Cutover (DB-integrity half): raw-SQL composite PROTECT FK.
 
 The ``CalendarManagementToken.membership`` relation is a Django ``ForeignObject``
 and therefore carries **no** DB-level foreign-key constraint. PROTECT delete

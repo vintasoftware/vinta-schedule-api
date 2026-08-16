@@ -158,8 +158,8 @@ def billing_profile(organization):
         # Pinned to MercadoPago to match the SDK-mocked
         # ``mercadopago_subscription_adapter`` slot below:
         # ``create_subscription_for_organization`` stamps the organization's
-        # resolved provider onto the ``Subscription`` (Rule B, Payment Provider
-        # Selection Phase 4), and that column is what every dunning retry
+        # resolved provider onto the ``Subscription`` (Rule B), and that
+        # column is what every dunning retry
         # resolves its adapter from. Leaving it unpinned would resolve to
         # ``settings.DEFAULT_PAYMENT_PROVIDER`` (``stripe``).
         payment_provider=PaymentProviders.MERCADOPAGO,
@@ -597,8 +597,7 @@ class TestDunningLadderFreeFallback:
 
 @pytest.mark.django_db
 class TestDunningTickToleratesADeclinedStripeCharge:
-    """Billing API Contract Hardening, Phase 5 live-probe BLOCKER: a live
-    Stripe test-mode probe of the exact call ``retry_failed_charge`` makes
+    """A live Stripe test-mode probe of the exact call ``retry_failed_charge`` makes
     (``pay_outstanding_invoice(subscription, payment_token="")``), against a
     card still dead on file -- the *common* dunning-tick outcome, since a dead
     card is why the subscription is in dunning at all -- raised an uncaught

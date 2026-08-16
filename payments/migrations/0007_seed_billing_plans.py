@@ -1,10 +1,9 @@
-# Phase 3 of billing plans and limits: seed the plan catalog. There is no feature
-# flag in this rollout — the `unlimited` plan *is* the kill switch. Every organization
-# is placed on it (a later phase) so enforcement code can run everywhere from day one
-# without being able to block anyone until an org is deliberately migrated onto a real
-# plan. `free`'s limit values and entitlement grants are placeholders; product
-# supplies the real numbers before any organization is actually moved onto it
-# (deferred, tracked as its own phase).
+# Seed the plan catalog. There is no feature flag in this rollout — the `unlimited`
+# plan *is* the kill switch. Every organization is placed on it so enforcement code
+# can run everywhere from day one without being able to block anyone until an org is
+# deliberately migrated onto a real plan. `free`'s limit values and entitlement
+# grants are placeholders; product supplies the real numbers before any organization
+# is actually moved onto it.
 #
 # Why the numbers below are literals rather than an import from
 # `payments/billing_plans_catalog.py`. A data migration has to keep meaning what it
@@ -29,12 +28,12 @@ FREE_PLAN_SLUG = "free"
 
 # Every LimitedResource member gets a NULL (no ceiling) row on `unlimited` — this is
 # what makes it safe as the rollout switch. Kind still needs to be correct per
-# resource so a later phase's postpaid/prepaid branching does not have to special-case
-# an unlimited plan.
+# resource so postpaid/prepaid branching does not have to special-case an unlimited
+# plan.
 POSTPAID_RESOURCES = {LimitedResource.EVENT_OCCURRENCES}
 
 # Placeholder ceilings for the `free` plan. Real numbers come from product before any
-# organization is actually rolled onto `free` (see the plan's Open Questions).
+# organization is actually rolled onto `free`.
 FREE_PLAN_LIMITS: dict[str, dict] = {
     LimitedResource.ORGANIZATION_MEMBERS: {"limit_value": 5, "overage_unit_price": None},
     LimitedResource.RESOURCE_CALENDARS: {"limit_value": 3, "overage_unit_price": None},
@@ -129,15 +128,16 @@ def unseed_billing_plans(apps, schema_editor):
     """Reverse: delete the two seeded plans (and, via CASCADE, their limits and
     entitlements).
 
-    Safe only if no `Subscription` still references these plans — true at this
-    phase (3) on its own, since organizations are not placed on a plan until
-    Phase 4. From Phase 4 (`payments.0009`) onward, `Subscription.plan` is
-    `on_delete=PROTECT`, so reversing the full chain to before this migration
-    requires reversing `0009` first — its own reverse deletes exactly the
-    `Subscription` rows *it* created (tagged `meta.backfilled_by`), which is what
-    keeps this delete free of a `ProtectedError`. Reversing `0007` directly while
-    any organically-created (non-backfilled) `Subscription` still references
-    `unlimited` or `free` still raises `ProtectedError`, by design."""
+    Safe only if no `Subscription` still references these plans — true right after
+    this migration runs, on its own, since organizations are not placed on a plan
+    until migration `payments.0009` runs. From `payments.0009` onward,
+    `Subscription.plan` is `on_delete=PROTECT`, so reversing the full chain to
+    before this migration requires reversing `0009` first — its own reverse
+    deletes exactly the `Subscription` rows *it* created (tagged
+    `meta.backfilled_by`), which is what keeps this delete free of a
+    `ProtectedError`. Reversing `0007` directly while any organically-created
+    (non-backfilled) `Subscription` still references `unlimited` or `free` still
+    raises `ProtectedError`, by design."""
     BillingPlan = apps.get_model("payments", "BillingPlan")
     BillingPlan.objects.filter(slug__in=[UNLIMITED_PLAN_SLUG, FREE_PLAN_SLUG]).delete()
 

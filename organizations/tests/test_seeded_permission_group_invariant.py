@@ -12,17 +12,18 @@ block in which only the first one sees a seeded database.
 ``vinta_orgs.testing``'s autouse ``seeded_organization_groups`` fixture, enabled
 by ``pytest_plugins = ["vinta_orgs.testing"]`` in the root ``conftest.py``, and
 pointed at our catalog by ``ORGANIZATION_GROUP_SEEDERS`` in
-``vinta_schedule_api/settings/base.py``. Phase 6 of the vinta-django-orgs
-migration deleted the repo-owned equivalent that used to live in ``conftest.py``
-(see the plan's **Package owns the authorization substrate** Guiding Decision:
-a test-support hook a stock package install would also need belongs upstream).
+``vinta_schedule_api/settings/base.py``. The repo-owned equivalent that used to
+live in ``conftest.py`` was deleted once the package started shipping its own:
+a test-support hook a stock package install would also need belongs upstream,
+not duplicated here.
 
 This module is what keeps that honest, and it stays *here* rather than upstream
 because what it pins is **our** wiring: that the plugin is registered, that
 ``ORGANIZATION_GROUP_SEEDERS`` names our seeder rather than the package's
 default, and that the catalog restored is ours -- the three groups and the four
-capability permissions Phase 3 declared. A stock package install satisfies none
-of those, so none of it would pass upstream unchanged.
+capability permissions ``0028_seed_permission_groups`` declared. A stock
+package install satisfies none of those, so none of it would pass upstream
+unchanged.
 
 Costing this wrong is expensive and has already been paid for twice. The loud
 symptom is not a missing group -- it is
@@ -31,8 +32,7 @@ inside the ``finally`` of a ``MigrationExecutor`` test, which aborts that test's
 restore and leaves the worker's database mid-graph. Every later test that writes an
 ``OrganizationMembership`` then fails with ``IntegrityError: null value in column
 "role"`` -- a column no live model has -- in modules with no relationship to the one
-that broke it. See the 2026-08-13 correction in
-``ai-plans/TRACKING_VINTA_DJANGO_ORGS_MIGRATION.md``.
+that broke it.
 """
 
 from django.contrib.auth.models import Group
@@ -64,8 +64,9 @@ def test_the_configured_seeder_is_ours_and_reads_the_live_catalog():
     """``ORGANIZATION_GROUP_SEEDERS`` must resolve to *our* seeder.
 
     Left unset, the package reseeds only its own ``organization_owner`` group --
-    which this repository does not have -- and the three groups Phase 3 declared
-    would stay gone after a flush with nothing red to say so. Pinned as identity
+    which this repository does not have -- and the three groups
+    ``0028_seed_permission_groups`` declared would stay gone after a flush with
+    nothing red to say so. Pinned as identity
     against the function object rather than as a settings string, so a rename on
     either side fails here.
 

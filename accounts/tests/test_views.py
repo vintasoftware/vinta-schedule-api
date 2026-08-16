@@ -107,7 +107,7 @@ class TestProviderCallbackAPIView:
 
 @pytest.mark.django_db
 class TestProviderCallbackDestinationResolution:
-    """Phase 7 -- the callback's response carries the resolved post-authentication
+    """The callback's response carries the resolved post-authentication
     destination, and no client-supplied value (``state["next"]``, which doubles as the
     OAuth ``callback_url``) can influence it.
 
@@ -280,10 +280,10 @@ class TestProviderCallbackDestinationResolution:
 
 @pytest.mark.django_db
 class TestGenericLoginPathUnaffectedByBrowserContext:
-    """Phase 8 -- Branded login by organization slug.
+    """Branded login by organization slug.
 
     The organization-scoped login URL is resolved entirely on the SPA side through
-    ``brandingForTenant(slug=...)`` (Phase 5): there is no backend routing to add for
+    ``brandingForTenant(slug=...)``: there is no backend routing to add for
     it, because the OAuth redirect/callback endpoints below take no
     organization/slug/tenant input and never acquire one from the request. This class
     pins that guarantee so it survives future refactors:
@@ -292,7 +292,7 @@ class TestGenericLoginPathUnaffectedByBrowserContext:
       still goes through ``ProviderRedirectAPIView`` with no organization concept at
       all, and ``ProviderCallbackAPIView`` still resolves the post-authentication
       destination purely from the authenticated user's own active membership
-      (package membership resolution / Phase 7) -- never from the request.
+      (package membership resolution) -- never from the request.
     - Nothing about the destination changes when the request carries an
       ``X-Organization-Id`` header (the header ordinary tenant-scoped REST endpoints
       honor via ``TenantScopedViewMixin``), a ``Referer`` header naming a different

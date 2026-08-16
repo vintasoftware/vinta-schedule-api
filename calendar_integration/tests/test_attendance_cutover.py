@@ -154,10 +154,10 @@ def test_attendance_serializer_membership_field_shape(organization, event):
     assert "user" not in EventAttendanceSerializer.Meta.fields
     assert "membership" in EventAttendanceSerializer.Meta.fields
 
-    # ``role`` left this representation in Phase 5 of the vinta-django-orgs
-    # migration, with the rest of ``role``'s API surface. What a member may do
-    # is reported by ``GET /organization-members/`` as ``permissions``; this
-    # field is an identity, not an authorization statement.
+    # ``role`` left this representation, along with the rest of ``role``'s API
+    # surface. What a member may do is reported by ``GET /organization-members/``
+    # as ``permissions``; this field is an identity, not an authorization
+    # statement.
     data = OwnershipMembershipSerializer(attendance.membership).data
     assert data == {
         "user_id": user.id,

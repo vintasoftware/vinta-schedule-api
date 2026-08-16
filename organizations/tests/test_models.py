@@ -241,10 +241,9 @@ class TestOrganizationParentAndCapabilities:
 
     def test_get_branding_root_returns_self_when_no_parent(self):
         """get_branding_root() returns itself for a standalone (parentless)
-        non-reseller org -- Organization Auth-Area Branding plan, Phase 5 widens
-        resolution beyond resellers to any parentless organization. The reseller
-        branch above is checked first and unchanged; this is the new fallback for
-        the case that used to return None."""
+        non-reseller org -- resolution was widened beyond resellers to any
+        parentless organization. The reseller branch above is checked first and
+        unchanged; this is the new fallback for the case that used to return None."""
         org = baker.make(Organization, can_invite_organizations=False)
         assert org.get_branding_root() == org
 
@@ -357,11 +356,11 @@ class TestMultiOrgMembership:
 
 
 # The composite-primary-key tests that lived here are gone with the composite
-# primary key itself (Phase 1 of the vinta-django-orgs migration -- a
-# ``ManyToManyField`` cannot hang off a composite-PK model, and the package's
-# abstract membership base declares two). Their replacements, covering the
-# surrogate ``id`` and the ``uniq_membership_user_organization`` constraint that
-# outlived both primary keys, are in ``organizations/tests/test_membership_pk.py``.
+# primary key itself -- a ``ManyToManyField`` cannot hang off a composite-PK
+# model, and the package's abstract membership base declares two. Their
+# replacements, covering the surrogate ``id`` and the
+# ``uniq_membership_user_organization`` constraint that outlived both primary
+# keys, are in ``organizations/tests/test_membership_pk.py``.
 
 
 @pytest.mark.django_db
@@ -475,15 +474,14 @@ class TestWeekStart:
 
 @pytest.mark.django_db
 class TestOrganizationSlug:
-    """Unit tests for Organization.slug (Phase 1 — self-serve organization slug)."""
+    """Unit tests for Organization.slug (self-serve organization slug)."""
 
     def test_an_organization_saved_without_a_slug_gets_an_opaque_one(self):
         """``slug`` is NOT NULL, so ``save()`` mints one -- and it is opaque.
 
         Not ``slugify(name)``: the slug is public (it appears in branded login
         URLs), so a name-derived default would publish the organization's name
-        for every row saved without an explicit slug. See the plan's "Runtime
-        slug default is opaque, not name-derived" Guiding Decision.
+        for every row saved without an explicit slug.
         """
         org = Organization.objects.create(name="Acme Incorporated")
 

@@ -71,9 +71,8 @@ def organization(user):
 def admin_user(user, organization):
     """Promote `user`'s membership in `organization` to admin.
 
-    Group create/update/delete is admin-only (CALENDAR_GROUP_SCOPED_AVAILABILITY
-    membership-permissions fix). Depend on this fixture -- in addition to
-    `auth_client` -- in any test that expects a write to succeed.
+    Group create/update/delete is admin-only. Depend on this fixture -- in
+    addition to `auth_client` -- in any test that expects a write to succeed.
     """
     membership = OrganizationMembership.objects.get(user=user, organization=organization)
     grant_membership_groups(membership, [GROUP_ORGANIZATION_ADMIN])

@@ -367,9 +367,9 @@ class TestOrganizationService:
     def test_invite_user_to_organization_branded_org_gets_the_branded_invitation_url(
         self, organization_service_with_mocks, user, mock_notification_service, settings
     ):
-        """Organization Auth-Area Branding plan, Phase 5 amendment (2026-08-06): the
-        accept-invite link must carry the branding root's slug, or the SPA has no way
-        to resolve that organization's branding before the invitee authenticates."""
+        """Added after the fact (2026-08-06): the accept-invite link must carry the
+        branding root's slug, or the SPA has no way to resolve that organization's
+        branding before the invitee authenticates."""
         settings.HEADLESS_FRONTEND_URLS = {
             "account_accept_invitation": "https://app.example.com/auth/accept-invite/?token={token}",
             "account_accept_invitation_branded": (

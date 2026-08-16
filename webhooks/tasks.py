@@ -31,7 +31,7 @@ def process_webhook_event(
     # Resolved eagerly (not via a lazy binding): a stale/deleted
     # `organization_id` must be caught here, at the task boundary, rather
     # than surfacing later as a bound-but-null organization deep inside a
-    # manager once Phase 2 starts consulting the context -- mirrors
+    # manager that consults the context -- mirrors
     # `calendar_integration/tasks/calendar_sync_tasks.py`'s
     # `organization = Organization.objects.filter(id=organization_id).first()`
     # / `if not organization: return` guard.

@@ -14,7 +14,7 @@ What this project can still break is the path to it, which it has broken twice:
   something else comes back.
 * ``CalendarQuerySet`` used to override ``update()`` with a body that read
   ``self._meta`` (which ``QuerySet`` does not have) and called a classmethod
-  that left ``Calendar``'s MRO in Phase 2a -- so *any*
+  that assumed an earlier shape of ``Calendar``'s MRO -- so *any*
   ``Calendar.objects.filter(...).update(...)`` raised ``AttributeError``, and
   the override shadowed the package's working one. ``Calendar`` is the model
   under test throughout for that reason.
@@ -94,8 +94,8 @@ class TestUpdateRefusesToRelocateRows:
     ):
         """``unsafe_organization_update=True`` is reachable through ``.update()``.
 
-        The plan reserves this flag for a data migration that genuinely has to
-        re-stamp rows, and says the flag belongs at that call site. A local
+        This flag is reserved for a data migration that genuinely has to
+        re-stamp rows, and belongs at that call site. A local
         override that raised before delegating made it unreachable -- the
         refusal fired regardless of the keyword -- so this is what proves the
         escape hatch exists rather than only being documented.

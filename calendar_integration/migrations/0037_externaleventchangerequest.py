@@ -1,4 +1,4 @@
-"""Phase 2 — Add ExternalEventChangeRequest model.
+"""Add ExternalEventChangeRequest model.
 
 Class of operation: new table (CreateModel).
 
@@ -13,9 +13,9 @@ The partial unique index on ``(event_fk, organization_id)`` filtered by
 resolved_by_user_id)`` are built at table-creation time on an empty table —
 same lock, same rationale.
 
-``event_fk`` is ``SET_NULL`` so that approving a ``delete``-kind request in
-Phase 5a (which deletes the ``CalendarEvent``) leaves the request row intact for
-history. A ``PENDING`` request always has a live event; ``null`` only occurs on
+``event_fk`` is ``SET_NULL`` so that approving a ``delete``-kind request (which
+deletes the ``CalendarEvent``) leaves the request row intact for history. A
+``PENDING`` request always has a live event; ``null`` only occurs on
 resolved/historical rows after the event is deleted.
 
 The ``event`` ForeignObject uses ``DO_NOTHING`` (not ``SET_NULL``) deliberately:

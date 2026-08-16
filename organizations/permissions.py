@@ -89,8 +89,7 @@ def is_branding_eligible_organization(organization: Organization | None) -> bool
 
     Two conditions -- this is the ``branding_logos`` S3Direct destination's
     ``auth`` callable (via ``user_administers_branding_eligible_organization``
-    below) and the GraphQL logo-signing mutation's gate (Organization
-    Auth-Area Branding plan, Phase 2b).
+    below) and the GraphQL logo-signing mutation's gate.
 
     ``evaluate_branding_write_gate`` below composes on top of this function
     rather than replacing it. It once added a third condition -- "and has picked
@@ -146,14 +145,13 @@ class BrandingWriteGateReason(enum.Enum):
     - ``NOT_ENTITLED`` -- a billing state. The organization's plan does not
       include white-label branding; fixable by upgrading.
 
-    There were three failure reasons until Phase 4 of the vinta-django-orgs
-    migration. ``NO_SLUG`` -- "otherwise eligible but has not picked a public
-    slug yet" -- was retired as a product rule in Phase 1, when ``slug`` became
-    NOT NULL with a ``save()``-time fallback and the ``organization_slug_not_blank``
-    check constraint made it unreachable for any organization that can exist;
-    it was kept dead-with-reason for one phase because it was still part of this
-    enum's published contract, and deleted here along with its
-    ``BRANDING_GATE_EXCEPTIONS`` entry and
+    There used to be a third failure reason. ``NO_SLUG`` -- "otherwise eligible
+    but has not picked a public slug yet" -- was retired as a product rule when
+    ``slug`` became NOT NULL with a ``save()``-time fallback and the
+    ``organization_slug_not_blank`` check constraint made it unreachable for any
+    organization that can exist; it was kept dead-with-reason for a while because
+    it was still part of this enum's published contract, and has since been
+    deleted along with its ``BRANDING_GATE_EXCEPTIONS`` entry and
     ``OrganizationSlugRequiredForBrandingError``.
     """
 
@@ -163,10 +161,9 @@ class BrandingWriteGateReason(enum.Enum):
 
 
 def evaluate_branding_write_gate(organization: Organization | None) -> BrandingWriteGateReason:
-    """Two-condition branding **write** gate (Organization Auth-Area Branding
-    plan, Phase 3): the acting organization must be parentless and hold the
-    ``white_label_branding`` entitlement. Replaces ``is_reseller()`` on every
-    write surface.
+    """Two-condition branding **write** gate: the acting organization must be
+    parentless and hold the ``white_label_branding`` entitlement. Replaces
+    ``is_reseller()`` on every write surface.
 
     Composes on top of, rather than duplicating, the two-condition
     ``is_branding_eligible_organization`` above by sharing
@@ -177,12 +174,10 @@ def evaluate_branding_write_gate(organization: Organization | None) -> BrandingW
     Checked in this order -- parent, then entitlement -- so the permanent case
     is never masked by a fixable one.
 
-    **A third condition, "and has picked a public slug", was retired** in
-    Phase 1 of the vinta-django-orgs migration (see that plan's "Slug
-    precondition for branding writes is retired" Guiding Decision) and its
-    last remnants -- the branch, ``BrandingWriteGateReason.NO_SLUG``, its
-    ``BRANDING_GATE_EXCEPTIONS`` entry and
-    ``OrganizationSlugRequiredForBrandingError`` -- deleted in Phase 4.
+    **A third condition, "and has picked a public slug", was retired** as a
+    product rule, and its last remnants -- the branch,
+    ``BrandingWriteGateReason.NO_SLUG``, its ``BRANDING_GATE_EXCEPTIONS`` entry
+    and ``OrganizationSlugRequiredForBrandingError`` -- have since been deleted.
     ``Organization.slug`` is NOT NULL with a ``save()``-time fallback and an
     ``organization_slug_not_blank`` check constraint, so no organization that
     exists can fail it and no write surface -- supported or not, including a raw
@@ -231,7 +226,7 @@ def user_administers_branding_eligible_organization(user: "User | None") -> bool
     request user -- it has no notion of "the acting organization" the way our
     own views/resolvers do. So this can only authorize "this user administers
     SOME eligible organization", not "acting for this specific organization".
-    Accepted per the plan's Logo upload path guiding decision: the generated
+    Accepted deliberately: the generated
     object key is unique per upload (``generate_s3direct_file_name``) and the
     object only becomes visible once a branding row references it -- an admin of
     one eligible org obtaining a key another admin could theoretically also
@@ -242,8 +237,8 @@ def user_administers_branding_eligible_organization(user: "User | None") -> bool
     organization, which it always knows, so it gets the tighter, org-specific
     check instead of this coarser one.
 
-    The role half became ``organizations.manage_branding`` in Phase 4 of the
-    vinta-django-orgs migration; the entitlement half
+    The role half is now the ``organizations.manage_branding`` permission,
+    replacing the dropped ``role`` column; the entitlement half
     (``is_branding_eligible_organization``) is untouched. The permission half is
     asked of the *database*, through
     ``OrganizationMembershipQuerySet.holding_permission`` -- the same lookup
@@ -356,8 +351,8 @@ class IsOrganizationAdmin(BasePermission):
       implementation. Handles both Organization instances and organization-scoped
       (`SingleOrganizationModelMixin`) subclasses.
 
-    Phase 4 of the vinta-django-orgs migration replaced `membership.is_admin` with
-    the permission. The active-membership check in front of it is **not** redundant
+    The `organizations.manage_members` permission replaced the `membership.is_admin`
+    property this used to read. The active-membership check in front of it is **not** redundant
     and must stay: it is what supplies the organization the capability is asked
     about. `has_permission` runs before any object is known, so the caller's own
     resolved organization is the only one it can name.
@@ -436,16 +431,18 @@ class IsBillingOwnerOrAdmin(BasePermission):
     (Historical note: this split was originally *forced* by an ordering defect —
     ``TenantScopedViewMixin`` resolved the active organization after DRF had
     already run ``check_permissions``, so nothing organization-specific was
-    reliable in ``has_permission`` at all. Phase 3.5 of the vinta-django-orgs
-    migration fixed the ordering; the split stays because of the billing-root
-    reason above, which is independent of it. ``request.organization`` and
-    ``request.organization_membership`` are now both correct
-    inside ``has_permission``.)
+    reliable in ``has_permission`` at all. That ordering has since been fixed --
+    ``TenantScopedViewMixin.perform_authentication`` now resolves and binds
+    between authentication and ``check_permissions`` -- and the split stays
+    because of the billing-root reason above, which is independent of it.
+    ``request.organization`` and ``request.organization_membership`` are now
+    both correct inside ``has_permission``.)
 
     - ``has_permission``: coarse gate -- an active membership carrying
       ``payments.manage_billing`` **in the organization the request resolved**
-      (since Phase 3.5 that is the membership ``X-Organization-Id`` selected,
-      not "some organization"). Coarse all the same, because the organization
+      (since the ordering fix above, that is the membership
+      ``X-Organization-Id`` selected, not "some organization"). Coarse all the
+      same, because the organization
       being *billed* is frequently an ancestor of it; deciding *which*
       organization is ``has_object_permission``'s job.
     - ``has_object_permission``: the real gate, against ``obj`` (an
@@ -464,12 +461,12 @@ class IsBillingOwnerOrAdmin(BasePermission):
          request shape that would make this branch decisive, so it preserves the
          policy for direct callers without describing current endpoint behavior.
 
-    Phase 4 of the vinta-django-orgs migration replaced
-    the flat two-column disjunction with
-    ``payments.manage_billing`` (the ``organization_admin`` and
-    ``organization_billing_owner`` groups both carry it, which is what makes the
-    two spellings the same set). **Branch 2 keeps its bespoke walk**, per the
-    plan's "Four rules stay hand-written" Guiding Decision: the auth backend
+    ``payments.manage_billing`` replaced the flat two-column disjunction this
+    used to read (``role == ADMIN or is_billing_owner``); the
+    ``organization_admin`` and ``organization_billing_owner`` groups both carry
+    the permission, which is what makes the two spellings the same set.
+    **Branch 2 keeps its bespoke walk** rather than becoming a plain permission
+    lookup: the auth backend
     resolves permissions for the *bound* organization only, and the grant this
     branch looks for is held in an ancestor of it. The permission is therefore
     asked with that ancestor named explicitly (see

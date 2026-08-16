@@ -166,17 +166,17 @@ class TestResolveBranding:
 
 @pytest.mark.django_db
 class TestGetBrandingRootParentlessResolution:
-    """``Organization.get_branding_root()`` -- Organization Auth-Area Branding plan,
-    Phase 5. Widens resolution so a branded parentless organization can be its own
-    branding root. The reseller branch is checked FIRST and is unchanged -- that
-    ordering is what preserves reseller precedence; only a parentless organization
-    that is NOT a reseller newly resolves to itself. A child under a non-reseller
-    parent must still resolve to ``None`` -- it cannot brand itself (enforced by the
-    write gate) and must not silently pick up its own identity as a fallback.
+    """``Organization.get_branding_root()`` widened so a branded parentless
+    organization can be its own branding root. The reseller branch is checked FIRST
+    and is unchanged -- that ordering is what preserves reseller precedence; only a
+    parentless organization that is NOT a reseller newly resolves to itself. A child
+    under a non-reseller parent must still resolve to ``None`` -- it cannot brand
+    itself (enforced by the write gate) and must not silently pick up its own
+    identity as a fallback.
     """
 
     def test_parentless_non_reseller_returns_itself(self):
-        """The one new behavior this phase adds."""
+        """The one new behavior this widened resolution adds."""
         org = baker.make(Organization, parent=None, can_invite_organizations=False)
 
         assert org.get_branding_root() == org
@@ -321,8 +321,8 @@ class TestResolveBrandingIsUngated:
     Its former caller, ``public_api.queries.validate_return_url``, read
     ``return_url_allowlist`` off this row to decide whether an OAuth return URL may be
     honoured -- a non-cosmetic, auth-flow decision. That query and the allowlist it
-    read are gone as of Phase 2a of the Organization Auth-Area Branding plan (see
-    ``resolve_branding``'s docstring), which leaves this function with no caller today.
+    read are gone now (see ``resolve_branding``'s docstring), which leaves this
+    function with no caller today.
     It stays deliberately separate from ``resolve_branding_for_display`` (and
     deliberately ungated) so a future non-cosmetic caller -- e.g. an auth-flow
     decision -- is not silently broken by a reseller downgrading off the cosmetic
@@ -424,11 +424,11 @@ def _org_with_entitlement(entitlement_key: str, is_enabled: bool, **org_kwargs) 
 
 @pytest.mark.django_db
 class TestResolveBrandingForDisplayParentlessOrganization:
-    """``resolve_branding_for_display`` for a parentless, non-reseller organization
-    -- Organization Auth-Area Branding plan, Phase 5. Exercises the same entitlement
-    gate as ``TestResolveBrandingForDisplayEntitlementGate`` above, but through the
-    newly-widened root (a parentless org resolving to itself) rather than through a
-    reseller ancestor -- pinning Use-case 6 (a branded organization downgrades): the
+    """``resolve_branding_for_display`` for a parentless, non-reseller organization.
+    Exercises the same entitlement gate as
+    ``TestResolveBrandingForDisplayEntitlementGate`` above, but through the
+    widened root (a parentless org resolving to itself) rather than through a
+    reseller ancestor -- pinning the downgrade case for a branded organization: the
     saved values are retained in the database but stop being applied the moment the
     entitlement is lost, and re-apply with no re-entry once it returns.
     """
@@ -475,10 +475,9 @@ class TestResolveBrandingForDisplayParentlessOrganization:
 @pytest.mark.django_db
 class TestEvaluateBrandingWriteGate:
     """``organizations.permissions.evaluate_branding_write_gate`` -- the full
-    branding write gate (Organization Auth-Area Branding plan, Phase 3):
-    parentless AND entitled. Its third condition (slug-set) is retired -- see
-    ``evaluate_branding_write_gate``. Composes on top of the two-condition
-    ``is_branding_eligible_organization`` (Phase 2b), which stays the
+    branding write gate: parentless AND entitled. Its third condition (slug-set) is
+    retired -- see ``evaluate_branding_write_gate``. Composes on top of the
+    two-condition ``is_branding_eligible_organization``, which stays the
     logo-signing surface's gate -- see ``test_two_condition_helper_stays_free_
     of_the_slug_condition`` below for that split pinned as a regression test.
     """
@@ -513,8 +512,7 @@ class TestEvaluateBrandingWriteGate:
         ``Organization.slug`` is NOT NULL with a ``save()``-time fallback and an
         ``organization_slug_not_blank`` check constraint, so an organization that
         is parentless and entitled now passes the gate outright -- no separate
-        "pick a slug first" step. See the plan's "Slug precondition for branding
-        writes is retired" Guiding Decision.
+        "pick a slug first" step.
         """
         org = _org_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None)
 
@@ -524,8 +522,8 @@ class TestEvaluateBrandingWriteGate:
     def test_a_blank_slug_no_longer_refuses_anything(self):
         """The retired condition, pinned as *retired* rather than as absent.
 
-        ``NO_SLUG`` was deleted in Phase 4 of the vinta-django-orgs migration
-        along with its branch. The only value that ever still reached that
+        ``NO_SLUG`` was deleted, along with its branch, when the slug precondition
+        for branding writes was retired. The only value that ever still reached that
         branch was an unsaved, in-memory ``Organization`` -- no persisted one
         can have a blank slug -- so that is what this drives, and it is now
         admitted rather than refused. Written this way so a future
@@ -544,8 +542,9 @@ class TestEvaluateBrandingWriteGate:
         """Each failure mode produces its own reason, not a bare False -- this is
         the whole point of the enum-returning gate over a boolean helper.
 
-        Two reasons, not three: ``NO_SLUG`` was retired in Phase 1 and deleted
-        in Phase 4 (see ``test_a_blank_slug_no_longer_refuses_anything``).
+        Two reasons, not three: ``NO_SLUG`` first became unreachable when ``slug``
+        became NOT NULL, then was deleted outright along with its branch (see
+        ``test_a_blank_slug_no_longer_refuses_anything``).
         """
         parent_org = _org_with_entitlement(
             Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="parent-org-2"
@@ -569,7 +568,7 @@ class TestEvaluateBrandingWriteGate:
         """``is_branding_eligible_organization`` (logo signing, capability signal)
         and ``evaluate_branding_write_gate`` (branding writes) used to differ by
         exactly the slug condition. With that condition retired they admit the
-        same set, which is the property later phases may rely on -- and which a
+        same set, which is the property callers may rely on -- and which a
         future change reintroducing a third condition to only one of them would
         break here."""
         org = _org_with_entitlement(
@@ -583,8 +582,8 @@ class TestEvaluateBrandingWriteGate:
 @pytest.mark.django_db
 class TestCanManageBrandingCapabilityField:
     """``can_manage_branding`` on ``CurrentMembershipSerializer`` and
-    ``MyMembershipSerializer`` (Organization Auth-Area Branding plan, Phase 4
-    Capability signal guiding decision).
+    ``MyMembershipSerializer`` -- a capability signal exposed to clients so they
+    can decide whether to show branding-management UI.
 
     Must track ``is_branding_eligible_organization`` (the parentless-and-entitled
     gate) rather than ``evaluate_branding_write_gate``. The two admit the same
@@ -902,10 +901,9 @@ class TestInvitationContextLogoUrl:
         assert logo_url.endswith("/branding/logo/default/"), logo_url
 
     def test_branded_parentless_non_reseller_organization_carries_its_own_identity(self):
-        """Organization Auth-Area Branding plan, Phase 5 -- Use-case 2. A parentless
-        organization that is NOT a reseller can now be its own branding root, so its
-        invitation email carries its own app name, logo, and colors -- not the vinta
-        default and not some other organization's."""
+        """A parentless organization that is NOT a reseller can now be its own
+        branding root, so its invitation email carries its own app name, logo, and
+        colors -- not the vinta default and not some other organization's."""
         org = _org_with_entitlement(
             Entitlement.WHITE_LABEL_BRANDING,
             is_enabled=True,
@@ -991,13 +989,13 @@ def _build_email_notification_service() -> NotificationService:
 
 @pytest.mark.django_db
 class TestInvitationReplyToEmailSend:
-    """Organization Auth-Area Branding plan, Phase 6 -- Use-case 2's reply-to half.
+    """The reply-to half of a branded invitation email.
 
     Sends a real invitation email end-to-end (context resolution -> template
     rendering -> ReplyToDjangoEmailNotificationAdapter) and inspects
     ``django.core.mail.outbox``. The From address must be identical in every case
-    -- branded, unbranded, or downgraded -- because Non-goals forbid a custom
-    sender; only the reply-to may vary.
+    -- branded, unbranded, or downgraded -- because branding deliberately stops
+    short of a custom sender; only the reply-to may vary.
     """
 
     def _make_invitation(self, organization: Organization) -> OrganizationInvitation:

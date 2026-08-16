@@ -107,7 +107,7 @@ class TestUnscopedReadsWithNoOrganizationBound:
         """The three properties ``OrganizationViewSet.mine`` depends on, none of
         which a ``count()`` would notice.
 
-        Phase 3 deleted this repo's local ``active_for_user`` override in favour
+        This repo's local ``active_for_user`` override was deleted in favour
         of the package's, on the grounds that the two were byte-equivalent. That
         is true today and says nothing about tomorrow: ``is_active``, the
         ``created`` ordering and the ``select_related`` are now the package's to
@@ -160,11 +160,11 @@ class TestUnscopedReadsWithNoOrganizationBound:
 class TestUnscopedReadsWithAnUnrelatedOrganizationBound:
     """The scoped-manager failure mode, if it were ever introduced, would show
     up here rather than above: binding organization A and reading B's
-    memberships. Binds through ``common.organization_context``, which since
-    Phase 2a *is* the package's own contextvar -- the one
+    memberships. Binds through ``common.organization_context``, which now
+    *is* the package's own contextvar -- the one
     ``SingleOrganizationUnscopedManager`` would read from if it read anything.
-    (Before Phase 2a this file bound through ``vinta_orgs.state`` directly,
-    because the two were still separate contextvars and only the package's was
+    (This file used to bind through ``vinta_orgs.state`` directly, because the
+    two were still separate contextvars and only the package's was
     consulted; ``0.4.0`` deleted that module-level function, and the shim in
     ``common.organization_context`` is now the only spelling.)"""
 

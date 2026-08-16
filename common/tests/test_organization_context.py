@@ -1,10 +1,9 @@
 """Unit tests for ``common.organization_context``.
 
-Covers the three properties the Phase 0 body of the vinta-django-orgs
-migration plan calls out explicitly: binding, nesting, and restoration of the
+Covers three properties: binding, nesting, and restoration of the
 *previous* binding (not a bare clear). These were the semantics the swap to the
 package's state had to preserve, and they still are: package ``0.4.0`` replaced
-the module-level functions with ``OrganizationState``, and Phase 3 kept the same
+the module-level functions with ``OrganizationState``, and this module keeps the same
 seven names here as shims over one specialized instance of it. Every test below
 goes through those shims, which is what makes them the contract test for the
 shim layer as well as for the semantics.
@@ -93,7 +92,7 @@ def test_organization_context_as_context_manager_binds_and_restores(org_a):
 def test_organization_context_nesting_restores_previous_organization_not_none(org_a, org_b):
     """Nesting must restore the *previous* organization, never just clear it.
 
-    This is the property the phase body highlights by name: a fan-out task
+    The property that matters in practice: a fan-out task
     that binds once per organization inside a loop must land back on whatever
     was bound before the loop started (commonly ``None``, but not always --
     exercised here with an outer non-``None`` binding), not on a hardcoded
@@ -114,7 +113,7 @@ def test_organization_context_nesting_restores_previous_organization_not_none(or
 def test_organization_context_sequential_iterations_do_not_leak(org_a, org_b):
     """Per-iteration binding (fan-out over organizations) leaves no residue.
 
-    Mirrors the pattern the Phase 0 task/command bindings use: one
+    Mirrors the pattern the task/command bindings use: one
     ``organization_context(...)`` block per organization in a loop, with
     nothing bound before or after the loop runs.
     """

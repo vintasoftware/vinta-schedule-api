@@ -1,14 +1,14 @@
 """Integration tests for the public GraphQL surface of group-scoped
-blocked times (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 2b).
+blocked times.
 
 Direct mirror of ``test_group_scoped_availability_windows.py`` for blocks.
 Covers ``groupScopedBlockedTimes`` (query) and
 ``batchUpsertGroupScopedBlockedTimes`` (batch-upsert mutation): batch apply,
 idempotent replay (identical final state, no duplicates), cross-organization
-scoping, and the IDOR window/calendar cross-check. Blocked time is NOT
-metered yet (Phase 2c does that), so there is no over-limit test here --
-instead, a ``RESTRICTED`` billing root is asserted to still block the batch
-(the one guard that DOES apply pre-metering).
+scoping, and the IDOR window/calendar cross-check. Blocked time is not
+metered, so there is no over-limit test here -- instead, a ``RESTRICTED``
+billing root is asserted to still block the batch (the one guard that DOES
+apply pre-metering).
 """
 
 import datetime
@@ -515,7 +515,7 @@ class TestGroupScopedBlockedTimesPublicAPI:
     # ------------------------------------------------------------------
 
     def test_restricted_organization_batch_rejected_wholesale(self):
-        """Blocked time is not metered yet (Phase 2c), so there is no
+        """Blocked time is not metered, so there is no
         plan-limit ceiling to hit here -- but the general RESTRICTED-billing-
         root guard every other guarded write goes through must still apply.
         Nothing is created."""
@@ -994,7 +994,7 @@ class TestGroupScopedBlockedTimesPublicAPI:
 
     def test_existing_group_scoped_availability_windows_query_shape_unchanged(self):
         """Byte-for-byte shape check: the frozen groupScopedAvailabilityWindows
-        query's response is unaffected by this phase's additions."""
+        query's response is unaffected by the group-scoped additions."""
         from calendar_integration.models import AvailableTime
 
         org = self._setup_org()

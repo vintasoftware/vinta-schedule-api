@@ -35,7 +35,7 @@ AFTER_PERIOD = datetime.datetime(2025, 7, 2, 0, 0, tzinfo=datetime.UTC)
 
 
 class DedupingPaymentService:
-    """Returns a real, persisted ``Payment`` row: ``_persist_statement`` (Phase 2)
+    """Returns a real, persisted ``Payment`` row: ``_persist_statement``
     links the charge onto ``BillingPeriodSummary.payment_id``, a genuine foreign
     key, so a bare stand-in with a made-up ``pk`` would violate referential
     integrity (see ``payments/tests/services/test_cycle_close.py``'s

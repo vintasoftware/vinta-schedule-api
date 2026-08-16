@@ -931,8 +931,9 @@ class RecurringMixin(SingleOrganizationModelMixin, SafeRelationNullInitMixin, Ba
             # ``filter_by_organization(self.organization_id)`` first: this row's own
             # organization is the scope, and the manager's version starts from the
             # unscoped queryset, so this works on an instance loaded outside any
-            # bound context (a service call inside a request, before Phase 2b binds
-            # one). Ordering it before the annotation also keeps
+            # bound context (a service call inside a request, before
+            # ``common.organization_context`` binds one). Ordering it before the
+            # annotation also keeps
             # ``BlockedTimeManager`` / ``AvailableTimeManager``'s base-rows-only
             # narrowing, which ``.objects`` applied here before.
             occurrences = (
@@ -1266,9 +1267,9 @@ class CalendarEvent(RecurringMixin):
         through_fields=("event", "membership"),
         blank=True,
     )
-    # Routed through ``EventExternalAttendance`` (Phase 2b of the
-    # vinta-django-orgs migration) -- it used to have an *auto-created* through
-    # table, ``calendar_integration_calendarevent_external_attendees``, holding
+    # Routed through ``EventExternalAttendance`` -- it used to have an
+    # *auto-created* through table,
+    # ``calendar_integration_calendarevent_external_attendees``, holding
     # ``calendarevent_id`` and ``externalattendee_id`` and no ``organization``
     # column. That join carried no organization, and neither does the related
     # manager a many-to-many builds (see
@@ -1506,7 +1507,7 @@ class BlockedTime(RecurringMixin):
         help_text="If this is a continuation of a split series",
     )
 
-    # Group-scoped availability (Phase 0 of CALENDAR_GROUP_SCOPED_AVAILABILITY):
+    # Group-scoped availability:
     # NULL means a base row — today's behavior, visible on every read path. A
     # non-null value scopes the row to that one CalendarGroupSlot; it is invisible
     # to the default manager (`objects`) and only reachable through the explicit
@@ -1608,7 +1609,7 @@ class AvailableTime(RecurringMixin):
         help_text="If this is a continuation of a split series",
     )
 
-    # Group-scoped availability (Phase 0 of CALENDAR_GROUP_SCOPED_AVAILABILITY):
+    # Group-scoped availability:
     # NULL means a base row — today's behavior, visible on every read path. A
     # non-null value scopes the row to that one CalendarGroupSlot; it is invisible
     # to the default manager (`objects`) and only reachable through the explicit

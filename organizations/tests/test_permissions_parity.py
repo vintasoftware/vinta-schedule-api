@@ -1,9 +1,7 @@
-"""The Phase 4 contract: the same allow/deny, from a permission instead of a role.
+"""The contract: the same allow/deny, from a permission instead of a role.
 
-Phase 4 of the vinta-django-orgs migration
-(``ai-plans/2026-08-12-VINTA_DJANGO_ORGS_MIGRATION_IMPLEMENTATION_PLAN.md``)
-swapped the membership's two flat capability columns for an
-organization-named permission check in every **permission class** --
+Every **permission class** was migrated off the membership's two flat
+capability columns onto an organization-named permission check --
 ``organizations.authorization.has_organization_permission``, *not*
 ``user.has_perm``, which answers about whichever organization happens to be
 bound and unions in grants that are not about an organization at all (that
@@ -13,11 +11,11 @@ permitted caller is refused.
 
 "Every permission class" is the honest scope, and is narrower than "every
 authorization decision": four readers of the columns survived outside them
-until Phase 6 -- ``public_api/scoping.py``,
+until the columns were dropped -- ``public_api/scoping.py``,
 ``calendar_integration/querysets.py``,
 ``calendar_integration/services/external_event_change_request_service.py`` and
-``booking_policy_permission_service.py``'s system-user adapters. Phase 6 moved
-each onto ``organizations.authorization.membership_holds_permission`` along
+``booking_policy_permission_service.py``'s system-user adapters. Each was moved
+onto ``organizations.authorization.membership_holds_permission`` along
 with the column drop; nothing in this module covers them.
 
 So this module is a matrix, **one test class per permission class**, not one per
@@ -25,8 +23,9 @@ file. Grouping by file would let a widened grant in one class hide behind its
 neighbours passing; grouping by class means a row going green that should be red
 names the class it belongs to.
 
-Thirteen classes, which is the corrected count -- the plan body says fifteen
-across four files, but ``users/permissions.py`` reads no membership state at all
+Thirteen classes, which is the corrected count -- a naive count of every
+permission-checking class across four files gives fifteen, but
+``users/permissions.py`` reads no membership state at all
 and ``public_api/permissions.py`` gates on system-user API scopes, not on
 membership. The thirteen are the four REST permission classes and the S3Direct
 ``auth`` callable in ``organizations/permissions.py``, plus the eight in
@@ -259,8 +258,8 @@ class TestOrganizationManagementPermission:
     """Nothing about this class is permission-shaped, and nothing in it changed.
 
     Its rule is "you may reach the onboarding endpoints only if you are *not* a
-    member" -- an inversion no capability can express. Kept verbatim per the
-    plan's "Four rules stay hand-written" Guiding Decision; pinned here so a
+    member" -- an inversion no capability can express. Kept hand-written rather
+    than converted to a permission check; pinned here so a
     later sweep does not mistake it for one that was missed.
     """
 
@@ -313,7 +312,8 @@ class TestOrganizationManagementPermission:
 @pytest.mark.django_db
 class TestOrganizationInvitationPermission:
     """Reads membership *presence* only, and did before too. A plain member may
-    manage their organization's invitations; that is not a Phase 4 widening."""
+    manage their organization's invitations; that is not a widening introduced
+    by the migration onto permission checks."""
 
     permission = OrganizationInvitationPermission()
 
@@ -535,10 +535,11 @@ class TestBookingPolicyPermissionParity:
     Only the admin short-circuit in ``has_permission`` moved.
     The per-target decision still lives in ``BookingPolicyPermissionService``,
     which is a service rather than a permission class and is therefore out of
-    this phase's scope -- but it no longer *derives* privilege: this class hands
-    it the answer it already computed (``is_privileged``), so the two cannot
-    disagree about the same caller. The service's remaining readers elsewhere
-    moved onto ``membership_holds_permission`` in Phase 6.
+    scope for the permission-class migration -- but it no longer *derives*
+    privilege: this class hands it the answer it already computed
+    (``is_privileged``), so the two cannot disagree about the same caller. The
+    service's remaining readers elsewhere moved onto
+    ``membership_holds_permission`` once the two flat columns were dropped.
     """
 
     def test_reads_stay_open_to_a_plain_member(
@@ -582,8 +583,8 @@ class TestBookingPolicyPermissionParity:
     ):
         """The two representations no longer disagree on this path.
 
-        This class's short-circuit reads ``organizations.manage_members`` as of
-        Phase 4, so it does not fire for a membership carrying no groups. The
+        This class's short-circuit reads ``organizations.manage_members``,
+        so it does not fire for a membership carrying no groups. The
         create path then falls through to
         ``BookingPolicyPermissionService.can_member_manage_target``, which used
         to re-derive privilege from the membership's own ``role`` column and
@@ -593,9 +594,9 @@ class TestBookingPolicyPermissionParity:
         ``has_permission`` is refused at ``has_object_permission`` as well and
         cannot create a policy they are then unable to edit.
 
-        Phase 6 dropped the column, so the two representations can no longer
-        disagree at all; what stays pinned here is that a group-less membership
-        is refused at both ends.
+        The ``role`` column was later dropped, so the two representations can no
+        longer disagree at all; what stays pinned here is that a group-less
+        membership is refused at both ends.
         """
         group = CalendarGroup.objects.create(organization=organization, name="Pool 2")
         request = request_for(
@@ -611,9 +612,9 @@ class TestBookingPolicyPermissionParity:
 
         A membership carrying the admin group while its (now dropped) ``role``
         column still said MEMBER was the mirror image of ``ungrouped_admin`` --
-        and the half Phase 5 made reachable, since clients assign groups
-        directly from then on. Such a caller passed ``has_permission``'s
-        capability short-circuit and was then refused by the service on
+        and the half made reachable once clients could assign groups directly,
+        through the group-assignment endpoint. Such a caller passed
+        ``has_permission``'s capability short-circuit and was then refused by the service on
         ``has_object_permission``, which re-derived privilege from the column:
         they could create a group policy and not edit the row they had just
         created. Both ends now read the same answer.
@@ -653,8 +654,9 @@ class TestBookingPolicyPermissionParity:
 
 @pytest.mark.django_db
 class TestExternalEventChangeRequestPermissionParity:
-    """Membership presence, no capability -- unchanged by Phase 4, and pinned
-    so a later reader does not assume it was overlooked."""
+    """Membership presence, no capability -- unchanged by the migration onto
+    permission checks, and pinned so a later reader does not assume it was
+    overlooked."""
 
     permission = ExternalEventChangeRequestPermission()
 
@@ -709,7 +711,8 @@ class TestCalendarEventPermissionParity:
                 is True
             )
             # An org admin who owns nothing is still refused -- this class has
-            # never had an admin branch, and Phase 4 did not add one.
+            # never had an admin branch, and the migration onto permission
+            # checks did not add one.
             assert (
                 self.permission.has_object_permission(
                     request_for(factory, acting_in(admin, organization)), _View(), event
@@ -760,9 +763,9 @@ def calendar_group_permission():
 
 @pytest.mark.django_db
 class TestCalendarGroupPermissionParity:
-    """Composes an admin check with group-scoped object logic -- one of the four
-    the plan keeps hand-written, and the one where a mechanical swap could
-    quietly widen.
+    """Composes an admin check with group-scoped object logic -- one of the
+    rules kept hand-written rather than converted to a permission check, and
+    the one where a mechanical swap could quietly widen.
 
     Three separate decisions, each pinned:
 
@@ -1043,9 +1046,9 @@ class TestOnlyAMembershipGrants:
     def test_the_global_organization_admin_group_does_not_either(
         self, factory, member, organization, other_organization
     ):
-        """The group Phase 3 seeded is a plain global ``auth.Group``. Adding a
-        *user* to it must grant nothing anywhere -- including in organizations
-        they have never been a member of."""
+        """The group ``0028_seed_permission_groups`` seeded is a plain global
+        ``auth.Group``. Adding a *user* to it must grant nothing anywhere --
+        including in organizations they have never been a member of."""
         member.groups.add(Group.objects.get(name=GROUP_ORGANIZATION_ADMIN))
         assert (
             self.admin_permission.has_permission(request_for(factory, member), _View("list"))
@@ -1146,7 +1149,7 @@ class TestTheEscalationFlagsStayOff:
     (``vinta_orgs.authorization.has_organization_permission``) and defaults both
     widening parameters off. **A default is not a guarantee** -- it is a
     dependency's decision, revisable in a release we do not control, and the two
-    things it would admit are precisely the escalations this phase's review found:
+    things it would admit are precisely the escalations this module exists to bar:
     a permission granted once in the Django user admin, and one click in that same
     form's ``groups`` picker, each becoming all four capabilities in *every*
     organization in the database.
@@ -1277,14 +1280,15 @@ class TestTheBackendsIsActiveGate:
     supplies it is ``vinta_orgs.auth_backends.OrganizationModelBackend
     ._get_membership``, which filters ``is_active=True`` as part of the lookup
     rather than on its result, so the per-organization cache never holds a row
-    nothing may use (package ``0.3.0``; see the plan's **Package owns the
-    authorization substrate** Guiding Decision).
+    nothing may use (package ``0.3.0``; the package owns the authorization
+    substrate, so this filtering is its responsibility, not the caller's).
 
-    Before Phase 4, ``is_organization_admin`` filtered ``is_active=True`` in its
-    own query. This class is what keeps that outcome after the filter moved into
-    the backend: delete the gate from ``_get_membership`` and every assertion
-    below flips to ``True`` -- a deactivated admin with full rights, the widest
-    regression this migration can produce.
+    Before the migration onto permission checks, ``is_organization_admin``
+    filtered ``is_active=True`` in its own query. This class is what keeps
+    that outcome after the filter moved into the backend: delete the gate from
+    ``_get_membership`` and every assertion below flips to ``True`` -- a
+    deactivated admin with full rights, the widest regression this migration
+    can produce.
     """
 
     def test_a_deactivated_admin_is_not_an_organization_admin(

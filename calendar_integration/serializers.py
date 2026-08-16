@@ -2499,8 +2499,7 @@ class CalendarGroupSlotMembershipSerializer(VirtualModelSerializer):
 
 
 class GroupScopedAvailabilityWindowSerializer(VirtualModelSerializer):
-    """Read representation of a group-scoped availability window
-    (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 1c).
+    """Read representation of a group-scoped availability window.
 
     Deliberately narrower than ``AvailableTimeSerializer``: there is no nested
     ``recurrence_rule`` write path here, only ``rrule_string`` -- matching
@@ -2645,8 +2644,7 @@ class GroupScopedAvailabilityWriteResultSerializer(serializers.Serializer):
 
 
 class GroupScopedBlockedTimeSerializer(VirtualModelSerializer):
-    """Read representation of a group-scoped blocked time
-    (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 2b).
+    """Read representation of a group-scoped blocked time.
 
     Mirrors ``GroupScopedAvailabilityWindowSerializer`` exactly, plus
     ``reason`` -- there is no nested ``recurrence_rule`` write path here,
@@ -2796,8 +2794,7 @@ class GroupScopedBlockWriteResultSerializer(serializers.Serializer):
 
 
 class GroupScopedQuotaRuleSerializer(VirtualModelSerializer):
-    """Read representation of a group-scoped quota rule
-    (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 3c).
+    """Read representation of a group-scoped quota rule.
 
     Simpler than ``GroupScopedAvailabilityWindowSerializer``/
     ``GroupScopedBlockedTimeSerializer``: quota rules are non-recurring (no

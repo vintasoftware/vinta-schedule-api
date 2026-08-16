@@ -1,9 +1,7 @@
 """The membership API reports capabilities, and reports the *right* ones.
 
-Phase 5 of the vinta-django-orgs migration
-(``ai-plans/2026-08-12-VINTA_DJANGO_ORGS_MIGRATION_IMPLEMENTATION_PLAN.md``)
-takes ``role`` out of every response and puts a resolved permission list in its
-place. Three things have to hold for that to be worth anything:
+``role`` is taken out of every response, and a resolved permission list stands
+in its place. Three things have to hold for that to be worth anything:
 
 1. ``role`` is gone -- from these responses and from the published contract as
    a whole, so a future serializer cannot quietly reintroduce it;
@@ -13,8 +11,9 @@ place. Three things have to hold for that to be worth anything:
 3. it is the **organization** half of that resolution -- not
    ``user.get_all_permissions()``, which would publish a superuser the entire
    ``auth.Permission`` catalog and publish an ordinary user the global grants
-   Phase 4 deliberately made inert. Getting this wrong is an information leak
-   about capabilities the API will then refuse to honour.
+   that the organization-scoped authorization backend deliberately treats as
+   inert. Getting this wrong is an information leak about capabilities the
+   API will then refuse to honour.
 """
 
 from __future__ import annotations
@@ -147,13 +146,14 @@ class TestTheBatchResolverAgreesWithTheBackend:
 
 @pytest.mark.django_db
 class TestTheGlobalHalfStaysOutOfTheResponse:
-    """The escalation Phase 4's review closed, restated as an information leak.
+    """A privilege escalation, restated as an information leak.
 
     ``user.get_all_permissions()`` unions the organization half with the user's
     *global* ``user_permissions`` and ``auth.Group`` rows, and
     ``PermissionsMixin`` short-circuits a superuser to the whole catalog.
-    Phase 4 made all three inert for authorization. Publishing any of them here
-    would tell a client the caller may do things every permission class denies.
+    The organization-scoped authorization backend treats all three as inert
+    for authorization. Publishing any of them here would tell a client the
+    caller may do things every permission class denies.
     """
 
     def test_a_global_user_permission_is_not_reported(self, organization):
@@ -187,10 +187,9 @@ class TestTheGlobalHalfStaysOutOfTheResponse:
     def test_a_superuser_gets_their_membership_capabilities_not_the_catalog(self, organization):
         """A superuser who is a plain member of a tenant is a plain member here.
 
-        Recorded in Phase 3 as an observed behaviour of
-        ``get_all_permissions()`` and left for this phase to handle: under a
-        bound organization it answers the entire ``auth.Permission`` table.
-        Publishing that would be a response naming hundreds of capabilities the
+        Under a bound organization, ``get_all_permissions()`` answers the
+        entire ``auth.Permission`` table for a superuser. Publishing that
+        would be a response naming hundreds of capabilities the
         API refuses -- ``IsBillingOwnerOrAdmin`` included, which charges a card.
         """
         superuser = baker.make(User, is_superuser=True, is_staff=True)
@@ -345,9 +344,9 @@ class TestTheMemberListEndpoint:
     """``GET /organization-members/`` -- who the members are, and what they may do."""
 
     def test_rows_carry_permissions_and_no_role_shaped_key(self, auth_client, user):
-        """Phase 5 dropped the two flat keys from this payload; Phase 6 dropped
-        the columns behind them, so the assertion below is now about the shape a
-        client can rely on rather than about a field being filtered out."""
+        """The two flat keys are gone from this payload, and the columns behind
+        them are gone from the model, so the assertion below is now about the
+        shape a client can rely on rather than about a field being filtered out."""
         organization = baker.make(Organization, name="Acme Inc")
         make_admin_membership(user=user, organization=organization)
         plain = make_membership(user=baker.make(User), organization=organization)
@@ -385,8 +384,8 @@ class TestNoPublishedResponseCarriesRole:
     """The regression gate: ``role`` cannot come back through any surface.
 
     Deliberately schema-level rather than a list of endpoints to check. A new
-    serializer field, a new GraphQL type, or a revert of one of this phase's
-    edits all show up here without anybody remembering to add a case.
+    serializer field, a new GraphQL type, or a revert of one of the edits that
+    removed ``role`` all show up here without anybody remembering to add a case.
 
     ``schema.yml`` is the committed OpenAPI document, and reading it is only
     equivalent to regenerating it while something guarantees it is not stale.

@@ -1,10 +1,10 @@
 """Multi-tenancy tests for the meter's organization scoping.
 
-``MeteringService`` is the first thing in this plan that *writes* money-bearing
-rows derived from another app's tenant-scoped data, and it reaches that data
-through ``EntitlementService.get_pooled_organization_ids`` rather than through a
-single organization filter. That makes the pool boundary the tenancy surface of
-this phase, and it has two failure directions that are not symmetric:
+``MeteringService`` writes money-bearing rows derived from another app's
+tenant-scoped data, and it reaches that data through
+``EntitlementService.get_pooled_organization_ids`` rather than through a
+single organization filter. That makes the pool boundary the tenancy surface
+here, and it has two failure directions that are not symmetric:
 
 - **Too wide** is a cross-tenant data leak *and* a wrong invoice: another
   organization's calendar becomes billable usage on somebody else's subscription.

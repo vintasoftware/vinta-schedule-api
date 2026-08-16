@@ -74,8 +74,10 @@ def assign_membership_groups(
     ``organizations.permission_catalog.canonical_groups``) rather than whatever
     a particular caller happened to pass.
 
-    It replaces the Phase 3 dual-write that derived the same set from the two
-    flat columns Phase 6 dropped. Same shape, one input instead of two.
+    It replaces a dual-write that derived the same set from the two flat
+    columns (``role`` and ``is_billing_owner``) that
+    ``organizations.migrations.0030_drop_role_and_is_billing_owner`` later
+    dropped. Same shape, one input instead of two.
 
     ``set()`` rather than ``add()``: this runs on rows whose capabilities may
     have just been *reduced*, so a demoted admin has to lose
@@ -218,7 +220,7 @@ class OrganizationService:
         my own organization" flow: the human calling it chose ``name`` for their
         own, about-to-be-public organization. Every other write path (including
         ``Organization.save()``'s own fallback) mints the opaque ``org-<token>``
-        form instead. See the plan's two Guiding Decisions rows on slugs.
+        form instead. See ``organizations.slug_generation`` for both shapes.
         """
         create_kwargs: dict = {
             "name": name,
@@ -532,8 +534,8 @@ class OrganizationService:
         invitation._raw_token = token  # type: ignore[attr-defined]
 
         if send_email:
-            # Reply-to (not From -- the From address is intentionally left untouched,
-            # see the Organization Auth-Area Branding plan's Non-goals) is resolved from
+            # Reply-to (not From -- the From address is intentionally left untouched;
+            # branding stops short of a custom sender) is resolved from
             # the organization's branding by organization_invitation_context() at send
             # time and applied by ReplyToDjangoEmailNotificationAdapter
             # (notifications/notification_adapters/django_email.py).

@@ -205,7 +205,7 @@ class BrandingLogoUploadResult:
     which this mutation exists to serve as a REST-reachable equivalent of.
     Authorized by the branding eligibility helper (acting organization is
     parentless and holds ``white_label_branding``), not by the destination's own
-    ``auth`` callable — see the plan's Logo upload path guiding decision.
+    ``auth`` callable.
     """
 
     object_key: str

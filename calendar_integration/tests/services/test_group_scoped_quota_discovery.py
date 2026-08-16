@@ -1,5 +1,4 @@
-"""Tests for group-scoped quota rules in discovery and booking validation
-(Phase 3b of ``CALENDAR_GROUP_SCOPED_AVAILABILITY``).
+"""Tests for group-scoped quota rules in discovery and booking validation.
 
 Covers:
 - A calendar at its cap is hidden from discovery for that period and
@@ -9,7 +8,7 @@ Covers:
 - Two rules (daily AND weekly) on the same calendar are BOTH enforced.
 - Explicit booking past the cap is rejected with
   ``GroupScopedRuleType.QUOTA_CONSUMED``.
-- The headline risk this phase exists to guard against: the quota-counting
+- The headline risk group-scoped quota enforcement exists to guard against: the quota-counting
   query count is a FIXED function of the roster/config (bounded by the
   number of distinct ``(slot, period)`` combinations actually configured),
   never a function of how many candidate times discovery walks.
@@ -285,10 +284,11 @@ def _seed_booking(
     """Directly create a LIVE booking "made through" `surgery_slot` -- a
     ``CalendarEvent`` plus its ``CalendarEventGroupSelection`` link, exactly
     what ``CalendarGroupService.create_grouped_event`` would persist for a
-    single-calendar slot selection (mirrors the Phase 3a counting-function
-    test helper). Used to seed MULTIPLE pre-existing bookings without going
-    through the full booking write pipeline, whose ``CalendarEvent.external_id``
-    is server-generated and left blank (globally unique, INTERNAL provider,
+    single-calendar slot selection (mirrors the quota period-counting tests'
+    ``_create_group_booking`` helper). Used to seed MULTIPLE pre-existing
+    bookings without going through the full booking write pipeline, whose
+    ``CalendarEvent.external_id`` is server-generated and left blank
+    (globally unique, INTERNAL provider,
     no write adapter under ``initialize_without_provider``) -- going through
     ``create_grouped_event`` more than once per test would collide on that
     constraint. The REJECTION/ACCEPTANCE tests below still exercise the real

@@ -208,7 +208,7 @@ class TestApproachingThreshold:
     def test_blocked_time_pushes_the_availability_window_warning_to_fire(
         self, service, organization, subscription
     ):
-        """Phase 2c: blocked time is now folded into the ``availability_windows``
+        """Blocked time is now folded into the ``availability_windows``
         counter this warning reads (``EntitlementService.get_current_usage`` ->
         ``_count_availability_windows``), so an organization that has only ever
         authored blocked time -- never an availability window -- can already be at

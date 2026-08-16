@@ -475,8 +475,8 @@ class CalendarPermissionService:
         self, user: User, calendar: Calendar, group_slot: CalendarGroupSlot
     ) -> bool:
         """Return True if `user` may create/update/delete group-scoped
-        availability configuration (windows -- and, in later phases, blocks
-        and quota rules) for `calendar` within `group_slot`.
+        availability configuration (windows, blocks, and quota rules) for
+        `calendar` within `group_slot`.
 
         Rules, in order:
           1. Org admins in ``group_slot``'s organization may always manage it.

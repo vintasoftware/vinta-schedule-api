@@ -1,7 +1,7 @@
 """Regression gate: our app is ``organizations``, and every table is where it was.
 
-This module exists because of a decision that was *reversed*. The plan's first
-draft targeted ``vinta-django-orgs`` ``0.1.1``, whose own Django app was also
+This module exists because of a decision that was *reversed*. An earlier
+approach targeted ``vinta-django-orgs`` ``0.1.1``, whose own Django app was also
 labelled ``organizations``. To resolve that collision it renamed **our** app to
 ``tenancy`` -- which in turn required ``db_table`` pins on every model, a rewrite
 of 79 migration files, a ``django_content_type`` / ``auth_permission`` relabel
@@ -93,7 +93,7 @@ class TestThePackageIsInstalledUnderItsOwnLabel:
         assert package_membership._meta.swapped == "organizations.OrganizationMembership"
 
     def test_the_custom_data_app_is_not_installed(self):
-        """``vinta_orgs_custom_data`` is a Non-goal -- per-organization dynamic
+        """``vinta_orgs_custom_data`` is deliberately not installed -- per-organization dynamic
         tables are not something this project has, or wants, tables for."""
         assert not apps.is_installed("vinta_orgs_custom_data")
 

@@ -276,7 +276,7 @@ class BillingPeriodResourceUsageSerializer(serializers.ModelSerializer):
     ``reconciliation_unmetered``/``reconciliation_orphaned`` live on the parent
     ``BillingPeriodSummary`` row, not here, and neither is serialized anywhere
     in this module -- internal investigation data, surfaced only in Django
-    admin (see the plan's Non-goals).
+    admin.
     """
 
     resource_key = serializers.CharField(
@@ -374,7 +374,7 @@ class BillingPeriodSummarySerializer(serializers.ModelSerializer):
 
     ``reconciliation_unmetered``/``reconciliation_orphaned`` are deliberately
     absent from every field below -- internal investigation data, surfaced only
-    in Django admin (see the plan's Non-goals).
+    in Django admin.
     """
 
     id = serializers.IntegerField(help_text="pk of this statement.")  # noqa: A003

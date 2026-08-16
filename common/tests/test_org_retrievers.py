@@ -1,9 +1,10 @@
 """``common.org_retrievers.retrieve_by_x_organization_id``.
 
-Registered in ``SHARED_SCHEMA_ORGANIZATIONS['ORGANIZATION_RETRIEVERS']`` but not
-yet consulted by anything -- ``TenantScopedViewMixin`` starts using it in Phase
-2b. Tested now because the contract it has to hold is easy to get subtly wrong
-later, when it does have callers.
+Registered in ``SHARED_SCHEMA_ORGANIZATIONS['ORGANIZATION_RETRIEVERS']``, which
+is what the package's resolver -- reached from
+``TenantScopedViewMixin.perform_authentication`` -- calls to turn a request into
+an organization. Pinned here because the contract it has to hold is easy to get
+subtly wrong.
 
 The contract that matters most is the one it does **not** share with the
 package's own ``retrieve_by_http_header``: an unknown organization id returns
@@ -52,8 +53,8 @@ class TestTheHeaderConstant:
 
 class TestItIsRegistered:
     def test_it_is_the_only_configured_retriever(self):
-        """Every retriever the package ships is a Non-goal: ``retrieve_by_domain``
-        is subdomain tenancy, ``retrieve_by_http_header`` reads a slug from a
+        """Every retriever the package ships answers a question we do not ask:
+        ``retrieve_by_domain`` is subdomain tenancy (which this project does not do), ``retrieve_by_http_header`` reads a slug from a
         different header, and ``retrieve_by_session`` reads the session."""
         assert settings.SHARED_SCHEMA_ORGANIZATIONS["ORGANIZATION_RETRIEVERS"] == [
             "common.org_retrievers.retrieve_by_x_organization_id"

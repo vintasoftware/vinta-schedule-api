@@ -7,10 +7,12 @@ membership row the caller already holds, and is what the handful of call sites
 outside the permission classes ask.
 
 Every authorization decision reads a *permission*, never a role column and never
-a group name -- see the plan's **Group scope** and **Permission catalog shape**
-Guiding Decisions
-(``ai-plans/2026-08-12-VINTA_DJANGO_ORGS_MIGRATION_IMPLEMENTATION_PLAN.md``).
-The codenames themselves live in ``organizations.permission_catalog``.
+a group name. The three seeded groups are global ``auth.Group`` rows shared by
+every organization -- per-organization scoping comes from the *membership* the
+group hangs off, not from the group -- so a group name says nothing on its own,
+and the permissions themselves are named for capabilities ("may this member
+change the plan") rather than for model CRUD. The codenames live in
+``organizations.permission_catalog``.
 
 **The rule itself is the package's.** ``vinta_orgs.authorization
 .has_organization_permission`` resolves a permission from an *active* membership
@@ -19,8 +21,8 @@ lookup, restores the previous binding afterwards, accepts an ``Organization`` or
 bare pk, and answers ``False`` for an anonymous caller, an inactive user, an
 organization that does not exist and a caller with no active membership in it.
 This repository consumed that rather than keeping the equivalent hand-written
-helper it had, per the plan's **Package owns the authorization substrate**
-Guiding Decision.
+helper it had: the authorization substrate is the ``vinta_orgs`` package's to
+own, and a local copy of it would be one more thing to keep in step.
 
 **What this module is for**, then, is the two keyword arguments below. They are
 this project's policy, not the package's, and they are spelled out at the one
@@ -51,12 +53,14 @@ organization half with a global half (``user.user_permissions`` plus the user's
 own ``auth.Group`` rows) and, before any backend runs at all, from
 ``PermissionsMixin``'s superuser short-circuit. Neither of those is a statement
 about the organization named, and neither could grant anything under the two
-flat columns Phase 4 replaced: a global
-``organizations.manage_members`` was inert, membership of the seeded
+flat columns these permission checks replaced
+(``OrganizationMembership.role`` and ``OrganizationMembership.is_billing_owner``):
+a global ``organizations.manage_members`` was inert, membership of the seeded
 ``organization_admin`` group (a plain global ``auth.Group``, listed by the user
 form's group picker in ``users/admin.py``) was inert, and a superuser without an
-admin membership did **not** satisfy ``role == ADMIN``. Identical outcomes is
-this phase's contract, and admitting any of those three would break it -- which
+admin membership did **not** satisfy ``role == ADMIN``. Producing outcomes
+identical to those columns is this module's contract, and admitting any of those
+three would break it -- which
 is why ``INCLUDE_GLOBAL_PERMISSIONS`` and ``ALLOW_SUPERUSER`` below are ``False``
 and are *passed*, not assumed.
 
@@ -65,7 +69,7 @@ and are *passed*, not assumed.
 callers of this function.
 
 **One deliberate difference from the role columns this replaces**, named here
-because "identical outcomes" is this migration phase's contract:
+because "identical outcomes to those columns" is this module's contract:
 
 * **An inactive *user* passes nothing.** The package gates on ``user.is_active``;
   the role checks gated only on ``membership.is_active``. This narrows rather
@@ -107,8 +111,8 @@ if TYPE_CHECKING:
 #: not scoped to an organization, so one row added once in the Django user admin
 #: -- or one click in that form's ``groups`` picker, which lists the seeded
 #: ``organization_admin`` group -- would become all four capabilities in *every*
-#: organization in the database. Both were inert under the ``role`` column this
-#: phase replaces, so admitting either is a widening rather than a migration.
+#: organization in the database. Both were inert under the ``role`` column these
+#: checks replaced, so admitting either is a widening rather than a migration.
 #:
 #: **It also admits every superuser, regardless of ``ALLOW_SUPERUSER`` below.**
 #: The global half is fetched through ``vinta_orgs.auth_backends
@@ -170,8 +174,9 @@ def has_organization_permission(
     annotates against its own swappable models and a structural user protocol),
     the same way ``common.organization_context`` restates ``vinta_orgs.state``.
     The two module-level constants are passed rather than left to default: what
-    they exclude is the subject of this phase's parity matrix, and a policy that
-    important should not be inherited silently from a dependency's defaults.
+    they exclude is exactly what ``organizations/tests/test_permissions_parity.py``
+    pins, and a policy that important should not be inherited silently from a
+    dependency's defaults.
     """
     return vinta_orgs_authorization.has_organization_permission(
         user,
@@ -186,8 +191,8 @@ def membership_holds_permission(membership: OrganizationMembership, permission: 
     """Whether **this membership row** carries ``permission``.
 
     The membership-shaped sibling of :func:`has_organization_permission`, and
-    the replacement for the ``membership.is_admin`` property that Phase 6 of the
-    vinta-django-orgs migration deleted with the ``role`` column. Use it where
+    the replacement for the ``membership.is_admin`` property that was deleted
+    along with the ``role`` column. Use it where
     the question is about a membership the caller already holds, and *not* about
     a ``(user, organization)`` pair -- three call sites outside the permission
     classes ask exactly that:
@@ -235,8 +240,8 @@ def membership_holds_permission(membership: OrganizationMembership, permission: 
 #: The two values published as a *description* of a membership's standing: the
 #: ``membership_role`` key in the ``organization_member_created`` webhook
 #: payload, and the ``audit.Audit.actor_role`` snapshot column. Neither
-#: authorizes anything. They are kept verbatim through Phase 6's column drop
-#: because changing either would be a partner-visible payload change nobody was
+#: authorizes anything. They were kept verbatim when the ``role`` column was
+#: dropped, because changing either would be a partner-visible payload change nobody was
 #: told about, and because every audit row already on disk holds one of them --
 #: writing something else would split the audit history in two silently, which
 #: is exactly the trap the withdrawn app rename was withdrawn to avoid.
@@ -248,7 +253,7 @@ def membership_role_label(membership: OrganizationMembership) -> str:
     """``"admin"`` or ``"member"`` -- the published description of a membership.
 
     Derived from ``organizations.manage_members`` rather than read from the
-    ``role`` column Phase 6 dropped. The two agree: ``role == ADMIN`` memberships
+    dropped ``role`` column. The two agree: ``role == ADMIN`` memberships
     were backfilled into ``organization_admin``, the only seeded group carrying
     that permission, and every write path since keeps the two in step.
 

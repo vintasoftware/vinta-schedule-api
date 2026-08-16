@@ -177,8 +177,9 @@ class CalendarViewSet(VintaScheduleModelViewSet):
     # time, where no organization is bound and the scoped manager would raise. It
     # is only a template -- ``get_queryset()`` below draws the tenant boundary with
     # ``filter_by_organization(...)``, which is where it belongs on a request the
-    # membership, not the ambient context, resolves. (Phase 2b binds the request's
-    # organization; even then this attribute is built before any request exists.)
+    # membership, not the ambient context, resolves. (The DRF integration binds
+    # the request's organization from the resolved membership; even then this
+    # attribute is built before any request exists.)
     queryset = Calendar.objects.unscoped()
     serializer_class = CalendarSerializer
     filterset_class = CalendarFilterSet
@@ -1775,11 +1776,10 @@ class AvailableTimeViewSet(VintaScheduleModelViewSet):
 @extend_schema(tags=["Calendar Group Scoped Availability Windows"])
 class GroupScopedAvailabilityWindowViewSet(VintaScheduleModelViewSet):
     """Nested under a group's slot: manage group-scoped availability windows
-    for calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
-    Phase 1c).
+    for calendars in that slot's roster.
 
     Reads go through ``AvailableTime.objects.for_group_slot(...)``. Every
-    write delegates to ``CalendarGroupService`` (Phase 1a) -- this view holds
+    write delegates to ``CalendarGroupService`` -- this view holds
     no business logic of its own, only request/response translation. Route
     visibility is gated by ``GroupScopedAvailabilityWindowPermission``; the
     per-calendar write authorization is re-checked by the service and its
@@ -1958,12 +1958,11 @@ class GroupScopedAvailabilityWindowViewSet(VintaScheduleModelViewSet):
 @extend_schema(tags=["Calendar Group Scoped Blocked Times"])
 class GroupScopedBlockedTimeViewSet(VintaScheduleModelViewSet):
     """Nested under a group's slot: manage group-scoped blocked times for
-    calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
-    Phase 2b).
+    calendars in that slot's roster.
 
     Direct mirror of ``GroupScopedAvailabilityWindowViewSet`` -- reads go
     through ``BlockedTime.objects.for_group_slot(...)``, every write
-    delegates to the Phase 2a ``CalendarGroupService`` block-write methods,
+    delegates to the ``CalendarGroupService`` block-write methods,
     and route visibility is gated by ``GroupScopedBlockedTimePermission``.
     See that viewset's docstring for the full rationale; only the resource
     it manages differs (blocks instead of windows).
@@ -2141,13 +2140,12 @@ class GroupScopedBlockedTimeViewSet(VintaScheduleModelViewSet):
 @extend_schema(tags=["Calendar Group Scoped Quota Rules"])
 class GroupScopedQuotaRuleViewSet(VintaScheduleModelViewSet):
     """Nested under a group's slot: manage group-scoped quota rules for
-    calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
-    Phase 3c).
+    calendars in that slot's roster.
 
     Mirrors ``GroupScopedAvailabilityWindowViewSet``/``GroupScopedBlockedTimeViewSet``
     exactly -- reads go through
     ``CalendarGroupSlotQuotaRule.objects.for_group_slot(...)``, every write
-    delegates to the Phase 3c ``CalendarGroupService`` quota-write methods,
+    delegates to the ``CalendarGroupService`` quota-write methods,
     and route visibility is gated by ``GroupScopedQuotaRulePermission``. The
     resource is simpler than windows/blocks: quota rules are non-recurring
     (no ``rrule_string``/``timezone``/time range) and unmetered (no

@@ -1046,7 +1046,7 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
     """Capability-gated REST endpoint for managing a parentless, entitled
     organization's branding.
 
-    Write gate (Organization Auth-Area Branding plan, Phase 3): PUT/PATCH
+    Write gate: PUT/PATCH
     require the acting org to be parentless and hold the
     ``white_label_branding`` entitlement
     (``organizations.permissions.evaluate_branding_write_gate`` -- its third,
@@ -1132,8 +1132,8 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
 
         Delegates to ``organizations.permissions.check_branding_read_eligibility``,
         shared with ``OrganizationBrandingLogoUploadParamsView``. That gate used
-        to admit one reason more than the write gate (``NO_SLUG``, retired in
-        Phase 1 and deleted in Phase 4); the two now admit the same set, and the
+        to admit one reason more than the write gate (``NO_SLUG``, since retired
+        as a product rule and deleted); the two now admit the same set, and the
         split is kept only because they answer different questions."""
         user = self.request.user
         if not user.is_authenticated:
@@ -1191,7 +1191,7 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
     def put(self, request, *args, **kwargs):
         """PUT /branding/ — create or replace the acting org's branding.
 
-        Audited (Organization Auth-Area Branding plan, Phase 4): a refused write
+        Audited: a refused write
         (gate failure or serializer validation error) raises before this method
         reaches the upsert, so nothing is ever recorded for a refused write. A
         first-time upsert records a CREATE with no diff; an upsert that replaces
@@ -1240,7 +1240,7 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
     def patch(self, request, *args, **kwargs):
         """PATCH /branding/ — update the acting org's branding (partial).
 
-        Audited (Organization Auth-Area Branding plan, Phase 4): a refused write
+        Audited: a refused write
         (gate failure, 404-not-configured, or serializer validation error) raises
         before this method reaches ``serializer.save()``, so nothing is ever
         recorded for a refused write. Always an UPDATE (PATCH never creates —
@@ -1372,9 +1372,9 @@ class OrganizationLogoDeliveryView(views.APIView):
     or are branded (matches ``brandingForTenant``'s no-enumeration-oracle contract).
 
     Resolution always goes through ``resolve_branding_for_display``, so this route
-    automatically inherits the widened branding root once Phase 5 of the
-    Organization Auth-Area Branding plan lands ``get_branding_root``'s parentless
-    case -- no second change here.
+    inherits whatever ``Organization.get_branding_root`` resolves -- including its
+    parentless case, where an organization with no reseller ancestor is its own
+    branding root -- without a second change here.
 
     ``Cache-Control`` carries a short max-age and the ``ETag`` is derived from the
     stored key (or a fixed sentinel for the default logo): the route's URL is
@@ -1433,8 +1433,8 @@ class OrganizationLogoDeliveryView(views.APIView):
         logo = branding.logo
         key = (logo.name or "") if logo else ""
 
-        # Defense in depth against BLOCKER 1 (arbitrary-key cross-tenant
-        # disclosure): even if a key outside the branding_logos upload prefix
+        # Defense in depth against arbitrary-key cross-tenant
+        # disclosure: even if a key outside the branding_logos upload prefix
         # somehow ended up on a branding row (bypassing the write-side rejection
         # in `normalize_uploaded_logo_key`, e.g. a row inserted directly), never
         # stream it -- treat it exactly like "no logo configured" instead.
@@ -1480,7 +1480,7 @@ class OrganizationLogoDeliveryView(views.APIView):
     def _set_cache_headers(self, response: FileResponse, etag: str) -> None:
         response["Cache-Control"] = f"public, max-age={LOGO_CACHE_MAX_AGE_SECONDS}"
         response["ETag"] = etag
-        # BLOCKER 2 (Phase 2b security review): the delivery route must never let
+        # Security requirement: the delivery route must never let
         # a browser sniff the body into a renderable type regardless of the
         # (allowlisted, but still attacker-influenced) Content-Type header --
         # applies to both the real-object stream and the default logo.

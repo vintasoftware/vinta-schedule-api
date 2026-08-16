@@ -395,10 +395,9 @@ class TestOrganizationAdminSlugValidation:
 class TestOrganizationBrandingAdminParentGuard:
     """``OrganizationBrandingAdmin`` refuses to save branding for an
     organization that has a parent -- admin is not an escape hatch for the
-    write gate's permanent refusal (Organization Auth-Area Branding plan,
-    Phase 3). Only the parent condition is enforced in admin; entitlement and
-    slug are self-serve/billing states an operator may legitimately need to
-    seed branding ahead of."""
+    write gate's permanent refusal. Only the parent condition is enforced in
+    admin; entitlement and slug are self-serve/billing states an operator may
+    legitimately need to seed branding ahead of."""
 
     def test_saving_branding_for_a_parented_organization_fails_validation(self, admin_client):
         parent = baker.make(Organization, name="Branding Parent", parent=None)
@@ -414,7 +413,7 @@ class TestOrganizationBrandingAdminParentGuard:
                 # validation-error response cannot handle a bound non-empty
                 # string value (a pre-existing quirk of
                 # s3direct_overrides.form_widgets.S3DirectWidget.render,
-                # unrelated to this phase) -- an empty value renders fine.
+                # unrelated to what this test covers) -- an empty value renders fine.
                 "logo": "",
                 "primary_color": "",
                 "secondary_color": "",

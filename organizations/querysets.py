@@ -56,8 +56,9 @@ class OrganizationMembershipQuerySet(_PackageOrganizationMembershipQuerySet):
         and "who is told about billing" derive from one source instead of two
         that can drift. It replaces the flat two-column disjunction it was
         written from,
-        and is now the only representation: the Phase 3 backfill
-        (``organizations/migrations/0029_...``) put every pre-existing membership
+        and is now the only representation: the
+        ``organizations/migrations/0029_backfill_membership_groups.py`` backfill
+        put every pre-existing membership
         in the matching group, and every membership written since goes through
         ``organizations.services.assign_membership_groups``.
 
@@ -65,7 +66,7 @@ class OrganizationMembershipQuerySet(_PackageOrganizationMembershipQuerySet):
         membership's direct ``permissions`` grant with the permissions its
         ``groups`` carry -- rather than a hand-written ``groups__permissions``
         filter, so this cannot drift from what
-        ``vinta_orgs.authorization.has_organization_permission`` (Phase 4) and
+        ``vinta_orgs.authorization.has_organization_permission`` and
         the last-administrator count both read. ``holding_permission`` already
         matches ``content_type__app_label`` alongside the codename and already
         calls ``distinct()`` -- see its docstring for why both are necessary.

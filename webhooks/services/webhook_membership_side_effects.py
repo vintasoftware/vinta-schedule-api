@@ -29,10 +29,10 @@ class WebhookMembershipSideEffectsService:
             "email": membership.user.email,
             "organization_id": membership.organization_id,
             "organization_name": membership.organization.name,
-            # Derived from ``organizations.manage_members`` since Phase 6 of the
-            # vinta-django-orgs migration dropped ``role``. The two published
-            # values are unchanged on purpose: this is a partner-visible payload
-            # and no handoff announced a new spelling.
+            # Derived from ``organizations.manage_members``, which replaced the
+            # now-dropped ``role`` column. The two published values are
+            # unchanged on purpose: this is a partner-visible payload and no
+            # handoff announced a new spelling.
             "membership_role": membership_role_label(membership),
         }
 

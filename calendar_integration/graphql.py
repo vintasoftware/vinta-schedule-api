@@ -593,12 +593,11 @@ class UnavailableTimeWindowGraphQLType:
 
 @strawberry.type
 class GroupScopedAvailabilityWindowGraphQLType:
-    """Public API representation of one group-scoped availability window
-    (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 1d).
+    """Public API representation of one group-scoped availability window.
 
     A raw window row -- one entry per recurring master or one-off window, not
     an expanded occurrence -- mirroring the internal REST surface's
-    ``GroupScopedAvailabilityWindowSerializer`` (Phase 1c) field shape.
+    ``GroupScopedAvailabilityWindowSerializer`` field shape.
     """
 
     id: int  # noqa: A003
@@ -638,8 +637,7 @@ def group_scoped_availability_window_from_model(
 
 @strawberry.type
 class GroupScopedBlockedTimeGraphQLType:
-    """Public API representation of one group-scoped blocked time
-    (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 2b).
+    """Public API representation of one group-scoped blocked time.
 
     A raw block row -- one entry per recurring master or one-off block, not
     an expanded occurrence -- mirroring the internal REST surface's
@@ -685,8 +683,7 @@ def group_scoped_blocked_time_from_model(
 
 @strawberry.type
 class GroupScopedQuotaRuleGraphQLType:
-    """Public API representation of one group-scoped quota rule
-    (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 3c).
+    """Public API representation of one group-scoped quota rule.
 
     Simpler than ``GroupScopedAvailabilityWindowGraphQLType``/
     ``GroupScopedBlockedTimeGraphQLType``: quota rules are non-recurring (no

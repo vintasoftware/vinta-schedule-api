@@ -98,7 +98,7 @@ class OrganizationScopedManager(SingleOrganizationModelManager):
 
     **Every many-to-many on a scoped model in this project is now the first
     shape.** ``CalendarEvent.external_attendees`` was the last of the second and
-    was repointed at ``EventExternalAttendance`` in Phase 2b -- see the comment
+    was repointed at ``EventExternalAttendance`` -- see the comment
     at its declaration in ``calendar_integration.models``. A new one declared
     without ``through=`` would silently be the second again, which is why the
     distinction is written down here rather than assumed.

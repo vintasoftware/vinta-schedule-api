@@ -500,11 +500,12 @@ def test_group_authorized_flag_bypasses_private_member_calendar_gate(organizatio
 
 
 @pytest.mark.django_db
-def test_can_perform_scheduling_unchanged_by_phase_7(organization):
+def test_can_perform_scheduling_still_gates_single_calendar_bookings(organization):
     """can_perform_scheduling still gates single-calendar bookings exactly as before.
 
-    The CalendarPermissionService.can_perform_scheduling signature and behavior
-    for single-calendar booking cases are unchanged.
+    The group-scheduling gate added around it must not disturb the
+    CalendarPermissionService.can_perform_scheduling signature or its behavior
+    for single-calendar booking cases.
     """
     cal = Calendar.objects.create(
         organization=organization,

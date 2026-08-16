@@ -1,5 +1,5 @@
 """Integration tests for the internal REST surface exposing group-scoped
-blocked times (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 2b).
+blocked times.
 
 Direct mirror of ``test_views_group_scoped_availability_windows.py`` for
 blocks. Covers:

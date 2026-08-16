@@ -225,8 +225,7 @@ class CalendarSyncManager(_CalendarSyncManagerBase):  # type: ignore[misc,valid-
 class BlockedTimeManager(_BlockedTimeManagerBase, RecurringManagerMixin):  # type: ignore[misc,valid-type]
     """Custom manager for BlockedTime model to handle specific queries.
 
-    ``group_slot`` scoping (``CALENDAR_GROUP_SCOPED_AVAILABILITY`` Phase 0):
-    :meth:`get_queryset` — and therefore every plain ``.objects`` call — returns
+    ``group_slot`` scoping: :meth:`get_queryset` — and therefore every plain ``.objects`` call — returns
     only base rows (``group_slot IS NULL``), which is today's behavior and every
     existing call site's implicit expectation. Group-scoped rows are reachable
     only through :meth:`for_group_slot` or :meth:`unscoped`, both explicit
@@ -292,8 +291,7 @@ class BlockedTimeManager(_BlockedTimeManagerBase, RecurringManagerMixin):  # typ
 class AvailableTimeManager(_AvailableTimeManagerBase, RecurringManagerMixin):  # type: ignore[misc,valid-type]
     """Custom manager for AvailableTime model to handle specific queries.
 
-    ``group_slot`` scoping (``CALENDAR_GROUP_SCOPED_AVAILABILITY`` Phase 0):
-    :meth:`get_queryset` — and therefore every plain ``.objects`` call — returns
+    ``group_slot`` scoping: :meth:`get_queryset` — and therefore every plain ``.objects`` call — returns
     only base rows (``group_slot IS NULL``), which is today's behavior and every
     existing call site's implicit expectation. Group-scoped rows are reachable
     only through :meth:`for_group_slot` or :meth:`unscoped`, both explicit
@@ -406,7 +404,8 @@ class CalendarGroupSlotQuotaRuleManager(_CalendarGroupSlotQuotaRuleManagerBase):
         ``BlockedTimeManager.for_group_slot`` / ``AvailableTimeManager.for_group_slot``:
         every caller narrows the result with ``filter_by_organization``, which is
         where the tenant boundary is drawn, and this is reached from request and
-        GraphQL paths that bind no organization until Phase 2b.
+        GraphQL paths that resolve the organization explicitly rather than through
+        an ambient request attribute.
         """
         return self.unscoped().for_group_slot(group_slot_id)
 

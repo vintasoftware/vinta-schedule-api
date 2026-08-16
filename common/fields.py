@@ -7,8 +7,7 @@ Module rationale — OrganizationMembershipForeignKey
 ``ForeignObject`` on ``(organization_id, <name>_user_id)``.  Repointing
 ``audit`` and ``calendar_integration`` at the surrogate key would mean a new
 column, a backfill and a rebind of the five raw-SQL composite PROTECT FKs on
-both, to buy nothing — see the migration plan's **Open Questions**, which
-answers this explicitly.
+both, to buy nothing.
 
 Why denormalize ``user_id``?
     A bare ``ForeignObject`` on ``(organization_id, …)`` requires the *host*
@@ -21,8 +20,8 @@ Why denormalize ``user_id``?
 
 Why still ``models.Field``?
     It subclasses ``models.Field`` and always has; the four bespoke tenancy
-    classes deleted from this module in Phase 6 of the vinta-django-orgs
-    migration were never its base.  It is deliberately *not* reparented onto
+    classes this module used to contain were never its base.  It is
+    deliberately *not* reparented onto
     the package's ``OrganizationSafeRelation`` either: that class contributes a
     concrete ``<name>_fk`` ``ForeignKey`` joined on ``(pk, organization)``,
     which is a different shape in every part — concrete column name, column

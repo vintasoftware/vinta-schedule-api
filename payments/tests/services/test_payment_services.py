@@ -101,7 +101,7 @@ def billing_address():
 
 @pytest.fixture
 def billing_profile(organization, billing_address):
-    """Unpinned by default -- several Phase 2 tests below assert on the
+    """Unpinned by default -- several tests below assert on the
     "never pinned" (``payment_provider == ""``) starting state. Tests that
     exercise `create_payment`/`create_subscription` (Rule B: resolves the
     provider from the organization) pin this explicitly to MercadoPago, to
@@ -838,9 +838,9 @@ def test_get_subscription_adapter_raises_for_unknown_provider(payment_service):
 
 
 # ---------------------------------------------------------------------------
-# Provider routing (Payment Provider Selection, Phase 4) -- two resolution
-# rules: existing-row operations resolve from the row's own stored provider
-# (Rule A); new-row operations resolve from the organization (Rule B).
+# Provider routing -- two resolution rules: existing-row operations resolve
+# from the row's own stored provider (Rule A); new-row operations resolve
+# from the organization (Rule B).
 # ---------------------------------------------------------------------------
 
 
@@ -848,7 +848,7 @@ def test_get_subscription_adapter_raises_for_unknown_provider(payment_service):
 def test_mercadopago_payment_is_refunded_and_status_checked_via_mercadopago_even_when_org_pin_is_stripe(
     payment_service, payment_adapter, stripe_payment_adapter, billing_profile
 ):
-    """The single most important assertion in this phase: a `Payment` row
+    """The single most important assertion in this test module: a `Payment` row
     stamped `mercadopago` must be refunded and status-checked through the
     MercadoPago adapter even when its organization's *current* pin says
     `stripe` (Rule A). Using the org's pin here would send a MercadoPago
@@ -1235,7 +1235,7 @@ def test_handle_subscription_payment_webhook_none_result_does_not_burn_the_deliv
 
 # ---------------------------------------------------------------------------
 # BillingProfile.payment_provider pin — SubscriptionService.record_payment_method
-# / SubscriptionService.set_payment_provider (Payment Provider Selection, Phase 2)
+# / SubscriptionService.set_payment_provider
 # ---------------------------------------------------------------------------
 
 
@@ -1380,12 +1380,10 @@ def test_set_payment_provider_succeeds_with_active_subscription_at_old_provider(
 
     ``set_payment_provider`` must repoint an organization's BillingProfile even
     while it holds a live Subscription at the provider being replaced. This is
-    not an oversight -- it is the plan's explicit **Pin mutability** guiding
-    decision (see the Payment Provider Selection implementation plan and the
-    resolved "no guard" entry in its Open Questions table): the lever exists
-    precisely for the migrate-a-customer-off-a-provider case, and a guard would
-    block it in exactly that scenario. A future reviewer must not reinstate a
-    guard here without revisiting that decision first.
+    not an oversight -- the pin is deliberately kept mutable in this case: the
+    lever exists precisely for the migrate-a-customer-off-a-provider scenario,
+    and a guard would block it in exactly that scenario. A future reviewer
+    must not reinstate a guard here without understanding why it was left out.
     """
     billing_profile.payment_provider = PaymentProviders.MERCADOPAGO
     billing_profile.save(update_fields=["payment_provider"])

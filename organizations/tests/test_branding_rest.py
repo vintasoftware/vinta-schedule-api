@@ -108,7 +108,7 @@ def reseller_org():
 def eligible_org():
     """A plain (non-reseller), parentless organization that is entitled (the
     suite's autouse default subscription) and has a slug -- the population
-    Phase 3 widens the write gate to admit (spec Use-case 1's actor)."""
+    the widened write gate admits (spec Use-case 1's actor)."""
     return baker.make(Organization, can_invite_organizations=False, slug="eligible-org")
 
 
@@ -824,14 +824,13 @@ class TestOrganizationBrandingViewSet:
 
 @pytest.mark.django_db
 class TestBrandingLogoKeyPrefixIsEnforcedOnWrite:
-    """BLOCKER 1 (Phase 2b security review): the media bucket is a single shared
-    bucket holding `profile_pictures`, `providers_documents`,
-    `healthcare_entities_documents` (PHI), and `branding_logos` at their own
-    top-level prefixes. A `logo_url` that normalizes to a key outside
-    `uploads/branding_logos/` must be rejected on write -- otherwise an eligible
-    reseller admin could point their own branding row at another tenant's
-    private object and have it served back through the unauthenticated
-    delivery route."""
+    """The media bucket is a single shared bucket holding `profile_pictures`,
+    `providers_documents`, `healthcare_entities_documents` (PHI), and
+    `branding_logos` at their own top-level prefixes. A `logo_url` that
+    normalizes to a key outside `uploads/branding_logos/` must be rejected on
+    write -- otherwise an eligible reseller admin could point their own
+    branding row at another tenant's private object and have it served back
+    through the unauthenticated delivery route."""
 
     @pytest.mark.parametrize(
         "logo_url",
@@ -967,8 +966,8 @@ class TestBrandingLogoIsReadBackAsASignedUrl:
 class TestBrandingWriteGateAllMethods:
     """The shared write gate (``organizations.permissions.
     evaluate_branding_write_gate``) guards PUT and PATCH on
-    ``OrganizationBrandingView`` with its write-gate check -- Phase 3 replaces
-    the reseller-only ``_check_reseller_status`` with it (see the class
+    ``OrganizationBrandingView`` with its write-gate check -- it replaced
+    the reseller-only ``_check_reseller_status`` (see the class
     docstring on ``OrganizationBrandingView``). GET goes through the eligibility
     gate (``_check_branding_read_gate``) instead; both refuse on parent-present
     and not-entitled, and since the write gate's slug condition was retired they
@@ -977,7 +976,7 @@ class TestBrandingWriteGateAllMethods:
     def test_eligible_non_reseller_admin_completes_get_put_and_patch(
         self, client, user, eligible_org, eligible_org_admin
     ):
-        """The headline behavior change of this phase: a plain, parentless,
+        """The headline behavior change: a plain, parentless,
         entitled, slugged organization -- not a reseller -- can now manage its
         own branding through every method this endpoint exposes."""
         client.force_authenticate(user)
@@ -1139,9 +1138,9 @@ class TestResellerNowRequiresASlug:
 class TestCanManageBrandingOnMembershipPayload:
     """``can_manage_branding`` on the membership payloads the SPA already
     fetches (``GET /organizations/current/`` and ``GET /organizations/mine/``)
-    -- Organization Auth-Area Branding plan, Phase 4 Capability signal.
+    -- a capability signal exposed to clients.
 
-    Covers all four write-gate cases named in the phase spec, plus the
+    Covers all four write-gate cases, plus the
     no-slug-but-eligible case that is the whole point of the field (it must
     read ``True`` there, unlike the write gate itself)."""
 

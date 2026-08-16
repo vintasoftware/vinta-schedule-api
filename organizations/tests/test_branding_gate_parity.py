@@ -1,9 +1,9 @@
-"""The branding gates after Phase 4: two independent conditions, still both required.
+"""The branding gates: two independent conditions, both required.
 
 The branding surfaces compose an **entitlement** condition
-(``white_label_branding``, plus "no parent") with a **role** condition. Phase 4
-of the vinta-django-orgs migration replaced the role half with
-``organizations.manage_branding`` and left the entitlement half alone. The way
+(``white_label_branding``, plus "no parent") with a **role** condition. The
+role half used to check ``role == ADMIN`` and was replaced with
+``organizations.manage_branding``; the entitlement half was left alone. The way
 that composition breaks silently is by collapsing into one condition, so the two
 cases this module exists for are:
 
@@ -118,9 +118,9 @@ class TestTheEntitlementHalfIsUntouched:
     def test_the_read_gate_no_longer_admits_more_than_the_write_gate(self, entitled, unentitled):
         """The read gate used to additionally admit ``NO_SLUG``, keeping a
         read-side surface open to an organization the write gate refused. That
-        reason is gone (Phase 4), so the two now admit exactly the same set --
-        asserted here rather than assumed, because the read gate is what guards
-        the logo-signing endpoint.
+        reason is gone now that the slug precondition is retired, so the two now
+        admit exactly the same set -- asserted here rather than assumed, because
+        the read gate is what guards the logo-signing endpoint.
 
         Asserted **over the enum**, not over two hand-picked organizations: one
         row per ``BrandingWriteGateReason``, with the set equality above them so
@@ -162,8 +162,7 @@ class TestTheEntitlementHalfIsUntouched:
 
 @pytest.mark.django_db
 class TestUserAdministersBrandingEligibleOrganization:
-    """The role half, which is what Phase 4 changed: ``role == ADMIN`` became
-    ``organizations.manage_branding``."""
+    """The role half: ``role == ADMIN`` became ``organizations.manage_branding``."""
 
     def test_an_admin_of_an_entitled_organization_is_admitted(self, entitled):
         user = baker.make(User)

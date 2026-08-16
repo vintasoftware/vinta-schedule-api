@@ -7,15 +7,15 @@ silent when everything is scoped -- can be unit-tested directly rather than only
 indirectly through pytest's fixture teardown machinery. See
 ``common/tests/test_organization_context_test_support.py``.
 
-What it checks, and why that changed in Phase 2a
-------------------------------------------------
-Phase 0 of the vinta-django-orgs migration added an
-``organization_context(...)`` binding to every Celery task and management
-command, while the managers of the day ignored the binding entirely. The
-tripwire's question then was "did anything run *unbound*?", because an unbound
-call site was the thing Phase 2 would break.
+What it checks, and why
+------------------------
+An ``organization_context(...)`` binding was once applied to every Celery
+task and management command while the managers of the day ignored the
+binding entirely. The tripwire's question then was "did anything run
+*unbound*?", because an unbound call site was the thing later scoping
+enforcement would break.
 
-Phase 2a landed that flip for ``calendar_integration``: ``objects`` scopes to the
+The manager for ``calendar_integration`` now scopes ``objects`` to the
 bound organization and, with ``STRICT_ORGANIZATION_FILTER = True``, raises when
 nothing is bound. The manager now enforces the "unbound" half by itself, and
 loudly. What it cannot enforce is the deliberate escape hatch: ``unscoped()`` /
@@ -26,12 +26,12 @@ question worth asking became:
     did a query touch an organization-scoped table with no organization bound
     **and** without naming one itself?
 
-**This also closes the blind spot Phase 0 recorded.** That implementation
-wrapped seven ``QuerySet`` methods (``__iter__``, ``get``, ``count``, ``exists``,
-``update``, ``delete``, ``aggregate``), so anything reaching the database by
-another route -- ``iterator()``, ``first()`` on a sliced queryset, ``len(qs)``,
-``bulk_update``, ``in_bulk``, or a custom manager method that iterates something
-it built itself -- slipped past. The guard now sits on
+**This also closes a blind spot the earlier queryset-method guard left.**
+That guard wrapped seven ``QuerySet`` methods (``__iter__``, ``get``, ``count``,
+``exists``, ``update``, ``delete``, ``aggregate``), so anything reaching the
+database by another route -- ``iterator()``, ``first()`` on a sliced queryset,
+``len(qs)``, ``bulk_update``, ``in_bulk``, or a custom manager method that
+iterates something it built itself -- slipped past. The guard now sits on
 ``SQLCompiler.execute_sql``, the single point every ``SELECT`` / ``UPDATE`` /
 ``DELETE`` / aggregate passes through, so there is no "other route" left. (Only
 ``INSERT`` is excluded: it has its own compiler, and an insert reads nothing.)
@@ -63,9 +63,9 @@ _STATEMENT_BY_COMPILER = {
 def _is_organization_scoped(model: type[Model] | None) -> bool:
     """Is ``model`` one of the models this project scopes per organization?
 
-    One base now answers it: Phase 2b finished moving every scoped model onto the
-    package's ``SingleOrganizationModelMixin``, so the bespoke half of this check
-    is gone with the class it named.
+    One base now answers it: every scoped model now sits on the package's
+    ``SingleOrganizationModelMixin``, so the bespoke half of this check is gone
+    with the class it named.
     """
     if model is None:
         return False
@@ -135,7 +135,7 @@ def _is_scoped_enough(query: Query, model: type[Model], compiler_name: str) -> b
     ``Calendar.objects.unscoped().get(pk=<id from the URL>)`` is the exact shape
     of an IDOR, and "a primary key identifies one row in the whole table" is not
     a reason to allow it: the scoping decision is precisely *whose* row it is,
-    and it is the read that decides. Phase 0's queryset-method guard reported
+    and it is the read that decides. The earlier queryset-method guard reported
     this shape; exempting every primary-key-addressed statement would be a
     coverage regression against the one defect class the tripwire exists for.
     The cost is that an unbound ``instance.refresh_from_db()`` is reported --
@@ -224,7 +224,7 @@ def raise_if_unbound_scoped_queries_occurred(unbound_calls: list[str]) -> None:
     assert not unbound_calls, (
         "Organization-scoped queries ran with no organization bound (via "
         f"common.organization_context) and without naming one: {unbound_calls}. "
-        "Bind the organization before the call, mirroring the Phase 0 task and "
-        "command bindings, or scope the query explicitly with "
+        "Bind the organization before the call, the way Celery tasks and "
+        "management commands do, or scope the query explicitly with "
         "filter_by_organization(...)."
     )

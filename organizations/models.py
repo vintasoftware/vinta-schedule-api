@@ -137,13 +137,13 @@ class Organization(AbstractOrganization):
                 name="organization_slug_not_blank",
             ),
         ]
-        # Two of the four capability permissions from the plan's permission
-        # catalog (``organizations.permission_catalog``). Named for what the
+        # Two of the four capability permissions in
+        # ``organizations.permission_catalog``. Named for what the
         # holder may *do*, not for the model-CRUD triples ``auth.Permission``
         # defaults to -- see that module's header.
         #
         # Declaring them here only makes ``post_migrate`` create the
-        # ``auth_permission`` rows; nothing reads them until Phase 4. The
+        # ``auth_permission`` rows; the grants come from the seeded groups. The
         # ``AlterModelOptions`` migration this generates emits no SQL and
         # touches no existing permission row or grant.
         permissions: ClassVar = [
@@ -244,9 +244,9 @@ class OrganizationMembership(AbstractOrganizationMembership):
 
     ``groups`` carries the three seeded groups from
     ``organizations.permission_catalog`` and is **the** representation of what a
-    membership may do. It was backfilled from the two flat columns it replaced by
-    migration ``0029``; those columns were dropped in Phase 6 of the
-    vinta-django-orgs migration (``0030``), leaving one representation.
+    membership may do. It was backfilled from the two flat columns it replaced
+    (``role`` and ``is_billing_owner``) by migration ``0029``; those columns were
+    then dropped by ``0030``, leaving one representation.
     ``organizations.services.assign_membership_groups`` is the single write
     path. Readers: ``organizations.auth_backends.OrganizationModelBackend``
     (which is what makes ``user.has_perm(...)`` answer per-organization),
@@ -331,8 +331,8 @@ class OrganizationInvitation(BaseModel):
     accept). A duplicate invite to the *same* org is still rejected by the
     ``uniq_invitation_email_organization`` constraint.
 
-    ``group`` replaced a ``role`` column in Phase 6 of the vinta-django-orgs
-    migration. It holds a *single* seeded group name rather than a list, because
+    ``group`` replaced the dropped ``role`` column.
+    It holds a *single* seeded group name rather than a list, because
     an invitation confers at most one of ``INVITABLE_GROUPS`` -- a many-to-many
     would be a table and a join for one enumerated value, and
     ``organization_billing_owner`` is refused at invitation time regardless (see
@@ -483,7 +483,7 @@ def resolve_branding(org: Organization) -> OrganizationBranding | None:
 
     If no reseller ancestor exists, returns None (vinta default branding applies).
 
-    **Deliberately ungated and, as of this phase, uncalled in production code.**
+    **Deliberately ungated, and currently uncalled in production code.**
     The ``white_label_branding`` entitlement is applied by ``resolve_branding_for_display``
     instead, because not every caller of this function is presenting branding. Its only
     caller was ``public_api.queries.validate_return_url``, which read
@@ -491,11 +491,10 @@ def resolve_branding(org: Organization) -> OrganizationBranding | None:
     permitted — an **auth-flow** decision, not a cosmetic one, which is why it was never
     gated: a reseller downgrading off a cosmetic entitlement must not silently break the
     OAuth return flow for every tenant underneath it. ``validate_return_url`` and the
-    allowlist it read are gone (see the Organization Auth-Area Branding plan, Phase 2a),
-    which leaves this function with no caller. It is kept rather than deleted here because
-    Phase 5 of that plan (branding resolution) is expected to need the same ungated
-    parent-walk semantics for a non-cosmetic decision; re-examine whether it still earns
-    its keep once that phase lands.
+    allowlist it read have both been removed, which leaves this function with no caller.
+    It is kept rather than deleted because the next non-cosmetic branding decision is
+    expected to need the same ungated parent-walk semantics; re-examine whether it still
+    earns its keep if that does not materialise.
 
     Args:
         org: The Organization instance to resolve branding for.

@@ -4,8 +4,7 @@ One place to name the four custom permissions declared as ``Meta.permissions``
 on ``Organization`` / ``OrganizationMembership`` / ``Subscription``, and the
 group-to-permission mapping the seed data migration writes.
 
-Two deliberate shapes, both from the plan's Guiding Decisions
-(``ai-plans/2026-08-12-VINTA_DJANGO_ORGS_MIGRATION_IMPLEMENTATION_PLAN.md``):
+Two deliberate shapes:
 
 * **Named for capabilities, not for CRUD.** ``manage_billing`` rather than
   ``change_subscription``: the authorization questions this codebase asks are
@@ -170,8 +169,9 @@ def canonical_groups(group_names: Iterable[str]) -> tuple[str, ...]:
 
     The single definition of "which of the three seeded groups does this
     membership belong in", shared by every write path that puts a membership in
-    groups (``organizations.services.assign_membership_groups``) and by the
-    Phase 3 backfill's intent.
+    groups (``organizations.services.assign_membership_groups``) and by the intent
+    of the ``organizations/migrations/0029_backfill_membership_groups.py``
+    backfill.
 
     Canonicalising rather than storing the request verbatim is what keeps the
     stored set a *function* of the capabilities asked for, so two requests that

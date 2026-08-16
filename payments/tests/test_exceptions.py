@@ -8,8 +8,8 @@ Two things matter here:
    ``code = "billing_error"`` sentinel with its own stable, snake_case
    discriminator -- a subclass left on the default is a subclass the handler
    would render with an unusable, indistinguishable code.
-2. ``OverLimitError`` is frozen (see the plan's Guiding Decisions): it keeps its
-   own six-key ``as_error_body()`` override, byte-identical to before this
+2. ``OverLimitError`` is frozen: it keeps its own six-key
+   ``as_error_body()`` override, byte-identical to before this
    promotion. The GraphQL error extension (``public_api/extensions.py``) and
    ``public_api/middlewares.py`` both consume that exact body -- a regression
    here would silently break both.
@@ -150,7 +150,7 @@ class TestNewSubclassesInheritTheBaseErrorBody:
 
 
 class TestOverLimitErrorIsFrozen:
-    """The single worst outcome of this phase would be ``OverLimitError``
+    """The single worst regression here would be ``OverLimitError``
     silently inheriting the two-key base body instead of keeping its own
     six-key override -- three separate surfaces (the DRF handler, the GraphQL
     error extension, ``public_api/middlewares.py``) consume the exact dict

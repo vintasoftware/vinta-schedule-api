@@ -48,7 +48,7 @@ class FakePaymentService:
     a double-run double-charges.
 
     Returns a **real, persisted** ``Payment`` row (via ``baker.make``), not a bare
-    stand-in: ``CycleCloseService._persist_statement`` (Phase 2) links the charge
+    stand-in: ``CycleCloseService._persist_statement`` links the charge
     onto ``BillingPeriodSummary.payment``, a genuine foreign key Postgres
     enforces referential integrity on regardless of what Django's ORM validated in
     Python — a dangling id would raise ``IntegrityError`` at ``check_constraints``
@@ -561,9 +561,9 @@ class TestDeferredBoundaryActions:
 
 @pytest.mark.django_db
 class TestStatementPersistence:
-    """Phase 2 of the billing usage summary & ledger plan: closing a period
-    persists a durable ``BillingPeriodSummary`` (+ one ``BillingPeriodResourceUsage``
-    per ``LimitedResource`` member) in the same transaction as the charge.
+    """Closing a period persists a durable ``BillingPeriodSummary`` (+ one
+    ``BillingPeriodResourceUsage`` per ``LimitedResource`` member) in the same
+    transaction as the charge.
     """
 
     def test_closing_writes_one_summary_with_one_resource_row_per_limited_resource(

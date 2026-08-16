@@ -1,9 +1,8 @@
 """Membership resolution stays on the package's request/direct-call seams.
 
-A Phase 3.5 acceptance criterion of the vinta-django-orgs migration
-(``ai-plans/2026-08-12-VINTA_DJANGO_ORGS_MIGRATION_IMPLEMENTATION_PLAN.md``): no
-production or test module imports or calls ``get_active_organization_membership``, and
-no code writes ``_active_membership`` onto a user. Both were the repo-owned resolver
+No production or test module may import or call
+``get_active_organization_membership``, and no code may write
+``_active_membership`` onto a user. Both were the repo-owned resolver
 that ``vinta_orgs`` ``0.3.0`` replaced -- the package resolves through
 ``request.organization_membership`` on a request and ``resolve_membership_for_user``
 off one, and, unlike the deleted helper, refuses to silently pick the oldest active

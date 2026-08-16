@@ -103,7 +103,7 @@ def persist_audit_record(
     # sees. Resolved eagerly (not via a lazy binding) so a stale/deleted
     # organization id is caught here, at the task boundary, rather than
     # surfacing later as a bound-but-null organization deep inside a manager
-    # once Phase 2 starts consulting the context -- mirrors
+    # that consults the context -- mirrors
     # `calendar_integration/tasks/calendar_sync_tasks.py`'s
     # `organization = Organization.objects.filter(id=organization_id).first()`
     # / `if not organization: return` guard.

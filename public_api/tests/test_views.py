@@ -1764,9 +1764,8 @@ class TestSystemUserTokenViewSetHonoursTheOrganizationHeader:
         This viewset carried a local ``initial()`` override that re-ran
         ``check_permissions`` to close that.
 
-        Phase 3.5 of the vinta-django-orgs migration made
-        ``TenantScopedViewMixin`` resolve between authentication and
-        ``check_permissions`` for every view on the mixin, and the local
+        ``TenantScopedViewMixin`` was changed to resolve between authentication
+        and ``check_permissions`` for every view on the mixin, and the local
         override went away. The expectation below is unchanged -- 403 on both
         the read and the write -- which is the point: the general fix subsumes
         the local one.
@@ -1813,7 +1812,7 @@ class TestSystemUserTokenViewSetHonoursTheOrganizationHeader:
         self, organization, other_organization
     ):
         """The mirror of ``test_being_an_admin_elsewhere_does_not_admit_you_to_the_named_organization``,
-        and the direction Phase 3.5 actually changed here: this viewset's local
+        and the direction that actually changed here: this viewset's local
         ``initial()`` override made denial the *conjunction* of the
         oldest-membership check and the resolved-membership check. Removing it
         left the resolved check alone -- so a caller who is only a plain member

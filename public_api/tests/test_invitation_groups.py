@@ -1,15 +1,15 @@
 """``createInvitation`` takes groups, not a role.
 
-Phase 5 of the vinta-django-orgs migration replaces
-``inviteToOrganization(..., role: OrgRole = MEMBER)`` with
+``inviteToOrganization(..., role: OrgRole = MEMBER)`` was replaced with
 ``createInvitation(input: { groups: [String!] = ["organization_member"] })`` and
-deletes the ``OrgRole`` enum. This is a breaking change for partner
+the ``OrgRole`` enum was deleted. This is a breaking change for partner
 integrations, so what it accepts, what it defaults to and what it refuses are
 all pinned here.
 
-The invitation still records a ``role`` column until Phase 6 drops it; the
-mutation translates. These tests assert on the *stored* state as well as on the
-response, because the translation is the part that could silently invert.
+The invitation still records a ``role`` column, which is legacy and unused
+going forward; the mutation translates. These tests assert on the *stored*
+state as well as on the response, because the translation is the part that
+could silently invert.
 """
 
 from __future__ import annotations

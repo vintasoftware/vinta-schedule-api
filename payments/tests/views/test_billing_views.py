@@ -118,8 +118,8 @@ def billing_profile(organization):
         # `mercadopago_payment_adapter`/`mercadopago_subscription_adapter` DI
         # overrides below. Add-on purchase (`purchase_add_on` ->
         # `PaymentService.create_payment`) resolves the provider from this pin
-        # (Rule B, Payment Provider Selection Phase 4); leaving it unpinned would
-        # resolve to `settings.DEFAULT_PAYMENT_PROVIDER` (`stripe`) and drive the
+        # (Rule B); leaving it unpinned would resolve to
+        # `settings.DEFAULT_PAYMENT_PROVIDER` (`stripe`) and drive the
         # real, unmocked Stripe adapter over the network.
         payment_provider=PaymentProviders.MERCADOPAGO,
     )
@@ -749,9 +749,8 @@ class TestAcceptanceScenario:
 
 @pytest.mark.django_db
 class TestUnconfiguredProviderMapsTo409:
-    """Payment Provider Selection: the plan's **Guiding Decisions** commit to
-    HTTP 409 for ``PaymentProviderNotConfiguredError``, and Phase 4 is what makes
-    it reachable from these actions. Mapped centrally in
+    """HTTP 409 is the committed response for ``PaymentProviderNotConfiguredError``,
+    reachable from these actions. Mapped centrally in
     ``common.exception_handlers.vinta_exception_handler`` (with ``set_rollback()``)
     rather than per-action, so a new billing write cannot forget it and 500 on a
     money path.
@@ -842,8 +841,8 @@ class TestUnconfiguredProviderMapsTo409:
 
 @pytest.mark.django_db
 class TestBillingErrorCodes:
-    """Billing API Contract Hardening, Phase 1: every billing error rendered by
-    ``common.exception_handlers.vinta_exception_handler`` now carries a stable,
+    """Every billing error rendered by
+    ``common.exception_handlers.vinta_exception_handler`` carries a stable,
     machine-readable ``code`` a client can branch on instead of matching on
     ``detail``'s message string.
     """
@@ -926,9 +925,9 @@ class TestBillingErrorCodes:
 
 @pytest.mark.django_db
 class TestRetryPaymentEndpoint:
-    """``POST /billing/subscription/retry-payment/`` -- Billing API Contract
-    Hardening, Phase 3. Mostly exercises the error/shape contract through the
-    endpoint here; permissions have their own dedicated case
+    """``POST /billing/subscription/retry-payment/``. Mostly exercises the
+    error/shape contract through the endpoint here; permissions have their own
+    dedicated case
     (``TestPermissions.test_plain_member_is_forbidden_from_retrying_payment``,
     since ``retry_payment`` is on the same ``write_actions`` gate as the other
     billing writes there); the ordering/idempotency-namespacing/webhook-recovery
@@ -1034,17 +1033,17 @@ class TestRetryPaymentEndpoint:
         subscription,
         billing_state,
     ):
-        """Billing API Contract Hardening, Phase 4: MercadoPago's
+        """MercadoPago's
         ``pay_outstanding_invoice`` is an explicit, typed refusal (see
         ``MercadoPagoSubscriptionAdapter.pay_outstanding_invoice`` -- unverified
         against a real account, and no organization is routed to MercadoPago
         today). Driven through the real HTTP path -> real (SDK-mocked) adapter
         boundary, this proves the endpoint no longer *silently* reports success
         for a provider it cannot actually collect through -- it fails loudly
-        instead, which is the whole point of this phase.
+        instead, which is the whole point of this behavior.
 
-        Before Phase 4, this exact setup returned 200 having collected $0.00
-        (Phase 3's ``change_subscription_plan``-based retry) -- see
+        Previously, this exact setup returned 200 having collected $0.00
+        (the old ``change_subscription_plan``-based retry) -- see
         ``TestRetryPaymentEndpoint`` module's Stripe-based sibling test below for
         the provider retry-payment actually recovers money through today.
 
@@ -1061,8 +1060,8 @@ class TestRetryPaymentEndpoint:
             format="json",
         )
 
-        # Billing API Contract Hardening, Phase 4 reviewer finding SHOULD-FIX
-        # 7: the refusal must reach the client as a typed 409, not an
+        # Reviewer finding SHOULD-FIX 7: the refusal must reach the client
+        # as a typed 409, not an
         # unhandled 500 -- `CollectionNotSupportedError` is a `BillingError`
         # subclass with a `common.exception_handlers.vinta_exception_handler`
         # branch, unlike the plain `PaymentAdapterError` this replaced.
@@ -1088,12 +1087,12 @@ class TestRetryPaymentEndpoint:
         subscription,
         billing_state,
     ):
-        """Billing API Contract Hardening, Phase 4's headline fix, proven
+        """This endpoint's headline fix, proven
         through the real HTTP path: unlike MercadoPago's refusal above,
         Stripe's ``pay_outstanding_invoice`` actually locates the
         subscription's open invoice and pays it -- ``stripe.Invoice.pay``, not
         a proration on a freshly-minted price (``change_subscription_plan``,
-        Phase 3's mistaken primitive). Stripe SDK calls are mocked at the
+        previously used as a mistaken primitive). Stripe SDK calls are mocked at the
         adapter module's own boundary, same pattern as
         ``test_stripe_subscription_adapter.py``.
 
@@ -1246,7 +1245,7 @@ class TestRetryPaymentEndpoint:
         subscription,
         billing_state,
     ):
-        """Billing API Contract Hardening, Phase 5: the user-facing half of the
+        """The user-facing half of the
         live-probe BLOCKER shares the dunning ladder's root cause --
         ``retry_payment`` drives the same ``pay_outstanding_invoice`` call, so
         a payer submitting a card the provider declines must get a clean typed
@@ -1315,15 +1314,13 @@ class TestRetryPaymentEndpoint:
 
 @pytest.mark.django_db
 class TestChangePlanReaffirmingSettledPlanStaysANoOp:
-    """Regression pin for the billing API contract hardening plan's explicit
-    non-goal: ``change-plan`` re-requesting the plan/interval the subscription
+    """Regression pin: ``change-plan`` re-requesting the plan/interval the subscription
     is *already* settled on stays a silent 200 no-op -- its ``already_settled``
     guard is load-bearing for the concurrent-first-upgrade story (see
-    ``SubscriptionService.request_plan_change``'s docstring) and this plan does
-    not touch it. ``retry-payment`` (``TestRetryPaymentEndpoint`` above), not a
+    ``SubscriptionService.request_plan_change``'s docstring) and is left
+    untouched here. ``retry-payment`` (``TestRetryPaymentEndpoint`` above), not a
     ``change-plan`` fix, is the supported way to recover a GRACE/RESTRICTED
-    subscription -- see the plan's **Risk & Rollout Notes**, "What this plan
-    does not fix"."""
+    subscription."""
 
     def test_reaffirming_the_settled_plan_is_still_a_200_no_op(
         self, billing_client, admin_membership, subscription, free_plan

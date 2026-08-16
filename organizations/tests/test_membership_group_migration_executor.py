@@ -1,18 +1,17 @@
 """The two row-writing halves of ``0029`` and ``0030``, driven over a real database.
 
-Everything here exists because Phase 6 of the vinta-django-orgs migration
-(``ai-plans/2026-08-12-VINTA_DJANGO_ORGS_MIGRATION_IMPLEMENTATION_PLAN.md``)
+Everything here exists because ``0030_drop_role_and_is_billing_owner``
 removed the *only* way these two code paths could be reached from the live
 models:
 
 * ``0029_backfill_membership_groups`` reads ``OrganizationMembership.role`` and
-  ``is_billing_owner``. Phase 6 dropped both columns, so no live model can build
+  ``is_billing_owner``. ``0030`` dropped both columns, so no live model can build
   the input state its batched ``iterator`` + through-row loop consumes.
   ``organizations/tests/test_group_backfill_migration.py`` still pins the pure
   mapping function ``target_group_names`` against literals, which is the right
   test for the mapping -- but it leaves the loop that *applies* the mapping with
   no assertion at all, and ``0029`` still runs on every real database upgrading
-  from pre-Phase-6.
+  from before ``0030``.
 * ``0030_drop_role_and_is_billing_owner``'s ``rename_role_values_to_group_names``
   reads ``OrganizationInvitation.role``, which ``0030`` itself renames. That
   remap is the entire justification for renaming the column rather than dropping
@@ -26,9 +25,9 @@ per-worker test database, stepping backwards to the state that still has the
 columns and forwards again. ``test_group_backfill_migration.py``'s header
 explains why *it* stays out of the migration-executor flake class; this module
 is the deliberate exception, kept separate so that choice is visible and so the
-cheap assertions there are not dragged into the expensive class here. Phase 3's
-``0029`` reverse defect -- a reverse nothing executed -- is the precedent for
-what an unexecuted migration branch costs.
+cheap assertions there are not dragged into the expensive class here.
+``0029``'s own reverse-migration defect -- a reverse nothing executed -- is the
+precedent for what an unexecuted migration branch costs.
 
 Every method restores ``executor.loader.graph.leaf_nodes()`` in ``finally``, not
 the migration it stepped to: stepping back unapplies *every* later migration in
@@ -88,7 +87,7 @@ def _delete_rows(table: str, ids: list[int]) -> None:
 class TestTheBackfillOverRealRows:
     """``0029``'s loop, executed -- not just its mapping function.
 
-    Four properties, all of which had assertions before Phase 6 deleted the
+    Four properties, all of which had assertions before ``0030`` deleted the
     half of the module that built rows from the two columns:
 
     * every cell of the mapping reaches the through table;

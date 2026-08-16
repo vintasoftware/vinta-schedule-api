@@ -6,11 +6,11 @@ in bulk" to "an existing row cannot change organization at all".
 ``organization_id`` against the persisted one and raises
 ``vinta_orgs.exceptions.OrganizationCannotBeUpdatedError`` on a mismatch.
 
-**Why this file exists.** Phase 3 of the vinta-django-orgs migration asserts
-that nothing in this repo needs ``unsafe_organization_update=True``, and the
-plan's own argument is that a miss would surface as a runtime error in
-production rather than as a test failure -- which is exactly the case for
-pinning the rule here instead of trusting the audit. All 34 scoped models
+**Why this file exists.** Nothing in this repo needs
+``unsafe_organization_update=True`` -- an audited fact -- and a miss would
+surface as a runtime error in production rather than as a test failure --
+which is exactly the case for pinning the rule here instead of trusting the
+audit. All 34 scoped models
 inherit this behaviour from one mixin, so ``Calendar`` and ``CalendarSync``
 stand in for the set.
 
@@ -24,7 +24,7 @@ Two things are pinned:
    save of a persisted scoped row where the organization is among the columns
    written. Under ``ATOMIC_REQUESTS = True`` that is a savepoint plus a locking
    read whose row lock is held until the request transaction commits. It is a
-   recorded, accepted cost (see the plan's **Risk & Rollout Notes**), and the
+   recorded, accepted cost, and the
    query-count assertions below are what makes a future upstream change to it
    visible -- the rest of this suite's query counts are all read-path.
 """
@@ -132,8 +132,8 @@ class TestSaveRefusesToRelocateAPersistedRow:
         assert (calendar_a.name, calendar_a.organization_id) == ("re-stamped", organization_a.id)
 
     def test_the_opt_in_relocates_the_row(self, organization_a, organization_b, calendar_a):
-        """``unsafe_organization_update=True`` is the escape hatch the plan
-        reserves for a data migration, and it is reachable through ``save()``.
+        """``unsafe_organization_update=True`` is the escape hatch reserved
+        for a data migration, and it is reachable through ``save()``.
 
         It also proves the refusals above are *this* rule and not some unrelated
         failure that happens to raise the same class.

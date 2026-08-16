@@ -1,8 +1,8 @@
 """A cross-organization row does not join through an organization-safe relation.
 
-This is the isolation guarantee the whole vinta-django-orgs migration exists for,
-so it is tested against a row that actually points across organizations rather
-than against the absence of one.
+This is the core isolation guarantee organization-safe relations exist to
+provide, so it is tested against a row that actually points across
+organizations rather than against the absence of one.
 
 **How the row is made.** No supported write path can produce it -- assigning
 ``event.calendar = other_orgs_calendar`` copies the target's organization onto
@@ -191,14 +191,14 @@ class TestTheManyToManyJoinsOnTheOrganizationToo:
     It was the last many-to-many on a scoped model with an auto-created through
     table -- two bare key columns, no ``organization`` -- so its join carried no
     organization and the related manager a many-to-many builds does not add one
-    (see ``common.managers.OrganizationScopedManager``). Phase 2b repointed it at
+    (see ``common.managers.OrganizationScopedManager``). It was repointed at
     ``EventExternalAttendance`` with ``through_fields`` naming the safe relations,
     which puts the organization into both hops' ``ON`` clause.
 
     Both hops get an intruder. One row is stopped at ``event`` and one at
     ``external_attendee``: an assertion that only planted the first would pass
     with ``through_fields`` still naming the concrete ``external_attendee_fk``,
-    which is the column this phase changed.
+    which is the column that repoint changed.
 
     Same construction as the rest of this file: the cross-organization rows are
     written at the column level, because no supported write path can produce them.

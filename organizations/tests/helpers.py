@@ -1,10 +1,8 @@
 """The sanctioned way for a test to build an ``OrganizationMembership``.
 
 **Use this instead of ``baker.make(OrganizationMembership, ...)``** anywhere the
-membership is meant to carry a capability -- which, since Phase 4 of the
-vinta-django-orgs migration
-(``ai-plans/2026-08-12-VINTA_DJANGO_ORGS_MIGRATION_IMPLEMENTATION_PLAN.md``), is
-what every permission class reads.
+membership is meant to carry a capability -- which is what every permission
+class reads, via ``OrganizationMembership.groups``.
 
 **Why.** Authorization reads an organization-named permission check
 (``organizations.authorization.has_organization_permission``, not
@@ -21,11 +19,11 @@ groups sees a *denial*, and a test that asserted a denial for some other reason
 passing while proving nothing. That is why the sweep to this helper had to be
 exhaustive.
 
-Since Phase 6 dropped the two flat capability columns there is no second
-representation left to disagree with the groups: a test cannot produce a
-membership that looks privileged to one reader and unprivileged to another, and
-a test that wanted an admin and built it with ``baker.make`` sees the denial
-directly.
+``OrganizationMembership`` carries no flat capability columns any more, only
+the groups: there is no second representation left to disagree with them, so a
+test cannot produce a membership that looks privileged to one reader and
+unprivileged to another, and a test that wanted an admin and built it with
+``baker.make`` sees the denial directly.
 
 A ``post_save`` signal would have covered every write path including baker's,
 and was deliberately rejected (**Decisions taken 2026-08-13** in the tracking
@@ -101,8 +99,8 @@ def grant_membership_groups(
     ``groups`` is **required and has no default**, unlike ``make_membership``'s.
     That asymmetry is deliberate. This function used to read a membership's
     ``role`` column and derive the groups from it, so the capability was named
-    at the *creation* call it wrapped; when Phase 6 dropped the column, giving
-    the parameter a default silently moved that decision here. Whichever default
+    at the *creation* call it wrapped; when the ``role`` column was dropped,
+    giving the parameter a default silently moved that decision here. Whichever default
     were chosen would be wrong for some caller and wrong *silently*, because no
     assertion reads the groups directly -- exactly how
     ``organizations/tests/test_org_resolution.py``'s ten member fixtures became

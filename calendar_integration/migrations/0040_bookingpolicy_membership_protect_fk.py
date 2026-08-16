@@ -1,4 +1,4 @@
-"""Phase 1 (DB-integrity): raw-SQL composite PROTECT FK for BookingPolicy.membership.
+"""DB-integrity: raw-SQL composite PROTECT FK for BookingPolicy.membership.
 
 The ``BookingPolicy.membership`` relation is a Django ``ForeignObject`` and
 therefore carries **no** DB-level foreign-key constraint. PROTECT delete

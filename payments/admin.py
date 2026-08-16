@@ -160,9 +160,10 @@ class BillingProfileAdmin(admin.ModelAdmin):
 
     ``payment_provider`` is editable here, but an edit to it is routed through
     ``SubscriptionService.set_payment_provider`` (see ``save_model``) rather than
-    a bare model save, so a staff repoint is audited (``AuditService``) like the
-    plan's other billing business writes -- see the Payment Provider Selection
-    plan's Pin mutability guiding decision.
+    a bare model save, so a staff repoint is audited (``AuditService``) like
+    every other billing business write, and treated as a deliberate action
+    (including back to "unset"), not a slug to validate against the provider
+    registry.
     """
 
     list_display = ("organization", "document_type", "document_number", "payment_provider")
@@ -391,8 +392,7 @@ class ProviderWebhookEventAdmin(admin.ModelAdmin):
 
 class BillingPeriodResourceUsageInline(admin.TabularInline):
     """Read-only view of a statement's per-resource rows, alongside the statement
-    itself — this app has no other surface where these are visible at all
-    (see `BillingPeriodSummary`'s Phase 0 scaffolding note)."""
+    itself — this app has no other surface where these are visible at all."""
 
     model = BillingPeriodResourceUsage
     extra = 0
@@ -424,7 +424,7 @@ class BillingPeriodSummaryAdmin(admin.ModelAdmin):
 
     This is where reconciliation drift (`reconciliation_unmetered` /
     `reconciliation_orphaned`) is surfaced — deliberately not in any API
-    response, per the plan's non-goal on exposing drift to customers. The
+    response, since customers must not be shown internal drift figures. The
     `payment` link is the statement's tie to the charge that settled it, not a
     rendered invoice (`BillingPeriodSummary` is a statement, not an invoice).
     """

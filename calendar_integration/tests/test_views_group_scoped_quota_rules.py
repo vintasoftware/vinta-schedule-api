@@ -1,5 +1,5 @@
 """Integration tests for the internal REST surface exposing group-scoped
-quota rules (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 3c).
+quota rules.
 
 Direct mirror of ``test_views_group_scoped_blocked_times.py`` for quota
 rules, minus the recurrence/orphaned-booking machinery (quota rules are

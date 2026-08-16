@@ -1,11 +1,13 @@
 """Drop ``role`` / ``is_billing_owner``, and re-spell the invitation's role as a group.
 
-The last phase of the vinta-django-orgs migration
-(``ai-plans/2026-08-12-VINTA_DJANGO_ORGS_MIGRATION_IMPLEMENTATION_PLAN.md``,
-Phase 6). ``0029`` put every membership in the groups its two flat columns
-implied and every write path since has kept them there, so the columns have had
-no reader outside this app's own dual-write since Phase 4. This removes them and
-leaves one representation of what a membership may do.
+``0029_backfill_membership_groups`` put every membership in the groups its two
+flat columns implied, and every write path since has kept them there. The
+authorization backend switched to reading groups/permissions rather than the
+two flat columns, and the dual-write that used to derive the group set from
+``role`` / ``is_billing_owner`` has itself been replaced by
+``organizations.services.assign_membership_groups``, so by this point the
+columns have no reader left at all. This removes them and leaves one
+representation of what a membership may do.
 
 Three operations, in dependency order:
 
@@ -40,10 +42,11 @@ there is nothing to restore them from once the columns are gone, and a reverse
 that guessed from the groups would be inventing history. Every membership comes
 back as ``role='member', is_billing_owner=False``; re-running ``0029`` forward
 after a reverse would then assign every membership to ``organization_member``,
-which is *wrong* for a database that had admins. Per the plan's **Pre-launch
-posture** Guiding Decision a tested reverse path is not required, and this one
-is offered only so the migration is steppable, not as a data-safe undo. Read the
-note before stepping backwards on anything that holds real memberships.
+which is *wrong* for a database that had admins. There are no production
+tenants at this stage of the project, so a tested reverse path is not
+required; this one is offered only so the migration is steppable, not as a
+data-safe undo. Read the note before stepping backwards on anything that holds
+real memberships.
 
 Lock audit
 ----------
@@ -63,10 +66,10 @@ Deliberately **not** two-phase, which is the other half of the lock question
 rename are breaking for any process still running the old code -- old workers
 would ``SELECT role`` against a table that no longer has it -- and the standard
 remedy (ship the code that stops reading the columns, deploy, then drop in a
-later release) is skipped on purpose, under the plan's **Pre-launch posture**
-Guiding Decision: there are no production tenants, so there is no window during
-which old and new code both serve traffic. If that assumption ever stops
-holding, this migration is the shape to split, not to re-run.
+later release) is skipped on purpose: there are no production tenants at this
+stage of the project, so there is no window during which old and new code both
+serve traffic. If that assumption ever stops holding, this migration is the
+shape to split, not to re-run.
 """
 
 from django.db import migrations, models

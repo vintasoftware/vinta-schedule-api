@@ -263,9 +263,9 @@ def test_find_bookable_slots_single_query_per_type(
 # ---------------------------------------------------------------------------
 # can_view_calendar_group / can_manage_calendar_group
 #
-# CALENDAR_GROUP_SCOPED_AVAILABILITY membership-permissions fix: owning a
-# pool calendar grants VISIBILITY (``can_view_calendar_group``) but no longer
-# grants the right to CREATE/UPDATE/DELETE the group itself
+# Membership-permissions fix: owning a pool calendar grants VISIBILITY
+# (``can_view_calendar_group``) but no longer grants the right to
+# CREATE/UPDATE/DELETE the group itself
 # (``can_manage_calendar_group``, now admin-only). The two
 # ``true_for_owner``/``false_for_non_owner`` cases below were previously
 # asserted against ``can_manage_calendar_group``; they now correctly target

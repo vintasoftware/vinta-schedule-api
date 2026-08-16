@@ -1523,7 +1523,7 @@ class TestUpdateBranding:
         assert branding.logo.name == "uploads/branding_logos/logo.png"
 
     def test_update_branding_foreign_prefix_logo_key_is_rejected(self):
-        """BLOCKER 1 (Phase 2b security review): a `logoUrl` that normalizes to a
+        """BLOCKER 1 (security review): a `logoUrl` that normalizes to a
         key outside `uploads/branding_logos/` -- e.g. another destination's
         prefix in the shared media bucket -- must be rejected, not persisted.
         Without this, an eligible reseller admin could point their own branding
@@ -1578,7 +1578,7 @@ class TestUpdateBranding:
         assert not OrganizationBranding.objects.filter(organization=reseller_org).exists()
 
     def test_update_branding_succeeds_for_a_non_reseller_organization(self):
-        """The headline behavior change of this phase: a plain (non-reseller),
+        """The headline behavior change of the branding widening: a plain (non-reseller),
         parentless, entitled, slugged organization can now save branding
         through `updateBranding` -- it is no longer refused for lacking
         `can_invite_organizations`."""
@@ -2173,8 +2173,7 @@ class TestUpdateBranding:
         self, django_capture_on_commit_callbacks
     ):
         """A first-time updateBranding call (no existing row) writes exactly
-        one CREATE audit entry, actor is the token's system user, no diff
-        (Organization Auth-Area Branding plan, Phase 4)."""
+        one CREATE audit entry, actor is the token's system user, no diff."""
         from di_core.containers import container
 
         org = baker.make(
@@ -2335,9 +2334,8 @@ mutation UpdateBranding($input: UpdateBrandingInput!) {
 class TestUpdateBrandingSlugInOneCall:
     """``UpdateBrandingInput.slug`` -- a partner-API caller can satisfy the
     write gate's slug precondition and set branding in a single
-    ``updateBranding`` call (Organization Auth-Area Branding plan, Phase 3).
-    Both the slug write and the branding upsert land in one
-    ``transaction.atomic()`` block: a rejected slug, or a later
+    ``updateBranding`` call. Both the slug write and the branding upsert land
+    in one ``transaction.atomic()`` block: a rejected slug, or a later
     field-validation failure, must not leave a partial write behind."""
 
     def setup_method(self):

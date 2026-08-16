@@ -88,8 +88,8 @@ class GetAvailableTimeOccurrencesJSON(Func):
 class GetCalendarGroupQuotaPeriodCountsJSON(Func):
     """
     Database function returning per-period LIVE booking counts for one calendar
-    inside one CalendarGroupSlot, as a JSON array (CALENDAR_GROUP_SCOPED_AVAILABILITY
-    Phase 3a). Only bookings made THROUGH that group slot (a
+    inside one CalendarGroupSlot, as a JSON array. Only bookings made THROUGH
+    that group slot (a
     ``CalendarEventGroupSelection`` row for this exact slot+calendar pair) are
     counted; events created directly on the calendar are not. Counts are derived
     on read -- a cancelled booking (its ``CalendarEvent`` row deleted) frees

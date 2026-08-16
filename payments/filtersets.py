@@ -124,9 +124,9 @@ class MeteredOccurrenceFilterSet(filters.FilterSet):
         pool on the request so this doesn't need its own DI/service access.
 
         An id outside the pool is a validation error (400), never a silent
-        empty ``200`` -- see the plan's Guiding Decisions: a quietly-empty
-        result for an organization the caller cannot see would read as "you
-        used nothing" for a question the caller was never allowed to ask.
+        empty ``200``: a quietly-empty result for an organization the caller
+        cannot see would read as "you used nothing" for a question the caller
+        was never allowed to ask.
         """
         pooled_organization_ids = getattr(self.request, "pooled_organization_ids", ())
         if value not in pooled_organization_ids:

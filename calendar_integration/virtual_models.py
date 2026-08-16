@@ -153,8 +153,7 @@ class AvailableTimeVirtualModel(OrganizationScopedVirtualModel):
 
 
 class GroupScopedAvailabilityWindowVirtualModel(OrganizationScopedVirtualModel):
-    """Virtual model for ``GroupScopedAvailabilityWindowSerializer``
-    (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 1c).
+    """Virtual model for ``GroupScopedAvailabilityWindowSerializer``.
 
     Deliberately narrower than ``AvailableTimeVirtualModel``: that serializer
     sources ``calendar_id``/``group_slot_id`` from the raw FK columns and
@@ -173,8 +172,7 @@ class GroupScopedAvailabilityWindowVirtualModel(OrganizationScopedVirtualModel):
 
 
 class GroupScopedBlockedTimeVirtualModel(OrganizationScopedVirtualModel):
-    """Virtual model for ``GroupScopedBlockedTimeSerializer``
-    (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 2b).
+    """Virtual model for ``GroupScopedBlockedTimeSerializer``.
 
     Mirrors ``GroupScopedAvailabilityWindowVirtualModel`` exactly, for the
     same reason: the serializer sources ``calendar_id``/``group_slot_id``
@@ -194,8 +192,7 @@ class GroupScopedBlockedTimeVirtualModel(OrganizationScopedVirtualModel):
 
 
 class GroupScopedQuotaRuleVirtualModel(OrganizationScopedVirtualModel):
-    """Virtual model for ``GroupScopedQuotaRuleSerializer``
-    (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 3c).
+    """Virtual model for ``GroupScopedQuotaRuleSerializer``.
 
     Simpler than ``GroupScopedAvailabilityWindowVirtualModel``/
     ``GroupScopedBlockedTimeVirtualModel``: a quota rule has no recurrence and

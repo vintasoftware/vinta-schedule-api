@@ -25,11 +25,11 @@ from organizations.models import Organization, OrganizationBranding, Organizatio
 
 class TestMembershipHasNoAdminSurface:
     def test_organization_membership_is_not_registered_at_all(self):
-        """No membership admin ships in this phase.
+        """No membership admin ships yet.
 
         Unregistering the package's without registering a replacement is the
         point: a membership admin that carries the seat-limit and
-        last-admin-protection rules is Phase 3's work, and until it exists
+        last-admin-protection rules does not exist yet, and until it does
         "no surface" is safer than "an unguarded one".
         """
         assert not admin.site.is_registered(OrganizationMembership)
@@ -72,7 +72,7 @@ class TestOrganizationAdminIsOurs:
         assert PackageOrganizationAdmin not in registered
 
     def test_ours_does_not_inline_organization_site(self):
-        """Domain-based tenancy is a Non-goal. The package's admin inlines
+        """This project does not do domain-based tenancy. The package's admin inlines
         ``OrganizationSite`` with ``min_num=1``, which would make saving an
         organization through the admin require a ``Site`` row."""
         from vinta_orgs.models import OrganizationSite
