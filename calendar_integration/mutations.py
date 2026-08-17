@@ -175,8 +175,6 @@ class CalendarWebhookMutations:
 
         try:
             # Get the calendar first
-            from calendar_integration.models import Calendar
-
             try:
                 calendar = Calendar.objects.filter_by_organization(organization).get(
                     id=input.calendar_id,

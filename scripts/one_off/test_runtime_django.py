@@ -1,6 +1,7 @@
 """Tests for the shared Django runner surface used by every one-off script."""
 
 import datetime
+import logging
 from pathlib import Path
 
 from django.core.files.storage import default_storage
@@ -26,8 +27,6 @@ def runtime(tmp_path: Path, command: BaseCommand) -> DjangoMgmtRuntime:
 
 def test_stdout_is_not_double_written(runtime: DjangoMgmtRuntime):
     """The command owns stdout, so LocalRuntime's own stream handler must be gone."""
-    import logging
-
     stream_handlers = [
         handler
         for handler in runtime._logger.handlers

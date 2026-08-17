@@ -311,11 +311,7 @@ class DunningService:
         .get_pooled_organization_ids``) -- the exact set every usage counter and
         the sync-pause guard itself resolve against -- not per calendar directly;
         each fanned-out task (``resync_organization_calendars_task``) resolves
-        its own organization's calendars. Deferred import: ``calendar_integration
-        .tasks`` is not imported at module level, mirroring the same
-        avoid-a-module-level-cross-app-import convention
-        ``CalendarSyncService.request_calendar_sync`` already uses for its own
-        Celery task import.
+        its own organization's calendars.
 
         Called from inside the caller's ``transaction.atomic()`` block, wrapped
         in ``transaction.on_commit`` here so the fan-out cannot race the
@@ -324,6 +320,17 @@ class DunningService:
         subscription still (as far as an uncommitted read is concerned)
         RESTRICTED.
         """
+        # Late, and it has to be: this module is imported by
+        # ``payments.services.subscription_service``, and importing
+        # ``calendar_integration.tasks.calendar_sync_tasks`` runs
+        # ``calendar_integration/tasks/__init__.py`` ->
+        # ``calendar_integration.services`` ->
+        # ``calendar_integration.services.calendar_event_service`` ->
+        # ``payments.services.metering_service`` ->
+        # ``payments.services.entitlement_service`` -> back to
+        # ``payments.services.subscription_service``. At module scope that fails
+        # with ``ImportError: cannot import name
+        # 'current_billing_period_start' from partially initialized module``.
         from calendar_integration.tasks.calendar_sync_tasks import (
             resync_organization_calendars_task,
         )

@@ -51,6 +51,7 @@ from calendar_integration.models import (
     CalendarGroup,
     CalendarGroupSlotQuotaRule,
     CalendarManagementToken,
+    CalendarWebhookEvent,
     ExternalEventChangeRequest,
 )
 from calendar_integration.services.ics_service import CalendarEventICSService
@@ -720,10 +721,6 @@ class Query:
     ) -> list[CalendarWebhookEventGraphQLType]:
         """Get recent webhook events filtered by user's organization."""
         org = _get_org(info)
-
-        import datetime
-
-        from calendar_integration.models import CalendarWebhookEvent
 
         start_time = datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(hours=hours_back)
 

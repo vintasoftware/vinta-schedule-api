@@ -23,6 +23,7 @@ from decimal import Decimal
 from typing import TypedDict
 
 from payments.billing_constants import Entitlement, LimitedResource, LimitKind
+from payments.models import BillingPlan, PlanEntitlement, PlanLimit
 
 
 UNLIMITED_PLAN_SLUG = "unlimited"
@@ -78,8 +79,6 @@ def seed_billing_plans() -> None:
     Runs against the live models on purpose: no historical-model injection seam, since
     no migration calls this. ``0007`` has its own copy.
     """
-    from payments.models import BillingPlan, PlanEntitlement, PlanLimit
-
     unlimited_plan, _created = BillingPlan.objects.update_or_create(
         slug=UNLIMITED_PLAN_SLUG,
         defaults={

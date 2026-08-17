@@ -7,6 +7,7 @@ from typing import ClassVar
 
 from calendar_integration.constants import CalendarProvider
 from calendar_integration.exceptions import WebhookAuthenticationError
+from calendar_integration.models import CalendarWebhookSubscription
 
 
 logger = logging.getLogger(__name__)
@@ -90,8 +91,6 @@ class MicrosoftWebhookValidator(BaseWebhookValidator):
 
         # For actual notifications, validate subscription exists and is active
         if subscription_id and organization_id:
-            from calendar_integration.models import CalendarWebhookSubscription
-
             if (
                 not CalendarWebhookSubscription.objects.filter_by_organization(organization_id)
                 .filter(

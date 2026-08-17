@@ -315,18 +315,26 @@ class CalendarService(BaseCalendarService):
 
     @staticmethod
     def _get_calendar_adapter_cls_for_provider(provider: CalendarProvider):
-        if provider == CalendarProvider.GOOGLE:
-            from calendar_integration.services.calendar_adapters.google_calendar_adapter import (
-                GoogleCalendarAdapter,
-            )
+        # Late, and it has to be: the adapter classes are the seam the calendar
+        # test suites patch, at their own definition modules
+        # (``patch("calendar_integration.services.calendar_adapters
+        # .google_calendar_adapter.GoogleCalendarAdapter")`` -- see
+        # ``calendar_integration/tests/services/test_calendar_service.py`` and
+        # its siblings). Binding either name at module scope here captures the
+        # real class before the patch is installed, and 70+ tests then drive the
+        # live Google/Microsoft adapter. Every adapter import in this file is
+        # late for that one reason; imports of anything else belong at the top.
+        from calendar_integration.services.calendar_adapters.google_calendar_adapter import (
+            GoogleCalendarAdapter,
+        )
+        from calendar_integration.services.calendar_adapters.ms_outlook_calendar_adapter import (
+            MSOutlookCalendarAdapter,
+        )
 
+        if provider == CalendarProvider.GOOGLE:
             return GoogleCalendarAdapter
 
         if provider == CalendarProvider.MICROSOFT:
-            from calendar_integration.services.calendar_adapters.ms_outlook_calendar_adapter import (
-                MSOutlookCalendarAdapter,
-            )
-
             return MSOutlookCalendarAdapter
 
         raise NotImplementedError(f"Calendar adapter for provider {provider} is not implemented.")
@@ -344,6 +352,7 @@ class CalendarService(BaseCalendarService):
         :return: CalendarAdapter instance and the account used (SocialAccount or GoogleCalendarServiceAccount).
         """
         if isinstance(account, GoogleCalendarServiceAccount):
+            # Late for the reason stated in ``_get_calendar_adapter_cls_for_provider``.
             from calendar_integration.services.calendar_adapters.google_calendar_adapter import (
                 GoogleCalendarAdapter,
             )
