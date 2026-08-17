@@ -38,7 +38,7 @@ def persist_truncated_rule(parent: RecurringMixin, truncated_rule: RecurrenceRul
     """Write a bulk modification's truncated rule onto ``parent``'s own rule row.
 
     The splitter returns a detached copy, and assigning it to the one-to-one alone
-    writes nothing: ``OrganizationModel.save`` only reassigns FK ids, it never saves
+    writes nothing: ``SingleOrganizationModelMixin.save`` only reassigns FK ids, it never saves
     the related object. The truncation has to be written to the rule row explicitly,
     reusing the existing row's id so the parent keeps the row it already points at
     and the continuation is free to own its own.

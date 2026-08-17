@@ -52,7 +52,8 @@ from calendar_integration.services.dataclasses import (
     CalendarGroupEventInputData,
     CalendarGroupSlotSelectionInputData,
 )
-from organizations.models import Organization, OrganizationMembership, OrganizationRole, WeekStart
+from organizations.models import Organization, OrganizationMembership, WeekStart
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import grant_membership_groups
 from users.models import Profile, User
 
@@ -104,8 +105,10 @@ def admin_user(db: Any, organization: Organization) -> User:
     Profile.objects.create(user=u)
     grant_membership_groups(
         OrganizationMembership.objects.create(
-            user=u, organization=organization, role=OrganizationRole.ADMIN
-        )
+            user=u,
+            organization=organization,
+        ),
+        [GROUP_ORGANIZATION_ADMIN],
     )
     return u
 
@@ -210,8 +213,10 @@ def reschedule_admin_user(organization: Organization) -> User:
     Profile.objects.create(user=u)
     grant_membership_groups(
         OrganizationMembership.objects.create(
-            user=u, organization=organization, role=OrganizationRole.ADMIN
-        )
+            user=u,
+            organization=organization,
+        ),
+        [GROUP_ORGANIZATION_ADMIN],
     )
     return u
 

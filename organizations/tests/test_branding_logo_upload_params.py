@@ -11,7 +11,8 @@ from rest_framework import status
 from rest_framework.test import APIClient
 from s3direct.utils import AWSCredentials
 
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import make_membership
 from organizations.tests.test_branding_rest import _make_unentitled_org
 
@@ -72,7 +73,7 @@ def eligible_org_admin(user, eligible_org):
     return make_membership(
         user=user,
         organization=eligible_org,
-        role=OrganizationRole.ADMIN,
+        groups=[GROUP_ORGANIZATION_ADMIN],
         is_active=True,
     )
 
@@ -84,7 +85,6 @@ def eligible_org_member(eligible_org):
         OrganizationMembership,
         user=member,
         organization=eligible_org,
-        role=OrganizationRole.MEMBER,
         is_active=True,
     )
     return member
@@ -95,7 +95,7 @@ def second_eligible_org_admin(user, second_eligible_org):
     return make_membership(
         user=user,
         organization=second_eligible_org,
-        role=OrganizationRole.ADMIN,
+        groups=[GROUP_ORGANIZATION_ADMIN],
         is_active=True,
     )
 
@@ -105,7 +105,7 @@ def parented_org_admin(user, parented_org):
     return make_membership(
         user=user,
         organization=parented_org,
-        role=OrganizationRole.ADMIN,
+        groups=[GROUP_ORGANIZATION_ADMIN],
         is_active=True,
     )
 
@@ -237,7 +237,7 @@ class TestOrganizationBrandingLogoUploadParamsView:
         make_membership(
             user=user,
             organization=org,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         client.force_authenticate(user)
@@ -283,13 +283,13 @@ class TestOrganizationBrandingLogoUploadParamsView:
         make_membership(
             user=user,
             organization=org_a,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         make_membership(
             user=user,
             organization=org_b,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 

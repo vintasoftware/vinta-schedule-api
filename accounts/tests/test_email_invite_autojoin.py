@@ -29,7 +29,9 @@ from allauth.account.adapter import get_adapter
 from allauth.account.models import EmailAddress
 from model_bakery import baker
 
+from organizations.authorization import membership_holds_permission
 from organizations.models import Organization, OrganizationInvitation, OrganizationMembership
+from organizations.permission_catalog import MANAGE_MEMBERS
 from users.factories import UserFactory
 
 
@@ -143,7 +145,7 @@ class TestInvitedEmailAutoJoin:
         assert OrganizationMembership.objects.filter(user=user).count() == 1
         membership = OrganizationMembership.objects.get(user=user)
         assert membership.organization == org
-        assert membership.role == "member"
+        assert not membership_holds_permission(membership, MANAGE_MEMBERS)
 
         # Zero new organisations were created — only the pre-existing one exists.
         assert Organization.objects.count() == 1
@@ -185,7 +187,7 @@ class TestInvitedEmailAutoJoin:
         assert OrganizationMembership.objects.filter(user=user).count() == 1
         membership = OrganizationMembership.objects.get(user=user)
         assert membership.organization == org
-        assert membership.role == "member"
+        assert not membership_holds_permission(membership, MANAGE_MEMBERS)
 
         # No stray org was created.
         assert Organization.objects.count() == 1
@@ -220,7 +222,7 @@ class TestInvitedEmailAutoJoin:
         assert OrganizationMembership.objects.filter(user=user).count() == 1
         membership = OrganizationMembership.objects.get(user=user)
         assert membership.organization == org
-        assert membership.role == "member"
+        assert not membership_holds_permission(membership, MANAGE_MEMBERS)
 
         # No new org created.
         assert Organization.objects.count() == 1
@@ -262,4 +264,4 @@ class TestInvitedEmailAutoJoin:
         # The linked membership belongs to the right user and org.
         assert invitation.membership.user == user
         assert invitation.membership.organization == org
-        assert invitation.membership.role == "member"
+        assert not membership_holds_permission(invitation.membership, MANAGE_MEMBERS)

@@ -54,11 +54,12 @@ class OrganizationMembershipQuerySet(_PackageOrganizationMembershipQuerySet):
 
         **Permission-shaped rather than role-shaped**, so "who may write billing"
         and "who is told about billing" derive from one source instead of two
-        that can drift. It replaces ``Q(role=ADMIN) | Q(is_billing_owner=True)``,
-        and is equivalent to it as long as the two representations agree: the
-        Phase 3 backfill (``organizations/migrations/0029_...``) put every
-        pre-existing membership in the matching group and the dual-write in
-        ``organizations.services`` keeps every membership written since in step.
+        that can drift. It replaces the flat two-column disjunction it was
+        written from,
+        and is now the only representation: the Phase 3 backfill
+        (``organizations/migrations/0029_...``) put every pre-existing membership
+        in the matching group, and every membership written since goes through
+        ``organizations.services.assign_membership_groups``.
 
         Built on ``holding_permission(...)`` -- the package's own union of a
         membership's direct ``permissions`` grant with the permissions its

@@ -16,6 +16,8 @@ Behaviors covered:
   400 and the 403.
 """
 
+from collections.abc import Iterable
+
 from django.contrib.auth import get_user_model
 from django.urls import reverse
 
@@ -31,7 +33,10 @@ from common.utils.view_utils import TenantScopedViewMixin
 from organizations.models import (
     Organization,
     OrganizationMembership,
-    OrganizationRole,
+)
+from organizations.permission_catalog import (
+    GROUP_ORGANIZATION_ADMIN,
+    GROUP_ORGANIZATION_MEMBER,
 )
 from organizations.tests.helpers import grant_membership_groups
 
@@ -51,17 +56,28 @@ def _make_membership(
     user: User,  # type: ignore[valid-type]
     org: Organization,
     *,
-    role: str = OrganizationRole.MEMBER,
+    groups: Iterable[str] = (GROUP_ORGANIZATION_MEMBER,),
     is_active: bool = True,
 ) -> OrganizationMembership:
-    """Create an OrganizationMembership directly (bypassing the invite flow)."""
+    """Create an OrganizationMembership directly (bypassing the invite flow).
+
+    ``groups`` defaults to ``organization_member`` -- **no capabilities** -- and
+    that default is load-bearing rather than arbitrary. Two tests in
+    ``TestCalendarViewSetOrgScoping`` assert that ``CalendarViewSet`` returns
+    only the calendars the caller *owns*, and ``get_queryset`` applies that
+    owner-scoping only to non-admins. Hand this an admin and those two stop
+    testing owner-scoping: the ownership rows they seed become dead setup and
+    the cross-org exclusion they assert falls out of organization scoping alone,
+    with no assertion changing. (That is exactly what happened when this
+    parameter was briefly deleted in Phase 6.)
+    """
     return grant_membership_groups(
         OrganizationMembership.objects.create(
             user=user,
             organization=org,
-            role=role,
             is_active=is_active,
-        )
+        ),
+        groups,
     )
 
 
@@ -338,6 +354,12 @@ class TestCalendarViewSetOrgScoping:
 
         cal_a = CalendarIntegrationTestFactory.create_calendar(organization=org_a)
         cal_b = CalendarIntegrationTestFactory.create_calendar(organization=org_b)
+        # A second Org A calendar the caller does *not* own. It is what keeps
+        # owner-scoping load-bearing here: without it every assertion below is
+        # satisfied by organization scoping alone, so a caller accidentally
+        # promoted to admin (``_make_membership``'s ``groups=``) would leave the
+        # two ownership rows as dead setup and this test still green.
+        unowned_in_org_a = CalendarIntegrationTestFactory.create_calendar(organization=org_a)
         # Non-admin members only list calendars they own (owner-scoping).
         CalendarIntegrationTestFactory.create_calendar_ownership(two_org_user, cal_a)
         CalendarIntegrationTestFactory.create_calendar_ownership(two_org_user, cal_b)
@@ -355,6 +377,10 @@ class TestCalendarViewSetOrgScoping:
         returned_ids = {item["id"] for item in response.json()["results"]}
         assert cal_a.id in returned_ids, "Org A calendar should appear in the list"
         assert cal_b.id not in returned_ids, "Org B calendar must NOT appear with Org A header"
+        assert unowned_in_org_a.id not in returned_ids, (
+            "An Org A calendar the caller does not own must be owner-scoped out; "
+            "seeing it means the caller is an admin, not the member this test needs."
+        )
 
     def test_list_with_header_b_returns_only_org_b_calendars(
         self,
@@ -367,6 +393,8 @@ class TestCalendarViewSetOrgScoping:
 
         cal_a = CalendarIntegrationTestFactory.create_calendar(organization=org_a)
         cal_b = CalendarIntegrationTestFactory.create_calendar(organization=org_b)
+        # The unowned Org B calendar; see the sibling test for why it is here.
+        unowned_in_org_b = CalendarIntegrationTestFactory.create_calendar(organization=org_b)
         # Non-admin members only list calendars they own (owner-scoping).
         CalendarIntegrationTestFactory.create_calendar_ownership(two_org_user, cal_a)
         CalendarIntegrationTestFactory.create_calendar_ownership(two_org_user, cal_b)
@@ -384,6 +412,10 @@ class TestCalendarViewSetOrgScoping:
         returned_ids = {item["id"] for item in response.json()["results"]}
         assert cal_b.id in returned_ids, "Org B calendar should appear in the list"
         assert cal_a.id not in returned_ids, "Org A calendar must NOT appear with Org B header"
+        assert unowned_in_org_b.id not in returned_ids, (
+            "An Org B calendar the caller does not own must be owner-scoped out; "
+            "seeing it means the caller is an admin, not the member this test needs."
+        )
 
     def test_create_under_header_b_returns_201_and_lands_in_org_b(
         self,
@@ -778,7 +810,7 @@ class TestADeactivatedAdminIsRefusedThroughTheRealStack:
         org_a: Organization,
     ) -> None:
         """Same user, same client, same URL, same header -- only ``is_active`` moves."""
-        membership = _make_membership(user, org_a, role=OrganizationRole.ADMIN)
+        membership = _make_membership(user, org_a, groups=[GROUP_ORGANIZATION_ADMIN])
         client = _auth_client_for(user)
         url = reverse("api:OrganizationMembers-list")
 
@@ -807,12 +839,13 @@ class TestADeactivatedAdminIsRefusedThroughTheRealStack:
     ) -> None:
         """The discriminator between the two ways this endpoint says 403.
 
-        Without it, the test above would pass on a build where ``is_active`` were
-        ignored and ``role`` alone did all the refusing. Here the membership is
-        active and the *role* is what is wrong, so resolution succeeds and
-        ``IsOrganizationAdmin`` answers -- a different body for the same code.
+        Without it, the test above would pass on a build where ``is_active``
+        were ignored and the capability alone did all the refusing. Here the
+        membership is active and carries no capability, so resolution succeeds
+        and ``IsOrganizationAdmin`` answers -- a different body for the same
+        code.
         """
-        _make_membership(user, org_a, role=OrganizationRole.MEMBER)
+        _make_membership(user, org_a)
         client = _auth_client_for(user)
         url = reverse("api:OrganizationMembers-list")
 

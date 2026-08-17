@@ -49,7 +49,7 @@ class CreateInvitationInput:
     with it: authorization is answered from permissions, which are carried by
     groups, so a group name is the only thing left worth naming on a write.
     Accepted values are validated in
-    ``organizations.permission_catalog.role_for_invitation_groups`` rather than
+    ``organizations.permission_catalog.group_for_invitation_groups`` rather than
     by a GraphQL enum, so adding a group is not a schema-breaking change for
     clients that do not use it.
     """

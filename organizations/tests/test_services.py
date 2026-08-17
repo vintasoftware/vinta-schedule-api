@@ -12,6 +12,10 @@ from calendar_integration.constants import (
     CalendarVisibility,
 )
 from calendar_integration.models import Calendar, CalendarOwnership
+from organizations.authorization import (
+    MEMBERSHIP_ROLE_LABEL_ADMIN,
+    MEMBERSHIP_ROLE_LABEL_MEMBER,
+)
 from organizations.exceptions import (
     InvalidInvitationTokenError,
     InvitationNotFoundError,
@@ -22,10 +26,18 @@ from organizations.models import (
     OrganizationBranding,
     OrganizationInvitation,
     OrganizationMembership,
-    OrganizationRole,
+)
+from organizations.permission_catalog import (
+    GROUP_ORGANIZATION_ADMIN,
+    GROUP_ORGANIZATION_MEMBER,
 )
 from organizations.services import OrganizationService
 from users.models import User
+
+
+def _group_names(membership) -> set[str]:
+    """The seeded groups a membership holds -- what ``role`` used to say."""
+    return set(membership.groups.values_list("name", flat=True))
 
 
 @pytest.mark.django_db
@@ -475,12 +487,12 @@ class TestOrganizationService:
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
             accepted_at=None,
             membership_user_id=None,
-            role=OrganizationRole.ADMIN,
+            group=GROUP_ORGANIZATION_ADMIN,
         )
 
         membership = organization_service.accept_invitation(token=token, user=admin_user)
 
-        assert membership.role == OrganizationRole.ADMIN
+        assert _group_names(membership) == {GROUP_ORGANIZATION_ADMIN}
 
     def test_accept_invitation_member_role_default(self, organization_service, organization):
         """accept_invitation with MEMBER role (default) produces MEMBER membership."""
@@ -500,12 +512,12 @@ class TestOrganizationService:
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
             accepted_at=None,
             membership_user_id=None,
-            role=OrganizationRole.MEMBER,
+            group=GROUP_ORGANIZATION_MEMBER,
         )
 
         membership = organization_service.accept_invitation(token=token, user=member_user)
 
-        assert membership.role == OrganizationRole.MEMBER
+        assert _group_names(membership) == {GROUP_ORGANIZATION_MEMBER}
 
     def test_accept_invitation_invalid_token(self, organization_service, user, organization):
         """Test accepting an invitation with an invalid token."""
@@ -677,7 +689,7 @@ class TestOrganizationService:
         assert membership is not None
         assert membership.user == invitee
         assert membership.organization == organization
-        assert membership.role == OrganizationRole.MEMBER
+        assert _group_names(membership) == {GROUP_ORGANIZATION_MEMBER}
 
         # Invitation must be marked accepted and linked.
         invitation.refresh_from_db()
@@ -697,7 +709,7 @@ class TestOrganizationService:
 
         assert membership is not None
         assert membership.user == user
-        assert membership.role == OrganizationRole.ADMIN
+        assert _group_names(membership) == {GROUP_ORGANIZATION_ADMIN}
         assert membership.organization.name == "My Org"
 
     def test_provision_tenant_for_user_already_has_membership_no_invite_no_name_returns_none(
@@ -906,7 +918,7 @@ class TestOrganizationService:
         assert membership is not None
         assert membership.user == invitee
         assert membership.organization == organization
-        assert membership.role == OrganizationRole.MEMBER
+        assert _group_names(membership) == {GROUP_ORGANIZATION_MEMBER}
 
         invitation.refresh_from_db()
         assert invitation.accepted_at is not None
@@ -1099,7 +1111,7 @@ class TestOrganizationService:
         assert membership is not None
         assert membership.user == user
         assert membership.organization == org_b
-        assert membership.role == OrganizationRole.MEMBER
+        assert _group_names(membership) == {GROUP_ORGANIZATION_MEMBER}
         # User now has TWO memberships.
         assert OrganizationMembership.objects.filter(user=user).count() == 2
 
@@ -1364,7 +1376,7 @@ class TestOrganizationService:
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
             accepted_at=None,
             membership_user_id=None,
-            role=OrganizationRole.MEMBER,
+            group=GROUP_ORGANIZATION_MEMBER,
         )
 
         membership = organization_service_with_webhook_mock.accept_invitation(
@@ -1400,7 +1412,7 @@ class TestOrganizationService:
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
             accepted_at=None,
             membership_user_id=None,
-            role=OrganizationRole.ADMIN,
+            group=GROUP_ORGANIZATION_ADMIN,
         )
 
         membership = organization_service_with_webhook_mock.accept_invitation(
@@ -1410,7 +1422,7 @@ class TestOrganizationService:
         call_args = mock_webhook_membership_side_effects_service.on_member_created.call_args
         passed_membership = call_args[0][0]
         assert passed_membership == membership
-        assert passed_membership.role == OrganizationRole.ADMIN
+        assert _group_names(passed_membership) == {GROUP_ORGANIZATION_ADMIN}
 
     def test_accept_invitation_no_webhook_emission_when_no_subscribed_config(
         self,
@@ -1484,7 +1496,7 @@ class TestOrganizationService:
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
             accepted_at=None,
             membership_user_id=None,
-            role=OrganizationRole.MEMBER,
+            group=GROUP_ORGANIZATION_MEMBER,
         )
         baker.make(
             WebhookConfiguration,
@@ -1515,7 +1527,7 @@ class TestOrganizationService:
         assert event.payload["email"] == invitee.email
         assert event.payload["organization_id"] == organization.id
         assert event.payload["organization_name"] == organization.name
-        assert event.payload["membership_role"] == OrganizationRole.MEMBER
+        assert event.payload["membership_role"] == MEMBERSHIP_ROLE_LABEL_MEMBER
 
     # -----------------------------------------------------------------------
     # organization_member_created webhook emission on create_organization
@@ -1538,7 +1550,7 @@ class TestOrganizationService:
             mock_webhook_membership_side_effects_service.on_member_created.call_args[0][0]
         )
         assert passed_membership.user == creator
-        assert passed_membership.role == OrganizationRole.ADMIN
+        assert _group_names(passed_membership) == {GROUP_ORGANIZATION_ADMIN}
         assert passed_membership.is_active is True
 
     def test_create_organization_no_webhook_emission_when_no_subscribed_config(
@@ -1606,7 +1618,7 @@ class TestOrganizationService:
         assert call["payload"]["email"] == creator.email
         assert call["payload"]["organization_id"] == org.id
         assert call["payload"]["organization_name"] == org.name
-        assert call["payload"]["membership_role"] == OrganizationRole.ADMIN
+        assert call["payload"]["membership_role"] == MEMBERSHIP_ROLE_LABEL_ADMIN
 
     # -----------------------------------------------------------------------
     # provision_tenant_for_user pending-invitation branch + multi-org
@@ -1673,7 +1685,7 @@ class TestOrganizationService:
         assert event.payload["user_id"] == invitee.id
         assert event.payload["email"] == invitee.email
         assert event.payload["organization_id"] == organization.id
-        assert event.payload["membership_role"] == OrganizationRole.MEMBER
+        assert event.payload["membership_role"] == MEMBERSHIP_ROLE_LABEL_MEMBER
 
     def test_provision_org_creation_emits_exactly_once_not_twice(
         self,
@@ -1697,7 +1709,7 @@ class TestOrganizationService:
         passed_membership = (
             mock_webhook_membership_side_effects_service.on_member_created.call_args[0][0]
         )
-        assert passed_membership.role == OrganizationRole.ADMIN
+        assert _group_names(passed_membership) == {GROUP_ORGANIZATION_ADMIN}
         assert passed_membership.is_active is True
 
     def test_provision_multi_org_emits_to_second_org_only(

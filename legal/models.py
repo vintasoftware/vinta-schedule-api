@@ -24,7 +24,7 @@ class PolicyDocument(BaseModel):
 
     Global — not tenant-scoped. `users.User` is a global model and policy
     documents are Vinta-owned (not per-organization) in v1, so this is a plain
-    `BaseModel`, not an `OrganizationModel`; it carries no `organization` FK.
+    `BaseModel` with no `SingleOrganizationModelMixin`; it carries no `organization` FK.
     """
 
     document_type = models.CharField(max_length=32, choices=PolicyDocumentType)
@@ -65,8 +65,8 @@ class UserConsent(BaseModel):
     Twilio/carrier SMS opt-in disputes).
 
     Global — not tenant-scoped. `users.User` is a global model and consent is
-    per-user, not per-organization, so this is a plain `BaseModel`, not an
-    `OrganizationModel`; it carries no `organization` FK.
+    per-user, not per-organization, so this is a plain `BaseModel` with no
+    `SingleOrganizationModelMixin`; it carries no `organization` FK.
 
     Re-consent policy (consent-once-ever): the SMS-consent gate is satisfied by
     ANY `UserConsent` row whose document is of type `SMS_CONSENT`, regardless

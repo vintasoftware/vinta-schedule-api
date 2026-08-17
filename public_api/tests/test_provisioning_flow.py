@@ -17,7 +17,10 @@ from organizations.models import (
     OrganizationBranding,
     OrganizationInvitation,
     OrganizationMembership,
-    OrganizationRole,
+)
+from organizations.permission_catalog import (
+    GROUP_ORGANIZATION_ADMIN,
+    GROUP_ORGANIZATION_MEMBER,
 )
 from public_api.models import ResourceAccess
 from public_api.services import PublicAPIAuthService
@@ -377,7 +380,7 @@ class TestCreateInvitationProvisioning:
         assert pending_invites.count() == 1
         invite = pending_invites.first()
         assert invite is not None
-        assert invite.role == OrganizationRole.MEMBER
+        assert invite.group == GROUP_ORGANIZATION_MEMBER
 
         # Verify no stray org was created (only reseller + child)
         assert Organization.objects.count() == org_count_before + 1
@@ -389,7 +392,7 @@ class TestCreateInvitationProvisioning:
     def test_social_login_auto_joins_invited_user_with_correct_role(self):
         """
         After createInvitation, social-login by that email yields an active membership
-        in the child org with the invited role, and no stray org is created.
+        in the child org with the invited group, and no stray org is created.
         """
         reseller_org = baker.make(Organization, name="Reseller", can_invite_organizations=True)
         child_org = baker.make(Organization, name="Child Org", parent=reseller_org)
@@ -401,7 +404,7 @@ class TestCreateInvitationProvisioning:
             email=invited_email,
             organization=child_org,
             invited_by=None,
-            role=OrganizationRole.ADMIN,
+            group=GROUP_ORGANIZATION_ADMIN,
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
             accepted_at=None,
             membership_user_id=None,
@@ -412,13 +415,13 @@ class TestCreateInvitationProvisioning:
         # Simulate social login (triggers auto-join via SocialAccountAdapter.save_user)
         user = _social_save_user(invited_email)
 
-        # The user should have exactly one membership in the child org with ADMIN role.
+        # The user should have exactly one membership in the child org, administering it.
         memberships = OrganizationMembership.objects.filter(user=user)
         assert memberships.count() == 1
         membership = memberships.first()
         assert membership is not None
         assert membership.organization == child_org
-        assert membership.role == OrganizationRole.ADMIN
+        assert set(membership.groups.values_list("name", flat=True)) == {GROUP_ORGANIZATION_ADMIN}
 
         # No stray org was created.
         assert Organization.objects.count() == org_count_before

@@ -33,7 +33,11 @@ from calendar_integration.models import (
     CalendarOwnership,
     ExternalEventChangeRequest,
 )
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import (
+    GROUP_ORGANIZATION_ADMIN,
+    GROUP_ORGANIZATION_MEMBER,
+)
 from organizations.tests.helpers import grant_membership_groups
 from users.factories import UserFactory
 
@@ -53,9 +57,9 @@ def _make_org_with_member(*, is_admin: bool = False) -> tuple[Organization, Orga
         OrganizationMembership.objects.create(
             user=user,
             organization=org,
-            role=OrganizationRole.ADMIN if is_admin else OrganizationRole.MEMBER,
             is_active=True,
-        )
+        ),
+        [GROUP_ORGANIZATION_ADMIN if is_admin else GROUP_ORGANIZATION_MEMBER],
     )
     return org, membership
 

@@ -30,13 +30,14 @@ from allauth.socialaccount.models import SocialLogin
 from model_bakery import baker
 
 from accounts.account_adapters import SocialAccountAdapter
+from organizations.authorization import membership_holds_permission
 from organizations.exceptions import UserAlreadyHasMembershipError
 from organizations.models import (
     Organization,
     OrganizationInvitation,
     OrganizationMembership,
-    OrganizationRole,
 )
+from organizations.permission_catalog import MANAGE_MEMBERS
 from users.factories import UserFactory
 from users.models import Profile, User
 
@@ -145,7 +146,7 @@ class TestSocialInviteAutojoin:
         assert OrganizationMembership.objects.filter(user=user).count() == 1
         membership = OrganizationMembership.objects.get(user=user)
         assert membership.organization == org
-        assert membership.role == OrganizationRole.MEMBER
+        assert not membership_holds_permission(membership, MANAGE_MEMBERS)
 
         # No new org was created.
         assert Organization.objects.count() == org_count_before
@@ -230,7 +231,7 @@ class TestSocialInviteAutojoin:
         assert OrganizationMembership.objects.filter(user=user).count() == 1
         membership = OrganizationMembership.objects.get(user=user)
         assert membership.organization == org
-        assert membership.role == OrganizationRole.MEMBER
+        assert not membership_holds_permission(membership, MANAGE_MEMBERS)
 
         invitation.refresh_from_db()
         assert invitation.accepted_at is not None

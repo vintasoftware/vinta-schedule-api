@@ -51,7 +51,7 @@ class Command(BaseCommand):
         expiry_threshold = now + datetime.timedelta(hours=hours_before_expiry)
 
         # Get subscriptions to refresh. `original_manager` (the unscoped
-        # manager `OrganizationModel` attaches) rather than the tenant-scoped
+        # manager `SingleOrganizationModelMixin` attaches) rather than the tenant-scoped
         # `objects` -- this driving scan is intentionally cross-organization
         # by design (mirroring `organizations/admin.py`'s explicit
         # `original_manager` usage): it is what makes the unfiltered "refresh

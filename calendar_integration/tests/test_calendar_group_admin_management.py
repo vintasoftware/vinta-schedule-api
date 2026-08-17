@@ -22,10 +22,15 @@ from calendar_integration.permissions import CalendarGroupPermission
 from calendar_integration.services.calendar_permission_service import (
     CalendarPermissionService,
 )
+from organizations.authorization import membership_holds_permission
 from organizations.models import (
     Organization,
     OrganizationMembership,
-    OrganizationRole,
+)
+from organizations.permission_catalog import (
+    GROUP_ORGANIZATION_ADMIN,
+    GROUP_ORGANIZATION_MEMBER,
+    MANAGE_MEMBERS,
 )
 from organizations.tests.helpers import grant_membership_groups
 from users.models import User
@@ -59,25 +64,26 @@ def group(organization):
 
 
 # ---------------------------------------------------------------------------
-# OrganizationRole + OrganizationMembership.is_admin
+# Membership capability, read from groups
 # ---------------------------------------------------------------------------
 @pytest.mark.django_db
-def test_membership_defaults_to_member(organization):
+def test_membership_defaults_to_no_capability(organization):
     user = User.objects.create_user(email="default@example.com")
     membership = OrganizationMembership.objects.create(user=user, organization=organization)
-    assert membership.role == OrganizationRole.MEMBER
-    assert membership.is_admin is False
+    assert membership_holds_permission(membership, MANAGE_MEMBERS) is False
 
 
 @pytest.mark.django_db
-def test_membership_is_admin_when_role_admin(organization):
+def test_membership_in_the_admin_group_holds_manage_members(organization):
     user = User.objects.create_user(email="admin@example.com")
     membership = grant_membership_groups(
         OrganizationMembership.objects.create(
-            user=user, organization=organization, role=OrganizationRole.ADMIN
-        )
+            user=user,
+            organization=organization,
+        ),
+        [GROUP_ORGANIZATION_ADMIN],
     )
-    assert membership.is_admin is True
+    assert membership_holds_permission(membership, MANAGE_MEMBERS) is True
 
 
 # ---------------------------------------------------------------------------
@@ -88,8 +94,10 @@ def test_user_is_organization_admin_true_for_admin(organization):
     user = User.objects.create_user(email="user-admin@example.com")
     grant_membership_groups(
         OrganizationMembership.objects.create(
-            user=user, organization=organization, role=OrganizationRole.ADMIN
-        )
+            user=user,
+            organization=organization,
+        ),
+        [GROUP_ORGANIZATION_ADMIN],
     )
     assert user.is_organization_admin(organization) is True
     # Also accepts an id directly.
@@ -100,7 +108,8 @@ def test_user_is_organization_admin_true_for_admin(organization):
 def test_user_is_organization_admin_false_for_member(organization):
     user = User.objects.create_user(email="user-member@example.com")
     OrganizationMembership.objects.create(
-        user=user, organization=organization, role=OrganizationRole.MEMBER
+        user=user,
+        organization=organization,
     )
     assert user.is_organization_admin(organization) is False
 
@@ -110,8 +119,10 @@ def test_user_is_organization_admin_false_for_other_org(organization, other_org)
     user = User.objects.create_user(email="cross-org@example.com")
     grant_membership_groups(
         OrganizationMembership.objects.create(
-            user=user, organization=organization, role=OrganizationRole.ADMIN
-        )
+            user=user,
+            organization=organization,
+        ),
+        [GROUP_ORGANIZATION_ADMIN],
     )
     # Admin in `organization`, no membership in `other_org` → False
     assert user.is_organization_admin(other_org) is False
@@ -131,8 +142,10 @@ def test_admin_can_manage_group_without_ownership(organization, group):
     admin = User.objects.create_user(email="noowner-admin@example.com")
     grant_membership_groups(
         OrganizationMembership.objects.create(
-            user=admin, organization=organization, role=OrganizationRole.ADMIN
-        )
+            user=admin,
+            organization=organization,
+        ),
+        [GROUP_ORGANIZATION_ADMIN],
     )
     # Intentionally no CalendarOwnership → before the admin override was added, this was False.
     svc = CalendarPermissionService()
@@ -144,8 +157,10 @@ def test_admin_of_other_org_cannot_manage_group(organization, other_org, group):
     admin_elsewhere = User.objects.create_user(email="xorg-admin@example.com")
     grant_membership_groups(
         OrganizationMembership.objects.create(
-            user=admin_elsewhere, organization=other_org, role=OrganizationRole.ADMIN
-        )
+            user=admin_elsewhere,
+            organization=other_org,
+        ),
+        [GROUP_ORGANIZATION_ADMIN],
     )
     svc = CalendarPermissionService()
     assert svc.can_manage_calendar_group(user=admin_elsewhere, group=group) is False
@@ -156,19 +171,18 @@ def test_demoted_admin_cannot_manage_group(organization, group):
     user = User.objects.create_user(email="demoted@example.com")
     membership = grant_membership_groups(
         OrganizationMembership.objects.create(
-            user=user, organization=organization, role=OrganizationRole.ADMIN
-        )
+            user=user,
+            organization=organization,
+        ),
+        [GROUP_ORGANIZATION_ADMIN],
     )
     svc = CalendarPermissionService()
     assert svc.can_manage_calendar_group(user=user, group=group) is True
-    # Downgrade to member and re-check — permission is revoked. Both steps
-    # mirror what a live demotion does: ``OrganizationMembershipViewSet
-    # .assign_groups`` saves the new state and then calls
-    # ``sync_membership_groups_from_role``, because the authorization decision
-    # reads the groups (Phase 4 of the vinta-django-orgs migration).
-    membership.role = OrganizationRole.MEMBER
-    membership.save(update_fields=["role"])
-    grant_membership_groups(membership)
+    # Downgrade to member and re-check — permission is revoked. This is exactly
+    # what a live demotion does: ``OrganizationMembershipViewSet.assign_groups``
+    # routes the new group set through ``assign_membership_groups``, and the
+    # authorization decision reads those groups.
+    grant_membership_groups(membership, [GROUP_ORGANIZATION_MEMBER])
     # A *fresh* user object, not ``refresh_from_db()``: both auth backends stash
     # resolved permission sets as attributes on the user instance, and
     # ``refresh_from_db`` reloads columns without touching them. Every real
@@ -184,8 +198,10 @@ def test_calendar_group_permission_passes_for_admin_without_ownership(organizati
     admin = User.objects.create_user(email="perm-admin@example.com")
     membership = grant_membership_groups(
         OrganizationMembership.objects.create(
-            user=admin, organization=organization, role=OrganizationRole.ADMIN
-        )
+            user=admin,
+            organization=organization,
+        ),
+        [GROUP_ORGANIZATION_ADMIN],
     )
     perm = CalendarGroupPermission(calendar_permission_service=CalendarPermissionService())
     request = Mock()
@@ -213,5 +229,5 @@ def test_create_organization_grants_admin_to_creator():
         creator=creator, name="Fresh Org", should_sync_rooms=False
     )
     membership = OrganizationMembership.objects.get(user=creator, organization=organization)
-    assert membership.role == OrganizationRole.ADMIN
+    assert membership_holds_permission(membership, MANAGE_MEMBERS) is True
     assert creator.is_organization_admin(organization) is True

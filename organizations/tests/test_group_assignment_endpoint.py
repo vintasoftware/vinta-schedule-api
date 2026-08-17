@@ -23,7 +23,7 @@ import pytest
 from model_bakery import baker
 from rest_framework import status
 
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import (
     GROUP_ORGANIZATION_ADMIN,
     GROUP_ORGANIZATION_BILLING_OWNER,
@@ -103,25 +103,6 @@ class TestAssigningGroups:
         assert "role" not in response.json()
         assert group_names(target) == {GROUP_ORGANIZATION_ADMIN}
 
-    def test_the_columns_the_rest_of_the_codebase_still_reads_are_written_too(
-        self, admin_client, organization
-    ):
-        """The dual-write, in the direction this endpoint runs it.
-
-        ``role`` / ``is_billing_owner`` are dropped in Phase 6, but until then
-        four readers outside the permission classes still consult them
-        (``public_api.scoping``, ``calendar_integration``). A promotion that
-        wrote only the groups would authorize the member differently depending
-        on which reader asked.
-        """
-        target = make_membership(user=baker.make(User), organization=organization)
-
-        admin_client.post(groups_url(target), {"groups": [GROUP_ORGANIZATION_ADMIN]}, format="json")
-
-        target.refresh_from_db()
-        assert target.role == OrganizationRole.ADMIN
-        assert target.is_admin is True
-
     def test_demoting_an_admin_removes_every_capability(self, admin_client, organization):
         other_admin = make_admin_membership(user=baker.make(User), organization=organization)
 
@@ -132,8 +113,6 @@ class TestAssigningGroups:
         assert response.status_code == status.HTTP_200_OK
         assert response.json()["permissions"] == []
         assert group_names(other_admin) == {GROUP_ORGANIZATION_MEMBER}
-        other_admin.refresh_from_db()
-        assert other_admin.role == OrganizationRole.MEMBER
 
     def test_billing_owner_can_be_granted_without_admin(self, admin_client, organization):
         target = make_membership(user=baker.make(User), organization=organization)
@@ -144,9 +123,7 @@ class TestAssigningGroups:
 
         assert response.status_code == status.HTTP_200_OK
         assert response.json()["permissions"] == [MANAGE_BILLING]
-        target.refresh_from_db()
-        assert target.is_billing_owner is True
-        assert target.role == OrganizationRole.MEMBER
+        assert group_names(target) == {GROUP_ORGANIZATION_BILLING_OWNER}
 
     def test_billing_owner_can_be_revoked(self, admin_client, organization):
         target = make_billing_owner_membership(user=baker.make(User), organization=organization)
@@ -157,8 +134,7 @@ class TestAssigningGroups:
 
         assert response.status_code == status.HTTP_200_OK
         assert response.json()["permissions"] == []
-        target.refresh_from_db()
-        assert target.is_billing_owner is False
+        assert group_names(target) == {GROUP_ORGANIZATION_MEMBER}
 
     def test_a_capability_group_alongside_member_stores_the_capability_group_alone(
         self, admin_client, organization
@@ -269,8 +245,6 @@ class TestTheLastManageMembersGuard:
 
         assert response.status_code == status.HTTP_400_BAD_REQUEST
         assert group_names(sole_admin) == {GROUP_ORGANIZATION_ADMIN}
-        sole_admin.refresh_from_db()
-        assert sole_admin.role == OrganizationRole.ADMIN
 
     def test_a_second_member_who_can_manage_members_unblocks_the_demotion(
         self, admin_client, user, organization

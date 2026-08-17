@@ -30,7 +30,8 @@ from calendar_integration.serializers import (
     OwnershipMembershipSerializer,
 )
 from calendar_integration.services.calendar_service_utils import resolve_member_user_ids
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import grant_membership_groups
 
 
@@ -136,8 +137,10 @@ def test_attendance_serializer_membership_field_shape(organization, event):
     user = baker.make("users.User")
     grant_membership_groups(
         OrganizationMembership.objects.create(
-            user=user, organization=organization, role=OrganizationRole.ADMIN
-        )
+            user=user,
+            organization=organization,
+        ),
+        [GROUP_ORGANIZATION_ADMIN],
     )
     _make_attendance(event, organization, membership_user_id=user.id)
 
@@ -196,7 +199,8 @@ def test_attendance_graphql_membership_resolver(organization, event):
     """The GraphQL attendance type's membership resolver returns the member identity."""
     user = baker.make("users.User")
     OrganizationMembership.objects.create(
-        user=user, organization=organization, role=OrganizationRole.MEMBER
+        user=user,
+        organization=organization,
     )
     _make_attendance(event, organization, membership_user_id=user.id)
 

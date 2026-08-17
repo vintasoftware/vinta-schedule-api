@@ -34,12 +34,12 @@ body: |
   - Acceptance criteria from the phase are not actually exercised by the new tests.
 
   ### Multi-tenancy violations (BLOCKER)
-  - `OrganizationModel` subclass queried without an organization filter — directly on the
+  - `SingleOrganizationModelMixin` subclass queried without an organization filter — directly on the
     queryset or via the default manager.
   - New code touches a tenant-scoped model via `Model._meta.default_manager` /
     `Model.objects.raw(...)` / `cursor.execute` that bypasses the manager's safety check.
   - New FK between tenant-scoped models uses a stock `ForeignKey` / `OneToOneField`
-    instead of `OrganizationForeignKey` / `OrganizationOneToOneField`.
+    instead of `OrganizationSafeForeignKey` / `OrganizationSafeOneToOneField`.
   - Celery task that operates on tenant data does not receive / propagate the organization
     context from its arguments.
   - GraphQL resolver returns tenant data without going through `PublicAPIAuthService`
@@ -81,7 +81,7 @@ body: |
   - Tests touch real network / Twilio / Google / S3 instead of using factories / mocks /
     Floci.
   - `pytest.mark.skip` / `xfail` added without an in-phase justification.
-  - Test setup creates `OrganizationModel` instances without an organization (would crash
+  - Test setup creates `SingleOrganizationModelMixin` instances without an organization (would crash
     in real flow; tests pass via factory side effects).
 
   ### Deploy + schema risks

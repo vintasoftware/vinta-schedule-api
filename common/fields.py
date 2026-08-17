@@ -2,20 +2,34 @@
 
 Module rationale — OrganizationMembershipForeignKey
 ----------------------------------------------------
-Django 6 forbids a real ``ForeignKey`` (with a DB-level FK constraint) to a
-model whose primary key is composite (``CompositePrimaryKey``).  Even before
-``OrganizationMembership`` gains a composite PK, using a ``ForeignObject`` for
-the relationship is the only design that will survive that migration without a
-second round of model rewrites.
+``OrganizationMembership`` carries a surrogate ``id`` again (a real
+``ForeignKey`` to it would be legal), but the relation stays a
+``ForeignObject`` on ``(organization_id, <name>_user_id)``.  Repointing
+``audit`` and ``calendar_integration`` at the surrogate key would mean a new
+column, a backfill and a rebind of the five raw-SQL composite PROTECT FKs on
+both, to buy nothing — see the migration plan's **Open Questions**, which
+answers this explicitly.
 
 Why denormalize ``user_id``?
     A bare ``ForeignObject`` on ``(organization_id, …)`` requires the *host*
     row to already carry the second join column.  The host row always has
-    ``organization_id`` (every ``OrganizationModel`` does), but it does NOT
+    ``organization_id`` (every organization-scoped model does), but it does NOT
     natively carry ``user_id``.  Storing a denormalized ``<name>_user_id``
     column on the host row makes the join instant — no extra look-up needed
     to resolve the owning user — and keeps the ``ForeignObject`` column
     mapping simple.
+
+Why still ``models.Field``?
+    It subclasses ``models.Field`` and always has; the four bespoke tenancy
+    classes deleted from this module in Phase 6 of the vinta-django-orgs
+    migration were never its base.  It is deliberately *not* reparented onto
+    the package's ``OrganizationSafeRelation`` either: that class contributes a
+    concrete ``<name>_fk`` ``ForeignKey`` joined on ``(pk, organization)``,
+    which is a different shape in every part — concrete column name, column
+    type, ``to_fields``, and ``on_delete`` — so inheriting it would mean
+    overriding all of it.  Staying a ``Field`` subclass also keeps django-stubs'
+    model-attribute typing working, which ``OrganizationSafeRelation`` (not a
+    ``Field``) does not get.
 
 Why no real DB foreign-key constraint here?
     ``ForeignObject`` creates no DB-level constraint; the ORM join is purely
@@ -34,7 +48,6 @@ from typing import TYPE_CHECKING, Any
 from django.db import models
 from django.db.backends.base.operations import BaseDatabaseOperations
 from django.db.models import AutoField, UUIDField
-from django.db.models.fields.composite import CompositeAttribute, CompositePrimaryKey
 from django.db.models.fields.related import ForeignObject
 
 
@@ -70,43 +83,6 @@ else:
     )
 
 
-class _SafeCompositeAttribute(CompositeAttribute):
-    """``CompositePrimaryKey`` descriptor that tolerates class-level access.
-
-    Django's stock :class:`~django.db.models.fields.composite.CompositeAttribute`
-    descriptor implements ``__get__`` as
-    ``tuple(getattr(instance, attname) for attname in self.attnames)`` with no
-    guard for ``instance is None``. Accessing the ``pk`` attribute on the *class*
-    (``Model.pk``) — which Django's own field descriptors handle by returning the
-    field/descriptor itself — therefore raises
-    ``AttributeError: 'NoneType' object has no attribute '<attname>'``.
-
-    Several introspection paths do exactly that class-level access. Notably
-    ``django_virtual_models.utils.get_methods`` runs
-    ``{attr for attr in dir(cls) if callable(getattr(cls, attr)) ...}`` over every
-    attribute of the model class while optimizing a nested serializer; on a
-    composite-PK model that ``getattr(cls, "pk")`` crashes. Returning the
-    descriptor on class-level access (the standard Django descriptor convention)
-    keeps that introspection working while instance-level access is unchanged.
-    """
-
-    def __get__(self, instance, cls=None):
-        if instance is None:
-            return self
-        return super().__get__(instance, cls)
-
-
-class SafeCompositePrimaryKey(CompositePrimaryKey):
-    """``CompositePrimaryKey`` whose descriptor tolerates class-level ``pk`` access.
-
-    Behaves identically to Django's ``CompositePrimaryKey`` for instances; only
-    differs in that ``Model.pk`` (class-level) returns the descriptor instead of
-    raising. See :class:`_SafeCompositeAttribute` for the rationale.
-    """
-
-    descriptor_class = _SafeCompositeAttribute
-
-
 class UUIDAutoField(UUIDField, AutoField):  # type: ignore
     def __init__(self, *args, **kwargs):
         kwargs.setdefault("default", uuid.uuid4)
@@ -122,124 +98,6 @@ class UUIDAutoField(UUIDField, AutoField):  # type: ignore
 
     def _check_max_length_warning(self):
         return []
-
-
-class TenantSafeForeignKey(models.Field):
-    """
-    Combines a normal ForeignKey for DB constraints/admin/etc and a ForeignObject
-    to enforce tenant_id in JOIN ON clauses.
-
-    **Dead code as of Phase 2b**, along with :class:`TenantSafeOneToOneField`.
-    Deleting ``organizations.OrganizationForeignKey`` removed the last subclass,
-    and ``OrganizationMembershipForeignKey`` extends ``models.Field`` directly
-    rather than either of these -- so nothing in the project builds on them and
-    nothing has to be migrated off them. Kept only until Phase 6, which owns the
-    deletion (see the migration plan's Phase 6, change 2); the ``tenant_field =
-    "tenant_id"`` default is itself a leftover, since no model in this project
-    has ever had a ``tenant_id`` column.
-    """
-
-    tenant_field: str = "tenant_id"
-
-    def __init__(
-        self,
-        to,
-        on_delete=models.CASCADE,
-        related_name=None,
-        null=False,
-        blank=False,
-        help_text="",
-    ):
-        self.to = to
-        self.tenant_field = self.tenant_field
-        self.on_delete = on_delete
-        self.related_name = related_name
-        self.null = null
-        self.blank = blank
-        self.help_text = help_text
-
-    def contribute_to_class(self, cls, name):
-        fk_field_name = f"{name}_fk"
-        strict_field_name = name
-
-        # 1. Add the ForeignKey field
-        fk_field = models.ForeignKey(
-            self.to,
-            on_delete=self.on_delete,
-            related_name=f"{self.related_name or name}_fk_rel",
-            null=self.null,
-            blank=self.blank,
-            help_text=self.help_text,
-        )
-        fk_field.contribute_to_class(cls, fk_field_name)
-
-        # 2. Add the ForeignObject field (non-editable, for JOINs)
-        fo_field = ForeignObject(
-            self.to,
-            from_fields=[f"{name}_fk", self.tenant_field],
-            to_fields=["id", self.tenant_field],
-            on_delete=self.on_delete,
-            related_name=self.related_name or f"{name}_set",
-            editable=False,
-            null=self.null,
-        )
-        fo_field.contribute_to_class(cls, strict_field_name)
-
-
-class TenantSafeOneToOneField(models.Field):
-    """
-    Combines a normal OneToOneField for DB constraints/admin/etc and a ForeignObject
-    to enforce tenant_id in JOIN ON clauses.
-
-    Dead code as of Phase 2b -- see :class:`TenantSafeForeignKey`.
-    """
-
-    tenant_field: str = "tenant_id"
-
-    def __init__(
-        self,
-        to,
-        on_delete=models.CASCADE,
-        related_name=None,
-        null=False,
-        blank=False,
-        help_text="",
-    ):
-        self.to = to
-        self.tenant_field = self.tenant_field
-        self.on_delete = on_delete
-        self.related_name = related_name
-        self.null = null
-        self.blank = blank
-        self.help_text = help_text
-
-    def contribute_to_class(self, cls, name):
-        fk_field_name = f"{name}_fk"
-        strict_field_name = name
-
-        # 1. Add the ForeignKey field
-        fk_field = models.OneToOneField(
-            self.to,
-            on_delete=self.on_delete,
-            related_name=f"{self.related_name or name}_fk_rel",
-            null=self.null,
-            blank=self.blank,
-            help_text=self.help_text,
-        )
-        fk_field.contribute_to_class(cls, fk_field_name)
-
-        # 2. Add the ForeignObject field (non-editable, for JOINs)
-        fo_field = ForeignObject(
-            self.to,
-            from_fields=[f"{name}_fk", self.tenant_field],
-            to_fields=["id", self.tenant_field],
-            on_delete=self.on_delete,
-            related_name=self.related_name or f"{name}_instance",
-            editable=False,
-            null=self.null,
-            unique=True,
-        )
-        fo_field.contribute_to_class(cls, strict_field_name)
 
 
 class OrganizationMembershipForeignKey(models.Field):
@@ -283,7 +141,7 @@ class OrganizationMembershipForeignKey(models.Field):
            (OrganizationMembership.organization_id, OrganizationMembership.user_id)
 
        This gives ``select_related("<name>")``, reverse-accessor, and
-       ``filter(<name>__role=...)``-style queries, all automatically scoped by
+       ``filter(<name>__is_active=...)``-style queries, all automatically scoped by
        organization.
 
     Why no ``on_delete`` DB constraint at the membership level?
@@ -340,12 +198,13 @@ class OrganizationMembershipForeignKey(models.Field):
         #    OrganizationMembership(organization_id, user_id).
         #    from_fields references the *field names* on the host model:
         #      - "<name>_user_id": the BigIntegerField added above
-        #      - "organization_id": the inherited FK attname on OrganizationModel
+        #      - "organization_id": the FK attname ``SingleOrganizationModelMixin`` adds
         #    to_fields references the *attnames* on OrganizationMembership:
         #      - "user_id": attname of the `user` ForeignKey
         #      - "organization_id": attname of the `organization` ForeignKey
-        #    This mirrors TenantSafeForeignKey's convention of using attnames
-        #    (e.g. "organization_id") rather than field names in to_fields.
+        #    ``to_fields`` names attnames (e.g. "organization_id") rather than
+        #    field names, which is what ``ForeignObject`` resolves against on
+        #    the target side.
         #
         #    The ForeignObject is wired with ``on_delete=DO_NOTHING`` regardless of
         #    the configured ``self.on_delete``. Delete integrity (PROTECT) is
@@ -356,7 +215,7 @@ class OrganizationMembershipForeignKey(models.Field):
         #    cascade collector would raise ``ProtectedError`` eagerly — even for a
         #    same-transaction cascade that removes BOTH the membership and the
         #    referencing row (e.g. deleting an Organization, which CASCADEs to its
-        #    memberships and OrganizationModel rows). Deferring to the DB-level
+        #    memberships and organization-scoped rows). Deferring to the DB-level
         #    constraint lets such whole-object cascades succeed while a
         #    membership-only delete (referencing row still live) still raises at
         #    commit. ``self.on_delete`` is retained for introspection/documentation

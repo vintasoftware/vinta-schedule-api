@@ -18,8 +18,8 @@ Two deliberate shapes, both from the plan's Guiding Decisions
   per-organization group layer can be added later without touching a call site.
 
 Permission classes and published membership serializers consume these constants,
-so the migration, the services' dual-write, the runtime checks, and the tests
-all spell the same strings.
+so the migration, the services, the runtime checks, and the tests all spell the
+same strings.
 
 The migration that seeds these does **not** import this module: a data
 migration must keep working when the live code moves on, so it carries its own
@@ -165,26 +165,43 @@ def _permissions_by_label() -> dict[str, Permission]:
     }
 
 
-def groups_for_membership_state(*, is_admin: bool, is_billing_owner: bool) -> tuple[str, ...]:
-    """The group names a membership in this ``role``/``is_billing_owner`` state holds.
+def canonical_groups(group_names: Iterable[str]) -> tuple[str, ...]:
+    """The seeded groups a membership asked for ``group_names`` actually holds.
 
-    The single definition of the mapping, shared by the Phase 3 backfill's
-    intent and by the temporary dual-write in ``organizations.services``. An
-    admin is also a billing owner by permission (``organization_admin`` carries
-    ``manage_billing``), so the admin group alone is enough where
-    ``is_billing_owner`` is not separately set -- but a membership that is both
-    gets both groups, because ``is_billing_owner`` is an independent column and
-    dropping it on the floor would lose information Phase 6 has not yet
-    retired.
+    The single definition of "which of the three seeded groups does this
+    membership belong in", shared by every write path that puts a membership in
+    groups (``organizations.services.assign_membership_groups``) and by the
+    Phase 3 backfill's intent.
+
+    Canonicalising rather than storing the request verbatim is what keeps the
+    stored set a *function* of the capabilities asked for, so two requests that
+    mean the same thing store the same thing:
+
+    * ``organization_member`` carries no permission, so it is dropped whenever a
+      capability group is present -- ``["organization_admin",
+      "organization_member"]`` stores the admin group alone.
+    * A membership asked for no capability group at all is put in
+      ``organization_member``, so "a member with no capabilities" stays
+      distinguishable from "no membership".
+    * ``organization_admin`` and ``organization_billing_owner`` are independent
+      and both are kept when both are asked for, even though the admin group
+      already carries ``manage_billing`` -- dropping the narrower one would make
+      a later demotion out of ``organization_admin`` silently remove billing
+      access the caller asked for separately.
+
+    Any name that is not one of the three seeded groups contributes nothing;
+    validating that the caller named a *known* group is the request
+    serializer's job, not this function's.
     """
-    names: list[str] = []
-    if is_admin:
-        names.append(GROUP_ORGANIZATION_ADMIN)
-    if is_billing_owner:
-        names.append(GROUP_ORGANIZATION_BILLING_OWNER)
-    if not names:
-        names.append(GROUP_ORGANIZATION_MEMBER)
-    return tuple(names)
+    names = set(group_names)
+    kept: list[str] = []
+    if GROUP_ORGANIZATION_ADMIN in names:
+        kept.append(GROUP_ORGANIZATION_ADMIN)
+    if GROUP_ORGANIZATION_BILLING_OWNER in names:
+        kept.append(GROUP_ORGANIZATION_BILLING_OWNER)
+    if not kept:
+        kept.append(GROUP_ORGANIZATION_MEMBER)
+    return tuple(kept)
 
 
 def seed_organization_groups() -> list[Group]:
@@ -227,44 +244,22 @@ def seed_organization_groups() -> list[Group]:
     return groups
 
 
-def membership_state_for_groups(group_names: Iterable[str]) -> tuple[bool, bool]:
-    """The ``(is_admin, is_billing_owner)`` a membership in ``group_names`` has.
-
-    The inverse of :func:`groups_for_membership_state`, and the write half of
-    ``POST /organization-members/{user_id}/groups/``: the API accepts group
-    names, the two columns are still live until Phase 6 drops them, and they
-    must not disagree. Round-tripping a result back through
-    ``groups_for_membership_state`` is what canonicalises the stored group set
-    -- so ``["organization_admin", "organization_member"]`` stores the admin
-    group alone, exactly as a promotion through the old ``role`` column did.
-
-    Any name that is not one of the two capability groups (including
-    ``organization_member``, which carries no permission) contributes nothing;
-    validating that the caller named a *known* group is the request
-    serializer's job, not this function's.
-    """
-    names = set(group_names)
-    return (GROUP_ORGANIZATION_ADMIN in names, GROUP_ORGANIZATION_BILLING_OWNER in names)
-
-
 #: The groups an *invitation* may carry. Narrower than the full set on purpose:
-#: an invitation persists its future membership's state in a single ``role``
-#: column with no billing-owner half, so ``organization_billing_owner`` has
-#: nowhere to live until the invitation is accepted. Refused explicitly rather
-#: than silently dropped -- a caller who asked for it would otherwise believe
-#: they had granted it.
+#: an invitation records its future membership's standing in a single
+#: ``group`` column, so it can name one group and only one. Refused explicitly
+#: rather than silently dropped -- a caller who asked for
+#: ``organization_billing_owner`` would otherwise believe they had granted it.
 INVITABLE_GROUPS: tuple[str, ...] = (GROUP_ORGANIZATION_MEMBER, GROUP_ORGANIZATION_ADMIN)
 
 
-def role_for_invitation_groups(group_names: Iterable[str]) -> str:
-    """The ``OrganizationRole`` value an invitation naming ``group_names`` stores.
+def group_for_invitation_groups(group_names: Iterable[str]) -> str:
+    """The single group name an invitation naming ``group_names`` stores.
 
-    The public GraphQL invitation input accepts group names; the invitation row
-    still records a ``role`` until Phase 6 of the vinta-django-orgs migration
-    drops the column, and the membership created on acceptance is put in the
-    matching groups by ``organizations.services``. This is the one translation
-    between the two, kept here beside the mapping it inverts rather than inline
-    in the mutation.
+    The public GraphQL invitation input accepts a *list*, because that is the
+    shape ``POST /organization-members/{user_id}/groups/`` accepts once the
+    invitation has been accepted; ``OrganizationInvitation.group`` holds one.
+    This is the one narrowing between the two, kept here beside
+    ``INVITABLE_GROUPS`` rather than inline in the mutation.
 
     :raises OrganizationGroupNotAssignableError: for a name that is not a
         seeded group, and for ``organization_billing_owner`` (see
@@ -275,7 +270,6 @@ def role_for_invitation_groups(group_names: Iterable[str]) -> str:
     # migrations' test helpers and by ``public_api`` types that have no reason
     # to pull DRF in.
     from organizations.exceptions import OrganizationGroupNotAssignableError
-    from organizations.models import OrganizationRole
 
     names = list(group_names)
     unusable = [name for name in names if name not in INVITABLE_GROUPS]
@@ -285,8 +279,8 @@ def role_for_invitation_groups(group_names: Iterable[str]) -> str:
             f"Allowed groups: {', '.join(INVITABLE_GROUPS)}."
         )
     if GROUP_ORGANIZATION_ADMIN in names:
-        return OrganizationRole.ADMIN
-    return OrganizationRole.MEMBER
+        return GROUP_ORGANIZATION_ADMIN
+    return GROUP_ORGANIZATION_MEMBER
 
 
 def permissions_for_groups(group_names: Iterable[str]) -> frozenset[str]:

@@ -1,5 +1,6 @@
 import datetime
 import logging
+from collections.abc import Iterable
 from typing import Annotated, Any
 
 from django.contrib.auth.models import Group
@@ -41,10 +42,14 @@ from organizations.models import (
     Organization,
     OrganizationInvitation,
     OrganizationMembership,
-    OrganizationRole,
     resolve_branding_for_display,
 )
-from organizations.permission_catalog import GROUP_PERMISSIONS, groups_for_membership_state
+from organizations.permission_catalog import (
+    GROUP_ORGANIZATION_ADMIN,
+    GROUP_ORGANIZATION_MEMBER,
+    GROUP_PERMISSIONS,
+    canonical_groups,
+)
 from organizations.slug_generation import derive_organization_slug
 from payments.billing_constants import LimitedResource
 from payments.exceptions import OverLimitError
@@ -57,35 +62,33 @@ from webhooks.services.webhook_membership_side_effects import WebhookMembershipS
 logger = logging.getLogger(__name__)
 
 
-# --------------------------------------------------------------------------
-# TEMPORARY DUAL-WRITE -- delete in Phase 6 with ``role`` / ``is_billing_owner``
-# --------------------------------------------------------------------------
-def sync_membership_groups_from_role(membership: OrganizationMembership) -> None:
-    """Bring ``membership.groups`` in step with its ``role`` / ``is_billing_owner``.
+def assign_membership_groups(
+    membership: OrganizationMembership, group_names: Iterable[str]
+) -> None:
+    """Put ``membership`` in exactly the seeded groups implied by ``group_names``.
 
-    **This function and every call to it are scheduled for deletion in Phase 6**
-    of the vinta-django-orgs migration
-    (``ai-plans/2026-08-12-VINTA_DJANGO_ORGS_MIGRATION_IMPLEMENTATION_PLAN.md``),
-    which drops the two columns and leaves the groups as the single
-    representation. Until then both are live and must agree: the Phase 3
-    backfill migration put every *pre-existing* membership in the right groups,
-    and this is what keeps every membership written *since* in the right ones.
+    The single write path for membership capabilities. Every production caller
+    goes through it -- organization creation, both invitation-accept paths, and
+    ``POST /organization-members/{user_id}/groups/`` -- so the stored group set
+    is always canonical (see
+    ``organizations.permission_catalog.canonical_groups``) rather than whatever
+    a particular caller happened to pass.
 
-    ``set()`` rather than ``add()`` -- unlike the backfill, this runs on a row
-    whose role may have just changed, so a demoted admin has to *lose*
+    It replaces the Phase 3 dual-write that derived the same set from the two
+    flat columns Phase 6 dropped. Same shape, one input instead of two.
+
+    ``set()`` rather than ``add()``: this runs on rows whose capabilities may
+    have just been *reduced*, so a demoted admin has to lose
     ``organization_admin``. Only the three seeded group names are touched; any
     other group a membership has been put in is left alone.
 
-    Silently does nothing if the seeded groups are absent, which can only happen
-    on a database that has not run
-    ``organizations.migrations.0028_seed_permission_groups`` -- there is no
-    caller for whom failing the whole write would be the better outcome, and
-    Phase 4's permission classes are what will make a missing group visible.
+    Silently assigns nothing if the seeded groups are absent, which can only
+    happen on a database that has not run
+    ``organizations.migrations.0028_seed_permission_groups``. There is no caller
+    for whom failing the whole write would be the better outcome, and a missing
+    group is immediately visible as a refused authorization.
     """
-    wanted = groups_for_membership_state(
-        is_admin=membership.role == OrganizationRole.ADMIN,
-        is_billing_owner=membership.is_billing_owner,
-    )
+    wanted = canonical_groups(group_names)
     managed = tuple(GROUP_PERMISSIONS)
     groups_by_name = {
         group.name: group for group in Group.objects.filter(name__in=managed).only("id", "name")
@@ -236,10 +239,8 @@ class OrganizationService:
         admin_membership = OrganizationMembership.objects.create(
             user=creator,
             organization=self.organization,
-            role=OrganizationRole.ADMIN,
         )
-        # Dual-write, deleted in Phase 6 -- see sync_membership_groups_from_role.
-        sync_membership_groups_from_role(admin_membership)
+        assign_membership_groups(admin_membership, [GROUP_ORGANIZATION_ADMIN])
         self.webhook_membership_side_effects_service.on_member_created(admin_membership)
 
         # Audit: the creator (now the org's first admin) is the actor for both the
@@ -389,7 +390,7 @@ class OrganizationService:
         last_name: str,
         organization: Organization,
         invited_by: User | None = None,
-        role: str = OrganizationRole.MEMBER,
+        group: str = GROUP_ORGANIZATION_MEMBER,
         send_email: bool = True,
         bypass_limits: bool = False,
     ) -> OrganizationInvitation:
@@ -407,8 +408,11 @@ class OrganizationService:
         :param invited_by: User who is sending the invitation. May be None when the invitation is
             created by an API-level actor (e.g. a reseller via the public GraphQL API) that has no
             corresponding Django User.
-        :param role: Role the invited user should receive on accepting the invitation. Defaults to
-            MEMBER. Use OrganizationRole.ADMIN for admin invitations.
+        :param group: Seeded group the accepted membership joins. Defaults to
+            ``organization_member`` (no capabilities). Pass
+            ``organization_admin`` for an admin invitation; see
+            ``organizations.permission_catalog.INVITABLE_GROUPS`` for why
+            ``organization_billing_owner`` is not invitable.
         :param send_email: When True (default) the invitation email is dispatched via the
             notification service. When False the email is suppressed — the caller is responsible
             for delivering the invite link using the raw token attached to the returned instance
@@ -475,7 +479,7 @@ class OrganizationService:
                     "last_name": last_name,
                     "token_hash": token_hash,
                     "expires_at": seven_days_from_now,
-                    "role": role,
+                    "group": group,
                 },
             )
         except IntegrityError as e:
@@ -486,7 +490,7 @@ class OrganizationService:
         if not created:
             before = {
                 "expires_at": invitation.expires_at.isoformat() if invitation.expires_at else None,
-                "role": invitation.role,
+                "group": invitation.group,
                 "accepted_at": invitation.accepted_at.isoformat()
                 if invitation.accepted_at
                 else None,
@@ -496,20 +500,20 @@ class OrganizationService:
             invitation.invited_by = invited_by
             invitation.first_name = first_name
             invitation.last_name = last_name
-            invitation.role = role
+            invitation.group = group
             invitation.accepted_at = None
             invitation.membership_user_id = None
             invitation.save()
             after = {
                 "expires_at": seven_days_from_now.isoformat(),
-                "role": role,
+                "group": group,
                 "accepted_at": None,
             }
             diff = compute_diff(before, after)
 
         # Audit: an admin (or an API-level actor with no Django User) invites a user.
         # A fresh invitation is a CREATE; reusing an existing pending row is an UPDATE
-        # (token/expiry/role reset).
+        # (token/expiry/group reset).
         actor = (
             self.audit_service.actor_from_user(invited_by, organization.id)
             if invited_by is not None
@@ -621,16 +625,14 @@ class OrganizationService:
                         membership = OrganizationMembership.objects.create(
                             user=user,
                             organization=invitation.organization,
-                            role=invitation.role,
                         )
                     except IntegrityError as e:
                         raise UserAlreadyHasMembershipError() from e
-                    # Dual-write, deleted in Phase 6 -- see
-                    # sync_membership_groups_from_role. Inside the same
-                    # transaction as the create: a membership that committed
-                    # without its groups would be authorized differently from
-                    # one that committed with them, once Phase 4 reads them.
-                    sync_membership_groups_from_role(membership)
+                    # Inside the same transaction as the create: a membership
+                    # that committed without its groups would be authorized
+                    # differently from one that committed with them, since the
+                    # groups are what every permission class reads.
+                    assign_membership_groups(membership, [invitation.group])
                     # Marking the invitation accepted must land in the same
                     # transaction as the guard + membership create, not a
                     # separate autocommit write after the block exits. Outside
@@ -744,13 +746,10 @@ class OrganizationService:
                     membership = OrganizationMembership.objects.create(
                         user=user,
                         organization=pending_invitation.organization,
-                        role=pending_invitation.role,
                     )
                 except IntegrityError as e:
                     raise UserAlreadyHasMembershipError() from e
-                # Dual-write, deleted in Phase 6 -- see
-                # sync_membership_groups_from_role.
-                sync_membership_groups_from_role(membership)
+                assign_membership_groups(membership, [pending_invitation.group])
                 # Marking the invitation accepted must land in the same
                 # transaction as the guard + membership create, not a separate
                 # autocommit write after the block exits. Outside a request

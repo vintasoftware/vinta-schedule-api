@@ -32,7 +32,6 @@ from organizations.models import (
     OrganizationBranding,
     OrganizationInvitation,
     OrganizationMembership,
-    OrganizationRole,
     resolve_branding,
     resolve_branding_for_display,
 )
@@ -42,6 +41,7 @@ from organizations.notification_contexts import (
     VINTA_DEFAULT_SECONDARY_COLOR,
     organization_invitation_context,
 )
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN, GROUP_ORGANIZATION_MEMBER
 from organizations.permissions import (
     BrandingWriteGateReason,
     evaluate_branding_write_gate,
@@ -594,12 +594,14 @@ class TestCanManageBrandingCapabilityField:
     ``test_reads_the_two_condition_helper_rather_than_the_write_gate``.
     """
 
-    def _membership(self, organization: Organization, role: str = OrganizationRole.ADMIN):
+    def _membership(
+        self, organization: Organization, groups: tuple[str, ...] = (GROUP_ORGANIZATION_ADMIN,)
+    ):
         user = baker.make(User)
         return make_membership(
             user=user,
             organization=organization,
-            role=role,
+            groups=groups,
             is_active=True,
         )
 
@@ -664,8 +666,8 @@ class TestCanManageBrandingCapabilityField:
         org = _org_with_entitlement(
             Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="member-org-cap"
         )
-        admin_membership = self._membership(org, role=OrganizationRole.ADMIN)
-        member_membership = self._membership(org, role=OrganizationRole.MEMBER)
+        admin_membership = self._membership(org, groups=(GROUP_ORGANIZATION_ADMIN,))
+        member_membership = self._membership(org, groups=(GROUP_ORGANIZATION_MEMBER,))
 
         assert CurrentMembershipSerializer(admin_membership).data["can_manage_branding"] is True
         assert CurrentMembershipSerializer(member_membership).data["can_manage_branding"] is False
@@ -686,7 +688,7 @@ class TestCanManageBrandingCapabilityField:
         org = _org_with_entitlement(
             Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="direct-branding"
         )
-        membership = self._membership(org, role=OrganizationRole.MEMBER)
+        membership = self._membership(org, groups=(GROUP_ORGANIZATION_MEMBER,))
         membership.permissions.add(
             Permission.objects.get(
                 codename=permission_codename,
@@ -737,7 +739,7 @@ class TestBrandingLogoDestinationAuth:
         make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         return user
@@ -762,7 +764,6 @@ class TestBrandingLogoDestinationAuth:
             OrganizationMembership,
             user=user,
             organization=org,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 

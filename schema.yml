@@ -19144,8 +19144,8 @@ components:
           description: 'Whether this membership is active. Inactive memberships are
             treated as gated: the user still has a row but loses all tenant-scoped
             access until reactivated. Use this to disable a user without deleting
-            their membership record (which would lose role/history). Default True
-            keeps every existing read unchanged.'
+            their membership record (which would lose their groups and history). Default
+            True keeps every existing read unchanged.'
         user_email:
           type: string
           format: email

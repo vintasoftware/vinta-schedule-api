@@ -230,8 +230,14 @@ class TestTheBackfillMigration:
         finally:
             with connection.cursor() as cursor:
                 cursor.execute("DELETE FROM organizations_organization WHERE id = ANY(%s)", [ids])
+            # ``leaf_nodes()``, not ``AFTER_CONSTRAINTS``: stepping back to
+            # ``0025`` unapplies every later migration in this app (and any that
+            # depends on one), and restoring only as far as ``0026`` would leave
+            # ``0027``-``0030`` unapplied for every later test sharing this
+            # worker's database -- which since ``0030`` means a NOT NULL ``role``
+            # column no live model writes.
             executor = MigrationExecutor(connection)
-            executor.migrate([(APP_LABEL, AFTER_CONSTRAINTS)])
+            executor.migrate(executor.loader.graph.leaf_nodes())
             executor.loader.build_graph()
 
 

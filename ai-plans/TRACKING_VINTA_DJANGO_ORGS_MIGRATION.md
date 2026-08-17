@@ -4,7 +4,7 @@
 - **Plan**: [ai-plans/2026-08-12-VINTA_DJANGO_ORGS_MIGRATION_IMPLEMENTATION_PLAN.md](2026-08-12-VINTA_DJANGO_ORGS_MIGRATION_IMPLEMENTATION_PLAN.md)
 - **Plan id**: `VINTA_DJANGO_ORGS_MIGRATION` (kebab: `vinta-django-orgs-migration`)
 - **Started**: 2026-08-12
-- **Last updated**: 2026-08-12
+- **Last updated**: 2026-08-13
 - **Feature flag**: none — the plan's Guiding Decisions justify the omission (no flag module in this repo; an app rename and a default-manager swap resolve at class-definition and migration time and cannot be gated per-request). There is consequently no flag-removal phase.
 
 ## run_options
@@ -58,7 +58,19 @@ Verified after fixing: host surface and container surface both load Django and b
 | `test_event_creation_surfaces.py::test_every_module_reaching_the_guard_has_a_probe` | Genuine parallel-load timeout; observed once. |
 | `test_availability_limit_concurrency.py::test_without_the_lock_the_net_zero_race_overshoots` | Genuine parallel-load timeout; observed once. |
 
-**Still open** (not a defect, but the fragility that let one hide): both migration tests manipulate `MigrationExecutor` against the shared per-worker database with no isolation from each other. Phase 3 added a third participant and that is what surfaced this. Worth addressing independently of this migration — the next such defect will hide the same way.
+**Closed 2026-08-13 (Phase 6) — the "still open" fragility was itself the third symptom, and it had one cause.** Phase 6's CI went red on four tests in two unrelated modules (`test_membership_group_migration_executor.py` × 2 with `SeededGroupsMissingError`, `test_seat_enforcement.py::TestConcurrentInvitesForTheLastSeat` × 2 with `IntegrityError: null value in column "role"`). Established mechanism, reproduced deterministically in 5 seconds by prepending a single no-op `transaction=True` test to the two modules:
+
+1. Every `@pytest.mark.django_db(transaction=True)` test runs Django's `flush` at teardown. `flush` re-emits `post_migrate`, so `django_content_type` and `auth_permission` are rebuilt — but **no data migration is re-run**, so `0028_seed_permission_groups`' three `auth_group` rows and their permission links are gone for the rest of that worker's session.
+2. pytest-django orders *all* transactional tests after *all* non-transactional ones, so they run as one block per worker in which only the first sees a seeded database.
+3. Every `MigrationExecutor` test steps `organizations` backwards and restores with `executor.migrate(leaf_nodes())` in a `finally`, which re-runs `0029` **forward**. On a flushed database that forward correctly raises `SeededGroupsMissingError` — **inside the `finally`**. The restore never completes and the worker's database is left mid-graph with `OrganizationMembership.role` NOT NULL back, so every later test that writes a membership dies with an `IntegrityError` naming a column no live model has, in modules with no relationship to the one that broke it.
+
+So the two "unrelated" failing modules were one chain, and `SeededGroupsMissingError` was the forward guard working correctly on a database another test had emptied. **Fix**: ~~`conftest.py`'s autouse `restore_seeded_permission_groups` re-establishes the seeded groups (and their permission links, from `organizations/permission_catalog.py`) at the start of every database test — the same shape as the existing `_reseed_default_billing_plan`, and the only reachable repair point, since the flush happens in pytest-django's finalizer, which runs *after* any conftest fixture's.~~ **Superseded 2026-08-14 by the `0.3.0` amendment (Phase 6, item 0) — the repair is the package's, not a repo-owned fixture.** `vinta_orgs.testing`'s autouse `seeded_organization_groups` does exactly what the struck text describes, is registered by `pytest_plugins = ["vinta_orgs.testing"]` in the root `conftest.py`, and is pointed at *our* catalog by `SHARED_SCHEMA_ORGANIZATIONS["ORGANIZATION_GROUP_SEEDERS"] = ["organizations.permission_catalog.seed_organization_groups"]`. **Nothing about the diagnosis, the mechanism, or the two load-bearing properties changes** — it is still reseed-at-setup (the flush runs inside pytest-django's own finalizer, later than any conftest fixture's teardown), and still reads head state (`GROUP_PERMISSIONS`) rather than `0028`'s frozen literals. What changed is ownership: a test-support hook a stock package install would need too belongs upstream, per the plan's **Package owns the authorization substrate** Guiding Decision. The repo-owned `_reseed_permission_groups` / `_test_uses_the_database` / `_DATABASE_FIXTURES` / `restore_seeded_permission_groups` block (124 lines) was deleted from `conftest.py`. Still pinned by `organizations/tests/test_seeded_permission_group_invariant.py`, which stays repo-owned because what it pins is *our* wiring — that the plugin is registered, that `ORGANIZATION_GROUP_SEEDERS` resolves to our seeder rather than the package's default `organization_owner`-only one, and that the catalog restored is Phase 3's three groups and four capabilities. This protects all four `MigrationExecutor` participants without any of them opting in, which is the point: repairing it per-consumer is what let one root cause wear three symptoms.
+
+**The blast radius was far wider than the four CI failures.** With the repair disabled, `organizations payments common/tests/test_fields.py` run serially gives **364 failures, not 4** — most of them permission-dependent view and webhook tests, because `user.has_perm(...)` resolves through exactly those groups. CI only ever showed four because with ten workers the transactional block at the tail of each worker is short. `--dist load` scheduling, not severity, is what decided which four surfaced.
+
+> **Re-measured 2026-08-14, after the rebase onto the amended stack.** The 364 figure did not reproduce, and the reason is worth recording because it is the same lesson as the misdiagnosis above: **the count is a function of ordering, not of severity.** Re-running the identical command with `vinta_orgs.testing` unregistered gave **2 failures**, both in `test_seeded_permission_group_invariant.py` — the first transactional test to flush landed near the tail of the block, so almost nothing ran after it. Selecting for the documented cascade instead (`test_seat_enforcement test_slug_backfill test_membership_group_migration_executor common/tests/test_fields test_views test_permissions test_billing_period_summary_model`, serial, plugin unregistered) reproduced it exactly: **5 failures**, including three `IntegrityError: null value in column "role"` in `common/tests/test_fields.py` — a module with no relationship to the one that emptied the database. The same command with the plugin registered: **253 passed, 0 failed.** So the mechanism, the cascade, and the cross-module symptom are all confirmed at head; only the headline number is unreproducible, and **no number should be trusted here without naming the selection and the ordering that produced it.** Treat 364 as "one observed ordering", not as the blast radius.
+
+Rejected alternatives: an xdist group for the migration tests (the interference is *within* a worker and sequential — grouping changes nothing, and CI runs the default `--dist load` anyway); a dedicated database for them (expensive, and leaves the other 360 failures latent); relaxing `0029`'s forward guard (it is correct — see above).
 
 Every "known flake" mention below this point predates this correction. They are left in place as the historical record of what each phase believed at the time; this section supersedes them.
 
@@ -79,7 +91,39 @@ Every "known flake" mention below this point predates this correction. They are 
 | 3.5 | Make the authorization substrate correct before migrating onto it | 4 | reviewer 4 | ✅ done | `plan/vinta-django-orgs-migration/phase-3.5` | phase-3 | see below |
 | 4 | Migrate the permission classes to `has_perm` | 4 | reviewer 4 | ✅ done | `plan/vinta-django-orgs-migration/phase-4` | `chore/prune-package-tests` | see below |
 | 5 | Expose permissions on REST and GraphQL, drop `role` | 3 | — | ✅ done | `plan/vinta-django-orgs-migration/phase-5` | phase-4 | see below |
-| 6 | Drop `role` / `is_billing_owner` and delete the old tenancy layer | 1 | — | ⏳ pending | — | phase-5 | — |
+| 6 | Drop `role` / `is_billing_owner` and delete the old tenancy layer | 1 | — | ✅ done | `plan/vinta-django-orgs-migration/phase-6` | phase-5 | see below |
+
+## CI — the whole stack is green (2026-08-13)
+
+Every PR in the stack passes its `Build` check. CI is the authoritative gate for
+this plan: local full-suite runs were declined throughout because the machine sat
+at load ~19 with 32 containers from other worktrees, making local runs ~4× slower
+than CI against a 10-second per-test timeout — slow and broken were
+indistinguishable locally.
+
+| PR | Phase | Build |
+|---|---|---|
+| #254 | 0 | ✅ pass |
+| #258 | 1 | ✅ pass |
+| #259 | 2a | ✅ pass |
+| #260 | 2b | ✅ pass |
+| #261 | 3 | ✅ pass |
+| #262 | 3.5 | ✅ pass |
+| #263 | test hygiene (`chore/prune-package-tests`) | ✅ pass |
+| #264 | 4 | ✅ pass |
+| #265 | 5 | ✅ pass |
+| #266 | 6 | ✅ pass |
+
+#266 went green on `065d3c4`, the transactional-flush repair described under the
+correction above. Nothing else in the stack needed a re-run.
+
+**Superseded 2026-08-14.** Every SHA in this section predates the `0.3.0`
+rebase. `phase-6` was rebased onto the amended `phase-5`, so ~~`065d3c4`~~ and
+the five commits around it no longer exist under those hashes; the repair that
+made #266 green is now `vinta_orgs.testing`'s fixture rather than the
+repo-owned one that commit added. See the Phase 6 rebase note below for the new
+SHAs. The ✅ column is left as the historical record of what each PR passed at
+the time.
 
 ## Amendment — 2026-08-12: package `0.2.0`, app rename withdrawn
 
@@ -551,6 +595,335 @@ Carry-forwards:
 - **The new endpoint can set *and clear* `is_billing_owner`**, which no API could do before. Not a widening: strictly less than `organization_admin`, which the same caller could already grant.
 - **`role_for_invitation_groups`'s late import is load-bearing** — verified. `organizations.models.OrganizationRole` raises `ImproperlyConfigured` if imported eagerly without `django.setup()`, and `permission_catalog` is imported by data-migration test helpers and DRF-agnostic `public_api` types.
 
+### Phase 6 — Drop `role` / `is_billing_owner` and delete the old tenancy layer
+
+- **Branch**: `plan/vinta-django-orgs-migration/phase-6` off `phase-5`
+- **Commit**: ~~`73639c4`~~ **`11d7b6d`** (implement, Tier 1 — escalated in practice; see below)
+
+#### Rebase onto the amended stack — 2026-08-14
+
+Phase 6 was written against the pre-`0.3.0` versions of Phases 3, 3.5, 4 and 5.
+Those were rewritten in place by the 2026-08-13 amendment, so this branch was
+rebased `--onto phase-5`. **Every SHA recorded in this section is superseded**;
+the six commits are now `11d7b6d`, `a0ab1df`, `b8e5077`, `481be19`, `bc6ece7`,
+`47f72fb`, plus one new commit on top carrying the item-0 amendment. No commit
+was dropped and no message changed.
+
+Ten files conflicted on the first commit and two on the third. The resolution
+rule throughout: **the amended side is the truth, Phase 6 contributes its
+intent** — so `organizations/authorization.py` keeps the thin adapter over
+`vinta_orgs.authorization` and *gains* Phase 6's `membership_holds_permission` /
+`membership_role_label`; `organizations/querysets.py` keeps
+`active().holding_permission(...)` and drops only the now-false sentence about
+the dual-write keeping two representations in step;
+`organizations/permission_catalog.py` keeps Phase 3's `seed_organization_groups`
+(the `ORGANIZATION_GROUP_SEEDERS` target) *and* takes Phase 6's
+`canonical_groups` and `group_for_invitation_groups`;
+`common/tests/test_resolution_table_after_reorder.py` keeps the amended
+status-code/body pins and loses only the `OrganizationRole` import.
+
+**One deletion, and it earns it**:
+`organizations/tests/test_privileged_membership_fixtures.py`. Its entire scan is
+keyed on `PRIVILEGE_KWARGS = {"role", "is_billing_owner"}` — with the columns
+gone, `_privilege_kwargs` can never fire and the guard is vacuous, which is a
+worse state than absent. Nothing else was removed. (Consequence worth knowing:
+its two whole-tree AST scans, `test_no_test_builds_a_privileged_membership_without_its_groups`
+and `test_no_other_module_uses_the_opt_out`, were the two tests that regularly
+exceeded the 10s per-test timeout; they no longer run.)
+
+**Five sites the rebase exposed that neither side had covered**, because they
+were added by the amended phases *after* Phase 6's sweep ran: three
+`role=OrganizationRole.*` in `organizations/tests/test_branding_gate_parity.py`
+and two in `organizations/tests/test_org_resolution.py`. Converted the same way
+the sweep converted their neighbours (`groups=[GROUP_ORGANIZATION_ADMIN]`, or
+the helper's `organization_member` default).
+
+**Item 0 of the amended phase body**: the seeded-group repair now comes from
+`vinta_orgs.testing`, and the repo-owned `conftest.py` fixture `bc6ece7` added
+is deleted. See the strikethrough under the 2026-08-13 correction section, and
+the re-measurement of the blast radius alongside it.
+
+**"Mechanical deletion once the greps are clean" understated it by a lot.** The
+plan rated this Tier 1. Three things in it were not mechanical: two production
+readers of `membership.role` that no carry-forward had named, an
+`OrganizationInvitation.role` column with nowhere to go once the enum was
+deleted, and a shared-migration-state defect that only exists *because* this
+phase adds the first schema migration downstream of `payments.0022`.
+
+**What landed**: migration `0030` (drop both columns; rename
+`OrganizationInvitation.role` -> `group` and remap its two values);
+`OrganizationRole`, `is_admin`, and the `sync_membership_groups_from_role`
+dual-write deleted; `assign_membership_groups` in its place as the single write
+path; `canonical_groups` replacing the `groups_for_membership_state` /
+`membership_state_for_groups` pair; `membership_holds_permission` and
+`membership_role_label` added to `organizations/authorization.py`; the four dead
+classes deleted from `common/fields.py`; ~350 fixture sites converted across 80
+test modules.
+
+**The five named call sites, and two nobody had named.**
+
+| Site | Read | Now reads |
+|---|---|---|
+| `public_api/scoping.py:50` | `membership.is_admin` | `membership_holds_permission(membership, MANAGE_MEMBERS)` |
+| `calendar_integration/querysets.py:1204` | `membership.is_admin` | same |
+| `external_event_change_request_service.py:503` | `membership.is_admin` | same |
+| `external_event_change_request_service.py:273` | `filter(role=ADMIN)` — **unlisted** | `.holding_permission(MANAGE_MEMBERS)` |
+| `organizations/services.py` | the dual-write shim | deleted; `assign_membership_groups` |
+| `webhooks/services/webhook_membership_side_effects.py:31` | `membership.role` — **unlisted** | `membership_role_label(membership)` |
+| `audit/services.py:76` | `membership.role` — **unlisted** | `membership_role_label(membership)` |
+
+`booking_policy_permission_service.py`, named in the brief, **held no reader at
+all** — Phase 4 removed the last one and only the module docstring still
+mentioned `is_admin`. The brief's count was one too high and two too low.
+
+The last two are the interesting ones: neither is an authorization read. The
+webhook payload's `membership_role` is a partner-visible field and
+`audit.Audit.actor_role` is a snapshot column with `"admin"` / `"member"` rows
+already on disk that `AuditRepository.query` matches exactly. Both keep their
+published values, derived from `organizations.manage_members` instead of the
+column — writing a new spelling would have split audit history in two silently,
+which is the exact trap the withdrawn app rename was withdrawn to avoid.
+
+**`membership_holds_permission` is not a fourth implementation.** It is
+`OrganizationMembershipQuerySet.holding_permission` narrowed to one row — one
+query, no new predicate, guaranteed to agree with the last-admin guard. It
+deliberately does *not* route through `has_organization_permission`: that takes a
+`user`, so it applies the backend's `user.is_active` gate and needs
+`membership.user` loaded, and `membership.is_admin` applied neither. Routing
+through it would have been a behaviour change dressed as a refactor.
+
+**`OrganizationInvitation.role` went, as `group`.** The column records which
+capability set the invitee receives on acceptance — real information, and the
+only remaining consumer of a role vocabulary. Dropping it would have silently
+demoted every pending admin invitation; keeping it would have needed a `choices`
+enum this phase exists to delete. Renamed to `group` holding a seeded group name,
+with a two-row value remap in the same migration. A single `CharField` rather
+than an M2M: an invitation carries at most one of `INVITABLE_GROUPS`. **No wire
+impact** — `role` was never on any REST or GraphQL invitation payload (Phase 5's
+handoff already documented `groups` on `createInvitation`), so no handoff update.
+
+**`sqlmigrate` review.** `0030` emits exactly: `RENAME COLUMN role TO "group"`,
+`ALTER COLUMN "group" TYPE varchar(50)`, two `DROP COLUMN`s, and `(no-op)` for
+the `is_active` `help_text` change. **No `DROP INDEX` or `DROP CONSTRAINT`
+anywhere** — the Phase 2a `_alter_field` failure class needs an `AlterField` on a
+column that participates in a `Meta.constraints` entry, and neither altered column
+does. Verified on a fresh database:
+`uniq_membership_user_organization` survives as a `UNIQUE CONSTRAINT` with all
+five raw-SQL PROTECT FKs still bound to it; both invitation constraints survive
+the rename, including the *partial* `uniq_invitation_membership_user_per_org`
+(stored as an index, which is the shape Phase 2a lost one of); and Phase 2a's
+`bookingpolicy_uniq_org_default` is still there.
+
+**A real defect the column drop surfaced, fixed here.** Two tests drive
+`MigrationExecutor` backwards over the shared per-worker database and restore only
+*their own app's* head in `finally`. Stepping `payments` back to `0019` unapplies
+every migration that depends on a later `payments` one — `organizations.0027`
+onwards reach `payments.0022` — and migrating forward to `payments.0020`
+re-applies only `payments`. That was invisible while the collateral migrations
+were data-only. `0030` is the first schema migration in that set, so the reverse
+*restored a NOT NULL `role` column no live model writes* and every membership
+insert in every later test in that worker failed with `NotNullViolation`. Five
+failures across two modules, in two apps neither test names. Both `finally`
+blocks now restore `executor.loader.graph.leaf_nodes()`. **This is the
+"still open" fragility the 2026-08-13 correction section predicted would hide the
+next defect the same way** — it did, and this time the diagnosis started from
+"passes alone, fails in a suite = interference", not from load.
+
+**The fixture sweep was automated, and the automation had a bug.** ~350 sites
+were rewritten by an AST-driven script under two rules: helper calls map
+`role=`/`is_billing_owner=` to `groups=[...]`; everything else naming
+`OrganizationMembership` simply drops the kwarg (an unprivileged row is the same
+shape, and a privileged one was already followed by `grant_membership_groups`).
+That second rule is wrong for three `_make_org_with_member(*, is_admin)` helpers
+whose deleted kwarg was `ADMIN if is_admin else MEMBER` and whose
+`grant_membership_groups` call then unconditionally granted admin — turning every
+`is_admin=False` fixture into an admin. Two of the three surfaced as red tests;
+the third would not have. Found by re-scanning the *pre-change* files for every
+sync call whose argument construction was not literally `ADMIN`, which found
+exactly those three and nothing else.
+
+**Tests removed, and what still covers them:**
+
+| Removed | Why | Replacement cover |
+|---|---|---|
+| `organizations/tests/test_privileged_membership_fixtures.py` (whole module) | It guarded against "privileged by column, unprivileged by permission" — a shape that needs two representations. With one, `baker.make(OrganizationMembership)` is simply an unprivileged membership and a test that wanted an admin goes **red**, loudly. | The failure it prevented is no longer silent. |
+| `test_group_assignment_endpoint.py::test_the_columns_the_rest_of_the_codebase_still_reads_are_written_too` | Pinned the dual-write in the direction the endpoint ran it. | Nothing to pin — the endpoint writes groups directly. |
+| `test_dunning_recipients.py::TestTheDualWriteKeepsTheTwoRepresentationsInStep` | Same. | Rewritten as `TestReGroupingRemovesCapabilities`: what those tests actually protected is that `assign_membership_groups` writes a *set*, so a demotion removes the dunning seat rather than only adding one. All three cases kept. |
+| `test_group_backfill_migration.py::TestTheBackfillMapsEveryCombination` (DB-driven half) | Drove the forward backfill through `global_apps`, which no longer carries the columns. | `TestTheMappingTheBackfillApplied` asserts the same four cells against the migration's own `target_group_names`, plus a new "every cell names only seeded groups" case. The reverse tests are kept and still DB-driven (the reverse reads no dropped column), including the CI-defect regression. |
+| `test_membership_api_surface.py`'s `is_billing_owner` half | Structurally impossible to emit once the column is gone; the `role` half is kept as a client-contract statement. | — |
+
+Also converted rather than removed: `common/tests/test_fields.py`'s
+`filter(membership__role=...)` traversal test. It became
+`membership__is_active`, **not** `membership__groups__name` — that class is
+`transaction=True`, which truncates `auth_group` between tests and takes the three
+seeded groups with it, so a group-shaped assertion there matches nothing and
+passes vacuously in the deny direction. ~~Worth knowing before writing any
+group-based assertion in a `transaction=True` class.~~ **Narrowed 2026-08-14**:
+`vinta_orgs.testing`'s autouse fixture reseeds the three groups at the *start*
+of every database test, so a `transaction=True` class no longer inherits an
+empty `auth_group` from the test before it. The hazard that remains is
+within-test — a group-shaped assertion made *after* something in the same test
+flushes still matches nothing — which is exactly the shape
+`test_seeded_permission_group_invariant.py` exercises deliberately. The
+conversion above stands on its own merits and was not reverted.
+
+**Gate**: ruff / format clean, `makemigrations --check` clean, `check --deploy`
+byte-identical to baseline (5 pre-existing warnings), mypy **291** (exactly the
+Phase 5 baseline), `schema.yml` regenerated (one `help_text` string),
+`schema-auth.yml` byte-identical. Scoped suites **5,858 passed / 0 failed** across
+two serial groups (`calendar_integration` 2,042; everything else 3,816), zero
+`Timeout (>10`, zero `AssertionError`. `migrate` clean from zero on a fresh
+database, and `0030` steps backwards and forwards again. Full suite gated on CI
+per the machine-load note.
+
+**Rebased again 2026-08-14 after the Phase 4 timeout fix**: Phase 6 now sits on
+the repaired Phase 5 tip. Commits 2–8 are patch-identical by `git range-diff`;
+the first differs only because it deletes the larger, newly optimized
+`test_privileged_membership_fixtures.py`, as Phase 6's removal of `role` and
+`is_billing_owner` makes that guard vacuous. Comparing the old and new final
+Phase 6 trees shows only this plan and tracking file changed. The full suite is
+**5,929 passed / 0 failed**; a clean migration followed by the migration-executor
+and seeded-group invariant tests is **5 passed / 0 failed**. Ruff, format,
+`makemigrations --check`, and `check --deploy` are clean. Mypy currently reports
+292 errors in 58 files; because the code tree is identical, the one-error change
+from the recorded 291 is tooling/environment drift rather than a branch change.
+New SHA `517d973`; `plan/vinta-django-orgs-migration/phase-6` force-pushed.
+
+**Rebased a third time 2026-08-16, onto the amended Phase 5.** Phase 5 grew a
+capability-enforcement pass, a last-admin guard, frozen-literal seed migrations
+and three relocated AST scans after Phase 6 was written, so seven files
+conflicted on the first commit and `conftest.py` on two later ones. Phase 5 was
+taken as the truth throughout; Phase 6 contributed its intent:
+
+- `organizations/permission_catalog.py` — Phase 5's structure kept whole
+  (`*_TUPLE` constants, derived `_label`, `PERMISSIONS`, `_permissions_by_label`
+  and the runtime seeders `ORGANIZATION_GROUP_SEEDERS` points at, none of which
+  a migration imports). Only the two flat-column translators went:
+  `groups_for_membership_state` and `membership_state_for_groups`.
+  `canonical_groups`, `INVITABLE_GROUPS` and `group_for_invitation_groups`
+  survive, and `0030`'s `role` → `group` rename still agrees with the model's
+  `choices=[(name, name) for name in INVITABLE_GROUPS]` (`makemigrations
+  --check` clean).
+- `organizations/views.py`, `common/tests/test_permission_check_ordering.py`,
+  `organizations/tests/test_org_resolution.py` — Phase 5's guards, enforcement
+  and restored classes kept; the conflicts were the `OrganizationRole` import
+  against a `get_active_organization_membership` import Phase 5 had already
+  deleted (`check_legacy_membership_resolution` forbids the latter). Neither
+  name survives.
+- `organizations/tests/test_permissions_parity.py`,
+  `payments/tests/test_reseller_root_billing.py` — every Phase 5 assertion,
+  docstring and control kept; only `role=`/`is_billing_owner=` became `groups=`.
+  Phase 6's bare `acting_in(...)` / `_acting_from(...)` statements were dropped:
+  Phase 5 rewrote the first into a pure function whose result is passed to
+  `request_for`, and deleted the second. **No test was deleted in this rebase.**
+- `conftest.py` — Phase 6's repo-owned `restore_seeded_permission_groups` block
+  was never applied. Phase 5 already registers `pytest_plugins =
+  ["vinta_orgs.testing"]` and points `ORGANIZATION_GROUP_SEEDERS` at
+  `seed_organization_groups`, which is exactly the end state Phase 6's own
+  follow-up (`take the seeded-group repair from vinta_orgs.testing`) reached by
+  adding 124 lines and removing them again.
+- Three `role=OrganizationRole.MEMBER` call sites Phase 5 added after Phase 6
+  was branched (`organizations/tests/test_branding.py`,
+  `organizations/tests/test_views.py` ×2, `legal/tests/test_consent_service.py`)
+  were converted; they were outside every conflict hunk and would have been
+  `NameError` at collection.
+
+**`check_privileged_membership_fixtures` is deleted, with its CI step and its
+pre-commit hook.** Phase 5 relocated the Phase 4 pytest guard into a management
+command, so the module the table above records as removed is now that command.
+The reasoning is unchanged and is now structural: the scan is keyed on
+`PRIVILEGE_KWARGS = {"role", "is_billing_owner"}`, and with both columns gone
+its pre-filter short-circuits on every module — it could report success forever
+without a possible offender, which is worse than no check. Retargeting it onto
+"a membership built without groups" was rejected: a group-less membership and
+one in `organization_member` are indistinguishable to every permission check, so
+that scan would flag hundreds of correct call sites while proving nothing. The
+invariant it guarded needed two representations that could disagree; one
+survives. `check_legacy_membership_resolution` and
+`check_event_guarded_surfaces` key on nothing that was dropped and stay wired in
+both CI and pre-commit; both pass with a propagating exit code.
+
+Gate on the rebased tip: ruff and `ruff format --check` clean, `makemigrations
+--check` clean, `check --deploy` clean, `schema.yml` regenerates byte-identical,
+mypy **292** (the Phase 5 figure, unmoved), full suite **5,954 passed / 0
+failed** in 156s at the default 10-second `pytest.ini` timeout — no raised
+budget, no timeout.
+
+Item 4's grep needs one correction it did not need when it was first recorded
+below. Excluding `.venv` and `*/migrations/*` it now returns **no live code
+reading either column**, but it is not literally empty: it matches prose in
+three docstrings, and three lines in
+`organizations/tests/test_membership_group_migration_executor.py` — the module
+`9c08e249` added *after* the "returns nothing" claim was written — which writes
+`role` / `is_billing_owner` through `MigrationExecutor`'s **historical** models
+to drive `0029` forward and `0030` across. That is the one place the columns
+must still be nameable, and it is why the module exists. Deleting the guard
+command removed the last hits that were neither prose nor historical.
+
+**The three carry-forward decisions:**
+
+1. **`IsBillingOwnerOrAdmin`'s reseller-root branch: KEPT.** It is unreachable
+   *as a grant* through today's callers, but that is a property of the callers,
+   not of the rule: every REST caller passes `resolve_billing_root(organization)`
+   (an ancestor-or-self) where the branch needs a descendant. The rule itself —
+   "a reseller root that pays for a descendant's capacity may manage its
+   billing" — is correct and is one of the four the plan's **Four rules stay
+   hand-written** decision names. Deleting it would take its dedicated test with
+   it, so the next view that hands a descendant to `check_object_permissions`
+   would lose the grant with nothing going red. Dead-by-construction is worth
+   deleting; dead-by-caller-convention is one PR from being alive.
+2. **Branding views stay on `IsOrganizationAdmin`: NOT MOVED.** Phase 5's trigger
+   ("the moment a group can carry `manage_branding` alone") has not fired and
+   cannot fire without the per-organization group layer, which is an explicit
+   plan Non-goal. Moving the gate to `manage_branding` is a *widening* in shape —
+   a member holding `manage_branding` but not `manage_members` would newly pass —
+   and this phase's contract is deletion with no authorization outcome change,
+   with no parity-matrix budget. It belongs with the change that makes the
+   trigger real.
+3. **Stale `OrganizationModel` prose: CLEANED**, in every `*.py` file. The `.md`
+   tooling docs (`AGENTS.md`, `ai-tools/skills/*`, `.claude|.cursor|.github`
+   agent definitions, `docs/glossary.md`) still name it; they are outside item 4's
+   `--include="*.py"` grep and outside this phase's brief. Worth a separate
+   docs pass — `ai-tools/skills/add-model/SKILL.md` still tells an implementer to
+   `from common.models import OrganizationModel`, which no longer exists.
+
+**Item 4's grep is clean**: `grep -rn "OrganizationRole\|is_billing_owner\|OrganizationModel\b" --include="*.py" .`
+excluding `.venv` and `*/migrations/*` returns **nothing**.
+
+Carry-forwards:
+
+- **`OrganizationMembershipForeignKey` was not reparented, deliberately.** The
+  phase brief said it "now has no base class to inherit from, so reparent it onto
+  the package's field classes"; that misreads the plan, which says it "extends
+  `models.Field` directly and needs no reparenting". `models.Field` is Django's
+  and was never one of the four deleted classes. Reparenting onto
+  `OrganizationSafeRelation` would mean overriding every attribute (different
+  concrete column name and type, different `to_fields`, `DO_NOTHING`) and would
+  lose django-stubs' `Field`-subclass model-attribute typing. Recorded in the
+  module docstring so it is not re-litigated.
+- **Migration `0013` was edited.** It declared `common.fields.SafeCompositePrimaryKey`
+  in its state half; that class is deleted, so the migration named a missing
+  import and the graph would not load. Repointed at `models.CompositePrimaryKey`
+  (identical deconstruction; the two differ only in a Python descriptor no
+  migration reads, and `0023` removes the field again). The alternative was
+  keeping a deleted class alive so an already-superseded migration could import
+  it.
+- **`0030`'s reverse restores the columns but not their values.** There is
+  nothing to restore them from, and guessing from the groups would invent
+  history. It is offered for steppability, not as a data-safe undo — every
+  membership comes back as `role='member', is_billing_owner=False`, so re-running
+  `0029` forward after a reverse would then put every membership in
+  `organization_member`. Documented in the migration header.
+- **Two `MigrationExecutor` tests now restore the whole graph**, which is correct
+  but slower and still leaves the underlying fragility: nothing *prevents* the
+  next such test from restoring only its own app. A fixture that snapshots and
+  restores the graph would.
+- **`assign_membership_groups` still silently no-ops when the seeded groups are
+  absent**, inherited from the shim. On a migrated database that cannot happen;
+  on one where it did, the symptom is a refused authorization rather than a
+  failed write. Unchanged by design, restated here because it is now the *only*
+  write path.
+
 ## Decisions taken 2026-08-13
 
 All three questions blocking Phase 4 were put to the user and answered:
@@ -561,7 +934,18 @@ All three questions blocking Phase 4 were put to the user and answered:
 
 ## Current phase
 
-Phase 6 — drop `role` / `is_billing_owner` and delete the old tenancy layer. Based on `phase-5`. Read Phase 4's and Phase 5's carry-forwards first: four `membership.is_admin` readers survive outside the permission classes and each breaks on the column drop, and `IsBillingOwnerOrAdmin`'s reseller-root branch is unreachable as a grant and may be collapsible. The substrate is now correct: permission checks see the resolved organization, and a deactivated membership resolves nothing. Use the corrected call-site count (two of the four files named in the plan body hold no membership reads), and the shared-test-helper fixture approach recorded under **Decisions taken 2026-08-13**.
+_(none — Phase 6 was the last. The plan is complete.)_
+
+Three items are left open and are **not** part of this plan:
+
+1. **`.md` tooling docs still name `OrganizationModel`** — `AGENTS.md`, every
+   `ai-tools/skills/*`, the `.claude` / `.cursor` / `.github` agent definitions,
+   `docs/glossary.md`, `.github/copilot-instructions.md`. `add-model/SKILL.md`
+   instructs an implementer to import a class that no longer exists. A docs pass.
+2. **The branding views' gate**, with its trigger stated in Phase 5's and Phase
+   6's carry-forwards. It belongs with the per-organization group layer.
+3. **`MigrationExecutor` tests restoring a partial graph.** Fixed at both current
+   sites; nothing prevents a third.
 
 ## Deferred phases
 

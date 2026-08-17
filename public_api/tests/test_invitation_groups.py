@@ -20,7 +20,7 @@ import pytest
 from model_bakery import baker
 from rest_framework.test import APIClient
 
-from organizations.models import Organization, OrganizationInvitation, OrganizationRole
+from organizations.models import Organization, OrganizationInvitation
 from organizations.permission_catalog import (
     GROUP_ORGANIZATION_ADMIN,
     GROUP_ORGANIZATION_BILLING_OWNER,
@@ -119,24 +119,24 @@ class TestAcceptedGroups:
         result = invite(child, "plain@example.com")
 
         assert "errors" not in result
-        assert stored("plain@example.com", child).role == OrganizationRole.MEMBER
+        assert stored("plain@example.com", child).group == GROUP_ORGANIZATION_MEMBER
 
     def test_organization_member_is_accepted_explicitly(self, invite, child):
         result = invite(child, "explicit@example.com", groups=[GROUP_ORGANIZATION_MEMBER])
 
         assert "errors" not in result
-        assert stored("explicit@example.com", child).role == OrganizationRole.MEMBER
+        assert stored("explicit@example.com", child).group == GROUP_ORGANIZATION_MEMBER
 
     def test_organization_admin_invites_an_administrator(self, invite, child):
         result = invite(child, "boss@example.com", groups=[GROUP_ORGANIZATION_ADMIN])
 
         assert "errors" not in result
-        assert stored("boss@example.com", child).role == OrganizationRole.ADMIN
+        assert stored("boss@example.com", child).group == GROUP_ORGANIZATION_ADMIN
 
     def test_the_membership_created_on_acceptance_carries_the_matching_groups(self, invite, child):
         """End to end: the group named on the invitation is the group granted.
 
-        The invitation stores a role and the acceptance path puts the new
+        The invitation stores a group name and the acceptance path puts the new
         membership in groups; only the pair together delivers what the partner
         asked for, and only this test crosses both.
         """
@@ -200,4 +200,4 @@ class TestRefusedGroups:
         result = invite(child, "empty@example.com", groups=[])
 
         assert "errors" not in result
-        assert stored("empty@example.com", child).role == OrganizationRole.MEMBER
+        assert stored("empty@example.com", child).group == GROUP_ORGANIZATION_MEMBER

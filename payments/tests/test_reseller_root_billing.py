@@ -27,8 +27,12 @@ from rest_framework.test import APIRequestFactory
 
 from common.organization_context import organization_context
 from common.organization_services import memberships
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
-from organizations.permission_catalog import MANAGE_BILLING
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import (
+    GROUP_ORGANIZATION_ADMIN,
+    GROUP_ORGANIZATION_BILLING_OWNER,
+    MANAGE_BILLING,
+)
 from organizations.permissions import IsBillingOwnerOrAdmin
 from organizations.tests.helpers import make_membership
 
@@ -82,7 +86,7 @@ class TestActingResellerRoot:
         """The low-level branch admits a permitted reseller-root membership
         against a descendant target."""
         user = baker.make(User)
-        make_membership(user=user, organization=reseller_root, role=OrganizationRole.ADMIN)
+        make_membership(user=user, organization=reseller_root, groups=[GROUP_ORGANIZATION_ADMIN])
 
         with organization_context(descendant):
             assert self.permission.has_object_permission(_request(user), None, descendant) is True
@@ -90,7 +94,7 @@ class TestActingResellerRoot:
     def test_the_binding_a_request_actually_produces(self, reseller_root, descendant):
         """The same low-level policy is true when the root is bound directly."""
         user = baker.make(User)
-        make_membership(user=user, organization=reseller_root, role=OrganizationRole.ADMIN)
+        make_membership(user=user, organization=reseller_root, groups=[GROUP_ORGANIZATION_ADMIN])
 
         with organization_context(reseller_root):
             assert self.permission.has_object_permission(_request(user), None, descendant) is True
@@ -98,14 +102,17 @@ class TestActingResellerRoot:
             # the assertion above would also hold against a branch that admitted
             # everyone whose bound organization happened to be a reseller root.
             plain = baker.make(User)
-            make_membership(user=plain, organization=reseller_root, role=OrganizationRole.MEMBER)
+            make_membership(
+                user=plain,
+                organization=reseller_root,
+            )
 
             assert self.permission.has_object_permission(_request(plain), None, descendant) is False
 
     def test_a_bare_has_perm_under_that_binding_would_have_said_no(self, reseller_root, descendant):
         """The low-level branch must name the reseller-root organization."""
         user = baker.make(User)
-        make_membership(user=user, organization=reseller_root, role=OrganizationRole.ADMIN)
+        make_membership(user=user, organization=reseller_root, groups=[GROUP_ORGANIZATION_ADMIN])
         with organization_context(descendant):
             assert user.has_perm(MANAGE_BILLING) is False
             assert self.permission.has_object_permission(_request(user), None, descendant) is True
@@ -113,21 +120,20 @@ class TestActingResellerRoot:
     def test_a_billing_owner_of_the_root_may_too(self, reseller_root, descendant):
         """``payments.manage_billing`` is the capability, not "is an admin" --
         the ``organization_billing_owner`` group carries it as well, which is
-        what makes the old ``is_admin or is_billing_owner`` disjunction one
-        permission rather than two."""
+        what makes the flat two-column disjunction it replaced one permission
+        rather than two."""
         user = baker.make(User)
         make_membership(
             user=user,
             organization=reseller_root,
-            role=OrganizationRole.MEMBER,
-            is_billing_owner=True,
+            groups=[GROUP_ORGANIZATION_BILLING_OWNER],
         )
         with organization_context(descendant):
             assert self.permission.has_object_permission(_request(user), None, descendant) is True
 
     def test_the_reach_extends_down_the_whole_subtree(self, reseller_root, descendant, grandchild):
         user = baker.make(User)
-        make_membership(user=user, organization=reseller_root, role=OrganizationRole.ADMIN)
+        make_membership(user=user, organization=reseller_root, groups=[GROUP_ORGANIZATION_ADMIN])
         with organization_context(grandchild):
             assert self.permission.has_object_permission(_request(user), None, grandchild) is True
 
@@ -135,7 +141,10 @@ class TestActingResellerRoot:
         """The capability sub-check is the only part that swapped, so this is the
         row that catches it having been dropped rather than swapped."""
         user = baker.make(User)
-        make_membership(user=user, organization=reseller_root, role=OrganizationRole.MEMBER)
+        make_membership(
+            user=user,
+            organization=reseller_root,
+        )
         with organization_context(descendant):
             assert self.permission.has_object_permission(_request(user), None, descendant) is False
 
@@ -144,7 +153,7 @@ class TestActingResellerRoot:
         make_membership(
             user=user,
             organization=reseller_root,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=False,
         )
         with organization_context(descendant):
@@ -155,7 +164,7 @@ class TestActingResellerRoot:
         permission and was not swapped for one -- an ordinary organization's
         admin gets no reach outside it."""
         user = baker.make(User)
-        make_membership(user=user, organization=plain_root, role=OrganizationRole.ADMIN)
+        make_membership(user=user, organization=plain_root, groups=[GROUP_ORGANIZATION_ADMIN])
         with organization_context(descendant):
             assert self.permission.has_object_permission(_request(user), None, descendant) is False
 
@@ -164,7 +173,7 @@ class TestActingResellerRoot:
         the parent is the billing root. ``is_target_in_subtree`` is directional
         and stays so."""
         user = baker.make(User)
-        make_membership(user=user, organization=descendant, role=OrganizationRole.ADMIN)
+        make_membership(user=user, organization=descendant, groups=[GROUP_ORGANIZATION_ADMIN])
         with organization_context(descendant):
             assert (
                 self.permission.has_object_permission(_request(user), None, reseller_root) is False
@@ -176,7 +185,7 @@ class TestActingResellerRoot:
             Organization, name="Rival", slug="rival-root", can_invite_organizations=True
         )
         user = baker.make(User)
-        make_membership(user=user, organization=other_root, role=OrganizationRole.ADMIN)
+        make_membership(user=user, organization=other_root, groups=[GROUP_ORGANIZATION_ADMIN])
         with organization_context(descendant):
             assert self.permission.has_object_permission(_request(user), None, descendant) is False
 
@@ -185,6 +194,6 @@ class TestActingResellerRoot:
     ):
         """The coarse gate checks the membership's explicitly named organization."""
         user = baker.make(User)
-        make_membership(user=user, organization=reseller_root, role=OrganizationRole.ADMIN)
+        make_membership(user=user, organization=reseller_root, groups=[GROUP_ORGANIZATION_ADMIN])
         with organization_context(descendant):
             assert self.permission.has_permission(_request(user), None) is True

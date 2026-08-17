@@ -39,7 +39,8 @@ from calendar_integration.services.dataclasses import (
     CalendarGroupInputData,
     CalendarGroupSlotInputData,
 )
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import grant_membership_groups
 from users.models import Profile, User
 
@@ -84,8 +85,10 @@ def admin_user(db: Any, organization: Organization) -> User:
     Profile.objects.create(user=u)
     grant_membership_groups(
         OrganizationMembership.objects.create(
-            user=u, organization=organization, role=OrganizationRole.ADMIN
-        )
+            user=u,
+            organization=organization,
+        ),
+        [GROUP_ORGANIZATION_ADMIN],
     )
     return u
 
@@ -95,7 +98,8 @@ def owner_user(db: Any, organization: Organization) -> User:
     u = User.objects.create_user(email="owner@example.com", password="pass")
     Profile.objects.create(user=u)
     OrganizationMembership.objects.create(
-        user=u, organization=organization, role=OrganizationRole.MEMBER
+        user=u,
+        organization=organization,
     )
     return u
 
@@ -108,7 +112,8 @@ def other_owner_user(db: Any, organization: Organization) -> User:
     u = User.objects.create_user(email="other_owner@example.com", password="pass")
     Profile.objects.create(user=u)
     OrganizationMembership.objects.create(
-        user=u, organization=organization, role=OrganizationRole.MEMBER
+        user=u,
+        organization=organization,
     )
     return u
 
@@ -118,7 +123,8 @@ def stranger_user(db: Any, organization: Organization) -> User:
     u = User.objects.create_user(email="stranger@example.com", password="pass")
     Profile.objects.create(user=u)
     OrganizationMembership.objects.create(
-        user=u, organization=organization, role=OrganizationRole.MEMBER
+        user=u,
+        organization=organization,
     )
     return u
 

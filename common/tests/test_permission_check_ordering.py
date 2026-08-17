@@ -41,8 +41,8 @@ from common.utils.view_utils import TenantScopedViewMixin
 from organizations.models import (
     Organization,
     OrganizationMembership,
-    OrganizationRole,
 )
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.permissions import IsOrganizationAdmin
 from organizations.tests.helpers import grant_membership_groups
 
@@ -127,14 +127,13 @@ def admin_here_member_there(
         OrganizationMembership.objects.create(
             user=user,
             organization=older_organization,
-            role=OrganizationRole.ADMIN,
             is_active=True,
-        )
+        ),
+        [GROUP_ORGANIZATION_ADMIN],
     )
     OrganizationMembership.objects.create(
         user=user,
         organization=newer_organization,
-        role=OrganizationRole.MEMBER,
         is_active=True,
     )
     return user
@@ -156,16 +155,15 @@ def member_here_admin_there(
     OrganizationMembership.objects.create(
         user=user,
         organization=older_organization,
-        role=OrganizationRole.MEMBER,
         is_active=True,
     )
     grant_membership_groups(
         OrganizationMembership.objects.create(
             user=user,
             organization=newer_organization,
-            role=OrganizationRole.ADMIN,
             is_active=True,
-        )
+        ),
+        [GROUP_ORGANIZATION_ADMIN],
     )
     return user
 
@@ -211,9 +209,9 @@ class TestTheAdminGateFollowsTheHeader:
                 OrganizationMembership.objects.create(
                     user=user,
                     organization=organization,
-                    role=OrganizationRole.ADMIN,
                     is_active=True,
-                )
+                ),
+                [GROUP_ORGANIZATION_ADMIN],
             )
 
         response = _dispatch(AdminGatedProbeView, user, str(newer_organization.pk))

@@ -29,7 +29,11 @@ from rest_framework.test import APIRequestFactory
 
 from calendar_integration.factories import create_calendar_ownership
 from calendar_integration.models import Calendar, CalendarEvent
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import (
+    GROUP_ORGANIZATION_ADMIN,
+    GROUP_ORGANIZATION_BILLING_OWNER,
+)
 from organizations.tests.helpers import make_membership
 from payments.models import MeteredOccurrence
 from payments.pagination import LargeLimitOffsetPagination
@@ -97,7 +101,7 @@ def admin_membership(user, root: Organization):
     return make_membership(
         user=user,
         organization=root,
-        role=OrganizationRole.ADMIN,
+        groups=[GROUP_ORGANIZATION_ADMIN],
         is_active=True,
     )
 
@@ -107,9 +111,8 @@ def billing_owner_membership(user, root: Organization):
     return make_membership(
         user=user,
         organization=root,
-        role=OrganizationRole.MEMBER,
+        groups=[GROUP_ORGANIZATION_BILLING_OWNER],
         is_active=True,
-        is_billing_owner=True,
     )
 
 
@@ -119,9 +122,7 @@ def plain_member_membership(user, root: Organization):
         OrganizationMembership,
         user=user,
         organization=root,
-        role=OrganizationRole.MEMBER,
         is_active=True,
-        is_billing_owner=False,
     )
 
 

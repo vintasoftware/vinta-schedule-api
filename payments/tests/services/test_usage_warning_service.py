@@ -22,8 +22,8 @@ import pytest
 from freezegun import freeze_time
 from model_bakery import baker
 
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
-from organizations.services import sync_membership_groups_from_role
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import make_membership
 from payments.billing_constants import BillingState, LimitedResource, LimitKind, LimitWarningLevel
 from payments.models import (
@@ -97,7 +97,6 @@ def _seed_members(organization: Organization, count: int) -> None:
             OrganizationMembership,
             organization=organization,
             user=baker.make(User),
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -113,13 +112,9 @@ def admin_membership(organization: Organization) -> OrganizationMembership:
     membership = make_membership(
         organization=organization,
         user=baker.make(User),
-        role=OrganizationRole.ADMIN,
+        groups=[GROUP_ORGANIZATION_ADMIN],
         is_active=True,
     )
-    # ``billing_recipients`` reads ``payments.manage_billing`` as of Phase 3, so
-    # the groups have to be in step with ``role``. Every live write path calls
-    # this; ``baker.make`` bypasses it. Phase 6 deletes the shim and this call.
-    sync_membership_groups_from_role(membership)
     return membership
 
 

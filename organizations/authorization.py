@@ -1,5 +1,11 @@
 """The one way this repository asks "may this user do X in organization Y".
 
+Two spellings, for two shapes of the same question:
+:func:`has_organization_permission` takes a ``(user, organization)`` pair and is
+what every permission class asks; :func:`membership_holds_permission` takes a
+membership row the caller already holds, and is what the handful of call sites
+outside the permission classes ask.
+
 Every authorization decision reads a *permission*, never a role column and never
 a group name -- see the plan's **Group scope** and **Permission catalog shape**
 Guiding Decisions
@@ -44,8 +50,8 @@ its low-level subtree policy:
 organization half with a global half (``user.user_permissions`` plus the user's
 own ``auth.Group`` rows) and, before any backend runs at all, from
 ``PermissionsMixin``'s superuser short-circuit. Neither of those is a statement
-about the organization named, and neither could grant anything under the ``role``
-/ ``is_billing_owner`` columns this phase replaces: a global
+about the organization named, and neither could grant anything under the two
+flat columns Phase 4 replaced: a global
 ``organizations.manage_members`` was inert, membership of the seeded
 ``organization_admin`` group (a plain global ``auth.Group``, listed by the user
 form's group picker in ``users/admin.py``) was inert, and a superuser without an
@@ -87,9 +93,11 @@ from typing import TYPE_CHECKING
 
 from vinta_orgs import authorization as vinta_orgs_authorization
 
+from organizations.permission_catalog import MANAGE_MEMBERS as _MANAGE_MEMBERS
+
 
 if TYPE_CHECKING:
-    from organizations.models import Organization
+    from organizations.models import Organization, OrganizationMembership
     from users.models import User
 
 
@@ -172,3 +180,96 @@ def has_organization_permission(
         include_global=INCLUDE_GLOBAL_PERMISSIONS,
         allow_superuser=ALLOW_SUPERUSER,
     )
+
+
+def membership_holds_permission(membership: OrganizationMembership, permission: str) -> bool:
+    """Whether **this membership row** carries ``permission``.
+
+    The membership-shaped sibling of :func:`has_organization_permission`, and
+    the replacement for the ``membership.is_admin`` property that Phase 6 of the
+    vinta-django-orgs migration deleted with the ``role`` column. Use it where
+    the question is about a membership the caller already holds, and *not* about
+    a ``(user, organization)`` pair -- three call sites outside the permission
+    classes ask exactly that:
+
+    * ``public_api.scoping`` -- what standing does the membership a token is
+      scoped to have;
+    * ``calendar_integration.querysets.ExternalEventChangeRequestQuerySet
+      .resolvable_by`` and ``ExternalEventChangeRequestService.can_resolve`` --
+      the same question, asked of a membership resolved by the caller.
+
+    Deliberately **not** implemented in terms of ``has_organization_permission``,
+    even though the two agree everywhere both are defined. That one takes a
+    ``user``, and so applies the auth backend's ``user.is_active`` gate and
+    needs ``membership.user`` loaded; ``membership.is_admin`` applied neither,
+    and each of the three call sites above already owns whichever ``is_active``
+    gate it wants. Routing through the user would therefore have been a silent
+    behaviour change dressed as a refactor.
+
+    One query, and no new predicate: it is
+    ``OrganizationMembershipQuerySet.holding_permission`` -- the same union of
+    the membership's direct ``permissions`` grant with the permissions its
+    ``groups`` carry that the last-admin guard counts by -- narrowed to a single
+    row. Under the group catalog this replaces, ``role == ADMIN`` and
+    "holds ``organizations.manage_members``" are the same set, because
+    ``organization_admin`` is the only seeded group carrying it.
+
+    **Precondition: ``membership`` is saved.** The lookup is by ``pk``, so an
+    unsaved row filters on ``pk=None``, matches nothing, and returns ``False`` --
+    "holds no permission", indistinguishable from a real denial. The
+    ``membership.is_admin`` property this replaced answered from memory and so
+    had no such precondition. No caller passes an unsaved membership today (all
+    three resolve theirs from the database), which is why this is documented
+    rather than enforced; a caller that starts building memberships in memory
+    must assign groups and save before asking.
+    """
+    # Late, for symmetry with this module's other model imports rather than out of
+    # necessity: ``organizations.models`` does not reach back here today, but it is
+    # imported by ``users.models``, which this module is imported *from*, so a
+    # module-scope import here is one refactor away from a cycle.
+    from organizations.models import OrganizationMembership as MembershipModel
+
+    return MembershipModel.objects.filter(pk=membership.pk).holding_permission(permission).exists()
+
+
+#: The two values published as a *description* of a membership's standing: the
+#: ``membership_role`` key in the ``organization_member_created`` webhook
+#: payload, and the ``audit.Audit.actor_role`` snapshot column. Neither
+#: authorizes anything. They are kept verbatim through Phase 6's column drop
+#: because changing either would be a partner-visible payload change nobody was
+#: told about, and because every audit row already on disk holds one of them --
+#: writing something else would split the audit history in two silently, which
+#: is exactly the trap the withdrawn app rename was withdrawn to avoid.
+MEMBERSHIP_ROLE_LABEL_ADMIN = "admin"
+MEMBERSHIP_ROLE_LABEL_MEMBER = "member"
+
+
+def membership_role_label(membership: OrganizationMembership) -> str:
+    """``"admin"`` or ``"member"`` -- the published description of a membership.
+
+    Derived from ``organizations.manage_members`` rather than read from the
+    ``role`` column Phase 6 dropped. The two agree: ``role == ADMIN`` memberships
+    were backfilled into ``organization_admin``, the only seeded group carrying
+    that permission, and every write path since keeps the two in step.
+
+    **Not an authorization input.** Nothing may branch on the return value to
+    decide whether an action is allowed -- ask
+    :func:`membership_holds_permission` or :func:`has_organization_permission`
+    for that. This exists only so the two surfaces that publish a role *name*
+    (see :data:`MEMBERSHIP_ROLE_LABEL_ADMIN`) keep publishing the same names.
+
+    Costs one query per call, where the column cost none. Three callers, not
+    two: the webhook payload builder, the ``audit.Audit`` row writer
+    (``AuditService.actor_from_membership``), and -- indirectly --
+    ``AuditService.actor_from_user``, which delegates to
+    ``actor_from_membership`` and is itself reached from
+    ``actor_from_user_or_token``. Each writes a row per call, so the extra query
+    is proportionate *per call*; what it is not proportionate to is a caller
+    that builds one actor snapshot per row in a loop. Hoist the snapshot out of
+    the loop instead of reaching past this function --
+    ``CalendarGroupService._delete_group_scoped_rows_for_removed_calendars``
+    is the worked example.
+    """
+    if membership_holds_permission(membership, _MANAGE_MEMBERS):
+        return MEMBERSHIP_ROLE_LABEL_ADMIN
+    return MEMBERSHIP_ROLE_LABEL_MEMBER

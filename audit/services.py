@@ -33,6 +33,7 @@ from audit.constants import AuditActorType
 from audit.repositories import AuditRepository
 from audit.tasks import persist_audit_record
 from audit.types import ActorSnapshot, AuditRecordData, SubjectRef
+from organizations.authorization import membership_role_label
 
 
 logger = logging.getLogger(__name__)
@@ -61,8 +62,17 @@ class AuditService:
     def actor_from_membership(membership: object) -> ActorSnapshot:
         """Build an ActorSnapshot from an OrganizationMembership.
 
-        Captures membership.role at call time so the Celery task never needs to
-        re-read a membership row that may have changed or been deleted.
+        Captures the membership's role *label* at call time so the Celery task
+        never needs to re-read a membership row that may have changed or been
+        deleted.
+
+        The label came off ``membership.role`` until Phase 6 of the
+        vinta-django-orgs migration dropped that column; it is now derived from
+        ``organizations.manage_members``, which names the same set. The two
+        published values (``"admin"`` / ``"member"``) are deliberately unchanged
+        -- every ``audit_audit.actor_role`` row already on disk holds one of
+        them, and ``AuditRepository.query`` matches the value exactly, so
+        writing a new spelling would silently split the audit history in two.
 
         Args:
             membership: An OrganizationMembership instance.
@@ -73,7 +83,7 @@ class AuditService:
         return ActorSnapshot(
             actor_type=AuditActorType.MEMBERSHIP,
             actor_id=membership.user_id,  # type: ignore[attr-defined]
-            actor_role=membership.role,  # type: ignore[attr-defined]
+            actor_role=membership_role_label(membership),  # type: ignore[arg-type]
         )
 
     @staticmethod

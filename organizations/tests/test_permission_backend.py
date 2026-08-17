@@ -60,9 +60,10 @@ same as stock ``ModelBackend`` -- nothing here removes that; what is removed
 is a test asserting it as *our* invariant when it is neither ours nor one we
 rely on.
 
-**Nothing in the application reads any of this yet.** Every permission class
-still checks ``role`` / ``is_billing_owner``; Phase 4 is what migrates them.
-These tests pin the foundation Phase 4 will stand on.
+**Nothing in the application read any of this when it was written.** Every
+permission class still checked the two flat columns; Phase 4 is what migrated
+them, and Phase 6 dropped the columns. These tests pin the foundation Phase 4
+stands on.
 """
 
 from __future__ import annotations
@@ -78,7 +79,7 @@ from model_bakery import baker
 from vinta_orgs.auth_backends import OrganizationModelBackend
 
 from common.organization_context import organization_context
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import (
     GROUP_ORGANIZATION_ADMIN,
     GROUP_ORGANIZATION_BILLING_OWNER,
@@ -117,15 +118,13 @@ def _membership(
     organization: Organization,
     group_name: str,
     *,
-    role: str = OrganizationRole.MEMBER,
     is_active: bool = True,
 ) -> OrganizationMembership:
-    membership = OrganizationMembership.objects.create(  # groups-deliberately-absent
-        # This module assigns the group by name on the next line, deliberately,
-        # so it can exercise a group the role mapping would not have produced.
+    # The group is assigned by name on the last line, deliberately, so this
+    # module can exercise combinations no production write path produces.
+    membership = OrganizationMembership.objects.create(
         user=user,
         organization=organization,
-        role=role,
         is_active=is_active,
     )
     membership.groups.add(Group.objects.get(name=group_name))
@@ -265,7 +264,7 @@ class TestAnAdminMembershipUnderItsOwnOrganization:
     def test_resolves_all_four_capability_permissions(self):
         user = baker.make(User, is_superuser=False, is_active=True)
         organization = _organization("Acme", "acme-backend-a")
-        _membership(user, organization, GROUP_ORGANIZATION_ADMIN, role=OrganizationRole.ADMIN)
+        _membership(user, organization, GROUP_ORGANIZATION_ADMIN)
 
         with organization_context(organization):
             resolved = _reloaded(user).get_all_permissions()
@@ -276,7 +275,7 @@ class TestAnAdminMembershipUnderItsOwnOrganization:
     def test_has_perm_answers_true_for_each_of_them(self):
         user = baker.make(User, is_superuser=False, is_active=True)
         organization = _organization("Acme", "acme-backend-b")
-        _membership(user, organization, GROUP_ORGANIZATION_ADMIN, role=OrganizationRole.ADMIN)
+        _membership(user, organization, GROUP_ORGANIZATION_ADMIN)
 
         reloaded = _reloaded(user)
         with organization_context(organization):
@@ -330,7 +329,7 @@ class TestTheOrganizationHalfIsConfinedToTheBoundOrganization:
         user = baker.make(User, is_superuser=False, is_active=True)
         organization_a = _organization("Alpha", "alpha-isolation")
         organization_b = _organization("Beta", "beta-isolation")
-        _membership(user, organization_a, GROUP_ORGANIZATION_ADMIN, role=OrganizationRole.ADMIN)
+        _membership(user, organization_a, GROUP_ORGANIZATION_ADMIN)
 
         with organization_context(organization_b):
             resolved = _reloaded(user).get_all_permissions()
@@ -343,7 +342,7 @@ class TestTheOrganizationHalfIsConfinedToTheBoundOrganization:
         user = baker.make(User, is_superuser=False, is_active=True)
         organization_a = _organization("Alpha", "alpha-isolation-2")
         organization_b = _organization("Beta", "beta-isolation-2")
-        _membership(user, organization_a, GROUP_ORGANIZATION_ADMIN, role=OrganizationRole.ADMIN)
+        _membership(user, organization_a, GROUP_ORGANIZATION_ADMIN)
         _membership(user, organization_b, GROUP_ORGANIZATION_MEMBER)
 
         reloaded = _reloaded(user)
@@ -354,7 +353,7 @@ class TestTheOrganizationHalfIsConfinedToTheBoundOrganization:
     def test_nothing_bound_resolves_no_organization_permissions(self):
         user = baker.make(User, is_superuser=False, is_active=True)
         organization = _organization("Alpha", "alpha-unbound")
-        _membership(user, organization, GROUP_ORGANIZATION_ADMIN, role=OrganizationRole.ADMIN)
+        _membership(user, organization, GROUP_ORGANIZATION_ADMIN)
 
         resolved = _reloaded(user).get_all_permissions()
 
@@ -373,7 +372,7 @@ class TestTheOrganizationHalfIsConfinedToTheBoundOrganization:
         user = baker.make(User, is_superuser=False, is_active=True)
         organization_a = _organization("Alpha", "alpha-cache")
         organization_b = _organization("Beta", "beta-cache")
-        _membership(user, organization_a, GROUP_ORGANIZATION_ADMIN, role=OrganizationRole.ADMIN)
+        _membership(user, organization_a, GROUP_ORGANIZATION_ADMIN)
         _membership(user, organization_b, GROUP_ORGANIZATION_MEMBER)
 
         reloaded = _reloaded(user)
@@ -430,7 +429,7 @@ class TestTheIsolationAssertionCanFail:
         user = baker.make(User, is_superuser=False, is_active=True)
         organization_a = _organization("Alpha", "alpha-mutation")
         organization_b = _organization("Beta", "beta-mutation")
-        _membership(user, organization_a, GROUP_ORGANIZATION_ADMIN, role=OrganizationRole.ADMIN)
+        _membership(user, organization_a, GROUP_ORGANIZATION_ADMIN)
         _membership(user, organization_b, GROUP_ORGANIZATION_MEMBER)
 
         with organization_context(organization_b):
@@ -478,7 +477,6 @@ class TestADeactivatedMembershipResolvesNoPermissions:
             user,
             organization,
             GROUP_ORGANIZATION_ADMIN,
-            role=OrganizationRole.ADMIN,
         )
 
         with organization_context(organization):

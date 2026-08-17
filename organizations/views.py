@@ -64,14 +64,9 @@ from organizations.models import (
     OrganizationBranding,
     OrganizationInvitation,
     OrganizationMembership,
-    OrganizationRole,
     resolve_branding_for_display,
 )
-from organizations.permission_catalog import (
-    MANAGE_MEMBERS,
-    membership_state_for_groups,
-    permissions_for_groups,
-)
+from organizations.permission_catalog import MANAGE_MEMBERS, permissions_for_groups
 from organizations.permissions import (
     BRANDING_GATE_EXCEPTIONS,
     BrandingWriteGateReason,
@@ -98,7 +93,7 @@ from organizations.serializers import (
     ServiceAccountReadSerializer,
     ServiceAccountWriteSerializer,
 )
-from organizations.services import OrganizationService, sync_membership_groups_from_role
+from organizations.services import OrganizationService, assign_membership_groups
 from payments.services.entitlement_service import EntitlementService
 
 
@@ -951,21 +946,13 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
                     )
                 )
 
-        # TEMPORARY DUAL-WRITE, deleted in Phase 6 with the two columns. The
-        # write goes through ``role`` / ``is_billing_owner`` and then back out
-        # through ``sync_membership_groups_from_role`` rather than straight to
-        # ``target.groups``, for two reasons: the columns are still read
-        # outside the permission classes (``public_api.scoping``,
-        # ``calendar_integration``), so leaving them stale would authorize the
-        # member differently depending on which reader asked; and routing
-        # through the same shim every other membership write uses is what
-        # *canonicalises* the stored group set, so no request body can persist
-        # a combination the shim would later overwrite.
-        is_admin, is_billing_owner = membership_state_for_groups(requested_groups)
-        target.role = OrganizationRole.ADMIN if is_admin else OrganizationRole.MEMBER
-        target.is_billing_owner = is_billing_owner
-        target.save(update_fields=["role", "is_billing_owner"])
-        sync_membership_groups_from_role(target)
+        # Routed through the same writer every other membership write uses,
+        # rather than straight to ``target.groups``, because that is what
+        # *canonicalises* the stored set (see
+        # ``organizations.permission_catalog.canonical_groups``) -- so no
+        # request body can persist a combination a later write would silently
+        # rewrite.
+        assign_membership_groups(target, requested_groups)
 
         # Return the updated membership
         read_serializer = self.get_serializer(target)

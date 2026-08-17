@@ -40,12 +40,13 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from accounts.account_adapters import SocialAccountAdapter
+from organizations.authorization import membership_holds_permission
 from organizations.models import (
     Organization,
     OrganizationInvitation,
     OrganizationMembership,
-    OrganizationRole,
 )
+from organizations.permission_catalog import MANAGE_MEMBERS
 from users.models import Profile, User
 
 
@@ -178,9 +179,9 @@ class TestSocialGatedOnboarding:
         # Organisation created
         assert Organization.objects.filter(name="Social Org").exists()
 
-        # User is now ADMIN
+        # User now administers the organization
         membership = OrganizationMembership.objects.get(user=user)
-        assert membership.role == OrganizationRole.ADMIN
+        assert membership_holds_permission(membership, MANAGE_MEMBERS)
 
     # ------------------------------------------------------------------
     # Scenario 3 — second create attempt is rejected
@@ -225,7 +226,7 @@ class TestSocialGatedOnboarding:
         # The second membership is also ADMIN.
         second_org = Organization.objects.get(name="Second Org")
         second_membership = OrganizationMembership.objects.get(user=user, organization=second_org)
-        assert second_membership.role == OrganizationRole.ADMIN
+        assert membership_holds_permission(second_membership, MANAGE_MEMBERS)
 
     # ------------------------------------------------------------------
     # Scenario 4 — membership-less user blocked from member-only endpoint

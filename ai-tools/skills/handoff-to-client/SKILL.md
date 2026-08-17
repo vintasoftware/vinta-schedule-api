@@ -5,7 +5,7 @@ description: Generate a markdown API-change handoff document for the client team
 
 # Handoff to client
 
-vinta_schedule_api (Django 6 + DRF + Strawberry GraphQL + Celery, multi-tenant (OrganizationModel), Postgres, deployed to Render) is an API-only repo — its consumers live in separate codebases: Web SPA (React), Partner integrations. Client implementers cannot read this repo's diff; this skill turns an API-changing branch into a self-contained markdown document they implement against.
+vinta_schedule_api (Django 6 + DRF + Strawberry GraphQL + Celery, multi-tenant (SingleOrganizationModelMixin), Postgres, deployed to Render) is an API-only repo — its consumers live in separate codebases: Web SPA (React), Partner integrations. Client implementers cannot read this repo's diff; this skill turns an API-changing branch into a self-contained markdown document they implement against.
 
 The document is a contract description, not a changelog: every change carries enough shape detail (fields, types, nullability, examples) that a client engineer can code against it without opening this repo.
 

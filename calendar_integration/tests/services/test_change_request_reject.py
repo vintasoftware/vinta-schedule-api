@@ -55,7 +55,8 @@ from calendar_integration.services.dataclasses import CalendarEventAdapterOutput
 from calendar_integration.services.external_event_change_request_service import (
     ExternalEventChangeRequestService,
 )
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import grant_membership_groups
 from users.models import Profile, User
 
@@ -88,7 +89,6 @@ def attendee_membership(organization: Organization) -> OrganizationMembership:
     membership, _ = OrganizationMembership.objects.get_or_create(
         user=user,
         organization=organization,
-        defaults={"role": OrganizationRole.MEMBER},
     )
     return membership
 
@@ -101,9 +101,8 @@ def admin_membership(organization: Organization) -> OrganizationMembership:
     membership, _ = OrganizationMembership.objects.get_or_create(
         user=user,
         organization=organization,
-        defaults={"role": OrganizationRole.ADMIN},
     )
-    grant_membership_groups(membership)
+    grant_membership_groups(membership, [GROUP_ORGANIZATION_ADMIN])
     return membership
 
 
@@ -115,7 +114,6 @@ def ineligible_membership(organization: Organization) -> OrganizationMembership:
     membership, _ = OrganizationMembership.objects.get_or_create(
         user=user,
         organization=organization,
-        defaults={"role": OrganizationRole.MEMBER},
     )
     return membership
 

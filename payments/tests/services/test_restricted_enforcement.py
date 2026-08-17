@@ -51,7 +51,10 @@ from organizations.models import (
     Organization,
     OrganizationInvitation,
     OrganizationMembership,
-    OrganizationRole,
+)
+from organizations.permission_catalog import (
+    GROUP_ORGANIZATION_ADMIN,
+    GROUP_ORGANIZATION_BILLING_OWNER,
 )
 from organizations.tests.helpers import make_membership
 from payments.billing_constants import BillingInterval, BillingState, LimitedResource, LimitKind
@@ -238,7 +241,7 @@ def _group_scoped_membership(
     make_membership(
         user=admin_user,
         organization=organization,
-        role=OrganizationRole.ADMIN,
+        groups=[GROUP_ORGANIZATION_ADMIN],
         is_active=True,
     )
     calendar = baker.make(
@@ -926,7 +929,7 @@ class TestRestrictedOrganizationBillingSurfaceStaysOpen:
             user=user,
             organization=organization,
             is_active=True,
-            is_billing_owner=True,
+            groups=[GROUP_ORGANIZATION_BILLING_OWNER],
         )
         client = APIClient()
         client.force_authenticate(user=user)

@@ -23,9 +23,14 @@ from model_bakery import baker
 
 from common.organization_context import organization_context
 from organizations.managers import OrganizationMembershipManager
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import (
+    GROUP_ORGANIZATION_ADMIN,
+    GROUP_ORGANIZATION_BILLING_OWNER,
+    GROUP_ORGANIZATION_MEMBER,
+)
 from organizations.querysets import OrganizationMembershipQuerySet
-from organizations.services import sync_membership_groups_from_role
+from organizations.services import assign_membership_groups
 from users.models import User
 
 
@@ -65,7 +70,8 @@ class TestManagerPlumbing:
 class TestUnscopedReadsWithNoOrganizationBound:
     def _membership(self, user: User, organization: Organization) -> OrganizationMembership:
         return OrganizationMembership.objects.create(
-            user=user, organization=organization, role=OrganizationRole.MEMBER
+            user=user,
+            organization=organization,
         )
 
     def test_user_memberships_returns_rows_with_nothing_bound(self):
@@ -190,30 +196,28 @@ class TestDomainMethodsSurvivedTheManagerChange:
         assert list(seats) == [active]
 
     def test_billing_recipients_returns_admins_and_billing_owners(self):
-        """``billing_recipients`` reads ``payments.manage_billing`` as of Phase 3,
-        not ``role`` / ``is_billing_owner`` -- so a membership written straight
-        through ``objects.create`` (which performs no dual-write) has to be put
-        in its groups the way ``OrganizationService`` does. The switch itself is
-        covered in ``payments/tests/test_dunning_recipients.py``; this stays a
-        test that the *manager* still exposes the method."""
+        """``billing_recipients`` reads ``payments.manage_billing``, which a
+        membership holds only through its groups -- so a membership written
+        straight through ``objects.create`` has to be put in them the way
+        ``OrganizationService`` does. The query itself is covered in
+        ``payments/tests/test_dunning_recipients.py``; this stays a test that
+        the *manager* still exposes the method."""
         organization = baker.make(Organization)
-        admin = OrganizationMembership.objects.create(  # groups-deliberately-absent
-            # Synced explicitly below, which is what this test is about.
+        admin = OrganizationMembership.objects.create(
             user=baker.make(User),
             organization=organization,
-            role=OrganizationRole.ADMIN,
         )
-        billing_owner = OrganizationMembership.objects.create(  # groups-deliberately-absent
+        billing_owner = OrganizationMembership.objects.create(
             user=baker.make(User),
             organization=organization,
-            role=OrganizationRole.MEMBER,
-            is_billing_owner=True,
         )
         plain_member = OrganizationMembership.objects.create(
-            user=baker.make(User), organization=organization, role=OrganizationRole.MEMBER
+            user=baker.make(User),
+            organization=organization,
         )
-        for membership in (admin, billing_owner, plain_member):
-            sync_membership_groups_from_role(membership)
+        assign_membership_groups(admin, [GROUP_ORGANIZATION_ADMIN])
+        assign_membership_groups(billing_owner, [GROUP_ORGANIZATION_BILLING_OWNER])
+        assign_membership_groups(plain_member, [GROUP_ORGANIZATION_MEMBER])
 
         recipients = OrganizationMembership.objects.billing_recipients(organization.id)
 

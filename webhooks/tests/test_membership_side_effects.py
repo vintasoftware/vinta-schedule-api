@@ -3,7 +3,9 @@ from unittest.mock import MagicMock
 import pytest
 from model_bakery import baker
 
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.authorization import MEMBERSHIP_ROLE_LABEL_ADMIN, MEMBERSHIP_ROLE_LABEL_MEMBER
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import make_membership
 from users.models import User
 from webhooks.constants import WebhookEventType
@@ -41,7 +43,6 @@ class TestWebhookMembershipSideEffectsService:
             OrganizationMembership,
             user=user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -56,7 +57,7 @@ class TestWebhookMembershipSideEffectsService:
                 "email": user.email,
                 "organization_id": organization.id,
                 "organization_name": organization.name,
-                "membership_role": OrganizationRole.MEMBER,
+                "membership_role": MEMBERSHIP_ROLE_LABEL_MEMBER,
             },
         )
 
@@ -67,7 +68,7 @@ class TestWebhookMembershipSideEffectsService:
         membership = make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
@@ -76,7 +77,7 @@ class TestWebhookMembershipSideEffectsService:
 
         mock_webhook_service.send_event.assert_called_once()
         call_kwargs = mock_webhook_service.send_event.call_args[1]
-        assert call_kwargs["payload"]["membership_role"] == OrganizationRole.ADMIN
+        assert call_kwargs["payload"]["membership_role"] == MEMBERSHIP_ROLE_LABEL_ADMIN
         assert call_kwargs["event_type"] == WebhookEventType.ORGANIZATION_MEMBER_CREATED
 
     def test_on_member_created_inactive_membership_does_not_emit(
@@ -87,7 +88,6 @@ class TestWebhookMembershipSideEffectsService:
             OrganizationMembership,
             user=user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=False,
         )
 
@@ -105,7 +105,6 @@ class TestWebhookMembershipSideEffectsService:
             OrganizationMembership,
             user=user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -119,7 +118,7 @@ class TestWebhookMembershipSideEffectsService:
         assert payload["email"] == user.email
         assert payload["organization_id"] == organization.id
         assert payload["organization_name"] == organization.name
-        assert payload["membership_role"] == OrganizationRole.MEMBER
+        assert payload["membership_role"] == MEMBERSHIP_ROLE_LABEL_MEMBER
         # Membership identity is the (user_id, organization_id) pair — no scalar id.
         # Ensure no extra fields sneak in
         assert set(payload.keys()) == {
@@ -140,7 +139,6 @@ class TestWebhookMembershipSideEffectsService:
             OrganizationMembership,
             user=user,
             organization=org_a,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
         # org_b is a distractor — must not appear in the send_event call
@@ -165,7 +163,6 @@ class TestWebhookMembershipSideEffectsService:
             OrganizationMembership,
             user=user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 

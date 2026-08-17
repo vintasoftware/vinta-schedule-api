@@ -41,7 +41,7 @@ from calendar_integration.tasks.calendar_sync_tasks import (
     resync_organization_calendars_task,
     sync_calendar_task,
 )
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
 from payments.billing_constants import BillingState, Entitlement
 from payments.exceptions import OverLimitError
 from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
@@ -459,7 +459,6 @@ class TestRecoveryDispatchesAResync:
             OrganizationMembership,
             organization=organization,
             user=account.user,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
         baker.make(
@@ -543,7 +542,6 @@ class TestResyncTaskQueuesPerCalendarSync:
             OrganizationMembership,
             organization=organization,
             user=account.user,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
         baker.make(

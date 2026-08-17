@@ -38,7 +38,11 @@ from organizations.exceptions import (
     BrandingEntitlementRequiredError,
     OrganizationHasParentBrandingError,
 )
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import (
+    GROUP_ORGANIZATION_ADMIN,
+    GROUP_ORGANIZATION_BILLING_OWNER,
+)
 from organizations.permissions import (
     BrandingWriteGateReason,
     check_branding_read_eligibility,
@@ -163,21 +167,24 @@ class TestUserAdministersBrandingEligibleOrganization:
 
     def test_an_admin_of_an_entitled_organization_is_admitted(self, entitled):
         user = baker.make(User)
-        make_membership(user=user, organization=entitled, role=OrganizationRole.ADMIN)
+        make_membership(user=user, organization=entitled, groups=[GROUP_ORGANIZATION_ADMIN])
 
         assert user_administers_branding_eligible_organization(user) is True
 
     def test_entitled_but_unpermitted_denies(self, entitled):
         """The organization can brand; this caller may not do it."""
         user = baker.make(User)
-        make_membership(user=user, organization=entitled, role=OrganizationRole.MEMBER)
+        make_membership(
+            user=user,
+            organization=entitled,
+        )
 
         assert user_administers_branding_eligible_organization(user) is False
 
     def test_permitted_but_unentitled_denies(self, unentitled):
         """This caller may brand; the organization cannot."""
         user = baker.make(User)
-        make_membership(user=user, organization=unentitled, role=OrganizationRole.ADMIN)
+        make_membership(user=user, organization=unentitled, groups=[GROUP_ORGANIZATION_ADMIN])
 
         assert user_administers_branding_eligible_organization(user) is False
 
@@ -189,8 +196,7 @@ class TestUserAdministersBrandingEligibleOrganization:
         make_membership(
             user=user,
             organization=entitled,
-            role=OrganizationRole.MEMBER,
-            is_billing_owner=True,
+            groups=[GROUP_ORGANIZATION_BILLING_OWNER],
         )
 
         assert user_administers_branding_eligible_organization(user) is False
@@ -198,7 +204,7 @@ class TestUserAdministersBrandingEligibleOrganization:
     def test_a_deactivated_admin_denies(self, entitled):
         user = baker.make(User)
         make_membership(
-            user=user, organization=entitled, role=OrganizationRole.ADMIN, is_active=False
+            user=user, organization=entitled, groups=[GROUP_ORGANIZATION_ADMIN], is_active=False
         )
 
         assert user_administers_branding_eligible_organization(user) is False
@@ -215,7 +221,7 @@ class TestUserAdministersBrandingEligibleOrganization:
         so would not catch its loss.
         """
         user = baker.make(User, is_active=False)
-        make_membership(user=user, organization=entitled, role=OrganizationRole.ADMIN)
+        make_membership(user=user, organization=entitled, groups=[GROUP_ORGANIZATION_ADMIN])
 
         assert user_administers_branding_eligible_organization(user) is False
 
@@ -224,7 +230,7 @@ class TestUserAdministersBrandingEligibleOrganization:
         half cannot buy past the parentless condition."""
         child = baker.make(Organization, parent=entitled, slug="child-admin-parity")
         user = baker.make(User)
-        make_membership(user=user, organization=child, role=OrganizationRole.ADMIN)
+        make_membership(user=user, organization=child, groups=[GROUP_ORGANIZATION_ADMIN])
 
         assert user_administers_branding_eligible_organization(user) is False
 
@@ -233,8 +239,8 @@ class TestUserAdministersBrandingEligibleOrganization:
         have -- s3direct's signing view has no notion of an acting organization.
         Pinned so a future narrowing is a decision rather than a side effect."""
         user = baker.make(User)
-        make_membership(user=user, organization=unentitled, role=OrganizationRole.ADMIN)
-        make_membership(user=user, organization=entitled, role=OrganizationRole.ADMIN)
+        make_membership(user=user, organization=unentitled, groups=[GROUP_ORGANIZATION_ADMIN])
+        make_membership(user=user, organization=entitled, groups=[GROUP_ORGANIZATION_ADMIN])
 
         assert user_administers_branding_eligible_organization(user) is True
 
@@ -262,7 +268,7 @@ class TestUserAdministersBrandingEligibleOrganization:
         user = baker.make(User)
         for index in range(3):
             organization = _organization(entitled=True, parent=None, slug=f"nquery-{index}")
-            make_membership(user=user, organization=organization, role=OrganizationRole.MEMBER)
+            make_membership(user=user, organization=organization)
 
         with django_assert_num_queries(1):
             assert user_administers_branding_eligible_organization(user) is False
@@ -277,7 +283,7 @@ class TestUserAdministersBrandingEligibleOrganization:
         reaches ``is_branding_eligible_organization`` at all.
         """
         user = baker.make(User)
-        make_membership(user=user, organization=entitled, role=OrganizationRole.ADMIN)
+        make_membership(user=user, organization=entitled, groups=[GROUP_ORGANIZATION_ADMIN])
 
         with django_assert_num_queries(3):
             assert user_administers_branding_eligible_organization(user) is True
@@ -290,22 +296,21 @@ class TestUserAdministersBrandingEligibleOrganization:
         No ``organization_context`` anywhere in this test, deliberately.
         """
         user = baker.make(User)
-        make_membership(user=user, organization=entitled, role=OrganizationRole.ADMIN)
+        make_membership(user=user, organization=entitled, groups=[GROUP_ORGANIZATION_ADMIN])
 
         from common.organization_context import get_current_organization
 
         assert get_current_organization() is None
         assert user_administers_branding_eligible_organization(user) is True
 
-    def test_an_ungrouped_admin_denies(self, entitled):
-        """The fixture-shaped membership: ``role=ADMIN`` with no groups. Refused,
-        because the decision reads the permission."""
+    def test_an_ungrouped_membership_denies(self, entitled):
+        """A membership in no group at all -- what a raw ``baker.make``
+        produces. Refused, because the decision reads the permission."""
         user = baker.make(User)
-        baker.make(  # groups-deliberately-absent: the point of this test
+        baker.make(
             OrganizationMembership,
             user=user,
             organization=entitled,
-            role=OrganizationRole.ADMIN,
         )
 
         assert user_administers_branding_eligible_organization(user) is False

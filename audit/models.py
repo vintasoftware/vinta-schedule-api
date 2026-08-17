@@ -23,7 +23,10 @@ from audit.constants import AuditAction, AuditActorType
 from common.fields import OrganizationMembershipForeignKey, OrganizationSafeForeignKey
 from common.managers import OrganizationScopedManager
 from common.models import BaseModel, SafeRelationNullInitMixin
-from organizations.models import OrganizationRole
+from organizations.authorization import (
+    MEMBERSHIP_ROLE_LABEL_ADMIN,
+    MEMBERSHIP_ROLE_LABEL_MEMBER,
+)
 
 
 class Audit(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel):
@@ -44,11 +47,23 @@ class Audit(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel):
     # --- actor snapshot ---
     actor_type = models.CharField(max_length=20, choices=AuditActorType, db_index=True)
     actor_id = models.BigIntegerField(null=True, blank=True)  # null for SYSTEM
-    # Snapshot of the membership role at emit time; null unless actor_type=MEMBERSHIP.
-    # null=True on CharField is intentional: empty string and "no role" are distinct.
+    # Snapshot of the membership's role *label* at emit time; null unless
+    # actor_type=MEMBERSHIP. null=True on CharField is intentional: empty string
+    # and "no role" are distinct.
+    #
+    # The choices used to be a ``TextChoices`` enum on ``organizations``,
+    # deleted with the ``role`` column in Phase 6 of the vinta-django-orgs
+    # migration.
+    # The two published values are unchanged -- see
+    # ``organizations.authorization.membership_role_label``, which derives them
+    # from ``organizations.manage_members`` -- because every row already on disk
+    # holds one of them and ``AuditRepository.query`` matches the value exactly.
     actor_role = models.CharField(  # noqa: DJ001
         max_length=20,
-        choices=OrganizationRole,
+        choices=[
+            (MEMBERSHIP_ROLE_LABEL_MEMBER, "Member"),
+            (MEMBERSHIP_ROLE_LABEL_ADMIN, "Admin"),
+        ],
         null=True,
         blank=True,
     )

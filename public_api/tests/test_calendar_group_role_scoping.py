@@ -31,7 +31,8 @@ from calendar_integration.models import (
     CalendarGroupSlotMembership,
     CalendarOwnership,
 )
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN, GROUP_ORGANIZATION_MEMBER
 from organizations.tests.helpers import make_membership
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess
@@ -106,11 +107,11 @@ class TestCalendarGroupRoleScoping:
         return group, slot
 
     def _make_membership(
-        self, org: Organization, *, role: str = OrganizationRole.MEMBER
+        self, org: Organization, *, groups: tuple[str, ...] = (GROUP_ORGANIZATION_MEMBER,)
     ) -> tuple[User, OrganizationMembership]:
         unique = uuid.uuid4().hex[:8]
         user = baker.make(User, email=f"user_{unique}@example.com")
-        membership = make_membership(user=user, organization=org, role=role, is_active=True)
+        membership = make_membership(user=user, organization=org, groups=groups, is_active=True)
         return user, membership
 
     def _own(self, org: Organization, user, calendar: Calendar) -> None:
@@ -173,7 +174,9 @@ class TestCalendarGroupRoleScoping:
         """NEW elevation: a scoped-admin token sees every group in the org,
         including ones it does not personally participate in."""
         org = self._org()
-        _admin_user, admin_membership = self._make_membership(org, role=OrganizationRole.ADMIN)
+        _admin_user, admin_membership = self._make_membership(
+            org, groups=(GROUP_ORGANIZATION_ADMIN,)
+        )
         cal = self._make_calendar(org)
         group_a, _slot_a = self._make_group(org, name="A", calendars=(cal,))
         group_b, _slot_b = self._make_group(org, name="B")
@@ -190,7 +193,7 @@ class TestCalendarGroupRoleScoping:
 
     def test_calendar_groups_scoped_member_sees_only_participant_groups(self):
         org = self._org()
-        member_user, membership = self._make_membership(org, role=OrganizationRole.MEMBER)
+        member_user, membership = self._make_membership(org, groups=(GROUP_ORGANIZATION_MEMBER,))
         own_calendar = self._make_calendar(org)
         self._own(org, member_user, own_calendar)
         other_calendar = self._make_calendar(org)
@@ -214,7 +217,7 @@ class TestCalendarGroupRoleScoping:
         """Fail closed: a scoped token whose membership is deactivated after
         minting must not fall back to unrestricted (or even its own) access."""
         org = self._org()
-        member_user, membership = self._make_membership(org, role=OrganizationRole.MEMBER)
+        member_user, membership = self._make_membership(org, groups=(GROUP_ORGANIZATION_MEMBER,))
         own_calendar = self._make_calendar(org)
         self._own(org, member_user, own_calendar)
         self._make_group(org, name="Mine", calendars=(own_calendar,))
@@ -238,7 +241,7 @@ class TestCalendarGroupRoleScoping:
 
     def test_calendar_group_scoped_member_non_participant_returns_none(self):
         org = self._org()
-        _member_user, membership = self._make_membership(org, role=OrganizationRole.MEMBER)
+        _member_user, membership = self._make_membership(org, groups=(GROUP_ORGANIZATION_MEMBER,))
         other_calendar = self._make_calendar(org)
         foreign_group, _slot = self._make_group(org, name="NotMine", calendars=(other_calendar,))
 
@@ -256,7 +259,9 @@ class TestCalendarGroupRoleScoping:
 
     def test_calendar_group_scoped_admin_returns_any_group(self):
         org = self._org()
-        _admin_user, admin_membership = self._make_membership(org, role=OrganizationRole.ADMIN)
+        _admin_user, admin_membership = self._make_membership(
+            org, groups=(GROUP_ORGANIZATION_ADMIN,)
+        )
         other_calendar = self._make_calendar(org)
         group, _slot = self._make_group(org, name="NotMine", calendars=(other_calendar,))
 
@@ -278,8 +283,12 @@ class TestCalendarGroupRoleScoping:
         """NEW elevation: a scoped-admin token may write group-scoped windows
         for a calendar it does not personally own -- matches org-wide power."""
         org = self._org()
-        _admin_user, admin_membership = self._make_membership(org, role=OrganizationRole.ADMIN)
-        other_user, _other_membership = self._make_membership(org, role=OrganizationRole.MEMBER)
+        _admin_user, admin_membership = self._make_membership(
+            org, groups=(GROUP_ORGANIZATION_ADMIN,)
+        )
+        other_user, _other_membership = self._make_membership(
+            org, groups=(GROUP_ORGANIZATION_MEMBER,)
+        )
         target_calendar = self._make_calendar(org)
         self._own(org, other_user, target_calendar)
         _group, slot = self._make_group(org, name="Group", calendars=(target_calendar,))
@@ -326,7 +335,7 @@ class TestCalendarGroupRoleScoping:
         """Fail closed: a scoped-member token whose membership went inactive
         after minting cannot write even to the calendar it used to own."""
         org = self._org()
-        member_user, membership = self._make_membership(org, role=OrganizationRole.MEMBER)
+        member_user, membership = self._make_membership(org, groups=(GROUP_ORGANIZATION_MEMBER,))
         own_calendar = self._make_calendar(org)
         self._own(org, member_user, own_calendar)
         _group, slot = self._make_group(org, name="Group", calendars=(own_calendar,))

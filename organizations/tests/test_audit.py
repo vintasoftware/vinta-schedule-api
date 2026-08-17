@@ -14,11 +14,12 @@ import pytest
 from model_bakery import baker
 
 from audit.constants import AuditAction
+from organizations.authorization import MEMBERSHIP_ROLE_LABEL_ADMIN
 from organizations.models import (
     Organization,
     OrganizationInvitation,
-    OrganizationRole,
 )
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN, GROUP_ORGANIZATION_MEMBER
 from organizations.services import OrganizationService
 from organizations.tests.helpers import make_membership
 
@@ -60,7 +61,7 @@ class TestOrganizationServiceAudit:
             assert p["action"] == AuditAction.CREATE
             assert p["actor"]["actor_type"] == "membership"
             assert p["actor"]["actor_id"] == user.id
-            assert p["actor"]["actor_role"] == OrganizationRole.ADMIN
+            assert p["actor"]["actor_role"] == MEMBERSHIP_ROLE_LABEL_ADMIN
 
     def test_invite_user_records_create(self, django_capture_on_commit_callbacks) -> None:
         org = baker.make(Organization)
@@ -68,7 +69,7 @@ class TestOrganizationServiceAudit:
         make_membership(
             user=inviter,
             organization=org,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
         service = self._service()
 
@@ -106,7 +107,7 @@ class TestOrganizationServiceAudit:
             email="joiner@example.com",
             organization=org,
             token_hash=hash_long_lived_token(raw),
-            role=OrganizationRole.MEMBER,
+            group=GROUP_ORGANIZATION_MEMBER,
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=1),
         )
         service = self._service()
@@ -134,7 +135,7 @@ class TestOrganizationServiceAudit:
             email="x@example.com",
             organization=org,
             token_hash="hash",
-            role=OrganizationRole.MEMBER,
+            group=GROUP_ORGANIZATION_MEMBER,
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=5),
         )
         service = self._service()

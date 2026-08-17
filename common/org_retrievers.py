@@ -39,8 +39,8 @@ def retrieve_by_x_organization_id(request: HttpRequest) -> Organization | None:
     Returns ``None`` -- never raises -- when the header is missing, empty, not
     an integer, or names an organization that does not exist.
 
-    ``Organization`` is the tenant root, not tenant-scoped data: it is not an
-    ``OrganizationModel`` subclass, so ``objects`` here is Django's stock
+    ``Organization`` is the tenant root, not tenant-scoped data: it carries no
+    ``SingleOrganizationModelMixin``, so ``objects`` here is Django's stock
     manager and this lookup neither needs nor bypasses an organization filter.
     """
     # Deferred: settings are imported long before the app registry is ready, and
