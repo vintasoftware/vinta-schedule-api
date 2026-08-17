@@ -36,6 +36,19 @@ class _EffectivePolicyRow(Protocol):
 
 
 @dataclass
+class ExternalClientIdentifierData:
+    """One ``(system, identifier)`` pair -- the client-owned reference carried by
+    ``ExternalClientIdentifier``. ``system`` is normalized (see
+    ``calendar_integration.external_client_identifiers.normalize_system``) by the
+    service before it is ever compared or persisted; callers may pass an
+    un-normalized value.
+    """
+
+    system: str
+    identifier: str
+
+
+@dataclass
 class EventAttendeeData:
     email: str
     name: str
@@ -60,6 +73,9 @@ class ExternalAttendeeInputData:
     email: str
     name: str = ""
     id: int | None = None  # noqa: A003
+    # None = omitted, leave untouched. [] = clear all. See
+    # ``ExternalClientIdentifierService.replace_for_target``.
+    external_client_identifiers: list[ExternalClientIdentifierData] | None = None
 
 
 @dataclass
@@ -94,6 +110,9 @@ class CalendarEventInputData:
     # before delegating to ``CalendarEventService``. Must NOT be set by external
     # callers outside of the group-booking flow.
     group_authorized: bool = False
+    # None = omitted, leave untouched. [] = clear all. See
+    # ``ExternalClientIdentifierService.replace_for_target``.
+    external_client_identifiers: list[ExternalClientIdentifierData] | None = None
 
 
 @dataclass
@@ -221,6 +240,9 @@ class EventExternalAttendeeData:
     email: str
     name: str | None
     status: Literal["accepted", "declined", "pending"]
+    external_client_identifiers: list[ExternalClientIdentifierData] = dataclass_field(
+        default_factory=list
+    )
 
 
 @dataclass
@@ -248,6 +270,9 @@ class CalendarEventData:
     is_recurring: bool
     recurring_event_id: str | None  # ID of the master recurring event
     original_payload: dict | None = None
+    external_client_identifiers: list[ExternalClientIdentifierData] = dataclass_field(
+        default_factory=list
+    )
 
 
 @dataclass

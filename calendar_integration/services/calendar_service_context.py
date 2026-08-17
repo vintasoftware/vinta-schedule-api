@@ -25,6 +25,9 @@ if TYPE_CHECKING:
     from calendar_integration.services.calendar_side_effects_service import (
         CalendarSideEffectsService,
     )
+    from calendar_integration.services.external_client_identifier_service import (
+        ExternalClientIdentifierService,
+    )
     from calendar_integration.services.protocols.calendar_adapter import CalendarAdapter
     from organizations.models import Organization
     from payments.services.entitlement_service import EntitlementService
@@ -69,3 +72,11 @@ class CalendarServiceContext:
     # which reads ``entitlement_service`` off the context -- kept enforcing, so a
     # service explicitly placed in bypass mode was still blockable.
     bypass_entitlement_limits: bool = False
+    # Identifier read/write service for ``ExternalClientIdentifier``, threaded from the
+    # facade so ``CalendarEventService`` can replace an event's (and its external
+    # attendees') identifier sets on create/update. Already bound to ``organization``
+    # by the facade (``authenticate()`` / ``initialize_without_provider()``) by the time
+    # it reaches this context. Defaults to ``None`` so contexts built directly in tests
+    # (without DI) still construct; a checked call site skips the write entirely when
+    # this is ``None``, mirroring ``audit_service``'s no-op-when-absent convention.
+    external_client_identifier_service: ExternalClientIdentifierService | None = None

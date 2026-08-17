@@ -92,6 +92,7 @@ from calendar_integration.services.dataclasses import (
     EventExternalAttendeeData,
     EventInternalAttendeeData,
     ExternalAttendeeInputData,
+    ExternalClientIdentifierData,
     ResourceAllocationInputData,
     ResourceData,
 )
@@ -748,20 +749,30 @@ class CalendarEventService:
         if guard_applies and entitlement_service is not None:
             self._check_new_master_postpaid_allowance(entitlement_service, event)
 
-        EventExternalAttendance.objects.bulk_create(
-            [
+        identifier_service = self._context.external_client_identifier_service
+        if identifier_service is not None:
+            identifier_service.replace_for_target(event, event_data.external_client_identifiers)
+
+        external_attendances_to_create = []
+        for attendance_data in event_data.external_attendances:
+            external_attendee = ExternalAttendee.objects.create(
+                organization=context.organization,
+                email=attendance_data.external_attendee.email,
+                name=attendance_data.external_attendee.name,
+            )
+            if identifier_service is not None:
+                identifier_service.replace_for_target(
+                    external_attendee,
+                    attendance_data.external_attendee.external_client_identifiers,
+                )
+            external_attendances_to_create.append(
                 EventExternalAttendance(
                     organization=context.organization,
                     event=event,
-                    external_attendee=ExternalAttendee.objects.create(
-                        organization=context.organization,
-                        email=attendance_data.external_attendee.email,
-                        name=attendance_data.external_attendee.name,
-                    ),
+                    external_attendee=external_attendee,
                 )
-                for attendance_data in event_data.external_attendances
-            ]
-        )
+            )
+        EventExternalAttendance.objects.bulk_create(external_attendances_to_create)
 
         # Resolve which attendee user_ids back an OrganizationMembership; non-members
         # get a NULL membership_user_id (an orphan attendance) so the composite PROTECT
@@ -993,10 +1004,32 @@ class CalendarEventService:
 
         event.save()
 
+        identifier_service = self._context.external_client_identifier_service
+        old_identifiers: list[ExternalClientIdentifierData] = []
+        new_identifiers: list[ExternalClientIdentifierData] = []
+        if identifier_service is not None:
+            old_identifiers, new_identifiers = identifier_service.replace_for_target(
+                event, event_data.external_client_identifiers
+            )
+
+        scalar_diff = compute_diff(audit_before, self._event_audit_scalar_snapshot(event)) or {}
+        if old_identifiers != new_identifiers:
+            scalar_diff = {
+                **scalar_diff,
+                "external_client_identifiers": {
+                    "old": [
+                        {"system": i.system, "identifier": i.identifier} for i in old_identifiers
+                    ],
+                    "new": [
+                        {"system": i.system, "identifier": i.identifier} for i in new_identifiers
+                    ],
+                },
+            }
+
         self._audit_event_write(
             AuditAction.UPDATE,
             event,
-            diff=compute_diff(audit_before, self._event_audit_scalar_snapshot(event)),
+            diff=scalar_diff or None,
         )
 
         existing_attendances = {a.membership_user_id: a for a in event.attendances.all()}
@@ -1009,7 +1042,20 @@ class CalendarEventService:
 
         maintained_external_attendees_ids = []
         external_attendees_to_update = []
+        # Identifiers to apply to ``external_attendees_to_update``, index-aligned.
+        external_attendees_to_update_identifiers: list[
+            list[ExternalClientIdentifierData] | None
+        ] = []
         external_attendees_to_create = []
+        # Identifiers to apply to ``external_attendees_to_create``, index-aligned. Must
+        # be applied AFTER ``bulk_create`` below assigns each attendee its pk -- these
+        # rows include attendees the incoming payload omitted an id for, which the
+        # branch below treats as brand new (see the ``else`` branch's comment) even
+        # when they represent an update the caller couldn't address by id; any
+        # identifiers they carry must land on the NEW row, not be silently dropped.
+        external_attendees_to_create_identifiers: list[
+            list[ExternalClientIdentifierData] | None
+        ] = []
         external_attendances_to_create = []
         serialized_external_attendances_to_create = []
         serialized_external_attendances_to_update = []
@@ -1032,13 +1078,26 @@ class CalendarEventService:
                     self._serialize_event_external_attendee(attendance_to_update)
                 )
                 external_attendees_to_update.append(attendance_to_update.external_attendee)
+                external_attendees_to_update_identifiers.append(
+                    external_attendance_data.external_attendee.external_client_identifiers
+                )
             else:
+                # No id, or an id absent from ``existing_external_attendances`` --
+                # either a genuinely new attendee, or one whose id the caller omitted.
+                # The latter is NOT reused: this always creates a fresh row, and the
+                # old row (if any) is removed below via ``external_attendees_to_delete``
+                # (its id is absent from ``maintained_external_attendees_ids``). Any
+                # identifiers on the old row cascade-delete with it -- so identifiers
+                # supplied here must be applied to THIS new row, not skipped.
                 external_attendee = ExternalAttendee(
                     organization=context.organization,
                     email=external_attendance_data.external_attendee.email,
                     name=external_attendance_data.external_attendee.name,
                 )
                 external_attendees_to_create.append(external_attendee)
+                external_attendees_to_create_identifiers.append(
+                    external_attendance_data.external_attendee.external_client_identifiers
+                )
                 external_attendance_instance = EventExternalAttendance(
                     organization=context.organization,
                     event=event,
@@ -1063,6 +1122,23 @@ class CalendarEventService:
         ExternalAttendee.objects.bulk_update(external_attendees_to_update, ["email", "name"])
         ExternalAttendee.objects.bulk_create(external_attendees_to_create)
         EventExternalAttendance.objects.bulk_create(external_attendances_to_create)
+
+        # Apply identifiers now that every attendee has a stable pk -- ``bulk_create``
+        # (Postgres) populates pks on the instances above, so ``external_attendee.pk``
+        # is available here for the newly created rows too.
+        if identifier_service is not None:
+            for external_attendee, identifiers in zip(
+                external_attendees_to_update,
+                external_attendees_to_update_identifiers,
+                strict=True,
+            ):
+                identifier_service.replace_for_target(external_attendee, identifiers)
+            for external_attendee, identifiers in zip(
+                external_attendees_to_create,
+                external_attendees_to_create_identifiers,
+                strict=True,
+            ):
+                identifier_service.replace_for_target(external_attendee, identifiers)
 
         external_attendees_to_delete = set(existing_external_attendances.keys()) - set(
             maintained_external_attendees_ids
