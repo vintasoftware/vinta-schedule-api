@@ -116,11 +116,76 @@ limit — it applies fine, but leaves no headroom for a future rename. `normaliz
 docstring still says "strip a trailing slash" (singular) and does not mention userinfo
 handling; it matches the plan's own wording but now understates the behavior.
 
+### Phase 2 — Identifier write service, normalization, validation, audit ✅
+
+- **Branch**: `plan/external-client-identifiers/phase-2` (base: `plan/external-client-identifiers/phase-1`)
+- **Implementer**: `claude-sonnet-5` (plan Tier 3)
+- **Reviewer**: `claude-sonnet-5` (Tier 3) — 0 BLOCKER, 3 SHOULD-FIX, 2 NIT
+- **Fixers**: `claude-sonnet-5` (escalated from Tier 2 — ordering logic inside an existing
+  reconciliation loop, not a mechanical edit)
+- **Commits**: `68e5cf67` (service), `a5d937fb` (attendee-ordering BLOCKER), `13a8e818` (review fixes)
+- **Diff**: 9 files, +1969 / −11
+
+`ExternalClientIdentifierService` owns `replace_for_target(target, identifiers | None)` and
+`get_for_targets(targets)`. It validates the target's allowlist and organization, normalizes
+`system`, rejects blank / whitespace-only / over-length identifiers, then diffs the stored set
+against the incoming one and applies a minimal delete + create. Registered in
+`di_core/containers.py` and threaded through `CalendarServiceContext` — never direct-imported.
+`create_event` and `update_event` call it for the event and each external attendee. The audit
+diff gains an `external_client_identifiers` key only when the set actually changed.
+
+**BLOCKER found by the conductor and fixed** (`a5d937fb`). `update_event` applied
+external-attendee identifiers *before* deleting the attendees being replaced.
+`extclientid_uniq_system_ident` is unique on `(organization, content_type, system, identifier)`
+and is not scoped to a single target, so a re-sent attendee whose id the caller omitted —
+deleted and recreated by the reconciliation loop — collided with its own about-to-be-deleted
+predecessor:
+
+```
+UniqueViolation: duplicate key value violates unique constraint "extclientid_uniq_system_ident"
+```
+
+Re-sending an attendee with an unchanged CRM id is the ordinary case. The phase's original test
+for this path passed only because it changed the identifier value (`old-contact` → `new-contact`),
+which sidesteps the collision. Reproduced with a probe that differed by exactly that one value.
+The fix moves identifier application after the stale attendees are deleted, and adds a clear-pass
+before the write-pass so two attendees swapping identifiers in one payload also work — that second
+case turned out to be real, not hypothetical. Both have regression tests, and the conductor
+verified both **fail** against the pre-fix service file and **pass** after.
+
+**Review fixes** (`13a8e818`):
+
+- **N+1 on the omitted path.** The write-pass called `replace_for_target(attendee, None)`
+  unconditionally, and the service runs its SELECT before the `None` check — so every
+  `update_event` gained one query per attendee even when the caller never mentions identifiers,
+  undercutting the "byte-identical when omitted" requirement. Guarded at the call sites, not
+  inside the service, because the service deliberately validates org and allowlist even on no-op
+  calls and two tests pin that. Pinned by a `django_assert_num_queries` test (28 with the guard,
+  29 without).
+- **Duplicate `system` in one payload now raises** `ExternalClientIdentifierDuplicateSystemError`
+  instead of silently collapsing to last-wins. Under last-wins a client sending
+  `[{crm, "A"}, {crm, "B"}]` got `B` stored while believing `A` was set, and a later lookup by `A`
+  returned nothing. Phase 3 hands this list straight through from an external API token, so the
+  ambiguity had to surface as an error before that ships. Comparison is on the normalized system,
+  so the same system spelled two ways in one payload is caught. **This is a deliberate addition to
+  the plan's Phase 3 error list** — Phase 3 must document it.
+- **`get_for_targets` cross-product guard** now has the test that makes it load-bearing. The query
+  filters content types and pks as separate `__in` sets; only an `if key in result` guard stops one
+  target's rows leaking into another's. The query itself was left alone — the per-pair `Q` rewrite
+  is an optimization with no caller until Phase 3.
+- Two docstring corrections, including one where a test's docstring contradicted what the adjacent
+  test asserts.
+
+**Verification** (all re-run by the conductor inside the worktree): `ruff check` clean ·
+`ruff format --check` 645 files · `makemigrations --check` no changes · `check --deploy` 0 errors ·
+`mypy` 291 pre-existing, 0 new · **`pytest calendar_integration/tests/` → 2107 passed, 0 failed**
+(2102 + 5). Duplicate-system rejection verified live against a running Django shell.
+
 ## Current phase
 
-**Phase 2 — Identifier write service, normalization, validation, audit**
-- Branch: `plan/external-client-identifiers/phase-2`
-- Base: `plan/external-client-identifiers/phase-1`
+**Phase 3 — Public GraphQL read, create-time write, and lookup**
+- Branch: `plan/external-client-identifiers/phase-3`
+- Base: `plan/external-client-identifiers/phase-2`
 - Status: not started
 
 ## Follow-ups (not blocking this plan)
@@ -136,7 +201,6 @@ handling; it matches the plan's own wording but now understates the behavior.
 
 | Phase | Title | Depends on |
 |---|---|---|
-| 2 | Identifier write service, normalization, validation, audit | 1 |
 | 3 | Public GraphQL read, create-time write, and lookup | 1, 2 |
 | 4 | Carry event identifiers in webhook payloads | 1, 2 |
 | 5 | Internal REST read, write and filtering | 1, 2 |
