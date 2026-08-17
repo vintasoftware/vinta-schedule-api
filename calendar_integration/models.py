@@ -2,6 +2,8 @@ import datetime
 import zoneinfo
 from typing import TYPE_CHECKING, Any, ClassVar, Self
 
+from django.contrib.contenttypes.fields import GenericForeignKey, GenericRelation
+from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
@@ -500,6 +502,17 @@ class ExternalAttendee(SingleOrganizationModelMixin, SafeRelationNullInitMixin, 
 
     name = models.CharField(max_length=255, blank=True)
     email = models.EmailField()
+
+    # Enables Django's deletion collector to cascade ``ExternalClientIdentifier`` rows
+    # when this attendee is deleted -- including when the deletion itself cascades from
+    # a parent (e.g. the event it attended being deleted). See
+    # ``ExternalClientIdentifier`` for why this can't be an ``OrganizationSafeForeignKey``.
+    external_client_identifiers = GenericRelation(
+        "ExternalClientIdentifier",
+        content_type_field="content_type",
+        object_id_field="identified_key",
+        related_query_name="external_attendee",
+    )
 
     def __str__(self):
         return f"{self.name} ({self.email})" if self.name else self.email
@@ -1301,6 +1314,18 @@ class CalendarEvent(RecurringMixin):
         through=ResourceAllocation,
         through_fields=("event", "calendar"),
         blank=True,
+    )
+
+    # Enables Django's deletion collector to cascade ``ExternalClientIdentifier`` rows
+    # when this event is deleted -- including when the deletion itself cascades from a
+    # parent (deleting a ``Calendar`` cascades its events, which now cascade their
+    # identifiers too). See ``ExternalClientIdentifier`` for why this can't be an
+    # ``OrganizationSafeForeignKey``.
+    external_client_identifiers = GenericRelation(
+        "ExternalClientIdentifier",
+        content_type_field="content_type",
+        object_id_field="identified_key",
+        related_query_name="calendar_event",
     )
 
     resource_allocations: "RelatedManager[ResourceAllocation]"
@@ -2414,3 +2439,54 @@ class BookingPolicy(SingleOrganizationModelMixin, SafeRelationNullInitMixin, Bas
         else:
             target = "unset target"
         return f"BookingPolicy({target}, org={self.organization_id})"
+
+
+class ExternalClientIdentifier(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel):
+    """A client-owned reference from one of our records to a resource in the client's system.
+
+    ``system`` names the external system as a normalized URL; ``identifier`` is that
+    system's opaque id for the resource. The target is any model in
+    ``IDENTIFIABLE_MODELS`` -- today ``CalendarEvent`` and ``ExternalAttendee``.
+
+    The generic relation cannot be an ``OrganizationSafeForeignKey``, so the target's
+    organization is validated in the service layer on write, never by the schema. Every
+    read path must go through ``objects`` (organization-scoped) rather than
+    ``original_manager``.
+    """
+
+    objects: ClassVar[OrganizationScopedManager] = OrganizationScopedManager()
+
+    # Not an OrganizationSafeForeignKey: ContentType is a Django-global table with no
+    # organization column.
+    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE)
+    # Repo PKs are BigAutoField, so this is BigInteger, not Integer.
+    identified_key = models.BigIntegerField()
+    identified_object = GenericForeignKey("content_type", "identified_key")
+
+    system = models.URLField(max_length=500)
+    identifier = models.CharField(max_length=255)
+
+    class Meta:
+        constraints = (
+            # One identifier per system per record.
+            models.UniqueConstraint(
+                fields=["organization", "content_type", "identified_key", "system"],
+                name="extclientid_uniq_target_system",
+            ),
+            # One external resource maps to at most one record of a given type.
+            # Doubles as the reverse-lookup index for the filter arguments.
+            models.UniqueConstraint(
+                fields=["organization", "content_type", "system", "identifier"],
+                name="extclientid_uniq_system_ident",
+            ),
+        )
+        indexes = (
+            # Record -> identifiers, the direction every read on an event/attendee takes.
+            models.Index(
+                fields=["organization", "content_type", "identified_key"],
+                name="extclientid_org_ct_key_idx",
+            ),
+        )
+
+    def __str__(self):
+        return f"{self.system}#{self.identifier}"
