@@ -93,7 +93,7 @@ class DjangoORMAuditRepository(AuditRepository):
 
     Uses Audit.original_manager (unscoped) for all reads so that staff admin
     context (which has no active-membership tenant scope) can read across
-    organisations -- and so that a read never depends on an organization being
+    organizations -- and so that a read never depends on an organization being
     bound to the context, which under STRICT_ORGANIZATION_FILTER would raise
     rather than return nothing. Reads are then explicitly filtered by
     organization_id when the caller supplies one.
