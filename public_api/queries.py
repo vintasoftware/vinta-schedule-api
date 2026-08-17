@@ -378,9 +378,12 @@ class Query:
         matching event per organization+contentType), so ``startDatetime``/``endDatetime``
         are not required for it. ``system`` is normalized before matching. Recurring
         occurrences generated in-memory by the userId/calendarId branches have no real
-        primary key (see ``CalendarEventService.get_calendar_events_expanded``) and can
-        therefore never carry an identifier — the identifier filter only ever matches
-        real, persisted rows.
+        primary key of their own (see ``CalendarEventService.get_calendar_events_expanded``),
+        so an identifier tagged directly on an occurrence can never match. An identifier
+        tagged on the recurring master, however, DOES reach its occurrences: an
+        occurrence is kept when either its own id or its master's id (persisted
+        modified-occurrence exceptions) or its master's recurrence rule (plain
+        generated occurrences) is one of the matching events.
         """
         # Get the user's organization and request from the GraphQL context.
         org = _get_org(info)
@@ -395,16 +398,30 @@ class Query:
             )
 
         matching_event_ids: set[int] | None = None
+        # Recurrence rule ids of the masters in ``matching_event_ids``. Generated
+        # occurrences (from the userId/calendarId expansion branches) are in-memory
+        # copies with no pk of their own, but they DO carry their master's
+        # ``recurrence_rule_fk_id`` (``CalendarEvent.create_instance_from_occurrence``
+        # copies it verbatim) -- unlike ``parent_recurring_object_fk_id``, which is only
+        # ever set on persisted modified-occurrence exceptions. Matching on it lets a
+        # tagged recurring master's identifier reach its occurrences without an extra
+        # per-occurrence query.
+        matching_recurrence_rule_ids: set[int] = set()
         if external_client_identifier_system is not None:
             normalized_system = normalize_system(external_client_identifier_system)
-            matching_event_ids = set(
+            matches = list(
                 CalendarEvent.objects.filter_by_organization(org.id)
                 .filter(
                     external_client_identifiers__system=normalized_system,
-                    external_client_identifiers__identifier=(external_client_identifier_identifier),
+                    external_client_identifiers__identifier=external_client_identifier_identifier,
+                    external_client_identifiers__organization=org.id,
                 )
-                .values_list("id", flat=True)
+                .values_list("id", "recurrence_rule_fk_id")
             )
+            matching_event_ids = {event_id for event_id, _ in matches}
+            matching_recurrence_rule_ids = {
+                rule_id for _, rule_id in matches if rule_id is not None
+            }
 
         # --- Branch 1: eventId lookup (unchanged) ---
         if event_id is not None:
@@ -469,10 +486,19 @@ class Query:
                 user_or_token=request.public_api_system_user, organization=org
             )
             events = deps.calendar_service.get_calendar_events_expanded_for_calendars(
-                owned_ids, start_datetime, end_datetime
+                owned_ids,
+                start_datetime,
+                end_datetime,
+                optimize_queryset=lambda qs: qs.prefetch_related("external_client_identifiers"),
             )
             if matching_event_ids is not None:
-                events = [e for e in events if e.id in matching_event_ids]
+                events = [
+                    e
+                    for e in events
+                    if e.id in matching_event_ids
+                    or e.recurrence_rule_fk_id in matching_recurrence_rule_ids
+                    or e.parent_recurring_object_fk_id in matching_event_ids
+                ]
             return cast(list[CalendarEventGraphQLType], events)
 
         # --- Branch 3: calendarId lookup (unchanged) ---
@@ -487,6 +513,7 @@ class Query:
             calendar,
             start_datetime,
             end_datetime,
+            optimize_queryset=lambda qs: qs.prefetch_related("external_client_identifiers"),
         )
 
         allowed_ids = (
@@ -498,7 +525,13 @@ class Query:
             events = [e for e in events if getattr(e, "calendar_fk_id", None) in allowed_ids]
 
         if matching_event_ids is not None:
-            events = [e for e in events if e.id in matching_event_ids]
+            events = [
+                e
+                for e in events
+                if e.id in matching_event_ids
+                or e.recurrence_rule_fk_id in matching_recurrence_rule_ids
+                or e.parent_recurring_object_fk_id in matching_event_ids
+            ]
 
         return cast(
             list[CalendarEventGraphQLType],

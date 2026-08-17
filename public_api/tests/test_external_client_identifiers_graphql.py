@@ -22,6 +22,7 @@ from unittest.mock import patch
 from django.contrib.auth import get_user_model
 
 import pytest
+import strawberry
 from model_bakery import baker
 from rest_framework.test import APIClient
 
@@ -32,12 +33,13 @@ from calendar_integration.models import (
     CalendarEvent,
     CalendarOwnership,
     ExternalClientIdentifier,
+    RecurrenceRule,
 )
 from calendar_integration.services.calendar_service import CalendarService
 from organizations.models import Organization, OrganizationMembership
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess
-from public_api.mutations import _map_external_client_identifiers
+from public_api.mutations import ExternalClientIdentifierInput, _map_external_client_identifiers
 from public_api.services import PublicAPIAuthService
 
 
@@ -66,8 +68,6 @@ def assert_graphql_error(response):
 class TestMapExternalClientIdentifiers:
     def test_unset_maps_to_none(self):
         """UNSET (omitted) must map to None -- "leave untouched" -- never to []."""
-        import strawberry
-
         assert _map_external_client_identifiers(strawberry.UNSET) is None
 
     def test_explicit_none_maps_to_empty_list(self):
@@ -77,8 +77,6 @@ class TestMapExternalClientIdentifiers:
         assert _map_external_client_identifiers([]) == []
 
     def test_explicit_values_map_through(self):
-        from public_api.mutations import ExternalClientIdentifierInput
-
         result = _map_external_client_identifiers(
             [ExternalClientIdentifierInput(system="https://crm.example.com", identifier="deal-1")]
         )
@@ -131,6 +129,98 @@ query CalendarEvents(
     ) {
         id
         title
+    }
+}
+"""
+
+_CALENDAR_EVENTS_BY_CALENDAR = """
+query CalendarEvents(
+    $calendarId: Int!, $startDatetime: DateTime!, $endDatetime: DateTime!,
+    $system: String, $identifier: String
+) {
+    calendarEvents(
+        calendarId: $calendarId,
+        startDatetime: $startDatetime,
+        endDatetime: $endDatetime,
+        externalClientIdentifierSystem: $system,
+        externalClientIdentifierIdentifier: $identifier
+    ) {
+        id
+        title
+        externalClientIdentifiers {
+            system
+            identifier
+        }
+    }
+}
+"""
+
+_CALENDAR_EVENTS_BY_USER = """
+query CalendarEvents(
+    $userId: Int!, $startDatetime: DateTime!, $endDatetime: DateTime!,
+    $system: String, $identifier: String
+) {
+    calendarEvents(
+        userId: $userId,
+        startDatetime: $startDatetime,
+        endDatetime: $endDatetime,
+        externalClientIdentifierSystem: $system,
+        externalClientIdentifierIdentifier: $identifier
+    ) {
+        id
+        title
+        externalClientIdentifiers {
+            system
+            identifier
+        }
+    }
+}
+"""
+
+# ``id`` is non-nullable on ``CalendarEventGraphQLType``, and generated recurring
+# occurrences are in-memory copies with no real pk (``id is None``) -- a pre-existing,
+# out-of-scope gap unrelated to this fix. The recurring-series tests below select
+# ``title``/``startTime`` instead so they can assert on occurrences without tripping it.
+_CALENDAR_EVENTS_BY_CALENDAR_NO_ID = """
+query CalendarEvents(
+    $calendarId: Int!, $startDatetime: DateTime!, $endDatetime: DateTime!,
+    $system: String, $identifier: String
+) {
+    calendarEvents(
+        calendarId: $calendarId,
+        startDatetime: $startDatetime,
+        endDatetime: $endDatetime,
+        externalClientIdentifierSystem: $system,
+        externalClientIdentifierIdentifier: $identifier
+    ) {
+        title
+        startTime
+        externalClientIdentifiers {
+            system
+            identifier
+        }
+    }
+}
+"""
+
+_CALENDAR_EVENTS_BY_USER_NO_ID = """
+query CalendarEvents(
+    $userId: Int!, $startDatetime: DateTime!, $endDatetime: DateTime!,
+    $system: String, $identifier: String
+) {
+    calendarEvents(
+        userId: $userId,
+        startDatetime: $startDatetime,
+        endDatetime: $endDatetime,
+        externalClientIdentifierSystem: $system,
+        externalClientIdentifierIdentifier: $identifier
+    ) {
+        title
+        startTime
+        externalClientIdentifiers {
+            system
+            identifier
+        }
     }
 }
 """
@@ -766,3 +856,288 @@ class TestExternalClientIdentifiersGraphQL:
         data_b = assert_graphql_success(response_b)
         assert len(data_b["calendarEvents"]) == 1
         assert int(data_b["calendarEvents"][0]["id"]) == event_b.id
+
+    # ------------------------------------------------------------------
+    # calendarId/userId branches -- identifier prefetch (N+1), recurring-series
+    # matching, and combined-mode narrowing
+    # ------------------------------------------------------------------
+
+    def _make_recurring_master(self, org, calendar, *, external_id=None):
+        rule = RecurrenceRule.from_rrule_string("FREQ=DAILY;COUNT=3", org)
+        rule.save()
+        master = CalendarEvent.objects.create(
+            title="Recurring Series",
+            description="",
+            start_time_tz_unaware=datetime.datetime(2026, 10, 1, 9, 0),
+            end_time_tz_unaware=datetime.datetime(2026, 10, 1, 9, 30),
+            timezone="UTC",
+            external_id=external_id or f"recurring-{uuid.uuid4().hex[:8]}",
+            calendar=calendar,
+            organization=org,
+        )
+        master.recurrence_rule = rule
+        master.save()
+        return master
+
+    def test_calendar_events_by_calendar_id_prefetches_identifiers_no_n_plus_1(
+        self, mock_rate_limiter, django_assert_num_queries
+    ):
+        """N one-off events on a calendar, each tagged with an identifier, selecting
+        ``externalClientIdentifiers`` through the ``calendarId`` branch must not issue
+        one extra query per event.
+
+        Capable of failing: reverting either the ``optimize_queryset=...`` argument at
+        the ``calendarId`` branch's call site (public_api/queries.py) or its
+        application to ``non_recurring_events`` (calendar_event_service.py) makes this
+        assert a strictly higher query count -- proven below by the "before" count.
+        """
+        mock_rate_limiter.return_value = iter([None])
+        org = self._make_org()
+        _owner, _membership, calendar = self._make_owner_with_calendar(org)
+        system_user, token, auth_service = self._make_org_wide_system_user(
+            org, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        events = []
+        for i in range(3):
+            event = baker.make(
+                CalendarEvent,
+                organization=org,
+                calendar=calendar,
+                title=f"NPlus1 Event {i}",
+                external_id=f"nplus1-{uuid.uuid4().hex[:8]}",
+                timezone="UTC",
+                start_time_tz_unaware=datetime.datetime(2026, 10, 1, 9 + i, 0),
+                end_time_tz_unaware=datetime.datetime(2026, 10, 1, 9 + i, 30),
+            )
+            create_external_client_identifier(
+                organization=org,
+                identified_object=event,
+                system="https://crm.example.com",
+                identifier=f"deal-nplus1-{i}",
+            )
+            events.append(event)
+
+        variables = {
+            "calendarId": calendar.id,
+            "startDatetime": "2026-10-01T00:00:00Z",
+            "endDatetime": "2026-10-01T23:59:59Z",
+            "system": None,
+            "identifier": None,
+        }
+
+        # 9 queries regardless of N: auth/entitlement/rate-limit plumbing (5), the
+        # calendar lookup (1), the non-recurring events queryset (1), the recurring
+        # (empty) master queryset (1), and ONE prefetch query for
+        # external_client_identifiers covering all 3 events (1). Pinned literal, not
+        # a relative comparison -- with the fix reverted this is 11 (one extra query
+        # per event instead of a single batched one). See the fixer's report for the
+        # captured "before" query log.
+        with django_assert_num_queries(9):
+            response = self._post_json(
+                _CALENDAR_EVENTS_BY_CALENDAR, system_user, token, auth_service, variables
+            )
+
+        data = assert_graphql_success(response)
+        returned = data["calendarEvents"]
+        assert len(returned) == 3
+        for i, event in enumerate(events):
+            matching = next(e for e in returned if int(e["id"]) == event.id)
+            assert matching["externalClientIdentifiers"] == [
+                {"system": "https://crm.example.com", "identifier": f"deal-nplus1-{i}"}
+            ]
+
+    def test_calendar_events_filter_by_identifier_returns_recurring_occurrences_via_calendar_id(
+        self, mock_rate_limiter
+    ):
+        """A recurring series tagged with an identifier on its master row: filtering by
+        that identifier through the ``calendarId`` branch must return the series'
+        occurrences in the window, not a silent empty list.
+
+        Capable of failing: before the recurrence-rule match was added, generated
+        occurrences carried no reference to their master's id at all, so
+        ``matching_event_ids`` filtering dropped every one of them.
+        """
+        mock_rate_limiter.return_value = iter([None])
+        org = self._make_org()
+        _owner, _membership, calendar = self._make_owner_with_calendar(org)
+        system_user, token, auth_service = self._make_org_wide_system_user(
+            org, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        master = self._make_recurring_master(org, calendar)
+        create_external_client_identifier(
+            organization=org,
+            identified_object=master,
+            system="https://crm.example.com",
+            identifier="series-calendar-id",
+        )
+
+        variables = {
+            "calendarId": calendar.id,
+            "startDatetime": "2026-10-01T00:00:00Z",
+            "endDatetime": "2026-10-05T00:00:00Z",
+            "system": "https://crm.example.com",
+            "identifier": "series-calendar-id",
+        }
+
+        response = self._post_json(
+            _CALENDAR_EVENTS_BY_CALENDAR_NO_ID, system_user, token, auth_service, variables
+        )
+        data = assert_graphql_success(response)
+        events = data["calendarEvents"]
+        assert len(events) >= 1, "Recurring series occurrences must not be silently dropped"
+        for event in events:
+            assert event["externalClientIdentifiers"] == [
+                {"system": "https://crm.example.com", "identifier": "series-calendar-id"}
+            ]
+
+    def test_calendar_events_filter_by_identifier_returns_recurring_occurrences_via_user_id(
+        self, mock_rate_limiter
+    ):
+        """Same as the ``calendarId`` case above, but through the ``userId`` branch."""
+        mock_rate_limiter.return_value = iter([None])
+        org = self._make_org()
+        owner, _membership, calendar = self._make_owner_with_calendar(org)
+        system_user, token, auth_service = self._make_org_wide_system_user(
+            org, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        master = self._make_recurring_master(org, calendar)
+        create_external_client_identifier(
+            organization=org,
+            identified_object=master,
+            system="https://crm.example.com",
+            identifier="series-user-id",
+        )
+
+        variables = {
+            "userId": owner.id,
+            "startDatetime": "2026-10-01T00:00:00Z",
+            "endDatetime": "2026-10-05T00:00:00Z",
+            "system": "https://crm.example.com",
+            "identifier": "series-user-id",
+        }
+
+        response = self._post_json(
+            _CALENDAR_EVENTS_BY_USER_NO_ID, system_user, token, auth_service, variables
+        )
+        data = assert_graphql_success(response)
+        events = data["calendarEvents"]
+        assert len(events) >= 1, "Recurring series occurrences must not be silently dropped"
+        for event in events:
+            assert event["externalClientIdentifiers"] == [
+                {"system": "https://crm.example.com", "identifier": "series-user-id"}
+            ]
+
+    def test_calendar_events_filter_by_calendar_id_and_identifier_narrows_results(
+        self, mock_rate_limiter
+    ):
+        """The ``calendarId`` + identifier combination: a matching event on the
+        calendar is returned, a non-matching event on the same calendar is not."""
+        mock_rate_limiter.return_value = iter([None])
+        org = self._make_org()
+        _owner, _membership, calendar = self._make_owner_with_calendar(org)
+        system_user, token, auth_service = self._make_org_wide_system_user(
+            org, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        matching_event = baker.make(
+            CalendarEvent,
+            organization=org,
+            calendar=calendar,
+            title="Matching",
+            external_id=f"calid-match-{uuid.uuid4().hex[:8]}",
+            timezone="UTC",
+            start_time_tz_unaware=datetime.datetime(2026, 10, 1, 9, 0),
+            end_time_tz_unaware=datetime.datetime(2026, 10, 1, 9, 30),
+        )
+        create_external_client_identifier(
+            organization=org,
+            identified_object=matching_event,
+            system="https://crm.example.com",
+            identifier="deal-narrow-calendar",
+        )
+        other_event = baker.make(
+            CalendarEvent,
+            organization=org,
+            calendar=calendar,
+            title="Other",
+            external_id=f"calid-other-{uuid.uuid4().hex[:8]}",
+            timezone="UTC",
+            start_time_tz_unaware=datetime.datetime(2026, 10, 1, 10, 0),
+            end_time_tz_unaware=datetime.datetime(2026, 10, 1, 10, 30),
+        )
+
+        variables = {
+            "calendarId": calendar.id,
+            "startDatetime": "2026-10-01T00:00:00Z",
+            "endDatetime": "2026-10-01T23:59:59Z",
+            "system": "https://crm.example.com",
+            "identifier": "deal-narrow-calendar",
+        }
+
+        response = self._post_json(
+            _CALENDAR_EVENTS_BY_CALENDAR, system_user, token, auth_service, variables
+        )
+        data = assert_graphql_success(response)
+        events = data["calendarEvents"]
+        returned_ids = {int(e["id"]) for e in events}
+        assert returned_ids == {matching_event.id}
+        assert other_event.id not in returned_ids
+
+    def test_calendar_events_filter_by_user_id_and_identifier_narrows_results(
+        self, mock_rate_limiter
+    ):
+        """The ``userId`` + identifier combination: a matching event owned by the
+        user is returned, a non-matching event owned by the same user is not."""
+        mock_rate_limiter.return_value = iter([None])
+        org = self._make_org()
+        owner, _membership, calendar = self._make_owner_with_calendar(org)
+        system_user, token, auth_service = self._make_org_wide_system_user(
+            org, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        matching_event = baker.make(
+            CalendarEvent,
+            organization=org,
+            calendar=calendar,
+            title="Matching",
+            external_id=f"userid-match-{uuid.uuid4().hex[:8]}",
+            timezone="UTC",
+            start_time_tz_unaware=datetime.datetime(2026, 10, 1, 9, 0),
+            end_time_tz_unaware=datetime.datetime(2026, 10, 1, 9, 30),
+        )
+        create_external_client_identifier(
+            organization=org,
+            identified_object=matching_event,
+            system="https://crm.example.com",
+            identifier="deal-narrow-user",
+        )
+        other_event = baker.make(
+            CalendarEvent,
+            organization=org,
+            calendar=calendar,
+            title="Other",
+            external_id=f"userid-other-{uuid.uuid4().hex[:8]}",
+            timezone="UTC",
+            start_time_tz_unaware=datetime.datetime(2026, 10, 1, 10, 0),
+            end_time_tz_unaware=datetime.datetime(2026, 10, 1, 10, 30),
+        )
+
+        variables = {
+            "userId": owner.id,
+            "startDatetime": "2026-10-01T00:00:00Z",
+            "endDatetime": "2026-10-01T23:59:59Z",
+            "system": "https://crm.example.com",
+            "identifier": "deal-narrow-user",
+        }
+
+        response = self._post_json(
+            _CALENDAR_EVENTS_BY_USER, system_user, token, auth_service, variables
+        )
+        data = assert_graphql_success(response)
+        events = data["calendarEvents"]
+        returned_ids = {int(e["id"]) for e in events}
+        assert returned_ids == {matching_event.id}
+        assert other_event.id not in returned_ids

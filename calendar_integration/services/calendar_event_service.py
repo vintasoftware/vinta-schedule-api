@@ -1814,9 +1814,10 @@ class CalendarEventService:
         :param start_date: Start of the date range
         :param end_date: End of the date range
         :param optimize_queryset: Optional callable (typically a serializer's
-            ``get_optimized_queryset``) applied to the master-event base queryset so its
-            nested relations are prefetched. Generated occurrences reuse their master's
-            prefetch cache, so the whole result serializes without per-event N+1s.
+            ``get_optimized_queryset``) applied to both the non-recurring-event queryset
+            and the recurring-master queryset so their nested relations are prefetched.
+            Generated occurrences reuse their master's prefetch cache, so the whole
+            result serializes without per-event N+1s.
         :return: List of all event instances in the range
         """
         if not is_initialized_or_authenticated_calendar_service(
@@ -1845,12 +1846,17 @@ class CalendarEventService:
                 calendar=calendar,
             )
 
-        # Get non-recurring events within the date range
+        # Get non-recurring events within the date range. Apply the optimize_queryset
+        # callable here too -- these are real, already-persisted rows returned as-is
+        # (not generated occurrences), so they need their own prefetch/select applied;
+        # they can't inherit it from a master the way recurring instances do below.
         non_recurring_events = base_qs.filter(
             Q(start_time__range=(start_date, end_date)) | Q(end_time__range=(start_date, end_date)),
             recurrence_rule__isnull=True,  # Non-recurring only
             is_recurring_exception=False,  # Exclude exception objects
         )
+        if optimize_queryset is not None:
+            non_recurring_events = optimize_queryset(non_recurring_events)
 
         # Get recurring master events and generate their instances. Apply the
         # serializer optimization here so generated occurrences inherit prefetched
@@ -1937,8 +1943,9 @@ class CalendarEventService:
             without issuing any DB query.
         :param start_date: Start of the date range (inclusive).
         :param end_date: End of the date range (inclusive).
-        :param optimize_queryset: Optional callable applied to the recurring-master
-            queryset so prefetched relations are inherited by generated occurrences.
+        :param optimize_queryset: Optional callable applied to both the non-recurring-event
+            queryset and the recurring-master queryset, so real rows get their own
+            prefetch and generated occurrences inherit it from their master.
         :return: Deduplicated, sorted list of event instances in the range.
         """
         if not is_initialized_or_authenticated_calendar_service(
@@ -1965,12 +1972,17 @@ class CalendarEventService:
             )
         )
 
-        # Get non-recurring events within the date range
+        # Get non-recurring events within the date range. Apply the optimize_queryset
+        # callable here too -- these are real, already-persisted rows returned as-is
+        # (not generated occurrences), so they need their own prefetch/select applied;
+        # they can't inherit it from a master the way recurring instances do below.
         non_recurring_events = base_qs.filter(
             Q(start_time__range=(start_date, end_date)) | Q(end_time__range=(start_date, end_date)),
             recurrence_rule__isnull=True,  # Non-recurring only
             is_recurring_exception=False,  # Exclude exception objects
         )
+        if optimize_queryset is not None:
+            non_recurring_events = optimize_queryset(non_recurring_events)
 
         # Get recurring master events and generate their instances.
         recurring_events = base_qs.filter(

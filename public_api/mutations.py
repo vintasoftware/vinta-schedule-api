@@ -973,6 +973,15 @@ class ExternalClientIdentifierInput:
 
     ``system`` is normalized (case + trailing slash) before storage and matching --
     see ``calendar_integration.external_client_identifiers.normalize_system``.
+
+    Rejected with a GraphQL error (no partial write) when:
+    - ``system`` is not a valid URL.
+    - ``identifier`` is blank or whitespace-only.
+    - ``identifier`` is over 255 characters.
+    - the ``(system, identifier)`` pair is already claimed by another record of the
+      same type (event or external attendee) in the organization.
+    - two pairs in the same payload normalize to the same ``system`` (e.g. differing
+      only by case or a trailing slash).
     """
 
     system: str
@@ -990,7 +999,18 @@ class ScheduleEventExternalAttendeeInput:
     # full set. Must default to UNSET, never a list, so existing callers that have
     # never heard of this field are unaffected. See
     # ``ExternalClientIdentifierService.replace_for_target``.
-    external_client_identifiers: list[ExternalClientIdentifierInput] | None = strawberry.UNSET  # type: ignore[assignment]
+    external_client_identifiers: list[ExternalClientIdentifierInput] | None = strawberry.field(  # type: ignore[assignment]
+        default=strawberry.UNSET,
+        description=(
+            "Client-owned (system, identifier) pairs for this external attendee. "
+            "Omitted = leave untouched; an explicit list (including [] or null) replaces "
+            "the full set. Rejected with a GraphQL error, and no partial write, when: an "
+            "invalid system URL is given; an identifier is blank/whitespace or over 255 "
+            "characters; a (system, identifier) pair is already claimed by another record "
+            "of the same type in the organization; or two pairs in this payload normalize "
+            "to the same system. See ExternalClientIdentifierInput."
+        ),
+    )
 
 
 @strawberry.input
@@ -1021,7 +1041,18 @@ class ScheduleEventInput:
     # every existing scheduleEvent caller that has never heard of this field would
     # start wiping identifiers on every call. See
     # ``ExternalClientIdentifierService.replace_for_target``.
-    external_client_identifiers: list[ExternalClientIdentifierInput] | None = strawberry.UNSET  # type: ignore[assignment]
+    external_client_identifiers: list[ExternalClientIdentifierInput] | None = strawberry.field(  # type: ignore[assignment]
+        default=strawberry.UNSET,
+        description=(
+            "Client-owned (system, identifier) pairs for this event. Omitted = leave "
+            "untouched; an explicit list (including [] or null) replaces the full set. "
+            "Rejected with a GraphQL error, and no event created, when: an invalid system "
+            "URL is given; an identifier is blank/whitespace or over 255 characters; a "
+            "(system, identifier) pair is already claimed by another record of the same "
+            "type in the organization; or two pairs in this payload normalize to the same "
+            "system. See ExternalClientIdentifierInput."
+        ),
+    )
 
 
 @strawberry.input
