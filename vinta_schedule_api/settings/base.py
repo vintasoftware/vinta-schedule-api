@@ -112,9 +112,17 @@ SHARED_SCHEMA_ORGANIZATIONS = {
     # after DRF authentication), so nothing would write this -- stated so a future
     # reader does not have to check.
     "ADD_ORGANIZATION_TO_SESSION": False,
-    # NOTE: ``STRICT_ORGANIZATION_FILTER`` stays at its default (``False``) until
-    # Phase 2a. No model scopes implicitly yet, so turning it on here would only
-    # change how ``Organization.objects.none()``-shaped calls behave.
+    # An organization-scoped query that runs with nothing bound raises
+    # ``OrganizationNotFoundError`` rather than quietly returning no rows. Turned
+    # on in Phase 2a, together with the first models to scope implicitly: an
+    # empty result is indistinguishable from "no data yet" in a task or a
+    # management command, where a missing binding is the likelier explanation,
+    # and this is the whole safety argument for migrating without a feature flag.
+    #
+    # Reaching outside the bound organization stays available and stays explicit:
+    # ``filter_by_organization(...)`` / ``exclude_by_organization(...)`` (which
+    # start from the unscoped queryset) and ``original_manager``.
+    "STRICT_ORGANIZATION_FILTER": True,
 }
 
 MIDDLEWARE = [

@@ -409,8 +409,9 @@ def test_forbidden_update_does_not_mutate_local_event_and_calls_update_event(
     fake_adapter.create_event.assert_not_called()
 
     # Exactly one AUTO_UNDONE change request must exist.
-    requests = ExternalEventChangeRequest.objects.filter(
-        organization_id=organization_forbidden.id,
+    requests = ExternalEventChangeRequest.objects.filter_by_organization(
+        organization_forbidden.id
+    ).filter(
         event=existing,
     )
     assert requests.count() == 1
@@ -479,26 +480,33 @@ def test_forbidden_update_external_id_in_matched_event_ids_not_deleted_by_full_s
     service._execute_calendar_sync(calendar_sync, sync_token=None)
 
     # The intercepted event must still exist (matched_event_ids kept it from deletion).
-    assert CalendarEvent.objects.filter(
-        external_id="evt_forbidden_intercept",
-        organization_id=organization_forbidden.id,
-    ).exists()
+    assert (
+        CalendarEvent.objects.filter_by_organization(organization_forbidden.id)
+        .filter(
+            external_id="evt_forbidden_intercept",
+        )
+        .exists()
+    )
     intercepted.refresh_from_db()
     assert intercepted.title == "Will Not Be Mutated"
 
     # The truly vanished event must have been deleted by full-sync.
-    assert not CalendarEvent.objects.filter(
-        external_id="evt_forbidden_vanished",
-        organization_id=organization_forbidden.id,
-    ).exists()
+    assert (
+        not CalendarEvent.objects.filter_by_organization(organization_forbidden.id)
+        .filter(
+            external_id="evt_forbidden_vanished",
+        )
+        .exists()
+    )
 
     # One AUTO_UNDONE change request created for the intercepted event.
     assert (
-        ExternalEventChangeRequest.objects.filter(
-            organization_id=organization_forbidden.id,
+        ExternalEventChangeRequest.objects.filter_by_organization(organization_forbidden.id)
+        .filter(
             event=intercepted,
             status=ExternalEventChangeRequestStatus.AUTO_UNDONE,
-        ).count()
+        )
+        .count()
         == 1
     )
 
@@ -631,10 +639,13 @@ def test_forbidden_delete_does_not_delete_local_event_and_calls_create_event(
     service._execute_calendar_sync(calendar_sync, sync_token="tok-prev")
 
     # Local event must still EXIST — it must NOT have been deleted.
-    assert CalendarEvent.objects.filter(
-        pk=event_pk,
-        organization_id=organization_forbidden.id,
-    ).exists()
+    assert (
+        CalendarEvent.objects.filter_by_organization(organization_forbidden.id)
+        .filter(
+            pk=event_pk,
+        )
+        .exists()
+    )
 
     # Outbound create_event must have been called once (re-create the deleted event).
     fake_adapter.create_event.assert_called_once()
@@ -646,8 +657,9 @@ def test_forbidden_delete_does_not_delete_local_event_and_calls_create_event(
     assert existing.external_id != old_external_id
 
     # Exactly one AUTO_UNDONE delete change request must exist.
-    requests = ExternalEventChangeRequest.objects.filter(
-        organization_id=organization_forbidden.id,
+    requests = ExternalEventChangeRequest.objects.filter_by_organization(
+        organization_forbidden.id
+    ).filter(
         event=existing,
     )
     assert requests.count() == 1
@@ -776,8 +788,8 @@ def test_forbidden_update_adapter_none_raises_improperly_configured(
         external_event_change_request_service=change_request_service,
     )
     inbound = _inbound_edit_event("evt_fb_adpnone_upd")
-    existing = CalendarEvent.objects.get(
-        external_id="evt_fb_adpnone_upd", organization_id=organization_forbidden.id
+    existing = CalendarEvent.objects.filter_by_organization(organization_forbidden.id).get(
+        external_id="evt_fb_adpnone_upd",
     )
     changes = EventsSyncChanges()
     with pytest.raises(ImproperlyConfigured):
@@ -811,8 +823,8 @@ def test_forbidden_delete_adapter_none_raises_improperly_configured(
         external_event_change_request_service=change_request_service,
     )
     inbound = _inbound_cancelled_event("evt_fb_adpnone_del")
-    existing = CalendarEvent.objects.get(
-        external_id="evt_fb_adpnone_del", organization_id=organization_forbidden.id
+    existing = CalendarEvent.objects.filter_by_organization(organization_forbidden.id).get(
+        external_id="evt_fb_adpnone_del",
     )
     changes = EventsSyncChanges()
     with pytest.raises(ImproperlyConfigured):
@@ -1041,10 +1053,13 @@ def test_allow_policy_inbound_update_applies_directly_no_change_request(
     assert existing.description == "Edited description"
 
     # No change request was created.
-    assert not ExternalEventChangeRequest.objects.filter(
-        organization_id=organization_allow.id,
-        event=existing,
-    ).exists()
+    assert (
+        not ExternalEventChangeRequest.objects.filter_by_organization(organization_allow.id)
+        .filter(
+            event=existing,
+        )
+        .exists()
+    )
 
     # No outbound adapter calls.
     fake_adapter.update_event.assert_not_called()
@@ -1084,16 +1099,17 @@ def test_allow_policy_inbound_cancellation_deletes_event_no_change_request(
     service._execute_calendar_sync(calendar_sync, sync_token="tok-prev")
 
     # ALLOW: the local event is DELETED.
-    assert not CalendarEvent.objects.filter(
-        pk=event_pk,
-        organization_id=organization_allow.id,
-    ).exists()
+    assert (
+        not CalendarEvent.objects.filter_by_organization(organization_allow.id)
+        .filter(
+            pk=event_pk,
+        )
+        .exists()
+    )
 
     # No change request was created.
     assert (
-        not ExternalEventChangeRequest.objects.filter(
-            organization_id=organization_allow.id,
-        )
+        not ExternalEventChangeRequest.objects.filter_by_organization(organization_allow.id)
         .filter(event_fk=existing.pk)
         .exists()
     )
@@ -1161,8 +1177,9 @@ def test_forbidden_update_supersedes_prior_pending_request(
     assert prior_pending.status == ExternalEventChangeRequestStatus.STALE
 
     # Exactly one AUTO_UNDONE row must exist for the event.
-    auto_undone = ExternalEventChangeRequest.objects.filter(
-        organization_id=organization_forbidden.id,
+    auto_undone = ExternalEventChangeRequest.objects.filter_by_organization(
+        organization_forbidden.id
+    ).filter(
         event=existing,
         status=ExternalEventChangeRequestStatus.AUTO_UNDONE,
     )
@@ -1234,11 +1251,14 @@ def test_forbidden_update_provider_call_raises_no_db_mutation(
         )
 
     # NO AUTO_UNDONE row must have been created.
-    assert not ExternalEventChangeRequest.objects.filter(
-        organization_id=organization_forbidden.id,
-        event=existing,
-        status=ExternalEventChangeRequestStatus.AUTO_UNDONE,
-    ).exists()
+    assert (
+        not ExternalEventChangeRequest.objects.filter_by_organization(organization_forbidden.id)
+        .filter(
+            event=existing,
+            status=ExternalEventChangeRequestStatus.AUTO_UNDONE,
+        )
+        .exists()
+    )
 
     # The prior PENDING must still be PENDING — NOT transitioned to STALE.
     prior_pending.refresh_from_db()

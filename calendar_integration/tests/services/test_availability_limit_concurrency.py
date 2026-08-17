@@ -177,7 +177,14 @@ def test_two_net_zero_batches_on_the_same_delete_serialize_and_do_not_overshoot(
     # `check_limit` blocks it. Either way, nothing overshoots.
     assert outcomes.count("ok") == 1
     assert set(outcomes) <= {"ok", "over_limit", "value_error"}
-    assert AvailableTime.objects.filter(organization=organization, calendar=calendar).count() == 3
+    assert (
+        AvailableTime.objects.filter_by_organization(organization)
+        .filter(
+            calendar=calendar,
+        )
+        .count()
+        == 3
+    )
 
 
 @pytest.mark.django_db(transaction=True)
@@ -198,4 +205,11 @@ def test_without_the_lock_the_net_zero_race_overshoots():
         outcomes = _run_two_racing_net_zero_batches(organization, calendar, shared.id)
 
     assert outcomes == ["ok", "ok"]
-    assert AvailableTime.objects.filter(organization=organization, calendar=calendar).count() == 4
+    assert (
+        AvailableTime.objects.filter_by_organization(organization)
+        .filter(
+            calendar=calendar,
+        )
+        .count()
+        == 4
+    )

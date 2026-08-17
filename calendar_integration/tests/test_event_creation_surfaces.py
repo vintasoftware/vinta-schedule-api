@@ -299,7 +299,7 @@ class TestRestSurface:
         assert body["code"] == "limit_exceeded"
         assert body["resource"] == LimitedResource.EVENT_OCCURRENCES
         assert body["remedy"] == LimitRemedy.ADD_PAYMENT_METHOD
-        assert not CalendarEvent.objects.filter(calendar=calendar).exists()
+        assert not CalendarEvent.original_manager.filter(calendar=calendar).exists()
 
     def test_unlimited_plan_is_unchanged(self, mock_google_adapter):
         organization, subscription = _organization_with_postpaid_limit(None, BillingState.FREE)
@@ -405,7 +405,7 @@ class TestTokenSurface:
         body = response.json()
         assert body["resource"] == LimitedResource.EVENT_OCCURRENCES
         assert body["remedy"] == LimitRemedy.ADD_PAYMENT_METHOD
-        assert not CalendarEvent.objects.filter(calendar=calendar).exists()
+        assert not CalendarEvent.original_manager.filter(calendar=calendar).exists()
 
     def test_unlimited_plan_is_unchanged(self):
         organization, subscription = _organization_with_postpaid_limit(None, BillingState.FREE)
@@ -528,7 +528,7 @@ class TestPublicApiScheduleEventSurface:
         assert body["code"] == "limit_exceeded"
         assert body["resource"] == LimitedResource.EVENT_OCCURRENCES
         assert body["remedy"] == LimitRemedy.ADD_PAYMENT_METHOD
-        assert not CalendarEvent.objects.filter(calendar=calendar).exists()
+        assert not CalendarEvent.original_manager.filter(calendar=calendar).exists()
 
     @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
     def test_unlimited_plan_is_unchanged(self, mock_rate_limiter):
@@ -638,7 +638,7 @@ class TestBookingCodeEventSurface:
         body = data["errors"][0]["extensions"]
         assert body["code"] == "limit_exceeded"
         assert body["resource"] == LimitedResource.EVENT_OCCURRENCES
-        assert not CalendarEvent.objects.filter(calendar=calendar).exists()
+        assert not CalendarEvent.original_manager.filter(calendar=calendar).exists()
         # The code must not have been consumed by a rejected booking.
         token.refresh_from_db()
         assert token.used_at is None
@@ -772,7 +772,7 @@ class TestBookingCodeGroupEventSurface:
         body = data["errors"][0]["extensions"]
         assert body["code"] == "limit_exceeded"
         assert body["resource"] == LimitedResource.EVENT_OCCURRENCES
-        assert not CalendarEvent.objects.filter(calendar=calendar).exists()
+        assert not CalendarEvent.original_manager.filter(calendar=calendar).exists()
         token.refresh_from_db()
         assert token.used_at is None
 
@@ -888,7 +888,7 @@ class TestBulkSyncWriterSurface:
         calendar_sync.refresh_from_db()
         assert calendar_sync.status == "failed"
         assert calendar_sync.error_message  # the OverLimitError's message, not empty
-        assert not CalendarEvent.objects.filter(calendar=calendar).exists()
+        assert not CalendarEvent.original_manager.filter(calendar=calendar).exists()
 
     def test_unlimited_plan_is_unchanged(self):
         organization, subscription = _organization_with_postpaid_limit(None, BillingState.FREE)
@@ -913,7 +913,7 @@ class TestBulkSyncWriterSurface:
 
         calendar_sync.refresh_from_db()
         assert calendar_sync.status == "success"
-        assert CalendarEvent.objects.filter(
+        assert CalendarEvent.original_manager.filter(
             calendar=calendar, external_id="sync-master-unlimited"
         ).exists()
 
@@ -1009,7 +1009,7 @@ class TestBundleEventFanOutHeadroom:
             )
 
         assert exc_info.value.resource_key == LimitedResource.EVENT_OCCURRENCES
-        assert not CalendarEvent.objects.filter(bundle_calendar=bundle_calendar).exists()
+        assert not CalendarEvent.original_manager.filter(bundle_calendar=bundle_calendar).exists()
 
     def test_five_internal_children_with_headroom_for_five_succeeds(self):
         organization, subscription = _organization_with_postpaid_limit(5, BillingState.FREE)
@@ -1060,7 +1060,7 @@ class TestBundleEventFanOutHeadroom:
         assert event.pk is not None
         # Primary + 4 internal representations = 5 CalendarEvent rows for this bundle --
         # the same 5 units the guard above checked headroom for.
-        assert CalendarEvent.objects.filter(bundle_calendar=bundle_calendar).count() == 5
+        assert CalendarEvent.original_manager.filter(bundle_calendar=bundle_calendar).count() == 5
 
     def test_five_google_children_checks_only_one_unit(self):
         """A bundle over five Google calendars costs 1, not 5: only the primary gets
@@ -1124,7 +1124,7 @@ class TestBundleEventFanOutHeadroom:
         # Only the primary got a real CalendarEvent -- the other four Google children
         # got a BlockedTime instead, which is exactly why this fan-out costs 1 unit.
         assert list(
-            CalendarEvent.objects.filter(bundle_calendar=bundle_calendar).values_list(
+            CalendarEvent.original_manager.filter(bundle_calendar=bundle_calendar).values_list(
                 "pk", flat=True
             )
         ) == [event.pk]
@@ -1295,7 +1295,7 @@ class TestRecurringMasterCostsItsOccurrences:
         assert exc_info.value.resource_key == LimitedResource.EVENT_OCCURRENCES
         assert exc_info.value.remedy == LimitRemedy.ADD_PAYMENT_METHOD
         # Stage 2 runs after the insert and rolls it back; nothing survives.
-        assert not CalendarEvent.objects.filter(calendar=calendar).exists()
+        assert not CalendarEvent.original_manager.filter(calendar=calendar).exists()
 
     def test_a_single_event_of_the_same_shape_still_fits(self):
         """The control for the test above: with 9 of 10 used, one booking is allowed.
@@ -1528,7 +1528,7 @@ class TestInternalCreateEventReentries:
 
         assert moved.pk is not None
         assert moved.calendar_fk_id == target.id
-        assert not CalendarEvent.objects.filter(pk=event.pk).exists()
+        assert not CalendarEvent.original_manager.filter(pk=event.pk).exists()
 
     def test_bypass_limits_skips_the_guard(self):
         """Every guarded write takes ``bypass_limits`` so a management command or a
@@ -1625,7 +1625,9 @@ class TestSyncRecoversOnceHeadroomIsRestored:
         sync_service.sync_events(calendar_sync)
         calendar_sync.refresh_from_db()
         assert calendar_sync.status == "success"
-        assert CalendarEvent.objects.filter(calendar=calendar, external_id="sync-recovers").exists()
+        assert CalendarEvent.original_manager.filter(
+            calendar=calendar, external_id="sync-recovers"
+        ).exists()
 
 
 # ----------------------------------------------------------------------------------

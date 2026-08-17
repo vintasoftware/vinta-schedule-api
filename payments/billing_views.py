@@ -534,17 +534,19 @@ class MeteredOccurrenceViewSet(TenantScopedViewMixin, mixins.ListModelMixin, Gen
         # already allowed to show can only belong to an organization in that
         # same pool.
         pooled_organization_ids = getattr(self.request, "pooled_organization_ids", ())
+        # ``unscoped()`` on both: the pool spans a reseller subtree, which no
+        # single-organization binding can express; ``pooled_organization_ids`` is
+        # the tenant boundary and is applied in each filter.
         events = (
-            CalendarEvent.objects.filter(
-                pk__in=event_ids, organization_id__in=pooled_organization_ids
-            )
+            CalendarEvent.objects.unscoped()
+            .filter(pk__in=event_ids, organization_id__in=pooled_organization_ids)
             .select_related("calendar")
             .prefetch_related(
                 Prefetch(
                     "calendar__ownerships",
-                    queryset=CalendarOwnership.objects.filter(
-                        organization_id__in=pooled_organization_ids
-                    ).select_related("membership__user__profile"),
+                    queryset=CalendarOwnership.objects.unscoped()
+                    .filter(organization_id__in=pooled_organization_ids)
+                    .select_related("membership__user__profile"),
                 )
             )
         )

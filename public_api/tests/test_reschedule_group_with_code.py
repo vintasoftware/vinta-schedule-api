@@ -830,7 +830,7 @@ class TestRescheduleGroupWithCodeLifecycleRejections:
             calendar_group_id=group.id,
             event_id=grouped_event.id,
         )
-        CalendarManagementToken.objects.filter(id=token.id).update(
+        CalendarManagementToken.original_manager.filter(id=token.id).update(
             used_at=datetime.datetime(2025, 1, 1, tzinfo=datetime.UTC)
         )
 

@@ -669,8 +669,8 @@ class CalendarSyncService:
                 # owner-less ownership per calendar: reuse any existing orphan row,
                 # otherwise create one.
                 ownership = (
-                    CalendarOwnership.objects.filter(
-                        organization=context.organization,
+                    CalendarOwnership.objects.filter_by_organization(context.organization)
+                    .filter(
                         calendar=calendar,
                         membership_user_id__isnull=True,
                     )
@@ -951,18 +951,16 @@ class CalendarSyncService:
 
         calendar_events_by_external_id = {
             e.external_id: e
-            for e in CalendarEvent.objects.filter(
+            for e in CalendarEvent.objects.filter_by_organization(context.organization.id).filter(
                 window,
                 calendar_fk_id=calendar_id,
-                organization_id=context.organization.id,
             )
         }
         blocked_times_by_external_id = {
             e.external_id: e
-            for e in BlockedTime.objects.filter(
+            for e in BlockedTime.objects.filter_by_organization(context.organization.id).filter(
                 window,
                 calendar_fk_id=calendar_id,
-                organization_id=context.organization.id,
             )
         }
         return calendar_events_by_external_id, blocked_times_by_external_id
@@ -1265,9 +1263,10 @@ class CalendarSyncService:
         if event.recurring_event_id:
             # This is an instance of a recurring event from external service
             try:
-                parent_event = CalendarEvent.objects.get(
+                parent_event = CalendarEvent.objects.filter_by_organization(
+                    calendar.organization_id
+                ).get(
                     external_id=event.recurring_event_id,
-                    organization_id=calendar.organization_id,
                 )
                 # Parent exists in our system, so this instance should be a CalendarEvent
                 # (because the parent was created through our API)
@@ -1450,11 +1449,10 @@ class CalendarSyncService:
             return
 
         deleted_ids = set(calendar_events_by_external_id.keys()) - matched_event_ids
-        CalendarEvent.objects.filter(
+        CalendarEvent.objects.filter_by_organization(context.organization.id).filter(
             calendar_fk_id=calendar_id,
             external_id__in=deleted_ids,
             start_time__gte=start_date,
-            organization_id=context.organization.id,
         ).delete()
 
     def _apply_sync_changes(self, calendar_id: int, changes: EventsSyncChanges):
@@ -1489,17 +1487,15 @@ class CalendarSyncService:
             )
 
         if changes.events_to_delete:
-            CalendarEvent.objects.filter(
+            CalendarEvent.objects.filter_by_organization(context.organization).filter(
                 calendar_fk_id=calendar_id,
                 external_id__in=changes.events_to_delete,
-                organization=context.organization,
             ).delete()
 
         if changes.blocks_to_delete:
-            BlockedTime.objects.filter(
+            BlockedTime.objects.filter_by_organization(context.organization).filter(
                 calendar_fk_id=calendar_id,
                 external_id__in=changes.blocks_to_delete,
-                organization=context.organization,
             ).delete()
 
         # After all changes are applied, link orphaned recurring instances to their parents
@@ -1515,17 +1511,19 @@ class CalendarSyncService:
             return
 
         # Find events that have a pending parent external ID in their meta
-        orphaned_instances = CalendarEvent.objects.filter(
+        orphaned_instances = CalendarEvent.objects.filter_by_organization(
+            context.organization.id
+        ).filter(
             calendar_fk_id=calendar_id,
-            organization_id=context.organization.id,
             parent_recurring_object__isnull=True,
             meta__pending_parent_external_id__isnull=False,
         )
 
         # Also find blocked times that might be orphaned instances
-        orphaned_blocked_times = BlockedTime.objects.filter(
+        orphaned_blocked_times = BlockedTime.objects.filter_by_organization(
+            context.organization.id
+        ).filter(
             calendar_fk_id=calendar_id,
-            organization_id=context.organization.id,
             meta__pending_parent_external_id__isnull=False,
         )
 
@@ -1534,9 +1532,10 @@ class CalendarSyncService:
             parent_external_id = instance.meta.get("pending_parent_external_id")
             if parent_external_id:
                 try:
-                    parent_event = CalendarEvent.objects.get(
+                    parent_event = CalendarEvent.objects.filter_by_organization(
+                        context.organization.id
+                    ).get(
                         external_id=parent_external_id,
-                        organization_id=context.organization.id,
                     )
                     # Link the instance to its parent
                     instance.parent_recurring_object_fk = parent_event
@@ -1557,9 +1556,8 @@ class CalendarSyncService:
             if parent_external_id:
                 try:
                     # Check if parent exists now
-                    CalendarEvent.objects.get(
+                    CalendarEvent.objects.filter_by_organization(context.organization.id).get(
                         external_id=parent_external_id,
-                        organization_id=context.organization.id,
                     )
                     # Parent exists, clear the pending flag
                     blocked_time.meta.pop("pending_parent_external_id", None)

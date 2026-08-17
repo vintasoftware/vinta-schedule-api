@@ -3490,7 +3490,7 @@ class TestPhase20ServiceAccountCRUD:
         response = client.delete(url)
 
         assert_response_status_code(response, status.HTTP_204_NO_CONTENT)
-        assert not GoogleCalendarServiceAccount.objects.filter(id=account.id).exists()
+        assert not GoogleCalendarServiceAccount.original_manager.filter(id=account.id).exists()
 
     def test_create_non_admin_returns_403(self, user):
         org = baker.make(Organization, name="NonAdmin Org")
@@ -3623,7 +3623,7 @@ class TestPhase11ServiceAccountRestrictedGuard:
         response = client.delete(url)
 
         assert_response_status_code(response, status.HTTP_402_PAYMENT_REQUIRED)
-        assert GoogleCalendarServiceAccount.objects.filter(id=account.id).exists()
+        assert GoogleCalendarServiceAccount.original_manager.filter(id=account.id).exists()
 
     @pytest.mark.parametrize("billing_state", [BillingState.ACTIVE, BillingState.GRACE])
     def test_non_restricted_org_can_create_service_account(self, user, billing_state):
@@ -3647,7 +3647,7 @@ class TestPhase11ServiceAccountRestrictedGuard:
         response = client.delete(url)
 
         assert_response_status_code(response, status.HTTP_204_NO_CONTENT)
-        assert not GoogleCalendarServiceAccount.objects.filter(id=account.id).exists()
+        assert not GoogleCalendarServiceAccount.original_manager.filter(id=account.id).exists()
 
 
 @pytest.mark.django_db

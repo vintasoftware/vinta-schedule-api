@@ -254,33 +254,29 @@ def di_container():
 
 @pytest.fixture
 def assert_no_unbound_scoped_queries():
-    """Tripwire: fail the test if an ``OrganizationModel``-scoped query executes
-    while no organization is bound via ``common.organization_context``.
+    """Tripwire: fail the test if a query on an organization-scoped table runs
+    with no organization bound via ``common.organization_context`` **and**
+    without naming one itself.
 
     Phase 0 of the vinta-django-orgs migration
     (``ai-plans/2026-08-12-VINTA_DJANGO_ORGS_MIGRATION_IMPLEMENTATION_PLAN.md``)
-    threads an explicit ``organization_context(...)`` binding through every
-    Celery task and management command that touches a scoped model, while the
-    manager itself (``organizations.managers.BaseOrganizationModelManager`` /
-    ``organizations.querysets.BaseOrganizationModelQuerySet``) keeps enforcing
-    only its own, unrelated contract: an explicit ``organization`` filter on the
-    query, checked independently of this binding. That is what makes Phase 0
-    behavior-neutral -- today, a query can run unbound and still succeed, as
-    long as it carries the explicit filter.
+    threaded an explicit ``organization_context(...)`` binding through every
+    Celery task and management command that touches a scoped model, and this
+    fixture asked "did anything run unbound?" -- because an unbound call site was
+    what Phase 2 would break.
 
-    Phase 2 changes that: the manager swaps to implicit, context-bound scoping,
-    and (`STRICT_ORGANIZATION_FILTER = True`) an unbound query raises instead of
-    silently returning nothing. Requesting this fixture in a test lets that test
-    assert the *new* contract now, ahead of the flip. A call site that passes
-    today (explicit filter present, no binding) but would raise in Phase 2
-    (nothing bound) fails under this fixture now, while the diff that caused it
-    is still in front of the reviewer -- not three phases later.
+    Phase 2a landed that flip for ``calendar_integration``: ``objects`` scopes to
+    the bound organization and, under ``STRICT_ORGANIZATION_FILTER``, raises when
+    nothing is bound. The manager now enforces the unbound half itself, loudly.
+    What it cannot enforce is the deliberate escape hatch -- ``unscoped()`` /
+    ``original_manager`` bypass the context on purpose and name no organization --
+    so that is what this reports. ``filter_by_organization(...)`` is not a
+    violation: it says which organization it means.
 
-    Deliberately **opt-in**, not autouse: today's managers ignore the binding
-    project-wide, and almost nothing in the suite binds one yet (that is
-    Phase 0's own scope: tasks and management commands, not the whole app).
-    Making this autouse before Phase 2b's ``TenantScopedViewMixin`` binding
-    lands would fail nearly every test that exercises a scoped model.
+    Deliberately **opt-in**, not autouse. Requests do not bind an organization
+    until Phase 2b's ``TenantScopedViewMixin`` change, and plenty of tests read
+    through ``original_manager`` on purpose; autouse would fail those for being
+    explicit about crossing organizations rather than for leaking across them.
 
     Implementation lives in ``common.organization_context_test_support`` (kept
     independent of pytest's fixture protocol so it is unit-testable on its own

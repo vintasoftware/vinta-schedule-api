@@ -255,14 +255,18 @@ def test_attendee_approves_delete_request_removes_event_and_keeps_request(
     result = service.approve(change_request, membership=attendee_membership)
 
     # The local event must no longer exist.
-    assert not CalendarEvent.objects.filter(
-        pk=event_id, organization_id=event.organization_id
-    ).exists()
+    assert (
+        not CalendarEvent.objects.filter_by_organization(event.organization_id)
+        .filter(
+            pk=event_id,
+        )
+        .exists()
+    )
 
     # The request row must survive with status APPROVED and event NULL.
     # Multi-tenancy manager requires organization_id in the filter.
-    saved = ExternalEventChangeRequest.objects.get(
-        pk=request_id, organization_id=event.organization_id
+    saved = ExternalEventChangeRequest.objects.filter_by_organization(event.organization_id).get(
+        pk=request_id,
     )
     assert saved.status == ExternalEventChangeRequestStatus.APPROVED
     assert saved.event_fk_id is None
@@ -298,9 +302,13 @@ def test_admin_approves_delete_request(
 
     result = service.approve(change_request, membership=admin_membership)
 
-    assert not CalendarEvent.objects.filter(
-        pk=event_id, organization_id=event.organization_id
-    ).exists()
+    assert (
+        not CalendarEvent.objects.filter_by_organization(event.organization_id)
+        .filter(
+            pk=event_id,
+        )
+        .exists()
+    )
     assert result.status == ExternalEventChangeRequestStatus.APPROVED
     assert result.event_fk_id is None
 

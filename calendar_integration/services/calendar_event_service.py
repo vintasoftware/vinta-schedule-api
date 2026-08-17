@@ -703,9 +703,10 @@ class CalendarEventService:
         # Handle parent event for exceptions/instances
         parent_event = None
         if event_data.parent_event_id:
-            parent_event = CalendarEvent.objects.get(
+            parent_event = CalendarEvent.objects.filter_by_organization(
+                context.organization.id
+            ).get(
                 id=event_data.parent_event_id,
-                organization_id=context.organization.id,
             )
 
         # Create recurrence rule if provided
@@ -840,10 +841,10 @@ class CalendarEventService:
             raise
         self._check_not_restricted()
 
-        event = CalendarEvent.objects.select_related("calendar").get(
-            calendar_fk_id=calendar_id,
-            id=event_id,
-            organization_id=context.organization.id,
+        event = (
+            CalendarEvent.objects.filter_by_organization(context.organization.id)
+            .select_related("calendar")
+            .get(calendar_fk_id=calendar_id, id=event_id)
         )
 
         # When True, authorization is granted by the public-token write allowance
@@ -1041,7 +1042,15 @@ class CalendarEventService:
                 external_attendance_instance = EventExternalAttendance(
                     organization=context.organization,
                     event=event,
-                    external_attendee=external_attendee,
+                    # ``external_attendee_fk``, not ``external_attendee``: the
+                    # attendee is not saved yet, and assigning it through the
+                    # organization-safe relation copies its *primary key* (still
+                    # ``None``) onto this row, leaving ``external_attendee_fk``
+                    # empty. Assigning the concrete field caches the instance
+                    # instead, so the key is resolved at ``bulk_create`` time --
+                    # and the row's organization, passed explicitly above, is left
+                    # alone.
+                    external_attendee_fk=external_attendee,
                 )
                 external_attendances_to_create.append(external_attendance_instance)
                 serialized_external_attendances_to_create.append(
@@ -1123,12 +1132,15 @@ class CalendarEventService:
                 if user is None:
                     continue
                 # Check if user already has a token for this event
-                existing_token = CalendarManagementToken.objects.filter(
-                    membership_user_id=user.id,
-                    event_fk_id=event.id,
-                    organization_id=context.organization.id,
-                    revoked_at__isnull=True,
-                ).first()
+                existing_token = (
+                    CalendarManagementToken.objects.filter_by_organization(context.organization.id)
+                    .filter(
+                        membership_user_id=user.id,
+                        event_fk_id=event.id,
+                        revoked_at__isnull=True,
+                    )
+                    .first()
+                )
 
                 if not existing_token:
                     context.calendar_permission_service.create_attendee_token(
@@ -1142,12 +1154,15 @@ class CalendarEventService:
         if external_attendances_to_create and context.calendar_permission_service:
             for external_attendance in external_attendances_to_create:
                 # Check if external attendee already has a token for this event
-                existing_token = CalendarManagementToken.objects.filter(
-                    organization_id=event.organization_id,
-                    external_attendee_fk_id=external_attendance.external_attendee.id,
-                    event_fk_id=event.id,
-                    revoked_at__isnull=True,
-                ).first()
+                existing_token = (
+                    CalendarManagementToken.objects.filter_by_organization(event.organization_id)
+                    .filter(
+                        external_attendee_fk_id=external_attendance.external_attendee.id,
+                        event_fk_id=event.id,
+                        revoked_at__isnull=True,
+                    )
+                    .first()
+                )
 
                 if not existing_token:
                     context.calendar_permission_service.create_external_attendee_update_token(
@@ -1386,12 +1401,16 @@ class CalendarEventService:
         def update_exception_manager(
             parent_obj: RecurringMixin, new_recurring_obj: RecurringMixin
         ) -> None:
-            EventRecurrenceException.objects.filter(parent_event=parent_obj).update(
+            # ``unscoped()``: ``parent_event`` is an organization-safe relation, so
+            # filtering it by instance puts the parent's ``organization_id`` in the
+            # ``ON`` clause -- the tenant boundary is in the query already.
+            EventRecurrenceException.objects.unscoped().filter(parent_event=parent_obj).update(
                 parent_event_fk=new_recurring_obj
             )
 
         def delete_exception_manager(parent_obj: RecurringMixin) -> None:
-            EventRecurrenceException.objects.filter(parent_event=parent_obj).delete()
+            # ``unscoped()``: see ``update_exception_manager`` above.
+            EventRecurrenceException.objects.unscoped().filter(parent_event=parent_obj).delete()
 
         modification_data = {
             "title": modified_title,
@@ -1707,7 +1726,11 @@ class CalendarEventService:
             raise
 
         base_qs = (
-            CalendarEvent.objects.annotate_recurring_occurrences_on_date_range(start_date, end_date)
+            # ``filter_by_organization`` leads the chain: it starts from the unscoped
+            # queryset, so the calendar's own organization is the scope and no ambient
+            # binding is required.
+            CalendarEvent.objects.filter_by_organization(calendar.organization_id)
+            .annotate_recurring_occurrences_on_date_range(start_date, end_date)
             .select_related("recurrence_rule")
             .filter(
                 parent_recurring_object__isnull=True,  # Master events only
@@ -1715,7 +1738,6 @@ class CalendarEventService:
         )
         if calendar.calendar_type == CalendarType.BUNDLE:
             base_qs = base_qs.filter(
-                organization_id=calendar.organization_id,
                 calendar__in=calendar.bundle_children.all(),
             )
         else:
@@ -1834,11 +1856,12 @@ class CalendarEventService:
         org_id = self._context.organization.id
 
         base_qs = (
-            CalendarEvent.objects.annotate_recurring_occurrences_on_date_range(start_date, end_date)
+            # See ``get_calendar_events_expanded`` on the ordering.
+            CalendarEvent.objects.filter_by_organization(org_id)
+            .annotate_recurring_occurrences_on_date_range(start_date, end_date)
             .select_related("recurrence_rule")
             .filter(
                 parent_recurring_object__isnull=True,  # Master events only
-                organization_id=org_id,
                 calendar_fk__in=id_set,
             )
         )
@@ -1924,10 +1947,10 @@ class CalendarEventService:
             raise
         self._check_not_restricted()
 
-        event = CalendarEvent.objects.select_related("calendar").get(
-            calendar_fk_id=calendar_id,
-            id=event_id,
-            organization_id=context.organization.id,
+        event = (
+            CalendarEvent.objects.filter_by_organization(context.organization.id)
+            .select_related("calendar")
+            .get(calendar_fk_id=calendar_id, id=event_id)
         )
         # When True, authorization is granted by the public-token write allowance
         # (org-wide or owner-scoped) and the subsequent permission-service check is

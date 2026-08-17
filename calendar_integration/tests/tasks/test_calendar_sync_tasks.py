@@ -17,6 +17,7 @@ from calendar_integration.tasks.calendar_sync_tasks import (
     import_organization_calendar_resources_task,
     sync_calendar_task,
 )
+from common.organization_context import organization_context
 from organizations.models import Organization
 from users.models import User
 
@@ -452,7 +453,12 @@ def test_sync_calendar_task_with_changes_applied(
     mock_service.sync_events.assert_called_once_with(calendar_sync)
 
     # Verify calendar sync status was updated
-    calendar_sync.refresh_from_db()
+    # Bound: the task's own binding ends with the task, and re-reading a row of
+    # ``organization`` is still a read on that organization's behalf. Unbound it
+    # is reported by ``assert_no_unbound_scoped_queries`` -- correctly, a
+    # primary-key ``SELECT`` that names no organization is the IDOR shape.
+    with organization_context(organization):
+        calendar_sync.refresh_from_db()
     assert calendar_sync.status == CalendarSyncStatus.SUCCESS
 
 
@@ -494,7 +500,12 @@ def test_sync_calendar_task_handles_sync_failures(
     mock_service.sync_events.assert_called_once_with(calendar_sync)
 
     # Verify calendar sync status reflects failure
-    calendar_sync.refresh_from_db()
+    # Bound: the task's own binding ends with the task, and re-reading a row of
+    # ``organization`` is still a read on that organization's behalf. Unbound it
+    # is reported by ``assert_no_unbound_scoped_queries`` -- correctly, a
+    # primary-key ``SELECT`` that names no organization is the IDOR shape.
+    with organization_context(organization):
+        calendar_sync.refresh_from_db()
     assert calendar_sync.status == CalendarSyncStatus.FAILED
     assert calendar_sync.error_message == "Sync failed due to API error"
 
@@ -546,7 +557,12 @@ def test_sync_calendar_task_with_google_service_account_changes_applied(
     assert "attendances_created" in changes_applied
 
     # Verify sync completed successfully
-    calendar_sync.refresh_from_db()
+    # Bound: the task's own binding ends with the task, and re-reading a row of
+    # ``organization`` is still a read on that organization's behalf. Unbound it
+    # is reported by ``assert_no_unbound_scoped_queries`` -- correctly, a
+    # primary-key ``SELECT`` that names no organization is the IDOR shape.
+    with organization_context(organization):
+        calendar_sync.refresh_from_db()
     assert calendar_sync.status == CalendarSyncStatus.SUCCESS
 
 
@@ -597,7 +613,12 @@ def test_import_organization_calendar_resources_task_with_changes_simulation(
     assert "projector_1" in resources_imported
 
     # Verify import completed successfully
-    import_workflow_state.refresh_from_db()
+    # Bound: the task's own binding ends with the task, and re-reading a row of
+    # ``organization`` is still a read on that organization's behalf. Unbound it
+    # is reported by ``assert_no_unbound_scoped_queries`` -- correctly, a
+    # primary-key ``SELECT`` that names no organization is the IDOR shape.
+    with organization_context(organization):
+        import_workflow_state.refresh_from_db()
     assert import_workflow_state.status == CalendarOrganizationResourceImportStatus.SUCCESS
 
 

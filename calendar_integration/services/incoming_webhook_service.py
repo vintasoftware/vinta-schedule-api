@@ -148,8 +148,9 @@ class CalendarIncomingWebhookService:
     ) -> CalendarWebhookSubscription | None:
         """Get webhook subscription by Google Calendar channel ID."""
         try:
-            return CalendarWebhookSubscription.objects.get(
-                organization=self.organization,
+            return CalendarWebhookSubscription.objects.filter_by_organization(
+                self.organization
+            ).get(
                 provider=CalendarProvider.GOOGLE,
                 channel_id=channel_id,
                 is_active=True,
@@ -172,8 +173,9 @@ class CalendarIncomingWebhookService:
         Get webhook subscription by provider and external subscription ID.
         """
         try:
-            return CalendarWebhookSubscription.objects.get(
-                organization=self.organization,
+            return CalendarWebhookSubscription.objects.filter_by_organization(
+                self.organization
+            ).get(
                 provider=provider,
                 external_subscription_id=external_subscription_id,
                 is_active=True,

@@ -273,7 +273,7 @@ class TestCalendarGroupCrud:
         url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
         response = auth_client.delete(url)
         _assert_status(response, status.HTTP_403_FORBIDDEN)
-        assert CalendarGroup.objects.filter(id=owned_group.id).exists()
+        assert CalendarGroup.original_manager.filter(id=owned_group.id).exists()
 
     def test_create_group(self, auth_client, organization, internal_calendars, user, admin_user):
         # The create endpoint uses the serializer which delegates to
@@ -363,7 +363,7 @@ class TestCalendarGroupCrud:
         url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
         response = auth_client.delete(url)
         _assert_status(response, status.HTTP_204_NO_CONTENT)
-        assert not CalendarGroup.objects.filter(id=owned_group.id).exists()
+        assert not CalendarGroup.original_manager.filter(id=owned_group.id).exists()
 
     def test_destroy_refused_when_group_has_events(
         self, auth_client, owned_group, internal_calendars, organization, admin_user

@@ -234,7 +234,7 @@ def test_delete_blocked_time_records_delete(
     assert payloads[0]["action"] == AuditAction.DELETE
     assert payloads[0]["subject"]["subject_type"] == "calendar_integration.BlockedTime"
     assert payloads[0]["subject"]["subject_id"] == str(bt_pk)
-    assert not BlockedTime.objects.filter(pk=bt_pk).exists()
+    assert not BlockedTime.original_manager.filter(pk=bt_pk).exists()
 
 
 # ---------------------------------------------------------------------------

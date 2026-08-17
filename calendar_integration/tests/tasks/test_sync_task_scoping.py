@@ -1,24 +1,21 @@
-"""Neutrality test for Phase 0's Celery task organization binding.
+"""What the Celery task organization binding does, before and after Phase 2a.
 
-Phase 0's entire point is that wrapping a task body in
-``common.organization_context.organization_context(...)`` changes *nothing*
-observable: the managers it wraps (``organizations.managers
-.BaseOrganizationModelManager`` / ``organizations.querysets
-.BaseOrganizationModelQuerySet``) ignore the binding completely today and keep
-requiring their own explicit ``organization`` filter. This suite proves that,
-rather than asserting it, by running the exact same task body twice against
-independently seeded data -- once through the real binding
-(``sync_calendar_task`` as shipped) and once with ``organization_context``
-replaced by a no-op stand-in that binds nothing (reproducing the pre-Phase-0
-code path) -- and comparing the two runs' observable outcomes.
+Phase 0 added ``common.organization_context.organization_context(...)`` around
+this task body and proved it changed *nothing* observable -- the managers of the
+day ignored the binding entirely and required their own explicit ``organization``
+filter. **Phase 2a ends that**: ``calendar_integration``'s models now scope to the
+bound organization implicitly, and with ``STRICT_ORGANIZATION_FILTER = True`` a
+scoped read with nothing bound raises ``OrganizationNotFoundError`` instead of
+silently returning nothing.
 
-This is deliberately **not** "call the function once and assert its own
-output": if some future change made the task's behavior depend on the
-binding (a scoped query moved inside the ``with`` block and started reading
-the context, say), the unbound run below would diverge from the bound one
-and this test would go red. A test that only exercised the bound path could
-never detect that regression, because it would have nothing to compare
-against.
+So the comparison this suite used to make -- run the body bound and unbound, and
+assert the two are indistinguishable -- is no longer the contract, and asserting
+it would assert the opposite of what the migration is for. The structure is kept
+(same two runs, same normalized description of what happened) with the expectation
+inverted: the *bound* run does the work, and the *unbound* run, which reproduces
+the pre-Phase-0 code path exactly, now fails loudly at the first scoped read. That
+is the whole safety argument for migrating without a feature flag, and it is
+pinned here rather than asserted in prose.
 """
 
 from __future__ import annotations
@@ -31,6 +28,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from allauth.socialaccount.models import SocialAccount, SocialToken
+from vinta_orgs.exceptions import OrganizationNotFoundError
 
 from calendar_integration.constants import CalendarProvider
 from calendar_integration.models import Calendar, CalendarSync, CalendarSyncStatus
@@ -136,48 +134,38 @@ def _run_sync_calendar_task(
     }
 
 
-class TestSyncCalendarTaskOrganizationBindingIsNeutral:
-    def test_bound_and_unbound_runs_produce_identical_observable_outcomes(self):
+class TestSyncCalendarTaskOrganizationBindingIsLoadBearing:
+    def test_the_bound_run_works_and_the_unbound_run_raises(self):
         # Deliberately does NOT request ``assert_no_unbound_scoped_queries``:
-        # this test's whole point is to run the task body once *without* an
-        # organization bound (reproducing the pre-Phase-0 code path), and
-        # that unbound run legitimately trips the tripwire (verified:
-        # ``CalendarSync.objects.filter_by_organization(...)
-        # .get_not_started_calendar_sync(...)`` calls ``.first()``, which
-        # iterates). Requesting the fixture here would fail by design, not
-        # because of a real unbound call site -- see this phase's fixer
-        # report for the reasoning.
+        # the second run below is *supposed* to be unbound, so the tripwire would
+        # fire by design rather than on a real defect.
         bound_org, bound_calendar, bound_account = _make_org_and_account("BoundOrg")
         unbound_org, unbound_calendar, unbound_account = _make_org_and_account("UnboundOrg")
 
         bound_result = _run_sync_calendar_task(bound_org, bound_calendar, bound_account, bind=True)
-        unbound_result = _run_sync_calendar_task(
-            unbound_org, unbound_calendar, unbound_account, bind=False
-        )
 
-        # The binding itself did happen on the bound run, and did not on the
-        # unbound (pre-Phase-0-equivalent) run -- otherwise this comparison
-        # would be vacuous (both branches doing the same thing).
+        # The binding happened, and the task did its work through it.
         assert bound_result["observed_bound_organization_id"] == bound_org.id
-        assert unbound_result["observed_bound_organization_id"] is None
-
-        # Every OTHER observable outcome is identical between the two runs,
-        # proving the binding changed nothing about what the task does.
-        comparable_keys = {
-            "task_return_value",
-            "final_status",
-            "authenticate_call_count",
-            "sync_events_call_count",
-        }
-        bound_comparable = {k: bound_result[k] for k in comparable_keys}
-        unbound_comparable = {k: unbound_result[k] for k in comparable_keys}
-        assert bound_comparable == unbound_comparable
-        assert bound_comparable == {
+        assert {
+            key: bound_result[key]
+            for key in (
+                "task_return_value",
+                "final_status",
+                "authenticate_call_count",
+                "sync_events_call_count",
+            )
+        } == {
             "task_return_value": None,
             "final_status": CalendarSyncStatus.SUCCESS,
             "authenticate_call_count": 1,
             "sync_events_call_count": 1,
         }
+
+        # The same body with nothing bound -- the pre-Phase-0 code path -- no
+        # longer reads as "no data"; it refuses, at the first scoped read
+        # (``CalendarSync.objects.get_not_started_calendar_sync(...)``).
+        with pytest.raises(OrganizationNotFoundError):
+            _run_sync_calendar_task(unbound_org, unbound_calendar, unbound_account, bind=False)
 
     def test_missing_organization_short_circuits_identically_bound_or_unbound(
         self, assert_no_unbound_scoped_queries

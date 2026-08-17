@@ -146,7 +146,7 @@ class TestRequestMethodsDoNotEnqueueWhileRestricted:
 
         assert exc_info.value.remedy == "resolve_billing"
         dispatched.assert_not_called()
-        assert not CalendarSync.objects.filter(calendar=calendar).exists()
+        assert not CalendarSync.original_manager.filter(calendar=calendar).exists()
 
     def test_request_calendars_import_raises_and_does_not_enqueue(self):
         organization = _organization_with_billing_state(BillingState.RESTRICTED)
@@ -371,7 +371,7 @@ class TestResellerChildSyncPausesWithRestrictedRoot:
 
         assert exc_info.value.remedy == "resolve_billing"
         dispatched.assert_not_called()
-        assert not CalendarSync.objects.filter(calendar=calendar).exists()
+        assert not CalendarSync.original_manager.filter(calendar=calendar).exists()
 
     def test_child_sync_calendar_task_early_returns_when_the_root_is_restricted(self):
         _root, child = _reseller_tree(BillingState.RESTRICTED)
@@ -436,7 +436,7 @@ class TestResellerChildSyncPausesWithRestrictedRoot:
         # A GRACE root does not pause the child: the request is not blocked and the
         # sync row is created (a RESTRICTED root would have raised before this).
         assert result is not None
-        assert CalendarSync.objects.filter(calendar=calendar).exists()
+        assert CalendarSync.original_manager.filter(calendar=calendar).exists()
 
 
 # ---------------------------------------------------------------------------
@@ -568,7 +568,9 @@ class TestResyncTaskQueuesPerCalendarSync:
             with patch.object(sync_calendar_task, "delay") as dispatched:
                 resync_organization_calendars_task(organization_id=organization.pk)
 
-        created_sync = CalendarSync.objects.get(calendar=calendar, organization=organization)
+        created_sync = CalendarSync.objects.filter_by_organization(organization).get(
+            calendar=calendar,
+        )
         assert created_sync.should_update_events is True
         dispatched.assert_called_once()
 
@@ -581,7 +583,7 @@ class TestResyncTaskQueuesPerCalendarSync:
             resync_organization_calendars_task(organization_id=organization.pk)
 
         dispatched.assert_not_called()
-        assert not CalendarSync.objects.filter(calendar=calendar).exists()
+        assert not CalendarSync.original_manager.filter(calendar=calendar).exists()
 
 
 # ---------------------------------------------------------------------------
@@ -680,4 +682,9 @@ class TestResyncReconcilesDrift:
         # ``test_execute_calendar_sync_full_cycle_creates_updates_and_deletes``
         # uses to prove a reconciling update.
         assert stale_block.reason == "Reconciled while restricted"
-        assert BlockedTime.objects.filter(calendar=calendar, external_id="ext-drifted").count() == 1
+        assert (
+            BlockedTime.original_manager.filter(
+                calendar=calendar, external_id="ext-drifted"
+            ).count()
+            == 1
+        )

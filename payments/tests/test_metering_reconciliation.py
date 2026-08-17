@@ -367,7 +367,7 @@ class TestRecurrenceExceptionCountedOnce:
             modified_title="Moved",
         )
         assert exception_event is not None
-        assert CalendarEvent.objects.filter(organization=subscription.organization).count() == 2
+        assert CalendarEvent.objects.filter_by_organization(subscription.organization).count() == 2
 
         _meter_the_period(metering_service, subscription)
 
@@ -631,7 +631,7 @@ class TestFirstOccurrenceSplitIsNotDeduplicated:
             modified_title="First one moved",
         )
         replacement = (
-            CalendarEvent.objects.filter(organization=subscription.organization)
+            CalendarEvent.objects.filter_by_organization(subscription.organization)
             .exclude(pk=weekly_series.pk)
             .filter(recurrence_rule__isnull=False)
             .first()
@@ -938,7 +938,7 @@ class TestBulkModificationWithOffsetTilesTheTimeline:
         continuation = self._split_with_offset(event_service, social_account, weekly_series)
         assert continuation is not None
 
-        parent = CalendarEvent.objects.filter(organization=subscription.organization).get(
+        parent = CalendarEvent.objects.filter_by_organization(subscription.organization).get(
             pk=weekly_series.pk
         )
 
@@ -948,7 +948,7 @@ class TestBulkModificationWithOffsetTilesTheTimeline:
         assert continuation.recurrence_rule_fk_id != original_rule_id, (
             "the continuation gets a fresh rule row, built from an rrule string"
         )
-        parent_rule = RecurrenceRule.objects.filter(organization=subscription.organization).get(
+        parent_rule = RecurrenceRule.objects.filter_by_organization(subscription.organization).get(
             pk=original_rule_id
         )
         assert (parent_rule.count, parent_rule.until) == (None, ALL_MONDAYS[0]), (
@@ -994,7 +994,7 @@ class TestBulkModificationWithOffsetTilesTheTimeline:
             modified_start_time_offset=datetime.timedelta(minutes=30),
         )
 
-        parent = CalendarEvent.objects.filter(organization=subscription.organization).get(
+        parent = CalendarEvent.objects.filter_by_organization(subscription.organization).get(
             pk=series.pk
         )
         assert (parent.recurrence_rule.count, parent.recurrence_rule.until) == (

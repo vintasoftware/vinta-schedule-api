@@ -178,7 +178,9 @@ class CalendarWebhookMutations:
             from calendar_integration.models import Calendar
 
             try:
-                calendar = Calendar.objects.get(id=input.calendar_id, organization=organization)
+                calendar = Calendar.objects.filter_by_organization(organization).get(
+                    id=input.calendar_id,
+                )
             except Calendar.DoesNotExist:
                 return WebhookSubscriptionResult(success=False, error_message="Calendar not found")
 
@@ -2276,9 +2278,9 @@ class ExternalEventChangeRequestMutations:
         # owner's social account credentials (matching the REST reject pattern).
         # The calendar's primary ownership row determines which social account to use.
         ownership = (
-            CalendarOwnership.objects.filter(
+            CalendarOwnership.objects.filter_by_organization(calendar.organization_id)
+            .filter(
                 calendar=calendar,
-                organization_id=calendar.organization_id,
                 membership_user_id__isnull=False,
             )
             .order_by("-is_default", "id")

@@ -223,8 +223,7 @@ class CalendarWebhookService:
 
         # Find calendar by external ID
         try:
-            calendar = Calendar.objects.get(
-                organization_id=narrowed.organization.id,
+            calendar = Calendar.objects.filter_by_organization(narrowed.organization.id).get(
                 external_id=external_calendar_id,
                 provider=webhook_event.provider,
             )
@@ -233,11 +232,17 @@ class CalendarWebhookService:
             return None
 
         # Check for recent syncs to prevent excessive syncing (deduplication)
-        recent_sync = CalendarSync.objects.filter(
-            calendar=calendar,
-            created__gte=now - datetime.timedelta(minutes=5),
-            status__in=[CalendarSyncStatus.IN_PROGRESS, CalendarSyncStatus.SUCCESS],
-        ).first()
+        # ``unscoped()``: ``calendar`` is an organization-safe relation, so filtering
+        # it by instance puts the calendar's ``organization_id`` in the ``ON`` clause.
+        recent_sync = (
+            CalendarSync.objects.unscoped()
+            .filter(
+                calendar=calendar,
+                created__gte=now - datetime.timedelta(minutes=5),
+                status__in=[CalendarSyncStatus.IN_PROGRESS, CalendarSyncStatus.SUCCESS],
+            )
+            .first()
+        )
 
         if recent_sync:
             logger.info(
@@ -575,9 +580,13 @@ class CalendarWebhookService:
         if not context.organization:
             raise ValueError("Organization must be set")
 
-        return CalendarWebhookSubscription.objects.filter(
-            organization=context.organization, is_active=True
-        ).select_related("calendar")
+        return (
+            CalendarWebhookSubscription.objects.filter_by_organization(context.organization)
+            .filter(
+                is_active=True,
+            )
+            .select_related("calendar")
+        )
 
     def delete_webhook_subscription(self, subscription_id: int) -> bool:
         """Delete a webhook subscription from provider and database.
@@ -596,8 +605,10 @@ class CalendarWebhookService:
             raise ValueError("Organization must be set")
 
         try:
-            subscription = CalendarWebhookSubscription.objects.get(
-                id=subscription_id, organization=context.organization
+            subscription = CalendarWebhookSubscription.objects.filter_by_organization(
+                context.organization
+            ).get(
+                id=subscription_id,
             )
         except CalendarWebhookSubscription.DoesNotExist:
             return False
@@ -629,8 +640,11 @@ class CalendarWebhookService:
             raise ValueError("Organization must be set")
 
         try:
-            subscription = CalendarWebhookSubscription.objects.get(
-                id=subscription_id, organization=context.organization, is_active=True
+            subscription = CalendarWebhookSubscription.objects.filter_by_organization(
+                context.organization
+            ).get(
+                id=subscription_id,
+                is_active=True,
             )
         except CalendarWebhookSubscription.DoesNotExist:
             return None
@@ -674,7 +688,7 @@ class CalendarWebhookService:
         expiring_soon_threshold = now + datetime.timedelta(hours=24)
 
         # Subscription counts
-        subscriptions_qs = CalendarWebhookSubscription.objects.filter(organization=organization)
+        subscriptions_qs = CalendarWebhookSubscription.objects.filter_by_organization(organization)
         total_subscriptions = subscriptions_qs.count()
         active_subscriptions = subscriptions_qs.filter(is_active=True).count()
         expired_subscriptions = subscriptions_qs.filter(is_active=True, expires_at__lt=now).count()
@@ -685,8 +699,8 @@ class CalendarWebhookService:
         ).count()
 
         # Event counts in last 24 hours
-        events_qs = CalendarWebhookEvent.objects.filter(
-            organization=organization, created__gte=twenty_four_hours_ago
+        events_qs = CalendarWebhookEvent.objects.filter_by_organization(organization).filter(
+            created__gte=twenty_four_hours_ago,
         )
         recent_events_count = events_qs.count()
         failed_events_count = events_qs.filter(

@@ -818,8 +818,12 @@ class TestSafetyNets:
             external_id="cycle_b",
         )
         # The cycle: each is the other's bulk-modification parent.
-        CalendarEvent.objects.filter(pk=first.pk).update(bulk_modification_parent_fk=second)
-        CalendarEvent.objects.filter(pk=second.pk).update(bulk_modification_parent_fk=first)
+        CalendarEvent.original_manager.filter(pk=first.pk).update(
+            bulk_modification_parent_fk=second
+        )
+        CalendarEvent.original_manager.filter(pk=second.pk).update(
+            bulk_modification_parent_fk=first
+        )
 
         result = metering_service.meter_occurrences_for_period(
             subscription, PERIOD_START, PERIOD_END
@@ -860,7 +864,7 @@ class TestSafetyNets:
                 )
             )
         for index in range(1, len(chain)):
-            CalendarEvent.objects.filter(pk=chain[index].pk).update(
+            CalendarEvent.original_manager.filter(pk=chain[index].pk).update(
                 bulk_modification_parent_fk=chain[index - 1]
             )
 

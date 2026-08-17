@@ -209,10 +209,11 @@ def test_create_booking_token_multiple_permissions(service, org, calendar):
     )
 
     stored = set(
-        CalendarManagementTokenPermission.objects.filter(
-            organization_id=org.id,
+        CalendarManagementTokenPermission.objects.filter_by_organization(org.id)
+        .filter(
             token_fk=token,
-        ).values_list("permission", flat=True)
+        )
+        .values_list("permission", flat=True)
     )
     assert EventManagementPermissions.RESCHEDULE in stored
     assert EventManagementPermissions.CANCEL in stored
@@ -291,7 +292,7 @@ def test_validate_code_raises_already_used(service, org, calendar):
     )
 
     # Mark as used.
-    CalendarManagementToken.objects.filter(pk=token.pk).update(used_at=timezone.now())
+    CalendarManagementToken.original_manager.filter(pk=token.pk).update(used_at=timezone.now())
 
     with pytest.raises(TokenAlreadyUsedError):
         service.validate_code(code, org.id)
@@ -307,7 +308,7 @@ def test_validate_code_raises_revoked(service, org, calendar):
     )
 
     # Revoke the token.
-    CalendarManagementToken.objects.filter(pk=token.pk).update(revoked_at=timezone.now())
+    CalendarManagementToken.original_manager.filter(pk=token.pk).update(revoked_at=timezone.now())
 
     with pytest.raises(TokenRevokedError):
         service.validate_code(code, org.id)

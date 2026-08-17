@@ -1391,7 +1391,7 @@ def test_available_time_default_manager_excludes_group_scoped_rows():
     )
 
     default_scope_ids = set(
-        AvailableTime.objects.filter(organization_id=org.id).values_list("id", flat=True)
+        AvailableTime.objects.filter_by_organization(org.id).values_list("id", flat=True)
     )
     assert base_row.id in default_scope_ids
     assert group_scoped_row.id not in default_scope_ids
@@ -1440,7 +1440,7 @@ def test_blocked_time_default_manager_excludes_group_scoped_rows():
     )
 
     default_scope_ids = set(
-        BlockedTime.objects.filter(organization_id=org.id).values_list("id", flat=True)
+        BlockedTime.objects.filter_by_organization(org.id).values_list("id", flat=True)
     )
     assert base_row.id in default_scope_ids
     assert group_scoped_row.id not in default_scope_ids
@@ -1563,8 +1563,8 @@ def test_available_time_only_user_authored_composes_with_group_scoping():
 
     # Default manager: only the base row.
     assert set(
-        AvailableTime.objects.only_user_authored()
-        .filter(organization_id=org.id)
+        AvailableTime.objects.filter_by_organization(org.id)
+        .only_user_authored()
         .values_list("id", flat=True)
     ) == {base_row.id}
 

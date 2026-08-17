@@ -505,20 +505,33 @@ class WebhookHealthDashboard:
         now = datetime.datetime.now(tz=datetime.UTC)
         twenty_four_hours_ago = now - datetime.timedelta(hours=24)
 
-        # Get statistics
-        total_subscriptions = CalendarWebhookSubscription.objects.count()
-        active_subscriptions = CalendarWebhookSubscription.objects.filter(is_active=True).count()
-        expired_subscriptions = CalendarWebhookSubscription.objects.filter(
-            is_active=True, expires_at__lt=now
-        ).count()
+        # Deliberately cross-organization, via ``unscoped()``: this is a
+        # site-wide operator dashboard reached only from the Django admin, and its
+        # whole purpose is the aggregate across every tenant. Made explicit rather
+        # than inherited, the same way ``organizations/admin.py`` states its intent.
+        total_subscriptions = CalendarWebhookSubscription.objects.unscoped().count()
+        active_subscriptions = (
+            CalendarWebhookSubscription.objects.unscoped().filter(is_active=True).count()
+        )
+        expired_subscriptions = (
+            CalendarWebhookSubscription.objects.unscoped()
+            .filter(is_active=True, expires_at__lt=now)
+            .count()
+        )
 
-        recent_events = CalendarWebhookEvent.objects.filter(
-            created__gte=twenty_four_hours_ago
-        ).count()
-        failed_events = CalendarWebhookEvent.objects.filter(
-            created__gte=twenty_four_hours_ago,
-            processing_status=IncomingWebhookProcessingStatus.FAILED,
-        ).count()
+        recent_events = (
+            CalendarWebhookEvent.objects.unscoped()
+            .filter(created__gte=twenty_four_hours_ago)
+            .count()
+        )
+        failed_events = (
+            CalendarWebhookEvent.objects.unscoped()
+            .filter(
+                created__gte=twenty_four_hours_ago,
+                processing_status=IncomingWebhookProcessingStatus.FAILED,
+            )
+            .count()
+        )
 
         success_rate = (
             ((recent_events - failed_events) / recent_events) * 100 if recent_events > 0 else 100.0

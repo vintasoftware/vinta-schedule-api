@@ -390,7 +390,7 @@ class TestAvailableTimesWithCode:
             permissions=[EventManagementPermissions.CREATE],
             calendar_id=calendar.id,
         )
-        CalendarManagementToken.objects.filter(id=token.id).update(
+        CalendarManagementToken.original_manager.filter(id=token.id).update(
             used_at=datetime.datetime(2025, 1, 1, tzinfo=datetime.UTC)
         )
 
@@ -1959,7 +1959,7 @@ class TestCalendarBookableSlotsWithCodeStrengthened:
             permissions=[EventManagementPermissions.CREATE],
             calendar_id=calendar.id,
         )
-        CalendarManagementToken.objects.filter(id=token.id).update(
+        CalendarManagementToken.original_manager.filter(id=token.id).update(
             used_at=datetime.datetime(2025, 1, 1, tzinfo=datetime.UTC)
         )
 

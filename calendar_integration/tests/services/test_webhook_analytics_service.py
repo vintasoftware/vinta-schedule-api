@@ -294,9 +294,12 @@ class TestWebhookAnalyticsService(TestCase):
     )
     def test_get_subscription_health_report(self, mock_subscription_objects: Mock) -> None:
         """Test getting subscription health report."""
-        # Mock the queryset chain
+        # Mock the queryset chain. The service now enters it through
+        # ``filter_by_organization(...)`` -- the manager method that starts from the
+        # *unscoped* queryset -- rather than ``filter(organization=...)``, so that is
+        # what the mock has to answer.
         mock_qs = Mock()
-        mock_subscription_objects.filter.return_value = mock_qs
+        mock_subscription_objects.filter_by_organization.return_value = mock_qs
 
         # Mock counts
         mock_qs.count.return_value = 6  # total subscriptions
@@ -332,13 +335,14 @@ class TestWebhookAnalyticsService(TestCase):
             150,
             {"calendar_integration.CalendarWebhookEvent": 150},
         )
-        mock_qs.filter.return_value = mock_filter_result
+        mock_qs.filter_by_organization.return_value.filter.return_value = mock_filter_result
 
         result = self.service.cleanup_old_webhook_events(days_to_keep=30)
 
         assert result == 150
-        # Verify the filter was called with proper arguments
-        mock_qs.filter.assert_called_once()
+        # Verify the organization scope and the date filter were both applied.
+        mock_qs.filter_by_organization.assert_called_once_with(self.organization)
+        mock_qs.filter_by_organization.return_value.filter.assert_called_once()
         mock_filter_result.delete.assert_called_once()
 
     @patch("calendar_integration.services.webhook_analytics_service.CalendarWebhookEvent.objects")
@@ -349,7 +353,7 @@ class TestWebhookAnalyticsService(TestCase):
             100,
             {"calendar_integration.CalendarWebhookEvent": 100},
         )
-        mock_qs.filter.return_value = mock_filter_result
+        mock_qs.filter_by_organization.return_value.filter.return_value = mock_filter_result
 
         result = self.service.cleanup_old_webhook_events(days_to_keep=7)
 

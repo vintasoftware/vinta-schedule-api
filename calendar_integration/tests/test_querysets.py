@@ -85,8 +85,8 @@ class TestCalendarQuerySet(TestCase):
     def test_only_virtual_calendars_default(self):
         """Test filtering virtual calendars with default parameter."""
         virtual_calendars = (
-            Calendar.objects.get_queryset()
-            .filter_by_organization(organization_id=self.organization.id)
+            Calendar.objects.unscoped()
+            .filter_by_organization(self.organization.id)
             .filter_by_is_virtual()
         )
 
@@ -96,8 +96,8 @@ class TestCalendarQuerySet(TestCase):
     def test_only_virtual_calendars_true(self):
         """Test filtering virtual calendars with is_virtual=True."""
         virtual_calendars = (
-            Calendar.objects.get_queryset()
-            .filter_by_organization(organization_id=self.organization.id)
+            Calendar.objects.unscoped()
+            .filter_by_organization(self.organization.id)
             .filter_by_is_virtual(True)
         )
 
@@ -107,8 +107,8 @@ class TestCalendarQuerySet(TestCase):
     def test_only_virtual_calendars_false(self):
         """Test filtering non-virtual calendars with is_virtual=False."""
         non_virtual_calendars = (
-            Calendar.objects.get_queryset()
-            .filter_by_organization(organization_id=self.organization.id)
+            Calendar.objects.unscoped()
+            .filter_by_organization(self.organization.id)
             .filter_by_is_virtual(False)
         )
 
@@ -122,8 +122,8 @@ class TestCalendarQuerySet(TestCase):
     def test_only_resource_calendars_default(self):
         """Test filtering resource calendars with default parameter."""
         resource_calendars = (
-            Calendar.objects.get_queryset()
-            .filter_by_organization(organization_id=self.organization.id)
+            Calendar.objects.unscoped()
+            .filter_by_organization(self.organization.id)
             .filter_by_is_resource()
         )
 
@@ -133,8 +133,8 @@ class TestCalendarQuerySet(TestCase):
     def test_only_resource_calendars_true(self):
         """Test filtering resource calendars with is_resource=True."""
         resource_calendars = (
-            Calendar.objects.get_queryset()
-            .filter_by_organization(organization_id=self.organization.id)
+            Calendar.objects.unscoped()
+            .filter_by_organization(self.organization.id)
             .filter_by_is_resource(True)
         )
 
@@ -144,8 +144,8 @@ class TestCalendarQuerySet(TestCase):
     def test_only_resource_calendars_false(self):
         """Test filtering non-resource calendars with is_resource=False."""
         non_resource_calendars = (
-            Calendar.objects.get_queryset()
-            .filter_by_organization(organization_id=self.organization.id)
+            Calendar.objects.unscoped()
+            .filter_by_organization(self.organization.id)
             .filter_by_is_resource(False)
         )
 
@@ -159,7 +159,7 @@ class TestCalendarQuerySet(TestCase):
     def test_only_calendars_by_provider_google(self):
         """Test filtering calendars by Google provider."""
         google_calendars = Calendar.objects.filter_by_organization(
-            organization_id=self.organization.id
+            self.organization.id
         ).only_calendars_by_provider(CalendarProvider.GOOGLE)
 
         self.assertEqual(google_calendars.count(), 2)
@@ -170,7 +170,7 @@ class TestCalendarQuerySet(TestCase):
     def test_only_calendars_by_provider_microsoft(self):
         """Test filtering calendars by Microsoft provider."""
         microsoft_calendars = Calendar.objects.filter_by_organization(
-            organization_id=self.organization.id
+            self.organization.id
         ).only_calendars_by_provider(CalendarProvider.MICROSOFT)
 
         self.assertEqual(microsoft_calendars.count(), 1)
@@ -179,7 +179,7 @@ class TestCalendarQuerySet(TestCase):
     def test_only_calendars_by_provider_apple(self):
         """Test filtering calendars by Apple provider."""
         apple_calendars = Calendar.objects.filter_by_organization(
-            organization_id=self.organization.id
+            self.organization.id
         ).only_calendars_by_provider(CalendarProvider.APPLE)
 
         self.assertEqual(apple_calendars.count(), 1)
@@ -188,7 +188,7 @@ class TestCalendarQuerySet(TestCase):
     def test_only_calendars_by_provider_nonexistent(self):
         """Test filtering calendars by non-existent provider."""
         other_calendars = Calendar.objects.filter_by_organization(
-            organization_id=self.organization.id
+            self.organization.id
         ).only_calendars_by_provider(CalendarProvider.ICS)
 
         self.assertEqual(other_calendars.count(), 0)
@@ -238,7 +238,7 @@ class TestCalendarQuerySet(TestCase):
 
         # Test the prefetch
         calendars = Calendar.objects.filter_by_organization(
-            organization_id=self.organization
+            self.organization
         ).prefetch_latest_sync()
 
         # Find our calendars
@@ -287,8 +287,9 @@ class TestCalendarQuerySet(TestCase):
 
         # Chain methods: get Google resource calendars
         google_resource_calendars = (
-            Calendar.objects.only_resource_calendars()
-            .filter_by_organization(organization_id=self.organization.id)
+            Calendar.objects.unscoped()
+            .only_resource_calendars()
+            .filter_by_organization(self.organization.id)
             .only_calendars_by_provider(CalendarProvider.GOOGLE)
         )
 
@@ -361,7 +362,7 @@ class TestCalendarSyncQuerySet(TestCase):
     def test_get_not_started_calendar_sync_exists(self):
         """Test getting a not started calendar sync that exists."""
         result = CalendarSync.objects.filter_by_organization(
-            organization_id=self.organization.id
+            self.organization.id
         ).get_not_started_calendar_sync(self.not_started_sync.id)
 
         self.assertIsNotNone(result)
@@ -371,7 +372,7 @@ class TestCalendarSyncQuerySet(TestCase):
     def test_get_not_started_calendar_sync_wrong_status(self):
         """Test getting a calendar sync with wrong status returns None."""
         result = CalendarSync.objects.filter_by_organization(
-            organization_id=self.organization.id
+            self.organization.id
         ).get_not_started_calendar_sync(self.in_progress_sync.id)
 
         self.assertIsNone(result)
@@ -379,7 +380,7 @@ class TestCalendarSyncQuerySet(TestCase):
     def test_get_not_started_calendar_sync_nonexistent_id(self):
         """Test getting a calendar sync with non-existent ID returns None."""
         result = CalendarSync.objects.filter_by_organization(
-            organization_id=self.organization.id
+            self.organization.id
         ).get_not_started_calendar_sync(99999)
 
         self.assertIsNone(result)
@@ -387,7 +388,7 @@ class TestCalendarSyncQuerySet(TestCase):
     def test_get_not_started_calendar_sync_with_success_status(self):
         """Test that success status sync is not returned."""
         result = CalendarSync.objects.filter_by_organization(
-            organization_id=self.organization.id
+            self.organization.id
         ).get_not_started_calendar_sync(self.success_sync.id)
 
         self.assertIsNone(result)
@@ -395,7 +396,7 @@ class TestCalendarSyncQuerySet(TestCase):
     def test_get_not_started_calendar_sync_with_failed_status(self):
         """Test that failed status sync is not returned."""
         result = CalendarSync.objects.filter_by_organization(
-            organization_id=self.organization.id
+            self.organization.id
         ).get_not_started_calendar_sync(self.failed_sync.id)
 
         self.assertIsNone(result)
@@ -403,7 +404,7 @@ class TestCalendarSyncQuerySet(TestCase):
     def test_get_not_started_calendar_sync_return_type(self):
         """Test that the method returns the correct type."""
         result = CalendarSync.objects.filter_by_organization(
-            organization_id=self.organization.id
+            self.organization.id
         ).get_not_started_calendar_sync(self.not_started_sync.id)
 
         self.assertIsInstance(result, CalendarSync)
@@ -466,14 +467,14 @@ class TestQuerySetIntegration(TestCase):
         """Test finding calendars with not started syncs."""
         # Get Google calendars
         google_calendars = Calendar.objects.filter_by_organization(
-            organization_id=self.organization.id
+            self.organization.id
         ).only_calendars_by_provider(CalendarProvider.GOOGLE)
         self.assertEqual(google_calendars.count(), 1)
 
         # Check if this calendar has a not started sync
         calendar = google_calendars.first()
         not_started_sync = CalendarSync.objects.filter_by_organization(
-            organization_id=self.organization.id
+            self.organization.id
         ).get_not_started_calendar_sync(self.google_sync.id)
 
         self.assertIsNotNone(not_started_sync)
@@ -483,7 +484,7 @@ class TestQuerySetIntegration(TestCase):
         """Test finding resource calendars with in progress syncs."""
         # Get resource calendars
         resource_calendars = Calendar.objects.filter_by_organization(
-            organization_id=self.organization.id
+            self.organization.id
         ).only_resource_calendars()
         self.assertEqual(resource_calendars.count(), 1)
 
@@ -492,7 +493,7 @@ class TestQuerySetIntegration(TestCase):
 
         # This sync should not be returned as it's not NOT_STARTED
         not_started_sync = CalendarSync.objects.filter_by_organization(
-            organization_id=self.organization.id
+            self.organization.id
         ).get_not_started_calendar_sync(self.microsoft_sync.id)
         self.assertIsNone(not_started_sync)
 
@@ -512,7 +513,7 @@ class TestQuerySetIntegration(TestCase):
 
         # Get Google calendars with prefetched syncs
         google_calendars = (
-            Calendar.objects.filter_by_organization(organization_id=self.organization.id)
+            Calendar.objects.filter_by_organization(self.organization.id)
             .only_calendars_by_provider(CalendarProvider.GOOGLE)
             .prefetch_latest_sync()
         )
@@ -636,7 +637,7 @@ class TestCalendarAvailabilityQuerySet(TestCase):
         ranges = [(self.range1_start, self.range1_end)]
 
         available_calendars = Calendar.objects.filter_by_organization(
-            organization_id=organization.id
+            organization.id
         ).only_calendars_available_in_ranges(ranges)
 
         # Should include both managed and resource calendars that have available times
@@ -652,7 +653,7 @@ class TestCalendarAvailabilityQuerySet(TestCase):
         ranges = [(self.range1_start, self.range1_end)]
 
         available_calendars = Calendar.objects.filter_by_organization(
-            organization_id=organization.id
+            organization.id
         ).only_calendars_available_in_ranges(ranges)
 
         # Should NOT include unmanaged calendar because it has conflicting events in the range
@@ -666,7 +667,7 @@ class TestCalendarAvailabilityQuerySet(TestCase):
         ranges = [(self.range2_start, self.range2_end)]
 
         available_calendars = Calendar.objects.filter_by_organization(
-            organization_id=organization.id
+            organization.id
         ).only_calendars_available_in_ranges(ranges)
 
         # Should NOT include unmanaged calendar because it has conflicting blocked times in the range
@@ -683,7 +684,7 @@ class TestCalendarAvailabilityQuerySet(TestCase):
         ]
 
         available_calendars = Calendar.objects.filter_by_organization(
-            organization_id=organization.id
+            organization.id
         ).only_calendars_available_in_ranges(ranges)
 
         # Only managed calendar should be returned as it has available times in both ranges
@@ -700,7 +701,7 @@ class TestCalendarAvailabilityQuerySet(TestCase):
         ]
 
         available_calendars = Calendar.objects.filter_by_organization(
-            organization_id=organization.id
+            organization.id
         ).only_calendars_available_in_ranges(ranges)
 
         # No calendars should be returned as none have availability in all ranges
@@ -715,7 +716,7 @@ class TestCalendarAvailabilityQuerySet(TestCase):
         )
 
         available_calendars = Calendar.objects.filter_by_organization(
-            organization_id=organization.id
+            organization.id
         ).only_calendars_available_in_ranges(ranges)
 
         # Should return no calendars when no ranges are specified
@@ -731,7 +732,7 @@ class TestCalendarAvailabilityQuerySet(TestCase):
         ranges = [(future_start, future_end)]
 
         available_calendars = Calendar.objects.filter_by_organization(
-            organization_id=organization.id
+            organization.id
         ).only_calendars_available_in_ranges(ranges)
 
         # Should include unmanaged calendars that have no conflicts in the range
@@ -765,7 +766,7 @@ class TestCalendarAvailabilityQuerySet(TestCase):
 
         ranges = [(self.range1_start, self.range1_end)]
         available_calendars = Calendar.objects.filter_by_organization(
-            organization_id=organization.id
+            organization.id
         ).only_calendars_available_in_ranges(ranges)
 
         # Empty managed calendar should not be included
@@ -789,7 +790,7 @@ class TestCalendarAvailabilityQuerySet(TestCase):
 
         ranges = [(self.range1_start, self.range1_end)]
         available_calendars = Calendar.objects.filter_by_organization(
-            organization_id=organization.id
+            organization.id
         ).only_calendars_available_in_ranges(ranges)
 
         # Empty unmanaged calendar SHOULD be included (no conflicts = available)
@@ -825,7 +826,7 @@ class TestCalendarAvailabilityQuerySet(TestCase):
         ]
 
         available_calendars = Calendar.objects.filter_by_organization(
-            organization_id=organization.id
+            organization.id
         ).only_calendars_available_in_ranges(ranges)
 
         # Should include calendars that satisfy conditions for both ranges
@@ -849,7 +850,7 @@ class TestCalendarAvailabilityQuerySet(TestCase):
 
         # Chain with provider filter
         google_available_calendars = (
-            Calendar.objects.filter_by_organization(organization_id=organization.id)
+            Calendar.objects.filter_by_organization(organization.id)
             .only_calendars_by_provider(CalendarProvider.GOOGLE)
             .only_calendars_available_in_ranges(ranges)
         )
@@ -875,7 +876,7 @@ class TestCalendarAvailabilityQuerySet(TestCase):
 
         ranges = [(overlap_start, overlap_end)]
         available_calendars = Calendar.objects.filter_by_organization(
-            organization_id=organization.id
+            organization.id
         ).only_calendars_available_in_ranges(ranges)
 
         calendar_ids = list(available_calendars.values_list("id", flat=True))
@@ -903,7 +904,7 @@ class TestCalendarAvailabilityQuerySet(TestCase):
 
         ranges = [(conflict_start, conflict_end)]
         available_calendars = Calendar.objects.filter_by_organization(
-            organization_id=organization.id
+            organization.id
         ).only_calendars_available_in_ranges(ranges)
 
         # Should return 0 calendars since:
@@ -987,7 +988,7 @@ class TestBlockedTimeQuerySet(TestCase):
     def test_filter_master_recurring_objects(self):
         """Test filtering master recurring blocked times."""
         masters = BlockedTime.objects.filter_by_organization(
-            organization_id=self.organization.id
+            self.organization.id
         ).filter_master_recurring_objects()
 
         assert masters.count() == 2
@@ -1011,7 +1012,7 @@ class TestBlockedTimeQuerySet(TestCase):
         )
 
         instances = BlockedTime.objects.filter_by_organization(
-            organization_id=self.organization.id
+            self.organization.id
         ).filter_recurring_instances()
 
         assert instances.count() == 1
@@ -1020,7 +1021,7 @@ class TestBlockedTimeQuerySet(TestCase):
     def test_filter_non_recurring_objects(self):
         """Test filtering non-recurring blocked times."""
         non_recurring = BlockedTime.objects.filter_by_organization(
-            organization_id=self.organization.id
+            self.organization.id
         ).filter_non_recurring_objects()
 
         assert non_recurring.count() == 1
@@ -1032,7 +1033,7 @@ class TestBlockedTimeQuerySet(TestCase):
         end_date = self.now + timedelta(days=10)
 
         blocked_times_with_occurrences = (
-            BlockedTime.objects.filter_by_organization(organization_id=self.organization.id)
+            BlockedTime.objects.filter_by_organization(self.organization.id)
             .filter_master_recurring_objects()
             .annotate_recurring_occurrences_on_date_range(start_date, end_date)
         )
@@ -1078,14 +1079,14 @@ class TestBlockedTimeQuerySet(TestCase):
     def test_manager_delegation_methods(self):
         """Test that manager methods properly delegate to queryset."""
         # Test manager methods delegate correctly
-        masters = BlockedTime.objects.filter_master_recurring_objects()
+        masters = BlockedTime.objects.unscoped().filter_master_recurring_objects()
         assert masters.count() >= 2
 
-        instances = BlockedTime.objects.filter_recurring_instances()
+        instances = BlockedTime.objects.unscoped().filter_recurring_instances()
         # Should be 0 initially since we haven't created any instances yet
         assert instances.count() == 0
 
-        non_recurring = BlockedTime.objects.filter_non_recurring_objects()
+        non_recurring = BlockedTime.objects.unscoped().filter_non_recurring_objects()
         assert non_recurring.count() >= 1
 
 
@@ -1158,7 +1159,7 @@ class TestAvailableTimeQuerySet(TestCase):
     def test_filter_master_recurring_objects(self):
         """Test filtering master recurring available times."""
         masters = AvailableTime.objects.filter_by_organization(
-            organization_id=self.organization.id
+            self.organization.id
         ).filter_master_recurring_objects()
 
         assert masters.count() == 2
@@ -1181,7 +1182,7 @@ class TestAvailableTimeQuerySet(TestCase):
         )
 
         instances = AvailableTime.objects.filter_by_organization(
-            organization_id=self.organization.id
+            self.organization.id
         ).filter_recurring_instances()
 
         assert instances.count() == 1
@@ -1190,7 +1191,7 @@ class TestAvailableTimeQuerySet(TestCase):
     def test_filter_non_recurring_objects(self):
         """Test filtering non-recurring available times."""
         non_recurring = AvailableTime.objects.filter_by_organization(
-            organization_id=self.organization.id
+            self.organization.id
         ).filter_non_recurring_objects()
 
         assert non_recurring.count() == 1
@@ -1202,7 +1203,7 @@ class TestAvailableTimeQuerySet(TestCase):
         end_date = self.now + timedelta(days=14)
 
         available_times_with_occurrences = (
-            AvailableTime.objects.filter_by_organization(organization_id=self.organization.id)
+            AvailableTime.objects.filter_by_organization(self.organization.id)
             .filter_master_recurring_objects()
             .annotate_recurring_occurrences_on_date_range(start_date, end_date)
         )
@@ -1246,14 +1247,14 @@ class TestAvailableTimeQuerySet(TestCase):
     def test_manager_delegation_methods(self):
         """Test that manager methods properly delegate to queryset."""
         # Test manager methods delegate correctly
-        masters = AvailableTime.objects.filter_master_recurring_objects()
+        masters = AvailableTime.objects.unscoped().filter_master_recurring_objects()
         assert masters.count() >= 2
 
-        instances = AvailableTime.objects.filter_recurring_instances()
+        instances = AvailableTime.objects.unscoped().filter_recurring_instances()
         # Should be 0 initially since we haven't created any instances yet
         assert instances.count() == 0
 
-        non_recurring = AvailableTime.objects.filter_non_recurring_objects()
+        non_recurring = AvailableTime.objects.unscoped().filter_non_recurring_objects()
         assert non_recurring.count() >= 1
 
     def test_duration_property(self):
@@ -1268,7 +1269,7 @@ class TestAvailableTimeQuerySet(TestCase):
         """Test chaining queryset methods for AvailableTime."""
         # Test chaining filter methods
         result = (
-            AvailableTime.objects.filter_by_organization(organization_id=self.organization.id)
+            AvailableTime.objects.filter_by_organization(self.organization.id)
             .filter_master_recurring_objects()
             .filter(start_time__hour=9)  # Only 9 AM start times
         )
@@ -1374,11 +1375,11 @@ class TestRecurringIntegration(TestCase):
 
         # Count master objects in each model
         blocked_masters = BlockedTime.objects.filter_by_organization(
-            organization_id=self.organization.id
+            self.organization.id
         ).filter_master_recurring_objects()
 
         available_masters = AvailableTime.objects.filter_by_organization(
-            organization_id=self.organization.id
+            self.organization.id
         ).filter_master_recurring_objects()
 
         assert blocked_masters.count() == 1
@@ -1416,7 +1417,7 @@ class TestRecurringIntegration(TestCase):
 
         # Test BlockedTime database function
         blocked_with_occurrences = (
-            BlockedTime.objects.filter_by_organization(organization_id=self.organization.id)
+            BlockedTime.objects.filter_by_organization(self.organization.id)
             .filter(id=blocked_time.id)
             .annotate_recurring_occurrences_on_date_range(start_date, end_date)
         )
@@ -1427,7 +1428,7 @@ class TestRecurringIntegration(TestCase):
 
         # Test AvailableTime database function
         available_with_occurrences = (
-            AvailableTime.objects.filter_by_organization(organization_id=self.organization.id)
+            AvailableTime.objects.filter_by_organization(self.organization.id)
             .filter(id=available_time.id)
             .annotate_recurring_occurrences_on_date_range(start_date, end_date)
         )
@@ -1514,10 +1515,14 @@ class TestBulkModificationQuerySet:
             recurrence_rule=rule2,
             organization=organization,
         )
-        available_times = AvailableTime.objects.filter(
-            calendar=calendar, organization=organization
-        ).annotate_recurring_occurrences_with_bulk_modifications_on_date_range(
-            _dt(2023, 10, 1), _dt(2023, 10, 3)
+        available_times = (
+            AvailableTime.objects.filter_by_organization(organization)
+            .filter(
+                calendar=calendar,
+            )
+            .annotate_recurring_occurrences_with_bulk_modifications_on_date_range(
+                _dt(2023, 10, 1), _dt(2023, 10, 3)
+            )
         )
         assert available_times.count() == 2
         for obj in available_times:
@@ -1557,10 +1562,14 @@ class TestBulkModificationQuerySet:
             organization=organization,
             external_id="blocked_2",
         )
-        blocked_times = BlockedTime.objects.filter(
-            calendar=calendar, organization=organization
-        ).annotate_recurring_occurrences_with_bulk_modifications_on_date_range(
-            _dt(2023, 10, 1), _dt(2023, 10, 3)
+        blocked_times = (
+            BlockedTime.objects.filter_by_organization(organization)
+            .filter(
+                calendar=calendar,
+            )
+            .annotate_recurring_occurrences_with_bulk_modifications_on_date_range(
+                _dt(2023, 10, 1), _dt(2023, 10, 3)
+            )
         )
         assert blocked_times.count() == 2
         for obj in blocked_times:
@@ -1601,10 +1610,14 @@ class TestBulkModificationQuerySet:
             _dt(2023, 10, 1), _dt(2023, 10, 15), include_continuations=True
         )
         assert len(all_occurrences) == 2
-        available_times = AvailableTime.objects.filter(
-            calendar=calendar, organization=organization
-        ).annotate_recurring_occurrences_with_bulk_modifications_on_date_range(
-            _dt(2023, 10, 1), _dt(2023, 10, 15)
+        available_times = (
+            AvailableTime.objects.filter_by_organization(organization)
+            .filter(
+                calendar=calendar,
+            )
+            .annotate_recurring_occurrences_with_bulk_modifications_on_date_range(
+                _dt(2023, 10, 1), _dt(2023, 10, 15)
+            )
         )
         for obj in available_times:
             assert hasattr(obj, "recurring_occurrences_with_bulk_modifications")
@@ -1632,8 +1645,8 @@ class TestBulkModificationQuerySet:
             organization=organization,
             external_id="event_128",
         )
-        events_with_bulk_occurrences = CalendarEvent.objects.filter(
-            organization=organization
+        events_with_bulk_occurrences = CalendarEvent.objects.filter_by_organization(
+            organization
         ).annotate_recurring_occurrences_with_bulk_modifications_on_date_range(
             _dt(2023, 10, 1), _dt(2023, 10, 5), 10
         )
@@ -1650,8 +1663,8 @@ class TestBulkModificationQuerySet:
             organization=organization,
             external_id="blocked_3",
         )
-        blocked_with_bulk = BlockedTime.objects.filter(
-            organization=organization
+        blocked_with_bulk = BlockedTime.objects.filter_by_organization(
+            organization
         ).annotate_recurring_occurrences_with_bulk_modifications_on_date_range(
             _dt(2023, 10, 1), _dt(2023, 10, 5)
         )

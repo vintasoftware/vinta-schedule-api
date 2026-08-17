@@ -200,7 +200,12 @@ def test_update_bundle_calendar_records_update(
     # This method only reconciles child relationships -> no field-level diff.
     assert record["diff"] is None
     # Relationship reconciliation itself is not audited.
-    assert ChildrenCalendarRelationship.objects.filter(bundle_calendar=bundle_calendar).count() == 1
+    assert (
+        ChildrenCalendarRelationship.original_manager.filter(
+            bundle_calendar=bundle_calendar
+        ).count()
+        == 1
+    )
 
 
 # ===========================================================================
@@ -235,7 +240,9 @@ def test_create_bundle_event_records_single_create(
         calendar_id: int, event_data: CalendarEventInputData, **kwargs
     ) -> CalendarEvent:
         counter["n"] += 1
-        cal = Calendar.objects.get(id=calendar_id, organization=organization)
+        cal = Calendar.objects.filter_by_organization(organization).get(
+            id=calendar_id,
+        )
         evt = CalendarEvent(
             title=event_data.title,
             calendar=cal,
@@ -314,7 +321,9 @@ def test_update_bundle_event_records_update(
     def fake_update_event(
         calendar_id: int, event_id: int, data: CalendarEventInputData
     ) -> CalendarEvent:
-        evt = CalendarEvent.objects.get(id=event_id, organization=organization)
+        evt = CalendarEvent.objects.filter_by_organization(organization).get(
+            id=event_id,
+        )
         evt.title = data.title
         evt.description = data.description
         evt.save(update_fields=["title", "description"])
@@ -373,7 +382,9 @@ def test_delete_bundle_event_records_delete(
     primary_event_id = primary_event.id
 
     def fake_delete_event(calendar_id: int, event_id: int, delete_series: bool = False) -> None:
-        CalendarEvent.objects.filter(id=event_id, organization=organization).delete()
+        CalendarEvent.objects.filter_by_organization(organization).filter(
+            id=event_id,
+        ).delete()
 
     with patch("audit.services.persist_audit_record") as mock_task:
         with django_capture_on_commit_callbacks(execute=True):

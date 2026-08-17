@@ -204,7 +204,11 @@ def _corrupt_open_ended_series(
 
 
 def _rule_of(event: CalendarEvent) -> RecurrenceRule:
-    return CalendarEvent.objects.get(organization=event.organization, pk=event.pk).recurrence_rule
+    return (
+        CalendarEvent.objects.filter_by_organization(event.organization)
+        .get(pk=event.pk)
+        .recurrence_rule
+    )
 
 
 # ---------------------------------------------------------------------------

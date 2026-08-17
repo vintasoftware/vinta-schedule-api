@@ -669,4 +669,4 @@ class TestTokenCalendarEventViewSetIntegration:
         assert response.status_code == status.HTTP_403_FORBIDDEN
 
         # Verify no event was created
-        assert not CalendarEvent.objects.filter(title="Should Not Be Created").exists()
+        assert not CalendarEvent.original_manager.filter(title="Should Not Be Created").exists()

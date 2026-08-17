@@ -388,7 +388,9 @@ def test_reject_delete_recreates_and_rebinds_external_id(
     assert adapter_input.external_id == old_external_id
 
     # The local event still exists and now tracks the NEW external id (churn).
-    refreshed = CalendarEvent.objects.get(pk=event_id, organization_id=event.organization_id)
+    refreshed = CalendarEvent.objects.filter_by_organization(event.organization_id).get(
+        pk=event_id,
+    )
     assert refreshed.external_id == "event_external_NEW_999"
     assert refreshed.external_id != old_external_id
 

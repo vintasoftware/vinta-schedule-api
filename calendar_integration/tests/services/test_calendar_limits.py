@@ -90,7 +90,13 @@ class TestCreateResourceCalendarLimit:
         assert exc_info.value.resource_key == LimitedResource.RESOURCE_CALENDARS
         assert exc_info.value.current_usage == 1
         assert exc_info.value.limit == 1
-        assert not Calendar.objects.filter(organization=organization, name="Blocked Room").exists()
+        assert (
+            not Calendar.objects.filter_by_organization(organization)
+            .filter(
+                name="Blocked Room",
+            )
+            .exists()
+        )
 
     @pytest.mark.parametrize("limit_value", [2, None], ids=["headroom", "unlimited"])
     def test_succeeds_with_headroom(self, limit_value):
@@ -140,9 +146,13 @@ class TestCreateGroupLimit:
             service.create_group(CalendarGroupInputData(name="Blocked Group"))
 
         assert exc_info.value.resource_key == LimitedResource.CALENDAR_GROUPS
-        assert not CalendarGroup.objects.filter(
-            organization=organization, name="Blocked Group"
-        ).exists()
+        assert (
+            not CalendarGroup.objects.filter_by_organization(organization)
+            .filter(
+                name="Blocked Group",
+            )
+            .exists()
+        )
 
     @pytest.mark.parametrize("limit_value", [2, None], ids=["headroom", "unlimited"])
     def test_succeeds_with_headroom(self, limit_value):
@@ -186,9 +196,13 @@ class TestCreateBundleCalendarLimit:
             service.create_bundle_calendar(name="Blocked Bundle")
 
         assert exc_info.value.resource_key == LimitedResource.BUNDLE_CALENDARS
-        assert not Calendar.objects.filter(
-            organization=organization, name="Blocked Bundle"
-        ).exists()
+        assert (
+            not Calendar.objects.filter_by_organization(organization)
+            .filter(
+                name="Blocked Bundle",
+            )
+            .exists()
+        )
 
     @pytest.mark.parametrize("limit_value", [2, None], ids=["headroom", "unlimited"])
     def test_succeeds_with_headroom(self, limit_value):
@@ -252,7 +266,12 @@ class TestCreateAvailableTimeLimit:
 
         assert exc_info.value.resource_key == LimitedResource.AVAILABILITY_WINDOWS
         assert (
-            AvailableTime.objects.filter(organization=organization, calendar=calendar).count() == 1
+            AvailableTime.objects.filter_by_organization(organization)
+            .filter(
+                calendar=calendar,
+            )
+            .count()
+            == 1
         )
 
     @pytest.mark.parametrize("limit_value", [2, None], ids=["headroom", "unlimited"])
@@ -324,9 +343,13 @@ class TestBlockedTimeCountsTowardTheAvailabilityWindowLimit:
         assert exc_info.value.resource_key == LimitedResource.AVAILABILITY_WINDOWS
         assert exc_info.value.current_usage == 1
         assert exc_info.value.limit == 1
-        assert not AvailableTime.objects.filter(
-            organization=organization, calendar=calendar
-        ).exists()
+        assert (
+            not AvailableTime.objects.filter_by_organization(organization)
+            .filter(
+                calendar=calendar,
+            )
+            .exists()
+        )
 
     def test_existing_group_scoped_blocked_time_blocks_further_window_creation(self):
         """Group-scoped blocks are invisible to ``BlockedTime.objects`` (the default
@@ -357,9 +380,13 @@ class TestBlockedTimeCountsTowardTheAvailabilityWindowLimit:
 
         assert exc_info.value.resource_key == LimitedResource.AVAILABILITY_WINDOWS
         assert exc_info.value.current_usage == 1
-        assert not AvailableTime.objects.filter(
-            organization=organization, calendar=calendar
-        ).exists()
+        assert (
+            not AvailableTime.objects.filter_by_organization(organization)
+            .filter(
+                calendar=calendar,
+            )
+            .exists()
+        )
 
     def test_headroom_left_after_blocked_time_still_allows_a_window(self):
         organization = _organization_with_limit(LimitedResource.AVAILABILITY_WINDOWS, 2)
@@ -407,7 +434,12 @@ class TestBatchModifyAvailableTimesLimit:
 
         assert exc_info.value.resource_key == LimitedResource.AVAILABILITY_WINDOWS
         assert (
-            AvailableTime.objects.filter(organization=organization, calendar=calendar).count() == 1
+            AvailableTime.objects.filter_by_organization(organization)
+            .filter(
+                calendar=calendar,
+            )
+            .count()
+            == 1
         )
 
     @pytest.mark.parametrize("limit_value", [3, None], ids=["headroom", "unlimited"])
@@ -437,7 +469,12 @@ class TestBatchModifyAvailableTimesLimit:
         result = service.batch_modify_available_times(calendar=calendar, operations=ops)
 
         assert (
-            AvailableTime.objects.filter(organization=organization, calendar=calendar).count() == 3
+            AvailableTime.objects.filter_by_organization(organization)
+            .filter(
+                calendar=calendar,
+            )
+            .count()
+            == 3
         )
         assert len(result) == 3
 
@@ -480,9 +517,14 @@ class TestBatchModifyAvailableTimesIsNetOfDeletes:
 
         # Net zero: still exactly at the ceiling, and the replacement landed.
         assert (
-            AvailableTime.objects.filter(organization=organization, calendar=calendar).count() == 5
+            AvailableTime.objects.filter_by_organization(organization)
+            .filter(
+                calendar=calendar,
+            )
+            .count()
+            == 5
         )
-        assert not AvailableTime.objects.filter(id=existing[0].id).exists()
+        assert not AvailableTime.original_manager.filter(id=existing[0].id).exists()
 
     def test_growing_batch_at_the_ceiling_still_raises(self):
         organization = _organization_with_limit(LimitedResource.AVAILABILITY_WINDOWS, 5)
@@ -508,9 +550,14 @@ class TestBatchModifyAvailableTimesIsNetOfDeletes:
         assert exc_info.value.resource_key == LimitedResource.AVAILABILITY_WINDOWS
         # Nothing in the batch was applied -- the delete included.
         assert (
-            AvailableTime.objects.filter(organization=organization, calendar=calendar).count() == 5
+            AvailableTime.objects.filter_by_organization(organization)
+            .filter(
+                calendar=calendar,
+            )
+            .count()
+            == 5
         )
-        assert AvailableTime.objects.filter(id=existing[0].id).exists()
+        assert AvailableTime.original_manager.filter(id=existing[0].id).exists()
 
     def test_update_only_batch_at_the_ceiling_is_allowed(self):
         organization = _organization_with_limit(LimitedResource.AVAILABILITY_WINDOWS, 2)
@@ -536,7 +583,12 @@ class TestBatchModifyAvailableTimesIsNetOfDeletes:
         )
 
         assert (
-            AvailableTime.objects.filter(organization=organization, calendar=calendar).count() == 2
+            AvailableTime.objects.filter_by_organization(organization)
+            .filter(
+                calendar=calendar,
+            )
+            .count()
+            == 2
         )
 
     def test_delete_only_batch_at_the_ceiling_is_allowed(self):
@@ -556,7 +608,12 @@ class TestBatchModifyAvailableTimesIsNetOfDeletes:
         )
 
         assert (
-            AvailableTime.objects.filter(organization=organization, calendar=calendar).count() == 1
+            AvailableTime.objects.filter_by_organization(organization)
+            .filter(
+                calendar=calendar,
+            )
+            .count()
+            == 1
         )
 
     def test_deleting_a_row_the_counter_does_not_count_earns_no_credit(self):
@@ -587,7 +644,7 @@ class TestBatchModifyAvailableTimesIsNetOfDeletes:
                 operations=[{"action": "delete", "id": derived.id}, _create_op(2)],
             )
 
-        assert AvailableTime.objects.filter(id=derived.id).exists()
+        assert AvailableTime.original_manager.filter(id=derived.id).exists()
 
 
 @pytest.mark.django_db
@@ -620,7 +677,12 @@ class TestBulkCreateAvailabilityWindowsLimit:
 
         assert exc_info.value.resource_key == LimitedResource.AVAILABILITY_WINDOWS
         assert (
-            AvailableTime.objects.filter(organization=organization, calendar=calendar).count() == 1
+            AvailableTime.objects.filter_by_organization(organization)
+            .filter(
+                calendar=calendar,
+            )
+            .count()
+            == 1
         )
 
     def test_multi_window_batch_that_exactly_fills_the_ceiling_is_allowed(self):
@@ -644,5 +706,10 @@ class TestBulkCreateAvailabilityWindowsLimit:
         service.bulk_create_availability_windows(calendar=calendar, availability_windows=windows)
 
         assert (
-            AvailableTime.objects.filter(organization=organization, calendar=calendar).count() == 4
+            AvailableTime.objects.filter_by_organization(organization)
+            .filter(
+                calendar=calendar,
+            )
+            .count()
+            == 4
         )

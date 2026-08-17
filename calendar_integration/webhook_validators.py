@@ -92,12 +92,15 @@ class MicrosoftWebhookValidator(BaseWebhookValidator):
         if subscription_id and organization_id:
             from calendar_integration.models import CalendarWebhookSubscription
 
-            if not CalendarWebhookSubscription.objects.filter(
-                organization_id=organization_id,
-                external_subscription_id=subscription_id,
-                provider=CalendarProvider.MICROSOFT,
-                is_active=True,
-            ).exists():
+            if (
+                not CalendarWebhookSubscription.objects.filter_by_organization(organization_id)
+                .filter(
+                    external_subscription_id=subscription_id,
+                    provider=CalendarProvider.MICROSOFT,
+                    is_active=True,
+                )
+                .exists()
+            ):
                 logger.warning(
                     "Microsoft webhook subscription not found: %s for org %s",
                     subscription_id,

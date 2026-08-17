@@ -5461,39 +5461,50 @@ class TestCalendarBundleUpdateAction:
         assert response.data["id"] == bundle.id
 
         # child1 should be gone
-        assert not ChildrenCalendarRelationship.objects.filter(
-            bundle_calendar=bundle,
-            child_calendar_fk_id=child1.id,
-            organization=organization,
-        ).exists()
+        assert (
+            not ChildrenCalendarRelationship.objects.filter_by_organization(organization)
+            .filter(
+                bundle_calendar=bundle,
+                child_calendar_fk_id=child1.id,
+            )
+            .exists()
+        )
 
         # child2 retained, child3 added
-        assert ChildrenCalendarRelationship.objects.filter(
-            bundle_calendar=bundle,
-            child_calendar_fk_id=child2.id,
-            organization=organization,
-        ).exists()
-        assert ChildrenCalendarRelationship.objects.filter(
-            bundle_calendar=bundle,
-            child_calendar_fk_id=child3.id,
-            organization=organization,
-        ).exists()
+        assert (
+            ChildrenCalendarRelationship.objects.filter_by_organization(organization)
+            .filter(
+                bundle_calendar=bundle,
+                child_calendar_fk_id=child2.id,
+            )
+            .exists()
+        )
+        assert (
+            ChildrenCalendarRelationship.objects.filter_by_organization(organization)
+            .filter(
+                bundle_calendar=bundle,
+                child_calendar_fk_id=child3.id,
+            )
+            .exists()
+        )
 
         # Exactly one primary — child3
         assert (
-            ChildrenCalendarRelationship.objects.filter(
+            ChildrenCalendarRelationship.objects.filter_by_organization(organization)
+            .filter(
                 bundle_calendar=bundle,
-                organization=organization,
                 is_primary=True,
-            ).count()
+            )
+            .count()
             == 1
         )
         assert (
-            ChildrenCalendarRelationship.objects.get(
+            ChildrenCalendarRelationship.objects.filter_by_organization(organization)
+            .get(
                 bundle_calendar=bundle,
-                organization=organization,
                 is_primary=True,
-            ).child_calendar_fk_id
+            )
+            .child_calendar_fk_id
             == child3.id
         )
 
@@ -5661,19 +5672,25 @@ class TestCalendarBundleUpdateAction:
         assert response.data["id"] == bundle.id
 
         # child_disabled should still be a child
-        assert ChildrenCalendarRelationship.objects.filter(
-            bundle_calendar=bundle,
-            child_calendar_fk_id=child_disabled.id,
-            organization=organization,
-        ).exists()
+        assert (
+            ChildrenCalendarRelationship.objects.filter_by_organization(organization)
+            .filter(
+                bundle_calendar=bundle,
+                child_calendar_fk_id=child_disabled.id,
+            )
+            .exists()
+        )
 
         # child_active should still be a child and marked primary
-        assert ChildrenCalendarRelationship.objects.filter(
-            bundle_calendar=bundle,
-            child_calendar_fk_id=child_active.id,
-            organization=organization,
-            is_primary=True,
-        ).exists()
+        assert (
+            ChildrenCalendarRelationship.objects.filter_by_organization(organization)
+            .filter(
+                bundle_calendar=bundle,
+                child_calendar_fk_id=child_active.id,
+                is_primary=True,
+            )
+            .exists()
+        )
 
     def test_bundle_update_rejects_new_disabled_child(self, organization):
         """
@@ -5704,11 +5721,14 @@ class TestCalendarBundleUpdateAction:
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
 
         # disabled_new should NOT be a child
-        assert not ChildrenCalendarRelationship.objects.filter(
-            bundle_calendar=bundle,
-            child_calendar_fk_id=disabled_new.id,
-            organization=organization,
-        ).exists()
+        assert (
+            not ChildrenCalendarRelationship.objects.filter_by_organization(organization)
+            .filter(
+                bundle_calendar=bundle,
+                child_calendar_fk_id=disabled_new.id,
+            )
+            .exists()
+        )
 
 
 @pytest.mark.django_db
@@ -5874,10 +5894,10 @@ class TestCalendarDisableGating:
         admin_client.delete(url)
 
         # Events must still exist
-        assert CalendarEvent.objects.filter(id=primary_event.id).exists()
-        assert CalendarEvent.objects.filter(id=representation_event.id).exists()
+        assert CalendarEvent.original_manager.filter(id=primary_event.id).exists()
+        assert CalendarEvent.original_manager.filter(id=representation_event.id).exists()
         # BlockedTime must still exist
-        assert BlockedTime.objects.filter(id=representation_blocked.id).exists()
+        assert BlockedTime.original_manager.filter(id=representation_blocked.id).exists()
 
     def test_bundle_disable_by_non_admin_member_403(self, organization):
         """Non-admin org member cannot disable a bundle → 403, bundle unchanged."""
