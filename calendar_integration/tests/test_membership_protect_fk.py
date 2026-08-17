@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import datetime
 
+from django.contrib.auth.models import Group, Permission
 from django.db import IntegrityError, connection, transaction
 
 import pytest
@@ -277,8 +278,6 @@ class TestTheManyToManyThroughTablesBindToThePrimaryKey:
         """The through-table rows -- not just the membership row -- must be
         gone after the delete, proving the CASCADE actually ran rather than
         merely that the membership itself is gone."""
-        from django.contrib.auth.models import Group, Permission
-
         membership = OrganizationMembership.objects.get(user=member_user, organization=organization)
         membership.groups.add(Group.objects.create(name="through-table-group"))
         membership.permissions.add(baker.make(Permission))

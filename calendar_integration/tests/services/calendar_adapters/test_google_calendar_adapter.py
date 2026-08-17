@@ -21,6 +21,8 @@ from calendar_integration.services.dataclasses import (
     CalendarResourceData,
     EventAttendeeData,
 )
+from common.redis import ResilientLimiter
+from users.models import User
 
 
 @pytest.fixture
@@ -94,8 +96,6 @@ def mock_rate_limiters():
     actually exist (e.g. try_acquire) — calling a non-existent method like
     ``ratelimit`` raises AttributeError here instead of only blowing up in prod.
     """
-    from common.redis import ResilientLimiter
-
     with (
         patch(
             "calendar_integration.services.calendar_adapters.google_calendar_adapter.read_quote_limiter",
@@ -120,8 +120,6 @@ class TestGoogleCalendarAdapterTokenRefresh:
 
     @pytest.mark.django_db
     def test_persist_refreshed_token_updates_socialtoken(self):
-        from users.models import User
-
         user = User.objects.create_user(email="refresh@example.com", password="pw")  # noqa: S106
         account = SocialAccount.objects.create(
             user=user, provider=CalendarProvider.GOOGLE, uid="refresh-uid"

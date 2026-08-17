@@ -26,19 +26,27 @@ from django.test.utils import CaptureQueriesContext
 
 import pytest
 
-from calendar_integration.constants import CalendarProvider, CalendarType, GroupScopedRuleType
+from calendar_integration.constants import (
+    CalendarProvider,
+    CalendarType,
+    GroupScopedRuleType,
+    RecurrenceFrequency,
+)
 from calendar_integration.exceptions import CalendarGroupScopedRuleViolationError
 from calendar_integration.models import (
     AvailableTime,
+    AvailableTimeRecurrenceException,
     Calendar,
     CalendarGroup,
     CalendarGroupSlot,
     CalendarGroupSlotMembership,
+    RecurrenceRule,
 )
 from calendar_integration.services.calendar_group_service import CalendarGroupService
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.dataclasses import (
+    CalendarGroupEventInputData,
     CalendarGroupSlotSelectionInputData,
 )
 from organizations.models import Organization, OrganizationMembership
@@ -292,8 +300,6 @@ def test_create_grouped_event_rejects_calendar_outside_group_scoped_window(
         rrule_string="RRULE:FREQ=WEEKLY;BYDAY=TU,TH",
     )
 
-    from calendar_integration.services.dataclasses import CalendarGroupEventInputData
-
     with pytest.raises(CalendarGroupScopedRuleViolationError) as exc_info:
         service.create_grouped_event(
             CalendarGroupEventInputData(
@@ -340,8 +346,6 @@ def test_create_grouped_event_allows_calendar_inside_group_scoped_window(
         rrule_string="RRULE:FREQ=WEEKLY;BYDAY=TU,TH",
     )
 
-    from calendar_integration.services.dataclasses import CalendarGroupEventInputData
-
     event = service.create_grouped_event(
         CalendarGroupEventInputData(
             title="Surgery",
@@ -376,8 +380,6 @@ def test_reschedule_grouped_event_rejects_move_outside_group_scoped_window(
         tz="UTC",
         rrule_string="RRULE:FREQ=WEEKLY;BYDAY=TU,TH",
     )
-
-    from calendar_integration.services.dataclasses import CalendarGroupEventInputData
 
     event = service.create_grouped_event(
         CalendarGroupEventInputData(
@@ -516,9 +518,6 @@ def test_group_scoped_recurring_exception_is_honored_when_master_is_group_scoped
     instead of being silently skipped by the default manager.
     """
     # Create a group-scoped recurring master: 9-10 AM every Tuesday and Thursday.
-    from calendar_integration.constants import RecurrenceFrequency
-    from calendar_integration.models import RecurrenceRule
-
     rule = RecurrenceRule.objects.create(
         organization=organization,
         frequency=RecurrenceFrequency.WEEKLY,
@@ -539,8 +538,6 @@ def test_group_scoped_recurring_exception_is_honored_when_master_is_group_scoped
 
     # The second occurrence would be Thursday of the first week (Sept 4).
     # Create a group-scoped exception for it: move it to 10-11 AM.
-    from calendar_integration.models import AvailableTimeRecurrenceException
-
     exception_original_start = THURSDAY.replace(hour=9)
     exception_new_start = THURSDAY.replace(hour=10)
     exception_new_end = THURSDAY.replace(hour=11)
@@ -672,8 +669,6 @@ def test_reschedule_grouped_event_with_non_primary_calendar_outside_window(
         rrule_string="RRULE:FREQ=WEEKLY;BYDAY=TU,TH",
     )
 
-    from calendar_integration.services.dataclasses import CalendarGroupEventInputData
-
     # Create event inside both windows (Tuesday 10-10:30 AM).
     event = service.create_grouped_event(
         CalendarGroupEventInputData(
@@ -747,8 +742,6 @@ def test_reschedule_grouped_event_with_non_primary_calendar_inside_windows(
         tz="UTC",
         rrule_string="RRULE:FREQ=WEEKLY;BYDAY=TU,TH",
     )
-
-    from calendar_integration.services.dataclasses import CalendarGroupEventInputData
 
     # Create event inside both windows (Tuesday 10-10:30 AM).
     event = service.create_grouped_event(

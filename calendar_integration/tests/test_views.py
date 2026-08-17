@@ -4,6 +4,7 @@ import uuid
 from unittest.mock import Mock
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth import get_user_model as _get_user_model
 from django.urls import reverse
 
 import icalendar
@@ -11,6 +12,7 @@ import pytest
 from allauth.socialaccount.models import SocialAccount, SocialToken
 from model_bakery import baker
 from rest_framework import status
+from rest_framework.test import APIClient
 
 from calendar_integration.constants import (
     CalendarProvider,
@@ -18,6 +20,7 @@ from calendar_integration.constants import (
     CalendarVisibility,
     RecurrenceFrequency,
 )
+from calendar_integration.exceptions import InvalidCalendarTokenError, NoAvailableTimeWindowsError
 from calendar_integration.models import (
     AvailableTime,
     BlockedTime,
@@ -517,7 +520,6 @@ class TestCalendarEventViewSet:
         self, auth_client, calendar, user, social_account
     ):
         """A booking with no available window must be a 400, not a 500."""
-        from calendar_integration.exceptions import NoAvailableTimeWindowsError
         from di_core.containers import container
 
         mock_calendar_service = Mock()
@@ -648,8 +650,6 @@ class TestCalendarEventViewSet:
 
     def test_transfer_event_success(self, organization, calendar, calendar_event):
         """Admin transfers an in-org event to an in-org target calendar."""
-        from rest_framework.test import APIClient
-
         from di_core.containers import container
 
         # Admin user
@@ -722,8 +722,6 @@ class TestCalendarEventViewSet:
 
     def test_transfer_event_same_calendar_no_op(self, organization, calendar, calendar_event):
         """Admin tries to transfer event to its own calendar → 400, no service call."""
-        from rest_framework.test import APIClient
-
         from di_core.containers import container
 
         # Admin user
@@ -755,8 +753,6 @@ class TestCalendarEventViewSet:
 
     def test_transfer_event_non_admin_forbidden(self, organization, calendar, calendar_event):
         """Non-admin active member receives 403."""
-        from rest_framework.test import APIClient
-
         member_user = baker.make(User)
         baker.make(
             OrganizationMembership,
@@ -775,8 +771,6 @@ class TestCalendarEventViewSet:
 
     def test_transfer_event_cross_org_event_not_found(self, organization):
         """Event from a different org yields 404 (org-scoped queryset)."""
-        from rest_framework.test import APIClient
-
         admin_user = baker.make(User)
         make_membership(
             user=admin_user,
@@ -799,8 +793,6 @@ class TestCalendarEventViewSet:
         self, organization, calendar, calendar_event
     ):
         """Missing target_calendar_id body field yields 400."""
-        from rest_framework.test import APIClient
-
         admin_user = baker.make(User)
         make_membership(
             user=admin_user,
@@ -827,8 +819,6 @@ class TestCalendarEventViewSet:
         self, organization, calendar, calendar_event
     ):
         """Non-existent target_calendar_id yields 400."""
-        from rest_framework.test import APIClient
-
         admin_user = baker.make(User)
         make_membership(
             user=admin_user,
@@ -856,8 +846,6 @@ class TestCalendarEventViewSet:
         self, organization, calendar, calendar_event
     ):
         """target_calendar_id from a different org yields 400."""
-        from rest_framework.test import APIClient
-
         admin_user = baker.make(User)
         make_membership(
             user=admin_user,
@@ -888,8 +876,6 @@ class TestCalendarEventViewSet:
         self, organization, calendar, calendar_event
     ):
         """Source calendar owner has no linked social account → 400."""
-        from rest_framework.test import APIClient
-
         admin_user = baker.make(User)
         make_membership(
             user=admin_user,
@@ -924,8 +910,6 @@ class TestCalendarEventViewSet:
         An ex-member (orphan ownership, no backing membership) must not provide the
         credentials used to read the source calendar from the provider.
         """
-        from rest_framework.test import APIClient
-
         from di_core.containers import container
 
         admin_user = baker.make(User)
@@ -1101,8 +1085,6 @@ class TestCalendarEventExpandedAction:
 
     def test_expanded_membership_less_user_returns_empty_list(self, calendar):
         """User without an active membership gets an empty 200 list (mirrors sibling expanded actions)."""
-        from rest_framework.test import APIClient
-
         no_membership_user = baker.make(User)
         client = APIClient()
         client.force_authenticate(user=no_membership_user)
@@ -2121,8 +2103,6 @@ class TestCalendarViewSet:
 
     def test_create_resource_calendar_admin(self, organization):
         """Org admin creates a manual resource calendar via POST /calendar/resource/."""
-        from rest_framework.test import APIClient
-
         from di_core.containers import container
 
         admin_user = baker.make(User)
@@ -2176,8 +2156,6 @@ class TestCalendarViewSet:
 
     def test_update_resource_calendar_capacity_admin(self, organization):
         """Admin can PATCH capacity on a RESOURCE calendar."""
-        from rest_framework.test import APIClient
-
         admin_user = baker.make(User)
         make_membership(
             user=admin_user,
@@ -2202,8 +2180,6 @@ class TestCalendarViewSet:
 
     def test_update_capacity_on_non_resource_rejected(self, organization):
         """Capacity can only be set on resource calendars."""
-        from rest_framework.test import APIClient
-
         admin_user = baker.make(User)
         make_membership(
             user=admin_user,
@@ -2459,10 +2435,6 @@ class TestCalendarViewSet:
 
     def test_membership_less_user_gets_empty_list(self):
         """User without org membership gets an empty list (not 500)."""
-        from django.contrib.auth import get_user_model as _get_user_model
-
-        from rest_framework.test import APIClient
-
         user_model = _get_user_model()
         memberless_user = baker.make(user_model)
 
@@ -2666,7 +2638,6 @@ class TestCalendarViewSet:
 
     def test_request_import_reports_per_account_failure(self, auth_client, user, organization):
         """A failing account is reported under `skipped` (400) instead of an opaque error."""
-        from calendar_integration.exceptions import InvalidCalendarTokenError
         from di_core.containers import container
 
         google_account = baker.make(SocialAccount, user=user, provider=CalendarProvider.GOOGLE)
@@ -2992,8 +2963,6 @@ class TestCalendarViewSet:
         mock_calendar_service.request_calendar_sync.return_value = mock_calendar_sync
 
         # Authenticate as admin and make request
-        from rest_framework.test import APIClient
-
         client = APIClient()
         client.force_authenticate(user=admin_user)
 
@@ -3048,8 +3017,6 @@ class TestCalendarViewSet:
         CalendarIntegrationTestFactory.create_calendar_ownership(calendar_owner, calendar)
 
         # Authenticate as regular member
-        from rest_framework.test import APIClient
-
         client = APIClient()
         client.force_authenticate(user=member_user)
 
@@ -3081,8 +3048,6 @@ class TestCalendarViewSet:
         other_calendar = CalendarIntegrationTestFactory.create_calendar(organization=other_org)
 
         # Authenticate as admin and try to sync cross-org calendar
-        from rest_framework.test import APIClient
-
         client = APIClient()
         client.force_authenticate(user=admin_user)
 
@@ -3123,8 +3088,6 @@ class TestCalendarViewSet:
         # Do NOT create social account for the owner - this is the test case
 
         # Authenticate as admin and make request
-        from rest_framework.test import APIClient
-
         client = APIClient()
         client.force_authenticate(user=admin_user)
 
@@ -3157,8 +3120,6 @@ class TestCalendarViewSet:
         calendar = CalendarIntegrationTestFactory.create_calendar(organization=organization)
 
         # Authenticate as admin and make request
-        from rest_framework.test import APIClient
-
         client = APIClient()
         client.force_authenticate(user=admin_user)
 
@@ -3197,8 +3158,6 @@ class TestCalendarViewSet:
             calendar=calendar,
             organization=organization,
         )
-
-        from rest_framework.test import APIClient
 
         client = APIClient()
         client.force_authenticate(user=admin_user)
@@ -3239,8 +3198,6 @@ class TestCalendarViewSet:
         CalendarIntegrationTestFactory.create_calendar_ownership(calendar_owner, calendar)
 
         # Authenticate as admin
-        from rest_framework.test import APIClient
-
         client = APIClient()
         client.force_authenticate(user=admin_user)
 
@@ -3326,8 +3283,6 @@ class TestCalendarViewSet:
         mock_calendar_sync.error_message = ""
         mock_calendar_sync.trigger_source = "manual"
         mock_calendar_service.request_calendar_sync.return_value = mock_calendar_sync
-
-        from rest_framework.test import APIClient
 
         client = APIClient()
         client.force_authenticate(user=admin_user)
@@ -4538,8 +4493,6 @@ class TestAvailableTimeViewSet:
 
     def test_batch_create_update_delete(self, auth_client, calendar, user):
         """A single batch creates, updates, and deletes available times atomically."""
-        from calendar_integration.models import AvailableTime
-
         calendar.manage_available_windows = True
         calendar.save()
         CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
@@ -4580,8 +4533,6 @@ class TestAvailableTimeViewSet:
 
     def test_batch_is_transactional_on_bad_operation(self, auth_client, calendar, user):
         """A failing operation rolls back the whole batch — no partial application."""
-        from calendar_integration.models import AvailableTime
-
         calendar.manage_available_windows = True
         calendar.save()
         CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
@@ -4614,8 +4565,6 @@ class TestAvailableTimeViewSet:
 
     def test_batch_defaults_to_user_default_calendar(self, auth_client, calendar, user):
         """Omitting calendar applies the batch to the user's default calendar."""
-        from calendar_integration.models import AvailableTime
-
         calendar.manage_available_windows = True
         calendar.save()
         CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar, is_default=True)
@@ -5380,8 +5329,6 @@ class TestCalendarBundleUpdateAction:
     @staticmethod
     def _make_admin(organization):
         """Create an admin user and membership; return (user, APIClient)."""
-        from rest_framework.test import APIClient
-
         admin = baker.make(User)
         make_membership(
             user=admin,
@@ -5395,8 +5342,6 @@ class TestCalendarBundleUpdateAction:
     @staticmethod
     def _make_member(organization):
         """Create a regular member and return (user, APIClient)."""
-        from rest_framework.test import APIClient
-
         member = baker.make(User)
         baker.make(
             OrganizationMembership,
@@ -5754,8 +5699,6 @@ class TestCalendarDisableGating:
     @staticmethod
     def _make_admin(organization):
         """Create an admin user+membership; return (user, APIClient)."""
-        from rest_framework.test import APIClient
-
         admin = baker.make(User)
         make_membership(
             user=admin,
@@ -5769,8 +5712,6 @@ class TestCalendarDisableGating:
     @staticmethod
     def _make_member(organization):
         """Create a regular member; return (user, APIClient)."""
-        from rest_framework.test import APIClient
-
         member = baker.make(User)
         baker.make(
             OrganizationMembership,
@@ -5885,8 +5826,6 @@ class TestCalendarDisableGating:
 
     def test_personal_calendar_disable_by_owner_204(self, organization):
         """Calendar owner can disable their own personal calendar → 204."""
-        from rest_framework.test import APIClient
-
         owner = baker.make(User)
         baker.make(
             OrganizationMembership,
@@ -6127,8 +6066,6 @@ class TestCalendarEventDownloadICS:
         PermissionDenied (403) from has_object_permission's False branch rather than
         Http404 — distinguishing an unauthorized member from a cross-org/unknown event.
         """
-        from rest_framework.test import APIClient
-
         organization = CalendarIntegrationTestFactory.create_organization()
         member_user = baker.make(User)
         baker.make(

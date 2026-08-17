@@ -37,7 +37,13 @@ import datetime
 
 import pytest
 
-from calendar_integration.models import Calendar, CalendarEvent, EventAttendance
+from calendar_integration.models import (
+    Calendar,
+    CalendarEvent,
+    EventAttendance,
+    EventExternalAttendance,
+    ExternalAttendee,
+)
 from organizations.models import Organization
 
 
@@ -207,8 +213,6 @@ class TestTheManyToManyJoinsOnTheOrganizationToo:
     def test_a_cross_organization_attendance_is_not_traversed(
         self, organization_a, organization_b, calendar_a
     ):
-        from calendar_integration.models import EventExternalAttendance, ExternalAttendee
-
         event_of_a = CalendarEvent.objects.create(
             organization=organization_a,
             calendar=calendar_a,

@@ -6,10 +6,20 @@ from django.utils import timezone
 
 import pytest
 
-from calendar_integration.constants import CalendarProvider, IncomingWebhookProcessingStatus
+from calendar_integration.constants import (
+    CalendarProvider,
+    CalendarSyncStatus,
+    IncomingWebhookProcessingStatus,
+)
 from calendar_integration.exceptions import WebhookAuthenticationError, WebhookValidationError
-from calendar_integration.models import Calendar, CalendarWebhookEvent, CalendarWebhookSubscription
+from calendar_integration.models import (
+    Calendar,
+    CalendarSync,
+    CalendarWebhookEvent,
+    CalendarWebhookSubscription,
+)
 from calendar_integration.services.incoming_webhook_service import CalendarIncomingWebhookService
+from calendar_integration.webhook_parsers import GoogleWebhookParser
 from organizations.models import Organization
 
 
@@ -153,9 +163,6 @@ class CalendarWebhookEventModelTest(TestCase):
 
     def test_webhook_event_properties(self):
         """Test webhook event derived properties."""
-        from calendar_integration.constants import CalendarSyncStatus
-        from calendar_integration.models import CalendarSync
-
         calendar = Calendar.objects.create(
             name="Test Calendar",
             organization=self.organization,
@@ -317,8 +324,6 @@ class CalendarIncomingWebhookServiceTest(TestCase):
 
     def test_parse_google_webhook_content(self):
         """Test parsing Google webhook content."""
-        from calendar_integration.webhook_parsers import GoogleWebhookParser
-
         parser = GoogleWebhookParser()
 
         # Test normal parsing

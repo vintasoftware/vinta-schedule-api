@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 from django.utils import timezone
 
 import pytest
+from graphql import GraphQLError
 from model_bakery import baker
 
 from calendar_integration.constants import CalendarProvider, CalendarType
@@ -31,6 +32,7 @@ from calendar_integration.services.calendar_group_service import CalendarGroupSe
 from calendar_integration.services.calendar_service import CalendarService
 from organizations.models import Organization
 from public_api.queries import DateTimeRangeInput, Query, QueryDependencies
+from public_api.schema import schema
 
 
 @pytest.fixture
@@ -697,8 +699,6 @@ def test_create_calendar_group_event_mutation_surfaces_validation_error(
 # Dependency-factory tests
 # ---------------------------------------------------------------------------
 def test_get_calendar_group_mutation_dependencies_missing_raises():
-    from graphql import GraphQLError
-
     with pytest.raises(GraphQLError, match="Missing required dependency"):
         get_calendar_group_mutation_dependencies(calendar_group_service=None, calendar_service=None)
 
@@ -781,8 +781,6 @@ def test_create_calendar_group_event_private_group_no_permission_service_returns
 # Schema-level smoke test
 # ---------------------------------------------------------------------------
 def test_schema_exposes_calendar_group_operations():
-    from public_api.schema import schema
-
     sdl = schema.as_str()
     for expected in (
         "type CalendarGroupGraphQLType",

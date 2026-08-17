@@ -25,6 +25,7 @@ from calendar_integration.models import (
     BlockedTime,
     Calendar,
     CalendarEvent,
+    CalendarOwnership,
     ChildrenCalendarRelationship,
 )
 from calendar_integration.services.calendar_bundle_service import CalendarBundleService
@@ -32,6 +33,7 @@ from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.dataclasses import (
     AvailableTimeWindow,
     CalendarEventInputData,
+    EventAttendanceInputData,
 )
 from organizations.models import Organization, OrganizationMembership
 from users.models import Profile, User
@@ -933,9 +935,6 @@ def test_collect_bundle_attendees_includes_calendar_owners(
     user = User.objects.create_user(email="attendee@example.com", password="pw")
     Profile.objects.create(user=user)
 
-    from calendar_integration.models import CalendarOwnership
-    from organizations.models import OrganizationMembership
-
     OrganizationMembership.objects.create(user=user, organization=organization)
     CalendarOwnership.objects.create(
         organization=organization,
@@ -969,10 +968,6 @@ def test_collect_bundle_attendees_deduplicates(
     """If a user is both an explicit attendee and a calendar owner, they appear once."""
     user = User.objects.create_user(email="dedup@example.com", password="pw")
     Profile.objects.create(user=user)
-
-    from calendar_integration.models import CalendarOwnership
-    from calendar_integration.services.dataclasses import EventAttendanceInputData
-    from organizations.models import OrganizationMembership
 
     OrganizationMembership.objects.create(user=user, organization=organization)
     CalendarOwnership.objects.create(

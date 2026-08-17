@@ -25,10 +25,12 @@ from calendar_integration.factories import (
 )
 from calendar_integration.models import (
     CalendarEvent,
+    EventExternalAttendance,
     EventRecurrenceException,
     ExternalAttendee,
 )
 from calendar_integration.services import CalendarEventICSService
+from users.factories import UserFactory
 
 
 @pytest.mark.django_db
@@ -651,8 +653,6 @@ def test_build_ics_attendees_internal_and_external():
     """An event with one internal attendee and one external attendee emits two
     correctly-formatted ATTENDEE lines carrying the right emails, ROLE, and PARTSTAT.
     """
-    from users.factories import UserFactory
-
     org = baker.make("organizations.Organization")
     calendar = baker.make("calendar_integration.Calendar", organization=org)
 
@@ -683,8 +683,6 @@ def test_build_ics_attendees_internal_and_external():
         email="external@example.com",
         name="External Person",
     )
-    from calendar_integration.models import EventExternalAttendance
-
     EventExternalAttendance.objects.create(
         organization=org,
         event=event,
@@ -747,8 +745,6 @@ def test_build_ics_attendees_internal_and_external():
 @pytest.mark.django_db
 def test_build_ics_attendee_partstat_mapping():
     """Verify all RSVPStatus values map to the correct PARTSTAT in the ICS."""
-    from users.factories import UserFactory
-
     org = baker.make("organizations.Organization")
     calendar = baker.make("calendar_integration.Calendar", organization=org)
 
@@ -783,8 +779,6 @@ def test_build_ics_attendee_partstat_mapping():
 @pytest.mark.django_db
 def test_build_ics_organizer_present_when_calendar_has_owner():
     """ORGANIZER line is present when the calendar has a primary owner membership."""
-    from users.factories import UserFactory
-
     org = baker.make("organizations.Organization")
     calendar = baker.make("calendar_integration.Calendar", organization=org)
 
@@ -827,8 +821,6 @@ def test_build_ics_organizer_present_when_calendar_has_owner():
 def test_build_ics_organizer_is_default_owner_when_multiple_owners():
     """When a calendar has multiple ownerships, the ORGANIZER is the one flagged
     ``is_default=True`` (deterministic), not an arbitrary ``first()`` row."""
-    from users.factories import UserFactory
-
     org = baker.make("organizations.Organization")
     calendar = baker.make("calendar_integration.Calendar", organization=org)
 
@@ -1009,8 +1001,6 @@ def test_build_ics_full_acceptance_scenario():
     matches to_rrule_string(), whose EXDATE contains the cancelled occurrence,
     and which carries one ORGANIZER and two ATTENDEE lines.
     """
-    from users.factories import UserFactory
-
     org = baker.make("organizations.Organization")
     calendar = baker.make("calendar_integration.Calendar", organization=org)
 
@@ -1049,8 +1039,6 @@ def test_build_ics_full_acceptance_scenario():
         email="external-acc@example.com",
         name="External Acc",
     )
-    from calendar_integration.models import EventExternalAttendance
-
     EventExternalAttendance.objects.create(
         organization=org,
         event=event,

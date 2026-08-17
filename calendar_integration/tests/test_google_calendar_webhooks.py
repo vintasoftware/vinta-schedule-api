@@ -17,6 +17,7 @@ from calendar_integration.constants import (
 )
 from calendar_integration.exceptions import (
     ServiceNotAuthenticatedError,
+    WebhookIgnoredError,
     WebhookProcessingFailedError,
 )
 from calendar_integration.models import (
@@ -76,8 +77,6 @@ class GoogleCalendarAdapterWebhookTest(TestCase):
             # Missing other required headers
         }
 
-        from calendar_integration.exceptions import WebhookProcessingFailedError
-
         with pytest.raises(
             WebhookProcessingFailedError, match="Missing required Google webhook headers"
         ):
@@ -86,8 +85,6 @@ class GoogleCalendarAdapterWebhookTest(TestCase):
     @patch("calendar_integration.services.calendar_adapters.google_calendar_adapter.build")
     def test_validate_webhook_notification_invalid_resource_uri(self, mock_build):
         """Test validation with invalid resource URI."""
-        from calendar_integration.exceptions import WebhookProcessingFailedError
-
         adapter = GoogleCalendarAdapter(self.credentials)
 
         headers = {
@@ -119,8 +116,6 @@ class GoogleCalendarAdapterWebhookTest(TestCase):
 
     def test_validate_webhook_notification_sync_ignored(self):
         """Test that sync notifications are ignored."""
-        from calendar_integration.exceptions import WebhookIgnoredError
-
         headers = {
             "X-Goog-Resource-ID": "test-resource-id",
             "X-Goog-Resource-URI": "https://www.googleapis.com/calendar/v3/calendars/test-calendar/events",

@@ -3,6 +3,7 @@ import uuid
 import zoneinfo
 from datetime import timedelta
 from unittest.mock import MagicMock, Mock, patch
+from zoneinfo import ZoneInfo
 
 from django.db import transaction
 from django.utils import timezone
@@ -49,6 +50,10 @@ from calendar_integration.models import (
     RecurrenceRule,
     ResourceAllocation,
 )
+from calendar_integration.serializers import (
+    AvailableTimeWindowSerializer,
+    UnavailableTimeWindowSerializer,
+)
 from calendar_integration.services.calendar_permission_service import (
     DEFAULT_ATTENDEE_PERMISSIONS,
     DEFAULT_CALENDAR_OWNER_PERMISSIONS,
@@ -59,6 +64,7 @@ from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.dataclasses import (
     ApplicationCalendarData,
     AvailableTimeWindow,
+    BlockedTimeData,
     CalendarEventAdapterInputData,
     CalendarEventAdapterOutputData,
     CalendarEventInputData,
@@ -9523,8 +9529,6 @@ def test_get_availability_windows_subtracts_busy_for_managed_calendar(organizati
 
 def test_available_time_window_serializer_renders_local_timezone():
     """The window serializer emits start/end in the window's timezone, not UTC."""
-    from calendar_integration.serializers import AvailableTimeWindowSerializer
-
     window = AvailableTimeWindow(
         start_time=datetime.datetime(2024, 1, 1, 12, 0, tzinfo=datetime.UTC),  # 09:00 Recife
         end_time=datetime.datetime(2024, 1, 1, 20, 0, tzinfo=datetime.UTC),  # 17:00 Recife
@@ -9581,10 +9585,6 @@ def test_recurring_availability_windows_keep_local_time(organization):
 
     Exercises the occurrence-materialization path (weeks beyond the master) end to end.
     """
-    from zoneinfo import ZoneInfo
-
-    from calendar_integration.serializers import AvailableTimeWindowSerializer
-
     recife = ZoneInfo("America/Recife")
     calendar = Calendar.objects.create(
         name="Recife Calendar",
@@ -9623,9 +9623,6 @@ def test_recurring_availability_windows_keep_local_time(organization):
 
 def test_unavailable_time_window_serializer_renders_local_timezone():
     """Unavailable windows render in the underlying record's timezone, not UTC."""
-    from calendar_integration.serializers import UnavailableTimeWindowSerializer
-    from calendar_integration.services.dataclasses import BlockedTimeData
-
     window = UnavailableTimeWindow(
         start_time=datetime.datetime(2024, 1, 1, 12, 0, tzinfo=datetime.UTC),  # 09:00 Recife
         end_time=datetime.datetime(2024, 1, 1, 20, 0, tzinfo=datetime.UTC),  # 17:00 Recife

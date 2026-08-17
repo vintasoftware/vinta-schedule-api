@@ -46,6 +46,10 @@ from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.calendar_service_context import CalendarServiceContext
 from calendar_integration.services.calendar_sync_service import CalendarSyncService
 from calendar_integration.services.dataclasses import CalendarResourceData
+from calendar_integration.tasks.calendar_sync_tasks import (
+    import_account_calendars_task,
+    sync_calendar_task,
+)
 from organizations.models import Organization
 from payments.billing_constants import BillingState, Entitlement, LimitedResource, LimitKind
 from payments.models import (
@@ -741,8 +745,6 @@ class TestSyncTasksSkipRatherThanFailOnMissingEntitlement:
 
     @_with_google_credentials
     def test_import_account_calendars_task_returns_instead_of_raising(self):
-        from calendar_integration.tasks.calendar_sync_tasks import import_account_calendars_task
-
         organization, account = self._unentitled_org_and_account()
 
         # No exception, and the task never reaches import_account_calendars().
@@ -757,8 +759,6 @@ class TestSyncTasksSkipRatherThanFailOnMissingEntitlement:
 
     @_with_google_credentials
     def test_sync_calendar_task_returns_instead_of_raising(self):
-        from calendar_integration.tasks.calendar_sync_tasks import sync_calendar_task
-
         organization, account = self._unentitled_org_and_account()
         calendar = baker.make(
             Calendar,

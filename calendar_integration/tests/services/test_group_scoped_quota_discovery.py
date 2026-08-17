@@ -32,6 +32,7 @@ from calendar_integration.constants import (
     GroupScopedRuleType,
     QuotaPeriod,
 )
+from calendar_integration.database_functions import GetCalendarGroupQuotaPeriodCountsJSON
 from calendar_integration.exceptions import CalendarGroupScopedRuleViolationError
 from calendar_integration.factories import create_group_slot_quota_rule
 from calendar_integration.models import (
@@ -44,6 +45,7 @@ from calendar_integration.models import (
     CalendarGroupSlotMembership,
     CalendarManagementToken,
 )
+from calendar_integration.services import slot_engine
 from calendar_integration.services.calendar_group_service import CalendarGroupService
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from calendar_integration.services.calendar_service import CalendarService
@@ -797,9 +799,6 @@ def test_python_and_sql_bucketing_agree_on_period_start(
     surgery_group: CalendarGroup,
     surgery_slot: CalendarGroupSlot,
 ) -> None:
-    from calendar_integration.database_functions import GetCalendarGroupQuotaPeriodCountsJSON
-    from calendar_integration.services import slot_engine
-
     seed_instants = [
         _utc(2025, 9, 3, 9),  # mid-week Wednesday
         _utc(2025, 9, 7, 23, 30),  # Sunday, near midnight
