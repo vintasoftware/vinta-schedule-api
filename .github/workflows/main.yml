@@ -1,15 +1,55 @@
 name: main
 on: [push]
 
+# Declared once for the whole workflow: every job inherits these, and a job- or
+# step-level `env:` still overrides. All of it is fake credentials that only need to
+# be non-empty and well-formed, so there is nothing job-specific to vary.
+# `DJANGO_SETTINGS_MODULE` is the one value that genuinely differs (test vs
+# production), so it is set per job / per step below and deliberately absent here.
+env:
+  PYTHON_VERSION: "3.13"
+  UV_VERSION: "0.11.18"
+  SECRET_KEY: "ci-secret-key-not-for-production-use-only-0123456789"
+  DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/vinta_schedule_test"
+  REDIS_URL: "redis://localhost:6379"
+  CORS_ALLOWED_ORIGINS: "https://example.com"
+  ALLOWED_HOSTS: ".example.com"
+  SMTP_HOST: 'example.com'
+  SMTP_USERNAME: "test"
+  SMTP_PASSWORD: "test"
+  SITE_DOMAIN: 'example.com'
+  API_DOMAIN: 'api.example.com'
+  DEFAULT_BCC_EMAILS: 'hugo@example.com'
+  AWS_STATIC_BUCKET_NAME: 'example-static'
+  AWS_ACCESS_KEY_ID: 'test'
+  AWS_SECRET_ACCESS_KEY: 'test'
+  AWS_S3_ACCESS_KEY_ID: 'test'
+  AWS_S3_SECRET_ACCESS_KEY: 'test'
+  AWS_MEDIA_BUCKET_NAME: 'example-media'
+  AWS_MEDIA_LOCATION: 'media'
+  AWS_MEDIA_S3_CUSTOM_DOMAIN: 'example.com'
+  AWS_MEDIA_S3_ENDPOINT_URL: 'https://example.com'
+  AWS_S3_REGION_NAME: 'us-east-1'
+  AWS_CLOUDFRONT_KEY_ID: 'test'
+  AWS_CLOUDFRONT_KEY: 'test'
+  SALT_KEY: 'test_salt_key_123'
+  TWILIO_ACCOUNT_SID: 'FAKE_ACCOUNT_SID'
+  TWILIO_API_KEY_SID: 'FAKE_API_KEY_SID'
+  TWILIO_API_KEY_SECRET: 'FAKE_API_KEY_SECRET'
+  TWILIO_NUMBER: '+12345678901'
+  TWILIO_DEFAULT_BROADCAST_NUMBERS: '+12345678901,+10987654321'
+  ACCOUNT_PHONE_VERIFICATION_ENABLED: 'false'
+  MERCADOPAGO_ACCESS_TOKEN: 'FAKE_MERCADOPAGO_ACCESS_TOKEN_FOR_CI'
+  MERCADOPAGO_WEBHOOK_SECRET: 'FAKE_WEBHOOK_SECRET_FOR_CI'
+  MERCADOPAGO_PUBLIC_KEY: 'FAKE_MERCADOPAGO_PUBLIC_KEY_FOR_CI'
+  STRIPE_SECRET_KEY: 'FAKE_STRIPE_SECRET_KEY_FOR_CI'
+  STRIPE_WEBHOOK_SECRET: 'FAKE_STRIPE_WEBHOOK_SECRET_FOR_CI'
+  STRIPE_PUBLISHABLE_KEY: 'FAKE_STRIPE_PUBLISHABLE_KEY_FOR_CI'
+  DEFAULT_PAYMENT_PROVIDER: 'stripe'
+
 jobs:
-  build:
-    name: Build vinta_schedule_api
-    strategy:
-      matrix:
-        python: [3.13]
-    env:
-      DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/vinta_schedule_test"
-      REDIS_URL: "redis://localhost:6379"
+  checks:
+    name: Lint and Django checks
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -37,113 +77,26 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      - name: Store branch and latest SHA
-        run: |
-          echo "##[set-output name=branch;]$(echo ${GITHUB_REF#refs/heads/})"
-          echo "::set-output name=sha_short::$(git rev-parse --short HEAD)"
-        id: git
-      - name: Setup Python ${{ matrix.python }}
+      - name: Setup Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python }}
+          python-version: ${{ env.PYTHON_VERSION }}
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
-          version: "0.11.18"
+          version: ${{ env.UV_VERSION }}
           enable-cache: true
-      - run: curl -s https://packagecloud.io/install/repositories/github/git-lfs/script.deb.sh | sudo bash
-      - run: sudo apt-get install git-lfs --upgrade
-      - name: Install PostgreSQL client
-        run: sudo apt-get update && sudo apt-get install -y postgresql-client
       - run: uv sync --frozen
-      - name: Generate secret key
-        run: echo '::set-output name=SECRET_KEY::`python -c "import uuid; print(uuid.uuid4().hex + uuid.uuid4().hex)"`'
-        id: secret_id_generator
       - name: Linting
         run: uv run ruff check ./
         env:
           DJANGO_SETTINGS_MODULE: "vinta_schedule_api.settings.test"
-          SECRET_KEY: ${{ steps.secret_id_generator.outputs.SECRET_KEY }}
-          DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/vinta_schedule_test"
-          CORS_ALLOWED_ORIGINS: "https://example.com"
-          ALLOWED_HOSTS: ".example.com"
-          SMTP_HOST: 'example.com'
-          SMTP_USERNAME: "test"
-          SMTP_PASSWORD: "test"
-          REDIS_URL: "redis://localhost:6379"
-          SITE_DOMAIN: 'example.com'
-          API_DOMAIN: 'api.example.com'
-          DEFAULT_BCC_EMAILS: 'hugo@example.com'
-          AWS_STATIC_BUCKET_NAME: 'example-static'
-          AWS_ACCESS_KEY_ID: 'test'
-          AWS_SECRET_ACCESS_KEY: 'test'
-          AWS_S3_ACCESS_KEY_ID: 'test'
-          AWS_S3_SECRET_ACCESS_KEY: 'test'
-          AWS_MEDIA_BUCKET_NAME: 'example-media'
-          AWS_MEDIA_LOCATION: 'media'
-          AWS_MEDIA_S3_CUSTOM_DOMAIN: 'example.com'
-          AWS_MEDIA_S3_ENDPOINT_URL: 'https://example.com'
-          AWS_S3_REGION_NAME: 'us-east-1'
-          AWS_CLOUDFRONT_KEY_ID: 'test'
-          AWS_CLOUDFRONT_KEY: 'test'
-          SALT_KEY: 'test_salt_key_123'
-          TWILIO_ACCOUNT_SID: 'FAKE_ACCOUNT_SID'
-          TWILIO_API_KEY_SID: 'FAKE_API_KEY_SID'
-          TWILIO_API_KEY_SECRET: 'FAKE_API_KEY_SECRET'
-          TWILIO_NUMBER: '+12345678901'
-          TWILIO_DEFAULT_BROADCAST_NUMBERS: '+12345678901,+10987654321'
-          ACCOUNT_PHONE_VERIFICATION_ENABLED: 'false'
-          MERCADOPAGO_ACCESS_TOKEN: 'FAKE_MERCADOPAGO_ACCESS_TOKEN_FOR_CI'
-          MERCADOPAGO_WEBHOOK_SECRET: 'FAKE_WEBHOOK_SECRET_FOR_CI'
-          MERCADOPAGO_PUBLIC_KEY: 'FAKE_MERCADOPAGO_PUBLIC_KEY_FOR_CI'
-          STRIPE_SECRET_KEY: 'FAKE_STRIPE_SECRET_KEY_FOR_CI'
-          STRIPE_WEBHOOK_SECRET: 'FAKE_STRIPE_WEBHOOK_SECRET_FOR_CI'
-          STRIPE_PUBLISHABLE_KEY: 'FAKE_STRIPE_PUBLISHABLE_KEY_FOR_CI'
-          DEFAULT_PAYMENT_PROVIDER: 'stripe'
-
       - run: uv run pre-commit run --all-files
         env:
           SKIP: ruff,eslint,missing-migrations,backend-schema,backend-auth-schema,check-event-guarded-surfaces,check-legacy-membership-resolution
       - run: uv run python manage.py export_allauth_schema --check
         env:
           DJANGO_SETTINGS_MODULE: "vinta_schedule_api.settings.production"
-          SECRET_KEY: ${{ steps.secret_id_generator.outputs.SECRET_KEY }}
-          DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/vinta_schedule_test"
-          CORS_ALLOWED_ORIGINS: "https://example.com"
-          ALLOWED_HOSTS: ".example.org"
-          SMTP_HOST: 'example.org'
-          SMTP_USERNAME: "test"
-          SMTP_PASSWORD: "test"
-          REDIS_URL: "redis://localhost:6379"
-          SITE_DOMAIN: 'example.com'
-          API_DOMAIN: 'api.example.com'
-          DEFAULT_BCC_EMAILS: 'hugo@example.com'
-          AWS_STATIC_BUCKET_NAME: 'example-static'
-          AWS_ACCESS_KEY_ID: 'test'
-          AWS_SECRET_ACCESS_KEY: 'test'
-          AWS_S3_ACCESS_KEY_ID: 'test'
-          AWS_S3_SECRET_ACCESS_KEY: 'test'
-          AWS_MEDIA_BUCKET_NAME: 'example-media'
-          AWS_MEDIA_LOCATION: 'media'
-          AWS_MEDIA_S3_CUSTOM_DOMAIN: 'example.com'
-          AWS_MEDIA_S3_ENDPOINT_URL: 'https://example.com'
-          AWS_S3_REGION_NAME: 'us-east-1'
-          AWS_CLOUDFRONT_KEY_ID: 'test'
-          AWS_CLOUDFRONT_KEY: 'test'
-          SALT_KEY: 'test_salt_key_123'
-          TWILIO_ACCOUNT_SID: 'FAKE_ACCOUNT_SID'
-          TWILIO_API_KEY_SID: 'FAKE_API_KEY_SID'
-          TWILIO_API_KEY_SECRET: 'FAKE_API_KEY_SECRET'
-          TWILIO_NUMBER: '+12345678901'
-          TWILIO_DEFAULT_BROADCAST_NUMBERS: '+12345678901,+10987654321'
-          ACCOUNT_PHONE_VERIFICATION_ENABLED: 'false'
-          MERCADOPAGO_ACCESS_TOKEN: 'FAKE_MERCADOPAGO_ACCESS_TOKEN_FOR_CI'
-          MERCADOPAGO_WEBHOOK_SECRET: 'FAKE_WEBHOOK_SECRET_FOR_CI'
-          MERCADOPAGO_PUBLIC_KEY: 'FAKE_MERCADOPAGO_PUBLIC_KEY_FOR_CI'
-          STRIPE_SECRET_KEY: 'FAKE_STRIPE_SECRET_KEY_FOR_CI'
-          STRIPE_WEBHOOK_SECRET: 'FAKE_STRIPE_WEBHOOK_SECRET_FOR_CI'
-          STRIPE_PUBLISHABLE_KEY: 'FAKE_STRIPE_PUBLISHABLE_KEY_FOR_CI'
-          DEFAULT_PAYMENT_PROVIDER: 'stripe'
       # `spectacular` has no `--check`, so the gate is regenerate-and-diff.
       # `schema.yml` is committed and read directly by
       # `organizations/tests/test_membership_api_surface.py`, which asks it whether any
@@ -157,249 +110,92 @@ jobs:
             || { echo '::error::schema.yml is stale. Run: python manage.py spectacular --file schema.yml'; exit 1; }
         env:
           DJANGO_SETTINGS_MODULE: "vinta_schedule_api.settings.test"
-          SECRET_KEY: ${{ steps.secret_id_generator.outputs.SECRET_KEY }}
-          DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/vinta_schedule_test"
-          CORS_ALLOWED_ORIGINS: "https://example.com"
-          ALLOWED_HOSTS: ".example.org"
-          SMTP_HOST: 'example.org'
-          SMTP_USERNAME: "test"
-          SMTP_PASSWORD: "test"
-          REDIS_URL: "redis://localhost:6379"
-          SITE_DOMAIN: 'example.com'
-          API_DOMAIN: 'api.example.com'
-          DEFAULT_BCC_EMAILS: 'hugo@example.com'
-          AWS_STATIC_BUCKET_NAME: 'example-static'
-          AWS_ACCESS_KEY_ID: 'test'
-          AWS_SECRET_ACCESS_KEY: 'test'
-          AWS_S3_ACCESS_KEY_ID: 'test'
-          AWS_S3_SECRET_ACCESS_KEY: 'test'
-          AWS_MEDIA_BUCKET_NAME: 'example-media'
-          AWS_MEDIA_LOCATION: 'media'
-          AWS_MEDIA_S3_CUSTOM_DOMAIN: 'example.com'
-          AWS_MEDIA_S3_ENDPOINT_URL: 'https://example.com'
-          AWS_S3_REGION_NAME: 'us-east-1'
-          AWS_CLOUDFRONT_KEY_ID: 'test'
-          AWS_CLOUDFRONT_KEY: 'test'
-          SALT_KEY: 'test_salt_key_123'
-          TWILIO_ACCOUNT_SID: 'FAKE_ACCOUNT_SID'
-          TWILIO_API_KEY_SID: 'FAKE_API_KEY_SID'
-          TWILIO_API_KEY_SECRET: 'FAKE_API_KEY_SECRET'
-          TWILIO_NUMBER: '+12345678901'
-          TWILIO_DEFAULT_BROADCAST_NUMBERS: '+12345678901,+10987654321'
-          ACCOUNT_PHONE_VERIFICATION_ENABLED: 'false'
-          MERCADOPAGO_ACCESS_TOKEN: 'FAKE_MERCADOPAGO_ACCESS_TOKEN_FOR_CI'
-          MERCADOPAGO_WEBHOOK_SECRET: 'FAKE_WEBHOOK_SECRET_FOR_CI'
-          MERCADOPAGO_PUBLIC_KEY: 'FAKE_MERCADOPAGO_PUBLIC_KEY_FOR_CI'
-          STRIPE_SECRET_KEY: 'FAKE_STRIPE_SECRET_KEY_FOR_CI'
-          STRIPE_WEBHOOK_SECRET: 'FAKE_STRIPE_WEBHOOK_SECRET_FOR_CI'
-          STRIPE_PUBLISHABLE_KEY: 'FAKE_STRIPE_PUBLISHABLE_KEY_FOR_CI'
-          DEFAULT_PAYMENT_PROVIDER: 'stripe'
       - run: uv run python manage.py makemigrations --check --dry-run
         env:
           DJANGO_SETTINGS_MODULE: "vinta_schedule_api.settings.production"
-          SECRET_KEY: ${{ steps.secret_id_generator.outputs.SECRET_KEY }}
-          DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/vinta_schedule_test"
-          CORS_ALLOWED_ORIGINS: "https://example.com"
-          ALLOWED_HOSTS: ".example.org"
-          SMTP_HOST: 'example.org'
-          SMTP_USERNAME: "test"
-          SMTP_PASSWORD: "test"
-          REDIS_URL: "redis://localhost:6379"
-          SITE_DOMAIN: 'example.com'
-          API_DOMAIN: 'api.example.com'
-          DEFAULT_BCC_EMAILS: 'hugo@example.com'
-          AWS_STATIC_BUCKET_NAME: 'example-static'
-          AWS_ACCESS_KEY_ID: 'test'
-          AWS_SECRET_ACCESS_KEY: 'test'
-          AWS_S3_ACCESS_KEY_ID: 'test'
-          AWS_S3_SECRET_ACCESS_KEY: 'test'
-          AWS_MEDIA_BUCKET_NAME: 'example-media'
-          AWS_MEDIA_LOCATION: 'media'
-          AWS_MEDIA_S3_CUSTOM_DOMAIN: 'example.com'
-          AWS_MEDIA_S3_ENDPOINT_URL: 'https://example.com'
-          AWS_S3_REGION_NAME: 'us-east-1'
-          AWS_CLOUDFRONT_KEY_ID: 'test'
-          AWS_CLOUDFRONT_KEY: 'test'
-          SALT_KEY: 'test_salt_key_123'
-          TWILIO_ACCOUNT_SID: 'FAKE_ACCOUNT_SID'
-          TWILIO_API_KEY_SID: 'FAKE_API_KEY_SID'
-          TWILIO_API_KEY_SECRET: 'FAKE_API_KEY_SECRET'
-          TWILIO_NUMBER: '+12345678901'
-          TWILIO_DEFAULT_BROADCAST_NUMBERS: '+12345678901,+10987654321'
-          ACCOUNT_PHONE_VERIFICATION_ENABLED: 'false'
-          MERCADOPAGO_ACCESS_TOKEN: 'FAKE_MERCADOPAGO_ACCESS_TOKEN_FOR_CI'
-          MERCADOPAGO_WEBHOOK_SECRET: 'FAKE_WEBHOOK_SECRET_FOR_CI'
-          MERCADOPAGO_PUBLIC_KEY: 'FAKE_MERCADOPAGO_PUBLIC_KEY_FOR_CI'
-          STRIPE_SECRET_KEY: 'FAKE_STRIPE_SECRET_KEY_FOR_CI'
-          STRIPE_WEBHOOK_SECRET: 'FAKE_STRIPE_WEBHOOK_SECRET_FOR_CI'
-          STRIPE_PUBLISHABLE_KEY: 'FAKE_STRIPE_PUBLISHABLE_KEY_FOR_CI'
-          DEFAULT_PAYMENT_PROVIDER: 'stripe'
       - run: uv run python manage.py check --deploy
         env:
           DJANGO_SETTINGS_MODULE: "vinta_schedule_api.settings.production"
-          SECRET_KEY: ${{ steps.secret_id_generator.outputs.SECRET_KEY }}
-          DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/vinta_schedule_test"
-          CORS_ALLOWED_ORIGINS: "https://example.com"
-          ALLOWED_HOSTS: ".example.org"
-          SMTP_HOST: 'example.org'
-          SMTP_USERNAME: "test"
-          SMTP_PASSWORD: "test"
-          REDIS_URL: "redis://localhost:6379"
-          SITE_DOMAIN: 'example.com'
-          API_DOMAIN: 'api.example.com'
-          DEFAULT_BCC_EMAILS: 'hugo@example.com'
-          AWS_STATIC_BUCKET_NAME: 'example-static'
-          AWS_ACCESS_KEY_ID: 'test'
-          AWS_SECRET_ACCESS_KEY: 'test'
-          AWS_S3_ACCESS_KEY_ID: 'test'
-          AWS_S3_SECRET_ACCESS_KEY: 'test'
-          AWS_MEDIA_BUCKET_NAME: 'example-media'
-          AWS_MEDIA_LOCATION: 'media'
-          AWS_MEDIA_S3_CUSTOM_DOMAIN: 'example.com'
-          AWS_MEDIA_S3_ENDPOINT_URL: 'https://example.com'
-          AWS_S3_REGION_NAME: 'us-east-1'
-          AWS_CLOUDFRONT_KEY_ID: 'test'
-          AWS_CLOUDFRONT_KEY: 'test'
-          SALT_KEY: 'test_salt_key_123'
-          TWILIO_ACCOUNT_SID: 'FAKE_ACCOUNT_SID'
-          TWILIO_API_KEY_SID: 'FAKE_API_KEY_SID'
-          TWILIO_API_KEY_SECRET: 'FAKE_API_KEY_SECRET'
-          TWILIO_NUMBER: '+12345678901'
-          TWILIO_DEFAULT_BROADCAST_NUMBERS: '+12345678901,+10987654321'
-          ACCOUNT_PHONE_VERIFICATION_ENABLED: 'false'
-          MERCADOPAGO_ACCESS_TOKEN: 'FAKE_MERCADOPAGO_ACCESS_TOKEN_FOR_CI'
-          MERCADOPAGO_WEBHOOK_SECRET: 'FAKE_WEBHOOK_SECRET_FOR_CI'
-          MERCADOPAGO_PUBLIC_KEY: 'FAKE_MERCADOPAGO_PUBLIC_KEY_FOR_CI'
-          STRIPE_SECRET_KEY: 'FAKE_STRIPE_SECRET_KEY_FOR_CI'
-          STRIPE_WEBHOOK_SECRET: 'FAKE_STRIPE_WEBHOOK_SECRET_FOR_CI'
-          STRIPE_PUBLISHABLE_KEY: 'FAKE_STRIPE_PUBLISHABLE_KEY_FOR_CI'
-          DEFAULT_PAYMENT_PROVIDER: 'stripe'
       - run: uv run python manage.py check_event_guarded_surfaces
         env:
           DJANGO_SETTINGS_MODULE: "vinta_schedule_api.settings.production"
-          SECRET_KEY: ${{ steps.secret_id_generator.outputs.SECRET_KEY }}
-          DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/vinta_schedule_test"
-          CORS_ALLOWED_ORIGINS: "https://example.com"
-          ALLOWED_HOSTS: ".example.org"
-          SMTP_HOST: 'example.org'
-          SMTP_USERNAME: "test"
-          SMTP_PASSWORD: "test"
-          REDIS_URL: "redis://localhost:6379"
-          SITE_DOMAIN: 'example.com'
-          API_DOMAIN: 'api.example.com'
-          DEFAULT_BCC_EMAILS: 'hugo@example.com'
-          AWS_STATIC_BUCKET_NAME: 'example-static'
-          AWS_ACCESS_KEY_ID: 'test'
-          AWS_SECRET_ACCESS_KEY: 'test'
-          AWS_S3_ACCESS_KEY_ID: 'test'
-          AWS_S3_SECRET_ACCESS_KEY: 'test'
-          AWS_MEDIA_BUCKET_NAME: 'example-media'
-          AWS_MEDIA_LOCATION: 'media'
-          AWS_MEDIA_S3_CUSTOM_DOMAIN: 'example.com'
-          AWS_MEDIA_S3_ENDPOINT_URL: 'https://example.com'
-          AWS_S3_REGION_NAME: 'us-east-1'
-          AWS_CLOUDFRONT_KEY_ID: 'test'
-          AWS_CLOUDFRONT_KEY: 'test'
-          SALT_KEY: 'test_salt_key_123'
-          TWILIO_ACCOUNT_SID: 'FAKE_ACCOUNT_SID'
-          TWILIO_API_KEY_SID: 'FAKE_API_KEY_SID'
-          TWILIO_API_KEY_SECRET: 'FAKE_API_KEY_SECRET'
-          TWILIO_NUMBER: '+12345678901'
-          TWILIO_DEFAULT_BROADCAST_NUMBERS: '+12345678901,+10987654321'
-          ACCOUNT_PHONE_VERIFICATION_ENABLED: 'false'
-          MERCADOPAGO_ACCESS_TOKEN: 'FAKE_MERCADOPAGO_ACCESS_TOKEN_FOR_CI'
-          MERCADOPAGO_WEBHOOK_SECRET: 'FAKE_WEBHOOK_SECRET_FOR_CI'
-          MERCADOPAGO_PUBLIC_KEY: 'FAKE_MERCADOPAGO_PUBLIC_KEY_FOR_CI'
-          STRIPE_SECRET_KEY: 'FAKE_STRIPE_SECRET_KEY_FOR_CI'
-          STRIPE_WEBHOOK_SECRET: 'FAKE_STRIPE_WEBHOOK_SECRET_FOR_CI'
-          STRIPE_PUBLISHABLE_KEY: 'FAKE_STRIPE_PUBLISHABLE_KEY_FOR_CI'
-          DEFAULT_PAYMENT_PROVIDER: 'stripe'
       - run: uv run python manage.py check_legacy_membership_resolution
         env:
           DJANGO_SETTINGS_MODULE: "vinta_schedule_api.settings.test"
-          SECRET_KEY: ${{ steps.secret_id_generator.outputs.SECRET_KEY }}
-          DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/vinta_schedule_test"
-          CORS_ALLOWED_ORIGINS: "https://example.com"
-          ALLOWED_HOSTS: ".example.org"
-          SMTP_HOST: 'example.org'
-          SMTP_USERNAME: "test"
-          SMTP_PASSWORD: "test"
-          REDIS_URL: "redis://localhost:6379"
-          SITE_DOMAIN: 'example.com'
-          API_DOMAIN: 'api.example.com'
-          DEFAULT_BCC_EMAILS: 'hugo@example.com'
-          AWS_STATIC_BUCKET_NAME: 'example-static'
-          AWS_ACCESS_KEY_ID: 'test'
-          AWS_SECRET_ACCESS_KEY: 'test'
-          AWS_S3_ACCESS_KEY_ID: 'test'
-          AWS_S3_SECRET_ACCESS_KEY: 'test'
-          AWS_MEDIA_BUCKET_NAME: 'example-media'
-          AWS_MEDIA_LOCATION: 'media'
-          AWS_MEDIA_S3_CUSTOM_DOMAIN: 'example.com'
-          AWS_MEDIA_S3_ENDPOINT_URL: 'https://example.com'
-          AWS_S3_REGION_NAME: 'us-east-1'
-          AWS_CLOUDFRONT_KEY_ID: 'test'
-          AWS_CLOUDFRONT_KEY: 'test'
-          SALT_KEY: 'test_salt_key_123'
-          TWILIO_ACCOUNT_SID: 'FAKE_ACCOUNT_SID'
-          TWILIO_API_KEY_SID: 'FAKE_API_KEY_SID'
-          TWILIO_API_KEY_SECRET: 'FAKE_API_KEY_SECRET'
-          TWILIO_NUMBER: '+12345678901'
-          TWILIO_DEFAULT_BROADCAST_NUMBERS: '+12345678901,+10987654321'
-          ACCOUNT_PHONE_VERIFICATION_ENABLED: 'false'
-          MERCADOPAGO_ACCESS_TOKEN: 'FAKE_MERCADOPAGO_ACCESS_TOKEN_FOR_CI'
-          MERCADOPAGO_WEBHOOK_SECRET: 'FAKE_WEBHOOK_SECRET_FOR_CI'
-          MERCADOPAGO_PUBLIC_KEY: 'FAKE_MERCADOPAGO_PUBLIC_KEY_FOR_CI'
-          STRIPE_SECRET_KEY: 'FAKE_STRIPE_SECRET_KEY_FOR_CI'
-          STRIPE_WEBHOOK_SECRET: 'FAKE_STRIPE_WEBHOOK_SECRET_FOR_CI'
-          STRIPE_PUBLISHABLE_KEY: 'FAKE_STRIPE_PUBLISHABLE_KEY_FOR_CI'
-          DEFAULT_PAYMENT_PROVIDER: 'stripe'
-      - run: |
-          uv run pytest $(ARG) -vs  -n auto --no-header --cov=. --cov-report=xml:junit/test-results.xml --junitxml=junit.xml -o junit_family=legacy
-        env:
-          DJANGO_SETTINGS_MODULE: "vinta_schedule_api.settings.test"
-          SECRET_KEY: ${{ steps.secret_id_generator.outputs.SECRET_KEY }}
-          DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/vinta_schedule_test"
-          CORS_ALLOWED_ORIGINS: "https://example.com"
-          ALLOWED_HOSTS: ".example.com"
-          SMTP_HOST: 'example.com'
-          SMTP_USERNAME: "test"
-          SMTP_PASSWORD: "test"
-          REDIS_URL: "redis://localhost:6379"
-          SITE_DOMAIN: 'example.com'
-          API_DOMAIN: 'api.example.com'
-          DEFAULT_BCC_EMAILS: 'hugo@example.com'
-          AWS_STATIC_BUCKET_NAME: 'example-static'
-          AWS_ACCESS_KEY_ID: 'test'
-          AWS_SECRET_ACCESS_KEY: 'test'
-          AWS_S3_ACCESS_KEY_ID: 'test'
-          AWS_S3_SECRET_ACCESS_KEY: 'test'
-          AWS_MEDIA_BUCKET_NAME: 'example-media'
-          AWS_MEDIA_LOCATION: 'media'
-          AWS_MEDIA_S3_CUSTOM_DOMAIN: 'example.com'
-          AWS_MEDIA_S3_ENDPOINT_URL: 'https://example.com'
-          AWS_S3_REGION_NAME: 'us-east-1'
-          AWS_CLOUDFRONT_KEY_ID: 'test'
-          AWS_CLOUDFRONT_KEY: 'test'
-          SALT_KEY: 'test_salt_key_123'
-          TWILIO_ACCOUNT_SID: 'FAKE_ACCOUNT_SID'
-          TWILIO_API_KEY_SID: 'FAKE_API_KEY_SID'
-          TWILIO_API_KEY_SECRET: 'FAKE_API_KEY_SECRET'
-          TWILIO_NUMBER: '+12345678901'
-          TWILIO_DEFAULT_BROADCAST_NUMBERS: '+12345678901,+10987654321'
-          ACCOUNT_PHONE_VERIFICATION_ENABLED: 'false'
-          MERCADOPAGO_ACCESS_TOKEN: 'FAKE_MERCADOPAGO_ACCESS_TOKEN_FOR_CI'
-          MERCADOPAGO_WEBHOOK_SECRET: 'FAKE_WEBHOOK_SECRET_FOR_CI'
-          MERCADOPAGO_PUBLIC_KEY: 'FAKE_MERCADOPAGO_PUBLIC_KEY_FOR_CI'
-          STRIPE_SECRET_KEY: 'FAKE_STRIPE_SECRET_KEY_FOR_CI'
-          STRIPE_WEBHOOK_SECRET: 'FAKE_STRIPE_WEBHOOK_SECRET_FOR_CI'
-          STRIPE_PUBLISHABLE_KEY: 'FAKE_STRIPE_PUBLISHABLE_KEY_FOR_CI'
-          DEFAULT_PAYMENT_PROVIDER: 'stripe'
 
+  test:
+    name: Tests (shard ${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    strategy:
+      # Each shard is an independent slice of the suite; one failing slice should
+      # not hide the failures in the others.
+      fail-fast: false
+      matrix:
+        # Keep `shard` the only dimension: `--splits` below reads
+        # `strategy.job-total`, which counts *all* matrix combinations.
+        shard: [1, 2, 3, 4]
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_DB: vinta_schedule_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    # Every step here runs under the test settings, unlike the `checks` job where the
+    # module varies per step -- so this one override lives at the job level.
+    env:
+      DJANGO_SETTINGS_MODULE: "vinta_schedule_api.settings.test"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Setup Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: uv sync --frozen
+      # `pytest-split` assigns each test to exactly one shard, so the four shards
+      # together run the whole suite -- adding an app or a test file needs no change
+      # here. With no `.test_durations` file committed it splits by test count, which
+      # measured within ~13% of a duration-balanced split (worst shard 99s vs 88s of
+      # a 350s suite) -- not worth the 900KB generated file that duration balancing
+      # would need. If the shards ever drift far apart, re-measure with
+      # `uv run pytest --store-durations --clean-durations --no-cov` (single process;
+      # the flag does not work under `-n auto`) and commit `.test_durations`.
+      # `-n auto` still parallelizes *within* a shard across the runner's cores.
+      - name: Run tests (shard ${{ matrix.shard }} of ${{ strategy.job-total }})
+        run: |
+          uv run pytest -vs --no-header -n auto \
+            --splits ${{ strategy.job-total }} --group ${{ matrix.shard }} \
+            --cov=. --cov-report=xml:junit/test-results.xml \
+            --junitxml=junit.xml -o junit_family=legacy
+
+      # Each shard covers only the code its own slice exercised; Codecov merges the
+      # four partial reports for the commit. Artifact names must be unique per shard.
       - name: Archive code coverage results
         uses: actions/upload-artifact@v4
         with:
-          name: code-coverage-report
+          name: code-coverage-report-shard-${{ matrix.shard }}
           path: junit/test-results.xml
 
       - name: Upload coverage to Codecov
@@ -409,7 +205,7 @@ jobs:
           fail_ci_if_error: true
           files: ./junit/test-results.xml
           flags: unittests
-          name: codecov-umbrella
+          name: codecov-shard-${{ matrix.shard }}
           token: ${{ secrets.CODECOV_TOKEN }}
           verbose: true
         env:
@@ -425,7 +221,7 @@ jobs:
 
   deploy-staging:
     name: Deploy staging (Render)
-    needs: build
+    needs: [checks, test]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:

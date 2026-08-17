@@ -167,6 +167,7 @@ Custom DB-defined code is versioned via the framework in `common/raw_sql_migrati
 - **Fixtures:** pytest fixtures in `conftest.py` (root + per-app). Available globally: `user`, `user_password`, `auth_client`, `anonymous_client`, `di_container`.
 - **Factories:** `<app>/factories.py` (e.g. `users/factories.py`, `calendar_integration/factories.py`); use `model_bakery` for ad-hoc objects.
 - **Parallelism:** `pytest -n auto` is the default. The `--reuse-db` variants (`make test`, `make test_seq`) skip rebuild for speed.
+- **CI sharding:** CI splits the suite across four runners with `pytest-split` (`--splits 4 --group N`, see `.github/workflows/main.yml`), each still running `-n auto` internally. Every test lands in exactly one shard, so new tests need no wiring. No `.test_durations` file is committed — splitting by test count measured within ~13% of duration-balanced here, and the durations file is 900KB. Re-measure with `uv run pytest --store-durations --clean-durations --no-cov` (single process — the flag does not work under `-n auto`) if the shards ever drift apart.
 - **Coverage:** `pytest --cov=. --cov-report=html:junit/test-results.html` (see `pytest.ini`). CI uploads to Codecov.
 - Write unit, integration, and functional tests for new code.
 
