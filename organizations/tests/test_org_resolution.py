@@ -69,7 +69,7 @@ def _make_membership(
     testing owner-scoping: the ownership rows they seed become dead setup and
     the cross-org exclusion they assert falls out of organization scoping alone,
     with no assertion changing. (That is exactly what happened when this
-    parameter was briefly deleted in Phase 6.)
+    parameter was briefly deleted.)
     """
     return grant_membership_groups(
         OrganizationMembership.objects.create(
@@ -780,11 +780,12 @@ class TestNonMemberOrgHeaderOptOut:
 class TestADeactivatedAdminIsRefusedThroughTheRealStack:
     """Deactivating an admin actually revokes their access, end to end.
 
-    Phase 3.5's Tests item 3, asserted the way that item asks for it: a real
-    request, a real routed admin-gated endpoint (``GET /organization-members/``,
+    Exercised end to end deliberately, not as a unit test of the backend and not
+    through a probe view: a real request, a real routed admin-gated endpoint
+    (``GET /organization-members/``,
     ``OrganizationMembershipViewSet``, ``permission_classes =
     (IsOrganizationAdmin,)``), the caller's own organization named in
-    ``X-Organization-Id``. Not a unit test of the backend, and not a probe view.
+    ``X-Organization-Id``.
 
     **Which gate answers, exactly.** The 403 below comes from the *resolver* --
     the package's membership queryset filters
@@ -794,11 +795,10 @@ class TestADeactivatedAdminIsRefusedThroughTheRealStack:
     consulted. It does **not** come from the package's ``OrganizationModelBackend
     ._get_membership``, the other place ``0.3.0`` put an ``is_active`` filter:
     nothing in this repository calls ``user.has_perm(...)`` for authorization
-    yet, so that filter is unreachable from any real request until Phase 4
-    migrates the permission classes onto ``has_perm``. Covering it through our
-    stack is recorded as a Phase 4 obligation in
-    ``ai-plans/TRACKING_VINTA_DJANGO_ORGS_MIGRATION.md``;
-    ``organizations/tests/test_permission_backend.py`` unit-tests it meanwhile.
+    yet, so that filter is unreachable from any real request until the
+    permission classes migrate onto ``has_perm``.
+    ``organizations/tests/test_permission_backend.py`` unit-tests that path
+    directly in the meantime.
 
     Both tests below move exactly one field and assert the status code follows,
     so neither can pass for a reason unrelated to the field it names.

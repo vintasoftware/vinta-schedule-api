@@ -6,7 +6,7 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-    """Phase 1 — Membership FK migration.
+    """Membership FK migration.
 
     Converts OrganizationMembership.user from OneToOneField to ForeignKey so a
     user can hold memberships in multiple organizations. Drops the implicit

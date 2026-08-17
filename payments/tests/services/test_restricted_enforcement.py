@@ -604,7 +604,7 @@ RESTRICTED_WRITE_PROBES: dict[str, WriteProbe] = {
 }
 
 
-#: Group-scoped single-write probes (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 2b).
+#: Group-scoped single-write probes.
 #: These six ``CalendarGroupService`` methods are NOT tied to a ``LimitedResource``
 #: ceiling -- they call ``_check_not_restricted()`` directly, never ``check_limit``
 #: -- so they cannot live in ``RESTRICTED_WRITE_PROBES`` (keyed exhaustively against
@@ -643,7 +643,7 @@ GUARDED_MUTATING_SERVICE_METHODS: list[tuple[type, str]] = [
     (CalendarGroupService, "delete_group"),
     (WebhookService, "update_configuration"),
     (WebhookService, "delete_configuration"),
-    # Group-scoped single-write methods (Phase 2b): none call check_limit, so
+    # Group-scoped single-write methods: none call check_limit, so
     # (unlike the base creates above) their create half is guarded the same
     # way as update/delete -- all six belong here, not just update/delete.
     (CalendarGroupService, "create_group_scoped_availability_window"),
@@ -785,7 +785,7 @@ class TestRestrictedOrganizationBlocksEveryWrite:
 @pytest.mark.django_db
 class TestRestrictedOrganizationBlocksGroupScopedWrites:
     """Sibling of ``TestRestrictedOrganizationBlocksEveryWrite`` for the six
-    group-scoped single-write ``CalendarGroupService`` methods (Phase 2b) --
+    group-scoped single-write ``CalendarGroupService`` methods --
     kept separate because they are not ``LimitedResource``-keyed (see
     ``GROUP_SCOPED_WRITE_PROBES``), but proven with the exact same shape:
     drive the real guarded method against a RESTRICTED org and assert it is

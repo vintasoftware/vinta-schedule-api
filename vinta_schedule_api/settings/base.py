@@ -95,7 +95,9 @@ ORGANIZATION_MEMBERSHIP_MODEL = "organizations.OrganizationMembership"
 SHARED_SCHEMA_ORGANIZATIONS = {
     # The one retriever we use. ``retrieve_by_domain`` (subdomain tenancy),
     # ``retrieve_by_http_header`` (``Organization-Slug``) and ``retrieve_by_session``
-    # are all deliberately omitted -- see the plan's Non-goals.
+    # are all deliberately omitted: this API resolves the organization only from
+    # the ``X-Organization-Id`` header, never by subdomain, a differently-named
+    # header, or session state.
     "ORGANIZATION_RETRIEVERS": [
         "common.org_retrievers.retrieve_by_x_organization_id",
     ],
@@ -113,8 +115,8 @@ SHARED_SCHEMA_ORGANIZATIONS = {
     # reader does not have to check.
     "ADD_ORGANIZATION_TO_SESSION": False,
     # An organization-scoped query that runs with nothing bound raises
-    # ``OrganizationNotFoundError`` rather than quietly returning no rows. Turned
-    # on in Phase 2a, together with the first models to scope implicitly: an
+    # ``OrganizationNotFoundError`` rather than quietly returning no rows. Enabled
+    # together with the first models to scope implicitly: an
     # empty result is indistinguishable from "no data yet" in a task or a
     # management command, where a missing binding is the likelier explanation,
     # and this is the whole safety argument for migrating without a feature flag.
@@ -233,8 +235,8 @@ AUTH_PASSWORD_VALIDATORS = [
 # Registered **unsubclassed**, as the package ships it -- not a repo-owned
 # subclass. Under ``0.2.0`` a deactivated membership still resolved its group
 # permissions (``_get_membership`` did not filter ``is_active``), which would
-# have forced a repo-owned subclass to close before Phase 4 could safely read
-# ``has_perm``. ``0.3.0`` fixes that at the source: ``is_active`` now lives on
+# have forced a repo-owned subclass to close before any caller could safely
+# read ``has_perm``. ``0.3.0`` fixes that at the source: ``is_active`` now lives on
 # ``AbstractOrganizationMembership`` and is filtered *inside*
 # ``OrganizationModelBackend._get_membership``, so a deactivated administrator
 # resolves exactly what a non-member resolves -- nothing. See
@@ -267,7 +269,7 @@ REST_FRAMEWORK = {
     # write actions (change-plan, add-on purchase/cancel in payments/billing_views.py)
     # — each drives a real provider round trip, so it is rate-limited rather than
     # left unbounded even behind auth. `payment-provider` covers the unauthenticated
-    # provider-credentials read endpoint (Phase 3) — cheap, no outbound provider call,
+    # provider-credentials read endpoint — cheap, no outbound provider call,
     # so a higher ceiling than the webhook scope.
     "DEFAULT_THROTTLE_RATES": {
         "payment-webhook": "60/min",
@@ -530,7 +532,7 @@ SPECTACULAR_SETTINGS = {
         # hash-suffixed name (e.g. "Provider331Enum").
         "ProviderEnum": "calendar_integration.constants.CalendarProvider.choices",
         # `legal.models.PolicyDocumentType` owns the published schema component
-        # `DocumentTypeEnum`. The new `BillingProfile.document_type` enum (Phase 2)
+        # `DocumentTypeEnum`. The new `BillingProfile.document_type` enum
         # would otherwise contest this name on a hash basis, risking a renamed
         # collision (e.g., "PolicyDocumentTypeEnum"). Pin `legal`'s existing,
         # already-published name so the legal app's client contract is not broken.
@@ -585,8 +587,7 @@ def generate_s3direct_file_name(original_file_name, dest):
 # strain storage or the unauthenticated delivery route's bandwidth.
 BRANDING_LOGO_MAX_SIZE_BYTES = 5 * 1024 * 1024
 # SVG is deliberately excluded: it can carry script and would render on our own
-# login page, making it a stored-XSS surface -- see the plan's "Logo limits"
-# guiding decision.
+# login page, making it a stored-XSS surface.
 BRANDING_LOGO_CONTENT_TYPES = ("image/png", "image/jpeg", "image/webp")
 
 
@@ -622,8 +623,7 @@ S3DIRECT_DESTINATIONS = {
         "key_args": "uploads/branding_logos",
         # Tightened from bare `is_authenticated`: the signing surface is not open
         # to every logged-in user on the platform, only to an admin of some
-        # branding-eligible organization -- see the plan's "Logo upload path"
-        # guiding decision.
+        # branding-eligible organization.
         "auth": _user_administers_branding_eligible_organization,
         # Same constraint as `profile_pictures` above: BucketOwnerEnforced rejects
         # every other canned ACL, and s3direct always sends one.
@@ -718,7 +718,7 @@ MERCADOPAGO_ACCESS_TOKEN = config("MERCADOPAGO_ACCESS_TOKEN", default="")
 MERCADOPAGO_WEBHOOK_SECRET = config("MERCADOPAGO_WEBHOOK_SECRET", default="")
 # Browser-safe public key used to initialize MercadoPago's payment form. Not a
 # secret — intentionally omitted from environment isolation. Served on unauthenticated
-# endpoints in Phase 3.
+# endpoints.
 MERCADOPAGO_PUBLIC_KEY = config("MERCADOPAGO_PUBLIC_KEY", default="")
 
 # Secret API key used to authenticate outbound calls to Stripe. No organization is
@@ -732,7 +732,7 @@ STRIPE_SECRET_KEY = config("STRIPE_SECRET_KEY", default="")
 STRIPE_WEBHOOK_SECRET = config("STRIPE_WEBHOOK_SECRET", default="")
 # Browser-safe public key used to initialize Stripe's payment form. Not a secret —
 # intentionally omitted from environment isolation. Served on unauthenticated
-# endpoints in Phase 3.
+# endpoints.
 STRIPE_PUBLISHABLE_KEY = config("STRIPE_PUBLISHABLE_KEY", default="")
 
 # System-wide default payment provider. Resolves to the organization's pinned

@@ -1,8 +1,8 @@
 """Integration tests for ``GET /billing/usage/periods/`` (list) and ``GET
 /billing/usage/periods/{id}/`` (detail) -- the closed-period statement
-endpoints ``BillingPeriodViewSet`` serves. Bundled per the plan's "Bundled
-phase granularity" decision: list and detail share a queryset, a permission,
-and a serializer tree, so both live in this one module.
+endpoints ``BillingPeriodViewSet`` serves. Bundled here because list and detail
+share a queryset, a permission, and a serializer tree, so both live in this
+one module.
 
 ``provision_default_subscription`` (root conftest, autouse) already gives every
 ``Organization`` created here a ``Subscription`` on the seeded ``unlimited``
@@ -166,8 +166,8 @@ class TestListReturnsCallersPooledStatements:
 @pytest.mark.django_db
 class TestNoActiveOrganizationIsForbidden:
     """A caller with zero active memberships gets ``403``, not ``200`` with an
-    empty list -- that ambiguity would otherwise be indistinguishable from
-    this phase's expected day-one state (an organization with no closed
+    empty list -- that ambiguity would otherwise be indistinguishable from a
+    new organization's expected day-one state (an organization with no closed
     periods yet), matching ``GET /billing/usage/``'s ``_require_organization``
     contract."""
 
@@ -347,7 +347,7 @@ class TestStatementOutsideThePoolReturns404NotForbidden:
 @pytest.mark.django_db
 class TestReconciliationFieldsAreNeverSerialized:
     """Reconciliation drift is internal investigation data, surfaced only in
-    Django admin -- an explicit Non-goal of exposing it to customers. Asserted
+    Django admin -- deliberately never exposed to customers. Asserted
     against the full serialized payload (as text), not just a field-name
     check, so a nested or renamed leak would still be caught."""
 

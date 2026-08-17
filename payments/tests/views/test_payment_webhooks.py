@@ -253,7 +253,7 @@ class TestPaymentUpdateWebhook:
     def test_webhook_resolves_off_the_payment_row_not_the_organizations_current_pin(
         self, webhook_client, mercadopago_payment_adapter, payment, billing_profile
     ):
-        """Payment Provider Selection, Phase 4, Rule A: a webhook delivery for a
+        """Rule A: a webhook delivery for a
         payment made at MercadoPago must be processed through MercadoPago even
         when the organization's *current* pin has since moved to Stripe. The
         webhook route already resolves its adapter off the `provider` URL kwarg
@@ -543,7 +543,7 @@ class TestSubscriptionPaymentUpdateWebhook:
     def test_subscription_charge_payment_row_carries_a_provider(
         self, webhook_client, mercadopago_subscription_adapter, billing_profile
     ):
-        """Payment Provider Selection, Phase 4: every recurring subscription
+        """Every recurring subscription
         charge creates a ``Payment`` row here, and that row must carry a
         provider. Stamped `""` (as it was before this fix) it is unroutable for
         the rest of its life -- ``check_payment_status``/``create_refund``
@@ -581,7 +581,7 @@ class TestSubscriptionPaymentUpdateWebhook:
     def test_approved_charge_pins_the_subscriptions_own_provider_not_a_hardcoded_one(
         self, webhook_client, mercadopago_subscription_adapter, billing_profile
     ):
-        """Payment Provider Selection, Phase 4 (the BLOCKER-4 regression): the pin
+        """The BLOCKER-4 regression: the pin
         written on an organization's first confirmed subscription charge comes
         from ``Subscription.payment_provider``, which
         ``create_subscription_for_organization`` now resolves from the
@@ -654,7 +654,7 @@ class TestSubscriptionPaymentUpdateWebhook:
 
 @pytest.mark.django_db
 class TestZeroAmountSubscriptionPaymentDoesNotResolveDunning:
-    """Billing API Contract Hardening, Phase 4's zero-amount guard.
+    """The zero-amount guard on subscription payments.
 
     Driven through the real inbound webhook path -- signature verification,
     ``ProviderWebhookEvent`` idempotency, ``PaymentsViewSet
@@ -662,7 +662,7 @@ class TestZeroAmountSubscriptionPaymentDoesNotResolveDunning:
     ``DunningService.resolve_payment_success`` (or the guard) directly. Calling
     the guard directly would only prove the guard's own logic is correct, not
     that it actually sits on the path a real webhook delivery takes; the
-    defect this phase closes (a $0.00 proration invoice's `invoice.paid`
+    defect this guard closes (a $0.00 proration invoice's `invoice.paid`
     reaching `resolve_payment_success` on Stripe -- see
     ``SubscriptionService.retry_payment``'s docstring for the probe numbers)
     is specifically about what happens *at that path*.
@@ -737,7 +737,7 @@ class TestZeroAmountSubscriptionPaymentDoesNotResolveDunning:
     def test_zero_amount_approved_payment_leaves_grace_subscription_in_grace(
         self, webhook_client, mercadopago_subscription_adapter, billing_profile
     ):
-        """The regression this phase closes: a $0 approved subscription
+        """The regression this guard closes: a $0 approved subscription
         payment (e.g. an offsetting-proration invoice) must never flip a
         GRACE subscription to ACTIVE -- that would be a false recovery, the
         payer marked healthy with the real balance still uncollected.
@@ -801,7 +801,7 @@ class TestZeroAmountSubscriptionPaymentDoesNotResolveDunning:
 
 @pytest.mark.django_db
 class TestStripeInvoicePaidResolvesOffTheEventsOwnInvoice:
-    """Billing API Contract Hardening, Phase 4 reviewer finding BLOCKER 1.
+    """Reviewer finding BLOCKER 1.
 
     Before the fix, `receive_payment_update` resolved the payment off
     `Subscription.latest_invoice` for *every* `invoice.*` event, regardless of

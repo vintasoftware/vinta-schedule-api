@@ -55,23 +55,23 @@ class SystemUserTokenViewSet(
     403 when it names an organization the caller is not an active member of.
     """
 
-    # ``TenantScopedViewMixin``, added in Phase 2b of the vinta-django-orgs
-    # migration. Before it, this was a plain ``GenericViewSet`` and did not
-    # resolve the header before the queryset and create serializer chose a
-    # membership. A multi-organization admin could therefore list and mint the
-    # tokens of an organization the header did not name. The mixin also puts these routes
-    # in front of ``common.openapi.TenantScopedAutoSchema``, which is what
-    # documents the header in ``schema.yml``.
+    # ``TenantScopedViewMixin`` resolves ``X-Organization-Id`` before the
+    # queryset and create serializer choose a membership. Without it, this
+    # would be a plain ``GenericViewSet``, and a multi-organization admin
+    # could list and mint the tokens of an organization the header did not
+    # name. The mixin also puts these routes in front of
+    # ``common.openapi.TenantScopedAutoSchema``, which is what documents the
+    # header in ``schema.yml``.
 
-    # Phase 3.5 removed this viewset's local ``initial()`` override, which
-    # re-ran ``check_permissions`` after the mixin's resolver. That was the
-    # repo's only defence against ``IsOrganizationAdmin.has_permission`` being
-    # asked about the caller's *oldest* membership rather than the organization
-    # the header names -- an admin of A, plain member of B, passing the
-    # collection-level gate for a request that then listed and minted B's
-    # tokens. ``TenantScopedViewMixin.perform_authentication`` now resolves
-    # before ``check_permissions`` for every view on the mixin, so keeping the
-    # override would only run the same check twice.
+    # This viewset no longer carries a local ``initial()`` override that
+    # re-ran ``check_permissions`` after the mixin's resolver. That override
+    # was the repo's only defence against ``IsOrganizationAdmin.has_permission``
+    # being asked about the caller's *oldest* membership rather than the
+    # organization the header names -- an admin of A, plain member of B,
+    # passing the collection-level gate for a request that then listed and
+    # minted B's tokens. ``TenantScopedViewMixin.perform_authentication`` now
+    # resolves before ``check_permissions`` for every view on the mixin, so
+    # keeping the override would only run the same check twice.
     # ``public_api/tests/test_views.py::TestSystemUserTokenViewSetHonoursTheOrganizationHeader``
     # still pins the 403, now through the general fix.
     permission_classes = (IsOrganizationAdmin,)

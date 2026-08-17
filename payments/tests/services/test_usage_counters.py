@@ -11,8 +11,8 @@ rather than hand-building ``AvailableTime`` rows: the whole defect was that edit
 a recurring window silently *inserts* rows, which a hand-built fixture would never
 reproduce.
 
-``TestUsageBreakdown`` at the bottom of this file is the Phase 1 regression gate
-for the billing usage summary & ledger plan: every ``UsageCounter`` now returns a
+``TestUsageBreakdown`` at the bottom of this file is the regression gate for
+the billing usage summary & ledger: every ``UsageCounter`` now returns a
 per-organization ``dict[int, int]`` instead of a scalar, and that class is what
 proves the grouping arithmetic behind both ``get_usage_breakdown`` and
 ``get_current_usage`` is correct, for every ``LimitedResource`` member, over a
@@ -286,7 +286,7 @@ class TestAvailabilityWindowCounter:
 
 @pytest.mark.django_db
 class TestBlockedTimeCounter:
-    """Phase 2c: blocked time is metered on the same ``availability_windows``
+    """Blocked time is metered on the same ``availability_windows``
     counter as availability windows, base and group-scoped rows alike.
 
     Mirrors ``TestAvailabilityWindowCounter`` exactly -- the two models share
@@ -443,7 +443,7 @@ class TestBlockedTimeCounter:
         self, entitlement_service, availability_service, managed_calendar, organization
     ):
         """``BlockedTime.objects`` (the default manager) excludes group-scoped rows
-        by design (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 0). The counter must
+        by design. The counter must
         read through ``unscoped()`` or a group-scoped block would bypass metering
         entirely -- the spec's rule is "every time window is metered" regardless of
         scope."""
@@ -474,7 +474,7 @@ class TestBlockedTimeCounter:
         self, entitlement_service, availability_service, managed_calendar, organization
     ):
         """The one shared ``availability_windows`` ceiling covers both models -- one
-        rule for every authored time window, positive or negative (Phase 2c)."""
+        rule for every authored time window, positive or negative."""
         availability_service.create_available_time(
             calendar=managed_calendar,
             start_time=_utc(2025, 7, 1, 10),
@@ -567,7 +567,8 @@ def pooled_subtree(db: Any) -> tuple[Organization, Organization, Organization]:
 
 @pytest.mark.django_db
 class TestUsageBreakdown:
-    """The regression gate for Phase 1 of the billing usage summary & ledger plan.
+    """The regression gate for the billing usage summary & ledger's per-organization
+    breakdown.
 
     ``UsageCounter`` was widened from ``Callable[[UsageContext], int]`` to
     ``Callable[[UsageContext], dict[int, int]]`` so the per-organization

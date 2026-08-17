@@ -52,8 +52,7 @@ class Audit(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel):
     # and "no role" are distinct.
     #
     # The choices used to be a ``TextChoices`` enum on ``organizations``,
-    # deleted with the ``role`` column in Phase 6 of the vinta-django-orgs
-    # migration.
+    # deleted along with the ``role`` column.
     # The two published values are unchanged -- see
     # ``organizations.authorization.membership_role_label``, which derives them
     # from ``organizations.manage_members`` -- because every row already on disk

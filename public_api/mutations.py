@@ -134,12 +134,11 @@ EVENT_TITLE_MAX_LENGTH = 255
 
 # One message per ``organizations.permissions.BrandingWriteGateReason`` failure --
 # this surface's translation of the shared write gate into its own error idiom
-# (GraphQLError), matching the plan's Shared gate helper guiding decision. Kept
-# distinct in wording from the REST 403 bodies (organizations.exceptions) and the
-# admin form error (organizations.admin) so each surface reads naturally, while
-# preserving the same distinguishability. Two entries, not three: the gate's
-# ``NO_SLUG`` reason was retired in Phase 1 of the vinta-django-orgs migration
-# and deleted in Phase 4.
+# (GraphQLError). Kept distinct in wording from the REST 403 bodies
+# (organizations.exceptions) and the admin form error (organizations.admin) so
+# each surface reads naturally, while preserving the same distinguishability.
+# Two entries, not three: the gate's ``NO_SLUG`` reason was retired and later
+# removed, so no message exists for it here.
 _BRANDING_GATE_MESSAGES: dict[BrandingWriteGateReason, str] = {
     BrandingWriteGateReason.HAS_PARENT: (
         "This organization has a parent organization and cannot manage its own "
@@ -589,7 +588,7 @@ class BatchUpdateAvailabilityWindowsResult:
 @strawberry.input
 class GroupScopedAvailabilityWindowOperationInput:
     """A single create/update/delete operation in a batch group-scoped
-    availability window upsert (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 1d).
+    availability window upsert.
 
     ``calendarId`` is required on every operation (not only ``create``) so
     the owner-scope guard can be applied per-operation before any service
@@ -643,7 +642,7 @@ class BatchUpsertGroupScopedAvailabilityWindowsResult:
 @strawberry.input
 class GroupScopedBlockedTimeOperationInput:
     """A single create/update/delete operation in a batch group-scoped
-    blocked-time upsert (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 2b).
+    blocked-time upsert.
 
     Mirrors ``GroupScopedAvailabilityWindowOperationInput`` exactly, plus
     ``reason``. ``calendarId`` is required on every operation (not only
@@ -697,7 +696,7 @@ class BatchUpsertGroupScopedBlockedTimesResult:
 @strawberry.input
 class GroupScopedQuotaRuleOperationInput:
     """A single create/update/delete operation in a batch group-scoped
-    quota-rule upsert (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 3c).
+    quota-rule upsert.
 
     Simpler than ``GroupScopedBlockedTimeOperationInput``: quota rules are
     non-recurring and have no time range, so there is no ``startTime``/
@@ -1536,13 +1535,12 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         Steps 1 through 6 run inside one ``transaction.atomic()`` block: a
         rejected slug, a failed gate, or any field-validation failure rolls
         back everything this call did -- including the slug write -- rather
-        than partially applying (see the plan's Slug is a precondition for
-        branding guiding decision).
+        than partially applying.
 
-        Audited (Organization Auth-Area Branding plan, Phase 4): every raise
-        above (slug rejection, gate failure, field validation) happens before
-        the upsert and rolls back the whole atomic block, so a refused write
-        never reaches the audit call below -- nothing is recorded for it. A
+        This upsert is audited: every raise above (slug rejection, gate
+        failure, field validation) happens before the upsert and rolls back
+        the whole atomic block, so a refused write never reaches the audit
+        call below -- nothing is recorded for it. A
         first-time upsert records a CREATE with no diff; an upsert that
         replaces an existing row records an UPDATE with a diff naming only the
         fields that changed, using the before-state captured BEFORE the
@@ -2372,8 +2370,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         input: BatchGroupScopedAvailabilityWindowsInput,  # noqa: A002
     ) -> BatchUpsertGroupScopedAvailabilityWindowsResult:
         """Apply an atomic create/update/delete batch of group-scoped
-        availability windows within one group slot's roster
-        (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 1d).
+        availability windows within one group slot's roster.
 
         Mirrors ``batchUpdateAvailabilityWindows``'s all-or-nothing and
         over-limit behavior exactly (same transaction/entitlement structure,
@@ -2520,14 +2517,13 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         input: BatchGroupScopedBlockedTimesInput,  # noqa: A002
     ) -> BatchUpsertGroupScopedBlockedTimesResult:
         """Apply an atomic create/update/delete batch of group-scoped blocked
-        times within one group slot's roster
-        (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 2b).
+        times within one group slot's roster.
 
         Direct mirror of ``batchUpsertGroupScopedAvailabilityWindows`` -- same
         validation, owner-scope, and IDOR cross-check structure -- with ONE
-        deliberate difference: blocked time is not metered yet (that is
-        Phase 2c), so this mutation never surfaces an ``OverLimitError`` for
-        a plan-limit ceiling; ``CalendarGroupService.batch_upsert_group_scoped_blocked_times``
+        deliberate difference: blocked time is not metered yet, so this
+        mutation never surfaces an ``OverLimitError`` for a plan-limit
+        ceiling; ``CalendarGroupService.batch_upsert_group_scoped_blocked_times``
         still enforces ``check_not_restricted`` (a ``RESTRICTED`` billing
         root still blocks the write), but there is no delta/limit check.
 
@@ -2651,8 +2647,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         input: BatchGroupScopedQuotaRulesInput,  # noqa: A002
     ) -> BatchUpsertGroupScopedQuotaRulesResult:
         """Apply an atomic create/update/delete batch of group-scoped quota
-        rules within one group slot's roster
-        (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 3c).
+        rules within one group slot's roster.
 
         Direct mirror of ``batchUpsertGroupScopedBlockedTimes`` -- same
         validation, owner-scope, and IDOR cross-check structure -- with two

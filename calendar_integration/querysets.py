@@ -76,8 +76,7 @@ else:
 class GroupSlotScopedQuerySetMixin(_GroupSlotScopedQuerySetBase):
     """Chainable group-slot scoping shared by ``AvailableTimeQuerySet`` and ``BlockedTimeQuerySet``.
 
-    Both models carry a nullable ``group_slot`` reference (see
-    ``CALENDAR_GROUP_SCOPED_AVAILABILITY`` Phase 0): null means a base row —
+    Both models carry a nullable ``group_slot`` reference: null means a base row —
     today's behavior, visible on every existing read path. A non-null value
     scopes the row to exactly one ``CalendarGroupSlot`` and must stay invisible
     unless a caller explicitly opts in.
@@ -1208,17 +1207,18 @@ class ExternalEventChangeRequestQuerySet(OrganizationScopedQuerySet):
         # late for that one reason. Imports of anything else belong at the top.
         from calendar_integration.models import EventAttendance  # noqa: PLC0415
 
-        # Reads the capability rather than a role column: the
-        # ``organization_admin`` group is the only seeded group carrying
-        # ``manage_members``, so this names the same set the removed
-        # ``membership.is_admin`` did.
+        # Replaces the old ``membership.is_admin`` check, which read a ``role``
+        # column that no longer exists. Same set: the ``organization_admin``
+        # group every admin membership was backfilled into is the only seeded
+        # group carrying ``manage_members``.
         if membership_holds_permission(membership, MANAGE_MEMBERS):
             return self
 
         # Non-admins: restrict to requests whose event they attend.
         # ``unscoped()``: the filter names the membership's own organization on the
-        # next line, which is the tenant boundary here -- ``resolvable_by`` is called
-        # from a request, where nothing is bound until Phase 2b.
+        # next line, which is the tenant boundary here -- ``resolvable_by`` takes
+        # the membership as an explicit argument rather than relying on an
+        # ambient organization binding.
         attendee_event_ids = (
             EventAttendance.objects.unscoped()
             .filter(

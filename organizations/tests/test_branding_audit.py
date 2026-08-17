@@ -1,5 +1,4 @@
-"""Audit-emission tests for the ``OrganizationBrandingView`` REST write paths
-(Organization Auth-Area Branding plan, Phase 4).
+"""Audit-emission tests for the ``OrganizationBrandingView`` REST write paths.
 
 Mirrors ``organizations/tests/test_audit.py``'s approach for ``OrganizationService``
 and ``public_api/tests/test_booking_policy_graphql.py``'s ``test_create_audited`` /

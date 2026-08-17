@@ -1,4 +1,4 @@
-"""The two Phase 3 data migrations: the group seed and the membership backfill.
+"""The two group data migrations: the group seed and the membership backfill.
 
 ``0028_seed_permission_groups`` creates the three global groups, the four
 capability permissions, and the mapping between them.
@@ -24,8 +24,8 @@ Three things are pinned here:
    observed-state assertion would now pass with ``0028`` deleted outright.
    Driving the migration is what makes it an assertion about the migration.
 2. **Every combination of the two flat columns maps to the right groups**,
-   asserted against the migration's own ``target_group_names``. Phase 6 dropped
-   both columns, so no live model carries them and the forward cannot be driven
+   asserted against the migration's own ``target_group_names``. Both columns
+   were later dropped, so no live model carries them and the forward cannot be driven
    over rows *from here*; the reverse, which reads no column, still is. The loop
    that applies the mapping to rows -- and with it idempotency, additivity and
    inactive-membership handling -- is driven with ``MigrationExecutor`` in
@@ -220,8 +220,8 @@ class TestTheMappingTheBackfillApplied:
     """Both flat columns, all four cells.
 
     Asserted against ``target_group_names``, the migration's own pure function,
-    rather than by running the backfill over rows. Phase 6 dropped the two
-    columns, so no live model carries them any more and the only way to build the
+    rather than by running the backfill over rows. Both columns were later
+    dropped, so no live model carries them any more and the only way to build the
     input state is to drive ``MigrationExecutor`` back to ``0028`` -- which would
     put this module into the migration-executor flake class the module header
     exists to stay out of. What this class pins is the *mapping*; the loop that

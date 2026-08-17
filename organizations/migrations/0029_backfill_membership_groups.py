@@ -1,6 +1,6 @@
 """Give every existing membership the groups its ``role`` / ``is_billing_owner`` imply.
 
-The mapping, from the plan's Phase 3:
+The mapping:
 
 ======================  ====================  ==========================================
 ``role``                ``is_billing_owner``  groups
@@ -15,13 +15,14 @@ The mapping, from the plan's Phase 3:
 An admin already holds ``payments.manage_billing`` through
 ``organization_admin``, so the second row's extra group grants nothing new --
 it is written anyway because ``is_billing_owner`` is an independent column and
-dropping it here would lose information that Phase 6, not this migration, is
-the one entitled to discard.
+dropping it here would lose information that only
+``0030_drop_role_and_is_billing_owner``, not this migration, is entitled to
+discard.
 
 ``role`` and ``is_billing_owner`` are **read, not written**. Both
-representations are live and must agree until Phase 6 retires one; the
-temporary dual-write in ``organizations.services`` is what keeps rows written
-after this migration in step.
+representations are live and must agree until ``0030`` drops the two columns
+and retires one of them; the temporary dual-write in ``organizations.services``
+is what keeps rows written after this migration in step.
 
 Idempotent, batched and resumable: rows are inserted straight into the M2M
 through table in fixed-size batches with ``ignore_conflicts=True``, so a

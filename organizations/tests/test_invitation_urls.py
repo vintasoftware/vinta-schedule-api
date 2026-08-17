@@ -1,10 +1,9 @@
 """Tests for organizations.invitation_urls.build_invitation_accept_url.
 
-Organization Auth-Area Branding plan, Phase 5 amendment (2026-08-06): the
-invitation accept link must carry the branding root's slug so the SPA's
+The invitation accept link must carry the branding root's slug so the SPA's
 accept-invite page can resolve that organization's branding before the user
-authenticates -- see the amendment note in the implementation plan for why
-this was missing from the original Phase 5 delivery.
+authenticates. Added after the fact (2026-08-06), once it became clear the
+accept-invite link had no way to carry that information to the SPA.
 """
 
 from model_bakery import baker

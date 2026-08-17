@@ -47,10 +47,10 @@ def _resolve_scope_and_membership(
       org-wide or missing/inactive.
 
     "Admin member" reads ``organizations.manage_members`` off the membership.
-    It read the ``role`` column until Phase 6 of the vinta-django-orgs
-    migration dropped it; the two name the same set, since
-    ``organization_admin`` -- the group every ``role == ADMIN`` membership was
-    backfilled into -- is the only seeded group carrying that permission. Asked
+    It used to read the ``role`` column directly; the two name the same set,
+    since ``organization_admin`` -- the group every ``role == ADMIN``
+    membership was backfilled into -- is the only seeded group carrying that
+    permission. Asked
     of the *membership* rather than of ``(user, organization)`` so the token's
     standing does not additionally depend on the underlying Django user's
     ``is_active``, which the column never consulted.

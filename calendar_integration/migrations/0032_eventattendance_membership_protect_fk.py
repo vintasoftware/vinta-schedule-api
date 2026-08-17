@@ -1,4 +1,4 @@
-"""Phase 4b cutover (DB-integrity half): raw-SQL composite PROTECT FK.
+"""Cutover (DB-integrity half): raw-SQL composite PROTECT FK.
 
 The ``EventAttendance.membership`` relation is a Django ``ForeignObject`` and
 therefore carries **no** DB-level foreign-key constraint. PROTECT delete
@@ -20,7 +20,7 @@ organization_id)`` positionally maps to ``(user_id, organization_id)``.
 
 Deferred PROTECT semantics
 --------------------------
-This mirrors the CalendarOwnership PROTECT FK added in Phase 2b (migration 0026).
+This mirrors the CalendarOwnership PROTECT FK added in migration 0026.
 The constraint is ``ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED`` so that
 the referential check fires at **COMMIT**, not at statement time. PROTECT
 semantics still hold: deleting a membership while a live ``EventAttendance`` still

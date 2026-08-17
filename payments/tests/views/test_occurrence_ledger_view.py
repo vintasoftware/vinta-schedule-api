@@ -1,8 +1,8 @@
 """Integration tests for ``GET /billing/usage/occurrences/`` -- the line-item
 ledger behind post-paid charges (``MeteredOccurrenceViewSet``). This is the
 one endpoint in the billing-usage surface gated by ``IsBillingOwnerOrAdmin``
-rather than the bare ``IsAuthenticated`` every other read in this module uses
-(see the plan's Guiding Decisions): a ledger row carries an ``event_id`` and
+rather than the bare ``IsAuthenticated`` every other read in this module uses:
+a ledger row carries an ``event_id`` and
 an exact ``occurrence_start``, which is calendar content that can span
 calendars the caller has no membership scope on.
 

@@ -30,7 +30,7 @@ UPDATE calendar_integration_calendarmanagementtoken
 
 
 class Migration(migrations.Migration):
-    """Phase 6 cutover (schema half): drop CalendarManagementToken.user.
+    """Cutover (schema half): drop CalendarManagementToken.user.
 
     - The ``user`` field is removed from model state and the legacy ``user_id``
       column is dropped from the DB. A column DROP is a brief metadata-only ACCESS

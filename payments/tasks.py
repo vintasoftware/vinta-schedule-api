@@ -40,19 +40,17 @@ from vinta_schedule_api.celery import app
 logger = logging.getLogger(__name__)
 
 #: `payments` models are plain ``BaseModel`` (not organization-scoped --
-#: see the plan's "Open Questions": billing is read at the billing root,
-#: often an ancestor of a single organization, so binding one is
-#: deliberately out of scope for this migration). What each per-subscription
-#: task below binds is the subscription's *own* organization -- the
-#: obvious, single-organization boundary for a per-subscription unit of
+#: billing is read at the billing root, often an ancestor of a single
+#: organization, so binding one is deliberately out of scope here). What each
+#: per-subscription task below binds is the subscription's *own* organization
+#: -- the obvious, single-organization boundary for a per-subscription unit of
 #: work, and the same organization every deleted-subscription early-return
 #: above it is keyed on. It does **not** cover the pooled-reseller-subtree
 #: reads inside ``MeteringService`` (e.g. ``expand_occurrence_identities``,
 #: which explicitly reads ``CalendarEvent`` across every organization
 #: ``EntitlementService.get_pooled_organization_ids`` returns via
-#: ``organization_id__in=...``) -- that is the exact cross-organization
-#: case Phase 2a's guidance covers by switching to ``original_manager``,
-#: not by binding a single context.
+#: ``organization_id__in=...``) -- that cross-organization case is handled by
+#: switching to ``original_manager`` instead, not by binding a single context.
 
 
 #: How far back each sweep re-reads. Deliberately **wider than the beat interval**
@@ -182,9 +180,9 @@ def process_dunning_for_subscription(
     best-effort ``except Exception`` guard ``close_subscription_billing_period``
     (below) already carries, for the same reason: a provider fault the
     adapter layer does not translate into a typed, expected outcome (a
-    genuine Stripe integration/transport error, or -- Billing API Contract
-    Hardening, Phase 5 BLOCKER -- a translated error type this call site does
-    not yet know to catch) must not be allowed to raise out of this task. An
+    genuine Stripe integration/transport error, or a translated error type
+    this call site does not yet know to catch) must not be allowed to raise
+    out of this task. An
     uncaught raise here is not a one-off failure -- per this task's own
     docstring above, it is redelivered and fails identically forever, so one
     subscription's provider fault would silently stop that subscription's

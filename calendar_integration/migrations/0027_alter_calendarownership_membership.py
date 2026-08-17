@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-    """Phase 2b: switch the ``membership`` ForeignObject to ``on_delete=DO_NOTHING``.
+    """Switch the ``membership`` ForeignObject to ``on_delete=DO_NOTHING``.
 
     PROTECT delete semantics for ``CalendarOwnership.membership`` are enforced
     solely by the raw-SQL composite FK added in 0026 (``DEFERRABLE INITIALLY

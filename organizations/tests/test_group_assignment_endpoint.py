@@ -1,4 +1,4 @@
-"""``POST /organization-members/{user_id}/groups/`` — the write half of Phase 5.
+"""``POST /organization-members/{user_id}/groups/`` — the group-assignment endpoint.
 
 Replaces ``POST /organization-members/{user_id}/update-role/``. Three
 properties of the old endpoint had to survive the change of representation, and

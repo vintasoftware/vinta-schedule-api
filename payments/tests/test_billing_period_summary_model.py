@@ -1,13 +1,13 @@
-"""Phase 0 scaffolding tests for `BillingPeriodSummary` / `BillingPeriodResourceUsage`.
+"""Scaffolding tests for `BillingPeriodSummary` / `BillingPeriodResourceUsage`.
 
-This phase ships no reader or writer for these tables — `CycleCloseService`
-starts persisting to them in Phase 2. What has to hold *now* is the schema
-itself: the two unique constraints that make cycle-close idempotent (the same
-pattern `MeteredOccurrence` and `ProviderWebhookEvent` already use), the
-two-nulls distinction on `BillingPeriodResourceUsage` (`total=None` means "not
-recorded", `limit_value=None` means "unlimited" -- collapsing either into `0`
-is the bug a reviewer should catch), the `for_organizations` pool scope, and
-that the migration creating both tables reverses cleanly.
+No reader or writer exists for these tables yet — `CycleCloseService` will start
+persisting to them once that's implemented. What has to hold *now* is the schema itself:
+the two unique constraints that make cycle-close idempotent (the same pattern
+`MeteredOccurrence` and `ProviderWebhookEvent` already use), the two-nulls distinction
+on `BillingPeriodResourceUsage` (`total=None` means "not recorded", `limit_value=None`
+means "unlimited" -- collapsing either into `0` is the bug a reviewer should catch), the
+`for_organizations` pool scope, and that the migration creating both tables reverses
+cleanly.
 """
 
 import datetime
@@ -253,11 +253,10 @@ class TestBillingPeriodSummaryMigration:
         depends on a later `payments` one -- `organizations.0027` onwards reach
         back to `payments.0022` -- and migrating forward to `payments.0020`
         re-applies only `payments`. That was invisible while the collateral
-        migrations were data-only; `organizations.0030` (Phase 6 of the
-        vinta-django-orgs migration) drops two columns, so leaving it unapplied
-        restores a NOT NULL `role` column no live model writes, and every
-        membership insert in every later test in this worker fails. Restoring to
-        `leaf_nodes()` puts every app back at head.
+        migrations were data-only; `organizations.0030` drops two columns, so
+        leaving it unapplied restores a NOT NULL `role` column no live model
+        writes, and every membership insert in every later test in this
+        worker fails. Restoring to `leaf_nodes()` puts every app back at head.
 
         `previous` must stay the migration immediately preceding this one in the
         `payments` graph, not merely the one it was generated against: renumbering

@@ -1,5 +1,4 @@
-"""Shared logic for the branding-logo upload/delivery surface (Phase 2b of the
-Organization Auth-Area Branding plan).
+"""Shared logic for the branding-logo upload/delivery surface.
 
 Split into its own module so the S3-key normalization, the delivery-route URL
 builder, and the signed-upload-payload builder each have exactly one
@@ -44,8 +43,7 @@ DEFAULT_LOGO_SLUG_SENTINEL = "default"
 
 # Cache-Control: short max-age. The route's URL is stable across re-uploads (same
 # organization slug, same path), so a long max-age would pin a replaced logo in
-# caches and in already-delivered emails -- see the plan's "Logo delivery caching"
-# guiding decision.
+# caches and in already-delivered emails.
 LOGO_CACHE_MAX_AGE_SECONDS = 300
 
 DEFAULT_LOGO_ASSET_PATH = Path(__file__).resolve().parent / "assets" / "default_logo.png"
@@ -353,8 +351,7 @@ def sign_branding_logo_upload(
 
 
 def branding_diff_state(branding: OrganizationBranding | None) -> dict[str, str]:
-    """Field-level snapshot of an ``OrganizationBranding`` row for audit diffs
-    (Organization Auth-Area Branding plan, Phase 4).
+    """Field-level snapshot of an ``OrganizationBranding`` row for audit diffs.
 
     Shared by both write surfaces -- ``organizations.views.OrganizationBrandingView``
     (REST) and ``public_api.mutations.Mutation.update_branding`` (GraphQL) -- so

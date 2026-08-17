@@ -71,8 +71,8 @@ class DedupingPaymentService:
 
     Returns a fresh, real ``Payment`` row on every call regardless of the key --
     exactly like the real ``PaymentService.create_payment`` (the local row is not
-    what dedups; the provider is) -- rather than a stable stand-in, because Phase
-    2's ``BillingPeriodSummary.payment_id`` is a genuine foreign key and needs
+    what dedups; the provider is) -- rather than a stable stand-in, because
+    ``BillingPeriodSummary.payment_id`` is a genuine foreign key and needs
     something Postgres can actually reference.
 
     ``create_payment`` sleeps ``race_window_seconds`` before recording, so the thread

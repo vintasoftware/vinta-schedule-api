@@ -192,7 +192,7 @@ def is_downgrade_grace(subscription: Subscription) -> bool:
     organization with a downgrade already scheduled whose *currently active*
     (still higher, pre-boundary) plan then also fails a renewal charge reads
     as a downgrade-grace here too, and the genuinely failed charge does not
-    get retried by the dunning ladder (nor, since Phase 3, by
+    get retried by the dunning ladder (nor by
     ``retry_payment`` -- see its docstring). Disambiguating the two reasons
     unambiguously would need a dedicated reason field on ``Subscription`` -- a
     larger schema change than the dead-edge gap this function exists to close

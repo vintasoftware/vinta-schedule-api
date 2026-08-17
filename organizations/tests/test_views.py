@@ -533,9 +533,9 @@ class TestOrganizationViewSet:
 
 @pytest.mark.django_db
 class TestOrganizationSlugUpdate:
-    """Integration tests: self-serve slug via PATCH /organizations/{id}/ (Phase 1).
+    """Integration tests: self-serve slug via PATCH /organizations/{id}/.
 
-    Covers the acceptance criteria from the plan's Phase 1: an admin sets a unique
+    Covers: an admin sets a unique
     slug; a non-admin is refused; a duplicate is rejected with a message naming the
     conflict (not a 500); changing an existing slug succeeds.
     """
@@ -2308,8 +2308,7 @@ class TestOrganizationMembershipViewSet:
         result = response.json()
         assert result["organization"]["id"] == organization.id
 
-    # The ``update-role`` action this class used to cover was replaced in Phase 5
-    # of the vinta-django-orgs migration by
+    # The ``update-role`` action this class used to cover was replaced by
     # ``POST /organization-members/{user_id}/groups/``. Its whole test surface --
     # promotion, demotion, the last-admin guard (now counted by capability),
     # rejection of an unknown group, the non-admin 403 and the cross-organization
@@ -2813,7 +2812,7 @@ _SA_PAYLOAD = {
 
 
 @pytest.mark.django_db
-class TestPhase18ServiceAccountConfig:
+class TestServiceAccountConfigPatch:
     """Admin configures the org's Google service-account credentials via PATCH.
 
     Security invariant: private_key and private_key_id are never returned in
@@ -3012,7 +3011,7 @@ class TestPhase18ServiceAccountConfig:
 
 
 @pytest.mark.django_db
-class TestPhase18SyncRoomsTrigger:
+class TestSyncRoomsTrigger:
     """POST sync-rooms works when creds configured; 400 (never 500) when not.
 
     Mocks ``calendar_service.authenticate`` and
@@ -3083,7 +3082,7 @@ class TestPhase18SyncRoomsTrigger:
 
 
 @pytest.mark.django_db
-class TestPhase18TransitionWithNoCredentials:
+class TestSyncRoomsTransitionWithNoCredentials:
     """Enabling should_sync_rooms False→True without creds → 400 (not 500)."""
 
     def _make_admin_client_and_org(self, user, should_sync_rooms=False):
@@ -3200,7 +3199,7 @@ class TestPhase18TransitionWithNoCredentials:
 
 
 @pytest.mark.django_db
-class TestPhase18CreateOrganizationNoCredentials:
+class TestCreateOrganizationWithNoCredentials:
     """create_organization(should_sync_rooms=True) with no creds must not crash."""
 
     def test_create_organization_with_sync_rooms_no_creds_does_not_crash(self, user):
@@ -3232,7 +3231,7 @@ class TestPhase18CreateOrganizationNoCredentials:
 
 
 @pytest.mark.django_db
-class TestPhase20ServiceAccountCRUD:
+class TestServiceAccountCRUD:
     """Admin-only CRUD for the org-level Google Calendar service account.
 
     Security invariant: private_key / private_key_id are never
@@ -3499,7 +3498,7 @@ class TestPhase20ServiceAccountCRUD:
 
 
 @pytest.mark.django_db
-class TestPhase11ServiceAccountRestrictedGuard:
+class TestServiceAccountRestrictedGuard:
     """A ``RESTRICTED`` organization cannot write its service account.
 
     ``GoogleCalendarServiceAccount`` is organization-scoped, so
@@ -3621,7 +3620,7 @@ class TestPhase11ServiceAccountRestrictedGuard:
 
 
 @pytest.mark.django_db
-class TestPhase20SyncAllCalendars:
+class TestSyncAllCalendars:
     """POST /organizations/{id}/sync-calendars/ — admin triggers a sync of all calendars."""
 
     def _make_admin(self, user, organization):
@@ -3773,9 +3772,9 @@ class TestOrganizationMineAction:
 
         # Verify the membership objects that were created are retrievable from the
         # DB by their (user, organization) identity. That pair is no longer the
-        # primary key -- the composite PK was unwound in Phase 1 of the
-        # vinta-django-orgs migration -- but it is still unique, enforced by
-        # ``uniq_membership_user_organization``.
+        # primary key -- the composite PK was unwound by
+        # ``0023_unwind_organizationmembership_composite_pk`` -- but it is still
+        # unique, enforced by ``uniq_membership_user_organization``.
         assert (
             OrganizationMembership.objects.get(
                 user_id=membership_a.user_id, organization_id=membership_a.organization_id

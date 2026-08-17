@@ -38,21 +38,20 @@ class CustomUserAdmin(UserAdmin):
         ``organization_member`` are seeded ``auth.Group`` rows, but they are
         only meaningful hanging off an **OrganizationMembership** -- that is
         what makes a grant organization-scoped. Attached to a *user* they grant
-        nothing: since Phase 4 of the vinta-django-orgs migration every
-        authorization check resolves the organization half alone
+        nothing: every authorization check resolves the organization half alone
         (``organizations.authorization.has_organization_permission``), which
         never looks at ``user.groups``.
 
         They were listed here, in a picker labelled "Groups", beside the real
         permission controls -- so the obvious way for a staff user to "make
         somebody an admin" was to tick a box that does nothing. The assignment
-        was inert before and after Phase 4 because organization capabilities are
-        resolved from membership groups, not global user groups; what is left is
+        is inert because organization capabilities are resolved from
+        membership groups, not global user groups; what is left is
         a control whose only possible outcome is a wrong belief. Membership groups are
         assigned through ``POST /organization-members/{user_id}/groups/``.
 
         Only the *widget's* choices are narrowed. Any other ``auth.Group`` a
-        deployment defines stays selectable, and an existing (pre-Phase-4)
+        deployment defines stays selectable, and an existing
         assignment of a seeded group is left on the row rather than silently
         dropped -- it is inert either way, and removing data from a form the
         operator did not touch is worse than leaving it.

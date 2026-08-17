@@ -1,6 +1,6 @@
 """``billing_recipients``: who receives the dunning ladder.
 
-Phase 3 replaced a flat two-column disjunction with
+``billing_recipients`` is built on
 ``active().holding_permission("payments.manage_billing")``, so "who may write
 billing" and "who is told about billing" derive from one source. The two
 consumers are ``DunningService._recipient_user_ids`` and
@@ -24,16 +24,16 @@ expression of it rather than a second call into the ORM path under test.
 
 It is named for what it does rather than for the columns it descends from, and
 that is the honest name now: with ``role`` and ``is_billing_owner`` gone it can
-no longer be a restatement of the *pre*-Phase-3 rule, only of the current one in
-a different idiom. Read it as an independent oracle, **not** as parity evidence
-against the flat-column era -- nothing in this repo can produce that era's state
-any more.
+no longer be a restatement of the flat-column rule it replaced, only of the
+current one in a different idiom. Read it as an independent oracle, **not** as
+parity evidence against the flat-column era -- nothing in this repo can produce
+that era's state any more.
 
-The parity class that pinned the Phase 3 dual-write is gone with Phase 6: there
-is one representation now, so there is nothing left for two writes to keep in
-step. What that class actually protected -- that a re-grouping removes a
-capability rather than only adding one -- is
-``TestReGroupingRemovesCapabilities`` below.
+The parity class that once pinned the dual-write between the old flat-column
+representation and this one is gone: there is one representation now, so there
+is nothing left for two writes to keep in step. What that class actually
+protected -- that a re-grouping removes a capability rather than only adding
+one -- is ``TestReGroupingRemovesCapabilities`` below.
 """
 
 from __future__ import annotations
@@ -83,10 +83,10 @@ def _capability_groups_predicate(membership: OrganizationMembership) -> bool:
     ``groups -> permissions -> codename`` join ``billing_recipients`` uses, so
     agreeing with it is evidence rather than a tautology.
 
-    Descended from the pre-Phase-3 ``role``/``is_billing_owner`` disjunction, but
-    no longer a restatement *of* it -- Phase 6 dropped both columns, so this is a
-    second expression of the current rule rather than parity evidence against the
-    previous one. See the module docstring.
+    Descended from the old ``role``/``is_billing_owner`` disjunction, but
+    no longer a restatement *of* it -- neither column exists on the model any
+    more, so this is a second expression of the current rule rather than parity
+    evidence against the previous one. See the module docstring.
     """
     names = set(membership.groups.values_list("name", flat=True))
     return membership.is_active and bool(
@@ -123,7 +123,7 @@ class TestWhoReceivesBilling:
     def test_it_matches_an_independent_reading_of_the_group_names(self):
         """The permission join agrees with a direct read of the group names.
 
-        Not parity against the pre-Phase-3 columns -- those are gone, and nothing
+        Not parity against the old flat-column fields -- those are gone, and nothing
         here can produce their state. Two independent expressions of the *current*
         rule, one through ``groups -> permissions -> codename`` and one over
         already-fetched names.
@@ -179,8 +179,9 @@ class TestWhoReceivesBilling:
     def test_a_membership_with_no_groups_at_all_is_not_a_recipient(self):
         """A membership nothing put in a group receives nothing.
 
-        The Phase 3 backfill is what put every pre-existing row in one, and
-        ``assign_membership_groups`` is what puts every row written since.
+        A one-time backfill migration is what put every pre-existing row in a
+        group, and ``assign_membership_groups`` is what puts every row written
+        since.
         Pinned so that dependency is visible rather than assumed."""
         organization = baker.make(Organization, name="Ungrouped Co", slug="ungrouped-co")
         ungrouped = OrganizationMembership.objects.create(
@@ -197,7 +198,7 @@ class TestWhoReceivesBilling:
 
         The filter it replaced read ``groups__permissions`` only, so a
         membership holding ``payments.manage_billing`` through the model's own
-        ``permissions`` M2M could write billing from Phase 4 onward and never be
+        ``permissions`` M2M could write billing and never be
         told about it. The package's ``holding_permission`` unions both sources
         -- deliberately, since under-counting is the dangerous direction for the
         last-administrator guard that reads the same method.
@@ -289,9 +290,9 @@ class TestReGroupingRemovesCapabilities:
 
     ``billing_recipients`` is only correct if a demotion actually takes the
     capability away; an ``add()``-shaped writer would leave a demoted admin on
-    the dunning list forever. These are what the Phase 3 dual-write tests were
-    really protecting, restated against the single representation that replaced
-    it."""
+    the dunning list forever. These are what dual-write parity tests for the old
+    two-representation system were really protecting, restated against the
+    single representation that replaced it."""
 
     def test_creating_an_admin_puts_it_in_the_admin_group(self):
         organization = baker.make(Organization, name="Sync Co", slug="sync-co")

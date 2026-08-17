@@ -150,8 +150,8 @@ class FakePaymentService:
     idempotency_keys: list[str] = field(default_factory=list)
     #: Every `provider` argument `create_subscription_plan` was called with, in
     #: order -- lets tests assert the caller (`_ensure_provider_plan`) resolves
-    #: it from the subscription's own stored provider (Payment Provider
-    #: Selection, Phase 4), not the organization's current pin.
+    #: it from the subscription's own stored provider, not the organization's
+    #: current pin.
     create_subscription_plan_providers: list[str] = field(default_factory=list)
 
     # `provider` is required, matching `PaymentService.create_subscription_plan`'s
@@ -235,8 +235,8 @@ class TestUpgrade:
         pro_plan = make_complete_plan(
             {LimitedResource.ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50")
         )
-        # Payment Provider Selection, Phase 4: the organization's pin and the
-        # subscription's own stored provider are deliberately made to *disagree*
+        # The organization's pin and the subscription's own stored provider are
+        # deliberately made to *disagree*
         # here. `external_id` is blank (no token has ever been attached), so
         # there is no provider-side state for Rule A to protect -- `_initiate_upgrade`
         # re-resolves from the organization and restamps the row before driving

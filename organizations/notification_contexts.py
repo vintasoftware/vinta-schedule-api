@@ -93,7 +93,7 @@ def organization_invitation_context(
         # django_email.py) to set the outbound message's reply-to. Empty string when there is
         # no branding row or no entitlement -- the adapter treats a falsy reply_to as "no
         # override" and falls back to our own From address, matching today's behavior exactly.
-        # The From address itself is never touched here: no custom sender, no
-        # sending-domain verification (Organization Auth-Area Branding plan, Non-goals).
+        # The From address itself is never touched here: per-organization branding
+        # deliberately stops short of a custom sender or sending-domain verification.
         "reply_to": support_email,
     }

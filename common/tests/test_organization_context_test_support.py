@@ -4,8 +4,8 @@ Exercises the tripwire directly (bypassing pytest's fixture protocol) so its own
 catching/silent behavior is pinned independently of
 ``conftest.assert_no_unbound_scoped_queries``, which is a thin wrapper around it.
 
-The contract these pin changed in Phase 2a of the vinta-django-orgs migration --
-see that module's docstring. In short: a query that *names* its organization is
+The contract these pin changed -- see that module's docstring. In short: a
+query that *names* its organization is
 fine unbound (``filter_by_organization(...)`` is the sanctioned way to reach
 outside the ambient context), and what is reported is a query on a scoped table
 that neither binds nor names one.
@@ -91,7 +91,7 @@ def test_records_a_violation_when_an_unscoped_read_runs_unbound(organization, ca
 def test_records_a_violation_when_bound_to_a_lazy_object_that_resolves_to_none(
     organization, calendar
 ):
-    """A ``SimpleLazyObject`` that resolves to ``None`` -- exactly how Phase 0's
+    """A ``SimpleLazyObject`` that resolves to ``None`` -- exactly how
     Celery task bindings bind a stale/deleted organization id (see
     ``webhooks/tasks.py`` / ``audit/tasks.py``) -- must still be reported as
     unbound. It is *not* ``is None`` (it is a ``SimpleLazyObject`` instance), so a
@@ -105,7 +105,7 @@ def test_records_a_violation_when_bound_to_a_lazy_object_that_resolves_to_none(
 
 
 def test_records_a_violation_for_a_read_that_no_queryset_method_wraps(organization, calendar):
-    """The Phase 0 blind spot, closed.
+    """A blind spot in the previous implementation, closed.
 
     ``iterator()`` reaches the database without going through ``__iter__``,
     ``get``, ``count``, ``exists``, ``update``, ``delete`` or ``aggregate`` -- the
@@ -153,7 +153,7 @@ def test_records_a_violation_for_a_read_addressed_by_primary_key(organization, c
     ``Calendar.objects.unscoped().get(pk=<id from the URL>)`` is the shape of an
     IDOR, and "a primary key identifies one row in the whole table" is not a
     defence: the scoping decision is precisely *whose* row it is, and the read is
-    what makes it. Phase 0's queryset-method guard reported this shape, so
+    what makes it. The queryset-method guard reported this shape, so
     exempting it would have been a coverage regression against the one defect
     class the tripwire exists for.
 
@@ -300,7 +300,7 @@ def test_pytest_fixture_is_wired_and_passes_for_properly_bound_queries(
     assert_no_unbound_scoped_queries, organization, calendar
 ):
     """Smoke test for the actual pytest fixture (``conftest
-    .assert_no_unbound_scoped_queries``), requested the way a Phase 0 task test
+    .assert_no_unbound_scoped_queries``), requested the way a task test
     would use it: every scoped query in this test runs bound, so requesting the
     fixture must not fail the test.
     """

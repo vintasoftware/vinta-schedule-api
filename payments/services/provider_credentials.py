@@ -44,8 +44,9 @@ def resolve_public_credentials(provider: str) -> PublicProviderCredentials:
         empty in this deployment. Both cases collapse to the same error here -- unlike the
         webhook views' ``UnknownPaymentProviderError``/``PaymentProviderNotConfiguredError``
         split, the credentials endpoints have nothing useful to say beyond "this provider
-        cannot be used to render a payment form right now" (see the plan's API Design
-        section for ``GET /billing/payment-provider/`` and its ``/default/`` sibling).
+        cannot be used to render a payment form right now" -- the response
+        ``GET /billing/payment-provider/`` and its ``/default/`` sibling both give the
+        caller.
     """
     if provider == PaymentProviders.STRIPE:
         publishable_key = settings.STRIPE_PUBLISHABLE_KEY

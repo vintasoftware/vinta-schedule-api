@@ -246,7 +246,7 @@ class TestCreateSubscriptionForOrganization:
 
 @pytest.mark.django_db
 class TestCreateSubscriptionResolvesTheProvider:
-    """Payment Provider Selection, Phase 4, Rule B: the one ``Subscription`` an
+    """Rule B: the one ``Subscription`` an
     organization ever gets (``Subscription.organization`` is a ``OneToOneField``,
     and this is the only production path that creates one) must be stamped with
     the provider the *organization* resolves to.

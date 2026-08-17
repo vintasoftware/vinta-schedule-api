@@ -8,7 +8,7 @@ from public_api.querysets import SystemUserQuerySet
 # ``SystemUserQuerySet(self.model, using=self._db)``. Building the queryset
 # directly skips ``OrganizationScopedManager.get_queryset`` entirely, so
 # ``objects`` would *look* scoped while reading every tenant -- the defect
-# Phase 2a found in all 12 ``calendar_integration`` managers.
+# found in all 12 ``calendar_integration`` managers.
 _SystemUserManagerBase = OrganizationScopedManager.from_queryset(SystemUserQuerySet)
 
 

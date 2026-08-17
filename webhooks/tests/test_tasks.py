@@ -2,9 +2,9 @@
 
 The service half (``WebhookService.process_webhook_event``) is covered in
 ``webhooks/tests/test_services.py``. The *task* is what establishes the
-organization binding, and since Phase 2b flipped ``webhooks`` onto
-``SingleOrganizationModelMixin`` the ``WebhookEvent.objects.filter(...)`` inside
-it is an implicitly scoped read: with nothing bound it raises
+organization binding: ``webhooks`` is on ``SingleOrganizationModelMixin``, so
+the ``WebhookEvent.objects.filter(...)`` inside it is an implicitly scoped
+read, and with nothing bound it raises
 ``OrganizationNotFoundError`` rather than returning the event. Nothing executed
 this function's body before -- every existing test patches ``.delay`` /
 ``.apply_async`` and asserts the scheduling call.

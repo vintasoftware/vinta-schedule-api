@@ -201,16 +201,15 @@ def _count_availability_windows(context: UsageContext) -> dict[int, int]:
     would read as 6 and be blocked below its real usage, which the rollout's
     "nobody is blocked as a consequence of the rollout itself" rule forbids.
 
-    Reads through ``unscoped()`` on both models
-    (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 0/1d/2c): the default manager on
+    Reads through ``unscoped()`` on both models: the default manager on
     each excludes group-scoped rows (``group_slot`` set) by design, so counting
     through it would under-report and let group-scoped windows and blocks bypass
     the plan limit entirely. The spec's metering rule is "every time window an
     organization authors is metered" regardless of scope or sign, so base and
-    group-scoped rows of both models are counted together here (Phase 2c: blocked
-    time was not metered before this and now is, for every organization at once
-    — see that phase's rollout note on why this is a billing-rule change made
-    deliberately, not incidentally).
+    group-scoped rows of both models are counted together here. Blocked time is
+    metered here alongside availability windows deliberately, not incidentally:
+    it is a billing-rule change applied to every organization at once, not a
+    side effect of adding group scoping.
 
     The two models are grouped separately, then merged key-wise
     (``_merge_breakdowns``): an organization that authored both availability

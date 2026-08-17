@@ -46,8 +46,8 @@ class User(AbstractBaseUser, PermissionsMixin, BaseModel):
         them names the organization explicitly rather than relying on whatever
         is bound.
 
-        Reads `organizations.manage_members` rather than `role == ADMIN` (Phase
-        4 of the vinta-django-orgs migration). The outcome is unchanged for
+        Reads `organizations.manage_members` rather than the dropped `role`
+        column's `role == ADMIN`. The outcome is unchanged for
         every membership the system writes: the `organization_admin` group
         carries that permission and nothing else grants it.
 

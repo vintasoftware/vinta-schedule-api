@@ -3,7 +3,7 @@
 Two contracts live here, and they are tested together because the second is only
 meaningful given the first.
 
-**The resolution table** (unchanged by Phase 2b -- 0 / 1 / 2+ active memberships
+**The resolution table** (0 / 1 / 2+ active memberships
 crossed with header absent / present-and-matching / present-and-not-a-member,
 plus the two opt-outs) is restated here rather than deferred to
 ``organizations/tests/test_org_resolution.py``, which covers the same table
@@ -451,8 +451,8 @@ class TestTheResolverItselfBindsNothing:
     performed *there* has no ``finally`` above it: nothing would ever release it,
     and the organization would stay bound in the xdist worker for the rest of the
     session. So the bind lives on the ``initial()`` path -- in
-    ``perform_authentication``, which Phase 3.5 moved it to so that resolution
-    precedes ``check_permissions`` -- and this pins the split.
+    ``perform_authentication``, which runs before ``check_permissions`` so that
+    resolution precedes permission checking -- and this pins the split.
     """
 
     def test_calling_it_outside_dispatch_leaves_the_context_alone(

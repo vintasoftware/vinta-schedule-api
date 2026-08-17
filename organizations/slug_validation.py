@@ -1,8 +1,8 @@
 """Shared validation rules for ``Organization.slug``.
 
-A single module so the REST serializer (this phase) and the public GraphQL
-input (a later phase) enforce identical rules — see the plan's **Slug
-validation** guiding decision. Exposes one callable,
+A single module so every surface that accepts a slug — the REST serializer, the
+admin form, and the public GraphQL input — enforces identical rules rather than
+each re-deriving them. Exposes one callable,
 :func:`validate_organization_slug`, that raises
 ``django.core.exceptions.ValidationError`` naming the specific rule violated.
 Uniqueness is deliberately NOT checked here — it needs a live queryset (and,
@@ -39,8 +39,8 @@ error:
 3. **Format and length** — lowercase alphanumeric characters with internal
    hyphens only; bounded length; no leading or trailing hyphen; not purely
    numeric (a numeric slug reads as an organization id, which is exactly
-   the enumerable identifier the slug exists to replace — see the plan's
-   **Public identifier** guiding decision).
+   the enumerable identifier the slug exists to replace as the organization's
+   public identifier).
 """
 
 from __future__ import annotations

@@ -1,14 +1,13 @@
-"""Integration tests for the quota period-counting Postgres function
-(CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 3a):
+"""Integration tests for the quota period-counting Postgres function:
 ``calculate_calendar_group_quota_period_counts`` / its JSON wrapper
 ``get_calendar_group_quota_period_counts_json``, exercised through the Django
 ORM wrapper ``GetCalendarGroupQuotaPeriodCountsJSON``.
 
-Nothing reads this function in application code yet (that's Phase 3b) -- this
-phase's job is to prove the counting primitive itself is correct: day / week /
-month bucketing, Monday vs Sunday week starts, cancellation (event row
-deleted) freeing the count immediately, a reschedule moving the count to its
-new period, and bookings made outside the group never counting.
+Nothing reads this function in application code yet -- this suite's job is to
+prove the counting primitive itself is correct: day / week / month bucketing,
+Monday vs Sunday week starts, cancellation (event row deleted) freeing the
+count immediately, a reschedule moving the count to its new period, and
+bookings made outside the group never counting.
 """
 
 from __future__ import annotations

@@ -267,9 +267,8 @@ class RepairUntruncatedRecurringParents(BaseOneOffScript[RepairTarget]):
 
     def process(self, item: RepairTarget) -> None:
         kind = KIND_BY_KEY[item.kind]
-        # No `organization_context` binding here (Phase 0 of the
-        # vinta-django-orgs migration): every access below -- this method's
-        # own `kind.parent_model.original_manager` call and
+        # No `organization_context` binding here: every access below -- this
+        # method's own `kind.parent_model.original_manager` call and
         # `_delete_phantom_metered`'s `original_manager` calls -- deliberately
         # bypasses tenant scoping, mirroring the scan in
         # `iter_targets`/`_iter_kind`, which is cross-organization by design

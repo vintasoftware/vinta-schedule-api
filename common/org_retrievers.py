@@ -3,7 +3,8 @@
 ``vinta-django-orgs`` resolves the acting organization by calling each dotted
 path in ``SHARED_SCHEMA_ORGANIZATIONS['ORGANIZATION_RETRIEVERS']`` with the
 request until one returns an organization. None of the three retrievers it
-ships fits us: ``retrieve_by_domain`` is subdomain tenancy (a Non-goal),
+ships fits us: ``retrieve_by_domain`` is subdomain tenancy (which this project
+deliberately does not do),
 ``retrieve_by_session`` reads the session (we are token-authenticated), and
 ``retrieve_by_http_header`` reads an ``Organization-Slug`` header by *slug*
 where our long-standing wire contract is ``X-Organization-Id`` by integer

@@ -435,10 +435,10 @@ class BlockedTimeAdmin(admin.ModelAdmin):
 
     Uses the manager's ``unscoped()`` accessor rather than the default
     ``get_queryset(request)`` chain: ``BlockedTimeManager.get_queryset`` (the
-    default manager, ``objects``) excludes group-scoped rows by design (see
-    ``CALENDAR_GROUP_SCOPED_AVAILABILITY`` Phase 0), and ``ModelAdmin`` builds
-    its own queryset from the model's default manager. Without this override,
-    admin would silently stop showing group-scoped blocks the moment any exist.
+    default manager, ``objects``) excludes group-scoped rows by design, and
+    ``ModelAdmin`` builds its own queryset from the model's default manager.
+    Without this override, admin would silently stop showing group-scoped
+    blocks the moment any exist.
     """
 
     list_display = ("id", "calendar", "group_slot", "start_time", "end_time", "reason")

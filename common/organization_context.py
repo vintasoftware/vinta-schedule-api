@@ -1,23 +1,17 @@
 """Storage for the organization the current execution context is bound to.
 
 **This project's specialization of ``vinta_orgs.state``** (the binding API
-``vinta-django-orgs`` ships). Phase 0 of the vinta-django-orgs migration
-(``ai-plans/2026-08-12-VINTA_DJANGO_ORGS_MIGRATION_IMPLEMENTATION_PLAN.md``)
-introduced this module as a *local* ``contextvars`` implementation that mirrored
-the package's public surface name-for-name, so every call site that would
-*become* implicitly organization-scoped could bind an organization while the
-then-current managers still ignored the binding entirely.
-
-**Phase 2a performed the swap**, and there is exactly one contextvar in the
-process -- the package's. That matters because the package's managers,
-``SingleOrganizationModelMixin.save()`` and
+``vinta-django-orgs`` ships), mirroring the package's public surface
+name-for-name. This module is a thin re-export: there is exactly one
+contextvar in the process -- the package's. That matters because the
+package's managers, ``SingleOrganizationModelMixin.save()`` and
 ``scope_queryset_to_current_organization`` all read
-``vinta_orgs._state._current_organization``; while this module owned a second,
-independent contextvar, every Phase 0 binding was invisible to them, and with
-``STRICT_ORGANIZATION_FILTER = True`` those call sites would have raised
-``OrganizationNotFoundError`` instead of scoping.
+``vinta_orgs._state._current_organization``; an independent contextvar owned
+by this module instead would make every binding made through it invisible to
+those managers, and with ``STRICT_ORGANIZATION_FILTER = True`` those call
+sites would raise ``OrganizationNotFoundError`` instead of scoping.
 
-**Phase 3 turned the re-export into a specialization.** Package ``0.4.0``
+The re-export is a specialization, not a bare alias. Package ``0.4.0``
 deleted the module-level ``get_current_organization`` / ``set_current_organization``
 / ``clear_current_organization`` / ``reset_current_organization`` /
 ``organization_context`` functions and replaced them with

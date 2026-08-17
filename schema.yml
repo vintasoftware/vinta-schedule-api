@@ -2159,7 +2159,7 @@ paths:
         ``IsBillingOwnerOrAdmin``. A ledger row carries an ``event_id`` and an exact
         ``occurrence_start`` -- that is calendar content, and it spans every
         calendar in the caller's pooled subtree, including ones the caller has no
-        membership scope on. A count is not. See the plan's Guiding Decisions.
+        membership scope on. A count is not.
 
         ``check_object_permissions`` is called explicitly in ``list()`` against the
         resolved billing root -- the same two-step dance
@@ -2269,7 +2269,7 @@ paths:
         ``IsBillingOwnerOrAdmin``. A ledger row carries an ``event_id`` and an exact
         ``occurrence_start`` -- that is calendar content, and it spans every
         calendar in the caller's pooled subtree, including ones the caller has no
-        membership scope on. A count is not. See the plan's Guiding Decisions.
+        membership scope on. A count is not.
 
         ``check_object_permissions`` is called explicitly in ``list()`` against the
         resolved billing root -- the same two-step dance
@@ -2377,9 +2377,9 @@ paths:
         ``GET /billing/usage/periods/`` and ``GET /billing/usage/periods/{id}/``
         -- the durable statements ``CycleCloseService`` writes at cycle close (see
         ``BillingPeriodSummary``'s docstring). List and detail are bundled
-        deliberately: they share a queryset, a permission, and a serializer tree
-        (see the plan's "Bundled phase granularity" decision) rather than shipping
-        as two PRs whose second one is fifty lines.
+        deliberately: they share a queryset, a permission, and a serializer tree,
+        so shipping them together avoided a second PR that would only add fifty
+        lines.
 
         Scoped to the caller's resolved pool exactly like ``BillingUsageViewSet``:
         ``resolve_billing_root`` then ``get_pooled_organization_ids``, both
@@ -2393,7 +2393,7 @@ paths:
         organization needs in order to resolve billing, including while
         ``RESTRICTED``.
 
-        History is forward-only (see the plan's Non-goals / Risk & Rollout Notes):
+        History is forward-only:
         an organization with no closed periods yet gets ``200`` with an empty list,
         never a ``404`` -- there is nothing wrong with that organization, cycle
         close simply has not run for it yet. A caller with **no active
@@ -2461,9 +2461,9 @@ paths:
         ``GET /billing/usage/periods/`` and ``GET /billing/usage/periods/{id}/``
         -- the durable statements ``CycleCloseService`` writes at cycle close (see
         ``BillingPeriodSummary``'s docstring). List and detail are bundled
-        deliberately: they share a queryset, a permission, and a serializer tree
-        (see the plan's "Bundled phase granularity" decision) rather than shipping
-        as two PRs whose second one is fifty lines.
+        deliberately: they share a queryset, a permission, and a serializer tree,
+        so shipping them together avoided a second PR that would only add fifty
+        lines.
 
         Scoped to the caller's resolved pool exactly like ``BillingUsageViewSet``:
         ``resolve_billing_root`` then ``get_pooled_organization_ids``, both
@@ -2477,7 +2477,7 @@ paths:
         organization needs in order to resolve billing, including while
         ``RESTRICTED``.
 
-        History is forward-only (see the plan's Non-goals / Risk & Rollout Notes):
+        History is forward-only:
         an organization with no closed periods yet gets ``200`` with an empty list,
         never a ``404`` -- there is nothing wrong with that organization, cycle
         close simply has not run for it yet. A caller with **no active
@@ -2552,9 +2552,9 @@ paths:
         ``GET /billing/usage/periods/`` and ``GET /billing/usage/periods/{id}/``
         -- the durable statements ``CycleCloseService`` writes at cycle close (see
         ``BillingPeriodSummary``'s docstring). List and detail are bundled
-        deliberately: they share a queryset, a permission, and a serializer tree
-        (see the plan's "Bundled phase granularity" decision) rather than shipping
-        as two PRs whose second one is fifty lines.
+        deliberately: they share a queryset, a permission, and a serializer tree,
+        so shipping them together avoided a second PR that would only add fifty
+        lines.
 
         Scoped to the caller's resolved pool exactly like ``BillingUsageViewSet``:
         ``resolve_billing_root`` then ``get_pooled_organization_ids``, both
@@ -2568,7 +2568,7 @@ paths:
         organization needs in order to resolve billing, including while
         ``RESTRICTED``.
 
-        History is forward-only (see the plan's Non-goals / Risk & Rollout Notes):
+        History is forward-only:
         an organization with no closed periods yet gets ``200`` with an empty list,
         never a ``404`` -- there is nothing wrong with that organization, cycle
         close simply has not run for it yet. A caller with **no active
@@ -2612,9 +2612,9 @@ paths:
         ``GET /billing/usage/periods/`` and ``GET /billing/usage/periods/{id}/``
         -- the durable statements ``CycleCloseService`` writes at cycle close (see
         ``BillingPeriodSummary``'s docstring). List and detail are bundled
-        deliberately: they share a queryset, a permission, and a serializer tree
-        (see the plan's "Bundled phase granularity" decision) rather than shipping
-        as two PRs whose second one is fifty lines.
+        deliberately: they share a queryset, a permission, and a serializer tree,
+        so shipping them together avoided a second PR that would only add fifty
+        lines.
 
         Scoped to the caller's resolved pool exactly like ``BillingUsageViewSet``:
         ``resolve_billing_root`` then ``get_pooled_organization_ids``, both
@@ -2628,7 +2628,7 @@ paths:
         organization needs in order to resolve billing, including while
         ``RESTRICTED``.
 
-        History is forward-only (see the plan's Non-goals / Risk & Rollout Notes):
+        History is forward-only:
         an organization with no closed periods yet gets ``200`` with an empty list,
         never a ``404`` -- there is nothing wrong with that organization, cycle
         close simply has not run for it yet. A caller with **no active
@@ -4441,7 +4441,7 @@ paths:
       description: |-
         PUT /branding/ — create or replace the acting org's branding.
 
-        Audited (Organization Auth-Area Branding plan, Phase 4): a refused write
+        Audited: a refused write
         (gate failure or serializer validation error) raises before this method
         reaches the upsert, so nothing is ever recorded for a refused write. A
         first-time upsert records a CREATE with no diff; an upsert that replaces
@@ -4499,7 +4499,7 @@ paths:
       description: |-
         PATCH /branding/ — update the acting org's branding (partial).
 
-        Audited (Organization Auth-Area Branding plan, Phase 4): a refused write
+        Audited: a refused write
         (gate failure, 404-not-configured, or serializer validation error) raises
         before this method reaches ``serializer.save()``, so nothing is ever
         recorded for a refused write. Always an UPDATE (PATCH never creates —
@@ -6268,11 +6268,10 @@ paths:
       operationId: calendar_groups_slots_availability_windows_list
       description: |-
         Nested under a group's slot: manage group-scoped availability windows
-        for calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
-        Phase 1c).
+        for calendars in that slot's roster.
 
         Reads go through ``AvailableTime.objects.for_group_slot(...)``. Every
-        write delegates to ``CalendarGroupService`` (Phase 1a) -- this view holds
+        write delegates to ``CalendarGroupService`` -- this view holds
         no business logic of its own, only request/response translation. Route
         visibility is gated by ``GroupScopedAvailabilityWindowPermission``; the
         per-calendar write authorization is re-checked by the service and its
@@ -6381,11 +6380,10 @@ paths:
       operationId: calendar_groups_slots_availability_windows_formatted_list
       description: |-
         Nested under a group's slot: manage group-scoped availability windows
-        for calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
-        Phase 1c).
+        for calendars in that slot's roster.
 
         Reads go through ``AvailableTime.objects.for_group_slot(...)``. Every
-        write delegates to ``CalendarGroupService`` (Phase 1a) -- this view holds
+        write delegates to ``CalendarGroupService`` -- this view holds
         no business logic of its own, only request/response translation. Route
         visibility is gated by ``GroupScopedAvailabilityWindowPermission``; the
         per-calendar write authorization is re-checked by the service and its
@@ -6508,11 +6506,10 @@ paths:
       operationId: calendar_groups_slots_availability_windows_retrieve
       description: |-
         Nested under a group's slot: manage group-scoped availability windows
-        for calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
-        Phase 1c).
+        for calendars in that slot's roster.
 
         Reads go through ``AvailableTime.objects.for_group_slot(...)``. Every
-        write delegates to ``CalendarGroupService`` (Phase 1a) -- this view holds
+        write delegates to ``CalendarGroupService`` -- this view holds
         no business logic of its own, only request/response translation. Route
         visibility is gated by ``GroupScopedAvailabilityWindowPermission``; the
         per-calendar write authorization is re-checked by the service and its
@@ -6655,11 +6652,10 @@ paths:
       operationId: calendar_groups_slots_availability_windows_formatted_retrieve
       description: |-
         Nested under a group's slot: manage group-scoped availability windows
-        for calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
-        Phase 1c).
+        for calendars in that slot's roster.
 
         Reads go through ``AvailableTime.objects.for_group_slot(...)``. Every
-        write delegates to ``CalendarGroupService`` (Phase 1a) -- this view holds
+        write delegates to ``CalendarGroupService`` -- this view holds
         no business logic of its own, only request/response translation. Route
         visibility is gated by ``GroupScopedAvailabilityWindowPermission``; the
         per-calendar write authorization is re-checked by the service and its
@@ -6823,12 +6819,11 @@ paths:
       operationId: calendar_groups_slots_blocked_times_list
       description: |-
         Nested under a group's slot: manage group-scoped blocked times for
-        calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
-        Phase 2b).
+        calendars in that slot's roster.
 
         Direct mirror of ``GroupScopedAvailabilityWindowViewSet`` -- reads go
         through ``BlockedTime.objects.for_group_slot(...)``, every write
-        delegates to the Phase 2a ``CalendarGroupService`` block-write methods,
+        delegates to the ``CalendarGroupService`` block-write methods,
         and route visibility is gated by ``GroupScopedBlockedTimePermission``.
         See that viewset's docstring for the full rationale; only the resource
         it manages differs (blocks instead of windows).
@@ -6934,12 +6929,11 @@ paths:
       operationId: calendar_groups_slots_blocked_times_formatted_list
       description: |-
         Nested under a group's slot: manage group-scoped blocked times for
-        calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
-        Phase 2b).
+        calendars in that slot's roster.
 
         Direct mirror of ``GroupScopedAvailabilityWindowViewSet`` -- reads go
         through ``BlockedTime.objects.for_group_slot(...)``, every write
-        delegates to the Phase 2a ``CalendarGroupService`` block-write methods,
+        delegates to the ``CalendarGroupService`` block-write methods,
         and route visibility is gated by ``GroupScopedBlockedTimePermission``.
         See that viewset's docstring for the full rationale; only the resource
         it manages differs (blocks instead of windows).
@@ -7059,12 +7053,11 @@ paths:
       operationId: calendar_groups_slots_blocked_times_retrieve
       description: |-
         Nested under a group's slot: manage group-scoped blocked times for
-        calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
-        Phase 2b).
+        calendars in that slot's roster.
 
         Direct mirror of ``GroupScopedAvailabilityWindowViewSet`` -- reads go
         through ``BlockedTime.objects.for_group_slot(...)``, every write
-        delegates to the Phase 2a ``CalendarGroupService`` block-write methods,
+        delegates to the ``CalendarGroupService`` block-write methods,
         and route visibility is gated by ``GroupScopedBlockedTimePermission``.
         See that viewset's docstring for the full rationale; only the resource
         it manages differs (blocks instead of windows).
@@ -7205,12 +7198,11 @@ paths:
       operationId: calendar_groups_slots_blocked_times_formatted_retrieve
       description: |-
         Nested under a group's slot: manage group-scoped blocked times for
-        calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
-        Phase 2b).
+        calendars in that slot's roster.
 
         Direct mirror of ``GroupScopedAvailabilityWindowViewSet`` -- reads go
         through ``BlockedTime.objects.for_group_slot(...)``, every write
-        delegates to the Phase 2a ``CalendarGroupService`` block-write methods,
+        delegates to the ``CalendarGroupService`` block-write methods,
         and route visibility is gated by ``GroupScopedBlockedTimePermission``.
         See that viewset's docstring for the full rationale; only the resource
         it manages differs (blocks instead of windows).
@@ -7372,13 +7364,12 @@ paths:
       operationId: calendar_groups_slots_quota_rules_list
       description: |-
         Nested under a group's slot: manage group-scoped quota rules for
-        calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
-        Phase 3c).
+        calendars in that slot's roster.
 
         Mirrors ``GroupScopedAvailabilityWindowViewSet``/``GroupScopedBlockedTimeViewSet``
         exactly -- reads go through
         ``CalendarGroupSlotQuotaRule.objects.for_group_slot(...)``, every write
-        delegates to the Phase 3c ``CalendarGroupService`` quota-write methods,
+        delegates to the ``CalendarGroupService`` quota-write methods,
         and route visibility is gated by ``GroupScopedQuotaRulePermission``. The
         resource is simpler than windows/blocks: quota rules are non-recurring
         (no ``rrule_string``/``timezone``/time range) and unmetered (no
@@ -7492,13 +7483,12 @@ paths:
       operationId: calendar_groups_slots_quota_rules_formatted_list
       description: |-
         Nested under a group's slot: manage group-scoped quota rules for
-        calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
-        Phase 3c).
+        calendars in that slot's roster.
 
         Mirrors ``GroupScopedAvailabilityWindowViewSet``/``GroupScopedBlockedTimeViewSet``
         exactly -- reads go through
         ``CalendarGroupSlotQuotaRule.objects.for_group_slot(...)``, every write
-        delegates to the Phase 3c ``CalendarGroupService`` quota-write methods,
+        delegates to the ``CalendarGroupService`` quota-write methods,
         and route visibility is gated by ``GroupScopedQuotaRulePermission``. The
         resource is simpler than windows/blocks: quota rules are non-recurring
         (no ``rrule_string``/``timezone``/time range) and unmetered (no
@@ -7626,13 +7616,12 @@ paths:
       operationId: calendar_groups_slots_quota_rules_retrieve
       description: |-
         Nested under a group's slot: manage group-scoped quota rules for
-        calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
-        Phase 3c).
+        calendars in that slot's roster.
 
         Mirrors ``GroupScopedAvailabilityWindowViewSet``/``GroupScopedBlockedTimeViewSet``
         exactly -- reads go through
         ``CalendarGroupSlotQuotaRule.objects.for_group_slot(...)``, every write
-        delegates to the Phase 3c ``CalendarGroupService`` quota-write methods,
+        delegates to the ``CalendarGroupService`` quota-write methods,
         and route visibility is gated by ``GroupScopedQuotaRulePermission``. The
         resource is simpler than windows/blocks: quota rules are non-recurring
         (no ``rrule_string``/``timezone``/time range) and unmetered (no
@@ -7740,13 +7729,12 @@ paths:
       operationId: calendar_groups_slots_quota_rules_destroy
       description: |-
         Nested under a group's slot: manage group-scoped quota rules for
-        calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
-        Phase 3c).
+        calendars in that slot's roster.
 
         Mirrors ``GroupScopedAvailabilityWindowViewSet``/``GroupScopedBlockedTimeViewSet``
         exactly -- reads go through
         ``CalendarGroupSlotQuotaRule.objects.for_group_slot(...)``, every write
-        delegates to the Phase 3c ``CalendarGroupService`` quota-write methods,
+        delegates to the ``CalendarGroupService`` quota-write methods,
         and route visibility is gated by ``GroupScopedQuotaRulePermission``. The
         resource is simpler than windows/blocks: quota rules are non-recurring
         (no ``rrule_string``/``timezone``/time range) and unmetered (no
@@ -7799,13 +7787,12 @@ paths:
       operationId: calendar_groups_slots_quota_rules_formatted_retrieve
       description: |-
         Nested under a group's slot: manage group-scoped quota rules for
-        calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
-        Phase 3c).
+        calendars in that slot's roster.
 
         Mirrors ``GroupScopedAvailabilityWindowViewSet``/``GroupScopedBlockedTimeViewSet``
         exactly -- reads go through
         ``CalendarGroupSlotQuotaRule.objects.for_group_slot(...)``, every write
-        delegates to the Phase 3c ``CalendarGroupService`` quota-write methods,
+        delegates to the ``CalendarGroupService`` quota-write methods,
         and route visibility is gated by ``GroupScopedQuotaRulePermission``. The
         resource is simpler than windows/blocks: quota rules are non-recurring
         (no ``rrule_string``/``timezone``/time range) and unmetered (no
@@ -7927,13 +7914,12 @@ paths:
       operationId: calendar_groups_slots_quota_rules_formatted_destroy
       description: |-
         Nested under a group's slot: manage group-scoped quota rules for
-        calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
-        Phase 3c).
+        calendars in that slot's roster.
 
         Mirrors ``GroupScopedAvailabilityWindowViewSet``/``GroupScopedBlockedTimeViewSet``
         exactly -- reads go through
         ``CalendarGroupSlotQuotaRule.objects.for_group_slot(...)``, every write
-        delegates to the Phase 3c ``CalendarGroupService`` quota-write methods,
+        delegates to the ``CalendarGroupService`` quota-write methods,
         and route visibility is gated by ``GroupScopedQuotaRulePermission``. The
         resource is simpler than windows/blocks: quota rules are non-recurring
         (no ``rrule_string``/``timezone``/time range) and unmetered (no
@@ -16705,7 +16691,7 @@ components:
         ``reconciliation_unmetered``/``reconciliation_orphaned`` live on the parent
         ``BillingPeriodSummary`` row, not here, and neither is serialized anywhere
         in this module -- internal investigation data, surfaced only in Django
-        admin (see the plan's Non-goals).
+        admin.
       properties:
         resource_key:
           type: string
@@ -16768,7 +16754,7 @@ components:
 
         ``reconciliation_unmetered``/``reconciliation_orphaned`` are deliberately
         absent from every field below -- internal investigation data, surfaced only
-        in Django admin (see the plan's Non-goals).
+        in Django admin.
       properties:
         id:
           type: integer
@@ -18238,8 +18224,7 @@ components:
     GroupScopedAvailabilityWindow:
       type: object
       description: |-
-        Read representation of a group-scoped availability window
-        (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 1c).
+        Read representation of a group-scoped availability window.
 
         Deliberately narrower than ``AvailableTimeSerializer``: there is no nested
         ``recurrence_rule`` write path here, only ``rrule_string`` -- matching
@@ -18406,8 +18391,7 @@ components:
     GroupScopedBlockedTime:
       type: object
       description: |-
-        Read representation of a group-scoped blocked time
-        (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 2b).
+        Read representation of a group-scoped blocked time.
 
         Mirrors ``GroupScopedAvailabilityWindowSerializer`` exactly, plus
         ``reason`` -- there is no nested ``recurrence_rule`` write path here,
@@ -18505,8 +18489,7 @@ components:
     GroupScopedQuotaRule:
       type: object
       description: |-
-        Read representation of a group-scoped quota rule
-        (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 3c).
+        Read representation of a group-scoped quota rule.
 
         Simpler than ``GroupScopedAvailabilityWindowSerializer``/
         ``GroupScopedBlockedTimeSerializer``: quota rules are non-recurring (no

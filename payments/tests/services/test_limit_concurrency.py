@@ -121,7 +121,9 @@ def _run_two_racing_seat_claims(organization: Organization, lock: bool) -> list[
 
 @pytest.mark.django_db(transaction=True)
 def test_two_threads_racing_for_the_last_seat_serialize_and_only_one_wins():
-    """The guarantee every pre-paid enforcement phase rests on."""
+    """The guarantee pre-paid enforcement (seat limits, pooled limits, etc.) rests on:
+    two concurrent claims for the last unit of capacity must serialize so exactly
+    one succeeds."""
     organization = _build_organization_at_one_seat_of_headroom(seat_limit=3)
 
     verdicts = _run_two_racing_seat_claims(organization, lock=True)

@@ -1,10 +1,9 @@
-"""Builds the invitation accept URL (Organization Auth-Area Branding plan, Phase 5
-amendment -- 2026-08-06).
+"""Builds the invitation accept URL, branding slug included.
 
-Phase 5 resolved branding into the invitation *email's content* (app name, logo,
-colors -- see ``organizations.notification_contexts``) but never threaded the
-branding root's slug into the accept link itself, so every invitation -- branded
-or not -- kept pointing at the same slug-less URL. The SPA's accept-invite page
+Branding was originally resolved only into the invitation *email's content* (app
+name, logo, colors -- see ``organizations.notification_contexts``); the branding
+root's slug was never threaded into the accept link itself, so every invitation
+-- branded or not -- pointed at the same slug-less URL. The SPA's accept-invite page
 has no other way to discover which organization a bare token belongs to before
 the user authenticates (there is no unauthenticated "resolve invitation by
 token" endpoint), so without the slug in the URL it can never call

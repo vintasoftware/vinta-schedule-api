@@ -615,7 +615,8 @@ class RescheduleGroupWithCodeInput:
 
     Slot selections are NOT included: v1 keeps existing group/calendar selections
     and changes ONLY the event times.  Full slot re-selection is deferred to a
-    future version (see Open Question 3 in the implementation plan).
+    future version; how it should interact with the existing selections is
+    still an open question.
     """
 
     code: str
@@ -1725,8 +1726,10 @@ class CalendarGroupMutations:
         Only the start/end/timezone fields change — title, description, attendees,
         resource allocations, and the group's calendar selections are preserved
         exactly from the existing event (time-only v1; full slot re-selection is
-        deferred per Open Question 3).  The event id is preserved so that external
-        integrations (e.g. Building Blocks) continue to reference the same event.
+        deferred to a future version, and how it should interact with the existing
+        selections is still an open question).  The event id is preserved so that
+        external integrations (e.g. Building Blocks) continue to reference the
+        same event.
         """
         deps = get_group_booking_code_mutation_dependencies()
 

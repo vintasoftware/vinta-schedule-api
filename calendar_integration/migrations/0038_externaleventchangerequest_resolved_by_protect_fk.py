@@ -1,4 +1,4 @@
-"""Phase 2 (DB-integrity): raw-SQL composite PROTECT FK for ExternalEventChangeRequest.resolved_by.
+"""DB-integrity: raw-SQL composite PROTECT FK for ExternalEventChangeRequest.resolved_by.
 
 The ``ExternalEventChangeRequest.resolved_by`` relation is a Django
 ``ForeignObject`` and therefore carries **no** DB-level foreign-key constraint.

@@ -123,7 +123,7 @@ def reverse_backfill_membership_user_id(apps, schema_editor):
 
 
 class Migration(migrations.Migration):
-    """Backfill EventAttendance.membership_user_id (Phase 3 data migration)."""
+    """Backfill EventAttendance.membership_user_id (data migration)."""
 
     atomic = False
 

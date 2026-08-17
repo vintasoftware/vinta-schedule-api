@@ -11,8 +11,7 @@ same organization as the resolved membership, so no endpoint request can make
 the subtree branch decisive. The tests preserve the branch's direct, low-level
 policy behavior without asserting a request path that does not exist.
 
-Phase 4 keeps this branch hand-written (the plan's "Four rules stay
-hand-written" Guiding Decision) and names the organization explicitly through
+This branch stays hand-written and names the organization explicitly through
 ``organizations.authorization.has_organization_permission``. The package header
 resolver cannot currently produce the cross-binding request shape that would
 make this branch decisive, so these are direct, low-level policy tests rather

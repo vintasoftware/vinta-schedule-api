@@ -16,8 +16,9 @@ one:
     Sanctioned for exactly two callers, both of which are places a human chose
     the name for their own, about-to-be-public organization:
     ``OrganizationService.create_organization`` (the self-serve "create my own
-    organization" flow) and the Phase 1 backfill of pre-existing rows. See the
-    plan's two Guiding Decisions rows on slugs.
+    organization" flow) and
+    ``organizations/migrations/0025_backfill_organization_slugs.py``, which
+    backfilled the pre-existing rows.
 
 Every candidate is checked against :func:`organizations.slug_validation.
 validate_organization_slug` before it is offered, so a derived slug is subject

@@ -30,7 +30,7 @@ FREE_PLAN_SLUG = "free"
 
 # Every LimitedResource member gets a NULL (no ceiling) row on `unlimited` — this is
 # what makes it safe as the rollout switch. Kind still needs to be correct per
-# resource so a later phase's postpaid/prepaid branching does not have to special-case
+# resource so postpaid/prepaid branching does not have to special-case
 # an unlimited plan.
 POSTPAID_RESOURCES = {LimitedResource.EVENT_OCCURRENCES}
 
@@ -41,7 +41,7 @@ class PlanSetting(TypedDict):
 
 
 # Placeholder ceilings for the `free` plan. Real numbers come from product before any
-# organization is actually rolled onto `free` (see the plan's Open Questions). Editing
+# organization is actually rolled onto `free`. Editing
 # them here is safe and expected; `0007`'s copy stays where it is.
 FREE_PLAN_LIMITS: dict[str, PlanSetting] = {
     LimitedResource.ORGANIZATION_MEMBERS: {"limit_value": 5, "overage_unit_price": None},

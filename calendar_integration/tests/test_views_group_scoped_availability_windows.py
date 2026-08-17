@@ -1,5 +1,5 @@
 """Integration tests for the internal REST surface exposing group-scoped
-availability windows (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 1c).
+availability windows.
 
 Covers:
 - Full lifecycle through the nested routes (create -> list -> retrieve ->

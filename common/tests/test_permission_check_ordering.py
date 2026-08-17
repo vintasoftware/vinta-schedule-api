@@ -1,8 +1,8 @@
 """A permission class is asked about the organization the header names.
 
 ``APIView.initial`` runs, in order: content negotiation, versioning,
-``perform_authentication``, ``check_permissions``, ``check_throttles``. Until
-Phase 3.5 of the vinta-django-orgs migration, ``TenantScopedViewMixin`` resolved
+``perform_authentication``, ``check_permissions``, ``check_throttles``.
+``TenantScopedViewMixin`` used to resolve
 ``X-Organization-Id`` *after* all of that -- so every permission class asking
 the membership helper at ``has_permission`` time fell through to the caller's
 **oldest** active membership. Meanwhile ``get_queryset``, object permissions,
@@ -19,7 +19,7 @@ organization.
 
 **These tests are mutation-tested, in-repo and permanently**:
 ``TestRestoringTheOldOrderingReopensIt`` below dispatches the same request
-through a view that reconstructs the pre-Phase-3.5 ordering exactly, and asserts
+through a view that reconstructs the old ordering exactly, and asserts
 it is *admitted*. If the ordering fix were reverted,
 ``TestTheAdminGateFollowsTheHeader`` would report the same 200 that class
 asserts -- so the two together discriminate, rather than one of them merely
@@ -75,7 +75,8 @@ class AdminGatedProbeView(TenantScopedViewMixin, APIView):
 
 
 class OldOrderingAdminGatedProbeView(AdminGatedProbeView):
-    """``AdminGatedProbeView`` with the pre-Phase-3.5 ordering restored.
+    """``AdminGatedProbeView`` with the old resolve-after-``check_permissions``
+    ordering restored.
 
     Not a historical curiosity -- it is the mutant. It reconstructs the exact
     old request state as well as its ordering: authentication records the oldest
@@ -222,8 +223,8 @@ class TestTheAdminGateFollowsTheHeader:
     def test_a_plain_member_of_their_oldest_organization_who_administers_the_named_one_is_admitted(
         self, member_here_admin_there: Any, newer_organization: Organization
     ) -> None:
-        """The admit direction, and the only one of the two Phase 3.5 flips a
-        served request the old ordering refused. The caller is a plain member
+        """The admit direction, and the only one of the two ordering-fix flips
+        that admits a served request the old ordering refused. The caller is a plain member
         of the organization the old fallback would have answered
         (``older_organization``) and admin of the organization the header
         names (``newer_organization``). The old ordering read the fallback --
@@ -248,7 +249,7 @@ class TestRestoringTheOldOrderingReopensIt:
     missing membership, a role that is not admin, an unrelated permission.
     """
 
-    def test_the_pre_phase_3_5_ordering_admits_the_request_the_fix_refuses(
+    def test_the_old_resolve_after_check_permissions_ordering_admits_the_request_the_fix_refuses(
         self, admin_here_member_there: Any, newer_organization: Organization
     ) -> None:
         response = _dispatch(
@@ -260,7 +261,7 @@ class TestRestoringTheOldOrderingReopensIt:
         # a plain member of -- the gate said yes about the *other* one.
         assert OldOrderingAdminGatedProbeView.organization_seen_by_the_body == newer_organization.pk
 
-    def test_the_pre_phase_3_5_ordering_refuses_the_admit_direction_too(
+    def test_the_old_resolve_after_check_permissions_ordering_refuses_the_admit_direction_too(
         self, member_here_admin_there: Any, newer_organization: Organization
     ) -> None:
         """The admit-direction mirror. If this did not refuse the request

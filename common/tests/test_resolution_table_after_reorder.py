@@ -1,8 +1,8 @@
 """The resolution table, restated against the reordered ``initial()``.
 
-Phase 3.5 moved organization resolution from *after* the whole of
-``APIView.initial`` to between ``perform_authentication`` and
-``check_permissions``, and then handed the seam and the table themselves to
+Organization resolution now happens between ``perform_authentication`` and
+``check_permissions`` (rather than after the whole of ``APIView.initial``),
+and the seam and the table themselves live in
 ``vinta_orgs.drf.OrganizationScopedAPIViewMixin`` /
 ``common.organization_services.memberships.resolve_for_user``. **This file is
 ours and stays ours** even though the package now implements the table: it pins

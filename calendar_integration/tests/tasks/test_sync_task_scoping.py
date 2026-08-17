@@ -1,19 +1,20 @@
-"""What the Celery task organization binding does, before and after Phase 2a.
+"""What the Celery task organization binding does, before and after
+``calendar_integration``'s models started scoping to it implicitly.
 
-Phase 0 added ``common.organization_context.organization_context(...)`` around
-this task body and proved it changed *nothing* observable -- the managers of the
-day ignored the binding entirely and required their own explicit ``organization``
-filter. **Phase 2a ends that**: ``calendar_integration``'s models now scope to the
-bound organization implicitly, and with ``STRICT_ORGANIZATION_FILTER = True`` a
-scoped read with nothing bound raises ``OrganizationNotFoundError`` instead of
-silently returning nothing.
+Binding ``common.organization_context.organization_context(...)`` around this
+task body used to change *nothing* observable -- the managers of the day
+ignored the binding entirely and required their own explicit ``organization``
+filter. That has since changed: ``calendar_integration``'s models now scope to
+the bound organization implicitly, and with ``STRICT_ORGANIZATION_FILTER =
+True`` a scoped read with nothing bound raises ``OrganizationNotFoundError``
+instead of silently returning nothing.
 
 So the comparison this suite used to make -- run the body bound and unbound, and
 assert the two are indistinguishable -- is no longer the contract, and asserting
 it would assert the opposite of what the migration is for. The structure is kept
 (same two runs, same normalized description of what happened) with the expectation
 inverted: the *bound* run does the work, and the *unbound* run, which reproduces
-the pre-Phase-0 code path exactly, now fails loudly at the first scoped read. That
+the old unscoped code path exactly, now fails loudly at the first scoped read. That
 is the whole safety argument for migrating without a feature flag, and it is
 pinned here rather than asserted in prose.
 """
@@ -45,7 +46,7 @@ pytestmark = pytest.mark.django_db
 def _unbound_organization_context(organization: Organization | None) -> Iterator[None]:
     """Stand-in for ``organization_context`` that binds nothing at all.
 
-    Reproduces the pre-Phase-0 code path exactly: the task body runs
+    Reproduces the old unscoped code path exactly: the task body runs
     unmodified, but no organization is ever bound to
     ``common.organization_context``. ``organization`` is accepted (matching
     the real context manager's signature) and deliberately unused.
@@ -161,7 +162,7 @@ class TestSyncCalendarTaskOrganizationBindingIsLoadBearing:
             "sync_events_call_count": 1,
         }
 
-        # The same body with nothing bound -- the pre-Phase-0 code path -- no
+        # The same body with nothing bound -- the old unscoped code path -- no
         # longer reads as "no data"; it refuses, at the first scoped read
         # (``CalendarSync.objects.get_not_started_calendar_sync(...)``).
         with pytest.raises(OrganizationNotFoundError):

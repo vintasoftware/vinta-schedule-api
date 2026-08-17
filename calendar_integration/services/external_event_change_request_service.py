@@ -269,11 +269,11 @@ class ExternalEventChangeRequestService:
         approver_user_ids.update(attendee_user_ids)
 
         # Organization admins (all active admins in the organization). Counted
-        # by capability rather than by the ``role`` column Phase 6 of the
-        # vinta-django-orgs migration dropped -- the same
-        # ``holding_permission`` the last-admin guard counts by, and the same
-        # question ``can_resolve`` asks of one membership, so the people
-        # notified are exactly the people admitted.
+        # by capability rather than by a ``role`` column (``OrganizationMembership``
+        # has none; groups replaced it) -- the same ``holding_permission`` the
+        # last-admin guard counts by, and the same question ``can_resolve``
+        # asks of one membership, so the people notified are exactly the
+        # people admitted.
         admin_user_ids = (
             OrganizationMembership.objects.filter(
                 organization_id=organization_id,
@@ -507,9 +507,9 @@ class ExternalEventChangeRequestService:
             return False
 
         # Admins can resolve any request in their organization. Read off the
-        # membership's permissions since Phase 6 of the vinta-django-orgs
-        # migration dropped ``role``; same set, same single implementation as
-        # ``ExternalEventChangeRequestQuerySet.resolvable_by``.
+        # membership's permissions rather than a ``role`` column (``OrganizationMembership``
+        # has none; groups replaced it); same set, same single implementation
+        # as ``ExternalEventChangeRequestQuerySet.resolvable_by``.
         if membership_holds_permission(membership, MANAGE_MEMBERS):
             return True
 

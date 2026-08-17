@@ -152,8 +152,8 @@ class PaymentService[
         outbound call -- gating charges on it both refuses a provider whose secret
         key works and green-lights one whose secret key is empty. It also
         deliberately collapses "unknown slug" and "unconfigured" into a single
-        error for its own read-only purpose (Phase 3 tracking decision #3), a
-        collapse that must not reach adapter resolution, where the
+        error for its own read-only purpose, a collapse that must not reach
+        adapter resolution, where the
         Unknown-vs-NotConfigured distinction is what tells "bad data in the pin
         column" apart from "this environment has no credentials for that provider".
 
@@ -750,14 +750,13 @@ class PaymentService[
         Thin wrapper over `BaseSubscriptionAdapter.pay_outstanding_invoice`,
         exactly like `update_subscription_payment_token`/`change_subscription_plan`
         above -- see that base method's docstring for the full contract and why
-        it is not `change_subscription_plan` (Billing API Contract Hardening,
-        Phase 4). Existing row: resolves from `subscription`'s own stored
-        provider (Rule A) -- a subscription with live provider-side state must
-        be driven at the provider holding it, never the organization's current
-        pin.
+        it is not `change_subscription_plan`. Existing row: resolves from
+        `subscription`'s own stored provider (Rule A) -- a subscription with
+        live provider-side state must be driven at the provider holding it,
+        never the organization's current pin.
 
-        `payment_token` is optional (Billing API Contract Hardening, Phase 5)
-        -- this method now has two callers with two different meanings:
+        `payment_token` is optional -- this method now has two callers with two
+        different meanings:
 
         - `SubscriptionService.retry_payment` (the user-facing endpoint) calls
           this *after* `update_subscription_payment_token`, with the token it

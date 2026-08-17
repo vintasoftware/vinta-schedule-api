@@ -20,9 +20,9 @@ What changes, and why
   NULLs in and ``0026`` makes it NOT NULL, because the column cannot be made NOT
   NULL before the rows have values.
 * ``groups`` / ``permissions`` many-to-many relations appear, with their two
-  through tables. They are empty and unread until Phase 3 of the
-  vinta-django-orgs migration plan; ``role`` and ``is_billing_owner`` still back
-  every authorization decision.
+  through tables. They stay empty and unread until ``0028_seed_permission_groups``
+  and ``0029_backfill_membership_groups`` populate them; until then ``role`` and
+  ``is_billing_owner`` still back every authorization decision.
 * The membership's ``user`` foreign key changes its reverse accessor from
   ``user.organization_memberships`` to ``user.memberships`` -- a Python-level
   rename with no DDL.

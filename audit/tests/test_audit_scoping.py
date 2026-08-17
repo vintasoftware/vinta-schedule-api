@@ -222,7 +222,7 @@ class TestTheAuditTaskBindsTheRecordsOwnOrganization:
     ) -> None:
         """``persist_audit_record`` runs in a worker with nothing bound.
 
-        Phase 0 wrapped its body in ``organization_context(...)`` built from the
+        Its body is wrapped in ``organization_context(...)`` built from the
         payload; this pins that the row still lands in the payload's
         organization now that the manager reads that binding.
         """

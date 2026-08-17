@@ -97,7 +97,7 @@ class TestPooledUsage:
         assert result.limit_value == 5
 
     def test_two_children_over_the_pooled_ceiling_block_each_other(self, service, plan):
-        """The phase's acceptance scenario, verbatim: a reseller root with two
+        """The canonical pooled-limit scenario: a reseller root with two
         children each holding 3 members against a pooled limit of 5."""
         root = baker.make(Organization, parent=None, can_invite_organizations=True)
         child_a = baker.make(Organization, parent=root, can_invite_organizations=False)

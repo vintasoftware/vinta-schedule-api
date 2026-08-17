@@ -44,11 +44,11 @@ The core SQL is extracted to
 call ``backfill_membership_user_id_sql()`` and ``collect_orphans()`` directly
 without running the migration runner.
 
-Test coverage note (Phase 2b)
------------------------------
-The Phase-1 live-ORM backfill tests (``tests/test_ownership_expand.py``:
+Test coverage note
+------------------
+The live-ORM backfill tests (``tests/test_ownership_expand.py``:
 CSV report, OSError fallback, reverse, idempotency, orphan detection) were
-removed in Phase 2b when migration 0025 dropped the ``CalendarOwnership.user``
+removed when migration 0025 dropped the ``CalendarOwnership.user``
 column — those tests referenced ``co.user_id`` via the live ORM, which no longer
 exists on the current model. ``django-test-migrations`` is **not** a project
 dependency (and was deliberately not added), so a migration-state test pinned at
@@ -132,7 +132,7 @@ def reverse_backfill_membership_user_id(apps, schema_editor):
 
 
 class Migration(migrations.Migration):
-    """Backfill CalendarOwnership.membership_user_id (Phase 1 data migration)."""
+    """Backfill CalendarOwnership.membership_user_id (data migration)."""
 
     atomic = False
 

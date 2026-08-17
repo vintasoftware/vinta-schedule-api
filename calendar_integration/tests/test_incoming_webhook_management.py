@@ -272,7 +272,7 @@ class TestWebhookAdmin(TestCase):
         assert WebhookHealthDashboard is not None
 
 
-class TestPhase4Integration(TestCase):
+class TestWebhookGraphQLIntegration(TestCase):
     """Integration tests for the webhook GraphQL types and mutations."""
 
     def setUp(self):

@@ -16,8 +16,8 @@ from django.db import migrations
 # for *orphan* attendances (the attendee is not — or is no longer — a member of the
 # event's organization). Dropping the ``user`` column PERMANENTLY discards the
 # attendee identity of those orphan rows; their user_id cannot be resurrected on
-# reverse (they keep user_id = NULL). Orphans were CSV-reported in the Phase 3
-# backfill (migration 0029) before this drop. Member-owned rows recover their
+# reverse (they keep user_id = NULL). Orphans were CSV-reported in the backfill
+# (migration 0029) before this drop. Member-owned rows recover their
 # user_id on reverse via the ``membership_user_id`` backfill below.
 DROP_USER_COLUMN = """
 ALTER TABLE calendar_integration_eventattendance
@@ -34,15 +34,15 @@ UPDATE calendar_integration_eventattendance
 
 
 class Migration(migrations.Migration):
-    """Phase 4b cutover (schema half): drop EventAttendance.user.
+    """Cutover (schema half): drop EventAttendance.user.
 
     - The ``user`` field is removed from model state and the legacy ``user_id``
       column is dropped from the DB. EventAttendance is higher-volume than
       CalendarOwnership, but a column DROP is a brief metadata-only ACCESS
       EXCLUSIVE lock (no table rewrite, no per-row work); storage is reclaimed at
       the next VACUUM, not inline. The lock is acceptable.
-    - **No unique constraint is added.** Unlike CalendarOwnership (Phase 2b),
-      EventAttendance has no ``update_or_create`` keyed on ``(event, member)`` that
+    - **No unique constraint is added.** Unlike CalendarOwnership, EventAttendance
+      has no ``update_or_create`` keyed on ``(event, member)`` that
       needs one, and there is no pre-existing unique on ``(event, user)``. Adding a
       new partial unique on ``(event_fk, membership_user_id)`` could fail on
       pre-existing duplicate member attendances, so it is deliberately skipped.

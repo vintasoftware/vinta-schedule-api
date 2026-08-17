@@ -1,7 +1,7 @@
 """
 Unit tests for ReplyToDjangoEmailNotificationAdapter.
 
-Organization Auth-Area Branding plan, Phase 6: the invitation reply-to plumbing. The
+Covers the invitation reply-to plumbing. The
 vintasend/vintasend_django email adapter has no reply-to concept at all -- it always
 sends with no ``Reply-To`` header. ``ReplyToDjangoEmailNotificationAdapter`` extends it
 to honor an optional ``reply_to`` string in the rendered notification context, while

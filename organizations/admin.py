@@ -1,9 +1,8 @@
 """Admin for ``Organization`` and ``OrganizationBranding`` -- intentionally cross-organization.
 
-Phase 0 of the vinta-django-orgs migration
-(``ai-plans/2026-08-12-VINTA_DJANGO_ORGS_MIGRATION_IMPLEMENTATION_PLAN.md``) asks every
-admin here to route its org-scoped querysets through ``original_manager`` rather than
-binding an ``organization_context``, so the cross-org intent is written down rather than
+The convention across this codebase is that an admin over organization-scoped models
+routes its querysets through ``original_manager`` rather than binding an
+``organization_context``, so the cross-org intent is written down rather than
 inferred (see ``audit/admin.py::AuditAdmin.get_queryset`` for the precedent this mirrors).
 There is nothing to change in *this* file to satisfy that: neither ``Organization`` nor
 ``OrganizationBranding`` is organization-scoped -- ``Organization`` is the tenant itself,
@@ -50,11 +49,12 @@ from payments.services.subscription_service import SubscriptionService
 #   surface of a membership, so any staff user with the change permission could
 #   grant themselves organization admin or billing management in a single form
 #   post. It is left unregistered outright; a membership admin that carries
-#   those rules is not this phase's.
+#   those rules does not exist yet, and re-registering one without them would
+#   reopen the escalation.
 # * ``OrganizationAdmin`` is replaced (below) rather than merely dropped: ours
 #   validates the slug, refuses a parent cycle, and puts every new organization
 #   on a billing plan. The package's also inlines ``OrganizationSite``, which we
-#   do not use at all (domain-based tenancy is a Non-goal).
+#   do not use at all -- this project does not do domain-based tenancy.
 for _package_registered_model in (Organization, OrganizationMembership):
     if admin.site.is_registered(_package_registered_model):
         admin.site.unregister(_package_registered_model)
@@ -267,8 +267,8 @@ class OrganizationAdmin(admin.ModelAdmin):
 class OrganizationBrandingAdminForm(forms.ModelForm):
     """Refuses to save branding for an organization that has a parent.
 
-    Admin is not an escape hatch: "no branding for organizations inside a
-    hierarchy" (see the plan's Non-goals) holds for staff too, mirroring here
+    Admin is not an escape hatch: the product rule "no branding for
+    organizations inside a hierarchy" holds for staff too, mirroring here
     what the other two write surfaces (``OrganizationBrandingView``,
     ``update_branding``) enforce via ``organizations.permissions.
     evaluate_branding_write_gate``. Deliberately checks ONLY the parent

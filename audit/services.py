@@ -66,9 +66,8 @@ class AuditService:
         never needs to re-read a membership row that may have changed or been
         deleted.
 
-        The label came off ``membership.role`` until Phase 6 of the
-        vinta-django-orgs migration dropped that column; it is now derived from
-        ``organizations.manage_members``, which names the same set. The two
+        The label comes off ``organizations.manage_members``, which names the
+        same set the retired ``membership.role`` column used to. The two
         published values (``"admin"`` / ``"member"``) are deliberately unchanged
         -- every ``audit_audit.actor_role`` row already on disk holds one of
         them, and ``AuditRepository.query`` matches the value exactly, so

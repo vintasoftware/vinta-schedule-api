@@ -8,7 +8,7 @@
   resolve at the billing root, consistent with every other read/check in this
   domain (``EntitlementService``).
 
-Also covers Phase 3's additive fields: attribution (``by_organization``), the
+Also covers additive fields: attribution (``by_organization``), the
 plan snapshot, and the plan/add-on decomposition of ``limit_value``.
 """
 

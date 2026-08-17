@@ -1,5 +1,4 @@
-"""Add group-slot scoping to AvailableTime and BlockedTime (Phase 0 of
-CALENDAR_GROUP_SCOPED_AVAILABILITY).
+"""Add group-slot scoping to AvailableTime and BlockedTime.
 
 Both ``AvailableTime`` and ``BlockedTime`` are hot tables (recurring-event
 expansion runs against them on every availability read), so this migration
@@ -27,8 +26,7 @@ follows the lock-aware column-addition pattern end to end:
    the ``SHARE`` lock a plain ``CREATE INDEX`` would hold for the build's
    duration, which would block writes on a hot table. The index is a partial
    index (``WHERE group_slot_fk_id IS NOT NULL``) because the column is a base
-   row (NULL) for the overwhelming majority of existing and future rows — see
-   ``CALENDAR_GROUP_SCOPED_AVAILABILITY`` Guiding Decisions, "Row scoping".
+   row (NULL) for the overwhelming majority of existing and future rows.
 
 No FK cascade is configured at the database level (``ON DELETE`` is omitted,
 matching every other ``OrganizationForeignKey`` in this codebase — see
@@ -39,8 +37,8 @@ Python-side deletion collector instead, via the model field's
 ``Model._base_manager`` (see ``django/db/models/deletion.py``), which for both
 models — since neither ``AvailableTime``/``BlockedTime`` nor any ancestor sets
 ``Meta.base_manager_name`` — is Django's own auto-created, always-unfiltered
-``Manager()``, never the ``group_slot``-filtered ``objects`` manager added in
-this same phase. So deleting a ``CalendarGroupSlot`` still finds and cascades
+``Manager()``, never the ``group_slot``-filtered ``objects`` manager added by
+this migration. So deleting a ``CalendarGroupSlot`` still finds and cascades
 to every referencing row, scoped or not.
 
 **The FK constraints are ``DEFERRABLE INITIALLY DEFERRED`` — load-bearing, not
