@@ -304,12 +304,78 @@ exactly which query it is and why it cannot be removed.
 reviewer confirmed it is not masking another defect, but calendar webhooks do not dispatch
 at all in the container-wired path today.
 
+### Phase 5 — Internal REST read, write and filtering ✅
+
+- **Branch**: `plan/external-client-identifiers/phase-5` (base: `plan/external-client-identifiers/phase-4`)
+- **Implementers**: `claude-sonnet-5` ×3 (see provenance below)
+- **Reviewer**: `claude-sonnet-5` (Tier 3) — 0 BLOCKER, 4 SHOULD-FIX, 2 NIT
+- **Fixer**: `claude-sonnet-5`
+- **Commits**: `2184dd29` (CSafeLoader), `1d849b78` (the phase)
+- **Diff**: 7 files, +1012 / −3
+
+`CalendarEventSerializer` and the external-attendee serializers gain a nested writable
+`external_client_identifiers` list mapped onto the Phase 2 dataclasses.
+`CalendarEventVirtualModel` and `ExternalAttendeeVirtualModel` prefetch the generic
+relation. `CalendarEventFilterSet` gains the two filter parameters, both-or-neither, with
+`system` normalized before matching and an explicit organization filter on the join.
+`schema.yml` regenerated; `schema-auth.yml` untouched.
+
+**Provenance — this phase was unusual and is worth recording.** Two implementer agents were
+killed mid-flight by the environment, neither having committed anything; the second also
+hung for ~10 minutes on `docker wait` against a container `--rm` had already removed, after
+redirecting its baseline log to a path *inside* that ephemeral container. Their work
+survived only because the second had run `git stash -u` before a baseline check. A third
+agent recovered the stash, committed it immediately as a checkpoint, audited it line by
+line and found **no changes needed** — a claim the conductor and the reviewer both re-derived
+rather than accepted. The lesson applied to every later agent: commit early and often, never
+background a docker run, never log into an ephemeral container.
+
+**Review verdicts on the three things that most needed re-deriving:**
+
+- **Tri-state is sound.** Verified through DRF internals: `Field.validate_empty_values` raises
+  `SkipField` whenever a field is `required=False` with no `default=`, on both `PATCH` and
+  `PUT`. Explicit `null` is a 400, not a silent collapse into clear-or-leave. No request
+  shape found where "omitted" and "clear" merge.
+- **The 22 → 26 pinned ICS query count is honest.** `download_ics` fetches the event twice
+  through the virtual-model queryset, so the new prefetch is paid twice per model — 2 × 2 = 4.
+  Confirmed by reverting to 22 and watching it fail with a full query dump. It is *not* the
+  floor for a well-designed endpoint; the double fetch is pre-existing waste this phase
+  merely quantifies. See follow-up 7.
+- **The `CSafeLoader` swap is legitimate but was scope creep**, bundled into the identifiers
+  commit. Split out into its own `test(organizations):` commit.
+
+**Gaps closed after review.** The external-attendee identifier surface — a named Phase 5
+deliverable — had **zero runtime coverage**: every test payload hardcoded
+`"external_attendances": []`, so the nested tri-state and nested N+1 prevention were verified
+only by inference. Added POST-persists, PATCH-omit-survives, PATCH-`[]`-clears, and an N+1
+test whose worst case includes attendees carrying identifiers (**9 queries at N=3 and at
+N=5**). REST-level 400 coverage was also extended from 2 of 6 domain errors to 4, merged into
+one parametrized test. `InvalidTargetError` and `CrossOrganizationError` were confirmed
+genuinely unreachable through this endpoint's request body — the target model and
+organization are resolved server-side, never caller-supplied — so no contrived tests were
+invented to reach them.
+
+**Conductor-verified falsifiability** (each mutation applied, observed red, reverted,
+observed green): event-level `PATCH`-omit fails with `assert [] == [{'identifier'...}]` when
+`update()`'s pop default becomes `[]`; attendee-level `PATCH`-omit fails the same way when
+the nested `.get()` gains a `[]` default. Production files confirmed byte-identical
+afterwards — `calendar_event_service.py` is not in the phase diff at all.
+
+**History was reshaped, content was not.** The survival checkpoints (`wip(...)`, which is not
+an allowed Conventional Commits type here) were collapsed into two properly-typed commits.
+The resulting tree hash is byte-identical to the verified 6103-passing state.
+
+**Verification** (conductor re-ran): `ruff check` clean · `ruff format --check` 648 files ·
+`makemigrations --check` no changes · `check --deploy` 0 errors · `mypy` 291 pre-existing,
+0 new · **full repo `pytest -n auto` → 6103 passed, 0 failed** (6087 + 16).
+
 ## Current phase
 
-**Phase 5 — Internal REST read, write and filtering**
-- Branch: `plan/external-client-identifiers/phase-5`
-- Base: `plan/external-client-identifiers/phase-4`
+**Phase 6 — Public `updateCalendarEvent` mutation**
+- Branch: `plan/external-client-identifiers/phase-6`
+- Base: `plan/external-client-identifiers/phase-5`
 - Status: not started
+- **Reviewer override: Tier 4 (`claude-opus-4-8`)** — the plan's only review-model override.
 
 ## Follow-ups (not blocking this plan)
 
@@ -376,11 +442,25 @@ at all in the container-wired path today.
    there are no extra dispatches — but the pattern is copy-pasted and would pay the same
    per-dispatch cost if that ever changes.
 
+7. **`download_ics` fetches the same event twice.** `calendar_integration/views.py` calls
+   `self.get_object()` (which already pulls the full virtual-model prefetch stack) and then
+   re-fetches the same row through `self.get_queryset()` purely to attach ICS-specific
+   `prefetch_related`. Every prefetched relation is therefore paid twice; adding
+   `external_client_identifiers` to two virtual models is what moved that test's pinned
+   count 22 → 26. Pre-existing, not caused by this plan. Fix by prefetching onto the object
+   `get_object()` already returned (`prefetch_related_objects([event], ...)`) or folding the
+   ICS relations into `get_queryset()`, then re-pin the count.
+
+8. **Re-pin query-count assertions after PR #278 merges.** The webhook DI fix makes calendar
+   side-effects actually dispatch, and each dispatch costs a `WebhookConfiguration` lookup.
+   The assertions added by this plan — Phase 2's 29, Phase 4's 75, Phase 5's ICS 26 and the
+   N+1 counts — will shift when #278 lands and this stack rebases. Nothing on `main` pins
+   counts today, so #278 itself is green.
+
 ## Remaining phases
 
 | Phase | Title | Depends on |
 |---|---|---|
-| 5 | Internal REST read, write and filtering | 1, 2 |
 | 6 | Public `updateCalendarEvent` mutation | 1, 2, 3 |
 
 ## Deferred phases
