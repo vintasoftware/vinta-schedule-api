@@ -1,5 +1,3 @@
-import django_virtual_models as v
-
 from calendar_integration.models import (
     AvailableTime,
     BlockedTime,
@@ -19,17 +17,18 @@ from calendar_integration.models import (
     RecurrenceRule,
     ResourceAllocation,
 )
+from common.virtual_models import OrganizationScopedVirtualModel
 from organizations.virtual_models import OrganizationMembershipVirtualModel
 
 
-class CalendarOwnershipVirtualModel(v.VirtualModel):
+class CalendarOwnershipVirtualModel(OrganizationScopedVirtualModel):
     membership = OrganizationMembershipVirtualModel()
 
     class Meta:
         model = CalendarOwnership
 
 
-class CalendarVirtualModel(v.VirtualModel):
+class CalendarVirtualModel(OrganizationScopedVirtualModel):
     memberships = OrganizationMembershipVirtualModel(many=True)
     calendar_ownerships = CalendarOwnershipVirtualModel(many=True)
 
@@ -37,50 +36,50 @@ class CalendarVirtualModel(v.VirtualModel):
         model = Calendar
 
 
-class ExternalAttendeeVirtualModel(v.VirtualModel):
+class ExternalAttendeeVirtualModel(OrganizationScopedVirtualModel):
     class Meta:
         model = ExternalAttendee
 
 
-class EventExternalAttendanceVirtualModel(v.VirtualModel):
+class EventExternalAttendanceVirtualModel(OrganizationScopedVirtualModel):
     external_attendee = ExternalAttendeeVirtualModel()
 
     class Meta:
         model = EventExternalAttendance
 
 
-class EventAttendanceVirtualModel(v.VirtualModel):
+class EventAttendanceVirtualModel(OrganizationScopedVirtualModel):
     membership = OrganizationMembershipVirtualModel()
 
     class Meta:
         model = EventAttendance
 
 
-class ResourceAllocationVirtualModel(v.VirtualModel):
+class ResourceAllocationVirtualModel(OrganizationScopedVirtualModel):
     calendar = CalendarVirtualModel()
 
     class Meta:
         model = ResourceAllocation
 
 
-class RecurrenceRuleVirtualModel(v.VirtualModel):
+class RecurrenceRuleVirtualModel(OrganizationScopedVirtualModel):
     class Meta:
         model = RecurrenceRule
 
 
-class NestedCalendarEventVirtualModel(v.VirtualModel):
+class NestedCalendarEventVirtualModel(OrganizationScopedVirtualModel):
     class Meta:
         model = CalendarEvent
 
 
-class CalendarGroupSlotMembershipVirtualModel(v.VirtualModel):
+class CalendarGroupSlotMembershipVirtualModel(OrganizationScopedVirtualModel):
     calendar = CalendarVirtualModel()
 
     class Meta:
         model = CalendarGroupSlotMembership
 
 
-class CalendarGroupSlotVirtualModel(v.VirtualModel):
+class CalendarGroupSlotVirtualModel(OrganizationScopedVirtualModel):
     memberships = CalendarGroupSlotMembershipVirtualModel(many=True)
     calendars = CalendarVirtualModel(many=True)
 
@@ -88,14 +87,14 @@ class CalendarGroupSlotVirtualModel(v.VirtualModel):
         model = CalendarGroupSlot
 
 
-class CalendarGroupVirtualModel(v.VirtualModel):
+class CalendarGroupVirtualModel(OrganizationScopedVirtualModel):
     slots = CalendarGroupSlotVirtualModel(many=True)
 
     class Meta:
         model = CalendarGroup
 
 
-class CalendarEventGroupSelectionVirtualModel(v.VirtualModel):
+class CalendarEventGroupSelectionVirtualModel(OrganizationScopedVirtualModel):
     slot = CalendarGroupSlotVirtualModel()
     calendar = CalendarVirtualModel()
 
@@ -103,7 +102,7 @@ class CalendarEventGroupSelectionVirtualModel(v.VirtualModel):
         model = CalendarEventGroupSelection
 
 
-class CalendarEventVirtualModel(v.VirtualModel):
+class CalendarEventVirtualModel(OrganizationScopedVirtualModel):
     calendar = CalendarVirtualModel()
     external_attendances = EventExternalAttendanceVirtualModel(many=True)
     attendances = EventAttendanceVirtualModel(many=True)
@@ -117,7 +116,7 @@ class CalendarEventVirtualModel(v.VirtualModel):
         model = CalendarEvent
 
 
-class EventRecurrenceExceptionVirtualModel(v.VirtualModel):
+class EventRecurrenceExceptionVirtualModel(OrganizationScopedVirtualModel):
     parent_event = CalendarEventVirtualModel()
     modified_event = CalendarEventVirtualModel()
 
@@ -125,12 +124,12 @@ class EventRecurrenceExceptionVirtualModel(v.VirtualModel):
         model = EventRecurrenceException
 
 
-class NestedBlockedTimeVirtualModel(v.VirtualModel):
+class NestedBlockedTimeVirtualModel(OrganizationScopedVirtualModel):
     class Meta:
         model = BlockedTime
 
 
-class BlockedTimeVirtualModel(v.VirtualModel):
+class BlockedTimeVirtualModel(OrganizationScopedVirtualModel):
     calendar = CalendarVirtualModel()
     recurrence_rule = RecurrenceRuleVirtualModel()
     parent_recurring_object = NestedBlockedTimeVirtualModel()
@@ -139,12 +138,12 @@ class BlockedTimeVirtualModel(v.VirtualModel):
         model = BlockedTime
 
 
-class NestedAvailableTimeVirtualModel(v.VirtualModel):
+class NestedAvailableTimeVirtualModel(OrganizationScopedVirtualModel):
     class Meta:
         model = AvailableTime
 
 
-class AvailableTimeVirtualModel(v.VirtualModel):
+class AvailableTimeVirtualModel(OrganizationScopedVirtualModel):
     calendar = CalendarVirtualModel()
     recurrence_rule = RecurrenceRuleVirtualModel()
     parent_recurring_object = NestedAvailableTimeVirtualModel()
@@ -153,9 +152,8 @@ class AvailableTimeVirtualModel(v.VirtualModel):
         model = AvailableTime
 
 
-class GroupScopedAvailabilityWindowVirtualModel(v.VirtualModel):
-    """Virtual model for ``GroupScopedAvailabilityWindowSerializer``
-    (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 1c).
+class GroupScopedAvailabilityWindowVirtualModel(OrganizationScopedVirtualModel):
+    """Virtual model for ``GroupScopedAvailabilityWindowSerializer``.
 
     Deliberately narrower than ``AvailableTimeVirtualModel``: that serializer
     sources ``calendar_id``/``group_slot_id`` from the raw FK columns and
@@ -173,9 +171,8 @@ class GroupScopedAvailabilityWindowVirtualModel(v.VirtualModel):
         model = AvailableTime
 
 
-class GroupScopedBlockedTimeVirtualModel(v.VirtualModel):
-    """Virtual model for ``GroupScopedBlockedTimeSerializer``
-    (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 2b).
+class GroupScopedBlockedTimeVirtualModel(OrganizationScopedVirtualModel):
+    """Virtual model for ``GroupScopedBlockedTimeSerializer``.
 
     Mirrors ``GroupScopedAvailabilityWindowVirtualModel`` exactly, for the
     same reason: the serializer sources ``calendar_id``/``group_slot_id``
@@ -194,9 +191,8 @@ class GroupScopedBlockedTimeVirtualModel(v.VirtualModel):
         model = BlockedTime
 
 
-class GroupScopedQuotaRuleVirtualModel(v.VirtualModel):
-    """Virtual model for ``GroupScopedQuotaRuleSerializer``
-    (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 3c).
+class GroupScopedQuotaRuleVirtualModel(OrganizationScopedVirtualModel):
+    """Virtual model for ``GroupScopedQuotaRuleSerializer``.
 
     Simpler than ``GroupScopedAvailabilityWindowVirtualModel``/
     ``GroupScopedBlockedTimeVirtualModel``: a quota rule has no recurrence and
@@ -211,7 +207,7 @@ class GroupScopedQuotaRuleVirtualModel(v.VirtualModel):
         model = CalendarGroupSlotQuotaRule
 
 
-class ExternalEventChangeRequestVirtualModel(v.VirtualModel):
+class ExternalEventChangeRequestVirtualModel(OrganizationScopedVirtualModel):
     """Virtual model for ``ExternalEventChangeRequest`` serialization.
 
     The serializer only reads direct columns (``event_fk_id``,

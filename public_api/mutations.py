@@ -20,6 +20,7 @@ from calendar_integration.constants import CalendarType
 from calendar_integration.exceptions import (
     BookingPolicyViolationError,
     CalendarGroupSlotConfigNotFoundError,
+    CalendarGroupValidationError,
     CalendarIntegrationError,
     DuplicateBookingPolicyError,
     NoAvailableTimeWindowsError,
@@ -64,6 +65,7 @@ from organizations.branding_logo import (
 from organizations.exceptions import (
     BrandingLogoUploadRejectedError,
     NoServiceAccountConfiguredError,
+    OrganizationGroupNotAssignableError,
     UserAlreadyHasMembershipError,
 )
 from organizations.invitation_urls import build_invitation_accept_url
@@ -73,6 +75,7 @@ from organizations.models import (
     OrganizationMembership,
     resolve_branding_for_display,
 )
+from organizations.permission_catalog import group_for_invitation_groups
 from organizations.permissions import (
     BrandingWriteGateReason,
     evaluate_branding_write_gate,
@@ -132,10 +135,11 @@ EVENT_TITLE_MAX_LENGTH = 255
 
 # One message per ``organizations.permissions.BrandingWriteGateReason`` failure --
 # this surface's translation of the shared write gate into its own error idiom
-# (GraphQLError), matching the plan's Shared gate helper guiding decision. Kept
-# distinct in wording from the REST 403 bodies (organizations.exceptions) and the
-# admin form error (organizations.admin) so each surface reads naturally, while
-# preserving the same three-way distinguishability.
+# (GraphQLError). Kept distinct in wording from the REST 403 bodies
+# (organizations.exceptions) and the admin form error (organizations.admin) so
+# each surface reads naturally, while preserving the same distinguishability.
+# Two entries, not three: the gate's ``NO_SLUG`` reason was retired and later
+# removed, so no message exists for it here.
 _BRANDING_GATE_MESSAGES: dict[BrandingWriteGateReason, str] = {
     BrandingWriteGateReason.HAS_PARENT: (
         "This organization has a parent organization and cannot manage its own "
@@ -145,10 +149,6 @@ _BRANDING_GATE_MESSAGES: dict[BrandingWriteGateReason, str] = {
     BrandingWriteGateReason.NOT_ENTITLED: (
         "This organization's plan does not include white-label branding."
     ),
-    BrandingWriteGateReason.NO_SLUG: (
-        "Pick a public slug for this organization before configuring branding. "
-        "Supply `slug` on this mutation, or set one via the organization endpoint first."
-    ),
 }
 
 
@@ -157,8 +157,8 @@ def _apply_input_slug(organization: Organization, slug: str) -> None:
     uniqueness excluding ``organization`` itself, and persist it immediately.
 
     Called from ``update_branding`` when ``UpdateBrandingInput.slug`` is
-    supplied, BEFORE the write gate's slug condition is evaluated -- see that
-    mutation's docstring. The caller wraps this call in ``transaction.atomic()``:
+    supplied -- see that mutation's docstring. The caller wraps this call in
+    ``transaction.atomic()``:
     an invalid or colliding slug raises ``GraphQLError`` here, and because that
     propagates out of the atomic block, the slug write (and anything else the
     block did) is rolled back rather than partially applied.
@@ -589,7 +589,7 @@ class BatchUpdateAvailabilityWindowsResult:
 @strawberry.input
 class GroupScopedAvailabilityWindowOperationInput:
     """A single create/update/delete operation in a batch group-scoped
-    availability window upsert (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 1d).
+    availability window upsert.
 
     ``calendarId`` is required on every operation (not only ``create``) so
     the owner-scope guard can be applied per-operation before any service
@@ -643,7 +643,7 @@ class BatchUpsertGroupScopedAvailabilityWindowsResult:
 @strawberry.input
 class GroupScopedBlockedTimeOperationInput:
     """A single create/update/delete operation in a batch group-scoped
-    blocked-time upsert (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 2b).
+    blocked-time upsert.
 
     Mirrors ``GroupScopedAvailabilityWindowOperationInput`` exactly, plus
     ``reason``. ``calendarId`` is required on every operation (not only
@@ -697,7 +697,7 @@ class BatchUpsertGroupScopedBlockedTimesResult:
 @strawberry.input
 class GroupScopedQuotaRuleOperationInput:
     """A single create/update/delete operation in a batch group-scoped
-    quota-rule upsert (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 3c).
+    quota-rule upsert.
 
     Simpler than ``GroupScopedBlockedTimeOperationInput``: quota rules are
     non-recurring and have no time range, so there is no ``startTime``/
@@ -1203,7 +1203,8 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         1. Checks the acting org has can_invite_organizations (via assert_org_can_invite).
         2. Validates organizationId is the acting org or a descendant (subtree guard).
         3. Checks the user is not already an active member of the target org.
-        4. Creates (or resets) a pending OrganizationInvitation via OrganizationService.
+        4. Translates the requested groups into the invitation's stored state and
+           creates (or resets) a pending OrganizationInvitation via OrganizationService.
         5. Sends the invitation email when sendEmail=true.
            When sendEmail=false, suppresses the email and returns the raw token instead.
         6. Returns the invitation with token=None and invite_url=None (email path).
@@ -1227,6 +1228,16 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
 
         # Tenant-isolation guard: target must be the acting org or a descendant
         assert_target_in_subtree(acting_org, target_org)
+
+        # A list in, one group stored: the invitation row holds a single
+        # group name, which ``OrganizationService`` puts the membership created
+        # on acceptance into. Refuses an unknown group, and refuses
+        # ``organization_billing_owner``, which an invitation has nowhere to
+        # store.
+        try:
+            invited_group = group_for_invitation_groups(input.groups)
+        except OrganizationGroupNotAssignableError as exc:
+            raise GraphQLError(str(exc)) from exc
 
         # Already-active-member guard: reject if the email belongs to an existing member.
         # We check by email because the invitation itself creates the user (the user may not
@@ -1265,7 +1276,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
                 last_name="",
                 organization=target_org,
                 invited_by=None,
-                role=input.role.to_model_role(),
+                group=invited_group,
                 send_email=input.send_email,
             )
         except OverLimitError as exc:
@@ -1507,12 +1518,13 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
            organization-slug rules and a uniqueness check (excluding the acting
            org itself) and applies it to the acting org BEFORE step 2 -- see
            ``UpdateBrandingInput.slug``'s docstring and ``_apply_input_slug``.
-        2. Evaluates the shared branding write gate -- parentless, entitled,
-           slug-set (``organizations.permissions.evaluate_branding_write_gate``).
+        2. Evaluates the shared branding write gate -- parentless and entitled
+           (``organizations.permissions.evaluate_branding_write_gate``; its
+           third, slug-set condition is retired -- see that function).
            Replaces the old ``can_invite_organizations``-only check
-           (``assert_org_can_invite``): a reseller is not exempt from any of
-           the three conditions. Raises a distinguishable ``GraphQLError`` per
-           failed condition.
+           (``assert_org_can_invite``): a reseller is not exempt from either
+           condition. Raises a distinguishable ``GraphQLError`` per failed
+           condition.
         3. Validates app_name: non-empty and max 120 characters.
         4. Validates primary_color and secondary_color format (#RRGGBB or #RRGGBBAA).
         5. Validates redirect_url: HTTPS scheme, no wildcard, no path-prefix pattern
@@ -1524,13 +1536,12 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         Steps 1 through 6 run inside one ``transaction.atomic()`` block: a
         rejected slug, a failed gate, or any field-validation failure rolls
         back everything this call did -- including the slug write -- rather
-        than partially applying (see the plan's Slug is a precondition for
-        branding guiding decision).
+        than partially applying.
 
-        Audited (Organization Auth-Area Branding plan, Phase 4): every raise
-        above (slug rejection, gate failure, field validation) happens before
-        the upsert and rolls back the whole atomic block, so a refused write
-        never reaches the audit call below -- nothing is recorded for it. A
+        This upsert is audited: every raise above (slug rejection, gate
+        failure, field validation) happens before the upsert and rolls back
+        the whole atomic block, so a refused write never reaches the audit
+        call below -- nothing is recorded for it. A
         first-time upsert records a CREATE with no diff; an upsert that
         replaces an existing row records an UPDATE with a diff naming only the
         fields that changed, using the before-state captured BEFORE the
@@ -1550,10 +1561,20 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         )
 
         with transaction.atomic():
-            # Slug application happens BEFORE the gate is evaluated so a
-            # partner-API caller can satisfy the gate's slug precondition and
-            # set branding in one call.
-            if input.slug:
+            # Omitted (``strawberry.UNSET``) means "leave the slug alone". An
+            # explicit ``null`` or ``""`` is refused rather than treated as
+            # omitted: the column is NOT NULL and the
+            # ``organization_slug_not_blank`` constraint rejects a blank
+            # value, so silently ignoring it would tell the caller it had
+            # cleared an identifier that is in fact unchanged. This mirrors
+            # ``OrganizationSerializer.validate_slug`` on the REST surface --
+            # both refuse an explicit null/blank on update.
+            if input.slug is not strawberry.UNSET:
+                if not input.slug or not input.slug.strip():
+                    raise GraphQLError(
+                        "Slug cannot be cleared once set. Send a new slug, or omit the "
+                        "field to leave it unchanged."
+                    )
                 _apply_input_slug(acting_org, input.slug)
 
             gate_reason = evaluate_branding_write_gate(acting_org)
@@ -2350,8 +2371,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         input: BatchGroupScopedAvailabilityWindowsInput,  # noqa: A002
     ) -> BatchUpsertGroupScopedAvailabilityWindowsResult:
         """Apply an atomic create/update/delete batch of group-scoped
-        availability windows within one group slot's roster
-        (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 1d).
+        availability windows within one group slot's roster.
 
         Mirrors ``batchUpdateAvailabilityWindows``'s all-or-nothing and
         over-limit behavior exactly (same transaction/entitlement structure,
@@ -2498,14 +2518,13 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         input: BatchGroupScopedBlockedTimesInput,  # noqa: A002
     ) -> BatchUpsertGroupScopedBlockedTimesResult:
         """Apply an atomic create/update/delete batch of group-scoped blocked
-        times within one group slot's roster
-        (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 2b).
+        times within one group slot's roster.
 
         Direct mirror of ``batchUpsertGroupScopedAvailabilityWindows`` -- same
         validation, owner-scope, and IDOR cross-check structure -- with ONE
-        deliberate difference: blocked time is not metered yet (that is
-        Phase 2c), so this mutation never surfaces an ``OverLimitError`` for
-        a plan-limit ceiling; ``CalendarGroupService.batch_upsert_group_scoped_blocked_times``
+        deliberate difference: blocked time is not metered yet, so this
+        mutation never surfaces an ``OverLimitError`` for a plan-limit
+        ceiling; ``CalendarGroupService.batch_upsert_group_scoped_blocked_times``
         still enforces ``check_not_restricted`` (a ``RESTRICTED`` billing
         root still blocks the write), but there is no delta/limit check.
 
@@ -2629,8 +2648,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         input: BatchGroupScopedQuotaRulesInput,  # noqa: A002
     ) -> BatchUpsertGroupScopedQuotaRulesResult:
         """Apply an atomic create/update/delete batch of group-scoped quota
-        rules within one group slot's roster
-        (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 3c).
+        rules within one group slot's roster.
 
         Direct mirror of ``batchUpsertGroupScopedBlockedTimes`` -- same
         validation, owner-scope, and IDOR cross-check structure -- with two
@@ -3341,8 +3359,6 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
 
         Returns the updated primary ``CalendarEvent``.
         """
-        from calendar_integration.exceptions import CalendarGroupValidationError
-
         # Sentinel emitted by CalendarEventService.update_event when a SystemUser's
         # scoped calendar can't be found (racing cross-owner path). Map it to the
         # uniform not-found message to prevent a discriminating oracle.
@@ -3457,8 +3473,6 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         - Org-wide token: ``assert_calendar_in_owner_scope`` is a no-op → acts org-wide.
         - The service independently re-verifies ownership as defense-in-depth.
         """
-        from calendar_integration.exceptions import CalendarGroupValidationError
-
         calendar_service, org = _get_org_and_init_calendar_service(info)
         request: PublicApiHttpRequest = info.context.request
 
@@ -3544,8 +3558,6 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         The token's ``OrganizationResourceAccess`` must include the
         ``BOOKING_POLICY`` resource.
         """
-        from audit.services import AuditService
-
         org = info.context.request.public_api_organization
         if not org:
             raise GraphQLError("Organization not found in request context")
@@ -3621,8 +3633,6 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         The token's ``OrganizationResourceAccess`` must include the
         ``BOOKING_POLICY`` resource.
         """
-        from audit.services import AuditService
-
         org = info.context.request.public_api_organization
         if not org:
             raise GraphQLError("Organization not found in request context")
@@ -3670,8 +3680,6 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         The token's ``OrganizationResourceAccess`` must include the
         ``BOOKING_POLICY`` resource.
         """
-        from audit.services import AuditService
-
         org = info.context.request.public_api_organization
         if not org:
             raise GraphQLError("Organization not found in request context")

@@ -8,7 +8,7 @@
   resolve at the billing root, consistent with every other read/check in this
   domain (``EntitlementService``).
 
-Also covers Phase 3's additive fields: attribution (``by_organization``), the
+Also covers additive fields: attribution (``by_organization``), the
 plan snapshot, and the plan/add-on decomposition of ``limit_value``.
 """
 
@@ -25,7 +25,9 @@ from rest_framework.test import APIClient
 
 from calendar_integration.constants import CalendarType
 from calendar_integration.models import Calendar
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
+from organizations.tests.helpers import make_membership
 from payments.billing_constants import BillingState, LimitedResource, LimitKind
 from payments.models import BillingPlan, PlanLimit, SubscriptionAddOn
 from payments.serializers import UsageResponseSerializer
@@ -65,11 +67,10 @@ def usage_url() -> str:
 class TestUnlimitedResourceSerializesAsNull:
     def test_null_not_zero(self, auth_client, user):
         organization = baker.make(Organization, parent=None, can_invite_organizations=False)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             organization=organization,
             user=user,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         plan = make_complete_plan({LimitedResource.RESOURCE_CALENDARS: None})
@@ -102,11 +103,10 @@ class TestResellerChildReportsPooledRootFigures:
         baker.make(OrganizationMembership, organization=root, is_active=True, _quantity=2)
         # ...the calling user's own membership, on the *child* (single membership,
         # so the X-Organization-Id header is optional and resolves to `child`)...
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             organization=child,
             user=user,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         # ...and three more members on the child.
@@ -146,18 +146,16 @@ class TestResellerChildReportsPooledRootFigures:
         )
 
         root_user = UserFactory().create_user()
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             organization=root,
             user=root_user,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             organization=child,
             user=user,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
@@ -184,11 +182,10 @@ class TestResellerChildReportsPooledRootFigures:
 class TestRestrictedOrganizationCanStillReadUsage:
     def test_restricted_org_gets_200(self, auth_client, user):
         organization = baker.make(Organization, parent=None, can_invite_organizations=False)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             organization=organization,
             user=user,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         plan = make_complete_plan({LimitedResource.RESOURCE_CALENDARS: 5})
@@ -312,11 +309,10 @@ class TestPlanAddOnDecompositionInvariant:
 
     def test_included_in_plan_plus_add_on_quantity_equals_limit_value(self, auth_client, user):
         organization = baker.make(Organization, parent=None, can_invite_organizations=False)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             organization=organization,
             user=user,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         plan = make_complete_plan({LimitedResource.CALENDAR_GROUPS: 5})
@@ -357,11 +353,10 @@ class TestAddOnPurchasedOnUnlimitedPlan:
 
     def test_add_on_quantity_is_reported_while_included_in_plan_stays_null(self, auth_client, user):
         organization = baker.make(Organization, parent=None, can_invite_organizations=False)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             organization=organization,
             user=user,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         plan = make_complete_plan({LimitedResource.CALENDAR_GROUPS: None})

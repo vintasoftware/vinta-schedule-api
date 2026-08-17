@@ -1,10 +1,12 @@
 """Django management command for webhook health check and diagnostics."""
 
+import json
 from typing import Any
 
 from django.core.management.base import BaseCommand, CommandParser
 
 from calendar_integration.services.webhook_analytics_service import WebhookAnalyticsService
+from common.organization_context import organization_context
 from organizations.models import Organization
 
 
@@ -66,7 +68,13 @@ class Command(BaseCommand):
         }
 
         for org in organizations:
-            org_report = self.check_organization_health(org, hours_back, verbose)
+            # Fans out across every organization checked (all of them, unless
+            # --organization-id narrows to one); each iteration binds its own
+            # organization rather than binding once outside the loop, so the
+            # binding always matches the single organization each iteration's
+            # queries actually belong to.
+            with organization_context(org):
+                org_report = self.check_organization_health(org, hours_back, verbose)
             total_report["organizations"].append(org_report)
             total_report["total_subscriptions"] += org_report["subscriptions"]["total"]
             total_report["total_active_subscriptions"] += org_report["subscriptions"]["active"]
@@ -75,8 +83,6 @@ class Command(BaseCommand):
             total_report["total_failed_events"] += org_report["events"]["failed"]
 
         if output_format == "json":
-            import json
-
             self.stdout.write(json.dumps(total_report, indent=2, default=str))
         else:
             self.print_text_report(total_report, verbose)

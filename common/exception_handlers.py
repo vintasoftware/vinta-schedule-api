@@ -41,10 +41,9 @@ def vinta_exception_handler(exc: Exception, context: dict) -> Response | None:
     renders the same dict through its own error extension, so the two surfaces
     stay byte-identical without either restating the shape.
 
-    ``PaymentProviderNotConfiguredError`` is rendered as **HTTP 409 Conflict**,
-    the status the payment-provider-selection plan's **Guiding Decisions** commits
-    to for "the provider this organization resolves to cannot be driven by this
-    deployment". Handled centrally rather than per-action because Phase 4 makes it
+    ``PaymentProviderNotConfiguredError`` is rendered as **HTTP 409 Conflict**
+    for "the provider this organization resolves to cannot be driven by this
+    deployment". Handled centrally rather than per-action because it is
     reachable from every billing write that touches a provider
     (``SubscriptionViewSet.change_plan`` / ``cancel``, ``AddOnViewSet.create``,
     and anything added later), and a per-action ``except`` would have to be
@@ -55,9 +54,9 @@ def vinta_exception_handler(exc: Exception, context: dict) -> Response | None:
     unaffected by this branch.
 
     ``PaymentTokenRequiredError`` / ``AddOnNotPurchasableError`` (400) and
-    ``UnconfirmedPlanChangeError`` (409) are the billing API contract hardening
-    plan's Phase 1: every ``BillingError`` subclass now carries a stable ``code``
-    (see ``payments.exceptions.BillingError``), and these three render it through
+    ``UnconfirmedPlanChangeError`` (409): every ``BillingError`` subclass carries
+    a stable ``code`` (see ``payments.exceptions.BillingError``), and these three
+    render it through
     the shared ``as_error_body()`` contract instead of each view improvising its
     own ad hoc body (a field-keyed ``ValidationError`` for the first two, a plain
     ``{"detail": ...}`` 409 for the third). Handled centrally for the same reason
@@ -66,20 +65,20 @@ def vinta_exception_handler(exc: Exception, context: dict) -> Response | None:
     it inherits for free.
 
     ``RetryPaymentNotApplicableError`` / ``SubscriptionNotAttachedError`` (409)
-    are Phase 3's grace-recovery errors, raised by
+    are grace-recovery errors, raised by
     ``SubscriptionService.retry_payment``. Both 409 Conflict, same status as
     ``UnconfirmedPlanChangeError`` above -- the request is well-formed, but the
     subscription's current state (not GRACE/RESTRICTED, or never attached at
     the provider) conflicts with what retry-payment needs to be true.
 
-    ``NoOutstandingBalanceError`` (409) is Phase 4's -- raised by
+    ``NoOutstandingBalanceError`` (409) is raised by
     ``BaseSubscriptionAdapter.pay_outstanding_invoice`` (via
     ``SubscriptionService.retry_payment``) when the provider reports nothing
     actually owed for a GRACE/RESTRICTED subscription. Same status as the two
     above, for the same reason: a well-formed request whose target state does
     not hold.
 
-    ``CollectionNotSupportedError`` (409) is also Phase 4's -- raised by
+    ``CollectionNotSupportedError`` (409) is raised by
     ``BaseSubscriptionAdapter.pay_outstanding_invoice`` when the resolved
     provider (MercadoPago, as of this writing) has no verified "collect the
     outstanding balance" primitive to drive. Before this class and branch
@@ -88,7 +87,7 @@ def vinta_exception_handler(exc: Exception, context: dict) -> Response | None:
     not a DRF ``APIException``, and had no branch here (reviewer finding
     SHOULD-FIX 7).
 
-    ``ChargeDeclinedError`` (**402 Payment Required**) is Phase 5's -- raised by
+    ``ChargeDeclinedError`` (**402 Payment Required**) is raised by
     ``StripeSubscriptionAdapter.pay_outstanding_invoice`` (via
     ``SubscriptionService.retry_payment``) when the provider either attempts
     the charge and the card is declined, or refuses to attempt it at all

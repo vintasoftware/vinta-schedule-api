@@ -122,9 +122,11 @@ class TestOverLimitGraphQLErrorRollsBackTheRequestTransaction:
         assert response.status_code == 200
         assert "errors" not in response.json()
         assert (
-            CalendarGroup.objects.filter(
-                organization_id=organization.pk, name="written-and-kept"
-            ).count()
+            CalendarGroup.objects.filter_by_organization(organization.pk)
+            .filter(
+                name="written-and-kept",
+            )
+            .count()
             == 1
         )
 
@@ -144,9 +146,11 @@ class TestOverLimitGraphQLErrorRollsBackTheRequestTransaction:
         data = response.json()
         assert len(data["errors"]) == 1
         assert (
-            CalendarGroup.objects.filter(
-                organization_id=organization.pk, name="written-before-the-graphql-guard"
-            ).count()
+            CalendarGroup.objects.filter_by_organization(organization.pk)
+            .filter(
+                name="written-before-the-graphql-guard",
+            )
+            .count()
             == 0
         ), (
             "The row written before the over-limit guard was committed. "

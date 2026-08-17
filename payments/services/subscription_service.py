@@ -708,16 +708,15 @@ class SubscriptionService:
         retry (``DunningService._retry_charge_and_notify``, driven by
         ``payments/tasks.py::process_dunning``).
 
-        **Drives ``pay_outstanding_invoice``, not ``change_subscription_plan``**
-        (Billing API Contract Hardening, Phase 5). Before this phase this
-        method reused ``_initiate_upgrade``'s ``_ensure_provider_plan`` +
-        ``change_subscription_plan`` pair -- exactly the operation Phase 4's
-        live Stripe probe proved collects **$0.00** against a real past-due
-        invoice (a same-amount price move prorates to zero; see
-        ``BaseSubscriptionAdapter.pay_outstanding_invoice``'s docstring for the
-        numbers). Phase 4 fixed the user-facing ``retry_payment`` endpoint but
-        deliberately left this method alone pending its own decision -- this
-        phase is that decision. ``payment_token`` is passed as ``""``: the
+        **Drives ``pay_outstanding_invoice``, not ``change_subscription_plan``.**
+        This method used to reuse ``_initiate_upgrade``'s
+        ``_ensure_provider_plan`` + ``change_subscription_plan`` pair --
+        exactly the operation a live Stripe probe proved collects **$0.00**
+        against a real past-due invoice (a same-amount price move prorates to
+        zero; see ``BaseSubscriptionAdapter.pay_outstanding_invoice``'s
+        docstring for the numbers). The user-facing ``retry_payment`` endpoint
+        was fixed first; this method was deliberately left alone until its own
+        fix landed here. ``payment_token`` is passed as ``""``: the
         ladder is re-driving whatever instrument is *already on file*, it has
         no new token to attach (see ``BaseSubscriptionAdapter
         .pay_outstanding_invoice``'s docstring for the two-callers contract).
@@ -744,10 +743,11 @@ class SubscriptionService:
         MercadoPago.** MercadoPago's adapter raises ``CollectionNotSupportedError``
         from ``pay_outstanding_invoice`` -- it has no verified "collect the
         outstanding balance" primitive (see that adapter's docstring).
-        Catching it here and falling back to the pre-Phase-5
-        ``_ensure_provider_plan`` + ``change_subscription_plan`` path keeps
+        Catching it here and falling back to the
+        ``_ensure_provider_plan`` + ``change_subscription_plan`` path this
+        method used before ``pay_outstanding_invoice`` existed keeps
         MercadoPago's ladder byte-identical **in provider calls, arguments,
-        and idempotency key** to before this phase -- not quite byte-identical
+        and idempotency key** to that earlier behavior -- not quite byte-identical
         in every respect: an MP subscription whose organization has no
         ``BillingProfile`` now fails one call earlier and without side
         effects (``PaymentService.pay_outstanding_invoice`` raises
@@ -795,8 +795,7 @@ class SubscriptionService:
         separate decision and deliberately out of scope here.
 
         **Nor must a declined (or unattemptable) charge.** ``ChargeDeclinedError``
-        (Billing API Contract Hardening, Phase 5 live-probe BLOCKER) means the
-        provider either attempted the charge and the card on file was
+        means the provider either attempted the charge and the card on file was
         declined, or refused to attempt it at all (e.g. no default payment
         method on file) -- see that exception's own docstring for the full
         translation. Either is the *common* dunning-tick outcome, since a
@@ -840,7 +839,7 @@ class SubscriptionService:
             logger.info(
                 "retry_failed_charge: Subscription %s's provider has no verified "
                 "pay_outstanding_invoice primitive -- falling back to the "
-                "pre-Phase-5 change_subscription_plan path. See "
+                "older change_subscription_plan path. See "
                 "MercadoPagoSubscriptionAdapter.pay_outstanding_invoice's "
                 "docstring for what would retire this fallback.",
                 subscription.pk,
@@ -895,8 +894,8 @@ class SubscriptionService:
 
         This is **not** ``retry_failed_charge`` (nor, transitively, the
         ``_ensure_provider_plan`` + ``change_subscription_plan`` pair
-        ``retry_failed_charge`` drives) -- it was, until Billing API Contract
-        Hardening Phase 4, and that was a defect, not a design choice.
+        ``retry_failed_charge`` drives) -- it used to be, and that was a
+        defect, not a design choice.
         ``change_subscription_plan`` moves a subscriber onto a plan and only
         charges a *proration* as a side effect of that move; it was never a
         "collect the missed payment" primitive, and a Stripe test-mode probe
@@ -918,7 +917,7 @@ class SubscriptionService:
         was itself in ``RELEVANT_SUBSCRIPTION_PAYMENT_EVENT_TYPES``, so it would
         have reached ``resolve_payment_success`` and reported a false recovery
         had the zero-amount guard (``PaymentsViewSet
-        ._apply_subscription_payment_side_effects``) not also shipped in Phase 4.
+        ._apply_subscription_payment_side_effects``) not also been added.
         **Do not restore the call to ``retry_failed_charge``/
         ``change_subscription_plan`` here** -- that is what silently collected
         nothing while reporting success.
@@ -1030,7 +1029,7 @@ class SubscriptionService:
             namespaced_idempotency_key = retry_payment_idempotency_key(
                 subscription.pk, idempotency_key
             )
-            # Billing API Contract Hardening, Phase 4: `pay_outstanding_invoice`,
+            # `pay_outstanding_invoice`,
             # never `retry_failed_charge`/`change_subscription_plan` -- see this
             # method's docstring for the probe evidence of why that collected
             # $0.00 against a real past-due invoice.
@@ -1352,9 +1351,9 @@ class SubscriptionService:
         ``provider``, in the same transaction as the ``PaymentMethod``
         ``get_or_create`` -- but only the first time: an already-pinned profile
         is left untouched. An organization that somehow gets a confirmed
-        instrument at a *second*, different provider keeps its original pin (see
-        the **Pin mutability** guiding decision) -- the discrepancy is logged at
-        ``warning`` so it surfaces rather than silently repointing future charges.
+        instrument at a *second*, different provider keeps its original pin --
+        the discrepancy is logged at ``warning`` so it surfaces rather than
+        silently repointing future charges.
 
         The pin write is a single conditional ``UPDATE ... WHERE payment_provider
         = ''``, not a read-then-write. Two concurrent calls for the same
@@ -1426,15 +1425,14 @@ class SubscriptionService:
         it is the explicit escape hatch for moving an organization's *future*
         charges onto a different provider. Callers are Django admin (see
         ``payments.admin.BillingProfileAdmin``) or an operator running this by
-        hand; there is no end-user-facing API surface for it (see the plan's
-        **Pin mutability** guiding decision).
+        hand; there is no end-user-facing API surface for it -- staff repoints
+        are deliberately kept off the public API.
 
         ``provider=""`` is a legitimate un-pin, not an error: an empty string is
         what the admin's ``<select>`` submits when a staff member clears the
-        field, and the plan's **Pin mutability** decision treats a staff repoint
-        (including back to "unset") as a deliberate action, not a slug to
-        validate against the provider registry. Any other value must still name
-        a real, configured provider.
+        field, and a staff repoint (including back to "unset") is treated as a
+        deliberate action, not a slug to validate against the provider
+        registry. Any other value must still name a real, configured provider.
 
         Deliberately carries **no active-subscription guard**: this succeeds
         even when the organization holds a live ``Subscription`` at the old

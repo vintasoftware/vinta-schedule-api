@@ -33,7 +33,8 @@ import pytest
 from model_bakery import baker
 from rest_framework.test import APIClient
 
-from organizations.models import Organization, OrganizationInvitation, OrganizationRole
+from organizations.models import Organization, OrganizationInvitation
+from organizations.permission_catalog import GROUP_ORGANIZATION_MEMBER
 from organizations.services import OrganizationService
 from payments.exceptions import BillingRootCycleError
 from payments.models import Subscription
@@ -92,7 +93,7 @@ class TestProvisionTenantForUserGetsASubscription:
             OrganizationInvitation,
             email=user.email,
             organization=organization,
-            role=OrganizationRole.MEMBER,
+            group=GROUP_ORGANIZATION_MEMBER,
             expires_at=datetime.now(tz=UTC) + timedelta(days=7),
         )
 

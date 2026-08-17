@@ -16,7 +16,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 from model_bakery import baker
 
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
+from organizations.tests.helpers import make_membership
 from payments.billing_constants import BillingState, LimitedResource, LimitKind
 from payments.models import BillingPlan, LimitWarningNotification, PlanLimit, Subscription
 from payments.tasks import check_approaching_limits, check_approaching_limits_for_subscription
@@ -60,13 +62,19 @@ def _subscription_for(
 
 
 def _add_admin_membership(organization: Organization) -> OrganizationMembership:
-    return baker.make(
-        OrganizationMembership,
+    """A billing-notification recipient.
+
+    ``OrganizationMembershipQuerySet.billing_recipients`` reads
+    ``payments.manage_billing``, which a membership only holds through its
+    groups -- and a bare ``baker.make`` assigns none.
+    """
+    membership = make_membership(
         organization=organization,
         user=baker.make(User),
-        role=OrganizationRole.ADMIN,
+        groups=[GROUP_ORGANIZATION_ADMIN],
         is_active=True,
     )
+    return membership
 
 
 def _seed_members(organization: Organization, count: int) -> None:
@@ -75,7 +83,6 @@ def _seed_members(organization: Organization, count: int) -> None:
             OrganizationMembership,
             organization=organization,
             user=baker.make(User),
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -107,7 +114,9 @@ def subscription_service(di_container):
 
 @pytest.mark.django_db
 class TestCheckApproachingLimitsFanOut:
-    def test_excludes_restricted_and_cancelled_subscriptions(self, subscription_service):
+    def test_excludes_restricted_and_cancelled_subscriptions(
+        self, assert_no_unbound_scoped_queries, subscription_service
+    ):
         plan = make_complete_plan()
 
         active_org = baker.make(Organization, parent=None, can_invite_organizations=False)
@@ -145,7 +154,11 @@ class TestCheckApproachingLimitsFanOut:
 @pytest.mark.django_db
 class TestWarningFiresOnceAcrossBeatRuns:
     def test_repeated_beat_ticks_send_exactly_one_warning(
-        self, subscription_service, mock_notification_service, organization
+        self,
+        assert_no_unbound_scoped_queries,
+        subscription_service,
+        mock_notification_service,
+        organization,
     ):
         _add_admin_membership(organization)
         _seed_members(organization, 7)  # + admin = 8 of 10 (80%)
@@ -168,7 +181,11 @@ class TestWarningFiresOnceAcrossBeatRuns:
         )
 
     def test_restricted_subscription_is_never_warned_even_if_dispatched_directly(
-        self, subscription_service, mock_notification_service, organization
+        self,
+        assert_no_unbound_scoped_queries,
+        subscription_service,
+        mock_notification_service,
+        organization,
     ):
         """Belt-and-suspenders: even if a stale task message dispatched before
         a subscription moved to ``RESTRICTED`` is delivered late, the
@@ -185,7 +202,9 @@ class TestWarningFiresOnceAcrossBeatRuns:
 
         mock_notification_service.create_notification.assert_not_called()
 
-    def test_a_deleted_subscription_is_skipped_not_raised(self, mock_notification_service):
+    def test_a_deleted_subscription_is_skipped_not_raised(
+        self, assert_no_unbound_scoped_queries, mock_notification_service
+    ):
         """Mirrors ``process_dunning_for_subscription``'s handling of the same
         race -- a subscription deleted between fan-out and execution must not
         raise (a raising task is redelivered forever under

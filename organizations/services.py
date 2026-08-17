@@ -1,7 +1,9 @@
 import datetime
 import logging
-from typing import Annotated
+from collections.abc import Iterable
+from typing import Annotated, Any
 
+from django.contrib.auth.models import Group
 from django.db import IntegrityError, transaction
 
 from allauth.socialaccount.models import SocialAccount
@@ -32,6 +34,7 @@ from organizations.exceptions import (
     InvalidInvitationTokenError,
     InvitationNotFoundError,
     NoServiceAccountConfiguredError,
+    OrganizationSlugCollisionError,
     UserAlreadyHasMembershipError,
 )
 from organizations.invitation_urls import build_invitation_accept_url
@@ -39,9 +42,15 @@ from organizations.models import (
     Organization,
     OrganizationInvitation,
     OrganizationMembership,
-    OrganizationRole,
     resolve_branding_for_display,
 )
+from organizations.permission_catalog import (
+    GROUP_ORGANIZATION_ADMIN,
+    GROUP_ORGANIZATION_MEMBER,
+    GROUP_PERMISSIONS,
+    canonical_groups,
+)
+from organizations.slug_generation import derive_organization_slug
 from payments.billing_constants import LimitedResource
 from payments.exceptions import OverLimitError
 from payments.services.entitlement_service import EntitlementService
@@ -51,6 +60,45 @@ from webhooks.services.webhook_membership_side_effects import WebhookMembershipS
 
 
 logger = logging.getLogger(__name__)
+
+
+def assign_membership_groups(
+    membership: OrganizationMembership, group_names: Iterable[str]
+) -> None:
+    """Put ``membership`` in exactly the seeded groups implied by ``group_names``.
+
+    The single write path for membership capabilities. Every production caller
+    goes through it -- organization creation, both invitation-accept paths, and
+    ``POST /organization-members/{user_id}/groups/`` -- so the stored group set
+    is always canonical (see
+    ``organizations.permission_catalog.canonical_groups``) rather than whatever
+    a particular caller happened to pass.
+
+    It replaces a dual-write that derived the same set from the two flat
+    columns (``role`` and ``is_billing_owner``) that
+    ``organizations.migrations.0030_drop_role_and_is_billing_owner`` later
+    dropped. Same shape, one input instead of two.
+
+    ``set()`` rather than ``add()``: this runs on rows whose capabilities may
+    have just been *reduced*, so a demoted admin has to lose
+    ``organization_admin``. Only the three seeded group names are touched; any
+    other group a membership has been put in is left alone.
+
+    Silently assigns nothing if the seeded groups are absent, which can only
+    happen on a database that has not run
+    ``organizations.migrations.0028_seed_permission_groups``. There is no caller
+    for whom failing the whole write would be the better outcome, and a missing
+    group is immediately visible as a refused authorization.
+    """
+    wanted = canonical_groups(group_names)
+    managed = tuple(GROUP_PERMISSIONS)
+    groups_by_name = {
+        group.name: group for group in Group.objects.filter(name__in=managed).only("id", "name")
+    }
+    keep = [group for group in membership.groups.all() if group.name not in managed]
+    membership.groups.set(
+        keep + [groups_by_name[name] for name in wanted if name in groups_by_name]
+    )
 
 
 class OrganizationService:
@@ -73,6 +121,72 @@ class OrganizationService:
         self.audit_service = audit_service
         self.subscription_service = subscription_service
         self.entitlement_service = entitlement_service
+
+    #: How many times :meth:`_create_organization_row` attempts the insert --
+    #: an initial derivation plus two re-derives after a lost slug race. Two
+    #: callers racing onto the same derived slug is already unlikely; three
+    #: losing in a row is not a case worth carrying more code for.
+    _SLUG_CREATE_ATTEMPTS = 3
+
+    #: Name of the unique constraint backing ``Organization.slug`` (inherited,
+    #: unnamed, from ``AbstractOrganization.slug``'s ``unique=True`` -- Django's
+    #: default naming for a single-column unique index). Verified against the
+    #: live schema (``\d organizations_organization``) rather than assumed: a
+    #: rename here would silently disable the retry-vs-reraise discriminator
+    #: below rather than raise, so if this ever drifts from the schema, fix the
+    #: constant, not the schema.
+    _SLUG_UNIQUE_CONSTRAINT_NAME = "organizations_organization_slug_key"
+
+    def _create_organization_row(self, create_kwargs: dict[str, Any]) -> Organization:
+        """``Organization.objects.create`` with a name-derived slug, race included.
+
+        ``derive_organization_slug``'s uniqueness check and the ``INSERT`` are two
+        statements, so a concurrent caller can claim the same derived slug in
+        between and the ``INSERT`` then raises ``IntegrityError``. That matters
+        more here than it looks: the whole method runs inside
+        ``@transaction.atomic()`` for the "no plan-less state" invariant, so an
+        uncaught ``IntegrityError`` would abort organization creation outright
+        rather than degrade.
+
+        Each attempt therefore gets its own savepoint (a nested ``atomic``
+        block), which is what lets the ``IntegrityError`` be caught without
+        poisoning the enclosing transaction -- the same pattern
+        ``public_api.mutations._apply_input_slug`` uses. The retry re-derives, so
+        the loser of the race takes the next free ``name-2`` rather than failing.
+
+        Operates on a local copy of ``create_kwargs`` -- the caller's dict is
+        read, never mutated.
+        """
+        create_kwargs = dict(create_kwargs)
+        for _attempt in range(self._SLUG_CREATE_ATTEMPTS):
+            create_kwargs["slug"] = derive_organization_slug(
+                create_kwargs["name"],
+                slug_exists=lambda candidate: Organization.objects.filter(slug=candidate).exists(),
+                disclose_name=True,
+            )
+            try:
+                with transaction.atomic():
+                    return Organization.objects.create(**create_kwargs)
+            except IntegrityError as exc:
+                # Only a lost slug race is retryable. Any other integrity
+                # failure (e.g. a `uniq_org_name_per_parent` violation) would
+                # fail identically on every attempt, so it is re-raised rather
+                # than retried into a misleading slug error. Read the failing
+                # constraint directly from the driver error rather than
+                # re-querying for the slug: a concurrent claim on the slug
+                # coinciding with a duplicate-name violation would otherwise
+                # be misread as the (retryable) slug race, exhaust the retry
+                # budget, and report "could not allocate a unique slug" for
+                # what is actually a duplicate-name error.
+                diag = getattr(exc.__cause__, "diag", None)
+                if diag is None or diag.constraint_name != self._SLUG_UNIQUE_CONSTRAINT_NAME:
+                    raise
+                logger.warning(
+                    "Organization slug %r was claimed concurrently; re-deriving.",
+                    create_kwargs["slug"],
+                )
+
+        raise OrganizationSlugCollisionError()
 
     @transaction.atomic()
     def create_organization(
@@ -99,6 +213,14 @@ class OrganizationService:
         management command, shell, or Celery task calling this directly would
         otherwise be able to commit the ``Organization`` row and then fail on
         subscription creation, leaving a plan-less organization behind.
+
+        **This is the one runtime path that derives a slug from the name.**
+        ``slug`` is public, so deriving it from the name publishes the name --
+        accepted here and nowhere else, because this is the self-serve "create
+        my own organization" flow: the human calling it chose ``name`` for their
+        own, about-to-be-public organization. Every other write path (including
+        ``Organization.save()``'s own fallback) mints the opaque ``org-<token>``
+        form instead. See ``organizations.slug_generation`` for both shapes.
         """
         create_kwargs: dict = {
             "name": name,
@@ -108,7 +230,7 @@ class OrganizationService:
             create_kwargs["external_event_update_policy"] = external_event_update_policy
         if week_start is not None:
             create_kwargs["week_start"] = week_start
-        self.organization = Organization.objects.create(**create_kwargs)
+        self.organization = self._create_organization_row(create_kwargs)
         # Every organization always has exactly one active plan, from creation —
         # there is no plan-less state.
         # A no-op for a reseller child (parent set): it pools against its root's
@@ -119,8 +241,8 @@ class OrganizationService:
         admin_membership = OrganizationMembership.objects.create(
             user=creator,
             organization=self.organization,
-            role=OrganizationRole.ADMIN,
         )
+        assign_membership_groups(admin_membership, [GROUP_ORGANIZATION_ADMIN])
         self.webhook_membership_side_effects_service.on_member_created(admin_membership)
 
         # Audit: the creator (now the org's first admin) is the actor for both the
@@ -270,7 +392,7 @@ class OrganizationService:
         last_name: str,
         organization: Organization,
         invited_by: User | None = None,
-        role: str = OrganizationRole.MEMBER,
+        group: str = GROUP_ORGANIZATION_MEMBER,
         send_email: bool = True,
         bypass_limits: bool = False,
     ) -> OrganizationInvitation:
@@ -288,8 +410,11 @@ class OrganizationService:
         :param invited_by: User who is sending the invitation. May be None when the invitation is
             created by an API-level actor (e.g. a reseller via the public GraphQL API) that has no
             corresponding Django User.
-        :param role: Role the invited user should receive on accepting the invitation. Defaults to
-            MEMBER. Use OrganizationRole.ADMIN for admin invitations.
+        :param group: Seeded group the accepted membership joins. Defaults to
+            ``organization_member`` (no capabilities). Pass
+            ``organization_admin`` for an admin invitation; see
+            ``organizations.permission_catalog.INVITABLE_GROUPS`` for why
+            ``organization_billing_owner`` is not invitable.
         :param send_email: When True (default) the invitation email is dispatched via the
             notification service. When False the email is suppressed — the caller is responsible
             for delivering the invite link using the raw token attached to the returned instance
@@ -356,7 +481,7 @@ class OrganizationService:
                     "last_name": last_name,
                     "token_hash": token_hash,
                     "expires_at": seven_days_from_now,
-                    "role": role,
+                    "group": group,
                 },
             )
         except IntegrityError as e:
@@ -367,7 +492,7 @@ class OrganizationService:
         if not created:
             before = {
                 "expires_at": invitation.expires_at.isoformat() if invitation.expires_at else None,
-                "role": invitation.role,
+                "group": invitation.group,
                 "accepted_at": invitation.accepted_at.isoformat()
                 if invitation.accepted_at
                 else None,
@@ -377,20 +502,20 @@ class OrganizationService:
             invitation.invited_by = invited_by
             invitation.first_name = first_name
             invitation.last_name = last_name
-            invitation.role = role
+            invitation.group = group
             invitation.accepted_at = None
             invitation.membership_user_id = None
             invitation.save()
             after = {
                 "expires_at": seven_days_from_now.isoformat(),
-                "role": role,
+                "group": group,
                 "accepted_at": None,
             }
             diff = compute_diff(before, after)
 
         # Audit: an admin (or an API-level actor with no Django User) invites a user.
         # A fresh invitation is a CREATE; reusing an existing pending row is an UPDATE
-        # (token/expiry/role reset).
+        # (token/expiry/group reset).
         actor = (
             self.audit_service.actor_from_user(invited_by, organization.id)
             if invited_by is not None
@@ -409,8 +534,8 @@ class OrganizationService:
         invitation._raw_token = token  # type: ignore[attr-defined]
 
         if send_email:
-            # Reply-to (not From -- the From address is intentionally left untouched,
-            # see the Organization Auth-Area Branding plan's Non-goals) is resolved from
+            # Reply-to (not From -- the From address is intentionally left untouched;
+            # branding stops short of a custom sender) is resolved from
             # the organization's branding by organization_invitation_context() at send
             # time and applied by ReplyToDjangoEmailNotificationAdapter
             # (notifications/notification_adapters/django_email.py).
@@ -481,9 +606,7 @@ class OrganizationService:
             if verify_long_lived_token(token, invitation.token_hash):
                 # Per-org check: refuse only a duplicate in the SAME org.
                 # A user already in a different org is allowed to join this one.
-                if user.organization_memberships.filter(
-                    organization=invitation.organization
-                ).exists():
+                if user.memberships.filter(organization=invitation.organization).exists():
                     raise UserAlreadyHasMembershipError()
                 with transaction.atomic():
                     # Guard first, before the membership write, inside the same
@@ -504,10 +627,14 @@ class OrganizationService:
                         membership = OrganizationMembership.objects.create(
                             user=user,
                             organization=invitation.organization,
-                            role=invitation.role,
                         )
                     except IntegrityError as e:
                         raise UserAlreadyHasMembershipError() from e
+                    # Inside the same transaction as the create: a membership
+                    # that committed without its groups would be authorized
+                    # differently from one that committed with them, since the
+                    # groups are what every permission class reads.
+                    assign_membership_groups(membership, [invitation.group])
                     # Marking the invitation accepted must land in the same
                     # transaction as the guard + membership create, not a
                     # separate autocommit write after the block exits. Outside
@@ -603,9 +730,7 @@ class OrganizationService:
         if pending_invitation is not None:
             # Per-org check: refuse only a duplicate in the SAME org.
             # A user already in a different org is allowed to join the inviting org.
-            if user.organization_memberships.filter(
-                organization=pending_invitation.organization
-            ).exists():
+            if user.memberships.filter(organization=pending_invitation.organization).exists():
                 raise UserAlreadyHasMembershipError()
             with transaction.atomic():
                 # Guard first, before the membership write, inside the same
@@ -623,10 +748,10 @@ class OrganizationService:
                     membership = OrganizationMembership.objects.create(
                         user=user,
                         organization=pending_invitation.organization,
-                        role=pending_invitation.role,
                     )
                 except IntegrityError as e:
                     raise UserAlreadyHasMembershipError() from e
+                assign_membership_groups(membership, [pending_invitation.group])
                 # Marking the invitation accepted must land in the same
                 # transaction as the guard + membership create, not a separate
                 # autocommit write after the block exits. Outside a request
@@ -664,7 +789,7 @@ class OrganizationService:
             # Auto-creating a second org for an existing member is handled by the create
             # endpoint (OrganizationManagementPermission on POST /organizations/).
             # This signup-path branch keeps the original single-membership check.
-            if user.organization_memberships.exists():
+            if user.memberships.exists():
                 raise UserAlreadyHasMembershipError()
             try:
                 with transaction.atomic():

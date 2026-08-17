@@ -1,5 +1,4 @@
-"""Tests for group-scoped blocked time in discovery and booking validation
-(Phase 2a of ``CALENDAR_GROUP_SCOPED_AVAILABILITY``).
+"""Tests for group-scoped blocked time in discovery and booking validation.
 
 Covers:
 - A group-scoped block hides the calendar in that group, in that block's
@@ -11,7 +10,7 @@ Covers:
 - The required "unchanged path" test: a group with NO group-scoped
   configuration (neither windows nor blocks) produces byte-for-byte
   identical discovery output AND issues the SAME number of queries as the
-  pre-Phase-1b/2a engine.
+  engine without group-scoped blocked-time/window support.
 """
 
 from __future__ import annotations
@@ -40,7 +39,9 @@ from calendar_integration.services.dataclasses import (
     CalendarGroupEventInputData,
     CalendarGroupSlotSelectionInputData,
 )
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
+from organizations.tests.helpers import grant_membership_groups
 from users.models import Profile, User
 
 
@@ -83,8 +84,12 @@ def audit_service():
 def admin_user(db: Any, organization: Organization) -> User:
     u = User.objects.create_user(email="admin@example.com", password="pass")
     Profile.objects.create(user=u)
-    OrganizationMembership.objects.create(
-        user=u, organization=organization, role=OrganizationRole.ADMIN
+    grant_membership_groups(
+        OrganizationMembership.objects.create(
+            user=u,
+            organization=organization,
+        ),
+        [GROUP_ORGANIZATION_ADMIN],
     )
     return u
 
@@ -494,14 +499,14 @@ def test_unconfigured_group_discovery_is_byte_for_byte_unchanged(
     surgery_slot: CalendarGroupSlot,
 ) -> None:
     """No group-scoped window, block, or quota rule exists anywhere in the
-    group -- discovery must take the early-out before any new (Phase 1b/2a)
+    group -- discovery must take the early-out before any new group-scoped
     work runs.
 
-    Query counts match the Phase 1b baseline exactly (6 for
+    Query counts match the established baseline exactly (6 for
     ``find_bookable_slots``, 5 for ``check_group_availability``) -- adding
     the block existence flag folded it into the SAME per-slot query rather
-    than issuing a new one, so this phase adds zero queries to the
-    unconfigured path too.
+    than issuing a new one, so group-scoped blocked time adds zero queries to
+    the unconfigured path too.
     """
     window_start = MONDAY
     window_end = SATURDAY

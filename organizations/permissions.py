@@ -5,19 +5,23 @@ from typing import TYPE_CHECKING, Annotated
 from dependency_injector.wiring import Provide, inject
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import BasePermission
+from vinta_orgs.mixins import SingleOrganizationModelMixin
 
+from organizations.authorization import has_organization_permission
 from organizations.exceptions import (
     BrandingEntitlementRequiredError,
     OrganizationHasParentBrandingError,
-    OrganizationSlugRequiredForBrandingError,
 )
 from organizations.models import (
     Organization,
     OrganizationInvitation,
     OrganizationMembership,
-    OrganizationModel,
-    OrganizationRole,
-    get_active_organization_membership,
+)
+from organizations.permission_catalog import (
+    MANAGE_BILLING,
+    MANAGE_BRANDING,
+    MANAGE_MEMBERS,
+    MANAGE_ORGANIZATION,
 )
 from payments.billing_constants import Entitlement
 from payments.entitlement_cache import has_entitlement_cached
@@ -35,9 +39,10 @@ def _organization_holds_white_label_branding(
     entitlement_service: Annotated[EntitlementService, Provide["entitlement_service"]] = None,  # type: ignore[assignment]
 ) -> bool:
     """The entitlement half of the branding gate, factored out so both
-    ``is_branding_eligible_organization`` (two-condition, below) and
-    ``evaluate_branding_write_gate`` (three-condition, further below) share one
-    entitlement check rather than each re-deriving it.
+    ``is_branding_eligible_organization`` (below) and
+    ``evaluate_branding_write_gate`` (further below) share one entitlement check
+    rather than each re-deriving it. Both are two-condition gates now that the
+    write gate's slug condition is retired.
 
     ``entitlement_service`` is DI-injected via ``@inject``/``Provide`` (the
     established pattern -- see ``audit/services.py``,
@@ -84,14 +89,14 @@ def is_branding_eligible_organization(organization: Organization | None) -> bool
 
     Two conditions -- this is the ``branding_logos`` S3Direct destination's
     ``auth`` callable (via ``user_administers_branding_eligible_organization``
-    below) and the GraphQL logo-signing mutation's gate (Organization
-    Auth-Area Branding plan, Phase 2b). Phase 3 introduces a THIRD condition
-    (the organization ends the write with a ``slug`` set) but does **not** fold
-    it in here -- see ``evaluate_branding_write_gate`` below, which composes on
-    top of this function rather than replacing it. Requiring a slug before an
-    admin can upload a logo would order the branding form around an
-    implementation detail (the Write gate guiding decision), so the
-    logo-signing surface deliberately keeps using this two-condition helper.
+    below) and the GraphQL logo-signing mutation's gate.
+
+    ``evaluate_branding_write_gate`` below composes on top of this function
+    rather than replacing it. It once added a third condition -- "and has picked
+    a public slug" -- which is why the two were kept separate; that condition is
+    retired (see it), so the two now admit the same set. The split is kept
+    because the two answer different questions and a future condition may again
+    apply to only one of them.
     """
     if organization is None or organization.parent_id is not None:
         return False
@@ -139,23 +144,26 @@ class BrandingWriteGateReason(enum.Enum):
       as fixable by the organization itself.
     - ``NOT_ENTITLED`` -- a billing state. The organization's plan does not
       include white-label branding; fixable by upgrading.
-    - ``NO_SLUG`` -- one step away. The organization is otherwise eligible but
-      has not picked a public slug yet (spec: "Eligible org with no public
-      identifier yet" -- branding settings stay offered, refused with a
-      message that reads as "pick a slug first", not hidden outright).
+
+    There used to be a third failure reason. ``NO_SLUG`` -- "otherwise eligible
+    but has not picked a public slug yet" -- was retired as a product rule when
+    ``slug`` became NOT NULL with a ``save()``-time fallback and the
+    ``organization_slug_not_blank`` check constraint made it unreachable for any
+    organization that can exist; it was kept dead-with-reason for a while because
+    it was still part of this enum's published contract, and has since been
+    deleted along with its ``BRANDING_GATE_EXCEPTIONS`` entry and
+    ``OrganizationSlugRequiredForBrandingError``.
     """
 
     OK = "ok"
     HAS_PARENT = "has_parent"
     NOT_ENTITLED = "not_entitled"
-    NO_SLUG = "no_slug"
 
 
 def evaluate_branding_write_gate(organization: Organization | None) -> BrandingWriteGateReason:
-    """Full three-condition branding **write** gate (Organization Auth-Area
-    Branding plan, Phase 3): the acting organization must be parentless, hold
-    the ``white_label_branding`` entitlement, AND end the write with a
-    ``slug`` set. Replaces ``is_reseller()`` on every write surface.
+    """Two-condition branding **write** gate: the acting organization must be
+    parentless and hold the ``white_label_branding`` entitlement. Replaces
+    ``is_reseller()`` on every write surface.
 
     Composes on top of, rather than duplicating, the two-condition
     ``is_branding_eligible_organization`` above by sharing
@@ -163,25 +171,28 @@ def evaluate_branding_write_gate(organization: Organization | None) -> BrandingW
     docstring for why the logo-signing surface stays on the two-condition
     helper instead of this one.
 
-    Checked in this order -- parent, then entitlement, then slug -- so the
-    permanent case is never masked by a fixable one, and the billing case is
-    never masked by the one-step-away case (an organization that lost the
-    entitlement and never picked a slug is told about the entitlement first;
-    picking a slug would not admit it either way).
+    Checked in this order -- parent, then entitlement -- so the permanent case
+    is never masked by a fixable one.
+
+    **A third condition, "and has picked a public slug", was retired** as a
+    product rule, and its last remnants -- the branch,
+    ``BrandingWriteGateReason.NO_SLUG``, its ``BRANDING_GATE_EXCEPTIONS`` entry
+    and ``OrganizationSlugRequiredForBrandingError`` -- have since been deleted.
+    ``Organization.slug`` is NOT NULL with a ``save()``-time fallback and an
+    ``organization_slug_not_blank`` check constraint, so no organization that
+    exists can fail it and no write surface -- supported or not, including a raw
+    ``queryset.update(slug="")`` -- can manufacture one that does.
     """
     if organization is None or organization.parent_id is not None:
         return BrandingWriteGateReason.HAS_PARENT
     if not _organization_holds_white_label_branding(organization):
         return BrandingWriteGateReason.NOT_ENTITLED
-    if not organization.slug:
-        return BrandingWriteGateReason.NO_SLUG
     return BrandingWriteGateReason.OK
 
 
 BRANDING_GATE_EXCEPTIONS: dict[BrandingWriteGateReason, type[PermissionDenied]] = {
     BrandingWriteGateReason.HAS_PARENT: OrganizationHasParentBrandingError,
     BrandingWriteGateReason.NOT_ENTITLED: BrandingEntitlementRequiredError,
-    BrandingWriteGateReason.NO_SLUG: OrganizationSlugRequiredForBrandingError,
 }
 
 
@@ -190,22 +201,23 @@ def check_branding_read_eligibility(organization: Organization | None) -> None:
     shared by every branding read-adjacent surface: ``OrganizationBrandingView.get``
     and ``OrganizationBrandingLogoUploadParamsView.post`` (``organizations/views.py``).
 
-    Derives its reason from ``evaluate_branding_write_gate`` but admits
-    ``NO_SLUG`` -- a slug-less eligible organization must still be able to see
-    the branding page and upload a logo (the frontend uploads a logo on
-    file-picker change, before the slug/branding write on form submit). Raises
-    the matching ``PermissionDenied`` subclass on the first failed condition;
-    a no-op when the gate admits the organization.
+    Derives its reason from ``evaluate_branding_write_gate``: anything but
+    ``OK`` raises. It used to additionally admit ``NO_SLUG``, which kept a
+    read-side surface open to an organization the write gate refused; that
+    reason is gone (see the write gate), so the two now admit exactly the same
+    set. The split is kept because the two answer different questions and a
+    future condition may again apply to only one of them.
     """
     reason = evaluate_branding_write_gate(organization)
-    if reason in (BrandingWriteGateReason.OK, BrandingWriteGateReason.NO_SLUG):
+    if reason is BrandingWriteGateReason.OK:
         return
     raise BRANDING_GATE_EXCEPTIONS[reason]()
 
 
 def user_administers_branding_eligible_organization(user: "User | None") -> bool:
-    """True iff ``user`` holds an active ADMIN membership in at least one
-    branding-eligible organization (see ``is_branding_eligible_organization``).
+    """True iff ``user`` holds an active membership carrying
+    ``organizations.manage_branding`` in at least one branding-eligible
+    organization (see ``is_branding_eligible_organization``).
 
     User-granularity rather than organization-granularity, deliberately: this is
     the ``auth`` callable for the ``branding_logos`` S3Direct destination
@@ -214,7 +226,7 @@ def user_administers_branding_eligible_organization(user: "User | None") -> bool
     request user -- it has no notion of "the acting organization" the way our
     own views/resolvers do. So this can only authorize "this user administers
     SOME eligible organization", not "acting for this specific organization".
-    Accepted per the plan's Logo upload path guiding decision: the generated
+    Accepted deliberately: the generated
     object key is unique per upload (``generate_s3direct_file_name``) and the
     object only becomes visible once a branding row references it -- an admin of
     one eligible org obtaining a key another admin could theoretically also
@@ -224,25 +236,45 @@ def user_administers_branding_eligible_organization(user: "User | None") -> bool
     ``is_branding_eligible_organization`` directly against the acting
     organization, which it always knows, so it gets the tighter, org-specific
     check instead of this coarser one.
+
+    The role half is now the ``organizations.manage_branding`` permission,
+    replacing the dropped ``role`` column; the entitlement half
+    (``is_branding_eligible_organization``) is untouched. The permission half is
+    asked of the *database*, through
+    ``OrganizationMembershipQuerySet.holding_permission`` -- the same lookup
+    ``billing_recipients`` uses, and the queryset form of the question
+    ``has_organization_permission`` answers for one ``(user, organization)``
+    pair, so the two agree by construction (both read the union of a
+    membership's own ``permissions`` grant with the permissions its ``groups``
+    carry, and neither consults the global half or the superuser
+    short-circuit). Asking it per membership instead cost one ``_get_membership``
+    plus two permission queries **per organization the caller belongs to**, on a
+    path -- s3direct logo signing -- that has no acting organization to narrow
+    by. There is no bound organization on that path at all, which is why the
+    question has to name organizations explicitly rather than read the ambient
+    binding.
+
+    ``user.is_active`` is checked here rather than inherited: the per-membership
+    form got it from ``has_organization_permission``, and the queryset filters
+    ``membership.is_active`` only.
     """
-    if user is None or not getattr(user, "is_authenticated", False):
+    if user is None or not getattr(user, "is_authenticated", False) or not user.is_active:
         return False
-    admin_memberships = OrganizationMembership.objects.active_for_user(user).filter(
-        role=OrganizationRole.ADMIN
+    # ``active_for_user`` already ``select_related``s the organization.
+    memberships = OrganizationMembership.objects.active_for_user(user).holding_permission(
+        MANAGE_BRANDING
     )
     return any(
-        is_branding_eligible_organization(membership.organization)
-        for membership in admin_memberships
+        is_branding_eligible_organization(membership.organization) for membership in memberships
     )
 
 
 class OrganizationManagementPermission(BasePermission):
     def has_permission(self, request, view):
         # Anonymous / unauthenticated users have no user attribute at all.
-        try:
-            user = request.user
-        except AttributeError:
+        if not hasattr(request, "user"):
             return True
+        user = request.user
 
         # Any authenticated user may create an additional organisation
         # (they become its admin via a fresh membership). Restricting create to
@@ -252,23 +284,20 @@ class OrganizationManagementPermission(BasePermission):
         if view.action == "create":
             return bool(user and user.is_authenticated)
 
-        # get_active_organization_membership handles both missing membership
-        # (RelatedObjectDoesNotExist) and inactive membership, returning None
-        # for both cases.  Only membership-LESS (or inactive) users may reach
-        # the remaining onboarding endpoints on this viewset.
-        membership = get_active_organization_membership(user)
+        # The package resolver represents missing and inactive membership as
+        # ``None``. Only those callers may reach the remaining onboarding
+        # endpoints on this viewset.
+        membership = request.organization_membership
         return membership is None
 
     def has_object_permission(self, request, view, obj):
         # Anonymous / unauthenticated users propagate to here only in edge
         # cases; treat them the same as membership-less (allow the framework
         # to deny them via IsAuthenticated first).
-        try:
-            user = request.user
-        except AttributeError:
+        if not hasattr(request, "user"):
             return True
 
-        membership = get_active_organization_membership(user)
+        membership = request.organization_membership
         if membership is None:
             # Membership-less OR inactive members never have object-level
             # access (they can only CREATE an org — handled in has_permission).
@@ -277,7 +306,7 @@ class OrganizationManagementPermission(BasePermission):
         return view.action != "create" and (
             (isinstance(obj, Organization) and membership.organization_id == obj.id)
             or (
-                isinstance(obj, OrganizationModel)
+                isinstance(obj, SingleOrganizationModelMixin)
                 and membership.organization_id == obj.organization_id
             )
         )
@@ -295,11 +324,11 @@ class OrganizationInvitationPermission(BasePermission):
             return False
 
         # User must have an active organization membership
-        return get_active_organization_membership(request.user) is not None
+        return request.organization_membership is not None
 
     def has_object_permission(self, request, view, obj):
         # User must have an active organization membership
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         if not membership:
             return False
 
@@ -313,24 +342,42 @@ class IsOrganizationAdmin(BasePermission):
     """
     Permission for admin-only endpoints within an organization.
 
-    - `has_permission`: requires an authenticated user with an active ADMIN organization
-      membership. This gate enforces the admin role at the collection level (list, create).
+    - `has_permission`: requires an authenticated user with an active organization
+      membership carrying `organizations.manage_members`. This gate enforces the admin
+      capability at the collection level (list, create).
     - `has_object_permission`: additionally enforces that the object's organization matches
       the membership organization and delegates the "is this user an admin of this object's org"
       decision to `User.is_organization_admin(organization_id)` so the rule has a single
-      implementation. Handles both Organization instances and OrganizationModel subclasses.
+      implementation. Handles both Organization instances and organization-scoped
+      (`SingleOrganizationModelMixin`) subclasses.
+
+    The `organizations.manage_members` permission replaced the `membership.is_admin`
+    property this used to read. The active-membership check in front of it is **not** redundant
+    and must stay: it is what supplies the organization the capability is asked
+    about. `has_permission` runs before any object is known, so the caller's own
+    resolved organization is the only one it can name.
+
+    A global grant -- a Django-admin-assigned `organizations.manage_members`, or
+    membership of the seeded global `organization_admin` group -- admits nobody
+    here either, and that is enforced one layer down rather than by this class:
+    `has_organization_permission` resolves the capability from an active
+    membership in the named organization alone. See
+    `organizations/authorization.py`.
     """
+
+    permission = MANAGE_MEMBERS
 
     def has_permission(self, request, view) -> bool:
         user: User = request.user
         if not user or not user.is_authenticated:
             return False
-        membership = get_active_organization_membership(user)
-        return membership is not None and membership.is_admin
+        membership = request.organization_membership
+        return membership is not None and has_organization_permission(
+            user, self.permission, membership.organization
+        )
 
     def has_object_permission(self, request, view, obj) -> bool:
-        user: User = request.user
-        membership = get_active_organization_membership(user)
+        membership = request.organization_membership
         if membership is None:
             return False
 
@@ -339,20 +386,32 @@ class IsOrganizationAdmin(BasePermission):
             obj_organization_id = obj.id
         elif isinstance(obj, OrganizationMembership):
             obj_organization_id = obj.organization_id
-        elif isinstance(obj, OrganizationModel):
+        elif isinstance(obj, SingleOrganizationModelMixin):
             obj_organization_id = obj.organization_id
         else:
-            # Handle SystemUser and other objects with an organization FK
+            # Handle objects that carry a plain ``organization`` FK
             if hasattr(obj, "organization_id"):
                 obj_organization_id = obj.organization_id
             else:
                 return False
 
-        # Membership org must match object org; user must be an admin
+        # Membership org must match object org; user must hold the admin permission.
         if membership.organization_id != obj_organization_id:
             return False
 
-        return user.is_organization_admin(membership.organization_id)
+        return has_organization_permission(request.user, self.permission, membership.organization)
+
+
+class CanManageOrganization(IsOrganizationAdmin):
+    """Require the organization-settings capability for the acting organization."""
+
+    permission = MANAGE_ORGANIZATION
+
+
+class CanManageBranding(IsOrganizationAdmin):
+    """Require the branding capability; entitlement checks remain at the view."""
+
+    permission = MANAGE_BRANDING
 
 
 class IsBillingOwnerOrAdmin(BasePermission):
@@ -360,39 +419,59 @@ class IsBillingOwnerOrAdmin(BasePermission):
     change plan, purchase/cancel an add-on, cancel the subscription.
 
     Split across ``has_permission``/``has_object_permission`` rather than doing
-    everything in ``has_permission``, deliberately: ``TenantScopedViewMixin.initial()``
-    calls ``super().initial()`` (which runs DRF's ``check_permissions()``, and
-    therefore every ``has_permission``) **before** it resolves and stashes
-    ``request.organization`` — the same ordering ``IsOrganizationAdmin`` above
-    already works around by never reading ``request.organization`` in
-    ``has_permission``. ``request.organization`` only becomes reliable once the
-    view body itself runs, which is exactly when ``has_object_permission`` runs
-    too (views call ``check_object_permissions`` explicitly against the
-    resolved billing-root ``Organization``; see ``SubscriptionViewSet`` /
-    ``AddOnViewSet``).
+    everything in ``has_permission``, because the two answer different
+    questions: ``has_permission`` cannot know *which* organization is being
+    billed. The billing endpoints act on the **billing root**, which is
+    frequently an ancestor of the organization the request resolved
+    (``resolve_billing_root``), and the views hand that resolved root to
+    ``check_object_permissions`` explicitly (see ``SubscriptionViewSet`` /
+    ``AddOnViewSet``). So the coarse gate runs first and the real decision runs
+    against ``obj``.
 
-    - ``has_permission``: coarse gate -- an active membership that is ``ADMIN``
-      **or** has ``is_billing_owner=True``, in *some* organization. Does not by
-      itself decide *which* organization; that is ``has_object_permission``'s job.
+    (Historical note: this split was originally *forced* by an ordering defect —
+    ``TenantScopedViewMixin`` resolved the active organization after DRF had
+    already run ``check_permissions``, so nothing organization-specific was
+    reliable in ``has_permission`` at all. That ordering has since been fixed --
+    ``TenantScopedViewMixin.perform_authentication`` now resolves and binds
+    between authentication and ``check_permissions`` -- and the split stays
+    because of the billing-root reason above, which is independent of it.
+    ``request.organization`` and ``request.organization_membership`` are now
+    both correct inside ``has_permission``.)
+
+    - ``has_permission``: coarse gate -- an active membership carrying
+      ``payments.manage_billing`` **in the organization the request resolved**
+      (since the ordering fix above, that is the membership
+      ``X-Organization-Id`` selected, not "some organization"). Coarse all the
+      same, because the organization
+      being *billed* is frequently an ancestor of it; deciding *which*
+      organization is ``has_object_permission``'s job.
     - ``has_object_permission``: the real gate, against ``obj`` (an
       ``Organization`` -- the resolved billing root). Grants access when either:
 
-      1. The caller's active membership is in ``obj`` itself and is
-         ``ADMIN``-or-billing-owner — the two roles the plan names as allowed to
-         manage billing.
-      2. An **acting reseller root**: the caller's active membership is
-         ``ADMIN``-or-billing-owner in some *other* organization that both (a)
-         can invite/create organizations (``can_invite_organizations``) and (b)
-         has ``obj`` within its subtree — the same subtree relationship
-         ``resolve_billing_root`` pools usage against, so a root that pays for a
-         descendant's capacity may also manage its billing, even when the
-         caller's ``X-Organization-Id``-scoped membership is to the descendant
-         itself (e.g. a support/account-manager membership with no elevated role
-         there). Reuses ``public_api.capabilities.is_target_in_subtree`` — the
-         boolean form of the same subtree-membership walk the reseller bundle's
-         GraphQL mutations use (via ``assert_target_in_subtree``) — rather than
-         re-deriving it a second time or coupling this REST layer to a GraphQL
-         error type.
+      1. The caller's active membership is in ``obj`` itself and carries
+         ``payments.manage_billing``.
+      2. An **acting reseller root**: a low-level policy branch for a caller's
+         active membership that carries ``payments.manage_billing``, can
+         invite/create organizations (``can_invite_organizations``), and has
+         ``obj`` within its subtree. It reuses
+         ``public_api.capabilities.is_target_in_subtree`` — the boolean form of
+         the reseller bundle's subtree-membership walk — rather than
+         re-deriving it or coupling this REST layer to a GraphQL error type.
+         The package header resolver currently cannot produce the cross-binding
+         request shape that would make this branch decisive, so it preserves the
+         policy for direct callers without describing current endpoint behavior.
+
+    ``payments.manage_billing`` replaced the flat two-column disjunction this
+    used to read (``role == ADMIN or is_billing_owner``); the
+    ``organization_admin`` and ``organization_billing_owner`` groups both carry
+    the permission, which is what makes the two spellings the same set.
+    **Branch 2 keeps its bespoke walk** rather than becoming a plain permission
+    lookup: the auth backend
+    resolves permissions for the *bound* organization only, and the grant this
+    branch looks for is held in an ancestor of it. The permission is therefore
+    asked with that ancestor named explicitly (see
+    ``organizations.authorization.has_organization_permission``); nothing else
+    about the branch changed.
 
     Read-only billing endpoints (usage, plan catalog, subscription detail) are
     intentionally **not** gated by this class — they stay open to any
@@ -404,24 +483,26 @@ class IsBillingOwnerOrAdmin(BasePermission):
         user: User = request.user
         if not user or not user.is_authenticated:
             return False
-        membership = get_active_organization_membership(user)
-        return membership is not None and (membership.is_admin or membership.is_billing_owner)
+        membership = request.organization_membership
+        return membership is not None and has_organization_permission(
+            user, MANAGE_BILLING, membership.organization
+        )
 
     def has_object_permission(self, request, view, obj) -> bool:
         user: User = request.user
-        membership = get_active_organization_membership(user)
+        membership = request.organization_membership
         if membership is None:
             return False
         target_organization = self._resolve_target_organization(obj)
         if target_organization is None:
             return False
 
-        if membership.organization_id == target_organization.id and (
-            membership.is_admin or membership.is_billing_owner
+        if membership.organization_id == target_organization.id and has_organization_permission(
+            user, MANAGE_BILLING, target_organization
         ):
             return True
 
-        return self._acting_reseller_root_permits(membership, target_organization)
+        return self._acting_reseller_root_permits(user, membership, target_organization)
 
     def _resolve_target_organization(self, obj) -> Organization | None:
         """``obj`` is either the ``Organization`` (billing root) directly, or a
@@ -438,9 +519,20 @@ class IsBillingOwnerOrAdmin(BasePermission):
         return getattr(subscription, "organization", None)
 
     def _acting_reseller_root_permits(
-        self, membership: OrganizationMembership, target_organization: Organization
+        self,
+        user: "User",
+        membership: OrganizationMembership,
+        target_organization: Organization,
     ) -> bool:
-        if not (membership.is_admin or membership.is_billing_owner):
+        """The hand-written half of this class -- see the class docstring.
+
+        The package header resolver resolves the membership from the selected
+        organization, so this branch is currently not decisive for a request
+        that crosses bindings. It remains an explicit low-level subtree-policy
+        check for direct callers; naming ``membership.organization`` keeps that
+        policy independent of the ambient context.
+        """
+        if not has_organization_permission(user, MANAGE_BILLING, membership.organization):
             return False
         if not membership.organization.can_invite_organizations:
             return False

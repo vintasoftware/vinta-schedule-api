@@ -367,9 +367,13 @@ class MeteringService:
             subscription.organization
         )
         masters = list(
-            CalendarEvent.objects.occurrence_bearing_masters_in_range(
-                window_start, window_end
-            ).filter(organization_id__in=organization_ids)
+            # ``unscoped()``: metering reads a subscription's *whole* reseller
+            # subtree (``organization_ids``, resolved from the billing root), which
+            # no single-organization binding can express. The tenant boundary is
+            # ``organization_ids`` itself, applied on the next line.
+            CalendarEvent.objects.unscoped()
+            .occurrence_bearing_masters_in_range(window_start, window_end)
+            .filter(organization_id__in=organization_ids)
         )
         series_root_ids = self._resolve_series_root_ids(masters, organization_ids)
 
@@ -478,9 +482,12 @@ class MeteringService:
             }
             if not unknown:
                 break
-            for pk, parent_id in CalendarEvent.objects.filter(
-                organization_id__in=organization_ids, pk__in=unknown
-            ).values_list("pk", "bulk_modification_parent_fk_id"):
+            for pk, parent_id in (
+                # ``unscoped()``: see ``expand_occurrence_identities``.
+                CalendarEvent.objects.unscoped()
+                .filter(organization_id__in=organization_ids, pk__in=unknown)
+                .values_list("pk", "bulk_modification_parent_fk_id")
+            ):
                 parent_of[pk] = parent_id
             # A parent that is not visible in the pooled subtree (deleted, or in
             # another tenant) terminates the walk rather than looping.

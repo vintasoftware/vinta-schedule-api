@@ -4,7 +4,9 @@ import pytest
 from model_bakery import baker
 from rest_framework import status
 
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
+from organizations.tests.helpers import make_membership
 from payments.models import BillingAddress, BillingProfile
 
 
@@ -16,11 +18,10 @@ def organization():
 @pytest.fixture
 def membership(user, organization):
     """An active ADMIN membership: billing profile writes require admin."""
-    return baker.make(
-        OrganizationMembership,
+    return make_membership(
         user=user,
         organization=organization,
-        role=OrganizationRole.ADMIN,
+        groups=[GROUP_ORGANIZATION_ADMIN],
         is_active=True,
     )
 
@@ -31,7 +32,6 @@ def non_admin_membership(user, organization):
         OrganizationMembership,
         user=user,
         organization=organization,
-        role=OrganizationRole.MEMBER,
         is_active=True,
     )
 
@@ -169,19 +169,17 @@ class TestBillingProfileViewSet:
         """A user who is an active member of both org A and org B gets the profile
         of whichever org the `X-Organization-Id` header selects, for each org in
         turn."""
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         other_organization = baker.make(Organization)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=other_organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 

@@ -8,7 +8,6 @@ from calendar_integration.services.booking_policy_permission_service import (
     BookingPolicyPermissionService,
 )
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
-from organizations.models import get_active_organization_membership
 
 
 class BookingPolicyPermission(BasePermission):
@@ -51,10 +50,16 @@ class BookingPolicyPermission(BasePermission):
         if request.method in SAFE_METHODS:
             return True
 
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         if membership is None:
             return False
-        if membership.is_admin:
+        # ``organizations.manage_members`` -- the same capability
+        # ``User.is_organization_admin`` reads -- replaced ``membership.is_admin``.
+        # The organization is named explicitly rather than left to the ambient
+        # binding, because that is what the attribute it replaces meant: a
+        # statement about ``membership.organization``.
+        is_privileged = request.user.is_organization_admin(membership.organization)
+        if is_privileged:
             return True
 
         # Detail writes (update/delete) are gated per-object in
@@ -62,11 +67,16 @@ class BookingPolicyPermission(BasePermission):
         if request.method not in ("POST",):
             return True
 
-        # Create: the target lives in the request body.
+        # Create: the target lives in the request body. ``is_privileged`` is
+        # handed to the service rather than re-derived there from
+        # ``membership.is_admin``: two derivations could disagree, and a caller
+        # admitted here by one and refused later by the other would be able to
+        # create a policy they then could not edit.
         return self.booking_policy_permission_service.can_member_manage_target(
             user=request.user,
             membership=membership,
             organization_id=membership.organization_id,
+            is_privileged=is_privileged,
             calendar_id=request.data.get("calendar"),
             membership_user_id=request.data.get("membership_user_id"),
             calendar_group_id=request.data.get("calendar_group"),
@@ -77,10 +87,14 @@ class BookingPolicyPermission(BasePermission):
         """Detail writes: admins always; members only for their own target."""
         if request.method in SAFE_METHODS:
             return True
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         return self.booking_policy_permission_service.can_member_manage_policy(
             user=request.user,
             membership=membership,
+            # The same capability ``has_permission`` short-circuits on, computed
+            # the same way -- see the comment there.
+            is_privileged=membership is not None
+            and request.user.is_organization_admin(membership.organization),
             policy=obj,
         )
 
@@ -99,7 +113,7 @@ class ExternalEventChangeRequestPermission(BasePermission):
         """Allow access only to authenticated users with an active membership."""
         if not request.user.is_authenticated:
             return False
-        return get_active_organization_membership(request.user) is not None
+        return request.organization_membership is not None
 
 
 class CalendarEventPermission(BasePermission):
@@ -175,7 +189,7 @@ class CalendarGroupPermission(BasePermission):
         user = request.user
         if not user.is_authenticated:
             return False
-        membership = get_active_organization_membership(user)
+        membership = request.organization_membership
         if membership is None:
             return False
         if getattr(view, "action", None) == "create":
@@ -183,7 +197,7 @@ class CalendarGroupPermission(BasePermission):
         return True
 
     def has_object_permission(self, request, view, obj):
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         if membership is None or obj.organization_id != membership.organization_id:
             return False
 
@@ -216,28 +230,27 @@ class CalendarGroupPermission(BasePermission):
 class GroupScopedAvailabilityWindowPermission(BasePermission):
     """Route-level group-visibility gate for the group-scoped availability
     window routes nested under a group's slot
-    (``calendar-groups/<group_id>/slots/<slot_id>/availability-windows/...``,
-    CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 1c).
+    (``calendar-groups/<group_id>/slots/<slot_id>/availability-windows/...``).
 
     ``has_permission`` resolves the ``(group_id, slot_id)`` pair from the URL
     once, org-scoped, and stashes it on the view as ``view.group_slot`` so the
     viewset doesn't repeat the query. Visibility uses the same "can this user
     see the group at all" rule as ``CalendarGroupPermission``
     (``CalendarPermissionService.can_view_calendar_group`` — admin, or owns
-    ANY calendar in ANY slot of the group; matches the Phase 1a service tests,
-    where owning a calendar in a *different* slot of the same group is enough
-    to see the group but not enough to manage a calendar the caller doesn't
-    own). A caller who cannot see the ``(group, slot)`` — because it genuinely
-    doesn't exist, belongs to another organization, or they own no calendar
-    anywhere in the group and are not an org admin — gets the exact same
-    ``Http404`` as a caller hitting a URL for a slot that never existed; there
-    is no separate 403 branch to compare it against (spec: "a member cannot
-    learn about groups they are not part of through error messages or
-    listings").
+    ANY calendar in ANY slot of the group; matches the calendar group
+    service's behavior, where owning a calendar in a *different* slot of the
+    same group is enough to see the group but not enough to manage a calendar
+    the caller doesn't own). A caller who cannot see the ``(group, slot)`` —
+    because it genuinely doesn't exist, belongs to another organization, or
+    they own no calendar anywhere in the group and are not an org admin —
+    gets the exact same ``Http404`` as a caller hitting a URL for a slot that
+    never existed; there is no separate 403 branch to compare it against
+    (spec: "a member cannot learn about groups they are not part of through
+    error messages or listings").
 
     This is a coarse, route-level gate only. The fine-grained decision — may
     *this* user write *this specific* calendar's config within the slot —
-    stays where Phase 1a put it: ``CalendarGroupService`` re-checks
+    lives in ``CalendarGroupService``, which re-checks
     ``can_manage_group_scoped_calendar_config`` on every write and raises the
     identically-shaped ``CalendarGroupSlotConfigNotFoundError`` (mapped to the
     same 404 by the view) when a visible member targets a calendar they don't
@@ -259,7 +272,7 @@ class GroupScopedAvailabilityWindowPermission(BasePermission):
         user = request.user
         if not user.is_authenticated:
             return False
-        membership = get_active_organization_membership(user)
+        membership = request.organization_membership
         if membership is None:
             return False
 
@@ -293,8 +306,7 @@ class GroupScopedAvailabilityWindowPermission(BasePermission):
 class GroupScopedBlockedTimePermission(BasePermission):
     """Route-level group-visibility gate for the group-scoped blocked time
     routes nested under a group's slot
-    (``calendar-groups/<group_id>/slots/<slot_id>/blocked-times/...``,
-    CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 2b).
+    (``calendar-groups/<group_id>/slots/<slot_id>/blocked-times/...``).
 
     Identical in every respect to ``GroupScopedAvailabilityWindowPermission``
     -- same coarse route-level gate (``can_view_calendar_group``), same
@@ -317,7 +329,7 @@ class GroupScopedBlockedTimePermission(BasePermission):
         user = request.user
         if not user.is_authenticated:
             return False
-        membership = get_active_organization_membership(user)
+        membership = request.organization_membership
         if membership is None:
             return False
 
@@ -351,8 +363,7 @@ class GroupScopedBlockedTimePermission(BasePermission):
 class GroupScopedQuotaRulePermission(BasePermission):
     """Route-level group-visibility gate for the group-scoped quota rule
     routes nested under a group's slot
-    (``calendar-groups/<group_id>/slots/<slot_id>/quota-rules/...``,
-    CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 3c).
+    (``calendar-groups/<group_id>/slots/<slot_id>/quota-rules/...``).
 
     Identical in every respect to ``GroupScopedAvailabilityWindowPermission``/
     ``GroupScopedBlockedTimePermission`` -- same coarse route-level gate
@@ -376,7 +387,7 @@ class GroupScopedQuotaRulePermission(BasePermission):
         user = request.user
         if not user.is_authenticated:
             return False
-        membership = get_active_organization_membership(user)
+        membership = request.organization_membership
         if membership is None:
             return False
 

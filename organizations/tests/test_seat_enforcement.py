@@ -24,13 +24,15 @@ from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
 
+from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
 from organizations.models import (
     Organization,
     OrganizationInvitation,
     OrganizationMembership,
-    OrganizationRole,
 )
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.services import OrganizationService
+from organizations.tests.helpers import make_membership
 from payments.billing_constants import BillingState, Entitlement, LimitedResource, LimitKind
 from payments.exceptions import OverLimitError
 from payments.models import (
@@ -40,6 +42,7 @@ from payments.models import (
     SubscriptionPlanLimit,
 )
 from payments.services.entitlement_service import EntitlementService
+from payments.tests.billing_fixtures import reseed_billing_plans
 from public_api.models import ResourceAccess
 from public_api.services import PublicAPIAuthService
 
@@ -123,6 +126,11 @@ def _organization_with_seat_limit(
     return organization
 
 
+@pytest.fixture(autouse=True)
+def _ensure_billing_plans(db):
+    reseed_billing_plans()
+
+
 @pytest.mark.django_db
 class TestInviteBlockedIdenticallyAcrossRestAndGraphQL:
     """The invite is blocked with a useful message, and the partner API is not a
@@ -132,11 +140,10 @@ class TestInviteBlockedIdenticallyAcrossRestAndGraphQL:
     def test_rest_invite_is_blocked_with_the_shared_over_limit_body(self):
         admin = baker.make(get_user_model(), email="rest-admin@example.com")
         organization = _organization_with_seat_limit(seat_limit=1, existing_active_members=0)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         client = APIClient()
@@ -198,11 +205,10 @@ class TestInviteBlockedIdenticallyAcrossRestAndGraphQL:
         directly against each other, which is the actual contract."""
         admin = baker.make(get_user_model(), email="compare-admin@example.com")
         rest_org = _organization_with_seat_limit(seat_limit=1, existing_active_members=0)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin,
             organization=rest_org,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         rest_client = APIClient()
@@ -254,11 +260,6 @@ class TestAcceptInvitationBlockedAtTheLimit:
     would be blocked at exactly the ceiling it is trying to fill."""
 
     def _pending_invitation(self, organization, email):
-        from common.utils.authentication_utils import (
-            generate_long_lived_token,
-            hash_long_lived_token,
-        )
-
         token = generate_long_lived_token()
         invitation = baker.make(
             OrganizationInvitation,
@@ -328,11 +329,6 @@ class TestAcceptInvitationMarksAcceptedInsideTheSameTransaction:
     permanent double-count of that seat."""
 
     def test_a_failure_marking_the_invitation_accepted_rolls_back_the_membership_too(self):
-        from common.utils.authentication_utils import (
-            generate_long_lived_token,
-            hash_long_lived_token,
-        )
-
         organization = _organization_with_seat_limit(seat_limit=2, existing_active_members=0)
         invitee = baker.make(get_user_model(), email="atomic-accept@example.com")
         token = generate_long_lived_token()
@@ -370,11 +366,6 @@ class TestProvisionTenantForUserMarksAcceptedInsideTheSameTransaction:
     instead of inside it. Signup is the higher-traffic of the two paths."""
 
     def test_a_failure_marking_the_invitation_accepted_rolls_back_the_membership_too(self):
-        from common.utils.authentication_utils import (
-            generate_long_lived_token,
-            hash_long_lived_token,
-        )
-
         organization = _organization_with_seat_limit(seat_limit=2, existing_active_members=0)
         invitee = baker.make(get_user_model(), email="atomic-provision@example.com")
         token = generate_long_lived_token()
@@ -408,17 +399,15 @@ class TestReactivationBlockedAtTheLimit:
     def test_reactivate_is_blocked_at_the_seat_limit(self):
         admin = baker.make(get_user_model(), email="reactivate-admin@example.com")
         organization = _organization_with_seat_limit(seat_limit=1, existing_active_members=0)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         inactive_member = baker.make(
             OrganizationMembership,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=False,
         )
         client = APIClient()
@@ -440,17 +429,15 @@ class TestReactivationBlockedAtTheLimit:
         does not push the organization past."""
         admin = baker.make(get_user_model(), email="reactivate-admin2@example.com")
         organization = _organization_with_seat_limit(seat_limit=1, existing_active_members=0)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         already_active_member = baker.make(
             OrganizationMembership,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
         client = APIClient()
@@ -478,11 +465,10 @@ class TestResendAtTheCeiling:
         # members + 1 pending invite at limit 5" scenario.
         admin = baker.make(get_user_model(), email="resend-admin@example.com")
         organization = _organization_with_seat_limit(seat_limit=2, existing_active_members=0)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         pending_invitation = baker.make(

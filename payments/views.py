@@ -270,8 +270,7 @@ class PaymentsViewSet(ViewSet):
           the latter's own (idempotent) ``billing_state`` write is a same-state
           no-op by the time it runs -- the two never disagree about which write
           actually happened.
-        - **Approved, but $0 collected** (Billing API Contract Hardening,
-          Phase 4's zero-amount guard): neither ``resolve_payment_success``,
+        - **Approved, but $0 collected**: neither ``resolve_payment_success``,
           ``confirm_plan_change``, nor ``record_payment_method`` runs. This is
           **defense in depth against a provider that does emit** a $0
           approved subscription-payment update (e.g. two offsetting proration
@@ -283,7 +282,7 @@ class PaymentsViewSet(ViewSet):
           the payer's outstanding balance was collected on any provider that
           *does* reach this method with one, and treating it as recovery
           would flip a GRACE/RESTRICTED subscription to ACTIVE while the real
-          balance stays unpaid forever (the exact false-recovery this phase's
+          balance stays unpaid forever (the exact false-recovery a live
           Stripe probe caught -- see `SubscriptionService.retry_payment`'s
           docstring for the numbers). **``confirm_plan_change`` must be
           skipped too, not only ``resolve_payment_success``**: `confirm_plan_change`
@@ -462,8 +461,8 @@ class BillingProfileViewSet(
 class PaymentProviderViewSet(TenantScopedViewMixin, ViewSet):
     """``GET /billing/payment-provider/`` -- the active organization's payment provider
     (its pin when set, ``settings.DEFAULT_PAYMENT_PROVIDER`` otherwise -- resolved through
-    ``PaymentProviderResolver``, the one place both this endpoint and Phase 4's charge
-    routing implement that rule) plus that provider's browser-safe public credentials.
+    ``PaymentProviderResolver``, the one place both this endpoint and the charge-routing
+    path implement that rule) plus that provider's browser-safe public credentials.
 
     Split from the unauthenticated system-default endpoint (see
     ``DefaultPaymentProviderView`` below): the two have different auth, throttle, and

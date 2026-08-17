@@ -45,7 +45,10 @@ from calendar_integration.models import Calendar, CalendarEvent, ExternalEventCh
 from calendar_integration.services.external_event_change_request_service import (
     ExternalEventChangeRequestService,
 )
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.authorization import membership_holds_permission
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN, MANAGE_MEMBERS
+from organizations.tests.helpers import grant_membership_groups
 from users.models import Profile, User
 
 
@@ -77,7 +80,6 @@ def attendee_membership(organization: Organization) -> OrganizationMembership:
     membership, _ = OrganizationMembership.objects.get_or_create(
         user=user,
         organization=organization,
-        defaults={"role": OrganizationRole.MEMBER},
     )
     return membership
 
@@ -90,8 +92,8 @@ def admin_membership(organization: Organization) -> OrganizationMembership:
     membership, _ = OrganizationMembership.objects.get_or_create(
         user=user,
         organization=organization,
-        defaults={"role": OrganizationRole.ADMIN},
     )
+    grant_membership_groups(membership, [GROUP_ORGANIZATION_ADMIN])
     return membership
 
 
@@ -103,7 +105,6 @@ def ineligible_membership(organization: Organization) -> OrganizationMembership:
     membership, _ = OrganizationMembership.objects.get_or_create(
         user=user,
         organization=organization,
-        defaults={"role": OrganizationRole.MEMBER},
     )
     return membership
 
@@ -197,7 +198,8 @@ def test_admin_approves_update_request_for_any_event(
     admin_membership: OrganizationMembership,
 ) -> None:
     """Admin (not an attendee) can approve an UPDATE request for any event in the org."""
-    assert admin_membership.is_admin  # sanity check
+    # sanity check
+    assert membership_holds_permission(admin_membership, MANAGE_MEMBERS)
 
     change_request = create_external_event_change_request(
         event=event,
@@ -255,14 +257,18 @@ def test_attendee_approves_delete_request_removes_event_and_keeps_request(
     result = service.approve(change_request, membership=attendee_membership)
 
     # The local event must no longer exist.
-    assert not CalendarEvent.objects.filter(
-        pk=event_id, organization_id=event.organization_id
-    ).exists()
+    assert (
+        not CalendarEvent.objects.filter_by_organization(event.organization_id)
+        .filter(
+            pk=event_id,
+        )
+        .exists()
+    )
 
     # The request row must survive with status APPROVED and event NULL.
     # Multi-tenancy manager requires organization_id in the filter.
-    saved = ExternalEventChangeRequest.objects.get(
-        pk=request_id, organization_id=event.organization_id
+    saved = ExternalEventChangeRequest.objects.filter_by_organization(event.organization_id).get(
+        pk=request_id,
     )
     assert saved.status == ExternalEventChangeRequestStatus.APPROVED
     assert saved.event_fk_id is None
@@ -298,9 +304,13 @@ def test_admin_approves_delete_request(
 
     result = service.approve(change_request, membership=admin_membership)
 
-    assert not CalendarEvent.objects.filter(
-        pk=event_id, organization_id=event.organization_id
-    ).exists()
+    assert (
+        not CalendarEvent.objects.filter_by_organization(event.organization_id)
+        .filter(
+            pk=event_id,
+        )
+        .exists()
+    )
     assert result.status == ExternalEventChangeRequestStatus.APPROVED
     assert result.event_fk_id is None
 
@@ -449,8 +459,8 @@ def test_can_resolve_returns_false_for_different_org(
     other_membership, _ = OrganizationMembership.objects.get_or_create(
         user=user,
         organization=other_org,
-        defaults={"role": OrganizationRole.ADMIN},  # even admin in another org
     )
+    grant_membership_groups(other_membership, [GROUP_ORGANIZATION_ADMIN])
 
     change_request = create_external_event_change_request(
         event=event,

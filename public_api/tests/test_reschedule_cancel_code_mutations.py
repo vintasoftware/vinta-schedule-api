@@ -337,7 +337,9 @@ class TestCreateCalendarRescheduleBookingCode:
         assert result["success"] is False
         assert result["errorCode"] == "INVALID_CODE"
 
-        assert not CalendarManagementToken.objects.filter(event_fk_id=other_event.id).exists()
+        assert not CalendarManagementToken.original_manager.filter(
+            event_fk_id=other_event.id
+        ).exists()
 
     def test_rejected_without_booking_code_resource(
         self,

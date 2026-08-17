@@ -4,8 +4,7 @@ The destination is read exclusively from the acting organization's stored
 branding (``organizations.models.resolve_branding_for_display``) -- never from a
 ``next``/``callback_url`` parameter, a header, or anything else the caller
 controls. That is the whole point of the design: there is no caller-supplied
-redirect target, so there is no open-redirect surface to validate away (see the
-Organization Auth-Area Branding plan, Phase 2a/7).
+redirect target, so there is no open-redirect surface to validate away.
 
 Both the social OAuth callback (``accounts.views.ProviderCallbackAPIView``) and
 every allauth-headless authentication response (via
@@ -20,7 +19,8 @@ import logging
 from django.conf import settings
 from django.http import HttpRequest, HttpResponse
 
-from organizations.models import get_active_organization_membership, resolve_branding_for_display
+from common.organization_services import memberships
+from organizations.models import resolve_branding_for_display
 from users.models import User
 
 
@@ -59,12 +59,14 @@ def resolve_post_auth_destination(user: User | None) -> str:
     fallback as a membership-less user -- there is no case where a completed
     authentication answers with nowhere to go.
 
-    There is no selected-org concept at authentication time: a user with several
-    active memberships resolves to their oldest one via
-    ``get_active_organization_membership``. Deterministic and safe -- every
-    candidate organization is one the user belongs to.
+    There is no selected-org concept at authentication time, and this flow is
+    deliberately organization-optional: a membership-less or ambiguous caller
+    must still receive the documented dashboard fallback. ``strict=False``
+    preserves that explicit ``None`` contract without selecting a tenant by row
+    age. Once the frontend selects an organization, tenant-scoped requests use
+    the strict request resolver as usual.
     """
-    membership = get_active_organization_membership(user) if user is not None else None
+    membership = memberships.resolve_for_user(user, strict=False)
     organization = membership.organization if membership else None
     branding = resolve_branding_for_display(organization)
 

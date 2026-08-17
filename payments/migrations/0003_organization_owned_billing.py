@@ -1,5 +1,5 @@
-# Phase 1 of billing plans and limits: move billing ownership from the user to the
-# organization, and repair the dead `Subscription.plan` seam.
+# Move billing ownership from the user to the organization, and repair the dead
+# `Subscription.plan` seam.
 #
 # Destructive rebuild of `payments_billingprofile` and `payments_subscription` — both
 # tables are empty in every environment (no code writes to them today), so no data

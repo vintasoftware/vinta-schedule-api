@@ -46,6 +46,10 @@ from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.calendar_service_context import CalendarServiceContext
 from calendar_integration.services.calendar_sync_service import CalendarSyncService
 from calendar_integration.services.dataclasses import CalendarResourceData
+from calendar_integration.tasks.calendar_sync_tasks import (
+    import_account_calendars_task,
+    sync_calendar_task,
+)
 from organizations.models import Organization
 from payments.billing_constants import BillingState, Entitlement, LimitedResource, LimitKind
 from payments.models import (
@@ -210,9 +214,11 @@ class TestPartialResourceCalendarImport:
         assert len(list(result)) == 2
         # Exactly 2 were persisted as RESOURCE calendars.
         assert (
-            Calendar.objects.filter(
-                organization=organization, calendar_type=CalendarType.RESOURCE
-            ).count()
+            Calendar.objects.filter_by_organization(organization)
+            .filter(
+                calendar_type=CalendarType.RESOURCE,
+            )
+            .count()
             == 2
         )
         assert len(host.request_calendar_sync_calls) == 2
@@ -234,9 +240,11 @@ class TestPartialResourceCalendarImport:
 
         assert len(list(result)) == 0
         assert (
-            Calendar.objects.filter(
-                organization=organization, calendar_type=CalendarType.RESOURCE
-            ).count()
+            Calendar.objects.filter_by_organization(organization)
+            .filter(
+                calendar_type=CalendarType.RESOURCE,
+            )
+            .count()
             == 0
         )
         assert host.request_calendar_sync_calls == []
@@ -253,9 +261,11 @@ class TestPartialResourceCalendarImport:
 
         service._execute_organization_calendar_resources_import(start, end)
         assert (
-            Calendar.objects.filter(
-                organization=organization, calendar_type=CalendarType.RESOURCE
-            ).count()
+            Calendar.objects.filter_by_organization(organization)
+            .filter(
+                calendar_type=CalendarType.RESOURCE,
+            )
+            .count()
             == 2
         )
 
@@ -268,9 +278,11 @@ class TestPartialResourceCalendarImport:
         # afford any of the remaining 8 new ones (still no headroom), and critically
         # did NOT count the 2 already-imported rooms as new demand.
         assert (
-            Calendar.objects.filter(
-                organization=organization, calendar_type=CalendarType.RESOURCE
-            ).count()
+            Calendar.objects.filter_by_organization(organization)
+            .filter(
+                calendar_type=CalendarType.RESOURCE,
+            )
+            .count()
             == 2
         )
 
@@ -286,9 +298,11 @@ class TestPartialResourceCalendarImport:
 
         service._execute_organization_calendar_resources_import(start, end)
         assert (
-            Calendar.objects.filter(
-                organization=organization, calendar_type=CalendarType.RESOURCE
-            ).count()
+            Calendar.objects.filter_by_organization(organization)
+            .filter(
+                calendar_type=CalendarType.RESOURCE,
+            )
+            .count()
             == 2
         )
 
@@ -296,9 +310,11 @@ class TestPartialResourceCalendarImport:
         service2._execute_organization_calendar_resources_import(start, end)
 
         assert (
-            Calendar.objects.filter(
-                organization=organization, calendar_type=CalendarType.RESOURCE
-            ).count()
+            Calendar.objects.filter_by_organization(organization)
+            .filter(
+                calendar_type=CalendarType.RESOURCE,
+            )
+            .count()
             == 2
         )
         # Both already-imported rooms were re-synced (not silently dropped).
@@ -314,9 +330,11 @@ class TestPartialResourceCalendarImport:
         service._execute_organization_calendar_resources_import(start, end, bypass_limits=True)
 
         assert (
-            Calendar.objects.filter(
-                organization=organization, calendar_type=CalendarType.RESOURCE
-            ).count()
+            Calendar.objects.filter_by_organization(organization)
+            .filter(
+                calendar_type=CalendarType.RESOURCE,
+            )
+            .count()
             == 4
         )
         assert len(host.request_calendar_sync_calls) == 4
@@ -357,9 +375,11 @@ class TestPromotingAnExistingCalendarConsumesHeadroom:
         # Usage started at 0 with a ceiling of 2, and all five discovered rooms are
         # chargeable (three promotions plus two creates), so exactly two may land.
         assert (
-            Calendar.objects.filter(
-                organization=organization, calendar_type=CalendarType.RESOURCE
-            ).count()
+            Calendar.objects.filter_by_organization(organization)
+            .filter(
+                calendar_type=CalendarType.RESOURCE,
+            )
+            .count()
             == 2
         )
         assert len(host.request_calendar_sync_calls) == 2
@@ -384,16 +404,20 @@ class TestPromotingAnExistingCalendarConsumesHeadroom:
         service._execute_organization_calendar_resources_import(start, end)
 
         assert (
-            Calendar.objects.filter(
-                organization=organization, calendar_type=CalendarType.RESOURCE
-            ).count()
+            Calendar.objects.filter_by_organization(organization)
+            .filter(
+                calendar_type=CalendarType.RESOURCE,
+            )
+            .count()
             == 0
         )
         # The rows are untouched, still PERSONAL.
         assert (
-            Calendar.objects.filter(
-                organization=organization, calendar_type=CalendarType.PERSONAL
-            ).count()
+            Calendar.objects.filter_by_organization(organization)
+            .filter(
+                calendar_type=CalendarType.PERSONAL,
+            )
+            .count()
             == 3
         )
         assert host.request_calendar_sync_calls == []
@@ -425,15 +449,19 @@ class TestPromotingAnExistingCalendarConsumesHeadroom:
         # room_2 is the only chargeable resource and it fits in the ceiling of 1;
         # the two soft-deleted rows are retyped but stay uncounted.
         assert (
-            Calendar.objects.live_of_type(CalendarType.RESOURCE)
+            Calendar.objects.unscoped()
+            .live_of_type(CalendarType.RESOURCE)
             .filter(organization=organization)
             .count()
             == 1
         )
         assert (
-            Calendar.objects.filter(
-                organization=organization, external_id="room_2", calendar_type=CalendarType.RESOURCE
-            ).count()
+            Calendar.objects.filter_by_organization(organization)
+            .filter(
+                external_id="room_2",
+                calendar_type=CalendarType.RESOURCE,
+            )
+            .count()
             == 1
         )
 
@@ -551,9 +579,11 @@ class TestPartialImportIsDistinguishableFromSuccess:
         assert import_state.status == CalendarOrganizationResourceImportStatus.SUCCESS
         assert import_state.error_message == ""
         assert (
-            Calendar.objects.filter(
-                organization=organization, calendar_type=CalendarType.RESOURCE
-            ).count()
+            Calendar.objects.filter_by_organization(organization)
+            .filter(
+                calendar_type=CalendarType.RESOURCE,
+            )
+            .count()
             == 3
         )
 
@@ -574,9 +604,11 @@ class TestUnlimitedPlanFullSyncIsUnchanged:
 
         assert len(list(result)) == 25
         assert (
-            Calendar.objects.filter(
-                organization=organization, calendar_type=CalendarType.RESOURCE
-            ).count()
+            Calendar.objects.filter_by_organization(organization)
+            .filter(
+                calendar_type=CalendarType.RESOURCE,
+            )
+            .count()
             == 25
         )
         assert len(host.request_calendar_sync_calls) == 25
@@ -600,9 +632,11 @@ class TestUnlimitedPlanFullSyncIsUnchanged:
         assert import_state.status == CalendarOrganizationResourceImportStatus.SUCCESS
         assert import_state.error_message == ""
         assert (
-            Calendar.objects.filter(
-                organization=organization, calendar_type=CalendarType.RESOURCE
-            ).count()
+            Calendar.objects.filter_by_organization(organization)
+            .filter(
+                calendar_type=CalendarType.RESOURCE,
+            )
+            .count()
             == 25
         )
         assert len(host.request_calendar_sync_calls) == 25
@@ -711,8 +745,6 @@ class TestSyncTasksSkipRatherThanFailOnMissingEntitlement:
 
     @_with_google_credentials
     def test_import_account_calendars_task_returns_instead_of_raising(self):
-        from calendar_integration.tasks.calendar_sync_tasks import import_account_calendars_task
-
         organization, account = self._unentitled_org_and_account()
 
         # No exception, and the task never reaches import_account_calendars().
@@ -727,8 +759,6 @@ class TestSyncTasksSkipRatherThanFailOnMissingEntitlement:
 
     @_with_google_credentials
     def test_sync_calendar_task_returns_instead_of_raising(self):
-        from calendar_integration.tasks.calendar_sync_tasks import sync_calendar_task
-
         organization, account = self._unentitled_org_and_account()
         calendar = baker.make(
             Calendar,

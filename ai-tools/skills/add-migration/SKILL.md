@@ -10,13 +10,13 @@ Two migration surfaces:
 1. **Standard Django** — `makemigrations` for model changes. This skill covers the lock-aware schema part.
 2. **Raw-SQL framework** — for DB-defined code (functions, procedures, triggers, views, materialized views) routed through `common/raw_sql_migration_managers.py`. **Don't use this skill** for those — go straight to [create-postgres-view](../create-postgres-view/SKILL.md), [create-postgres-function](../create-postgres-function/SKILL.md), or the trigger / procedure variants. They own the framework specifics.
 
-Background: [AGENTS.md → Architecture → Raw SQL](../../AGENTS.md#raw-sql-functions-procedures-triggers-views-materialized-views) for the framework's contract; [AGENTS.md → Multi-Tenancy](../../AGENTS.md#multi-tenancy) for `OrganizationModel` constraints on new columns + indexes.
+Background: [AGENTS.md → Architecture → Raw SQL](../../AGENTS.md#raw-sql-functions-procedures-triggers-views-materialized-views) for the framework's contract; [AGENTS.md → Multi-Tenancy](../../AGENTS.md#multi-tenancy) for `SingleOrganizationModelMixin` constraints on new columns + indexes.
 
 ## Decision questions
 
 1. **What's the change?** Column add / drop / type / null / default; index add / drop; FK add / drop; new table; rename; raw SQL function / view / etc.; data migration.
 2. **Is the target table hot?** Hot tables are those receiving non-trivial write traffic (calendar events, bundle relationships, bookings, organizations members). Schema changes on hot tables need lock-aware operations.
-3. **Is the model `OrganizationModel`-derived?** New columns / indexes need to consider the org dimension (lead with `organization_id` in composite indexes, include `organization` in unique constraints).
+3. **Is the model `SingleOrganizationModelMixin`-derived?** New columns / indexes need to consider the org dimension (lead with `organization_id` in composite indexes, include `organization` in unique constraints).
 4. **Is the operation reversible?** Every migration needs a meaningful reverse, or an explicitly-justified `RunPython.noop`.
 5. **Does the change cascade into raw-SQL objects?** If you bump a function the recurrence DB framework depends on, the depending objects need rebuilding in the same chain.
 

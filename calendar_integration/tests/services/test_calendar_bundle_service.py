@@ -25,6 +25,7 @@ from calendar_integration.models import (
     BlockedTime,
     Calendar,
     CalendarEvent,
+    CalendarOwnership,
     ChildrenCalendarRelationship,
 )
 from calendar_integration.services.calendar_bundle_service import CalendarBundleService
@@ -32,6 +33,7 @@ from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.dataclasses import (
     AvailableTimeWindow,
     CalendarEventInputData,
+    EventAttendanceInputData,
 )
 from organizations.models import Organization, OrganizationMembership
 from users.models import Profile, User
@@ -355,11 +357,14 @@ def test_update_bundle_calendar_changes_primary(
         primary_calendar=child_calendar_internal,
     )
 
-    primary_rel = ChildrenCalendarRelationship.objects.filter(
-        bundle_calendar=result,
-        organization=organization,
-        is_primary=True,
-    ).first()
+    primary_rel = (
+        ChildrenCalendarRelationship.objects.filter_by_organization(organization)
+        .filter(
+            bundle_calendar=result,
+            is_primary=True,
+        )
+        .first()
+    )
     assert primary_rel is not None
     assert primary_rel.child_calendar == child_calendar_internal
 
@@ -468,7 +473,9 @@ def test_create_bundle_event_uses_designated_primary(
         calendar_id: int, event_data: CalendarEventInputData, **kwargs
     ) -> CalendarEvent:
         """Return a minimal CalendarEvent for the requested calendar."""
-        cal = Calendar.objects.get(id=calendar_id, organization=organization)
+        cal = Calendar.objects.filter_by_organization(organization).get(
+            id=calendar_id,
+        )
         evt = CalendarEvent(
             id=len(created_calls) + 1,
             title=event_data.title,
@@ -536,7 +543,9 @@ def test_create_bundle_event_creates_blocked_time_for_provider_children(
     def fake_create_event(
         calendar_id: int, event_data: CalendarEventInputData, **kwargs
     ) -> CalendarEvent:
-        cal = Calendar.objects.get(id=calendar_id, organization=organization)
+        cal = Calendar.objects.filter_by_organization(organization).get(
+            id=calendar_id,
+        )
         evt = CalendarEvent(
             title=event_data.title,
             calendar=cal,
@@ -549,7 +558,7 @@ def test_create_bundle_event_creates_blocked_time_for_provider_children(
         evt.save()
         return evt
 
-    bt_count_before = BlockedTime.objects.filter(organization=organization).count()
+    bt_count_before = BlockedTime.objects.filter_by_organization(organization).count()
 
     with patch.object(
         service_facade, "get_availability_windows_in_range", return_value=availability_window
@@ -558,12 +567,16 @@ def test_create_bundle_event_creates_blocked_time_for_provider_children(
             bundle_svc.create_bundle_event(bc, bundle_event_data)
 
     # A BlockedTime must have been created for other_google
-    bt_count_after = BlockedTime.objects.filter(organization=organization).count()
+    bt_count_after = BlockedTime.objects.filter_by_organization(organization).count()
     assert bt_count_after == bt_count_before + 1
 
-    bt = BlockedTime.objects.filter(
-        organization=organization, bundle_primary_event__isnull=False
-    ).last()
+    bt = (
+        BlockedTime.objects.filter_by_organization(organization)
+        .filter(
+            bundle_primary_event__isnull=False,
+        )
+        .last()
+    )
     assert bt is not None
     assert bt.calendar == other_google
 
@@ -775,7 +788,9 @@ def test_delete_bundle_event_deletes_representations_and_blocked_times(
 
     def fake_delete(calendar_id: int, event_id: int, delete_series: bool = False) -> None:
         deleted_ids.append((calendar_id, event_id))
-        CalendarEvent.objects.filter(id=event_id, organization=organization).delete()
+        CalendarEvent.objects.filter_by_organization(organization).filter(
+            id=event_id,
+        ).delete()
 
     with patch.object(initialized_facade, "delete_event", side_effect=fake_delete):
         svc.delete_bundle_event(primary_event)
@@ -784,7 +799,7 @@ def test_delete_bundle_event_deletes_representations_and_blocked_times(
     assert len(deleted_ids) == 2
 
     # The blocked time was deleted directly (not via host.delete_event)
-    assert not BlockedTime.objects.filter(id=blocked.id).exists()
+    assert not BlockedTime.original_manager.filter(id=blocked.id).exists()
 
 
 # ===========================================================================
@@ -920,9 +935,6 @@ def test_collect_bundle_attendees_includes_calendar_owners(
     user = User.objects.create_user(email="attendee@example.com", password="pw")
     Profile.objects.create(user=user)
 
-    from calendar_integration.models import CalendarOwnership
-    from organizations.models import OrganizationMembership
-
     OrganizationMembership.objects.create(user=user, organization=organization)
     CalendarOwnership.objects.create(
         organization=organization,
@@ -956,10 +968,6 @@ def test_collect_bundle_attendees_deduplicates(
     """If a user is both an explicit attendee and a calendar owner, they appear once."""
     user = User.objects.create_user(email="dedup@example.com", password="pw")
     Profile.objects.create(user=user)
-
-    from calendar_integration.models import CalendarOwnership
-    from calendar_integration.services.dataclasses import EventAttendanceInputData
-    from organizations.models import OrganizationMembership
 
     OrganizationMembership.objects.create(user=user, organization=organization)
     CalendarOwnership.objects.create(

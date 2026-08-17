@@ -48,7 +48,7 @@ class _Kind:
 
     key: str
     # Typed `Any` rather than `type[Model]`: both are read through
-    # `original_manager`, which the OrganizationModel machinery attaches
+    # `original_manager`, which the organization-scoping machinery attaches
     # dynamically and mypy therefore cannot see on a `type` annotation.
     parent_model: Any
     record_model: Any
@@ -267,6 +267,17 @@ class RepairUntruncatedRecurringParents(BaseOneOffScript[RepairTarget]):
 
     def process(self, item: RepairTarget) -> None:
         kind = KIND_BY_KEY[item.kind]
+        # No `organization_context` binding here: every access below -- this
+        # method's own `kind.parent_model.original_manager` call and
+        # `_delete_phantom_metered`'s `original_manager` calls -- deliberately
+        # bypasses tenant scoping, mirroring the scan in
+        # `iter_targets`/`_iter_kind`, which is cross-organization by design
+        # (same pattern as `organizations/admin.py`'s explicit
+        # `original_manager` usage). `_delete_phantom_metered` also reads
+        # `Subscription`/`MeteredOccurrence` via `.objects`, but both are
+        # plain `BaseModel` (not organization-scoped -- see `payments/tasks
+        # .py`'s module docstring), so those calls need no organization
+        # context either way.
         with transaction.atomic():
             parent = (
                 kind.parent_model.original_manager.select_related("recurrence_rule_fk")
@@ -387,6 +398,10 @@ class RepairUntruncatedRecurringParents(BaseOneOffScript[RepairTarget]):
         if subscription is None:
             return None
 
+        # Late, and it has to be: `di_core.containers.container` is only assigned
+        # in `DICoreConfig.ready()`, so a module-level `from ... import container`
+        # binds the `None` the module starts with and never sees the wired
+        # container.
         from di_core.containers import container
 
         if container is None:

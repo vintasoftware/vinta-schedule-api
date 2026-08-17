@@ -165,9 +165,9 @@ class RecurrenceManager:
 
             # Return the updated master object
             parent_model = cast(models.Model, parent_object)
-            return parent_object.__class__.objects.get(
-                organization_id=parent_object.organization_id, id=parent_model.pk
-            )
+            return parent_object.__class__.objects.filter_by_organization(
+                parent_object.organization_id
+            ).get(id=parent_model.pk)
 
         # Exception is on a future occurrence
         if is_cancelled:

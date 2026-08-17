@@ -2,7 +2,9 @@ from typing import Literal
 
 from calendar_integration.models import Calendar
 from calendar_integration.querysets import CalendarGroupQuerySet
+from organizations.authorization import membership_holds_permission
 from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import MANAGE_MEMBERS
 from public_api.models import SystemUser
 
 
@@ -43,11 +45,20 @@ def _resolve_scope_and_membership(
       membership is missing/inactive, fail-closed).
     - membership: The active OrganizationMembership if scoped, or None if
       org-wide or missing/inactive.
+
+    "Admin member" reads ``organizations.manage_members`` off the membership.
+    It used to read the ``role`` column directly; the two name the same set,
+    since ``organization_admin`` -- the group every ``role == ADMIN``
+    membership was backfilled into -- is the only seeded group carrying that
+    permission. Asked
+    of the *membership* rather than of ``(user, organization)`` so the token's
+    standing does not additionally depend on the underlying Django user's
+    ``is_active``, which the column never consulted.
     """
     if system_user.scoped_to_membership_user_id is None:
         return ("org_wide", None)
     membership = _resolve_scoped_membership(system_user, organization)
-    if membership is not None and membership.is_admin:
+    if membership is not None and membership_holds_permission(membership, MANAGE_MEMBERS):
         return ("scoped_admin", membership)
     return ("scoped_member", membership)
 
@@ -57,9 +68,9 @@ def system_user_scope(system_user: SystemUser, organization: Organization) -> Sy
 
     - ``"org_wide"``: ``scoped_to_membership_user_id`` is ``None`` -- unrestricted,
       matches today's default token behavior exactly (unchanged by this).
-    - ``"scoped_admin"``: the token is scoped to an active membership whose role
-      is ADMIN -- acts with that membership's admin powers (all calendar groups,
-      any calendar).
+    - ``"scoped_admin"``: the token is scoped to an active membership holding
+      ``organizations.manage_members`` -- acts with that membership's admin
+      powers (all calendar groups, any calendar).
     - ``"scoped_member"``: the token is scoped to a membership that is either
       not an admin, or missing/inactive. A missing/inactive scoped membership
       is deliberately collapsed into this same value with EMPTY access

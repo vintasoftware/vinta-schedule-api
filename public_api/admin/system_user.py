@@ -10,6 +10,7 @@ from django.http import HttpRequest
 
 from dependency_injector.wiring import Provide, inject
 
+from common.managers import unscoped_default_manager
 from payments.billing_constants import LimitedResource
 from payments.exceptions import OverLimitError
 from public_api.models import ResourceAccess, SystemUser
@@ -92,6 +93,26 @@ class ResourceAccessInline(admin.TabularInline):
     verbose_name = "Resource Access"
     verbose_name_plural = "Resource Accesses"
 
+    def formfield_for_foreignkey(self, db_field: Any, request: HttpRequest, **kwargs: Any) -> Any:
+        """Build the parent-key form field without demanding a bound organization.
+
+        Django reaches ``ForeignKey.formfield`` for the inline's ``system_user``
+        key, and that method evaluates
+        ``remote_field.model._default_manager.using(db)`` *eagerly*, inside the
+        dict literal it hands to ``super().formfield()`` -- before any
+        ``queryset=`` a ``ModelAdmin`` could supply, so no override can head it
+        off. ``SystemUser``'s default manager is organization-scoped, and the
+        admin binds no organization by design (it is deliberately
+        cross-organization -- see ``SystemUserAdmin.get_queryset``), so under
+        ``STRICT_ORGANIZATION_FILTER`` that raises ``OrganizationNotFoundError``
+        and 500s the whole change view.
+
+        Excluding the field instead is not an option: Django's ``admin.E201``
+        check forbids excluding an inline's foreign key to its parent.
+        """
+        with unscoped_default_manager():
+            return super().formfield_for_foreignkey(db_field, request, **kwargs)
+
 
 @admin.register(SystemUser)
 class SystemUserAdmin(admin.ModelAdmin):
@@ -123,6 +144,19 @@ class SystemUserAdmin(admin.ModelAdmin):
     )
     actions = ("deactivate_system_user",)
     inlines = (ResourceAccessInline,)
+
+    def get_queryset(self, request: HttpRequest) -> QuerySet[SystemUser]:
+        """Every system user, in every organization -- including the org-less ones.
+
+        The Django admin is deliberately cross-organization (the same decision
+        ``organizations/admin.py`` records), and nothing binds an organization to
+        a staff request, so ``SystemUser.objects`` would raise
+        ``OrganizationNotFoundError`` here rather than list anything. Reading
+        through ``original_manager`` is also the only way to see a token with
+        ``organization=None``, which is a state this admin is the sole surface
+        for creating.
+        """
+        return SystemUser.original_manager.all()
 
     def deactivate_system_user(self, request: HttpRequest, queryset: QuerySet[SystemUser]) -> None:
         """

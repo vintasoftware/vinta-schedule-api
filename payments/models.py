@@ -192,10 +192,10 @@ class BillingProfile(BaseModel):
         on_delete=models.CASCADE,
         related_name="billing_profile",
     )
-    # Payer identity sent to the payment gateway. Distinct from the future
-    # `OrganizationMembership.is_billing_owner`, which is about who may *manage*
-    # billing — these fields are about what the gateway needs to charge the
-    # organization (e.g. MercadoPago rejects a payer with no email).
+    # Payer identity sent to the payment gateway. Distinct from
+    # `payments.manage_billing`, which is about who may *manage* billing — these
+    # fields are about what the gateway needs to charge the organization (e.g.
+    # MercadoPago rejects a payer with no email).
     contact_first_name = models.CharField(max_length=255)
     contact_last_name = models.CharField(max_length=255, blank=True)
     contact_email = models.EmailField()
@@ -296,6 +296,23 @@ class Subscription(BaseModel):
     add_ons: "RelatedManager[SubscriptionAddOn]"
     payments: "RelatedManager[Payment]"
 
+    class Meta(BaseModel.Meta):
+        # The billing half of the capability catalog
+        # (``organizations.permission_catalog``). Declared on ``Subscription``
+        # rather than on ``Organization`` because the subscription is the object
+        # the capability acts on -- changing the plan, buying add-ons, managing
+        # the payment method. ``organizations.manage_billing`` would have read
+        # as an organization-settings permission.
+        #
+        # Two consumers: ``IsBillingOwnerOrAdmin`` (the authorization gate on
+        # every billing write) and
+        # ``OrganizationMembershipQuerySet.billing_recipients`` (who receives the
+        # dunning ladder) -- so "who may write billing" and "who is told about
+        # it" derive from this one permission.
+        permissions: ClassVar = [
+            ("manage_billing", "Can manage the organization's billing"),
+        ]
+
     def __str__(self):
         return (
             f"{self.id} - {self.status} - {self.current_period_start} - {self.current_period_end}"
@@ -320,7 +337,8 @@ class PaymentMethod(BaseModel):
     (``PaymentsViewSet``) call ``SubscriptionService.record_payment_method`` once a
     charge against it is reported ``APPROVED`` — never synchronously from the
     request that merely *attempts* to attach one. Not tenant-scoped
-    (``OrganizationModel``) for the same reason as the other billing models in this
+    (no ``SingleOrganizationModelMixin``) for the same reason as the other billing
+    models in this
     module: cross-organization billing reads would otherwise force an
     ``original_manager`` escape at nearly every call site.
     """
@@ -530,7 +548,7 @@ class ProviderWebhookEvent(BaseModel):
     Not tenant-scoped: a webhook notification arrives before we know which
     organization it resolves to (see the billing plans and limits plan's Data Model
     Changes — cross-organization billing reads are the reason these models stay
-    plain-FK rather than ``OrganizationModel``). ``(provider, route,
+    plain-FK rather than organization-scoped). ``(provider, route,
     external_event_id)`` uniquely identifies one delivery attempt at the provider;
     ``processed_at`` is set only once the corresponding domain update
     (payment/subscription status) has actually been applied, so a row that exists
@@ -599,7 +617,7 @@ class MeteredOccurrence(BaseModel):
     the allowance and overage price in force at that moment, so a later plan change
     or limit override cannot retroactively reprice usage that already happened.
 
-    Not an ``OrganizationModel``: billing legitimately reads across organizations
+    Not organization-scoped: billing legitimately reads across organizations
     (a reseller root's cycle close sums its whole subtree), and the tenant-safe
     queryset layer would force an ``original_manager`` escape at nearly every call
     site. The ``organization`` FK is still present and every read goes through
@@ -711,7 +729,7 @@ class BillingPeriodSummary(BaseModel):
     it, so the write must be a no-op on re-run rather than something the caller
     has to remember to check.
 
-    Not an ``OrganizationModel``, for the same reason ``MeteredOccurrence`` is
+    Not organization-scoped, for the same reason ``MeteredOccurrence`` is
     not: billing legitimately reads across a pooled subtree, and tenant-scoped
     managers would force an ``original_manager`` escape at nearly every call
     site. ``organization`` is always the resolved **billing root**.

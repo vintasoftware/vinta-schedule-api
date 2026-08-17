@@ -51,6 +51,7 @@ from calendar_integration.models import (
     CalendarGroup,
     CalendarGroupSlotQuotaRule,
     CalendarManagementToken,
+    CalendarWebhookEvent,
     ExternalEventChangeRequest,
 )
 from calendar_integration.services.ics_service import CalendarEventICSService
@@ -611,9 +612,7 @@ class Query:
         """Get users filtered by user's organization."""
         org = _get_org(info)
 
-        queryset = User.objects.filter(
-            organization_memberships__organization=org, organization_memberships__is_active=True
-        )
+        queryset = User.objects.filter(memberships__organization=org, memberships__is_active=True)
         if user_id is not None:
             queryset = queryset.filter(id=user_id)
 
@@ -723,14 +722,13 @@ class Query:
         """Get recent webhook events filtered by user's organization."""
         org = _get_org(info)
 
-        import datetime
-
-        from calendar_integration.models import CalendarWebhookEvent
-
         start_time = datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(hours=hours_back)
 
         queryset = (
-            CalendarWebhookEvent.objects.filter(organization=org, created__gte=start_time)
+            CalendarWebhookEvent.objects.filter_by_organization(org)
+            .filter(
+                created__gte=start_time,
+            )
             .select_related("subscription")
             .order_by("-created")
         )
@@ -972,8 +970,7 @@ class Query:
 
         Returns raw window rows (one per recurring master or one-off window,
         not expanded occurrences) -- mirrors the internal REST surface's list
-        shape (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 1c). Optionally
-        filtered to a single calendar in the slot's roster.
+        shape. Optionally filtered to a single calendar in the slot's roster.
         """
         org = _get_org(info)
 
@@ -1011,8 +1008,8 @@ class Query:
 
         Returns raw block rows (one per recurring master or one-off block,
         not expanded occurrences) -- mirrors the internal REST surface's
-        list shape (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 2b). Optionally
-        filtered to a single calendar in the slot's roster.
+        list shape. Optionally filtered to a single calendar in the slot's
+        roster.
         """
         org = _get_org(info)
 
@@ -1048,9 +1045,8 @@ class Query:
     ) -> list[GroupScopedQuotaRuleGraphQLType]:
         """List group-scoped quota rules for a group slot's roster.
 
-        Mirrors the internal REST surface's list shape
-        (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 3c). Optionally filtered to
-        a single calendar in the slot's roster.
+        Mirrors the internal REST surface's list shape. Optionally filtered
+        to a single calendar in the slot's roster.
         """
         org = _get_org(info)
 

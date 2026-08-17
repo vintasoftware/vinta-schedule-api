@@ -22,7 +22,11 @@ import pytest
 from freezegun import freeze_time
 from model_bakery import baker
 
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from calendar_integration.constants import CalendarType
+from calendar_integration.models import BlockedTime, Calendar
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
+from organizations.tests.helpers import make_membership
 from payments.billing_constants import BillingState, LimitedResource, LimitKind, LimitWarningLevel
 from payments.models import (
     BillingPlan,
@@ -95,7 +99,6 @@ def _seed_members(organization: Organization, count: int) -> None:
             OrganizationMembership,
             organization=organization,
             user=baker.make(User),
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -108,13 +111,13 @@ def admin_membership(organization: Organization) -> OrganizationMembership:
     least one, every "was a notification sent?" assertion in this module
     would pass vacuously regardless of whether the threshold/debounce logic
     is actually correct."""
-    return baker.make(
-        OrganizationMembership,
+    membership = make_membership(
         organization=organization,
         user=baker.make(User),
-        role=OrganizationRole.ADMIN,
+        groups=[GROUP_ORGANIZATION_ADMIN],
         is_active=True,
     )
+    return membership
 
 
 @pytest.mark.django_db
@@ -187,9 +190,6 @@ class TestApproachingThreshold:
     def test_zero_limit_with_any_usage_reaches_immediately(
         self, service, organization, subscription
     ):
-        from calendar_integration.constants import CalendarType
-        from calendar_integration.models import Calendar
-
         _make_limit(subscription, LimitedResource.RESOURCE_CALENDARS, 0)
         baker.make(
             Calendar,
@@ -207,15 +207,12 @@ class TestApproachingThreshold:
     def test_blocked_time_pushes_the_availability_window_warning_to_fire(
         self, service, organization, subscription
     ):
-        """Phase 2c: blocked time is now folded into the ``availability_windows``
+        """Blocked time is now folded into the ``availability_windows``
         counter this warning reads (``EntitlementService.get_current_usage`` ->
         ``_count_availability_windows``), so an organization that has only ever
         authored blocked time -- never an availability window -- can already be at
         or past the threshold. Proves the push side picks up the rule change with
         no changes of its own: it reads the same counter enforcement does."""
-        from calendar_integration.constants import CalendarType
-        from calendar_integration.models import BlockedTime, Calendar
-
         _make_limit(subscription, LimitedResource.AVAILABILITY_WINDOWS, 10)
         calendar = baker.make(
             Calendar,
@@ -343,9 +340,6 @@ class TestBestEffort:
         _make_limit(subscription, LimitedResource.ORGANIZATION_MEMBERS, 10)
         _make_limit(subscription, LimitedResource.RESOURCE_CALENDARS, 10)
         _seed_members(organization, 8)
-
-        from calendar_integration.constants import CalendarType
-        from calendar_integration.models import Calendar
 
         for i in range(8):
             baker.make(

@@ -14,7 +14,9 @@ Three scenarios are covered:
 """
 
 import datetime
+from unittest.mock import patch
 
+from django.contrib.messages.storage.cookie import CookieStorage
 from django.test import override_settings
 
 import pytest
@@ -22,8 +24,11 @@ from allauth.account.adapter import get_adapter
 from allauth.account.models import EmailAddress
 from model_bakery import baker
 
+from organizations.authorization import membership_holds_permission
 from organizations.models import Organization, OrganizationInvitation, OrganizationMembership
+from organizations.permission_catalog import MANAGE_MEMBERS
 from users.factories import UserFactory
+from users.models import Profile as ProfileModel
 
 
 def _create_email_address(user, verified: bool = False) -> EmailAddress:
@@ -45,8 +50,6 @@ def _confirm_email(rf, email_address: EmailAddress) -> bool:
     this call via the adapter override, exercising the same hook as the headless
     verify-email endpoint.
     """
-    from django.contrib.messages.storage.cookie import CookieStorage
-
     request = rf.get("/")
     request._messages = CookieStorage(request)
     return get_adapter(request).confirm_email(request, email_address)
@@ -72,7 +75,7 @@ class TestProvisionOnEmailConfirmation:
         assert OrganizationMembership.objects.filter(user=user).count() == 1
         membership = OrganizationMembership.objects.get(user=user)
         assert membership.organization.name == "Alice's Workshop"
-        assert membership.role == "admin"
+        assert membership_holds_permission(membership, MANAGE_MEMBERS)
 
         # pending_organization_name was cleared.
         profile.refresh_from_db()
@@ -156,17 +159,13 @@ class TestProvisionOnEmailConfirmation:
         assert OrganizationMembership.objects.filter(user=invited_user).count() == 1
         membership = OrganizationMembership.objects.get(user=invited_user)
         assert membership.organization == org
-        assert membership.role == "member"
+        assert not membership_holds_permission(membership, MANAGE_MEMBERS)
 
         # No new org was created.
         assert Organization.objects.count() == 1
 
     def test_no_profile_guard_does_not_raise(self, rf):
         """Adapter confirm_email is robust when the user somehow has no profile."""
-        from unittest.mock import patch
-
-        from django.contrib.messages.storage.cookie import CookieStorage
-
         user = UserFactory().create_user(email="noProfile@example.com")
         email_address = _create_email_address(user)
 
@@ -174,8 +173,6 @@ class TestProvisionOnEmailConfirmation:
         request._messages = CookieStorage(request)
 
         # Simulate missing profile by patching the profile descriptor to raise.
-        from users.models import Profile as ProfileModel
-
         def _raise_does_not_exist(self):
             raise ProfileModel.DoesNotExist()
 
@@ -259,7 +256,7 @@ class TestProvisioningWaitsForEveryVerification:
 
         membership = OrganizationMembership.objects.get(user=user)
         assert membership.organization == org
-        assert membership.role == "member"
+        assert not membership_holds_permission(membership, MANAGE_MEMBERS)
         invitation.refresh_from_db()
         assert invitation.accepted_at is not None
         assert invitation.membership_user_id == membership.user_id

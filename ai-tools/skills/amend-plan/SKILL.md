@@ -27,7 +27,7 @@ Refuse with this guidance; do not proceed.
 
 ## Working assumptions
 
-- Repo: vinta_schedule_api (Django 6 + DRF + Strawberry GraphQL + Celery, multi-tenant (OrganizationModel), Postgres, deployed to Render). Conventions: [AGENTS.md](AGENTS.md).
+- Repo: vinta_schedule_api (Django 6 + DRF + Strawberry GraphQL + Celery, multi-tenant (SingleOrganizationModelMixin), Postgres, deployed to Render). Conventions: [AGENTS.md](AGENTS.md).
 - Plan files: [`ai-plans/YYYY-MM-DD-FEATURE_NAME_PLAN.md`](ai-plans/).
 - Lint: `docker compose run --rm api uv run ruff check ./`. Format: `docker compose run --rm api uv run ruff format ./`.
 - Type / build gate: `docker compose run --rm api uv run python manage.py check --deploy` plus full mypy via `docker compose run --rm api uv run mypy .`.
@@ -203,7 +203,7 @@ Spawn an implementer subagent. The prompt mirrors [implement-phase](../implement
 You are amending {phase.id}: {phase.title} of plan {plan.id}.
 
 ## Repo
-vinta_schedule_api (Django 6 + DRF + Strawberry GraphQL + Celery, multi-tenant (OrganizationModel), Postgres, deployed to Render).
+vinta_schedule_api (Django 6 + DRF + Strawberry GraphQL + Celery, multi-tenant (SingleOrganizationModelMixin), Postgres, deployed to Render).
 
 ## Working location
 Work inside `<WORKROOT>`. `cd` into it before any command.

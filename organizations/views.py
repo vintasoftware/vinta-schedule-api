@@ -1,6 +1,6 @@
 import datetime
 import logging
-from typing import Annotated, ClassVar
+from typing import Annotated, Any, ClassVar, cast
 
 from django.db import transaction
 from django.http import FileResponse
@@ -20,6 +20,7 @@ from rest_framework.mixins import ListModelMixin, RetrieveModelMixin
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.viewsets import GenericViewSet
+from vinta_orgs.querysets import split_permission_label
 
 from audit.constants import AuditAction
 from audit.diff import compute_diff
@@ -33,6 +34,7 @@ from common.utils.view_utils import (
     ReadOnlyVintaScheduleModelViewSet,
     TenantScopedViewMixin,
 )
+from organizations.authorization import has_organization_permission
 from organizations.branding_logo import (
     BRANDING_LOGO_KEY_PREFIX,
     DEFAULT_LOGO_ASSET_PATH,
@@ -62,13 +64,14 @@ from organizations.models import (
     OrganizationBranding,
     OrganizationInvitation,
     OrganizationMembership,
-    OrganizationRole,
-    get_active_organization_membership,
     resolve_branding_for_display,
 )
+from organizations.permission_catalog import MANAGE_MEMBERS, permissions_for_groups
 from organizations.permissions import (
     BRANDING_GATE_EXCEPTIONS,
     BrandingWriteGateReason,
+    CanManageBranding,
+    CanManageOrganization,
     IsOrganizationAdmin,
     OrganizationInvitationPermission,
     OrganizationManagementPermission,
@@ -77,6 +80,7 @@ from organizations.permissions import (
 )
 from organizations.serializers import (
     AcceptInvitationSerializer,
+    AssignMembershipGroupsSerializer,
     CurrentMembershipSerializer,
     GoogleServiceAccountWriteSerializer,
     MyMembershipSerializer,
@@ -88,9 +92,8 @@ from organizations.serializers import (
     OrganizationSerializer,
     ServiceAccountReadSerializer,
     ServiceAccountWriteSerializer,
-    UpdateMembershipRoleSerializer,
 )
-from organizations.services import OrganizationService
+from organizations.services import OrganizationService, assign_membership_groups
 from payments.services.entitlement_service import EntitlementService
 
 
@@ -111,18 +114,19 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
     #:
     #: The ``create`` action is also exempt so that a member with existing
     #: memberships can POST /organizations/ without a header. Without
-    #: this exemption, the multi-org 400 would fire in ``initial()`` before
-    #: ``perform_create`` runs, and the post-create re-resolve in
+    #: this exemption, the multi-org 400 would fire in ``perform_authentication()``
+    #: before ``perform_create`` runs, and the post-create re-resolve in
     #: ``CreateModelMixin.create`` would again raise 400 (the user now has one
     #: more membership than before the write).
     #:
     #: All other actions keep the standard header enforcement (400 / 403).
-    active_org_optional_actions = ("mine", "create")
+    organization_optional_actions = ("mine", "create")
 
     def get_permissions(self):
         """
         Override permissions per action:
-        - update / partial_update: admin-only (IsOrganizationAdmin).  An admin
+        - update / partial_update: require ``organizations.manage_organization``.
+          A permitted member
           can only reach their own org because get_queryset is scoped by
           membership, so cross-org attempts return 404.
         - All other actions keep the class-level defaults (IsAuthenticated +
@@ -132,7 +136,7 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
           membership check.
         """
         if self.action in ("update", "partial_update"):
-            return [IsAuthenticated(), IsOrganizationAdmin()]
+            return [IsAuthenticated(), CanManageOrganization()]
         return super().get_permissions()
 
     @inject
@@ -146,8 +150,7 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
         self.organization_service = organization_service
 
     def get_queryset(self):
-        user = self.request.user
-        membership = get_active_organization_membership(user)
+        membership = self.request.organization_membership
         if membership:
             return Organization.objects.filter(id=membership.organization_id)
         return Organization.objects.none()
@@ -158,23 +161,25 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
         Overrides ``CreateModelMixin.create`` to handle the post-write refetch
         correctly for members who already have one or more memberships.
 
-        We skip the base mixin's post-write ``_resolve_active_organization`` call
+        We skip the base mixin's post-write ``resolve_organization`` call
         entirely.  For the ``create`` action — exempted via
-        ``active_org_optional_actions = ("mine", "create")`` — that re-resolve
+        ``organization_optional_actions = ("mine", "create")`` — that re-resolve
         would leave a multi-org caller with no ``X-Organization-Id`` header
         resolved to ``None``, making ``get_queryset`` return nothing and causing
         the re-fetch to raise ``DoesNotExist`` / 500.
 
         Instead, after ``perform_create`` we look up the just-created membership
         directly and stash it on the request so the re-fetch (via
-        ``get_queryset``) is scoped to the new organization.
+        ``get_queryset``) is scoped to the new organization -- and bind that
+        organization to the context, which is the half of the base mixin's
+        re-resolve that still applies here.
         """
         serializer = self.get_create_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         self.perform_create(serializer)
         instance = serializer.instance
 
-        # Stash the newly-created membership so get_queryset can scope to the
+        # Put the newly-created membership on the request so get_queryset can scope to the
         # new org for the re-fetch below.  The membership was created by
         # create_organization; it exists in the DB at this point.
         new_membership = (
@@ -196,11 +201,19 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
                 "this is a bug; the response will be misconfigured.",
                 instance.pk,
             )
-        request.user._active_membership = new_membership  # type: ignore[union-attr]
         request.organization_membership = new_membership  # type: ignore[attr-defined]
         request.organization = (  # type: ignore[attr-defined]
             new_membership.organization if new_membership is not None else None
         )
+        # ...and bind what was just resolved. Skipping the base mixin's
+        # post-create ``resolve_organization`` also skips its re-bind, so
+        # without this line the context stays on whatever ``initial()`` resolved
+        # -- ``None`` for a first-time creator, or organization A for an existing
+        # member who sent ``X-Organization-Id: A`` while creating organization B
+        # -- while every line below reads the *new* organization off the request.
+        # The re-fetch and the serializer would then run through default managers
+        # scoped to a different organization than the one being returned.
+        self.bind_organization(request.organization)  # type: ignore[attr-defined]
 
         # Re-fetch the instance so any annotations/virtual-model fields on
         # OrganizationVirtualModel are populated.  Mirror the base
@@ -270,8 +283,8 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
             if sa_data is not None:
                 # A RESTRICTED organization may not write, and the service-account
                 # upsert below is a real user-initiated write on an
-                # ``OrganizationModel`` (``GoogleCalendarServiceAccount``) -- block it
-                # here, the same check every other blocked write consults.
+                # organization-scoped model (``GoogleCalendarServiceAccount``) --
+                # block it here, the same check every other blocked write consults.
                 self.organization_service.entitlement_service.check_not_restricted(instance)
                 GoogleCalendarServiceAccount.objects.filter_by_organization(instance.id).filter(
                     calendar_fk__isnull=True
@@ -306,7 +319,7 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
         return Response(return_serializer.data)
 
     @extend_schema(
-        summary="Current organization + role for the authenticated user",
+        summary="Current organization + permissions for the authenticated user",
         responses={
             200: CurrentMembershipSerializer,
             404: OpenApiResponse(description="No organization membership (gated user)"),
@@ -314,12 +327,12 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
     )
     @action(detail=False, methods=["get"], url_path="current", permission_classes=[IsAuthenticated])
     def current(self, request):
-        """Return the caller's organization and role.
+        """Return the caller's organization and the capabilities they hold in it.
 
         HTTP 200 — the user is onboarded (has a membership).
         HTTP 404 — the user is gated (no membership yet).
         """
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         if membership is None:
             raise NotFound(detail="No organization membership.")
         serializer = CurrentMembershipSerializer(membership, context={"request": request})
@@ -470,7 +483,9 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
         return Response(result, status=status.HTTP_202_ACCEPTED)
 
 
-class ServiceAccountViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
+class ServiceAccountViewSet(
+    TenantScopedViewMixin, ListModelMixin, RetrieveModelMixin, GenericViewSet
+):
     """Admin-only CRUD for the organization's Google Calendar service account.
 
     Manages **only** the org-level service account (``calendar_fk IS NULL``) — the
@@ -502,7 +517,7 @@ class ServiceAccountViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
         user = self.request.user
         if not user.is_authenticated:
             return GoogleCalendarServiceAccount.objects.none()
-        membership = get_active_organization_membership(user)
+        membership = self.request.organization_membership
         if membership is None:
             return GoogleCalendarServiceAccount.objects.none()
         return GoogleCalendarServiceAccount.objects.filter_by_organization(
@@ -525,9 +540,9 @@ class ServiceAccountViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
         account already exists (rotate via PUT/PATCH or DELETE first) or the
         payload is invalid.
         """
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         if membership is None:
-            # IsOrganizationAdmin already guards this; defensive fallback.
+            # The admin permission already guards this; defensive fallback.
             return Response(
                 {"detail": "No active organization membership."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -636,8 +651,7 @@ class OrganizationInvitationViewSet(NoUpdateVintaScheduleModelViewSet):
 
     def get_queryset(self):
         """Filter invitations by the user's organization."""
-        user = self.request.user
-        membership = get_active_organization_membership(user)
+        membership = self.request.organization_membership
         if membership:
             return OrganizationInvitation.objects.filter(organization_id=membership.organization_id)
         # Return empty queryset for users without an active membership
@@ -646,8 +660,7 @@ class OrganizationInvitationViewSet(NoUpdateVintaScheduleModelViewSet):
     def get_serializer_context(self):
         """Add organization to serializer context."""
         context = super().get_serializer_context()
-        user = self.request.user
-        membership = get_active_organization_membership(user)
+        membership = self.request.organization_membership
         if membership:
             context["organization"] = membership.organization
         return context
@@ -683,7 +696,7 @@ class OrganizationInvitationViewSet(NoUpdateVintaScheduleModelViewSet):
             raise ValidationError(detail="Invitation already accepted.")
 
         # Resolve the requesting user's organization (mirror how the viewset resolves context)
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         if membership is None:
             # This shouldn't happen because OrganizationInvitationPermission.has_permission
             # already checked for active membership, but guard for clarity
@@ -714,7 +727,8 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
     - `deactivate`: POST to disable a member (prevent self-deactivation and
       protect the last active admin).
     - `reactivate`: POST to re-enable a member.
-    - `update-role`: POST to change a member's role (protect the last active admin).
+    - `groups`: POST to set a member's groups, and with them their capabilities
+      (protects the last member who can manage members).
     """
 
     queryset = OrganizationMembership.objects.select_related("user", "user__profile")
@@ -739,8 +753,7 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
 
     def get_queryset(self):
         """Org-scoped queryset: return members of the caller's organization only."""
-        user = self.request.user
-        membership = get_active_organization_membership(user)
+        membership = self.request.organization_membership
         if membership:
             return (
                 OrganizationMembership.objects.filter(organization_id=membership.organization_id)
@@ -792,20 +805,20 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
         # guard above blocks the only path that could drop the org to zero admins
         # (requester attempting to deactivate themselves). Retained to protect any future
         # non-self deactivation paths (e.g., bulk action or service-layer call).
-        if target.is_admin:
-            org_id = target.organization_id
-            other_active_admin_count = (
-                OrganizationMembership.objects.filter(
-                    organization_id=org_id,
-                    role=target.role,  # Same role filter (ADMIN)
-                    is_active=True,
-                )
-                # Composite PK (user, organization): exclude the target by its user_id
-                # within the already org-scoped filter.
-                .exclude(user_id=target.user_id)
-                .count()
-            )
-            if other_active_admin_count == 0:
+        #
+        # Counts by capability (``organizations.manage_members``), the same way
+        # ``assign_groups`` below does, rather than by the ``role`` column: a
+        # direct per-membership grant of the permission makes its holder a
+        # remaining administrator just as much as the ``organization_admin``
+        # group does, and the two guards must agree on what "the last admin"
+        # means.
+        if has_organization_permission(target.user, MANAGE_MEMBERS, target.organization):
+            other_holders_of_manage_members = OrganizationMembership.objects.other_members_holding(
+                organization_id=target.organization_id,
+                excluding_user_id=target.user_id,
+                permission=MANAGE_MEMBERS,
+            ).count()
+            if other_holders_of_manage_members == 0:
                 raise ValidationError(
                     detail="Cannot deactivate the last active admin of the organization."
                 )
@@ -846,59 +859,100 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     @extend_schema(
-        summary="Update an organization member's role",
-        request=UpdateMembershipRoleSerializer,
+        summary="Set an organization member's groups",
+        request=AssignMembershipGroupsSerializer,
         responses={
             200: OrganizationMembershipSerializer,
-            400: OpenApiResponse(description="Invalid role or would demote the last active admin"),
+            400: OpenApiResponse(
+                description=(
+                    "Unknown group name, empty group list, or the assignment would "
+                    "leave the organization with nobody who can manage members"
+                )
+            ),
             403: OpenApiResponse(description="Not an admin"),
             404: OpenApiResponse(description="Member not found or cross-org"),
         },
     )
-    @action(detail=True, methods=["post"], url_path="update-role")
-    def update_role(self, request, user_id=None):
-        """Update a member's role (member <-> admin).
+    @action(detail=True, methods=["post"], url_path="groups")
+    def assign_groups(self, request, user_id=None):
+        """Replace a member's groups, and with them the capabilities they hold.
+
+        Replaces the former ``update-role`` action. The request names *groups*
+        -- the one write where a group name is the natural input, since
+        assigning a group is the act of choosing one -- and the response
+        reports the resulting *permissions*, which is what every authorization
+        check actually reads.
 
         Guards:
-        - Cannot demote the last active admin (org lockout prevention).
 
-        Idempotency: setting the role to its current value is a no-op success.
+        - **The organization keeps at least one member who can manage
+          members.** Restated from "cannot demote the last active admin": the
+          rule counts by capability (``organizations.manage_members``) rather
+          than by the ``role`` column, so it holds for any future group that
+          carries the capability and does not depend on a representation the
+          API no longer exposes.
+        - A restricted organization may not write at all. See ``deactivate``
+          above for why the check is here rather than in
+          ``OrganizationService``.
+
+        Idempotency: assigning the groups a member already holds is a no-op
+        success, including for the sole administrator re-assigning
+        ``organization_admin`` to themselves -- the guard fires on *losing* the
+        capability, not on writing it again.
         """
         target = (
             self.get_object()
         )  # Permission checks via IsOrganizationAdmin.has_object_permission
 
-        # A restricted organization may not write, including changing a member's
-        # role. See ``deactivate`` above for why this is checked directly here
-        # rather than in ``OrganizationService``.
         self.organization_service.entitlement_service.check_not_restricted(target.organization)
 
-        serializer = UpdateMembershipRoleSerializer(data=request.data)
+        serializer = AssignMembershipGroupsSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        new_role = serializer.validated_data["role"]
+        requested_groups = serializer.validated_data["groups"]
 
-        # Guard: prevent demoting the last active admin (org lockout prevention).
-        if target.is_admin and new_role != OrganizationRole.ADMIN:
-            org_id = target.organization_id
-            other_active_admin_count = (
-                OrganizationMembership.objects.filter(
-                    organization_id=org_id,
-                    role=OrganizationRole.ADMIN,
-                    is_active=True,
-                )
-                # Composite PK (user, organization): exclude the target by its user_id
-                # within the already org-scoped filter.
-                .exclude(user_id=target.user_id)
-                .count()
-            )
-            if other_active_admin_count == 0:
+        # Guard: the organization must keep somebody who can manage members.
+        #
+        # Asked in three parts, in the cheap-first order: does the assignment
+        # *remove* the capability (no query at all), did the target actually
+        # hold it (resolved the same way every permission class resolves it),
+        # and is anybody else left holding it.
+        #
+        # The direct-grant half is spelled from ``MANAGE_MEMBERS`` rather than from a
+        # hand-written ``codename`` / ``app_label`` pair: a rename of the permission
+        # would leave a literal pair matching nothing, and a clause that matches nothing
+        # here reads as "the target holds no direct grant" -- silently widening the
+        # refusal to admins who do hold one.
+        manage_members_app_label, manage_members_codename = split_permission_label(MANAGE_MEMBERS)
+        keeps_manage_members = (
+            MANAGE_MEMBERS in permissions_for_groups(requested_groups)
+            or target.permissions.filter(
+                codename=manage_members_codename,
+                content_type__app_label=manage_members_app_label,
+            ).exists()
+        )
+        if not keeps_manage_members and has_organization_permission(
+            target.user, MANAGE_MEMBERS, target.organization
+        ):
+            others_who_can_manage_members = OrganizationMembership.objects.other_members_holding(
+                organization_id=target.organization_id,
+                excluding_user_id=target.user_id,
+                permission=MANAGE_MEMBERS,
+            ).count()
+            if others_who_can_manage_members == 0:
                 raise ValidationError(
-                    detail="Cannot demote the last active admin of the organization."
+                    detail=(
+                        "Cannot remove the last active member who can manage members "
+                        "from the organization."
+                    )
                 )
 
-        # Update (idempotent: no-op if role unchanged)
-        target.role = new_role
-        target.save(update_fields=["role"])
+        # Routed through the same writer every other membership write uses,
+        # rather than straight to ``target.groups``, because that is what
+        # *canonicalises* the stored set (see
+        # ``organizations.permission_catalog.canonical_groups``) -- so no
+        # request body can persist a combination a later write would silently
+        # rewrite.
+        assign_membership_groups(target, requested_groups)
 
         # Return the updated membership
         read_serializer = self.get_serializer(target)
@@ -989,33 +1043,32 @@ class AcceptInvitationView(generics.CreateAPIView):
 
 @extend_schema(tags=["Branding"])
 class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
-    """Admin-only REST endpoint for managing a parentless, entitled, slugged
+    """Capability-gated REST endpoint for managing a parentless, entitled
     organization's branding.
 
-    Write gate (Organization Auth-Area Branding plan, Phase 3): PUT/PATCH
-    require the acting org to be parentless, hold the ``white_label_branding``
-    entitlement, AND have a slug set
-    (``organizations.permissions.evaluate_branding_write_gate``), AND the
-    caller must be an org admin (``IsOrganizationAdmin`` permission).
-    Replaces the earlier reseller-only gate (``is_reseller()``) -- any paying,
-    parentless, slugged organization can now manage its own branding, not just
-    resellers. Each of the three failure conditions raises its own
-    ``PermissionDenied`` subclass (``organizations.exceptions``) so the
-    response body -- not just the 403 status -- distinguishes the permanent
-    refusal (has a parent) from the billing state (not entitled) from the
-    one-step-away case (no slug).
+    Write gate: PUT/PATCH
+    require the acting org to be parentless and hold the
+    ``white_label_branding`` entitlement
+    (``organizations.permissions.evaluate_branding_write_gate`` -- its third,
+    slug-set condition is retired, see that function), AND the caller must hold
+    ``organizations.manage_branding``. Replaces the earlier
+    reseller-only gate (``is_reseller()``) -- any paying, parentless
+    organization can now manage its own branding, not just resellers. Each of
+    the two failure conditions raises its own ``PermissionDenied`` subclass
+    (``organizations.exceptions``) so the response body -- not just the 403
+    status -- distinguishes the permanent refusal (has a parent) from the
+    billing state (not entitled).
 
-    GET uses the narrower two-condition **eligibility** gate
+    GET uses the **eligibility** gate
     (``organizations.permissions.is_branding_eligible_organization`` --
-    parentless AND entitled, via ``_check_branding_read_gate``): a slug-less
-    but otherwise eligible org still gets to *see* the branding page (its
-    normal 404-no-row-yet / 200-with-a-row behavior), so the "pick a slug
-    first" refusal only ever surfaces on a write. This matches the plan's
-    Capability signal guiding decision and keeps this endpoint's read path
-    consistent with the ``can_manage_branding`` contract a slug-less eligible
+    parentless AND entitled, via ``_check_branding_read_gate``). It admits
+    exactly what the write gate admits; the two are kept separate because they
+    answer different questions and a future condition may again apply to only
+    one of them (see ``evaluate_branding_write_gate``). The read path is routed
+    through the eligibility gate rather than the write gate, keeping this
+    endpoint consistent with the ``can_manage_branding`` contract an eligible
     org's SPA would otherwise render into a page that immediately 403s.
-    GET still refuses with the same parent/entitlement 403 bodies as the
-    write gate.
+    GET refuses with the same parent/entitlement 403 bodies as the write gate.
 
     Operations: retrieve (GET) + upsert (PUT/PATCH) the **acting org's own**
     branding. The endpoint operates on the request's organization only — it
@@ -1026,17 +1079,17 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
     or makes organization writable.
 
     Tenant-scoping: ``TenantScopedViewMixin`` resolves ``X-Organization-Id``
-    before any handler runs, so multi-org admins always operate on the
+    before any handler runs, so multi-org callers always operate on the
     header-named org. Without the header a multi-org caller receives 400;
     a header naming a non-member org receives 403 — identical to every other
-    org-scoped endpoint. ``TenantScopedViewMixin._is_active_org_resolution_optional``
-    uses ``getattr(self, "action", None)``, so the absent ``self.action`` attribute
-    (ViewSetMixin is not in the MRO) is safe — ``None`` is never in the default
-    ``active_org_optional_actions = ()`` tuple, so full 400/403 enforcement runs
-    on every HTTP method.
+    org-scoped endpoint. ``OrganizationScopedAPIViewMixin
+    .is_organization_resolution_optional`` uses ``getattr(self, "action", None)``,
+    so the absent ``self.action`` attribute (ViewSetMixin is not in the MRO) is
+    safe — ``None`` is never in the default ``organization_optional_actions = ()``
+    tuple, so full 400/403 enforcement runs on every HTTP method.
     """
 
-    permission_classes = (IsOrganizationAdmin,)
+    permission_classes = (CanManageBranding,)
     serializer_class = OrganizationBrandingSerializer
 
     @inject
@@ -1054,16 +1107,18 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
     )
 
     def _check_branding_write_gate(self) -> None:
-        """Verify the acting org passes the full write gate (parentless,
-        entitled, slug-set). Raises the matching ``PermissionDenied`` subclass
-        on the first failed condition; a no-op when the gate admits the org."""
+        """Verify the acting org passes the write gate (parentless and
+        entitled -- its third, slug-set condition is retired; see
+        ``organizations.permissions.evaluate_branding_write_gate``). Raises the
+        matching ``PermissionDenied`` subclass on the first failed condition; a
+        no-op when the gate admits the org."""
         user = self.request.user
         # Narrows AbstractBaseUser | AnonymousUser -> AbstractBaseUser for mypy
         # (matches the pattern in ServiceAccountViewSet.get_queryset above);
-        # IsOrganizationAdmin already blocks anonymous callers before this runs.
+        # CanManageBranding already blocks anonymous callers before this runs.
         if not user.is_authenticated:
             raise PermissionDenied("No active organization membership.")
-        membership = get_active_organization_membership(user)
+        membership = cast("Any", self.request).organization_membership
         if membership is None:
             raise PermissionDenied("No active organization membership.")
         reason = evaluate_branding_write_gate(membership.organization)
@@ -1076,19 +1131,21 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
         **eligibility** gate (parentless, entitled) used for GET.
 
         Delegates to ``organizations.permissions.check_branding_read_eligibility``,
-        shared with ``OrganizationBrandingLogoUploadParamsView`` -- see that
-        function's docstring for why ``NO_SLUG`` is admitted here."""
+        shared with ``OrganizationBrandingLogoUploadParamsView``. That gate used
+        to admit one reason more than the write gate (``NO_SLUG``, since retired
+        as a product rule and deleted); the two now admit the same set, and the
+        split is kept only because they answer different questions."""
         user = self.request.user
         if not user.is_authenticated:
             raise PermissionDenied("No active organization membership.")
-        membership = get_active_organization_membership(user)
+        membership = cast("Any", self.request).organization_membership
         if membership is None:
             raise PermissionDenied("No active organization membership.")
         check_branding_read_eligibility(membership.organization)
 
     def _get_branding_or_404(self):
         """Get the acting org's branding, or raise 404 if not set."""
-        membership = get_active_organization_membership(self.request.user)
+        membership = self.request.organization_membership
         if membership is None:
             raise PermissionDenied("No active organization membership.")
 
@@ -1102,8 +1159,7 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
         responses={
             200: OrganizationBrandingSerializer,
             403: OpenApiResponse(
-                description="Organization has a parent or lacks the entitlement; or not an admin. "
-                "A slug-less-but-otherwise-eligible org is NOT refused here -- see 404."
+                description="Organization has a parent, lacks the entitlement, or lacks branding permission."
             ),
             404: OpenApiResponse(description="Branding not yet configured"),
         },
@@ -1111,10 +1167,10 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
     def get(self, request, *args, **kwargs):
         """GET /branding/ — retrieve the acting org's branding.
 
-        Uses the two-condition eligibility gate, not the full write gate: a
-        slug-less-but-otherwise-eligible org is admitted here (and falls
-        through to the normal 404-no-row-yet / 200-with-a-row branch below)
-        -- see ``_check_branding_read_gate``."""
+        Uses the two-condition eligibility gate (parentless, entitled) rather
+        than the write gate; the two admit the same set -- see
+        ``_check_branding_read_gate``. An eligible org with no branding row yet
+        falls through to the 404-no-row-yet / 200-with-a-row branch below."""
         self._check_branding_read_gate()
         instance = self._get_branding_or_404()
         serializer = OrganizationBrandingSerializer(instance, context={"request": request})
@@ -1128,14 +1184,14 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
             200: OrganizationBrandingSerializer,
             400: OpenApiResponse(description="Invalid input (color format, URL validation)"),
             403: OpenApiResponse(
-                description="Organization has a parent, lacks the entitlement, or has no slug; or not an admin"
+                description="Organization has a parent, lacks the entitlement, or lacks branding permission"
             ),
         },
     )
     def put(self, request, *args, **kwargs):
         """PUT /branding/ — create or replace the acting org's branding.
 
-        Audited (Organization Auth-Area Branding plan, Phase 4): a refused write
+        Audited: a refused write
         (gate failure or serializer validation error) raises before this method
         reaches the upsert, so nothing is ever recorded for a refused write. A
         first-time upsert records a CREATE with no diff; an upsert that replaces
@@ -1143,7 +1199,7 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
         actually changed, using the before-state captured BEFORE the write.
         """
         self._check_branding_write_gate()
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         if membership is None:
             raise PermissionDenied("No active organization membership.")
 
@@ -1176,7 +1232,7 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
             200: OrganizationBrandingSerializer,
             400: OpenApiResponse(description="Invalid input (color format, URL validation)"),
             403: OpenApiResponse(
-                description="Organization has a parent, lacks the entitlement, or has no slug; or not an admin"
+                description="Organization has a parent, lacks the entitlement, or lacks branding permission"
             ),
             404: OpenApiResponse(description="Branding not yet configured"),
         },
@@ -1184,7 +1240,7 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
     def patch(self, request, *args, **kwargs):
         """PATCH /branding/ — update the acting org's branding (partial).
 
-        Audited (Organization Auth-Area Branding plan, Phase 4): a refused write
+        Audited: a refused write
         (gate failure, 404-not-configured, or serializer validation error) raises
         before this method reaches ``serializer.save()``, so nothing is ever
         recorded for a refused write. Always an UPDATE (PATCH never creates —
@@ -1201,7 +1257,7 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
 
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         if membership is None:
             raise PermissionDenied("No active organization membership.")
         self._record_branding_audit(membership, instance, created=False, before=before)
@@ -1245,7 +1301,7 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
 
 @extend_schema(tags=["Branding"])
 class OrganizationBrandingLogoUploadParamsView(TenantScopedViewMixin, views.APIView):
-    """Signs a ``branding_logos`` S3 upload for the acting organization's admin.
+    """Signs a ``branding_logos`` S3 upload for a caller with branding capability.
 
     The shipped ``django-s3direct`` signing view (``POST
     /s3direct/get_upload_params/``) is a plain Django view authenticated only
@@ -1256,15 +1312,16 @@ class OrganizationBrandingLogoUploadParamsView(TenantScopedViewMixin, views.APIV
     reusing the same ``sign_branding_logo_upload`` signing helper so the S3
     key/credential logic has one implementation.
 
-    Gated on the two-condition branding **eligibility** check
+    Gated on ``organizations.manage_branding`` and the branding **eligibility** check
     (``organizations.permissions.check_branding_read_eligibility`` -- parentless
-    AND entitled), not the three-condition write gate: the frontend uploads a
-    logo on file-picker change, before the slug/branding PUT on form submit, so
-    requiring a slug here would refuse an upload the write gate itself never
-    sees. Matches ``OrganizationBrandingView.get``'s read gate.
+    AND entitled) rather than on the write gate. The two admit the same set now
+    that the write gate's slug condition is retired, but the split is kept: the
+    frontend uploads a logo on file-picker change, before the branding PUT on
+    form submit, so this surface deliberately depends on the read-side gate.
+    Matches ``OrganizationBrandingView.get``'s read gate.
     """
 
-    permission_classes = (IsOrganizationAdmin,)
+    permission_classes = (CanManageBranding,)
 
     @extend_schema(
         summary="Sign a branding logo upload",
@@ -1273,12 +1330,12 @@ class OrganizationBrandingLogoUploadParamsView(TenantScopedViewMixin, views.APIV
             200: OrganizationBrandingLogoUploadParamsSerializer,
             400: OpenApiResponse(description="Disallowed content type or file size"),
             403: OpenApiResponse(
-                description="Organization has a parent or lacks the entitlement; or not an admin"
+                description="Organization has a parent, lacks the entitlement, or lacks branding permission"
             ),
         },
     )
     def post(self, request, *args, **kwargs):
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         if membership is None:
             raise PermissionDenied("No active organization membership.")
         check_branding_read_eligibility(membership.organization)
@@ -1315,9 +1372,9 @@ class OrganizationLogoDeliveryView(views.APIView):
     or are branded (matches ``brandingForTenant``'s no-enumeration-oracle contract).
 
     Resolution always goes through ``resolve_branding_for_display``, so this route
-    automatically inherits the widened branding root once Phase 5 of the
-    Organization Auth-Area Branding plan lands ``get_branding_root``'s parentless
-    case -- no second change here.
+    inherits whatever ``Organization.get_branding_root`` resolves -- including its
+    parentless case, where an organization with no reseller ancestor is its own
+    branding root -- without a second change here.
 
     ``Cache-Control`` carries a short max-age and the ``ETag`` is derived from the
     stored key (or a fixed sentinel for the default logo): the route's URL is
@@ -1376,8 +1433,8 @@ class OrganizationLogoDeliveryView(views.APIView):
         logo = branding.logo
         key = (logo.name or "") if logo else ""
 
-        # Defense in depth against BLOCKER 1 (arbitrary-key cross-tenant
-        # disclosure): even if a key outside the branding_logos upload prefix
+        # Defense in depth against arbitrary-key cross-tenant
+        # disclosure: even if a key outside the branding_logos upload prefix
         # somehow ended up on a branding row (bypassing the write-side rejection
         # in `normalize_uploaded_logo_key`, e.g. a row inserted directly), never
         # stream it -- treat it exactly like "no logo configured" instead.
@@ -1423,7 +1480,7 @@ class OrganizationLogoDeliveryView(views.APIView):
     def _set_cache_headers(self, response: FileResponse, etag: str) -> None:
         response["Cache-Control"] = f"public, max-age={LOGO_CACHE_MAX_AGE_SECONDS}"
         response["ETag"] = etag
-        # BLOCKER 2 (Phase 2b security review): the delivery route must never let
+        # Security requirement: the delivery route must never let
         # a browser sniff the body into a renderable type regardless of the
         # (allowlisted, but still attacker-influenced) Content-Type header --
         # applies to both the real-object stream and the default logo.

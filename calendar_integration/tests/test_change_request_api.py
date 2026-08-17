@@ -15,6 +15,8 @@ from unittest.mock import MagicMock
 from django.urls import reverse
 
 import pytest
+from allauth.socialaccount.models import SocialAccount, SocialToken
+from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
 
@@ -33,7 +35,12 @@ from calendar_integration.models import (
     CalendarOwnership,
     ExternalEventChangeRequest,
 )
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import (
+    GROUP_ORGANIZATION_ADMIN,
+    GROUP_ORGANIZATION_MEMBER,
+)
+from organizations.tests.helpers import grant_membership_groups
 from users.factories import UserFactory
 
 
@@ -44,22 +51,20 @@ from users.factories import UserFactory
 
 def _make_org_with_member(*, is_admin: bool = False) -> tuple[Organization, OrganizationMembership]:
     """Create an organization and an active membership for a fresh user."""
-    from model_bakery import baker
-
     user = UserFactory().create_user()
     org = baker.make(Organization, name="Test Org")
-    membership = OrganizationMembership.objects.create(
-        user=user,
-        organization=org,
-        role=OrganizationRole.ADMIN if is_admin else OrganizationRole.MEMBER,
-        is_active=True,
+    membership = grant_membership_groups(
+        OrganizationMembership.objects.create(
+            user=user,
+            organization=org,
+            is_active=True,
+        ),
+        [GROUP_ORGANIZATION_ADMIN if is_admin else GROUP_ORGANIZATION_MEMBER],
     )
     return org, membership
 
 
 def _make_calendar(org: Organization, provider: str = CalendarProvider.GOOGLE) -> Calendar:
-    from model_bakery import baker
-
     return baker.make(
         Calendar,
         organization=org,
@@ -75,8 +80,6 @@ def _make_event(calendar: Calendar) -> CalendarEvent:
     """Create a CalendarEvent with a valid timezone and unique external_id."""
     global _event_counter
     _event_counter += 1
-
-    from model_bakery import baker
 
     return baker.make(
         CalendarEvent,
@@ -421,8 +424,6 @@ class TestChangeRequestReject:
         req_status: str = ExternalEventChangeRequestStatus.PENDING,
     ) -> tuple[OrganizationMembership, ExternalEventChangeRequest]:
         """Create org, member, calendar, event, ownership, and a change request."""
-        from allauth.socialaccount.models import SocialAccount, SocialToken
-
         org, membership = _make_org_with_member(is_admin=is_admin)
         cal = _make_calendar(org, provider=CalendarProvider.GOOGLE)
         event = _make_event(cal)
@@ -510,8 +511,6 @@ class TestChangeRequestReject:
     def test_member_attendee_can_reject(self):
         """A member-attendee can reject a change request on their event."""
         org, member = _make_org_with_member(is_admin=False)
-        from allauth.socialaccount.models import SocialAccount, SocialToken
-
         cal = _make_calendar(org, provider=CalendarProvider.GOOGLE)
         event = _make_event(cal)
         _make_ownership(member, cal)

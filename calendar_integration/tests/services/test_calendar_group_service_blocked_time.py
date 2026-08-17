@@ -1,5 +1,4 @@
-"""Tests for group-scoped blocked-time writes on ``CalendarGroupService``
-(Phase 2a of ``CALENDAR_GROUP_SCOPED_AVAILABILITY``).
+"""Tests for group-scoped blocked-time writes on ``CalendarGroupService``.
 
 Covers create/update/delete through the explicit group-scoped accessor,
 recurrence + per-block timezone round-trip, audit emission with before/after
@@ -39,7 +38,9 @@ from calendar_integration.services.dataclasses import (
     CalendarGroupInputData,
     CalendarGroupSlotInputData,
 )
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
+from organizations.tests.helpers import grant_membership_groups
 from users.models import Profile, User
 
 
@@ -81,8 +82,12 @@ def audit_service() -> AuditService:
 def admin_user(db: Any, organization: Organization) -> User:
     u = User.objects.create_user(email="admin@example.com", password="pass")
     Profile.objects.create(user=u)
-    OrganizationMembership.objects.create(
-        user=u, organization=organization, role=OrganizationRole.ADMIN
+    grant_membership_groups(
+        OrganizationMembership.objects.create(
+            user=u,
+            organization=organization,
+        ),
+        [GROUP_ORGANIZATION_ADMIN],
     )
     return u
 
@@ -92,7 +97,8 @@ def owner_user(db: Any, organization: Organization) -> User:
     u = User.objects.create_user(email="owner@example.com", password="pass")
     Profile.objects.create(user=u)
     OrganizationMembership.objects.create(
-        user=u, organization=organization, role=OrganizationRole.MEMBER
+        user=u,
+        organization=organization,
     )
     return u
 
@@ -105,7 +111,8 @@ def other_owner_user(db: Any, organization: Organization) -> User:
     u = User.objects.create_user(email="other_owner@example.com", password="pass")
     Profile.objects.create(user=u)
     OrganizationMembership.objects.create(
-        user=u, organization=organization, role=OrganizationRole.MEMBER
+        user=u,
+        organization=organization,
     )
     return u
 
@@ -115,7 +122,8 @@ def stranger_user(db: Any, organization: Organization) -> User:
     u = User.objects.create_user(email="stranger@example.com", password="pass")
     Profile.objects.create(user=u)
     OrganizationMembership.objects.create(
-        user=u, organization=organization, role=OrganizationRole.MEMBER
+        user=u,
+        organization=organization,
     )
     return u
 
@@ -772,7 +780,7 @@ def test_delete_group_scoped_blocked_time_denies_non_owner(
 
 
 # ---------------------------------------------------------------------------
-# Cascade through this service path (schema-enforced by Phase 0)
+# Cascade through this service path (schema-enforced by on_delete=CASCADE)
 # ---------------------------------------------------------------------------
 
 
@@ -797,8 +805,7 @@ def test_deleting_slot_through_update_group_cascades_group_scoped_blocks(
 
     # Reconcile the group with no slots at all -- CalendarGroupService.update_group
     # deletes the now-absent "Lead Surgeon" slot, which cascades (on_delete=CASCADE
-    # on BlockedTime.group_slot, established in Phase 0) to every group-scoped
-    # block that referenced it.
+    # on BlockedTime.group_slot) to every group-scoped block that referenced it.
     service.update_group(group.id, CalendarGroupInputData(name=group.name, slots=[]))
 
     assert (

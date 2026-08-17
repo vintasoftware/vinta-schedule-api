@@ -97,7 +97,7 @@ class TestTenantScopedAutoSchema:
     def test_current_action_has_header(self, openapi_schema: dict) -> None:
         """``GET /organizations/current/`` is action-bearing and tenant-scoped.
 
-        It is NOT in ``active_org_optional_actions``, so it must DECLARE the
+        It is NOT in ``organization_optional_actions``, so it must DECLARE the
         ``X-Organization-Id`` header (``in: header``, ``required`` not True).
         This guards against a regression where ``action``-bearing ViewSet routes
         silently lose the injected header.
@@ -126,7 +126,7 @@ class TestTenantScopedAutoSchema:
         """``GET /organizations/mine/`` is opted out: must NOT declare the header."""
         header_names = _operation_header_names(openapi_schema, "/organizations/mine/", "get")
         assert "X-Organization-Id" not in header_names, (
-            "GET /organizations/mine/ is in active_org_optional_actions and must NOT "
+            "GET /organizations/mine/ is in organization_optional_actions and must NOT "
             f"declare X-Organization-Id, but found headers: {header_names}"
         )
 
@@ -134,7 +134,7 @@ class TestTenantScopedAutoSchema:
         """``POST /organizations/`` is opted out: must NOT declare the header."""
         header_names = _operation_header_names(openapi_schema, "/organizations/", "post")
         assert "X-Organization-Id" not in header_names, (
-            "POST /organizations/ is in active_org_optional_actions ('create') and must NOT "
+            "POST /organizations/ is in organization_optional_actions ('create') and must NOT "
             f"declare X-Organization-Id, but found headers: {header_names}"
         )
 

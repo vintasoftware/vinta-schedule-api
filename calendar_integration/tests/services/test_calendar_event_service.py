@@ -10,13 +10,23 @@ facade forwards to it.
 """
 
 import datetime
+from unittest import mock
 from unittest.mock import Mock, patch
+
+from django.core.exceptions import PermissionDenied
 
 import pytest
 from allauth.socialaccount.models import SocialAccount, SocialToken
 
-from calendar_integration.constants import CalendarProvider
-from calendar_integration.models import Calendar, CalendarEvent, CalendarManagementToken
+from calendar_integration.constants import CalendarProvider, CalendarType
+from calendar_integration.models import (
+    Calendar,
+    CalendarEvent,
+    CalendarManagementToken,
+    CalendarOwnership,
+    EventRecurrenceException,
+    RecurrenceRule,
+)
 from calendar_integration.services.calendar_event_service import CalendarEventService
 from calendar_integration.services.calendar_permission_service import (
     DEFAULT_CALENDAR_OWNER_PERMISSIONS,
@@ -27,6 +37,7 @@ from calendar_integration.services.dataclasses import (
     CalendarEventInputData,
 )
 from organizations.models import Organization, OrganizationMembership
+from public_api.services import PublicAPIAuthService
 from users.models import Profile, User
 
 
@@ -262,9 +273,13 @@ def test_delete_event(
 
     event_service.delete_event(calendar.id, created_id)
 
-    assert not CalendarEvent.objects.filter(
-        id=created_id, organization_id=calendar.organization_id
-    ).exists()
+    assert (
+        not CalendarEvent.objects.filter_by_organization(calendar.organization_id)
+        .filter(
+            id=created_id,
+        )
+        .exists()
+    )
     mock_google_adapter.delete_event.assert_called_once()
 
 
@@ -313,9 +328,13 @@ def test_transfer_event(
 
     assert new_event.calendar == target_calendar
     assert new_event.external_id == "transferred_event"
-    assert not CalendarEvent.objects.filter(
-        id=original.id, organization_id=calendar.organization_id
-    ).exists()
+    assert (
+        not CalendarEvent.objects.filter_by_organization(calendar.organization_id)
+        .filter(
+            id=original.id,
+        )
+        .exists()
+    )
 
 
 @pytest.mark.django_db
@@ -356,9 +375,6 @@ def scoped_event_setup(db):
     ``manage_available_windows=False`` so the whole range is bookable (no window setup
     needed) and no provider, so no external write adapter is invoked.
     """
-    from calendar_integration.models import CalendarOwnership
-    from organizations.models import OrganizationMembership
-
     organization = Organization.objects.create(name="Scoped Event Org", should_sync_rooms=False)
     owner = User.objects.create_user(email="scoped-owner@example.com", password="testpass123")
     Profile.objects.create(user=owner)
@@ -409,8 +425,6 @@ def _facade_for_system_user(system_user, organization):
 @pytest.mark.django_db
 def test_create_event_allows_owner_scoped_system_user_on_owned_calendar(scoped_event_setup):
     """An owner-scoped token whose owner owns the calendar may create an event."""
-    from public_api.services import PublicAPIAuthService
-
     org = scoped_event_setup["organization"]
     calendar = scoped_event_setup["calendar"]
     membership = scoped_event_setup["membership"]
@@ -432,10 +446,6 @@ def test_create_event_allows_owner_scoped_system_user_on_owned_calendar(scoped_e
 @pytest.mark.django_db
 def test_create_event_still_blocks_org_wide_system_user(scoped_event_setup):
     """An org-wide (unscoped) token is still blocked from creating events."""
-    from django.core.exceptions import PermissionDenied
-
-    from public_api.services import PublicAPIAuthService
-
     org = scoped_event_setup["organization"]
     calendar = scoped_event_setup["calendar"]
 
@@ -448,9 +458,13 @@ def test_create_event_still_blocks_org_wide_system_user(scoped_event_setup):
     with pytest.raises(PermissionDenied, match="Events cannot be created through the Public API"):
         facade.create_event(calendar.id, _scoped_event_input())
 
-    assert not CalendarEvent.objects.filter(
-        calendar_fk_id=calendar.id, organization_id=org.id
-    ).exists()
+    assert (
+        not CalendarEvent.objects.filter_by_organization(org.id)
+        .filter(
+            calendar_fk_id=calendar.id,
+        )
+        .exists()
+    )
 
 
 @pytest.mark.django_db
@@ -460,11 +474,6 @@ def test_create_event_blocks_scoped_token_on_non_owned_calendar(scoped_event_set
     The independent CalendarOwnership verification fails (no ownership row links the
     token's owner to this other calendar), so the block stays in force.
     """
-    from django.core.exceptions import PermissionDenied
-
-    from organizations.models import OrganizationMembership
-    from public_api.services import PublicAPIAuthService
-
     org = scoped_event_setup["organization"]
     membership = scoped_event_setup["membership"]
 
@@ -491,9 +500,13 @@ def test_create_event_blocks_scoped_token_on_non_owned_calendar(scoped_event_set
     with pytest.raises(PermissionDenied, match="Events cannot be created through the Public API"):
         facade.create_event(other_calendar.id, _scoped_event_input())
 
-    assert not CalendarEvent.objects.filter(
-        calendar_fk_id=other_calendar.id, organization_id=org.id
-    ).exists()
+    assert (
+        not CalendarEvent.objects.filter_by_organization(org.id)
+        .filter(
+            calendar_fk_id=other_calendar.id,
+        )
+        .exists()
+    )
 
 
 @pytest.mark.django_db
@@ -505,8 +518,6 @@ def test_create_event_owner_scoped_audit_actor_is_system_user(scoped_event_setup
     Running with ``django_capture_on_commit_callbacks`` actually fires the callback, so a
     regression to direct ``permission_service.token`` access would raise here.
     """
-    from public_api.services import PublicAPIAuthService
-
     org = scoped_event_setup["organization"]
     calendar = scoped_event_setup["calendar"]
     membership = scoped_event_setup["membership"]
@@ -570,9 +581,6 @@ def write_allowance_setup(db):
     No external-provider credentials are set; the calendar provider is left as None
     so no write adapter fires (pure-DB path), which is sufficient for authorization tests.
     """
-    from calendar_integration.constants import CalendarType
-    from calendar_integration.models import CalendarOwnership
-
     org = Organization.objects.create(name="Write Allowance Org", should_sync_rooms=False)
 
     owner_a = User.objects.create_user(email="write-owner-a@example.com", password="pw")
@@ -660,8 +668,6 @@ def _updated_event_input():
 @pytest.mark.django_db
 def test_update_event_allows_owner_scoped_system_user_on_owned_calendar(write_allowance_setup):
     """An owner-scoped token whose owner owns the calendar may update its event."""
-    from public_api.services import PublicAPIAuthService
-
     setup = write_allowance_setup
     org = setup["organization"]
     calendar = setup["calendar_a"]
@@ -685,8 +691,6 @@ def test_update_event_allows_owner_scoped_system_user_on_owned_calendar(write_al
 @pytest.mark.django_db
 def test_delete_event_allows_owner_scoped_system_user_on_owned_calendar(write_allowance_setup):
     """An owner-scoped token whose owner owns the calendar may delete its event."""
-    from public_api.services import PublicAPIAuthService
-
     setup = write_allowance_setup
     org = setup["organization"]
     calendar = setup["calendar_a"]
@@ -704,7 +708,13 @@ def test_delete_event_allows_owner_scoped_system_user_on_owned_calendar(write_al
     facade = _facade_for_system_user(system_user, org)
     facade.delete_event(calendar.id, event_id)
 
-    assert not CalendarEvent.objects.filter(id=event_id, organization_id=org.id).exists()
+    assert (
+        not CalendarEvent.objects.filter_by_organization(org.id)
+        .filter(
+            id=event_id,
+        )
+        .exists()
+    )
 
 
 # ------------------------------------------------------------------
@@ -720,10 +730,6 @@ def test_update_event_blocks_owner_scoped_system_user_on_foreign_calendar(write_
     is returned so the caller cannot distinguish a forbidden calendar from a
     genuinely missing one.
     """
-    from django.core.exceptions import PermissionDenied
-
-    from public_api.services import PublicAPIAuthService
-
     setup = write_allowance_setup
     org = setup["organization"]
     # calendar_b is owned by owner_b; the scoped token is for owner_a's membership.
@@ -743,7 +749,13 @@ def test_update_event_blocks_owner_scoped_system_user_on_foreign_calendar(write_
         facade.update_event(calendar_b.id, event.id, _updated_event_input())
 
     # The event must be unchanged.
-    assert CalendarEvent.objects.filter(id=event.id, organization_id=org.id).exists()
+    assert (
+        CalendarEvent.objects.filter_by_organization(org.id)
+        .filter(
+            id=event.id,
+        )
+        .exists()
+    )
 
 
 @pytest.mark.django_db
@@ -752,10 +764,6 @@ def test_delete_event_blocks_owner_scoped_system_user_on_foreign_calendar(write_
 
     The not-found-parity message is returned; the event row survives.
     """
-    from django.core.exceptions import PermissionDenied
-
-    from public_api.services import PublicAPIAuthService
-
     setup = write_allowance_setup
     org = setup["organization"]
     calendar_b = setup["calendar_b"]
@@ -774,7 +782,13 @@ def test_delete_event_blocks_owner_scoped_system_user_on_foreign_calendar(write_
     with pytest.raises(PermissionDenied, match=r"Calendar matching query does not exist\."):
         facade.delete_event(calendar_b.id, event_id)
 
-    assert CalendarEvent.objects.filter(id=event_id, organization_id=org.id).exists()
+    assert (
+        CalendarEvent.objects.filter_by_organization(org.id)
+        .filter(
+            id=event_id,
+        )
+        .exists()
+    )
 
 
 # ------------------------------------------------------------------
@@ -785,8 +799,6 @@ def test_delete_event_blocks_owner_scoped_system_user_on_foreign_calendar(write_
 @pytest.mark.django_db
 def test_update_event_allows_org_wide_system_user(write_allowance_setup):
     """An org-wide token may update any event in the organization."""
-    from public_api.services import PublicAPIAuthService
-
     setup = write_allowance_setup
     org = setup["organization"]
     # Use calendar_b (not owned by any membership associated with the token).
@@ -810,8 +822,6 @@ def test_update_event_allows_org_wide_system_user(write_allowance_setup):
 @pytest.mark.django_db
 def test_delete_event_allows_org_wide_system_user(write_allowance_setup):
     """An org-wide token may delete any event in the organization."""
-    from public_api.services import PublicAPIAuthService
-
     setup = write_allowance_setup
     org = setup["organization"]
     calendar = setup["calendar_b"]
@@ -827,7 +837,13 @@ def test_delete_event_allows_org_wide_system_user(write_allowance_setup):
     facade = _facade_for_system_user(system_user, org)
     facade.delete_event(calendar.id, event_id)
 
-    assert not CalendarEvent.objects.filter(id=event_id, organization_id=org.id).exists()
+    assert (
+        not CalendarEvent.objects.filter_by_organization(org.id)
+        .filter(
+            id=event_id,
+        )
+        .exists()
+    )
 
 
 # ------------------------------------------------------------------
@@ -843,10 +859,6 @@ def test_create_event_org_wide_system_user_stays_blocked(write_allowance_setup):
     must remain blocked — this is an explicit divergence captured here so it
     does not regress silently.
     """
-    from django.core.exceptions import PermissionDenied
-
-    from public_api.services import PublicAPIAuthService
-
     setup = write_allowance_setup
     org = setup["organization"]
     calendar = setup["calendar_a"]
@@ -860,9 +872,13 @@ def test_create_event_org_wide_system_user_stays_blocked(write_allowance_setup):
     with pytest.raises(PermissionDenied, match="Events cannot be created through the Public API"):
         facade.create_event(calendar.id, _scoped_event_input())
 
-    assert not CalendarEvent.objects.filter(
-        calendar_fk_id=calendar.id, organization_id=org.id
-    ).exists()
+    assert (
+        not CalendarEvent.objects.filter_by_organization(org.id)
+        .filter(
+            calendar_fk_id=calendar.id,
+        )
+        .exists()
+    )
 
 
 @pytest.mark.django_db
@@ -875,11 +891,6 @@ def test_create_event_allows_scoped_token_on_owned_bundle_calendar(write_allowan
     stays blocked (see ``test_create_event_org_wide_system_user_stays_blocked``). The
     fan-out is mocked to isolate the authorization decision (no child/availability setup).
     """
-    from unittest import mock
-
-    from calendar_integration.constants import CalendarType
-    from public_api.services import PublicAPIAuthService
-
     setup = write_allowance_setup
     org = setup["organization"]
     bundle = setup["bundle_calendar"]
@@ -921,11 +932,6 @@ def test_update_event_allows_scoped_token_on_owned_bundle_primary_event(write_al
     creation on a bundle calendar. The bundle fan-out is mocked so the test isolates the
     authorization decision (no provider/child setup needed).
     """
-    from unittest import mock
-
-    from calendar_integration.constants import CalendarType
-    from public_api.services import PublicAPIAuthService
-
     setup = write_allowance_setup
     org = setup["organization"]
     bundle = setup["bundle_calendar"]
@@ -969,11 +975,6 @@ def test_delete_event_allows_scoped_token_on_owned_bundle_primary_event(write_al
     fan-out), permitted through the Public API and gated only by
     ``_public_token_may_write``. The fan-out is mocked to isolate the authorization.
     """
-    from unittest import mock
-
-    from calendar_integration.constants import CalendarType
-    from public_api.services import PublicAPIAuthService
-
     setup = write_allowance_setup
     org = setup["organization"]
     bundle = setup["bundle_calendar"]
@@ -1063,10 +1064,6 @@ def test_update_event_org_wide_token_denied_across_tenants(db):
     system_user.organization_id to calendar.organization_id directly, so a
     cross-tenant write is blocked even if the caller supplies org A as context.
     """
-    from django.core.exceptions import PermissionDenied
-
-    from public_api.services import PublicAPIAuthService
-
     org_a = Organization.objects.create(name="Cross Tenant Org A", should_sync_rooms=False)
     org_b = Organization.objects.create(name="Cross Tenant Org B", should_sync_rooms=False)
 
@@ -1098,7 +1095,13 @@ def test_update_event_org_wide_token_denied_across_tenants(db):
         facade.update_event(calendar_b.id, event_b.id, _updated_event_input())
 
     # The event must survive.
-    assert CalendarEvent.objects.filter(id=event_b.id, organization_id=org_b.id).exists()
+    assert (
+        CalendarEvent.objects.filter_by_organization(org_b.id)
+        .filter(
+            id=event_b.id,
+        )
+        .exists()
+    )
 
 
 @pytest.mark.django_db
@@ -1107,10 +1110,6 @@ def test_delete_event_org_wide_token_denied_across_tenants(db):
 
     Mirrors the update cross-tenant test; pins the tenant boundary for delete.
     """
-    from django.core.exceptions import PermissionDenied
-
-    from public_api.services import PublicAPIAuthService
-
     org_a = Organization.objects.create(name="Cross Tenant Del Org A", should_sync_rooms=False)
     org_b = Organization.objects.create(name="Cross Tenant Del Org B", should_sync_rooms=False)
 
@@ -1142,7 +1141,13 @@ def test_delete_event_org_wide_token_denied_across_tenants(db):
         facade.delete_event(calendar_b.id, event_id)
 
     # The event must survive.
-    assert CalendarEvent.objects.filter(id=event_id, organization_id=org_b.id).exists()
+    assert (
+        CalendarEvent.objects.filter_by_organization(org_b.id)
+        .filter(
+            id=event_id,
+        )
+        .exists()
+    )
 
 
 # ------------------------------------------------------------------
@@ -1161,8 +1166,6 @@ def test_update_event_owner_scoped_audit_actor_is_system_user(write_allowance_se
     (the SystemUser).  Patching ``transaction.on_commit`` to fire inline lets us
     capture the actor that reaches ``on_update_event``.
     """
-    from public_api.services import PublicAPIAuthService
-
     setup = write_allowance_setup
     org = setup["organization"]
     calendar = setup["calendar_a"]
@@ -1210,8 +1213,6 @@ def test_delete_event_owner_scoped_audit_actor_is_system_user(write_allowance_se
     over into the on_commit lambda; patching on_commit to fire inline lets the spy
     observe the actor.
     """
-    from public_api.services import PublicAPIAuthService
-
     setup = write_allowance_setup
     org = setup["organization"]
     calendar = setup["calendar_a"]
@@ -1246,7 +1247,13 @@ def test_delete_event_owner_scoped_audit_actor_is_system_user(write_allowance_se
         if side_effects is not None:
             side_effects.on_delete_event = original  # type: ignore[method-assign]
 
-    assert not CalendarEvent.objects.filter(id=event_id, organization_id=org.id).exists()
+    assert (
+        not CalendarEvent.objects.filter_by_organization(org.id)
+        .filter(
+            id=event_id,
+        )
+        .exists()
+    )
 
     if side_effects is not None:
         assert recorded, "on_delete_event side effect did not fire"
@@ -1268,8 +1275,6 @@ _RECURRENCE_ID = datetime.datetime(2026, 7, 17, 10, 0, tzinfo=datetime.UTC)
 
 def _make_recurring_master_for_write_tests(organization, calendar) -> CalendarEvent:
     """Create a recurring master CalendarEvent (weekly) directly in the DB."""
-    from calendar_integration.models import RecurrenceRule
-
     rule = RecurrenceRule.from_rrule_string("FREQ=WEEKLY;COUNT=10", organization)
     rule.save()
     master = CalendarEvent.objects.create(
@@ -1294,9 +1299,6 @@ def test_reschedule_event_occurrence_creates_modified_exception(write_allowance_
     The exception carries ``is_cancelled=False`` and a ``modified_event`` at the new
     time; the master event and its recurrence rule are left untouched.
     """
-    from calendar_integration.models import EventRecurrenceException
-    from public_api.services import PublicAPIAuthService
-
     setup = write_allowance_setup
     org = setup["organization"]
     calendar = setup["calendar_a"]
@@ -1332,8 +1334,8 @@ def test_reschedule_event_occurrence_creates_modified_exception(write_allowance_
     assert modified.end_time == new_end
 
     # Exactly one exception, modified (not cancelled), pointing at the new event.
-    exceptions = EventRecurrenceException.objects.filter(
-        parent_event_fk=master, organization_id=org.id
+    exceptions = EventRecurrenceException.objects.filter_by_organization(org.id).filter(
+        parent_event_fk=master,
     )
     assert exceptions.count() == 1
     exception = exceptions.get()
@@ -1353,9 +1355,6 @@ def test_reschedule_event_occurrence_creates_modified_exception(write_allowance_
 @pytest.mark.django_db
 def test_reschedule_event_occurrence_is_idempotent(write_allowance_setup):
     """Rescheduling the same occurrence twice updates in place (one exception row)."""
-    from calendar_integration.models import EventRecurrenceException
-    from public_api.services import PublicAPIAuthService
-
     setup = write_allowance_setup
     org = setup["organization"]
     calendar = setup["calendar_a"]
@@ -1388,8 +1387,8 @@ def test_reschedule_event_occurrence_is_idempotent(write_allowance_setup):
         timezone="UTC",
     )
 
-    exceptions = EventRecurrenceException.objects.filter(
-        parent_event_fk=master, organization_id=org.id
+    exceptions = EventRecurrenceException.objects.filter_by_organization(org.id).filter(
+        parent_event_fk=master,
     )
     assert exceptions.count() == 1
     exception = exceptions.get()
@@ -1406,9 +1405,6 @@ def test_cancel_event_occurrence_creates_cancellation_exception(write_allowance_
     The exception carries ``is_cancelled=True`` and no ``modified_event``; the master
     is untouched.
     """
-    from calendar_integration.models import EventRecurrenceException
-    from public_api.services import PublicAPIAuthService
-
     setup = write_allowance_setup
     org = setup["organization"]
     calendar = setup["calendar_a"]
@@ -1431,8 +1427,8 @@ def test_cancel_event_occurrence_creates_cancellation_exception(write_allowance_
     )
     assert result is None
 
-    exceptions = EventRecurrenceException.objects.filter(
-        parent_event_fk=master, organization_id=org.id
+    exceptions = EventRecurrenceException.objects.filter_by_organization(org.id).filter(
+        parent_event_fk=master,
     )
     assert exceptions.count() == 1
     exception = exceptions.get()
@@ -1449,9 +1445,6 @@ def test_cancel_event_occurrence_creates_cancellation_exception(write_allowance_
 @pytest.mark.django_db
 def test_cancel_event_occurrence_is_idempotent(write_allowance_setup):
     """Cancelling the same occurrence twice keeps a single exception row."""
-    from calendar_integration.models import EventRecurrenceException
-    from public_api.services import PublicAPIAuthService
-
     setup = write_allowance_setup
     org = setup["organization"]
     calendar = setup["calendar_a"]
@@ -1474,9 +1467,11 @@ def test_cancel_event_occurrence_is_idempotent(write_allowance_setup):
     )
 
     assert (
-        EventRecurrenceException.objects.filter(
-            parent_event_fk=master, organization_id=org.id
-        ).count()
+        EventRecurrenceException.objects.filter_by_organization(org.id)
+        .filter(
+            parent_event_fk=master,
+        )
+        .count()
         == 1
     )
 
@@ -1488,9 +1483,6 @@ def test_occurrence_methods_allow_org_wide_token(write_allowance_setup):
     Uses calendar_b, which no token-associated membership owns — proving org-wide
     reach (owner-scoped ownership is NOT required for org-wide tokens).
     """
-    from calendar_integration.models import EventRecurrenceException
-    from public_api.services import PublicAPIAuthService
-
     setup = write_allowance_setup
     org = setup["organization"]
     calendar = setup["calendar_b"]
@@ -1522,9 +1514,11 @@ def test_occurrence_methods_allow_org_wide_token(write_allowance_setup):
     )
 
     assert (
-        EventRecurrenceException.objects.filter(
-            parent_event_fk=master, organization_id=org.id
-        ).count()
+        EventRecurrenceException.objects.filter_by_organization(org.id)
+        .filter(
+            parent_event_fk=master,
+        )
+        .count()
         == 2
     )
 
@@ -1535,11 +1529,6 @@ def test_occurrence_methods_block_owner_scoped_on_foreign_master(write_allowance
 
     The not-found-parity message is raised and NO exception row is created.
     """
-    from django.core.exceptions import PermissionDenied
-
-    from calendar_integration.models import EventRecurrenceException
-    from public_api.services import PublicAPIAuthService
-
     setup = write_allowance_setup
     org = setup["organization"]
     # calendar_b is owned by owner_b; the token is scoped to owner_a's membership.
@@ -1572,9 +1561,13 @@ def test_occurrence_methods_block_owner_scoped_on_foreign_master(write_allowance
             recurrence_id=_RECURRENCE_ID,
         )
 
-    assert not EventRecurrenceException.objects.filter(
-        parent_event_fk=master, organization_id=org.id
-    ).exists()
+    assert (
+        not EventRecurrenceException.objects.filter_by_organization(org.id)
+        .filter(
+            parent_event_fk=master,
+        )
+        .exists()
+    )
 
 
 @pytest.mark.django_db
@@ -1584,11 +1577,6 @@ def test_occurrence_methods_cross_tenant_master_denied():
     Either the org-scoped load misses (``CalendarEvent.DoesNotExist``) or the
     public-token guard denies (``PermissionDenied``); no exception row is created.
     """
-    from django.core.exceptions import PermissionDenied
-
-    from calendar_integration.models import EventRecurrenceException
-    from public_api.services import PublicAPIAuthService
-
     org_a = Organization.objects.create(name="Occ Cross Tenant A", should_sync_rooms=False)
     org_b = Organization.objects.create(name="Occ Cross Tenant B", should_sync_rooms=False)
 
@@ -1612,16 +1600,18 @@ def test_occurrence_methods_cross_tenant_master_denied():
             recurrence_id=_RECURRENCE_ID,
         )
 
-    assert not EventRecurrenceException.objects.filter(
-        parent_event_fk=master, organization_id=org_b.id
-    ).exists()
+    assert (
+        not EventRecurrenceException.objects.filter_by_organization(org_b.id)
+        .filter(
+            parent_event_fk=master,
+        )
+        .exists()
+    )
 
 
 @pytest.mark.django_db
 def test_occurrence_methods_reject_non_recurring_master(write_allowance_setup):
     """A non-recurring master cannot be addressed by a single-occurrence op → ValueError."""
-    from public_api.services import PublicAPIAuthService
-
     setup = write_allowance_setup
     org = setup["organization"]
     calendar = setup["calendar_a"]
@@ -1665,9 +1655,6 @@ def test_occurrence_methods_allowed_for_scoped_token_on_owned_bundle_calendar(
     on the master's exception primitives (no bundle fan-out), so they create the expected
     ``EventRecurrenceException`` rows.
     """
-    from calendar_integration.models import EventRecurrenceException, RecurrenceRule
-    from public_api.services import PublicAPIAuthService
-
     setup = write_allowance_setup
     org = setup["organization"]
     bundle = setup["bundle_calendar"]
@@ -1707,7 +1694,9 @@ def test_occurrence_methods_allowed_for_scoped_token_on_owned_bundle_calendar(
         end_time=datetime.datetime(2026, 7, 17, 15, 0, tzinfo=datetime.UTC),
         timezone="UTC",
     )
-    exc = EventRecurrenceException.objects.get(parent_event_fk=master, organization_id=org.id)
+    exc = EventRecurrenceException.objects.filter_by_organization(org.id).get(
+        parent_event_fk=master,
+    )
     assert exc.is_cancelled is False
     assert exc.modified_event_fk_id is not None
 
@@ -1728,11 +1717,6 @@ def test_reschedule_event_occurrence_calls_adapter_create_on_personal_calendar(
     """On a PERSONAL calendar with a write adapter, reschedule calls create_event on the
     adapter with is_recurring_instance=True and captures the returned external_id.
     """
-    from unittest.mock import Mock, patch
-
-    from calendar_integration.services.dataclasses import CalendarEventAdapterOutputData
-    from public_api.services import PublicAPIAuthService
-
     setup = write_allowance_setup
     org = setup["organization"]
     calendar_a = setup["calendar_a"]
@@ -1821,8 +1805,6 @@ def test_reschedule_and_cancel_occurrence_expansion(write_allowance_setup):
     Acceptance pin: the expansion correctly picks up the modified or cancelled
     occurrence so callers see the right timeline.
     """
-    from public_api.services import PublicAPIAuthService
-
     setup = write_allowance_setup
     org = setup["organization"]
     calendar = setup["calendar_a"]

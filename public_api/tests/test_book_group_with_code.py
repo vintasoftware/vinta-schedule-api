@@ -663,7 +663,7 @@ class TestCreateGroupEventWithCodeLifecycleRejections:
             permissions=[EventManagementPermissions.CREATE],
             calendar_group_id=group.id,
         )
-        CalendarManagementToken.objects.filter(id=token.id).update(
+        CalendarManagementToken.original_manager.filter(id=token.id).update(
             used_at=datetime.datetime(2025, 1, 1, tzinfo=datetime.UTC)
         )
         selections = _slot_selections(group, primary_calendar, secondary_calendar)

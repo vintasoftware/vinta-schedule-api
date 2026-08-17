@@ -1,5 +1,4 @@
-"""Tests for group-scoped quota rules in discovery and booking validation
-(Phase 3b of ``CALENDAR_GROUP_SCOPED_AVAILABILITY``).
+"""Tests for group-scoped quota rules in discovery and booking validation.
 
 Covers:
 - A calendar at its cap is hidden from discovery for that period and
@@ -9,7 +8,7 @@ Covers:
 - Two rules (daily AND weekly) on the same calendar are BOTH enforced.
 - Explicit booking past the cap is rejected with
   ``GroupScopedRuleType.QUOTA_CONSUMED``.
-- The headline risk this phase exists to guard against: the quota-counting
+- The headline risk group-scoped quota enforcement exists to guard against: the quota-counting
   query count is a FIXED function of the roster/config (bounded by the
   number of distinct ``(slot, period)`` combinations actually configured),
   never a function of how many candidate times discovery walks.
@@ -33,6 +32,7 @@ from calendar_integration.constants import (
     GroupScopedRuleType,
     QuotaPeriod,
 )
+from calendar_integration.database_functions import GetCalendarGroupQuotaPeriodCountsJSON
 from calendar_integration.exceptions import CalendarGroupScopedRuleViolationError
 from calendar_integration.factories import create_group_slot_quota_rule
 from calendar_integration.models import (
@@ -45,6 +45,7 @@ from calendar_integration.models import (
     CalendarGroupSlotMembership,
     CalendarManagementToken,
 )
+from calendar_integration.services import slot_engine
 from calendar_integration.services.calendar_group_service import CalendarGroupService
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from calendar_integration.services.calendar_service import CalendarService
@@ -52,7 +53,9 @@ from calendar_integration.services.dataclasses import (
     CalendarGroupEventInputData,
     CalendarGroupSlotSelectionInputData,
 )
-from organizations.models import Organization, OrganizationMembership, OrganizationRole, WeekStart
+from organizations.models import Organization, OrganizationMembership, WeekStart
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
+from organizations.tests.helpers import grant_membership_groups
 from users.models import Profile, User
 
 
@@ -101,8 +104,12 @@ def audit_service():
 def admin_user(db: Any, organization: Organization) -> User:
     u = User.objects.create_user(email="quota-admin@example.com", password="pass")
     Profile.objects.create(user=u)
-    OrganizationMembership.objects.create(
-        user=u, organization=organization, role=OrganizationRole.ADMIN
+    grant_membership_groups(
+        OrganizationMembership.objects.create(
+            user=u,
+            organization=organization,
+        ),
+        [GROUP_ORGANIZATION_ADMIN],
     )
     return u
 
@@ -205,8 +212,12 @@ def reschedule_admin_user(organization: Organization) -> User:
     the quota gate."""
     u = User.objects.create_user(email="quota-reschedule-admin@example.com", password="pass")
     Profile.objects.create(user=u)
-    OrganizationMembership.objects.create(
-        user=u, organization=organization, role=OrganizationRole.ADMIN
+    grant_membership_groups(
+        OrganizationMembership.objects.create(
+            user=u,
+            organization=organization,
+        ),
+        [GROUP_ORGANIZATION_ADMIN],
     )
     return u
 
@@ -275,10 +286,11 @@ def _seed_booking(
     """Directly create a LIVE booking "made through" `surgery_slot` -- a
     ``CalendarEvent`` plus its ``CalendarEventGroupSelection`` link, exactly
     what ``CalendarGroupService.create_grouped_event`` would persist for a
-    single-calendar slot selection (mirrors the Phase 3a counting-function
-    test helper). Used to seed MULTIPLE pre-existing bookings without going
-    through the full booking write pipeline, whose ``CalendarEvent.external_id``
-    is server-generated and left blank (globally unique, INTERNAL provider,
+    single-calendar slot selection (mirrors the quota period-counting tests'
+    ``_create_group_booking`` helper). Used to seed MULTIPLE pre-existing
+    bookings without going through the full booking write pipeline, whose
+    ``CalendarEvent.external_id`` is server-generated and left blank
+    (globally unique, INTERNAL provider,
     no write adapter under ``initialize_without_provider``) -- going through
     ``create_grouped_event`` more than once per test would collide on that
     constraint. The REJECTION/ACCEPTANCE tests below still exercise the real
@@ -787,9 +799,6 @@ def test_python_and_sql_bucketing_agree_on_period_start(
     surgery_group: CalendarGroup,
     surgery_slot: CalendarGroupSlot,
 ) -> None:
-    from calendar_integration.database_functions import GetCalendarGroupQuotaPeriodCountsJSON
-    from calendar_integration.services import slot_engine
-
     seed_instants = [
         _utc(2025, 9, 3, 9),  # mid-week Wednesday
         _utc(2025, 9, 7, 23, 30),  # Sunday, near midnight

@@ -2,7 +2,7 @@
 
 import django.db.transaction
 from django.contrib.auth import get_user_model
-from django.db import IntegrityError
+from django.db import IntegrityError, connection
 from django.urls import reverse
 
 import pytest
@@ -10,14 +10,17 @@ from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
 
+from calendar_integration.models import Calendar, CalendarOwnership
+from common.organization_services import memberships
 from organizations.models import (
     ExternalEventUpdatePolicy,
     Organization,
     OrganizationMembership,
-    OrganizationRole,
     WeekStart,
-    get_active_organization_membership,
 )
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
+from organizations.tests.helpers import grant_membership_groups
+from users.factories import UserFactory
 
 
 User = get_user_model()
@@ -71,15 +74,12 @@ class TestInactiveMembershipGating:
 
     def _make_inactive_member_client(self):
         """Create a user with an inactive membership, return (user, APIClient)."""
-        from users.factories import UserFactory
-
         user = UserFactory().create_user()
         org = baker.make(Organization)
         baker.make(
             OrganizationMembership,
             user=user,
             organization=org,
-            role=OrganizationRole.MEMBER,
             is_active=False,
         )
         client = APIClient()
@@ -88,15 +88,12 @@ class TestInactiveMembershipGating:
 
     def _make_active_member_client(self):
         """Create a user with an active membership, return (user, org, APIClient)."""
-        from users.factories import UserFactory
-
         user = UserFactory().create_user()
         org = baker.make(Organization)
         baker.make(
             OrganizationMembership,
             user=user,
             organization=org,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
         client = APIClient()
@@ -105,8 +102,6 @@ class TestInactiveMembershipGating:
 
     def test_inactive_membership_gets_empty_list_on_calendar_endpoint(self):
         """An inactive member gets an empty calendar list — not 500 or real data."""
-        from calendar_integration.models import Calendar
-
         _user, org, client = self._make_inactive_member_client()
         baker.make(Calendar, organization=org)
 
@@ -120,8 +115,6 @@ class TestInactiveMembershipGating:
 
     def test_active_membership_sees_calendars(self):
         """An active member can see their organization's calendars."""
-        from calendar_integration.models import Calendar, CalendarOwnership
-
         user, org, client = self._make_active_member_client()
         calendar = baker.make(Calendar, organization=org)
         # Non-admin members only list calendars they own (owner-scoping).
@@ -153,8 +146,6 @@ class TestInactiveMembershipGating:
         user object does not carry a stale cached membership (Django caches the
         reverse OneToOne result on the user instance).
         """
-        from calendar_integration.models import Calendar, CalendarOwnership
-
         user, org, client = self._make_inactive_member_client()
         calendar = baker.make(Calendar, organization=org)
         # Non-admin members only list calendars they own (owner-scoping).
@@ -242,17 +233,14 @@ class TestOrganizationParentAndCapabilities:
 
     def test_get_branding_root_returns_self_when_no_parent(self):
         """get_branding_root() returns itself for a standalone (parentless)
-        non-reseller org -- Organization Auth-Area Branding plan, Phase 5 widens
-        resolution beyond resellers to any parentless organization. The reseller
-        branch above is checked first and unchanged; this is the new fallback for
-        the case that used to return None."""
+        non-reseller org -- resolution was widened beyond resellers to any
+        parentless organization. The reseller branch above is checked first and
+        unchanged; this is the new fallback for the case that used to return None."""
         org = baker.make(Organization, can_invite_organizations=False)
         assert org.get_branding_root() == org
 
     def test_parent_protect_prevents_deletion_of_reseller_with_children(self):
         """on_delete=PROTECT prevents deleting a reseller that has children."""
-        from django.db import IntegrityError
-
         reseller = baker.make(Organization, can_invite_organizations=True)
         _child = baker.make(Organization, parent=reseller)
 
@@ -317,12 +305,13 @@ class TestMultiOrgMembership:
         org_admin = baker.make(Organization)
         org_member = baker.make(Organization)
 
-        OrganizationMembership.objects.create(
-            user=user, organization=org_admin, role=OrganizationRole.ADMIN, is_active=True
+        grant_membership_groups(
+            OrganizationMembership.objects.create(
+                user=user, organization=org_admin, is_active=True
+            ),
+            [GROUP_ORGANIZATION_ADMIN],
         )
-        OrganizationMembership.objects.create(
-            user=user, organization=org_member, role=OrganizationRole.MEMBER, is_active=True
-        )
+        OrganizationMembership.objects.create(user=user, organization=org_member, is_active=True)
 
         assert user.is_organization_admin(org_admin) is True
         assert user.is_organization_admin(org_member) is False
@@ -332,13 +321,14 @@ class TestMultiOrgMembership:
         user = baker.make(User)
         org = baker.make(Organization)
 
-        OrganizationMembership.objects.create(
-            user=user, organization=org, role=OrganizationRole.ADMIN, is_active=False
+        grant_membership_groups(
+            OrganizationMembership.objects.create(user=user, organization=org, is_active=False),
+            [GROUP_ORGANIZATION_ADMIN],
         )
 
         assert user.is_organization_admin(org) is False
 
-    def test_get_active_membership_ignores_inactive_membership_in_other_org(self):
+    def test_resolver_ignores_inactive_membership_in_other_org(self):
         """With one active (org A) and one inactive (org B) membership, the active one wins."""
         user = baker.make(User)
         org_a = baker.make(Organization)
@@ -349,51 +339,18 @@ class TestMultiOrgMembership:
         )
         OrganizationMembership.objects.create(user=user, organization=org_b, is_active=False)
 
-        resolved = get_active_organization_membership(user)
+        resolved = memberships.resolve_for_user(user)
 
         assert resolved == active
         assert resolved.organization == org_a
 
 
-@pytest.mark.django_db
-class TestOrganizationMembershipCompositePK:
-    """Unit tests for the composite primary key (user_id, organization_id)."""
-
-    def test_pk_tuple_lookup_returns_membership(self):
-        """OrganizationMembership.objects.get(pk=(user.id, org.id)) returns the membership."""
-        user = baker.make(User)
-        org = baker.make(Organization)
-        membership = OrganizationMembership.objects.create(user=user, organization=org)
-
-        fetched = OrganizationMembership.objects.get(pk=(user.id, org.id))
-        assert fetched == membership
-
-    def test_instance_pk_is_tuple_of_user_and_org_ids(self):
-        """membership.pk is the (user_id, organization_id) tuple after save."""
-        user = baker.make(User)
-        org = baker.make(Organization)
-        membership = OrganizationMembership.objects.create(user=user, organization=org)
-
-        assert membership.pk == (user.id, org.id)
-
-
-@pytest.mark.django_db(transaction=True)
-class TestOrganizationMembershipCompositePKUniqueness:
-    """Transaction-level test for the composite PK uniqueness constraint."""
-
-    def test_duplicate_membership_raises_integrity_error(self):
-        """Creating a second OrganizationMembership for the same (user, org) raises IntegrityError.
-
-        Uses transaction=True so the IntegrityError from the DB constraint is
-        flushed immediately (not deferred to test teardown).
-        """
-        user = baker.make(User)
-        org = baker.make(Organization)
-        OrganizationMembership.objects.create(user=user, organization=org)
-
-        with pytest.raises(IntegrityError):
-            with django.db.transaction.atomic():
-                OrganizationMembership.objects.create(user=user, organization=org)
+# The composite-primary-key tests that lived here are gone with the composite
+# primary key itself -- a ``ManyToManyField`` cannot hang off a composite-PK
+# model, and the package's abstract membership base declares two. Their
+# replacements, covering the surrogate ``id`` and the
+# ``uniq_membership_user_organization`` constraint that outlived both primary
+# keys, are in ``organizations/tests/test_membership_pk.py``.
 
 
 @pytest.mark.django_db
@@ -484,8 +441,6 @@ class TestWeekStart:
         ensuring that rows created before the migration (via raw SQL or the
         old schema) read the correct Monday default after migration 0018.
         """
-        from django.db import connection
-
         # Insert an Organization row without specifying week_start, so the
         # Postgres db_default applies. This simulates a row created before
         # the migration. Include all required columns to satisfy NOT NULL constraints.
@@ -493,10 +448,10 @@ class TestWeekStart:
             cursor.execute(
                 """
                 INSERT INTO organizations_organization
-                (name, should_sync_rooms, external_event_update_policy, meta, created, modified, can_invite_organizations)
+                (name, slug, should_sync_rooms, external_event_update_policy, created, modified, can_invite_organizations)
                 VALUES (%s, %s, %s, %s, NOW(), NOW(), %s)
                 """,
-                ["Pre-migration Org", False, "change_request", "{}", False],
+                ["Pre-migration Org", "pre-migration-org", False, "change_request", False],
             )
 
         # Read the row back via the ORM and verify week_start is Monday.
@@ -507,27 +462,47 @@ class TestWeekStart:
 
 @pytest.mark.django_db
 class TestOrganizationSlug:
-    """Unit tests for Organization.slug (Phase 1 — self-serve organization slug)."""
+    """Unit tests for Organization.slug (self-serve organization slug)."""
 
-    def test_slug_is_optional_on_creation(self):
-        """A freshly created Organization has slug=None when not supplied."""
-        org = baker.make(Organization)
-        assert org.slug is None
+    def test_an_organization_saved_without_a_slug_gets_an_opaque_one(self):
+        """``slug`` is NOT NULL, so ``save()`` mints one -- and it is opaque.
+
+        Not ``slugify(name)``: the slug is public (it appears in branded login
+        URLs), so a name-derived default would publish the organization's name
+        for every row saved without an explicit slug.
+        """
+        org = Organization.objects.create(name="Acme Incorporated")
+
+        assert org.slug.startswith("org-")
+        assert "acme" not in org.slug
+        org.refresh_from_db()
+        assert org.slug.startswith("org-")
 
     def test_slug_can_be_set_on_creation(self):
         """slug can be supplied at creation time."""
         org = baker.make(Organization, slug="my-org")
         assert org.slug == "my-org"
 
-    def test_multiple_null_slugs_coexist(self):
-        """Postgres's unique index admits any number of NULL slugs."""
-        org_a = baker.make(Organization)
-        org_b = baker.make(Organization)
-        assert org_a.slug is None
-        assert org_b.slug is None
-        # No IntegrityError raised by baker.make above is the assertion — both rows
-        # persisted with slug=NULL.
-        assert Organization.objects.filter(slug__isnull=True).count() >= 2
+    def test_two_organizations_saved_without_a_slug_do_not_collide(self):
+        """The minted slugs are distinct, so the unique index admits both."""
+        org_a = Organization.objects.create(name="Same Name")
+        org_b = Organization.objects.create(name="Same Name")
+
+        assert org_a.slug != org_b.slug
+
+    def test_a_blank_slug_is_refused_by_the_database(self):
+        """``organization_slug_not_blank`` refuses ``''`` even past ``save()``.
+
+        This is what makes the branding gate's retired ``NO_SLUG`` condition
+        permanently unreachable rather than merely hard to reach: ``save()``
+        would have replaced the blank value, so the interesting write is the one
+        that goes around it.
+        """
+        org = baker.make(Organization, slug="a-real-slug")
+
+        with pytest.raises(IntegrityError):
+            with django.db.transaction.atomic():
+                Organization.objects.filter(pk=org.pk).update(slug="")
 
     def test_duplicate_slug_raises_integrity_error(self):
         """Two organizations cannot share the same non-null slug."""

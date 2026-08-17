@@ -7,7 +7,6 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from common.utils.view_utils import ReadOnlyVintaScheduleModelViewSet, VintaScheduleModelViewSet
-from organizations.models import get_active_organization_membership
 from webhooks.constants import WebhookStatus
 from webhooks.models import WebhookConfiguration, WebhookEvent
 from webhooks.serializers import WebhookConfigurationSerializer, WebhookEventSerializer
@@ -20,13 +19,17 @@ class WebhookConfigurationViewSet(VintaScheduleModelViewSet):
     Provides full CRUD operations: create, retrieve, update, partial_update, destroy, and list.
     """
 
-    queryset = WebhookConfiguration.objects.all()
+    # ``unscoped()``, not ``objects.all()``: a class attribute is evaluated at
+    # *import* time, long before any request has bound an organization, and under
+    # ``STRICT_ORGANIZATION_FILTER`` the scoped manager raises there rather than
+    # at first use. ``get_queryset()`` below narrows it to the caller's
+    # organization, which is the only place the narrowing was ever done.
+    queryset = WebhookConfiguration.objects.unscoped()
     serializer_class = WebhookConfigurationSerializer
 
     def get_queryset(self):
         """Filter configurations by current user's organization and exclude deleted ones."""
-        user = self.request.user
-        membership = get_active_organization_membership(user)
+        membership = self.request.organization_membership
         if membership:
             return self.queryset.filter(
                 organization=membership.organization, deleted_at__isnull=True
@@ -52,7 +55,9 @@ class WebhookEventViewSet(ReadOnlyVintaScheduleModelViewSet):
     Provides read-only operations (list, retrieve) and a custom retry action.
     """
 
-    queryset = WebhookEvent.objects.all()
+    # ``unscoped()`` for the same reason as ``WebhookConfigurationViewSet`` --
+    # see the comment there. Narrowed per request in ``get_queryset()``.
+    queryset = WebhookEvent.objects.unscoped()
     serializer_class = WebhookEventSerializer
 
     @inject
@@ -67,8 +72,7 @@ class WebhookEventViewSet(ReadOnlyVintaScheduleModelViewSet):
 
     def get_queryset(self):
         """Filter events by current user's organization."""
-        user = self.request.user
-        membership = get_active_organization_membership(user)
+        membership = self.request.organization_membership
         if membership:
             return (
                 self.queryset.filter(organization=membership.organization)

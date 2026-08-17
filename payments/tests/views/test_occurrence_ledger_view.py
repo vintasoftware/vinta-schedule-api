@@ -1,8 +1,8 @@
 """Integration tests for ``GET /billing/usage/occurrences/`` -- the line-item
 ledger behind post-paid charges (``MeteredOccurrenceViewSet``). This is the
 one endpoint in the billing-usage surface gated by ``IsBillingOwnerOrAdmin``
-rather than the bare ``IsAuthenticated`` every other read in this module uses
-(see the plan's Guiding Decisions): a ledger row carries an ``event_id`` and
+rather than the bare ``IsAuthenticated`` every other read in this module uses:
+a ledger row carries an ``event_id`` and
 an exact ``occurrence_start``, which is calendar content that can span
 calendars the caller has no membership scope on.
 
@@ -29,10 +29,16 @@ from rest_framework.test import APIRequestFactory
 
 from calendar_integration.factories import create_calendar_ownership
 from calendar_integration.models import Calendar, CalendarEvent
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import (
+    GROUP_ORGANIZATION_ADMIN,
+    GROUP_ORGANIZATION_BILLING_OWNER,
+)
+from organizations.tests.helpers import make_membership
 from payments.models import MeteredOccurrence
 from payments.pagination import LargeLimitOffsetPagination
 from payments.services.subscription_service import current_billing_period_start
+from users.factories import UserFactory
 
 
 def occurrences_url() -> str:
@@ -93,24 +99,21 @@ def subscription(root: Organization):
 
 @pytest.fixture
 def admin_membership(user, root: Organization):
-    return baker.make(
-        OrganizationMembership,
+    return make_membership(
         user=user,
         organization=root,
-        role=OrganizationRole.ADMIN,
+        groups=[GROUP_ORGANIZATION_ADMIN],
         is_active=True,
     )
 
 
 @pytest.fixture
 def billing_owner_membership(user, root: Organization):
-    return baker.make(
-        OrganizationMembership,
+    return make_membership(
         user=user,
         organization=root,
-        role=OrganizationRole.MEMBER,
+        groups=[GROUP_ORGANIZATION_BILLING_OWNER],
         is_active=True,
-        is_billing_owner=True,
     )
 
 
@@ -120,9 +123,7 @@ def plain_member_membership(user, root: Organization):
         OrganizationMembership,
         user=user,
         organization=root,
-        role=OrganizationRole.MEMBER,
         is_active=True,
-        is_billing_owner=False,
     )
 
 
@@ -327,8 +328,6 @@ class TestEventEnrichment:
     def test_row_with_a_live_event_reports_title_calendar_and_owners(
         self, auth_client, admin_membership, root, subscription
     ):
-        from users.factories import UserFactory
-
         owner = UserFactory().create_user(first_name="Dana", last_name="Reyes")
         calendar = baker.make(Calendar, organization=root, name="Team")
         create_calendar_ownership(calendar=calendar, user=owner)

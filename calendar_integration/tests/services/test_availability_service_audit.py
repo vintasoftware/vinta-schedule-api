@@ -26,7 +26,9 @@ from calendar_integration.services.availability_service import AvailabilityServi
 from calendar_integration.services.calendar_service_context import CalendarServiceContext
 from calendar_integration.services.recurrence_manager import RecurrenceManager
 from calendar_integration.tests.services.test_availability_service import FakeHost
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
+from organizations.tests.helpers import grant_membership_groups
 from users.models import Profile, User
 
 
@@ -53,8 +55,12 @@ def organization(db: Any) -> Organization:
 def user(db: Any, organization: Organization) -> User:
     u = User.objects.create_user(email="audit_avail@example.com", password="pass")
     Profile.objects.create(user=u)
-    OrganizationMembership.objects.create(
-        user=u, organization=organization, role=OrganizationRole.ADMIN
+    grant_membership_groups(
+        OrganizationMembership.objects.create(
+            user=u,
+            organization=organization,
+        ),
+        [GROUP_ORGANIZATION_ADMIN],
     )
     return u
 
@@ -234,7 +240,7 @@ def test_delete_blocked_time_records_delete(
     assert payloads[0]["action"] == AuditAction.DELETE
     assert payloads[0]["subject"]["subject_type"] == "calendar_integration.BlockedTime"
     assert payloads[0]["subject"]["subject_id"] == str(bt_pk)
-    assert not BlockedTime.objects.filter(pk=bt_pk).exists()
+    assert not BlockedTime.original_manager.filter(pk=bt_pk).exists()
 
 
 # ---------------------------------------------------------------------------

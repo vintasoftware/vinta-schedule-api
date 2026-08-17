@@ -30,7 +30,9 @@ from calendar_integration.serializers import (
     OwnershipMembershipSerializer,
 )
 from calendar_integration.services.calendar_service_utils import resolve_member_user_ids
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
+from organizations.tests.helpers import grant_membership_groups
 
 
 @pytest.fixture
@@ -133,8 +135,12 @@ def test_orphan_attendance_excluded_from_attendee_memberships_m2m(organization, 
 def test_attendance_serializer_membership_field_shape(organization, event):
     """The REST attendance serializer exposes membership identity, not a bare user."""
     user = baker.make("users.User")
-    OrganizationMembership.objects.create(
-        user=user, organization=organization, role=OrganizationRole.ADMIN
+    grant_membership_groups(
+        OrganizationMembership.objects.create(
+            user=user,
+            organization=organization,
+        ),
+        [GROUP_ORGANIZATION_ADMIN],
     )
     _make_attendance(event, organization, membership_user_id=user.id)
 
@@ -148,11 +154,14 @@ def test_attendance_serializer_membership_field_shape(organization, event):
     assert "user" not in EventAttendanceSerializer.Meta.fields
     assert "membership" in EventAttendanceSerializer.Meta.fields
 
+    # ``role`` left this representation, along with the rest of ``role``'s API
+    # surface. What a member may do is reported by ``GET /organization-members/``
+    # as ``permissions``; this field is an identity, not an authorization
+    # statement.
     data = OwnershipMembershipSerializer(attendance.membership).data
     assert data == {
         "user_id": user.id,
         "organization_id": organization.id,
-        "role": OrganizationRole.ADMIN,
     }
 
 
@@ -171,7 +180,7 @@ def test_attendance_serializer_orphan_membership_is_null(organization, event):
 
 
 # ---------------------------------------------------------------------------
-# GraphQL type — membership identity { user_id, organization_id, role }
+# GraphQL type — membership identity { user_id, organization_id }
 # ---------------------------------------------------------------------------
 
 
@@ -190,7 +199,8 @@ def test_attendance_graphql_membership_resolver(organization, event):
     """The GraphQL attendance type's membership resolver returns the member identity."""
     user = baker.make("users.User")
     OrganizationMembership.objects.create(
-        user=user, organization=organization, role=OrganizationRole.MEMBER
+        user=user,
+        organization=organization,
     )
     _make_attendance(event, organization, membership_user_id=user.id)
 
@@ -207,7 +217,7 @@ def test_attendance_graphql_membership_resolver(organization, event):
     assert resolved is not None
     assert resolved.user_id == user.id
     assert resolved.organization_id == organization.id
-    assert resolved.role == OrganizationRole.MEMBER
+    assert not hasattr(resolved, "role")
 
     orphan_attendance = _make_attendance(event, organization, membership_user_id=None)
     orphan_attendance = (

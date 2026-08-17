@@ -19,6 +19,8 @@ import datetime
 from decimal import Decimal
 from unittest.mock import patch
 
+from django.db import IntegrityError
+
 import pytest
 from dateutil.relativedelta import relativedelta
 from freezegun import freeze_time
@@ -292,7 +294,6 @@ class TestIdempotence:
         application-level "have I seen this?" check instead of by the database.
         This is the test that distinguishes the two.
         """
-        from django.db import IntegrityError
 
         def _row() -> MeteredOccurrence:
             return MeteredOccurrence(
@@ -818,8 +819,12 @@ class TestSafetyNets:
             external_id="cycle_b",
         )
         # The cycle: each is the other's bulk-modification parent.
-        CalendarEvent.objects.filter(pk=first.pk).update(bulk_modification_parent_fk=second)
-        CalendarEvent.objects.filter(pk=second.pk).update(bulk_modification_parent_fk=first)
+        CalendarEvent.original_manager.filter(pk=first.pk).update(
+            bulk_modification_parent_fk=second
+        )
+        CalendarEvent.original_manager.filter(pk=second.pk).update(
+            bulk_modification_parent_fk=first
+        )
 
         result = metering_service.meter_occurrences_for_period(
             subscription, PERIOD_START, PERIOD_END
@@ -860,7 +865,7 @@ class TestSafetyNets:
                 )
             )
         for index in range(1, len(chain)):
-            CalendarEvent.objects.filter(pk=chain[index].pk).update(
+            CalendarEvent.original_manager.filter(pk=chain[index].pk).update(
                 bulk_modification_parent_fk=chain[index - 1]
             )
 

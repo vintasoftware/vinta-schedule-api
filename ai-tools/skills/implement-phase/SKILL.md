@@ -23,7 +23,7 @@ Compose with **only what the agent needs**:
 You are implementing {phase.id}: {phase.title} of plan {plan.id}.
 
 ## Repo
-vinta_schedule_api (Django 6 + DRF + Strawberry GraphQL + Celery, multi-tenant (OrganizationModel), Postgres, deployed to Render).
+vinta_schedule_api (Django 6 + DRF + Strawberry GraphQL + Celery, multi-tenant (SingleOrganizationModelMixin), Postgres, deployed to Render).
 
 ## Working location
 Work entirely inside `<WORKROOT>`. `cd` into it before any command. Every `git`,

@@ -5,7 +5,14 @@ decision through this one service, so the rule lives in a single place instead o
 being duplicated across the REST permission class and the GraphQL resolvers:
 
 - **Private REST** (``BookingPolicyPermission``): the actor is an internal
-  ``User`` + their ``OrganizationMembership``. Privileged == ``membership.is_admin``.
+  ``User`` + their ``OrganizationMembership``. Privileged is **decided by the
+  caller and passed in** (``is_privileged``), not re-derived here: the permission
+  class already computes ``user.is_organization_admin(membership.organization)``
+  for its own collection-level short-circuit, and a second, independent
+  derivation from ``membership.is_admin`` let the two disagree -- a caller
+  privileged by permission but not by the role column could *create* a policy at
+  ``has_permission`` and then be refused at ``has_object_permission`` when
+  updating the row they had just created.
 - **Public GraphQL** (booking-policy mutations / query): the actor is a
   ``SystemUser`` token. Privileged == the token is **organization-wide**
   (``scoped_to_membership_user_id is None``); a token scoped to a membership is
@@ -101,18 +108,24 @@ class BookingPolicyPermissionService:
         user: "User",
         membership: "OrganizationMembership | None",
         organization_id: int,
+        is_privileged: bool,
         calendar_id=None,
         membership_user_id=None,
         calendar_group_id=None,
         is_organization_default: bool = False,
     ) -> bool:
-        """Whether an internal member may manage a policy for the given target."""
+        """Whether an internal member may manage a policy for the given target.
+
+        ``is_privileged`` is the caller's answer to "does this actor administer
+        the organization" -- required rather than defaulted, so that no call site
+        can silently fall back to a second derivation. See the module docstring.
+        """
         if membership is None:
             return False
         return self._can_manage_target(
             organization_id=organization_id,
             acting_membership_user_id=user.id,
-            is_privileged=membership.is_admin,
+            is_privileged=is_privileged,
             calendar_id=calendar_id,
             membership_user_id=membership_user_id,
             calendar_group_id=calendar_group_id,
@@ -124,6 +137,7 @@ class BookingPolicyPermissionService:
         *,
         user: "User",
         membership: "OrganizationMembership | None",
+        is_privileged: bool,
         policy: BookingPolicy,
     ) -> bool:
         """Object-level variant: read the target from an existing policy row."""
@@ -133,6 +147,7 @@ class BookingPolicyPermissionService:
             user=user,
             membership=membership,
             organization_id=policy.organization_id,
+            is_privileged=is_privileged,
             calendar_id=policy.calendar_fk_id,
             membership_user_id=self._policy_membership_user_id(policy),
             calendar_group_id=policy.calendar_group_fk_id,

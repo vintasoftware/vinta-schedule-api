@@ -1,30 +1,41 @@
 """Audit models.
 
-`Audit` and `AuditAffectedMembership` are both OrganizationModel subclasses.
-They are append-only by intent — the repository never calls update or delete.
+`Audit` and `AuditAffectedMembership` are both organization-scoped
+(`SingleOrganizationModelMixin`). They are append-only by intent — the
+repository never calls update or delete.
 
 Unscoped read access:
-  OrganizationModel already provides `original_manager = models.Manager()` on
-  every subclass. The audit repository and admin should use
-  `Audit.original_manager.all()` (filtered by `organization_id` where needed)
-  rather than the tenant-scoped `objects` manager, because staff context has no
-  active-membership tenant scope.
+  `SingleOrganizationModelMixin` provides `original_manager` (the package's
+  `SingleOrganizationUnscopedManager`) on every subclass. The audit repository
+  and admin use `Audit.original_manager.all()` (filtered by `organization_id`
+  where needed) rather than the implicitly-scoped `objects` manager, because
+  staff context has no active-membership tenant scope and, under
+  `STRICT_ORGANIZATION_FILTER`, an unbound read through `objects` raises.
 """
 
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from django.db import models
 
+from vinta_orgs.mixins import SingleOrganizationModelMixin
+
 from audit.constants import AuditAction, AuditActorType
-from common.fields import OrganizationMembershipForeignKey
-from organizations.models import OrganizationForeignKey, OrganizationModel, OrganizationRole
+from common.fields import OrganizationMembershipForeignKey, OrganizationSafeForeignKey
+from common.managers import OrganizationScopedManager
+from common.models import BaseModel, SafeRelationNullInitMixin
+from organizations.authorization import (
+    MEMBERSHIP_ROLE_LABEL_ADMIN,
+    MEMBERSHIP_ROLE_LABEL_MEMBER,
+)
 
 
-class Audit(OrganizationModel):
+class Audit(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel):
     """Immutable audit record capturing an action taken by an actor on a subject.
 
     Every field is populated at emit time and never mutated afterwards.
     """
+
+    objects: ClassVar[OrganizationScopedManager] = OrganizationScopedManager()
 
     # Duplicates BaseModel.created by design: created_at is append-only and
     # semantically clearer for audit ordering. Prefer created_at over created
@@ -36,11 +47,22 @@ class Audit(OrganizationModel):
     # --- actor snapshot ---
     actor_type = models.CharField(max_length=20, choices=AuditActorType, db_index=True)
     actor_id = models.BigIntegerField(null=True, blank=True)  # null for SYSTEM
-    # Snapshot of the membership role at emit time; null unless actor_type=MEMBERSHIP.
-    # null=True on CharField is intentional: empty string and "no role" are distinct.
+    # Snapshot of the membership's role *label* at emit time; null unless
+    # actor_type=MEMBERSHIP. null=True on CharField is intentional: empty string
+    # and "no role" are distinct.
+    #
+    # The choices used to be a ``TextChoices`` enum on ``organizations``,
+    # deleted along with the ``role`` column.
+    # The two published values are unchanged -- see
+    # ``organizations.authorization.membership_role_label``, which derives them
+    # from ``organizations.manage_members`` -- because every row already on disk
+    # holds one of them and ``AuditRepository.query`` matches the value exactly.
     actor_role = models.CharField(  # noqa: DJ001
         max_length=20,
-        choices=OrganizationRole,
+        choices=[
+            (MEMBERSHIP_ROLE_LABEL_MEMBER, "Member"),
+            (MEMBERSHIP_ROLE_LABEL_ADMIN, "Admin"),
+        ],
         null=True,
         blank=True,
     )
@@ -65,11 +87,17 @@ class Audit(OrganizationModel):
     affected_memberships = models.ManyToManyField(
         "organizations.OrganizationMembership",
         through="audit.AuditAffectedMembership",
-        # through_fields references the ForeignObject descriptor name "membership"
-        # (the name given to OrganizationMembershipForeignKey) per the convention
-        # established by CalendarOwnership — the M2M target end is the ForeignObject
-        # descriptor, NOT a _fk column.
-        through_fields=("audit_fk", "membership"),
+        # Both ends name the organization-carrying relation, never a ``_fk``
+        # column. The target end is the ``OrganizationMembershipForeignKey``
+        # descriptor ``membership`` (the CalendarOwnership convention); the
+        # source end is the ``OrganizationSafeForeignKey`` descriptor ``audit``,
+        # so Audit -> AuditAffectedMembership joins on
+        # ``(audit_fk, organization)`` rather than on the key alone. Naming
+        # ``audit_fk`` here would drop the organization out of the ``ON`` clause,
+        # and the related manager an M2M builds is *not* organization-scoped
+        # (see ``common.managers.OrganizationScopedManager``), so nothing else
+        # would put it back. ``Calendar.memberships`` is spelled the same way.
+        through_fields=("audit", "membership"),
         related_name="+",
         blank=True,
     )
@@ -86,7 +114,7 @@ class Audit(OrganizationModel):
         return f"Audit({self.action}, {self.actor_type}, {self.subject_type}:{self.subject_id})"
 
 
-class AuditAffectedMembership(OrganizationModel):
+class AuditAffectedMembership(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel):
     """Through table linking an Audit to the OrganizationMembership(s) it affected.
 
     Audit is APPEND-ONLY and must SURVIVE membership deletion.  We deliberately
@@ -95,7 +123,9 @@ class AuditAffectedMembership(OrganizationModel):
     never blocks on or cascades to audit rows.
     """
 
-    audit = OrganizationForeignKey(
+    objects: ClassVar[OrganizationScopedManager] = OrganizationScopedManager()
+
+    audit = OrganizationSafeForeignKey(
         Audit,
         on_delete=models.CASCADE,
         related_name="affected_membership_links",
@@ -113,6 +143,15 @@ class AuditAffectedMembership(OrganizationModel):
         null=False,
         blank=False,
     )
+
+    if TYPE_CHECKING:
+        # ``OrganizationMembershipForeignKey`` contributes this column in
+        # ``contribute_to_class``, which django-stubs' plugin does not follow --
+        # so every read of it (here, and in ``audit.repositories``) is an
+        # ``attr-defined`` error without this declaration. Annotation only: an
+        # annotation with no value is not a Django field, and this block does
+        # not run at all.
+        membership_user_id: int
 
     class Meta:
         constraints: ClassVar = [

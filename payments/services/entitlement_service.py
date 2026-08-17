@@ -105,16 +105,6 @@ def _group_counts_by_organization(queryset: QuerySet[Any]) -> dict[int, int]:
     # model declares ``Meta.ordering`` either), so this is defensive today — but
     # it means a later, unrelated ``Meta.ordering`` addition on any of those
     # models can no longer mis-bill every customer through this path.
-    #
-    # ``Count("pk")``: on ``OrganizationMembership`` (composite primary key,
-    # ``SafeCompositePrimaryKey("user", "organization")``), Django 6 rewrites the
-    # ``ColPairs`` source to its first column, so this becomes ``COUNT(user_id)``
-    # — correct, but as a side effect of a Django internal, not a documented
-    # contract. The same rewrite raises ``ValueError("COUNT(DISTINCT) doesn't
-    # support composite primary keys")`` the moment ``distinct=True`` is added.
-    # Do not add ``distinct=True`` "defensively": no chain feeding this function
-    # has a row-multiplying join, so it is not needed, and it would turn this
-    # into a 500 on every seat check.
     return {
         row["organization_id"]: row["usage_count"]
         for row in queryset.order_by().values("organization_id").annotate(usage_count=Count("pk"))
@@ -161,26 +151,40 @@ def _count_organization_members(context: UsageContext) -> dict[int, int]:
 
 
 def _count_resource_calendars(context: UsageContext) -> dict[int, int]:
-    """Resource/room calendars per organization, excluding soft-deleted ones."""
+    """Resource/room calendars per organization, excluding soft-deleted ones.
+
+    ``unscoped()`` for the reason given in the module note on pooled usage: a
+    usage count spans a subscription's whole reseller subtree
+    (``context.organization_ids``), which no single-organization binding can
+    express. The tenant boundary is ``organization_ids`` itself, resolved from
+    the billing root, and it is applied on the next line.
+    """
     return _group_counts_by_organization(
-        Calendar.objects.live_of_type(CalendarType.RESOURCE).filter(
-            organization_id__in=context.organization_ids
-        )
+        Calendar.objects.unscoped()
+        .live_of_type(CalendarType.RESOURCE)
+        .filter(organization_id__in=context.organization_ids)
     )
 
 
 def _count_bundle_calendars(context: UsageContext) -> dict[int, int]:
-    """Bundle calendars per organization, excluding soft-deleted ones."""
+    """Bundle calendars per organization, excluding soft-deleted ones.
+
+    ``unscoped()``: see :func:`_count_resource_calendars`.
+    """
     return _group_counts_by_organization(
-        Calendar.objects.live_of_type(CalendarType.BUNDLE).filter(
-            organization_id__in=context.organization_ids
-        )
+        Calendar.objects.unscoped()
+        .live_of_type(CalendarType.BUNDLE)
+        .filter(organization_id__in=context.organization_ids)
     )
 
 
 def _count_calendar_groups(context: UsageContext) -> dict[int, int]:
+    """Calendar groups per organization.
+
+    ``unscoped()``: see :func:`_count_resource_calendars`.
+    """
     return _group_counts_by_organization(
-        CalendarGroup.objects.filter(organization_id__in=context.organization_ids)
+        CalendarGroup.objects.unscoped().filter(organization_id__in=context.organization_ids)
     )
 
 
@@ -197,16 +201,15 @@ def _count_availability_windows(context: UsageContext) -> dict[int, int]:
     would read as 6 and be blocked below its real usage, which the rollout's
     "nobody is blocked as a consequence of the rollout itself" rule forbids.
 
-    Reads through ``unscoped()`` on both models
-    (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 0/1d/2c): the default manager on
+    Reads through ``unscoped()`` on both models: the default manager on
     each excludes group-scoped rows (``group_slot`` set) by design, so counting
     through it would under-report and let group-scoped windows and blocks bypass
     the plan limit entirely. The spec's metering rule is "every time window an
     organization authors is metered" regardless of scope or sign, so base and
-    group-scoped rows of both models are counted together here (Phase 2c: blocked
-    time was not metered before this and now is, for every organization at once
-    — see that phase's rollout note on why this is a billing-rule change made
-    deliberately, not incidentally).
+    group-scoped rows of both models are counted together here. Blocked time is
+    metered here alongside availability windows deliberately, not incidentally:
+    it is a billing-rule change applied to every organization at once, not a
+    side effect of adding group scoping.
 
     The two models are grouped separately, then merged key-wise
     (``_merge_breakdowns``): an organization that authored both availability
@@ -226,8 +229,14 @@ def _count_availability_windows(context: UsageContext) -> dict[int, int]:
 def _count_webhook_subscriptions(context: UsageContext) -> dict[int, int]:
     """Webhook configurations per organization, excluding soft-deleted ones
     (``deleted_at`` set)."""
+    # ``unscoped()`` first, like the ``calendar_integration`` counters above: a
+    # usage context spans a billing root's whole pooled reseller subtree, so this
+    # is a deliberate cross-organization read that no single bound organization
+    # covers. ``organization_id__in`` is the scope.
     return _group_counts_by_organization(
-        WebhookConfiguration.objects.live().filter(organization_id__in=context.organization_ids)
+        WebhookConfiguration.objects.unscoped()
+        .live()
+        .filter(organization_id__in=context.organization_ids)
     )
 
 
@@ -240,8 +249,10 @@ def _count_public_api_system_users(context: UsageContext) -> dict[int, int]:
     entirely unmetered; whoever makes ``organization`` non-nullable should revisit
     this.
     """
+    # ``unscoped()`` for the pooled-subtree reason given in
+    # ``_count_webhook_subscriptions``.
     return _group_counts_by_organization(
-        SystemUser.objects.live().filter(organization_id__in=context.organization_ids)
+        SystemUser.objects.unscoped().live().filter(organization_id__in=context.organization_ids)
     )
 
 
@@ -705,7 +716,7 @@ class EntitlementService:
         The entry point every guarded create/update/delete method that does not
         already route through ``check_limit`` / ``check_postpaid_allowance``
         (which fold ``is_billing_root_restricted`` in directly, see their
-        docstrings) calls before writing an ``OrganizationModel`` row on a guarded
+        docstrings) calls before writing an organization-scoped row on a guarded
         resource. See ``is_billing_root_restricted`` for what "restricted" means
         and why it is defined exactly once.
         """

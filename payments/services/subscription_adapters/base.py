@@ -117,18 +117,18 @@ class BaseSubscriptionAdapter:
 
         **Not the same operation as ``change_subscription_plan``.** That method
         moves a subscriber onto a (possibly unchanged) plan and only charges a
-        proration as a *side effect* of the move -- it was Phase 3's mistaken
-        stand-in for this method, and driving it against ``retry_payment``'s own
-        plan/price is exactly what produced the Billing API Contract Hardening
-        plan's Phase 4 probe evidence: a real Stripe past-due renewal invoice
-        left `open` after "retry", $0.00 collected, because a fresh
-        same-amount Price made the proration net to zero. This method instead
-        targets the actual unpaid balance sitting at the provider -- the one
-        thing dunning exists to collect -- and asks the provider to attempt to
-        charge exactly that, with no plan/price/proration math involved at all.
+        proration as a *side effect* of the move -- it was previously used as a
+        mistaken stand-in for this method, and driving it against
+        ``retry_payment``'s own plan/price is exactly what produced this live
+        evidence: a real Stripe past-due renewal invoice left `open` after
+        "retry", $0.00 collected, because a fresh same-amount Price made the
+        proration net to zero. This method instead targets the actual unpaid
+        balance sitting at the provider -- the one thing dunning exists to
+        collect -- and asks the provider to attempt to charge exactly that,
+        with no plan/price/proration math involved at all.
 
         **``payment_token`` is optional -- exactly two callers, exactly two
-        meanings (Billing API Contract Hardening, Phase 5):**
+        meanings:**
 
         - **Set** (``SubscriptionService.retry_payment``, the user-facing
           grace-recovery endpoint): "attach this new instrument, then collect

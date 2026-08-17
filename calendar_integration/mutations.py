@@ -175,10 +175,10 @@ class CalendarWebhookMutations:
 
         try:
             # Get the calendar first
-            from calendar_integration.models import Calendar
-
             try:
-                calendar = Calendar.objects.get(id=input.calendar_id, organization=organization)
+                calendar = Calendar.objects.filter_by_organization(organization).get(
+                    id=input.calendar_id,
+                )
             except Calendar.DoesNotExist:
                 return WebhookSubscriptionResult(success=False, error_message="Calendar not found")
 
@@ -613,7 +613,8 @@ class RescheduleGroupWithCodeInput:
 
     Slot selections are NOT included: v1 keeps existing group/calendar selections
     and changes ONLY the event times.  Full slot re-selection is deferred to a
-    future version (see Open Question 3 in the implementation plan).
+    future version; how it should interact with the existing selections is
+    still an open question.
     """
 
     code: str
@@ -1723,8 +1724,10 @@ class CalendarGroupMutations:
         Only the start/end/timezone fields change — title, description, attendees,
         resource allocations, and the group's calendar selections are preserved
         exactly from the existing event (time-only v1; full slot re-selection is
-        deferred per Open Question 3).  The event id is preserved so that external
-        integrations (e.g. Building Blocks) continue to reference the same event.
+        deferred to a future version, and how it should interact with the existing
+        selections is still an open question).  The event id is preserved so that
+        external integrations (e.g. Building Blocks) continue to reference the
+        same event.
         """
         deps = get_group_booking_code_mutation_dependencies()
 
@@ -2276,9 +2279,9 @@ class ExternalEventChangeRequestMutations:
         # owner's social account credentials (matching the REST reject pattern).
         # The calendar's primary ownership row determines which social account to use.
         ownership = (
-            CalendarOwnership.objects.filter(
+            CalendarOwnership.objects.filter_by_organization(calendar.organization_id)
+            .filter(
                 calendar=calendar,
-                organization_id=calendar.organization_id,
                 membership_user_id__isnull=False,
             )
             .order_by("-is_default", "id")

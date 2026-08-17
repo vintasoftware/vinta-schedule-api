@@ -17,6 +17,7 @@ Covers:
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -28,6 +29,7 @@ from model_bakery import baker
 
 from audit.constants import AuditAction, AuditActorType
 from audit.factories import AuditFactory
+from audit.models import Audit
 from audit.repositories import AuditRepository
 from audit.types import ActorSnapshot, AuditPage, AuditQuery, AuditRecord, SubjectRef
 from organizations.models import Organization
@@ -254,8 +256,6 @@ class TestAuditAdminFilters:
         Creates 2 records, backdates one to 2020, then asserts that filtering
         by created_after=2022 shows exactly 1 record (the recent one).
         """
-        from audit.models import Audit
-
         org = baker.make(Organization)
         factory = AuditFactory()
         old_record = factory.create(org)
@@ -281,8 +281,6 @@ class TestAuditAdminFilters:
         Creates 2 records, backdates one to 2020, then asserts that filtering
         by created_before=2021 shows exactly 1 record (the old one).
         """
-        from audit.models import Audit
-
         org = baker.make(Organization)
         factory = AuditFactory()
         old_record = factory.create(org)
@@ -374,8 +372,6 @@ class TestAuditAdminPagination:
         - Each page renders exactly 2 rows (per_page=2).
         - The subject_ids rendered on page 1 and page 2 are fully disjoint.
         """
-        import re
-
         org = baker.make(Organization)
         factory = AuditFactory()
         # Use distinct subject_ids so we can track which record is on which page.
@@ -499,8 +495,6 @@ class TestAuditAdminReadOnly:
 
     def test_post_to_change_url_is_rejected(self, admin_client: Client, db: Any) -> None:
         """POST to the admin change URL must be rejected and the record must be unchanged."""
-        from audit.models import Audit
-
         org = baker.make(Organization)
         record = AuditFactory().create(org)
         original_action = record.action
@@ -514,8 +508,6 @@ class TestAuditAdminReadOnly:
 
     def test_post_to_delete_url_is_rejected(self, admin_client: Client, db: Any) -> None:
         """POST to the admin delete URL must be rejected and the record must still exist."""
-        from audit.models import Audit
-
         org = baker.make(Organization)
         record = AuditFactory().create(org)
 

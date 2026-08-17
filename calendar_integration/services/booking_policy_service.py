@@ -27,6 +27,7 @@ from dependency_injector.wiring import Provide, inject
 
 from audit.constants import AuditAction
 from audit.diff import compute_diff
+from audit.services import AuditService
 from calendar_integration.exceptions import (
     CalendarServiceOrganizationNotSetError,
     DuplicateBookingPolicyError,
@@ -43,7 +44,6 @@ from organizations.models import Organization, OrganizationMembership
 
 
 if TYPE_CHECKING:
-    from audit.services import AuditService
     from audit.types import ActorSnapshot
     from calendar_integration.querysets import BookingPolicyQuerySet
 
@@ -113,9 +113,6 @@ class BookingPolicyService:
         """
         if self.audit_service is None or self.organization is None:
             return
-        # Runtime import: AuditService is TYPE_CHECKING-only at module top to avoid the di_core import cycle.
-        from audit.services import AuditService
-
         actor: ActorSnapshot = (
             self._actor if self._actor is not None else AuditService.system_actor()
         )
@@ -175,7 +172,7 @@ class BookingPolicyService:
         no membership policy can be attached to them).
         """
         # Filter to ownerships that belong to this org and have a real membership.
-        # We read through the CalendarOwnership manager which is an OrganizationModel
+        # We read through the CalendarOwnership manager, which is organization-scoped,
         # so we must use filter_by_organization.
         ownerships = list(
             CalendarOwnership.objects.filter_by_organization(self.organization.id)  # type: ignore[union-attr]

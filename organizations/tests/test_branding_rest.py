@@ -1,7 +1,10 @@
 import datetime
 import json
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Permission
+from django.contrib.contenttypes.models import ContentType
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
@@ -11,13 +14,15 @@ import pytest
 from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
+from s3direct.utils import AWSCredentials
 
 from organizations.models import (
     Organization,
     OrganizationBranding,
     OrganizationMembership,
-    OrganizationRole,
 )
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
+from organizations.tests.helpers import make_membership
 from payments.billing_constants import BillingState, Entitlement
 from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
 
@@ -92,34 +97,19 @@ def user():
 @pytest.fixture
 def reseller_org():
     """A reseller organization -- parentless (default) and entitled via the
-    suite's autouse default subscription. Phase 3 widens the write gate with a
-    THIRD condition (slug-set) on top of the pre-existing parentless+entitled
-    pair, and a reseller is not exempt from it -- this fixture carries a slug
-    so the pre-Phase-3 test bodies below keep passing. See
-    ``TestResellerNowRequiresASlug`` for the explicit regression coverage of
-    that behavior change."""
+    suite's autouse default subscription, so it passes the branding write gate.
+    Carries an explicit, readable slug rather than the random one model-bakery
+    would generate for the NOT NULL column, so a test that posts it back reads
+    sensibly. See ``TestResellerNowRequiresASlug``."""
     return baker.make(Organization, can_invite_organizations=True, slug="acme-reseller")
-
-
-@pytest.fixture
-def reseller_org_without_slug():
-    """Same as ``reseller_org`` but deliberately unslugged."""
-    return baker.make(Organization, can_invite_organizations=True)
 
 
 @pytest.fixture
 def eligible_org():
     """A plain (non-reseller), parentless organization that is entitled (the
     suite's autouse default subscription) and has a slug -- the population
-    Phase 3 widens the write gate to admit (spec Use-case 1's actor)."""
+    the widened write gate admits (spec Use-case 1's actor)."""
     return baker.make(Organization, can_invite_organizations=False, slug="eligible-org")
-
-
-@pytest.fixture
-def no_slug_org():
-    """Parentless and entitled, but no slug -- the "one step away" refusal
-    (spec: "Eligible org with no public identifier yet")."""
-    return baker.make(Organization, can_invite_organizations=False, parent=None)
 
 
 @pytest.fixture
@@ -132,11 +122,10 @@ def parented_org(eligible_org):
 @pytest.fixture
 def reseller_org_admin(user, reseller_org):
     """Create an admin membership for the user in the reseller org."""
-    return baker.make(
-        OrganizationMembership,
+    return make_membership(
         user=user,
         organization=reseller_org,
-        role=OrganizationRole.ADMIN,
+        groups=[GROUP_ORGANIZATION_ADMIN],
         is_active=True,
     )
 
@@ -144,11 +133,10 @@ def reseller_org_admin(user, reseller_org):
 @pytest.fixture
 def eligible_org_admin(user, eligible_org):
     """Create an admin membership for the user in the eligible (non-reseller) org."""
-    return baker.make(
-        OrganizationMembership,
+    return make_membership(
         user=user,
         organization=eligible_org,
-        role=OrganizationRole.ADMIN,
+        groups=[GROUP_ORGANIZATION_ADMIN],
         is_active=True,
     )
 
@@ -161,32 +149,18 @@ def eligible_org_member(eligible_org):
         OrganizationMembership,
         user=member,
         organization=eligible_org,
-        role=OrganizationRole.MEMBER,
         is_active=True,
     )
     return member
 
 
 @pytest.fixture
-def no_slug_org_admin(user, no_slug_org):
-    """Create an admin membership for the user in the no-slug org."""
-    return baker.make(
-        OrganizationMembership,
-        user=user,
-        organization=no_slug_org,
-        role=OrganizationRole.ADMIN,
-        is_active=True,
-    )
-
-
-@pytest.fixture
 def parented_org_admin(user, parented_org):
     """Create an admin membership for the user in the parented org."""
-    return baker.make(
-        OrganizationMembership,
+    return make_membership(
         user=user,
         organization=parented_org,
-        role=OrganizationRole.ADMIN,
+        groups=[GROUP_ORGANIZATION_ADMIN],
         is_active=True,
     )
 
@@ -199,7 +173,6 @@ def reseller_org_member(reseller_org):
         OrganizationMembership,
         user=member,
         organization=reseller_org,
-        role=OrganizationRole.MEMBER,
         is_active=True,
     )
     return member
@@ -208,6 +181,92 @@ def reseller_org_member(reseller_org):
 @pytest.mark.django_db
 class TestOrganizationBrandingViewSet:
     """Test suite for OrganizationBrandingViewSet REST endpoints."""
+
+    @pytest.fixture(autouse=True)
+    def _s3_upload_settings(self, settings):
+        """Only the accepted-upload cases below reach the presigned-URL step --
+        the rejection cases raise before ever needing a bucket/region/endpoint or
+        credentials, so they're unaffected by this fixture."""
+
+        settings.AWS_STORAGE_BUCKET_NAME = "test-bucket"
+        settings.AWS_S3_REGION_NAME = "us-east-1"
+        settings.AWS_S3_ENDPOINT_URL = "https://s3.us-east-1.amazonaws.com"
+        with patch(
+            "organizations.branding_logo.get_aws_credentials",
+            return_value=AWSCredentials(token=None, secret_key="secret", access_key="AKIATEST"),
+        ):
+            yield
+
+    @pytest.mark.parametrize(
+        ("method", "expected_status"),
+        [
+            ("get", status.HTTP_404_NOT_FOUND),
+            ("put", status.HTTP_201_CREATED),
+            ("patch", status.HTTP_200_OK),
+            ("post", status.HTTP_200_OK),
+        ],
+    )
+    def test_direct_branding_permission_admits_and_manage_members_does_not(
+        self, client, user, reseller_org, reseller_org_admin, method, expected_status
+    ):
+        """Every branding surface reads its declared capability, not admin-ness."""
+
+        reseller_org_admin.groups.clear()
+        branding_permission = Permission.objects.get(
+            codename="manage_branding",
+            content_type=ContentType.objects.get_for_model(Organization),
+        )
+        members_permission = Permission.objects.get(
+            codename="manage_members",
+            content_type=ContentType.objects.get_for_model(OrganizationMembership),
+        )
+        client.force_authenticate(user)
+        client.credentials(HTTP_X_ORGANIZATION_ID=str(reseller_org.id))
+
+        if method == "patch":
+            baker.make(OrganizationBranding, organization=reseller_org, app_name="Existing")
+
+        reseller_org_admin.permissions.add(branding_permission)
+        if method == "get":
+            response = client.get(BRANDING_URL)
+        elif method == "put":
+            response = client.put(
+                BRANDING_URL,
+                {
+                    "app_name": "Direct Branding",
+                    "primary_color": "#000000",
+                    "secondary_color": "#ffffff",
+                    "support_email": "support@example.com",
+                    "redirect_url": "https://example.com",
+                },
+                format="json",
+            )
+        elif method == "patch":
+            response = client.patch(BRANDING_URL, {"app_name": "Direct Branding"}, format="json")
+        else:
+            response = client.post(
+                reverse("branding-logo-upload-params"),
+                {"file_name": "logo.png", "file_type": "image/png", "file_size": 1},
+                format="json",
+            )
+        assert_response_status_code(response, expected_status)
+
+        reseller_org_admin.permissions.clear()
+        reseller_org_admin.permissions.add(members_permission)
+        client.force_authenticate(User.objects.get(pk=user.pk))
+        if method == "get":
+            response = client.get(BRANDING_URL)
+        elif method == "put":
+            response = client.put(BRANDING_URL, {}, format="json")
+        elif method == "patch":
+            response = client.patch(BRANDING_URL, {"app_name": "Denied"}, format="json")
+        else:
+            response = client.post(
+                reverse("branding-logo-upload-params"),
+                {"file_name": "logo.png", "file_type": "image/png", "file_size": 1},
+                format="json",
+            )
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
 
     def test_retrieve_branding_not_configured_returns_404(
         self, client, user, reseller_org, reseller_org_admin
@@ -486,31 +545,6 @@ class TestOrganizationBrandingViewSet:
         response = client.put(BRANDING_URL, data=payload, format="json")
         assert_response_status_code(response, status.HTTP_201_CREATED)
 
-    def test_non_reseller_org_without_a_slug_returns_403_for_the_slug_reason(
-        self, client, user, no_slug_org, no_slug_org_admin
-    ):
-        """A plain (non-reseller) organization is no longer refused for lacking
-        reseller status -- see ``TestBrandingWriteGateAllMethods`` for the full
-        "eligible non-reseller org succeeds" coverage that is the point of this
-        phase. It IS still refused here, but for the slug condition -- the
-        response body must name the slug, not reseller status."""
-        client.force_authenticate(user)
-        client.credentials(HTTP_X_ORGANIZATION_ID=str(no_slug_org.id))
-
-        payload = {
-            "app_name": "MyScheduler",
-            "primary_color": "#FF0000",
-            "secondary_color": "#00FF00",
-            "logo_url": "",
-            "support_email": "",
-            "redirect_url": "",
-        }
-
-        response = client.put(BRANDING_URL, data=payload, format="json")
-        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
-        assert "slug" in str(response.json()).lower()
-        assert "reseller" not in str(response.json()).lower()
-
     def test_non_admin_member_returns_403(self, client, reseller_org, reseller_org_member):
         """Non-admin member of reseller org gets 403."""
         client.force_authenticate(reseller_org_member)
@@ -686,18 +720,16 @@ class TestOrganizationBrandingViewSet:
         )
 
         # Create memberships: reseller_a first so it is the "oldest".
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=reseller_a,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=reseller_b,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
@@ -769,18 +801,16 @@ class TestOrganizationBrandingViewSet:
             Organization, can_invite_organizations=True, slug="reseller-b-multi-2"
         )
 
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=reseller_a,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=reseller_b,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
@@ -794,14 +824,13 @@ class TestOrganizationBrandingViewSet:
 
 @pytest.mark.django_db
 class TestBrandingLogoKeyPrefixIsEnforcedOnWrite:
-    """BLOCKER 1 (Phase 2b security review): the media bucket is a single shared
-    bucket holding `profile_pictures`, `providers_documents`,
-    `healthcare_entities_documents` (PHI), and `branding_logos` at their own
-    top-level prefixes. A `logo_url` that normalizes to a key outside
-    `uploads/branding_logos/` must be rejected on write -- otherwise an eligible
-    reseller admin could point their own branding row at another tenant's
-    private object and have it served back through the unauthenticated
-    delivery route."""
+    """The media bucket is a single shared bucket holding `profile_pictures`,
+    `providers_documents`, `healthcare_entities_documents` (PHI), and
+    `branding_logos` at their own top-level prefixes. A `logo_url` that
+    normalizes to a key outside `uploads/branding_logos/` must be rejected on
+    write -- otherwise an eligible reseller admin could point their own
+    branding row at another tenant's private object and have it served back
+    through the unauthenticated delivery route."""
 
     @pytest.mark.parametrize(
         "logo_url",
@@ -937,19 +966,17 @@ class TestBrandingLogoIsReadBackAsASignedUrl:
 class TestBrandingWriteGateAllMethods:
     """The shared write gate (``organizations.permissions.
     evaluate_branding_write_gate``) guards PUT and PATCH on
-    ``OrganizationBrandingView`` with its full three-condition check -- Phase 3
-    replaces the reseller-only ``_check_reseller_status`` with it (see the
-    class docstring on ``OrganizationBrandingView``). GET uses the narrower
-    two-condition eligibility gate (``_check_branding_read_gate``): it still
-    refuses on parent-present and not-entitled, but -- unlike PUT/PATCH --
-    admits a slug-less-but-otherwise-eligible org (see
-    ``test_no_slug_eligible_org_get_is_allowed_but_put_and_patch_are_refused``
-    below)."""
+    ``OrganizationBrandingView`` with its write-gate check -- it replaced
+    the reseller-only ``_check_reseller_status`` (see the class
+    docstring on ``OrganizationBrandingView``). GET goes through the eligibility
+    gate (``_check_branding_read_gate``) instead; both refuse on parent-present
+    and not-entitled, and since the write gate's slug condition was retired they
+    admit the same set."""
 
     def test_eligible_non_reseller_admin_completes_get_put_and_patch(
         self, client, user, eligible_org, eligible_org_admin
     ):
-        """The headline behavior change of this phase: a plain, parentless,
+        """The headline behavior change: a plain, parentless,
         entitled, slugged organization -- not a reseller -- can now manage its
         own branding through every method this endpoint exposes."""
         client.force_authenticate(user)
@@ -1005,80 +1032,6 @@ class TestBrandingWriteGateAllMethods:
 
         assert not OrganizationBranding.objects.filter(organization=parented_org).exists()
 
-    def test_no_slug_org_gets_403_with_the_pick_a_slug_reason(
-        self, client, user, no_slug_org, no_slug_org_admin
-    ):
-        """Spec edge case: "Eligible org with no public identifier yet" --
-        refused with a reason distinct from the other two (named "slug", not
-        "parent" or "plan")."""
-        client.force_authenticate(user)
-        client.credentials(HTTP_X_ORGANIZATION_ID=str(no_slug_org.id))
-
-        payload = {
-            "app_name": "NoSlugApp",
-            "logo_url": "",
-            "primary_color": "",
-            "secondary_color": "",
-            "support_email": "",
-            "redirect_url": "",
-        }
-        response = client.put(BRANDING_URL, data=payload, format="json")
-        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
-        assert "slug" in str(response.json()).lower()
-        assert not OrganizationBranding.objects.filter(organization=no_slug_org).exists()
-
-    def test_no_slug_eligible_org_get_is_allowed_but_put_and_patch_are_refused(
-        self, client, user, no_slug_org, no_slug_org_admin
-    ):
-        """Capability signal guiding decision (Organization Auth-Area
-        Branding plan): a parentless + entitled + slug-less org must still
-        SEE the branding page -- GET is admitted by the narrower
-        two-condition eligibility gate -- even though writing is refused
-        ("pick a slug first") until it does. Matches the spec's "Eligible org
-        with no public identifier yet" edge case: settings still offered,
-        saving refused. Mirrors the slugged-reseller no-row case
-        (``TestResellerNowRequiresASlug.test_reseller_with_a_slug_still_passes_the_gate``):
-        404, not 403, when no branding row exists yet; 200 once one does."""
-        client.force_authenticate(user)
-        client.credentials(HTTP_X_ORGANIZATION_ID=str(no_slug_org.id))
-
-        # No branding row yet: GET admits the request (the eligibility gate
-        # passed) and falls through to the ordinary "no row" 404 -- not 403.
-        get_response = client.get(BRANDING_URL)
-        assert_response_status_code(get_response, status.HTTP_404_NOT_FOUND)
-
-        # PUT/PATCH still refuse with the "pick a slug first" reason.
-        payload = {
-            "app_name": "NoSlugApp",
-            "logo_url": "",
-            "primary_color": "",
-            "secondary_color": "",
-            "support_email": "",
-            "redirect_url": "",
-        }
-        put_response = client.put(BRANDING_URL, data=payload, format="json")
-        assert_response_status_code(put_response, status.HTTP_403_FORBIDDEN)
-        assert "slug" in str(put_response.json()).lower()
-
-        patch_response = client.patch(BRANDING_URL, data={"app_name": "x"}, format="json")
-        assert_response_status_code(patch_response, status.HTTP_403_FORBIDDEN)
-        assert "slug" in str(patch_response.json()).lower()
-
-        # Now with a branding row present, GET succeeds with 200.
-        baker.make(
-            OrganizationBranding,
-            organization=no_slug_org,
-            app_name="NoSlugAppExisting",
-            logo="",
-            primary_color="",
-            secondary_color="",
-            support_email="",
-            redirect_url="",
-        )
-        get_response_with_row = client.get(BRANDING_URL)
-        assert_response_status_code(get_response_with_row, status.HTTP_200_OK)
-        assert get_response_with_row.json()["app_name"] == "NoSlugAppExisting"
-
     def test_non_admin_member_of_an_eligible_org_still_gets_403(
         self, client, eligible_org, eligible_org_member
     ):
@@ -1094,11 +1047,10 @@ class TestBrandingWriteGateAllMethods:
     def test_free_plan_org_gets_403(self, client, user):
         """Parentless and slugged, but not entitled -- the billing-state refusal."""
         org = _make_unentitled_org(parent=None, slug="free-plan-org")
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=org,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         client.force_authenticate(user)
@@ -1109,24 +1061,31 @@ class TestBrandingWriteGateAllMethods:
         detail = str(response.json()).lower()
         assert "plan" in detail or "entitle" in detail
 
-    def test_the_three_refusal_reasons_are_distinguishable(
+    @pytest.mark.no_auto_subscription
+    def test_the_two_refusal_reasons_are_distinguishable(
         self,
         client,
         user,
         parented_org,
         parented_org_admin,
-        no_slug_org,
-        no_slug_org_admin,
     ):
-        """The has-a-parent and no-slug 403 bodies differ -- not a generic
+        """The has-a-parent and not-entitled 403 bodies differ -- not a generic
         "forbidden" message both times -- so a caller (or a reviewer reading
         the response) can tell which write-gate condition failed.
 
-        Probed via PUT: the no-slug condition is a write-gate-only refusal
-        (GET uses the narrower two-condition eligibility gate and admits a
-        slug-less-but-otherwise-eligible org -- see
-        ``test_no_slug_eligible_org_get_is_allowed_but_put_and_patch_are_refused``),
-        so GET would not reproduce the no-slug 403 body here."""
+        Two reasons, not three: the write gate's third, slug-set condition is
+        retired (see ``organizations.permissions.evaluate_branding_write_gate``),
+        and the tests that probed it through this endpoint are gone with it --
+        a persisted organization can no longer be slug-less, so there is no way
+        to reach that 403 through any supported write path.
+        """
+        unentitled_org = _make_unentitled_org(parent=None, slug="unentitled-reason-org")
+        make_membership(
+            user=user,
+            organization=unentitled_org,
+            groups=[GROUP_ORGANIZATION_ADMIN],
+            is_active=True,
+        )
         client.force_authenticate(user)
 
         payload = {
@@ -1141,53 +1100,26 @@ class TestBrandingWriteGateAllMethods:
         client.credentials(HTTP_X_ORGANIZATION_ID=str(parented_org.id))
         parented_detail = client.put(BRANDING_URL, data=payload, format="json").json()
 
-        client.credentials(HTTP_X_ORGANIZATION_ID=str(no_slug_org.id))
-        no_slug_detail = client.put(BRANDING_URL, data=payload, format="json").json()
+        client.credentials(HTTP_X_ORGANIZATION_ID=str(unentitled_org.id))
+        unentitled_detail = client.put(BRANDING_URL, data=payload, format="json").json()
 
-        assert parented_detail != no_slug_detail
+        assert parented_detail != unentitled_detail
         assert "parent" in str(parented_detail).lower()
-        assert "slug" in str(no_slug_detail).lower()
-        assert "slug" not in str(parented_detail).lower()
-        assert "parent" not in str(no_slug_detail).lower()
+        assert "parent" not in str(unentitled_detail).lower()
+        unentitled_text = str(unentitled_detail).lower()
+        assert "plan" in unentitled_text or "entitle" in unentitled_text
 
 
 @pytest.mark.django_db
 class TestResellerNowRequiresASlug:
-    """Phase 3 widens the write gate with a THIRD condition (slug-set) on top
-    of the pre-existing parentless+entitled pair. A reseller organization is
-    parentless in every fixture this suite has, and (via the autouse default
-    subscription) entitled by default -- so before this phase a reseller
-    always passed the old ``is_reseller()`` gate. It does NOT get a pass on
-    the new slug condition: this is a deliberate behavior change for reseller
-    fixtures, asserted explicitly here rather than left to be discovered as a
-    side effect of ``reseller_org`` now carrying a slug."""
+    """A reseller is parentless in every fixture this suite has and (via the
+    autouse default subscription) entitled by default, so it passes the write
+    gate -- exactly as it passed the old ``is_reseller()`` one.
 
-    def test_reseller_without_a_slug_is_now_refused(self, client, user, reseller_org_without_slug):
-        """The no-slug refusal is a **write** gate condition (see
-        ``OrganizationBrandingView._check_branding_read_gate`` -- GET uses the
-        narrower two-condition eligibility gate and does not refuse for a
-        missing slug), so probe it via PUT."""
-        baker.make(
-            OrganizationMembership,
-            user=user,
-            organization=reseller_org_without_slug,
-            role=OrganizationRole.ADMIN,
-            is_active=True,
-        )
-        client.force_authenticate(user)
-        client.credentials(HTTP_X_ORGANIZATION_ID=str(reseller_org_without_slug.id))
-
-        payload = {
-            "app_name": "NoSlugApp",
-            "logo_url": "",
-            "primary_color": "",
-            "secondary_color": "",
-            "support_email": "",
-            "redirect_url": "",
-        }
-        response = client.put(BRANDING_URL, data=payload, format="json")
-        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
-        assert "slug" in str(response.json()).lower()
+    This class used to also pin a slug-less reseller being refused. That
+    condition is retired (``organizations.permissions.
+    evaluate_branding_write_gate``) and the state it described is unreachable,
+    so what is left is the admission case."""
 
     def test_reseller_with_a_slug_still_passes_the_gate(
         self, client, user, reseller_org, reseller_org_admin
@@ -1206,9 +1138,9 @@ class TestResellerNowRequiresASlug:
 class TestCanManageBrandingOnMembershipPayload:
     """``can_manage_branding`` on the membership payloads the SPA already
     fetches (``GET /organizations/current/`` and ``GET /organizations/mine/``)
-    -- Organization Auth-Area Branding plan, Phase 4 Capability signal.
+    -- a capability signal exposed to clients.
 
-    Covers all four write-gate cases named in the phase spec, plus the
+    Covers all four write-gate cases, plus the
     no-slug-but-eligible case that is the whole point of the field (it must
     read ``True`` there, unlike the write gate itself)."""
 
@@ -1231,31 +1163,11 @@ class TestCanManageBrandingOnMembershipPayload:
         [entry] = mine_response.json()
         assert entry["can_manage_branding"] is True
 
-    def test_eligible_org_with_no_slug_still_reports_true(self, client, user, no_slug_org):
-        """The key case: an org one write-gate step away (missing only a slug)
-        must still report `can_manage_branding=True` -- see the plan's
-        Capability signal guiding decision. Distinguishes this field from the
-        write gate, which would refuse this exact organization."""
-        baker.make(
-            OrganizationMembership,
-            user=user,
-            organization=no_slug_org,
-            role=OrganizationRole.ADMIN,
-            is_active=True,
-        )
-        client.force_authenticate(user)
-        client.credentials(HTTP_X_ORGANIZATION_ID=str(no_slug_org.id))
-
-        current_response = client.get(self._current_url())
-        assert_response_status_code(current_response, status.HTTP_200_OK)
-        assert current_response.json()["can_manage_branding"] is True
-
     def test_parented_org_reports_false(self, client, user, parented_org):
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=parented_org,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         client.force_authenticate(user)
@@ -1273,11 +1185,10 @@ class TestCanManageBrandingOnMembershipPayload:
     @pytest.mark.no_auto_subscription
     def test_free_plan_org_reports_false(self, client, user):
         free_org = _make_unentitled_org(parent=None, slug="free-cap-org")
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=free_org,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         client.force_authenticate(user)
@@ -1292,20 +1203,21 @@ class TestCanManageBrandingOnMembershipPayload:
         [entry] = mine_response.json()
         assert entry["can_manage_branding"] is False
 
-    def test_non_admin_member_of_an_eligible_org_still_reports_true(
+    def test_unpermitted_member_of_an_eligible_org_reports_false(
         self, client, eligible_org, eligible_org_member
     ):
-        """A non-admin member's payload reports the same organization-level
-        capability as an admin's -- `can_manage_branding` is not gated by the
-        caller's own role, only by the organization's eligibility. Write
-        authorization stays role-gated separately, on the branding endpoints
-        themselves (`IsOrganizationAdmin`)."""
+        """The published field is the branding capability plus eligibility.
+
+        The eligible organization alone does not authorize this membership to
+        manage branding; the positive admin case above supplies the capability
+        half of the same contract.
+        """
         client.force_authenticate(eligible_org_member)
         client.credentials(HTTP_X_ORGANIZATION_ID=str(eligible_org.id))
 
         current_response = client.get(self._current_url())
         assert_response_status_code(current_response, status.HTTP_200_OK)
-        assert current_response.json()["can_manage_branding"] is True
+        assert current_response.json()["can_manage_branding"] is False
 
     def test_mine_endpoint_entitlement_queries_do_not_scale_with_membership_count(self):
         """Reviewer finding: the N+1-shaped entitlement lookup on
@@ -1326,11 +1238,10 @@ class TestCanManageBrandingOnMembershipPayload:
                     can_invite_organizations=False,
                     slug=f"batch-org-{organization_count}-{index}",
                 )
-                baker.make(
-                    OrganizationMembership,
+                make_membership(
                     user=caller,
                     organization=org,
-                    role=OrganizationRole.ADMIN,
+                    groups=[GROUP_ORGANIZATION_ADMIN],
                     is_active=True,
                 )
             local_client = APIClient()

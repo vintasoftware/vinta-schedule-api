@@ -344,9 +344,8 @@ class CalendarGroupSlotConfigNotFoundError(CalendarGroupError):
     Deliberately the SAME exception -- same type, same message -- whether the
     membership genuinely does not exist or the acting user is simply not
     authorized to manage it. A member must not be able to learn that a group
-    or roster entry exists by comparing error shapes (see the spec's
-    permission decision under CALENDAR_GROUP_SCOPED_AVAILABILITY): a plain
-    404-shaped error here is indistinguishable from a 403 in disguise.
+    or roster entry exists by comparing error shapes: a plain 404-shaped
+    error here is indistinguishable from a 403 in disguise.
     """
 
     default_message = "No group-scoped availability configuration found for this calendar and slot."
@@ -358,10 +357,8 @@ class CalendarGroupScopedRuleViolationError(CalendarGroupError):
 
     Carries ``calendar_id`` and ``rule_type`` (see ``GroupScopedRuleType``) so
     callers can build a structured error response -- never the configured
-    rule values themselves (spec Decisions -> Errors: enough for an admin to
-    act on, without leaking roster detail to external bookers on public
-    links). ``OUTSIDE_WINDOW`` is raised as of Phase 1b, ``INSIDE_BLOCK`` as
-    of Phase 2a, and ``QUOTA_CONSUMED`` as of Phase 3b -- naming only the
+    rule values themselves: enough for an admin to act on, without leaking
+    roster detail to external bookers on public links. Naming only the
     quota rule that was violated, never its configured cap or the calendar's
     current count.
     """

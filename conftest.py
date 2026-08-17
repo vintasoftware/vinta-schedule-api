@@ -6,6 +6,20 @@ import pytest
 from rest_framework.test import APIClient
 
 
+# Repairs the one hazard the package's seeded-group pattern creates on its own:
+# a ``transaction=True`` test flushes ``auth_group`` / ``auth_group_permissions``
+# on teardown, and ``flush`` does not replay data migrations, so the three
+# groups ``organizations/migrations/0028_seed_permission_groups.py`` seeded
+# vanish for the rest of that worker's session. The autouse
+# ``seeded_organization_groups`` fixture this plugin provides reseeds them
+# (via ``ORGANIZATION_GROUP_SEEDERS``, see ``vinta_schedule_api/settings/base.py``)
+# before every test with database access. See ``vinta_orgs.testing`` for the
+# full contract -- it must be a setup hook, not a teardown one, because the
+# flush runs inside pytest-django's own finalizer, later than any conftest
+# fixture's teardown could reach.
+pytest_plugins = ["vinta_orgs.testing"]
+
+
 _ALLOWED_NETWORK_HOSTS = {
     "127.0.0.1",
     "::1",
@@ -106,8 +120,9 @@ def mock_external_calendar_clients(monkeypatch):
     )
 
 
-def _reseed_default_billing_plan():
-    """Recreate the ``unlimited`` plan that migration ``0007_seed_billing_plans`` seeds.
+def _reseed_billing_plans():
+    """Recreate the ``unlimited`` and ``free`` plans that ``0007_seed_billing_plans``
+    seeds, from the live catalog.
 
     ``@pytest.mark.django_db(transaction=True)`` tests run against a real
     ``TransactionTestCase``, which *flushes* every table afterwards and (without
@@ -115,41 +130,13 @@ def _reseed_default_billing_plan():
     seeded plan catalog disappears for every test that runs after the first transactional
     one, and any organization created from then on has no default plan to land on.
 
-    Keep the shape in sync with ``payments/migrations/0007_seed_billing_plans.py``: a
-    ``PlanLimit`` row for **every** ``LimitedResource`` (``assert_plan_is_complete``
-    refuses a plan that omits one) with a NULL ceiling, and every ``Entitlement`` granted.
+    Deferred import for the reason spelled out on ``assert_no_unbound_scoped_queries``
+    below: pytest imports this module during collection, before pytest-django calls
+    ``django.setup()``, so nothing that reaches the ORM may sit at module scope here.
     """
-    from payments.billing_constants import Entitlement, LimitedResource, LimitKind
-    from payments.models import BillingPlan, PlanEntitlement, PlanLimit
+    from payments.tests.billing_fixtures import reseed_billing_plans
 
-    postpaid = {LimitedResource.EVENT_OCCURRENCES}
-    plan, _ = BillingPlan.objects.update_or_create(
-        slug="unlimited",
-        defaults={
-            "name": "Unlimited",
-            "is_active": True,
-            "is_default_for_new_organizations": True,
-            "monthly_price": 0,
-            "annual_price": None,
-            "currency": "USD",
-            "grace_period_days": None,
-        },
-    )
-    for resource_key in LimitedResource.values:
-        PlanLimit.objects.update_or_create(
-            plan=plan,
-            resource_key=resource_key,
-            defaults={
-                "limit_value": None,
-                "kind": (LimitKind.POSTPAID if resource_key in postpaid else LimitKind.PREPAID),
-                "overage_unit_price": None,
-            },
-        )
-    for entitlement_key in Entitlement.values:
-        PlanEntitlement.objects.update_or_create(
-            plan=plan, entitlement_key=entitlement_key, defaults={"is_enabled": True}
-        )
-    return plan
+    reseed_billing_plans()
 
 
 @pytest.fixture(autouse=True)
@@ -203,7 +190,7 @@ def provision_default_subscription(request):
         try:
             subscription_service.create_subscription_for_organization(instance)
         except NoDefaultBillingPlanError:
-            _reseed_default_billing_plan()
+            _reseed_billing_plans()
             subscription_service.create_subscription_for_organization(instance)
 
     post_save.connect(
@@ -215,6 +202,105 @@ def provision_default_subscription(request):
         post_save.disconnect(
             sender=Organization, dispatch_uid="conftest_provision_default_subscription"
         )
+
+
+#: The pytest-django entry points that flush every table on teardown. A test naming any
+#: of them -- or carrying ``@pytest.mark.django_db(transaction=True)``, or subclassing
+#: ``TransactionTestCase`` -- destroys the rows the data migrations wrote for the rest
+#: of the worker's session.
+_FLUSHING_FIXTURES = frozenset({"transactional_db", "django_db_reset_sequences", "live_server"})
+
+#: Everything pytest-django will give a test a database through. Read to decide whether
+#: this fixture may touch the ORM at all -- see ``ensure_seeded_billing_catalog``.
+_DATABASE_FIXTURES = _FLUSHING_FIXTURES | {"db", "django_db_serialized_rollback"}
+
+#: Session state: has a test flushed the plan catalog since it was last seeded? Module
+#: scope rather than a fixture because it must outlive the test that set it -- it is
+#: consumed by the *next* test, in the next fixture instance.
+_billing_catalog_was_flushed = False
+
+
+def _test_uses_the_database(request) -> bool:
+    if request.node.get_closest_marker("django_db") is not None:
+        return True
+    if _DATABASE_FIXTURES & set(request.fixturenames):
+        return True
+
+    from django.test import TransactionTestCase
+
+    cls = getattr(request.node, "cls", None)
+    return isinstance(cls, type) and issubclass(cls, TransactionTestCase)
+
+
+def _test_flushes_the_database(request) -> bool:
+    marker = request.node.get_closest_marker("django_db")
+    if marker is not None and marker.kwargs.get("transaction"):
+        return True
+    if _FLUSHING_FIXTURES & set(request.fixturenames):
+        return True
+
+    from django.test import TestCase, TransactionTestCase
+
+    cls = getattr(request.node, "cls", None)
+    return (
+        isinstance(cls, type)
+        and issubclass(cls, TransactionTestCase)
+        and not issubclass(cls, TestCase)
+    )
+
+
+@pytest.fixture(autouse=True)
+def ensure_seeded_billing_catalog(request):
+    """Put the seeded plan catalog back, but **only after something destroyed it**.
+
+    Two rules, and the reasons they are rules rather than "reseed before every test",
+    which is what this fixture used to do:
+
+    1. **It does not request ``db``.** A root-level autouse fixture that requests ``db``
+       hands database access to every test in the repository, and pytest-django's
+       ``RuntimeError: Database access not allowed`` -- the thing that catches a test
+       which forgot ``@pytest.mark.django_db`` -- stops firing repo-wide. So the marker
+       and the fixture names are inspected first, and ``_django_db_helper`` is forced up
+       by name only once a database is known to be wanted. Same shape as
+       ``vinta_orgs.testing.seeded_organization_groups``, for the same reason.
+    2. **It only runs after a flush.** The catalog is written by
+       ``payments/migrations/0007_seed_billing_plans.py`` and survives in the test
+       database until a ``transaction=True`` test flushes it; pytest-django sorts every
+       transactional test *after* the non-transactional ones, so the damage is confined
+       to transactional tests that run later. Reseeding unconditionally would recreate,
+       from live code, exactly what ``0007`` seeds -- which makes every assertion about
+       the migration's output pass whether or not the migration still does anything.
+       ``payments/tests/test_plan_seed_migration.py`` is precisely that module, and it
+       went green with ``0007``'s ``RunPython`` gutted while this fixture was
+       unconditional.
+
+    ``@pytest.mark.no_billing_catalog_reseed`` opts out of the repair entirely, for the
+    tests whose subject *is* what the migration left behind. They would rather fail than
+    be handed a synthetic catalog.
+    """
+    global _billing_catalog_was_flushed
+
+    if not _test_uses_the_database(request):
+        yield
+        return
+
+    if _billing_catalog_was_flushed and not request.node.get_closest_marker(
+        "no_billing_catalog_reseed"
+    ):
+        # Force the database up first: an autouse fixture runs before the ``db`` /
+        # ``transactional_db`` fixture a test requests by name, so without this the
+        # reseed would hit pytest-django's access blocker.
+        request.getfixturevalue("_django_db_helper")
+        _reseed_billing_plans()
+        _billing_catalog_was_flushed = False
+
+    yield
+
+    if _test_flushes_the_database(request):
+        # Set at *our* teardown, which is earlier than the flush itself -- that runs in
+        # pytest-django's own finalizer, later than any conftest fixture can reach. The
+        # flag is read at the next test's setup, which is after it either way.
+        _billing_catalog_was_flushed = True
 
 
 @pytest.fixture
@@ -250,3 +336,46 @@ def di_container():
     from di_core.containers import container
 
     return container
+
+
+@pytest.fixture
+def assert_no_unbound_scoped_queries():
+    """Tripwire: fail the test if a query on an organization-scoped table runs
+    with no organization bound via ``common.organization_context`` **and**
+    without naming one itself.
+
+    An explicit ``organization_context(...)`` binding is threaded through every
+    Celery task and management command that touches a scoped model, and this
+    fixture asks "did anything run unbound?" -- because an unbound call site is
+    what breaks once a manager enforces scoping.
+
+    For ``calendar_integration``, ``objects`` scopes to
+    the bound organization and, under ``STRICT_ORGANIZATION_FILTER``, raises when
+    nothing is bound. The manager enforces the unbound half itself, loudly.
+    What it cannot enforce is the deliberate escape hatch -- ``unscoped()`` /
+    ``original_manager`` bypass the context on purpose and name no organization --
+    so that is what this reports. ``filter_by_organization(...)`` is not a
+    violation: it says which organization it means.
+
+    Deliberately **opt-in**, not autouse. Requests do not bind an organization
+    via ``organization_context``, and plenty of tests read
+    through ``original_manager`` on purpose; autouse would fail those for being
+    explicit about crossing organizations rather than for leaking across them.
+
+    Implementation lives in ``common.organization_context_test_support`` (kept
+    independent of pytest's fixture protocol so it is unit-testable on its own
+    -- see that module's tests).
+    """
+    # Deferred: pytest imports this root ``conftest.py`` (module scope, see
+    # its top-of-file imports above) during collection, before pytest-django
+    # calls ``django.setup()`` -- so anything that touches the Django ORM
+    # must wait until a fixture actually runs, not sit at module scope here.
+    from common.organization_context_test_support import (
+        assert_all_scoped_queries_are_bound,
+        raise_if_unbound_scoped_queries_occurred,
+    )
+
+    with assert_all_scoped_queries_are_bound() as unbound_calls:
+        yield unbound_calls
+
+    raise_if_unbound_scoped_queries_occurred(unbound_calls)

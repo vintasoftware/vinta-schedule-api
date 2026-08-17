@@ -26,8 +26,9 @@ from model_bakery import baker
 from audit.constants import AuditAction, AuditActorType
 from audit.models import Audit, AuditAffectedMembership
 from audit.repositories import DjangoORMAuditRepository
-from audit.types import ActorSnapshot, AuditRecord, AuditRecordData, SubjectRef
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from audit.types import ActorSnapshot, AuditQuery, AuditRecord, AuditRecordData, SubjectRef
+from organizations.authorization import MEMBERSHIP_ROLE_LABEL_ADMIN, MEMBERSHIP_ROLE_LABEL_MEMBER
+from organizations.models import Organization, OrganizationMembership
 
 
 User = get_user_model()
@@ -108,7 +109,7 @@ class TestDjangoORMAuditRepositoryAdd:
             actor=ActorSnapshot(
                 actor_type=AuditActorType.MEMBERSHIP,
                 actor_id=membership.user_id,
-                actor_role=OrganizationRole.ADMIN,
+                actor_role=MEMBERSHIP_ROLE_LABEL_ADMIN,
             ),
             subject=make_subject(),
         )
@@ -116,13 +117,13 @@ class TestDjangoORMAuditRepositoryAdd:
 
         assert record.actor.actor_type == AuditActorType.MEMBERSHIP
         assert record.actor.actor_id == membership.user_id
-        assert record.actor.actor_role == OrganizationRole.ADMIN
+        assert record.actor.actor_role == MEMBERSHIP_ROLE_LABEL_ADMIN
         assert record.actor.system_user_scopes is None
         assert record.actor.system_user_scoped_to_membership is None
 
         db_audit = Audit.original_manager.get(pk=record.id)
         assert db_audit.actor_id == membership.user_id
-        assert db_audit.actor_role == OrganizationRole.ADMIN
+        assert db_audit.actor_role == MEMBERSHIP_ROLE_LABEL_ADMIN
 
     def test_add_system_user_actor_with_scopes_and_scoped_to(self) -> None:
         """SYSTEM_USER actor: scopes list + scoped_to_membership_user_id populated."""
@@ -351,8 +352,6 @@ class TestDjangoORMAuditRepositoryAddDiff:
         empty dict ({}) carries no change information and is normalized to None
         at write time so that the has_diff filter (diff__isnull) is correct.
         """
-        from audit.types import AuditQuery
-
         org = baker.make(Organization)
         repo = DjangoORMAuditRepository()
 
@@ -423,7 +422,7 @@ class TestDjangoORMAuditRepositoryAddReturnValue:
             actor=ActorSnapshot(
                 actor_type=AuditActorType.MEMBERSHIP,
                 actor_id=membership.user_id,
-                actor_role=OrganizationRole.MEMBER,
+                actor_role=MEMBERSHIP_ROLE_LABEL_MEMBER,
             ),
             subject=subject,
             # Use the org-scoped user_id
@@ -438,7 +437,7 @@ class TestDjangoORMAuditRepositoryAddReturnValue:
         assert record.action == AuditAction.UPDATE
         assert record.actor.actor_type == AuditActorType.MEMBERSHIP
         assert record.actor.actor_id == membership.user_id
-        assert record.actor.actor_role == OrganizationRole.MEMBER
+        assert record.actor.actor_role == MEMBERSHIP_ROLE_LABEL_MEMBER
         assert record.subject.subject_type == "calendar_integration.CalendarEvent"
         assert record.subject.subject_id == "100"
         assert record.subject.subject_label == "Board Meeting"

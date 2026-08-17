@@ -25,7 +25,7 @@ from model_bakery import baker
 from organizations.models import Organization, OrganizationMembership
 from payments.billing_constants import BillingState, LimitedResource, LimitKind
 from payments.exceptions import BillingRootCycleError
-from payments.models import BillingPlan, Subscription, SubscriptionPlanLimit
+from payments.models import BillingPlan, Subscription, SubscriptionAddOn, SubscriptionPlanLimit
 from payments.services.entitlement_service import EntitlementService
 
 
@@ -97,7 +97,7 @@ class TestPooledUsage:
         assert result.limit_value == 5
 
     def test_two_children_over_the_pooled_ceiling_block_each_other(self, service, plan):
-        """The phase's acceptance scenario, verbatim: a reseller root with two
+        """The canonical pooled-limit scenario: a reseller root with two
         children each holding 3 members against a pooled limit of 5."""
         root = baker.make(Organization, parent=None, can_invite_organizations=True)
         child_a = baker.make(Organization, parent=root, can_invite_organizations=False)
@@ -154,8 +154,6 @@ class TestPooledUsage:
         assert service.get_current_usage(child_b, LimitedResource.ORGANIZATION_MEMBERS) == 4
 
     def test_add_on_on_the_root_lifts_the_whole_subtree(self, service, plan):
-        from payments.models import SubscriptionAddOn
-
         root = baker.make(Organization, parent=None, can_invite_organizations=True)
         child = baker.make(Organization, parent=root, can_invite_organizations=False)
         subscription = make_subscription(root, plan, member_limit=5)

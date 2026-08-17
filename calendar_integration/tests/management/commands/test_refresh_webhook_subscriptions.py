@@ -50,7 +50,7 @@ class TestRefreshWebhookSubscriptionsCommand(TestCase):
         assert "Organization 99999 not found" in output
 
     @patch(
-        "calendar_integration.management.commands.refresh_webhook_subscriptions.CalendarWebhookSubscription.objects"
+        "calendar_integration.management.commands.refresh_webhook_subscriptions.CalendarWebhookSubscription.original_manager"
     )
     def test_handle_single_organization_no_subscriptions(self, mock_qs: Mock) -> None:
         """Test command with single organization that has no expiring subscriptions."""
@@ -75,7 +75,7 @@ class TestRefreshWebhookSubscriptionsCommand(TestCase):
 
     @patch("di_core.containers.container")
     @patch(
-        "calendar_integration.management.commands.refresh_webhook_subscriptions.CalendarWebhookSubscription.objects"
+        "calendar_integration.management.commands.refresh_webhook_subscriptions.CalendarWebhookSubscription.original_manager"
     )
     def test_handle_single_organization_with_subscriptions(
         self, mock_qs: Mock, mock_container: Mock
@@ -129,7 +129,7 @@ class TestRefreshWebhookSubscriptionsCommand(TestCase):
 
     @patch("di_core.containers.container")
     @patch(
-        "calendar_integration.management.commands.refresh_webhook_subscriptions.CalendarWebhookSubscription.objects"
+        "calendar_integration.management.commands.refresh_webhook_subscriptions.CalendarWebhookSubscription.original_manager"
     )
     def test_handle_dry_run(self, mock_qs: Mock, mock_container: Mock) -> None:
         """Test command with dry run option."""
@@ -172,7 +172,7 @@ class TestRefreshWebhookSubscriptionsCommand(TestCase):
         mock_subscription.refresh_subscription.assert_not_called()
 
     @patch(
-        "calendar_integration.management.commands.refresh_webhook_subscriptions.CalendarWebhookSubscription.objects"
+        "calendar_integration.management.commands.refresh_webhook_subscriptions.CalendarWebhookSubscription.original_manager"
     )
     def test_handle_all_organizations(self, mock_qs: Mock) -> None:
         """Test command with all organizations."""
@@ -189,7 +189,7 @@ class TestRefreshWebhookSubscriptionsCommand(TestCase):
         assert "No webhook subscriptions need refreshing" in output
 
     @patch(
-        "calendar_integration.management.commands.refresh_webhook_subscriptions.CalendarWebhookSubscription.objects"
+        "calendar_integration.management.commands.refresh_webhook_subscriptions.CalendarWebhookSubscription.original_manager"
     )
     def test_handle_with_provider_filter(self, mock_qs: Mock) -> None:
         """Test command with specific provider filter."""
@@ -220,7 +220,7 @@ class TestRefreshWebhookSubscriptionsCommand(TestCase):
         mock_qs.filter.assert_called()
 
     @patch(
-        "calendar_integration.management.commands.refresh_webhook_subscriptions.CalendarWebhookSubscription.objects"
+        "calendar_integration.management.commands.refresh_webhook_subscriptions.CalendarWebhookSubscription.original_manager"
     )
     def test_handle_with_custom_hours_before_expiry(self, mock_qs: Mock) -> None:
         """Test command with custom hours before expiry."""
@@ -246,7 +246,7 @@ class TestRefreshWebhookSubscriptionsCommand(TestCase):
 
     @patch("di_core.containers.container")
     @patch(
-        "calendar_integration.management.commands.refresh_webhook_subscriptions.CalendarWebhookSubscription.objects"
+        "calendar_integration.management.commands.refresh_webhook_subscriptions.CalendarWebhookSubscription.original_manager"
     )
     def test_handle_refresh_exception(self, mock_qs: Mock, mock_container: Mock) -> None:
         """Test command when refresh_subscription raises an exception."""

@@ -353,7 +353,7 @@ class TestCreateEventPostpaidGuard:
         event = service.create_event(calendar.id, _event_input(start))
 
         assert event.pk is not None
-        assert CalendarEvent.objects.filter(pk=event.pk).exists()
+        assert CalendarEvent.original_manager.filter(pk=event.pk).exists()
 
         # "Accrues" is proven, not assumed: metering this event now must record it
         # as overage (outside the 1-occurrence allowance), not silently for free.
@@ -380,7 +380,7 @@ class TestCreateEventPostpaidGuard:
 
         assert exc_info.value.resource_key == LimitedResource.EVENT_OCCURRENCES
         assert exc_info.value.remedy == LimitRemedy.ADD_PAYMENT_METHOD
-        assert not CalendarEvent.objects.filter(calendar=calendar).exists()
+        assert not CalendarEvent.original_manager.filter(calendar=calendar).exists()
 
     def test_without_payment_method_under_the_allowance_succeeds(self):
         organization, subscription = _organization_with_postpaid_limit(5, BillingState.FREE)

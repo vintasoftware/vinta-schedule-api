@@ -1,7 +1,9 @@
+import datetime
 import json
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.db import connection
 from django.urls import reverse
 
 import pytest
@@ -163,8 +165,6 @@ class TestWebhookConfigurationViewSet:
         active_config = WebhookTestFactory.create_webhook_configuration(organization=organization)
 
         # Create deleted configuration
-        import datetime
-
         WebhookTestFactory.create_webhook_configuration(
             organization=organization, deleted_at=datetime.datetime.now(tz=datetime.UTC)
         )
@@ -223,9 +223,11 @@ class TestWebhookConfigurationViewSet:
         assert response_data["headers"] == data["headers"]
 
         # Verify configuration was created in database
-        config = WebhookConfiguration.objects.filter(
-            id=response_data["id"], organization=organization
-        ).first()
+        config = (
+            WebhookConfiguration.objects.filter_by_organization(organization)
+            .filter(id=response_data["id"])
+            .first()
+        )
         assert config is not None
         assert config.organization == organization
         assert config.event_type == data["event_type"]
@@ -289,8 +291,6 @@ class TestWebhookConfigurationViewSet:
         config_id = webhook_configuration.pk
 
         # Query the database directly to check if deleted_at was set
-        from django.db import connection
-
         with connection.cursor() as cursor:
             cursor.execute(
                 "SELECT deleted_at FROM webhooks_webhookconfiguration WHERE id = %s", [config_id]
@@ -320,9 +320,11 @@ class TestWebhookConfigurationViewSet:
         assert response_data["headers"] == data["headers"]
 
         # Verify configuration was created in database
-        config = WebhookConfiguration.objects.filter(
-            id=response_data["id"], organization=organization
-        ).first()
+        config = (
+            WebhookConfiguration.objects.filter_by_organization(organization)
+            .filter(id=response_data["id"])
+            .first()
+        )
         assert config is not None
         assert config.event_type == WebhookEventType.ORGANIZATION_MEMBER_CREATED
 
@@ -352,7 +354,7 @@ class TestInactiveMemberWebhookAccess:
     def test_create_webhook_configuration_inactive_member_denied(self, auth_client, user):
         """POST webhook-configuration by inactive member must be rejected.
 
-        With is_active=False the serializer's get_active_organization_membership()
+        With is_active=False the package resolver
         returns None, so the create path raises a ValidationError → 400.  The
         key contract: the webhook is NOT created for the inactive user's org.
         """
@@ -370,7 +372,7 @@ class TestInactiveMemberWebhookAccess:
         # Serializer guard raises ValidationError → 400
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
         # Nothing created
-        assert not WebhookConfiguration.objects.filter(organization=org).exists()
+        assert not WebhookConfiguration.objects.filter_by_organization(org).exists()
 
     def test_create_webhook_configuration_active_member_succeeds(self, auth_client, user):
         """Sanity: an active member can still create webhook configurations."""
@@ -386,7 +388,7 @@ class TestInactiveMemberWebhookAccess:
         response = auth_client.post(url, data, format="json")
 
         assert_response_status_code(response, status.HTTP_201_CREATED)
-        assert WebhookConfiguration.objects.filter(organization=org).exists()
+        assert WebhookConfiguration.objects.filter_by_organization(org).exists()
 
 
 @pytest.mark.django_db

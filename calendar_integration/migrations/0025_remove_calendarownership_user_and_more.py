@@ -28,7 +28,7 @@ UPDATE calendar_integration_calendarownership
 
 
 class Migration(migrations.Migration):
-    """Phase 2b cutover (schema half): drop CalendarOwnership.user, add partial unique.
+    """Cutover (schema half): drop CalendarOwnership.user, add partial unique.
 
     - The ``user`` field is removed from model state and the legacy ``user_id``
       column is dropped from the DB. CalendarOwnership is low-volume, so the brief

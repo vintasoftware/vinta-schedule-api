@@ -36,16 +36,19 @@ from django.urls import reverse
 import pytest
 from allauth.account.models import EmailAddress
 from allauth.socialaccount.models import SocialLogin
+from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
 
 from accounts.account_adapters import SocialAccountAdapter
+from common.organization_services import memberships
+from organizations.authorization import membership_holds_permission
 from organizations.models import (
     Organization,
     OrganizationInvitation,
     OrganizationMembership,
-    OrganizationRole,
 )
+from organizations.permission_catalog import MANAGE_MEMBERS
 from users.models import Profile, User
 
 
@@ -141,16 +144,14 @@ class TestSocialGatedOnboarding:
     def test_uninvited_social_user_has_no_organization_membership(self):
         """
         A gated (membership-less) user has no OrganizationMembership rows.
-        With user.organization_memberships now a FK manager (not a OneToOne
+        With user.memberships now a FK manager (not a OneToOne
         descriptor), the gating invariant is confirmed by checking the queryset
         is empty rather than expecting RelatedObjectDoesNotExist.
         """
-        from organizations.models import get_active_organization_membership
-
         user = _social_save_user("gated@social.example.com")
 
-        assert user.organization_memberships.count() == 0
-        assert get_active_organization_membership(user) is None
+        assert user.memberships.count() == 0
+        assert memberships.resolve_for_user(user) is None
 
     # ------------------------------------------------------------------
     # Scenario 2 — gated user creates org and becomes ADMIN
@@ -178,9 +179,9 @@ class TestSocialGatedOnboarding:
         # Organisation created
         assert Organization.objects.filter(name="Social Org").exists()
 
-        # User is now ADMIN
+        # User now administers the organization
         membership = OrganizationMembership.objects.get(user=user)
-        assert membership.role == OrganizationRole.ADMIN
+        assert membership_holds_permission(membership, MANAGE_MEMBERS)
 
     # ------------------------------------------------------------------
     # Scenario 3 — second create attempt is rejected
@@ -225,7 +226,7 @@ class TestSocialGatedOnboarding:
         # The second membership is also ADMIN.
         second_org = Organization.objects.get(name="Second Org")
         second_membership = OrganizationMembership.objects.get(user=user, organization=second_org)
-        assert second_membership.role == OrganizationRole.ADMIN
+        assert membership_holds_permission(second_membership, MANAGE_MEMBERS)
 
     # ------------------------------------------------------------------
     # Scenario 4 — membership-less user blocked from member-only endpoint
@@ -277,7 +278,7 @@ class TestSocialSignupCrossOrgInviteAccept:
     creates a second membership.  The user ends with TWO active memberships.
     """
 
-    def _social_save_existing_user(self, user: User) -> User:
+    def _social_save_existing_user(self, user: User, provider: str) -> User:
         """Simulate save_user for a user who already exists in the DB (e.g. re-login).
 
         Uses the same stub pattern as _social_save_user but operates on an already-
@@ -286,7 +287,7 @@ class TestSocialSignupCrossOrgInviteAccept:
         adapter = SocialAccountAdapter()
         sociallogin = MagicMock(spec=SocialLogin)
         sociallogin.user = user
-        sociallogin.account = MagicMock(extra_data={})
+        sociallogin.account = MagicMock(provider=provider, id=123, extra_data={})
 
         def _super_save(request, sociallogin, form=None):
             # User is already saved; just return it.
@@ -296,7 +297,10 @@ class TestSocialSignupCrossOrgInviteAccept:
         with patch.object(SocialAccountAdapter.__bases__[0], "save_user", side_effect=_super_save):
             return adapter.save_user(None, sociallogin, form=None)
 
-    def test_existing_org_a_member_social_signup_with_org_b_invite_gains_second_membership(self):
+    @pytest.mark.parametrize("provider", ("google", "microsoft"))
+    def test_existing_org_a_member_social_signup_with_org_b_invite_gains_second_membership(
+        self, provider: str
+    ):
         """Existing org-A member + pending org-B invite → TWO memberships.
 
         Simulates the real-world cross-org-via-invite path through the adapter:
@@ -307,12 +311,8 @@ class TestSocialSignupCrossOrgInviteAccept:
            and joins the user to org B as MEMBER.
         5. After save_user returns, the user has TWO active memberships (org A + org B).
         """
-        from model_bakery import baker
-
         # Create user already a member of org A.
         user = baker.make(User, email="crossorg_social@example.com")
-        from users.models import Profile
-
         Profile.objects.get_or_create(
             user=user, defaults={"first_name": "Cross", "last_name": "Org"}
         )
@@ -336,7 +336,17 @@ class TestSocialSignupCrossOrgInviteAccept:
         user.refresh_from_db()
 
         # Trigger the adapter's save_user (the cross-org invite accept path).
-        returned_user = self._social_save_existing_user(user)
+        # Google and Microsoft run the calendar-import branch. It must use the
+        # newly provisioned org-B membership rather than resolve the oldest
+        # membership (org A), and must not reject the social signup as ambiguous.
+        with (
+            patch(
+                "accounts.account_adapters.transaction.on_commit",
+                side_effect=lambda callback: callback(),
+            ),
+            patch("calendar_integration.tasks.import_account_calendars_task.delay") as import_task,
+        ):
+            returned_user = self._social_save_existing_user(user, provider)
 
         assert returned_user.pk == user.pk, "save_user must return the same user"
 
@@ -356,4 +366,9 @@ class TestSocialSignupCrossOrgInviteAccept:
         assert invite.accepted_at is not None, "org-B invitation must be marked accepted"
         assert invite.membership is not None, (
             "org-B invitation must be linked to the new membership"
+        )
+        import_task.assert_called_once_with(
+            account_type="social_account",
+            account_id=123,
+            organization_id=org_b.id,
         )

@@ -88,8 +88,8 @@ class WriteOnlyView(APIView):
 class WriteThenUnconfiguredProviderView(APIView):
     """Stands in for a billing write that resolves an adapter *after* writing.
 
-    Mirrors the real ordering on the money paths Phase 4 makes this reachable
-    from: ``purchase_add_on`` creates the ``SubscriptionAddOn`` row and
+    Mirrors the real ordering on the money paths that make this reachable:
+    ``purchase_add_on`` creates the ``SubscriptionAddOn`` row and
     ``request_plan_change`` moves ``Subscription.plan`` before either drives the
     provider, so both have already written by the time adapter resolution can
     raise ``PaymentProviderNotConfiguredError``.
@@ -154,9 +154,11 @@ class TestOverLimitErrorRollsBackTheRequestTransaction:
 
         assert response.status_code == status.HTTP_201_CREATED
         assert (
-            CalendarGroup.objects.filter(
-                organization_id=organization.pk, name="written-and-kept"
-            ).count()
+            CalendarGroup.objects.filter_by_organization(organization.pk)
+            .filter(
+                name="written-and-kept",
+            )
+            .count()
             == 1
         )
 
@@ -169,9 +171,11 @@ class TestOverLimitErrorRollsBackTheRequestTransaction:
 
         assert response.status_code == status.HTTP_402_PAYMENT_REQUIRED
         assert (
-            CalendarGroup.objects.filter(
-                organization_id=organization.pk, name="written-before-the-guard"
-            ).count()
+            CalendarGroup.objects.filter_by_organization(organization.pk)
+            .filter(
+                name="written-before-the-guard",
+            )
+            .count()
             == 0
         ), (
             "The row written before the over-limit guard was committed. The exception "
@@ -196,8 +200,8 @@ class TestOverLimitErrorRollsBackTheRequestTransaction:
 @pytest.mark.django_db
 @pytest.mark.usefixtures("test_urlconf", "atomic_requests")
 class TestUnconfiguredProviderRollsBackTheRequestTransaction:
-    """Payment Provider Selection, Phase 4: the same ``set_rollback()`` contract,
-    for the 409 branch added alongside the 402 one.
+    """The same ``set_rollback()`` contract, for the 409 branch added alongside
+    the 402 one.
 
     It matters more here, not less: the paths that raise this write local rows
     representing *paid* state -- a ``SubscriptionAddOn`` recording capacity, a
@@ -214,9 +218,11 @@ class TestUnconfiguredProviderRollsBackTheRequestTransaction:
 
         assert response.status_code == status.HTTP_409_CONFLICT
         assert (
-            CalendarGroup.objects.filter(
-                organization_id=organization.pk, name="written-before-the-provider-call"
-            ).count()
+            CalendarGroup.objects.filter_by_organization(organization.pk)
+            .filter(
+                name="written-before-the-provider-call",
+            )
+            .count()
             == 0
         ), (
             "The row written before the provider call was committed. The exception "
@@ -225,9 +231,9 @@ class TestUnconfiguredProviderRollsBackTheRequestTransaction:
         )
 
     def test_the_409_body_carries_the_errors_message(self, anonymous_client, organization):
-        """Billing API Contract Hardening, Phase 1: ``PaymentProviderNotConfiguredError``
-        now renders through the shared ``BillingError.as_error_body()`` contract, so
-        the body gains a stable ``code`` alongside the existing ``detail`` message."""
+        """``PaymentProviderNotConfiguredError`` now renders through the shared
+        ``BillingError.as_error_body()`` contract, so the body gains a stable
+        ``code`` alongside the existing ``detail`` message."""
         response = anonymous_client.post("/unconfigured-provider/")
 
         assert response.json() == {

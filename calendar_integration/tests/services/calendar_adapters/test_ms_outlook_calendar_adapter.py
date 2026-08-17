@@ -1127,8 +1127,6 @@ def test_make_request_request_exception_retries(mock_sleep, mock_limiter):
 @patch("time.sleep")
 def test_make_request_request_exception_max_retries(mock_sleep, mock_limiter):
     """Test _make_request when RequestException max retries exceeded."""
-    import requests
-
     # Create client
     client = MSOutlookCalendarAPIClient(access_token="test_token")
 

@@ -400,8 +400,7 @@ class TestBillingProfileAdminSaveModel:
     """``BillingProfileAdmin.save_model`` -- verifies each of its documented
     branches: an audited edit to ``payment_provider``, a no-op for edits that
     don't touch it, the create path (no audited route), and clearing the field
-    back to "" (a legitimate un-pin, not a 500 -- see the Finding 2 fix in the
-    Payment Provider Selection Phase 2 review).
+    back to "" (a legitimate un-pin, not a 500).
     """
 
     @pytest.fixture
@@ -509,7 +508,7 @@ class TestBillingProfileAdminSaveModel:
     def test_repointing_to_a_provider_with_no_outbound_credential_does_not_500(
         self, rf, superuser, billing_profile, django_capture_on_commit_callbacks, di_container
     ):
-        """Payment Provider Selection, Phase 4: ``set_payment_provider`` validates
+        """``set_payment_provider`` validates
         **registry membership only**. A staff repoint onto a provider whose secret
         key this environment has not been given yet is legitimate -- the pin only
         governs *future* charges, and "flip the pin, then add the key" is a normal

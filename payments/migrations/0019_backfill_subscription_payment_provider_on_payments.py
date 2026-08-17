@@ -1,13 +1,13 @@
-# Payment Provider Selection, Phase 4: stamp a provider onto the
-# subscription-charge `Payment` rows that were written without one.
+# Stamp a provider onto the subscription-charge `Payment` rows that were written
+# without one.
 #
 # `PaymentService.receive_subscription_payment_update` -- the only writer of
 # `Payment.subscription` anywhere in the codebase -- created its rows without
 # passing `payment_provider`, so every recurring subscription charge landed a row
-# stamped `""`. That was invisible before this phase (everything resolved through
-# the single hardcoded MercadoPago gateway), but from Phase 4 on those rows are
-# unroutable: `check_payment_status` / `create_refund` resolve their adapter from
-# this column and `""` raises `UnknownPaymentProviderError`.
+# stamped `""`. That was invisible while everything resolved through the single
+# hardcoded MercadoPago gateway, but now that `check_payment_status` /
+# `create_refund` resolve their adapter from this column, those rows are
+# unroutable: `""` raises `UnknownPaymentProviderError`.
 #
 # The owning `Subscription`'s own `payment_provider` is the correct value: the
 # charge was made by whichever provider drives that subscription, and
@@ -17,13 +17,13 @@
 # guessed at -- there is nothing to derive a provider from, and inventing one
 # would be worse than the loud `UnknownPaymentProviderError` they already get.
 #
-# Reverse safety (second-pass Tier 4 fix): a blanket "blank every
-# subscription-linked Payment.payment_provider" reverse -- what this migration
-# originally did -- would also blank rows this migration never touched (any
-# `Payment` a caller stamped with a real provider through the ordinary Phase 4
-# code path after this migration ran). Combined with `0018`'s (now-fixed) reverse,
+# Reverse safety: a blanket "blank every subscription-linked
+# Payment.payment_provider" reverse -- what this migration originally did --
+# would also blank rows this migration never touched (any `Payment` a caller
+# stamped with a real provider through the ordinary provider-resolution code path
+# after this migration ran). Combined with `0018`'s (now-fixed) reverse,
 # reversing both would have rewritten every Stripe-provider subscription charge
-# to `mercadopago` -- producing the wrong-provider refund this whole phase exists
+# to `mercadopago` -- producing the wrong-provider refund this migration exists
 # to prevent, via the migration path instead of the code path. The forward pass
 # now stamps `meta[BACKFILL_META_KEY]` on each row it actually fills (following
 # the same precedent as `payments.0009_backfill_unlimited_subscriptions` /

@@ -34,7 +34,9 @@ from calendar_integration.models import (
     CalendarEvent,
     CalendarGroup,
     CalendarManagementToken,
+    EventExternalAttendance,
     EventManagementPermissions,
+    ExternalAttendee,
 )
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from organizations.models import Organization
@@ -126,8 +128,6 @@ def available_window(organization, calendar):
 @pytest.fixture
 def existing_event(organization, calendar):
     """An existing event with a title, description, and one external attendee."""
-    from calendar_integration.models import EventExternalAttendance, ExternalAttendee
-
     event = baker.make(
         CalendarEvent,
         organization=organization,
@@ -350,8 +350,6 @@ class TestRescheduleCalendarEventWithCodeHappyPath:
         assert existing_event.description == "Original description."
 
         # DB: external attendee still exists.
-        from calendar_integration.models import EventExternalAttendance
-
         ext_attendances = list(
             EventExternalAttendance.objects.filter_by_organization(organization.id)
             .select_related("external_attendee")
@@ -698,7 +696,7 @@ class TestRescheduleCalendarEventWithCodeLifecycleRejections:
             calendar_id=calendar.id,
             event_id=existing_event.id,
         )
-        CalendarManagementToken.objects.filter(id=token.id).update(
+        CalendarManagementToken.original_manager.filter(id=token.id).update(
             used_at=datetime.datetime(2025, 1, 1, tzinfo=datetime.UTC)
         )
 

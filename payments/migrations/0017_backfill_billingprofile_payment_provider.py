@@ -1,10 +1,8 @@
-# Payment Provider Selection, Phase 2: every existing `BillingProfile` is
-# explicitly pinned to `stripe` (the system default -- see
-# `settings.DEFAULT_PAYMENT_PROVIDER`) so that a future change to that setting
-# can never silently move an already-provisioned organization onto a different
-# provider. No organization has a paid subscription yet (per the plan's
-# Guiding Decisions), so this is a no-op in effect -- it only makes the pin
-# explicit.
+# Every existing `BillingProfile` is explicitly pinned to `stripe` (the system
+# default -- see `settings.DEFAULT_PAYMENT_PROVIDER`) so that a future change to
+# that setting can never silently move an already-provisioned organization onto a
+# different provider. No organization has a paid subscription yet, so this is a
+# no-op in effect -- it only makes the pin explicit.
 #
 # The literal "stripe" is hardcoded rather than importing
 # `payments.constants.PaymentProviders.STRIPE`, mirroring the precedent set by

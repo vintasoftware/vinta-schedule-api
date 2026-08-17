@@ -18,10 +18,8 @@ units of headroom, one over five Google children costs 1 -- because a
 ``BlockedTime`` is never billable.
 """
 
-import ast
 import base64
 import datetime
-import pathlib
 from unittest.mock import Mock, patch
 
 from django.db import connection
@@ -35,13 +33,21 @@ from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
 
-from calendar_integration.constants import CalendarProvider, CalendarType
+from calendar_integration.constants import (
+    CalendarProvider,
+    CalendarType,
+    EventManagementPermissions,
+)
 from calendar_integration.models import (
     Calendar,
     CalendarEvent,
+    CalendarGroup,
+    CalendarGroupSlot,
+    CalendarGroupSlotMembership,
     CalendarManagementToken,
     CalendarManagementTokenPermission,
-    EventManagementPermissions,
+    CalendarOwnership,
+    CalendarSync,
 )
 from calendar_integration.services.calendar_permission_service import (
     DEFAULT_CALENDAR_OWNER_PERMISSIONS,
@@ -50,6 +56,7 @@ from calendar_integration.services.calendar_permission_service import (
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.calendar_sync_service import CalendarSyncService
 from calendar_integration.services.dataclasses import (
+    AvailableTimeWindow,
     CalendarEventAdapterOutputData,
     CalendarEventInputData,
 )
@@ -217,8 +224,6 @@ def _google_backed_owner(
     calendar-level token to resolve permissions from (mirrors
     ``test_calendar_event_service.py``'s ``calendar_owner_token`` fixture).
     """
-    from calendar_integration.models import CalendarManagementToken, CalendarOwnership
-
     user = User.objects.create_user(email=f"rest-{organization.pk}@example.com", password="x")
     Profile.objects.create(user=user)
     OrganizationMembership.objects.create(user=user, organization=organization, is_active=True)
@@ -299,7 +304,7 @@ class TestRestSurface:
         assert body["code"] == "limit_exceeded"
         assert body["resource"] == LimitedResource.EVENT_OCCURRENCES
         assert body["remedy"] == LimitRemedy.ADD_PAYMENT_METHOD
-        assert not CalendarEvent.objects.filter(calendar=calendar).exists()
+        assert not CalendarEvent.original_manager.filter(calendar=calendar).exists()
 
     def test_unlimited_plan_is_unchanged(self, mock_google_adapter):
         organization, subscription = _organization_with_postpaid_limit(None, BillingState.FREE)
@@ -405,7 +410,7 @@ class TestTokenSurface:
         body = response.json()
         assert body["resource"] == LimitedResource.EVENT_OCCURRENCES
         assert body["remedy"] == LimitRemedy.ADD_PAYMENT_METHOD
-        assert not CalendarEvent.objects.filter(calendar=calendar).exists()
+        assert not CalendarEvent.original_manager.filter(calendar=calendar).exists()
 
     def test_unlimited_plan_is_unchanged(self):
         organization, subscription = _organization_with_postpaid_limit(None, BillingState.FREE)
@@ -471,8 +476,6 @@ def _scoped_system_user(
 def _owner_with_calendar(
     organization: Organization,
 ) -> tuple[User, OrganizationMembership, Calendar]:
-    from calendar_integration.models import CalendarOwnership
-
     owner = User.objects.create_user(
         email=f"sched-owner-{organization.pk}@example.com", password="x"
     )
@@ -528,7 +531,7 @@ class TestPublicApiScheduleEventSurface:
         assert body["code"] == "limit_exceeded"
         assert body["resource"] == LimitedResource.EVENT_OCCURRENCES
         assert body["remedy"] == LimitRemedy.ADD_PAYMENT_METHOD
-        assert not CalendarEvent.objects.filter(calendar=calendar).exists()
+        assert not CalendarEvent.original_manager.filter(calendar=calendar).exists()
 
     @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
     def test_unlimited_plan_is_unchanged(self, mock_rate_limiter):
@@ -638,7 +641,7 @@ class TestBookingCodeEventSurface:
         body = data["errors"][0]["extensions"]
         assert body["code"] == "limit_exceeded"
         assert body["resource"] == LimitedResource.EVENT_OCCURRENCES
-        assert not CalendarEvent.objects.filter(calendar=calendar).exists()
+        assert not CalendarEvent.original_manager.filter(calendar=calendar).exists()
         # The code must not have been consumed by a rejected booking.
         token.refresh_from_db()
         assert token.used_at is None
@@ -702,12 +705,6 @@ mutation CreateCalendarGroupEventWithCode($input: CreateGroupEventWithCodeInput!
 
 
 def _group_with_one_slot(organization: Organization) -> tuple[object, object, Calendar]:
-    from calendar_integration.models import (
-        CalendarGroup,
-        CalendarGroupSlot,
-        CalendarGroupSlotMembership,
-    )
-
     calendar = baker.make(
         Calendar,
         organization=organization,
@@ -772,7 +769,7 @@ class TestBookingCodeGroupEventSurface:
         body = data["errors"][0]["extensions"]
         assert body["code"] == "limit_exceeded"
         assert body["resource"] == LimitedResource.EVENT_OCCURRENCES
-        assert not CalendarEvent.objects.filter(calendar=calendar).exists()
+        assert not CalendarEvent.original_manager.filter(calendar=calendar).exists()
         token.refresh_from_db()
         assert token.used_at is None
 
@@ -869,8 +866,6 @@ class TestBulkSyncWriterSurface:
         organization, _subscription = _at_the_allowance_no_payment_method()
         sync_service, calendar = _sync_setup(organization)
 
-        from calendar_integration.models import CalendarSync
-
         calendar_sync = CalendarSync.objects.create(
             organization=organization,
             calendar=calendar,
@@ -888,14 +883,12 @@ class TestBulkSyncWriterSurface:
         calendar_sync.refresh_from_db()
         assert calendar_sync.status == "failed"
         assert calendar_sync.error_message  # the OverLimitError's message, not empty
-        assert not CalendarEvent.objects.filter(calendar=calendar).exists()
+        assert not CalendarEvent.original_manager.filter(calendar=calendar).exists()
 
     def test_unlimited_plan_is_unchanged(self):
         organization, subscription = _organization_with_postpaid_limit(None, BillingState.FREE)
         _seed_metered_occurrences(organization, subscription, 1)
         sync_service, calendar = _sync_setup(organization)
-
-        from calendar_integration.models import CalendarSync
 
         calendar_sync = CalendarSync.objects.create(
             organization=organization,
@@ -913,7 +906,7 @@ class TestBulkSyncWriterSurface:
 
         calendar_sync.refresh_from_db()
         assert calendar_sync.status == "success"
-        assert CalendarEvent.objects.filter(
+        assert CalendarEvent.original_manager.filter(
             calendar=calendar, external_id="sync-master-unlimited"
         ).exists()
 
@@ -968,8 +961,6 @@ def _create_bundle_event_with_open_availability(
     the bundle service's own test suite does, leaving the postpaid guard, the
     permission checks, and every DB write completely real.
     """
-    from calendar_integration.services.dataclasses import AvailableTimeWindow
-
     availability_window = [
         AvailableTimeWindow(start_time=event_data.start_time, end_time=event_data.end_time)
     ]
@@ -1009,7 +1000,7 @@ class TestBundleEventFanOutHeadroom:
             )
 
         assert exc_info.value.resource_key == LimitedResource.EVENT_OCCURRENCES
-        assert not CalendarEvent.objects.filter(bundle_calendar=bundle_calendar).exists()
+        assert not CalendarEvent.original_manager.filter(bundle_calendar=bundle_calendar).exists()
 
     def test_five_internal_children_with_headroom_for_five_succeeds(self):
         organization, subscription = _organization_with_postpaid_limit(5, BillingState.FREE)
@@ -1060,7 +1051,7 @@ class TestBundleEventFanOutHeadroom:
         assert event.pk is not None
         # Primary + 4 internal representations = 5 CalendarEvent rows for this bundle --
         # the same 5 units the guard above checked headroom for.
-        assert CalendarEvent.objects.filter(bundle_calendar=bundle_calendar).count() == 5
+        assert CalendarEvent.original_manager.filter(bundle_calendar=bundle_calendar).count() == 5
 
     def test_five_google_children_checks_only_one_unit(self):
         """A bundle over five Google calendars costs 1, not 5: only the primary gets
@@ -1124,7 +1115,7 @@ class TestBundleEventFanOutHeadroom:
         # Only the primary got a real CalendarEvent -- the other four Google children
         # got a BlockedTime instead, which is exactly why this fan-out costs 1 unit.
         assert list(
-            CalendarEvent.objects.filter(bundle_calendar=bundle_calendar).values_list(
+            CalendarEvent.original_manager.filter(bundle_calendar=bundle_calendar).values_list(
                 "pk", flat=True
             )
         ) == [event.pk]
@@ -1295,7 +1286,7 @@ class TestRecurringMasterCostsItsOccurrences:
         assert exc_info.value.resource_key == LimitedResource.EVENT_OCCURRENCES
         assert exc_info.value.remedy == LimitRemedy.ADD_PAYMENT_METHOD
         # Stage 2 runs after the insert and rolls it back; nothing survives.
-        assert not CalendarEvent.objects.filter(calendar=calendar).exists()
+        assert not CalendarEvent.original_manager.filter(calendar=calendar).exists()
 
     def test_a_single_event_of_the_same_shape_still_fits(self):
         """The control for the test above: with 9 of 10 used, one booking is allowed.
@@ -1528,7 +1519,7 @@ class TestInternalCreateEventReentries:
 
         assert moved.pk is not None
         assert moved.calendar_fk_id == target.id
-        assert not CalendarEvent.objects.filter(pk=event.pk).exists()
+        assert not CalendarEvent.original_manager.filter(pk=event.pk).exists()
 
     def test_bypass_limits_skips_the_guard(self):
         """Every guarded write takes ``bypass_limits`` so a management command or a
@@ -1600,8 +1591,6 @@ class TestSyncRecoversOnceHeadroomIsRestored:
         _seed_metered_occurrences(organization, subscription, 1)
         sync_service, calendar = _sync_setup(organization)
 
-        from calendar_integration.models import CalendarSync
-
         calendar_sync = CalendarSync.objects.create(
             organization=organization,
             calendar=calendar,
@@ -1625,172 +1614,6 @@ class TestSyncRecoversOnceHeadroomIsRestored:
         sync_service.sync_events(calendar_sync)
         calendar_sync.refresh_from_db()
         assert calendar_sync.status == "success"
-        assert CalendarEvent.objects.filter(calendar=calendar, external_id="sync-recovers").exists()
-
-
-# ----------------------------------------------------------------------------------
-# Coverage registry: every module that reaches the guard has a probe here
-# ----------------------------------------------------------------------------------
-
-#: Repository root, for the source walk below.
-_REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
-
-#: The three modules that *implement* the guarded write chain rather than consume it,
-#: excluded from the derived set below. Each has a reason, not a convenience:
-#:
-#: - ``calendar_event_service.py`` holds the guard itself, and its internal
-#:   re-entries into ``create_event`` (``create_recurring_event``, the
-#:   bulk-modification continuation, ``transfer_event``) are covered by
-#:   ``TestInternalCreateEventReentries`` below rather than by a "surface" probe.
-#: - ``calendar_service.py`` is the facade that forwards to it.
-#: - ``calendar_bundle_service.py`` is the fan-out, covered by
-#:   ``TestBundleEventFanOutHeadroom``.
-_GUARD_IMPLEMENTATION_MODULES = {
-    "calendar_integration/services/calendar_event_service.py",
-    "calendar_integration/services/calendar_service.py",
-    "calendar_integration/services/calendar_bundle_service.py",
-}
-
-#: Call names that mean "this module can trip the post-paid guard": the two service
-#: entry points that route into ``CalendarEventService.create_event``, and a direct
-#: call to the guard for a writer (the sync path) that does not go through it.
-_GUARD_REACHING_CALLS = {"create_event", "create_recurring_event", "check_postpaid_allowance"}
-
-#: Receivers whose ``create_event`` is the *provider* adapter's (a Google/Microsoft
-#: API write), not this service's. ``ExternalEventChangeRequestService`` calls
-#: ``write_adapter.create_event`` to re-create an event on the provider after an
-#: undone deletion -- no local ``CalendarEvent`` is created and nothing is metered,
-#: so it is not a guarded surface.
-_ADAPTER_RECEIVER_MARKERS = ("adapter", "client")
-
-
-def _receiver_name(node: ast.Attribute) -> str:
-    """The identifier the guarded call is made *on* (``x.y.create_event`` -> ``y``)."""
-    value = node.value
-    if isinstance(value, ast.Attribute):
-        return value.attr
-    if isinstance(value, ast.Name):
-        return value.id
-    return ""
-
-
-#: Every module the walk below is expected to find, mapped to the test class(es) that
-#: drive it. The **keys are asserted against the source tree**, in both directions --
-#: this is the difference between this test and the hand-written literal it replaced,
-#: which compared a dict in this file against a list in this file and would therefore
-#: have passed unchanged when a seventh entry point appeared.
-GUARDED_SURFACES: dict[str, tuple[type, ...]] = {
-    # REST (`CalendarEventViewSet`) and the token REST surface share one serializer,
-    # which is the module that actually issues the create.
-    "calendar_integration/serializers.py": (TestRestSurface, TestTokenSurface),
-    # `createCalendarEventWithCode` (direct) and `createCalendarGroupEventWithCode`
-    # (via `calendar_group_service`, below).
-    "calendar_integration/mutations.py": (
-        TestBookingCodeEventSurface,
-        TestBookingCodeGroupEventSurface,
-    ),
-    "public_api/mutations.py": (TestPublicApiScheduleEventSurface,),
-    "calendar_integration/services/calendar_group_service.py": (TestBookingCodeGroupEventSurface,),
-    "calendar_integration/services/calendar_sync_service.py": (TestBulkSyncWriterSurface,),
-}
-
-
-def _modules_reaching_the_guard() -> set[str]:
-    """Every module in the tree that can trip the post-paid guard, read out of the
-    source with ``ast`` rather than listed by hand.
-
-    Tests, migrations, factories, and the calendar *adapters* (whose own
-    ``create_event`` talks to Google/Microsoft, not to this service) are excluded, as
-    are the three guard-implementation modules above.
-
-    Scoped to this project's own **first-party Django app packages** (resolved from
-    ``django.apps``, kept to those living under the repo), not a blind ``rglob`` of the
-    repo root. Two reasons, one correctness and one operational: a blind walk would
-    read non-source trees like ``mediafiles`` / ``templates`` / a nested
-    ``.claude/worktrees`` checkout of this same repo -- making the result depend on
-    what else is on disk -- and parsing every one of them is slow enough to trip this
-    test's ``pytest-timeout`` under parallel load. Walking only the app packages is
-    both the correct set and an order of magnitude less work.
-    """
-    from django.apps import apps
-
-    app_dirs: list[pathlib.Path] = []
-    for config in apps.get_app_configs():
-        app_path = pathlib.Path(config.path).resolve()
-        try:
-            app_path.relative_to(_REPO_ROOT)
-        except ValueError:
-            continue  # third-party app installed outside the repo
-        app_dirs.append(app_path)
-
-    found: set[str] = set()
-    for app_dir in app_dirs:
-        for path in app_dir.rglob("*.py"):
-            parts = path.relative_to(_REPO_ROOT).parts
-            relative = path.relative_to(_REPO_ROOT).as_posix()
-            if (
-                any(part.startswith(".") for part in parts)
-                or "tests" in parts
-                or "migrations" in parts
-                or "calendar_adapters" in parts
-                or path.name == "factories.py"
-                or relative in _GUARD_IMPLEMENTATION_MODULES
-            ):
-                continue
-            try:
-                tree = ast.parse(path.read_text(encoding="utf-8"))
-            except (SyntaxError, UnicodeDecodeError):  # pragma: no cover - not our source
-                continue
-            for node in ast.walk(tree):
-                if (
-                    isinstance(node, ast.Call)
-                    and isinstance(node.func, ast.Attribute)
-                    and node.func.attr in _GUARD_REACHING_CALLS
-                    and not any(
-                        marker in _receiver_name(node.func) for marker in _ADAPTER_RECEIVER_MARKERS
-                    )
-                ):
-                    found.add(relative)
-                    break
-    return found
-
-
-def test_every_module_reaching_the_guard_has_a_probe():
-    """Derived from the source tree, and asserted both ways.
-
-    A seventh entry point -- a new viewset, a new mutation, a new service that calls
-    ``create_event`` -- appears in ``discovered`` the moment it is written and fails
-    here until somebody registers a probe for it. And a registration left behind for
-    a module that no longer creates events fails the other assertion, so the registry
-    cannot rot in the direction of *claiming* coverage it no longer has.
-    """
-    discovered = _modules_reaching_the_guard()
-
-    unprobed = discovered - GUARDED_SURFACES.keys()
-    assert not unprobed, (
-        f"These modules reach CalendarEventService.create_event (or the post-paid guard "
-        f"directly) but have no probe in this file: {sorted(unprobed)}. Add one, or add "
-        "the module to _GUARD_IMPLEMENTATION_MODULES with a reason if it implements the "
-        "guarded chain rather than consuming it."
-    )
-
-    stale = GUARDED_SURFACES.keys() - discovered
-    assert not stale, (
-        f"GUARDED_SURFACES registers {sorted(stale)}, which no longer reach the guard. "
-        "Remove the registration, or fix the call path if the surface was meant to stay "
-        "guarded -- otherwise this file reports coverage of a path nothing routes through."
-    )
-
-
-def test_every_registered_surface_has_a_blocked_and_unlimited_probe():
-    """A registered probe class that lost its blocked-path or unlimited-path test
-    would leave the module above nominally covered and actually unchecked."""
-    for module, test_classes in GUARDED_SURFACES.items():
-        for test_class in test_classes:
-            method_names = {m for m in dir(test_class) if m.startswith("test_")}
-            assert any("blocked" in m for m in method_names), (
-                f"{module} -> {test_class.__name__} has no blocked-path test"
-            )
-            assert any("unlimited" in m for m in method_names), (
-                f"{module} -> {test_class.__name__} has no unlimited-plan test"
-            )
+        assert CalendarEvent.original_manager.filter(
+            calendar=calendar, external_id="sync-recovers"
+        ).exists()

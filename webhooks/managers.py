@@ -1,16 +1,28 @@
-from organizations.managers import BaseOrganizationModelManager
+from common.managers import OrganizationScopedManager
 from webhooks.querysets import WebhookConfigurationQuerySet
 
 
-class WebhookConfigurationManager(BaseOrganizationModelManager):
-    """Manager for WebhookConfiguration with domain-specific query methods."""
+# ``from_queryset`` rather than a hand-rolled ``get_queryset`` returning
+# ``WebhookConfigurationQuerySet(self.model, using=self._db)``. Building the
+# queryset directly skips ``OrganizationScopedManager.get_queryset`` entirely, so
+# ``objects`` would *look* scoped while reading every tenant -- the defect once
+# found in all 12 ``calendar_integration`` managers. Going through
+# ``from_queryset`` also keeps ``_queryset_class`` and the copied queryset methods
+# pointed at the same class.
+_WebhookConfigurationManagerBase = OrganizationScopedManager.from_queryset(
+    WebhookConfigurationQuerySet
+)
 
-    def get_queryset(self) -> WebhookConfigurationQuerySet:
-        return WebhookConfigurationQuerySet(self.model, using=self._db)
 
-    def filter_by_organization(self, organization_id: int) -> WebhookConfigurationQuerySet:
-        return self.get_queryset().filter(organization_id=organization_id)  # type: ignore[return-value]
+class WebhookConfigurationManager(_WebhookConfigurationManagerBase):  # type: ignore[misc,valid-type]
+    """Manager for WebhookConfiguration with domain-specific query methods.
 
-    def live(self) -> WebhookConfigurationQuerySet:
-        """Wraps :meth:`WebhookConfigurationQuerySet.live`."""
-        return self.get_queryset().live()
+    ``live()`` is copied off :class:`~webhooks.querysets.WebhookConfigurationQuerySet`
+    by ``from_queryset``; ``filter_by_organization`` / ``exclude_by_organization`` /
+    ``unscoped`` come from :class:`~common.managers.OrganizationScopedManager`.
+
+    The old hand-written ``filter_by_organization(organization_id)`` is gone:
+    the inherited one takes an ``Organization`` *or* its id and starts from the
+    unscoped queryset, which is what makes a deliberate cross-organization read
+    expressible under ``STRICT_ORGANIZATION_FILTER``.
+    """

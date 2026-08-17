@@ -288,15 +288,18 @@ def serialize_event_data_input(
     # ``new`` side and falsely flag it as an attendee change.
     member_user_ids = resolve_member_user_ids(new_attendance_user_ids, organization.id)
     attendances_users_by_id = {u.id: u for u in User.objects.filter(id__in=member_user_ids)}
+    # ``unscoped()`` on both: ``event`` is an organization-safe relation, so
+    # filtering it by instance puts the event's ``organization_id`` in the ``ON``
+    # clause -- the tenant boundary is in the query already.
     existing_attendances_by_user_id = {
         a.membership_user_id: a
-        for a in EventAttendance.objects.filter(
+        for a in EventAttendance.objects.unscoped().filter(
             event=event, membership_user_id__in=new_attendance_user_ids
         )
     }
     existing_external_attendances_by_attendee_id = {
         a.external_attendee.id: a
-        for a in EventExternalAttendance.objects.filter(
+        for a in EventExternalAttendance.objects.unscoped().filter(
             event=event, external_attendee__id__in=new_external_attendances_attendee_ids
         )
     }
@@ -354,8 +357,7 @@ def serialize_event_data_input(
                 ),
             )
             # For recurring instances, get resource allocations from the parent event; for regular events, use their own
-            for resource_allocation in Calendar.objects.filter(
-                organization=organization,
+            for resource_allocation in Calendar.objects.filter_by_organization(organization).filter(
                 id__in=[r.resource_id for r in event_data.resource_allocations],
                 calendar_type=CalendarType.RESOURCE,
             )
@@ -383,19 +385,22 @@ def grant_calendar_owner_permissions(
     # Grant permissions to all calendar owners (resolved via membership; orphan
     # ownerships with a null membership are intentionally skipped).
     calendar_owners = User.objects.filter(
-        organization_memberships__calendar_ownerships__calendar_fk_id=calendar.id,
-        organization_memberships__calendar_ownerships__organization_id=calendar.organization_id,
+        memberships__calendar_ownerships__calendar_fk_id=calendar.id,
+        memberships__calendar_ownerships__organization_id=calendar.organization_id,
     ).distinct()
 
     for owner in calendar_owners:
         # Check if user already has a token for this calendar
-        existing_token = CalendarManagementToken.objects.filter(
-            membership_user_id=owner.id,
-            calendar_fk_id=calendar.id,
-            organization_id=calendar.organization_id,
-            event_fk_id__isnull=True,
-            revoked_at__isnull=True,
-        ).first()
+        existing_token = (
+            CalendarManagementToken.objects.filter_by_organization(calendar.organization_id)
+            .filter(
+                membership_user_id=owner.id,
+                calendar_fk_id=calendar.id,
+                event_fk_id__isnull=True,
+                revoked_at__isnull=True,
+            )
+            .first()
+        )
 
         if not existing_token:
             permission_service.create_calendar_owner_token(
@@ -429,12 +434,15 @@ def grant_event_attendee_permissions(
         if attendee_user is None:
             continue
         # Check if user already has a token for this event
-        existing_token = CalendarManagementToken.objects.filter(
-            membership_user_id=attendee_user.id,
-            event_fk_id=event.id,
-            organization_id=event.organization_id,
-            revoked_at__isnull=True,
-        ).first()
+        existing_token = (
+            CalendarManagementToken.objects.filter_by_organization(event.organization_id)
+            .filter(
+                membership_user_id=attendee_user.id,
+                event_fk_id=event.id,
+                revoked_at__isnull=True,
+            )
+            .first()
+        )
 
         if not existing_token:
             permission_service.create_attendee_token(
@@ -448,12 +456,15 @@ def grant_event_attendee_permissions(
         event.organization_id
     ):
         # Check if external attendee already has a token for this event
-        existing_token = CalendarManagementToken.objects.filter(
-            organization_id=event.organization_id,
-            external_attendee_fk_id=external_attendance.external_attendee_fk_id,
-            event_fk_id=event.id,
-            revoked_at__isnull=True,
-        ).first()
+        existing_token = (
+            CalendarManagementToken.objects.filter_by_organization(event.organization_id)
+            .filter(
+                external_attendee_fk_id=external_attendance.external_attendee_fk_id,
+                event_fk_id=event.id,
+                revoked_at__isnull=True,
+            )
+            .first()
+        )
 
         if not existing_token:
             permission_service.create_external_attendee_update_token(
@@ -498,12 +509,11 @@ def get_calendar_by_external_id(
 
     query_kwargs: dict[str, object] = {
         "external_id": calendar_external_id,
-        "organization_id": organization.id,
     }
     if calendar_adapter:
         query_kwargs["provider"] = calendar_adapter.provider
 
-    result = Calendar.objects.get(**query_kwargs)
+    result = Calendar.objects.filter_by_organization(organization.id).get(**query_kwargs)
     cache[cache_key] = result
     return result
 
@@ -523,9 +533,8 @@ def get_calendar_by_id(
     if cache_key in cache:
         return cache[cache_key]
 
-    result = Calendar.objects.get(
+    result = Calendar.objects.filter_by_organization(organization.id).get(
         id=calendar_id,
-        organization_id=organization.id,
     )
     cache[cache_key] = result
     return result

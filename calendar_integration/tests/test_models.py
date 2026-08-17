@@ -1351,7 +1351,7 @@ def test_blockedtime_and_availabletime_bulk_modification_records():
     assert bulk_av.parent_available_time_fk_id == parent_av.id
 
 
-# --- Group-slot scoping (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 0) --------
+# --- Group-slot scoping ------------------------------------------------
 #
 # `AvailableTime` and `BlockedTime` gained a nullable `group_slot` reference.
 # The default manager (`objects`) must exclude group-scoped rows (group_slot
@@ -1391,7 +1391,7 @@ def test_available_time_default_manager_excludes_group_scoped_rows():
     )
 
     default_scope_ids = set(
-        AvailableTime.objects.filter(organization_id=org.id).values_list("id", flat=True)
+        AvailableTime.objects.filter_by_organization(org.id).values_list("id", flat=True)
     )
     assert base_row.id in default_scope_ids
     assert group_scoped_row.id not in default_scope_ids
@@ -1440,7 +1440,7 @@ def test_blocked_time_default_manager_excludes_group_scoped_rows():
     )
 
     default_scope_ids = set(
-        BlockedTime.objects.filter(organization_id=org.id).values_list("id", flat=True)
+        BlockedTime.objects.filter_by_organization(org.id).values_list("id", flat=True)
     )
     assert base_row.id in default_scope_ids
     assert group_scoped_row.id not in default_scope_ids
@@ -1535,7 +1535,7 @@ def test_available_time_only_user_authored_composes_with_group_scoping():
     """`only_user_authored` (the billing counter's filter) must keep working
     whether it runs against the default (base-rows-only) manager or the
     unscoped/for_group_slot accessors, since group-scoped windows are metered
-    too (see AvailableTimeQuerySet.only_user_authored and Guiding Decisions).
+    too (see AvailableTimeQuerySet.only_user_authored).
     """
     org = baker.make("organizations.Organization")
     cal = baker.make(
@@ -1563,8 +1563,8 @@ def test_available_time_only_user_authored_composes_with_group_scoping():
 
     # Default manager: only the base row.
     assert set(
-        AvailableTime.objects.only_user_authored()
-        .filter(organization_id=org.id)
+        AvailableTime.objects.filter_by_organization(org.id)
+        .only_user_authored()
         .values_list("id", flat=True)
     ) == {base_row.id}
 

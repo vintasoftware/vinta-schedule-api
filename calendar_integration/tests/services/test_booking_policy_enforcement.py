@@ -27,11 +27,12 @@ Coverage:
 from __future__ import annotations
 
 import datetime
+from unittest.mock import patch
 
 import pytest
 
 from calendar_integration.constants import CalendarProvider, CalendarType
-from calendar_integration.exceptions import BookingPolicyViolationError
+from calendar_integration.exceptions import BookingPolicyViolationError, CalendarIntegrationError
 from calendar_integration.factories import create_booking_policy
 from calendar_integration.models import (
     AvailableTime,
@@ -40,6 +41,7 @@ from calendar_integration.models import (
     CalendarEvent,
     ChildrenCalendarRelationship,
 )
+from calendar_integration.services.bookable_slots_service import BookableSlotsService
 from calendar_integration.services.booking_policy_service import BookingPolicyService
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.dataclasses import CalendarEventInputData
@@ -202,8 +204,6 @@ class TestBookingPolicyEnforcementSingleCalendar:
         svc = self._svc(org)
 
         with pytest.raises(BookingPolicyViolationError):
-            from unittest.mock import patch
-
             with patch("calendar_integration.services.calendar_service._tz") as mock_tz:
                 mock_tz.now.return_value = _NOW
                 svc.create_event(calendar.id, _event_input_data())
@@ -228,8 +228,6 @@ class TestBookingPolicyEnforcementSingleCalendar:
         svc = self._svc(org)
 
         with pytest.raises(BookingPolicyViolationError):
-            from unittest.mock import patch
-
             with patch("calendar_integration.services.calendar_service._tz") as mock_tz:
                 mock_tz.now.return_value = _NOW
                 svc.create_event(calendar.id, _event_input_data())
@@ -259,8 +257,6 @@ class TestBookingPolicyEnforcementSingleCalendar:
         svc = self._svc(org)
 
         with pytest.raises(BookingPolicyViolationError):
-            from unittest.mock import patch
-
             with patch("calendar_integration.services.calendar_service._tz") as mock_tz:
                 mock_tz.now.return_value = _NOW
                 svc.create_event(calendar.id, _event_input_data())
@@ -290,8 +286,6 @@ class TestBookingPolicyEnforcementSingleCalendar:
         svc = self._svc(org)
 
         with pytest.raises(BookingPolicyViolationError):
-            from unittest.mock import patch
-
             with patch("calendar_integration.services.calendar_service._tz") as mock_tz:
                 mock_tz.now.return_value = _NOW
                 svc.create_event(calendar.id, _event_input_data())
@@ -329,8 +323,6 @@ class TestBookingPolicyEnforcementSingleCalendar:
 
         # Booking attempt now — slot is inside the dead zone, must be rejected.
         with pytest.raises(BookingPolicyViolationError):
-            from unittest.mock import patch
-
             with patch("calendar_integration.services.calendar_service._tz") as mock_tz:
                 mock_tz.now.return_value = _NOW
                 svc.create_event(calendar.id, _event_input_data())
@@ -387,8 +379,6 @@ class TestBookingPolicyEnforcementBundle:
         svc = _service(org)
 
         with pytest.raises(BookingPolicyViolationError):
-            from unittest.mock import patch
-
             with patch("calendar_integration.services.calendar_service._tz") as mock_tz:
                 mock_tz.now.return_value = _NOW
                 svc.create_event(bundle.id, _event_input_data())
@@ -408,8 +398,6 @@ class TestBookingPolicyEnforcementBundle:
         svc = _service(org)
 
         with pytest.raises(BookingPolicyViolationError):
-            from unittest.mock import patch
-
             with patch("calendar_integration.services.calendar_service._tz") as mock_tz:
                 mock_tz.now.return_value = _NOW
                 svc.create_event(bundle.id, _event_input_data())
@@ -431,9 +419,6 @@ class TestBookingPolicyEnforcementBundle:
         ``resolve_for_bundle``).  Regression check that enforcement does not
         re-check the child policy.
         """
-        from calendar_integration.services.bookable_slots_service import BookableSlotsService
-        from calendar_integration.services.booking_policy_service import BookingPolicyService
-
         bundle, child = self._make_bundle(org)
 
         # Bundle policy: lead_time = 0 (no constraint) → booking at _BOOKING_START is allowed.
@@ -467,8 +452,6 @@ class TestBookingPolicyErrorInheritance:
     """Verify the exception class hierarchy is correct."""
 
     def test_booking_policy_violation_is_calendar_integration_error(self):
-        from calendar_integration.exceptions import CalendarIntegrationError
-
         err = BookingPolicyViolationError()
         assert isinstance(err, CalendarIntegrationError)
 

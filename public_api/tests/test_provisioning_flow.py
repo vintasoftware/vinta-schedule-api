@@ -12,14 +12,19 @@ from model_bakery import baker
 from rest_framework.test import APIClient
 
 from accounts.account_adapters import SocialAccountAdapter
+from common.utils.authentication_utils import verify_long_lived_token
 from organizations.models import (
     Organization,
     OrganizationBranding,
     OrganizationInvitation,
     OrganizationMembership,
-    OrganizationRole,
 )
-from public_api.models import ResourceAccess
+from organizations.permission_catalog import (
+    GROUP_ORGANIZATION_ADMIN,
+    GROUP_ORGANIZATION_MEMBER,
+)
+from organizations.services import OrganizationService
+from public_api.models import ResourceAccess, SystemUser
 from public_api.services import PublicAPIAuthService
 from users.models import Profile, User
 
@@ -303,7 +308,7 @@ class TestCreateInvitationProvisioning:
         After the chain:
         - A pending OrganizationInvitation exists in the child org addressed to the user email.
           (The invitation itself creates the user.)
-        - The invitation has the requested role.
+        - The invitation records the state the requested group implies.
         - No stray org was created.
         """
         from di_core.containers import container
@@ -354,7 +359,7 @@ class TestCreateInvitationProvisioning:
                             "input": {
                                 "userEmail": invited_email,
                                 "organizationId": str(child_org_id),
-                                "role": "MEMBER",
+                                "groups": ["organization_member"],
                             }
                         },
                     },
@@ -377,7 +382,7 @@ class TestCreateInvitationProvisioning:
         assert pending_invites.count() == 1
         invite = pending_invites.first()
         assert invite is not None
-        assert invite.role == OrganizationRole.MEMBER
+        assert invite.group == GROUP_ORGANIZATION_MEMBER
 
         # Verify no stray org was created (only reseller + child)
         assert Organization.objects.count() == org_count_before + 1
@@ -389,7 +394,7 @@ class TestCreateInvitationProvisioning:
     def test_social_login_auto_joins_invited_user_with_correct_role(self):
         """
         After createInvitation, social-login by that email yields an active membership
-        in the child org with the invited role, and no stray org is created.
+        in the child org with the invited group, and no stray org is created.
         """
         reseller_org = baker.make(Organization, name="Reseller", can_invite_organizations=True)
         child_org = baker.make(Organization, name="Child Org", parent=reseller_org)
@@ -401,7 +406,7 @@ class TestCreateInvitationProvisioning:
             email=invited_email,
             organization=child_org,
             invited_by=None,
-            role=OrganizationRole.ADMIN,
+            group=GROUP_ORGANIZATION_ADMIN,
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
             accepted_at=None,
             membership_user_id=None,
@@ -412,13 +417,13 @@ class TestCreateInvitationProvisioning:
         # Simulate social login (triggers auto-join via SocialAccountAdapter.save_user)
         user = _social_save_user(invited_email)
 
-        # The user should have exactly one membership in the child org with ADMIN role.
+        # The user should have exactly one membership in the child org, administering it.
         memberships = OrganizationMembership.objects.filter(user=user)
         assert memberships.count() == 1
         membership = memberships.first()
         assert membership is not None
         assert membership.organization == child_org
-        assert membership.role == OrganizationRole.ADMIN
+        assert set(membership.groups.values_list("name", flat=True)) == {GROUP_ORGANIZATION_ADMIN}
 
         # No stray org was created.
         assert Organization.objects.count() == org_count_before
@@ -439,9 +444,7 @@ class TestCreateInvitationProvisioning:
         token to call accept_invitation, assert an active membership in the target org,
         and confirm no plaintext token is stored in the DB row.
         """
-        from common.utils.authentication_utils import verify_long_lived_token
         from di_core.containers import container
-        from organizations.services import OrganizationService
 
         # Setup reseller + child org
         reseller_org = baker.make(Organization, name="Reseller", can_invite_organizations=True)
@@ -513,12 +516,12 @@ class TestCreateInvitationProvisioning:
         assert invitation.accepted_at is not None
 
     def test_send_email_false_invite_url_carries_the_reseller_ancestor_slug(self, settings):
-        """Organization Auth-Area Branding plan, Phase 5 amendment (2026-08-06): the
-        inviteUrl the sendEmail=false path returns must be keyed on the branding
-        root's slug -- the reseller's, not the invited child org's (which has none)
-        -- exactly like the branded invitation email built by the same-org REST/
-        service path. Otherwise the SPA has no way to resolve the reseller's
-        branding for this invitation before the invitee authenticates."""
+        """The inviteUrl the sendEmail=false path returns must be keyed on the
+        branding root's slug -- the reseller's, not the invited child org's
+        (which has none) -- exactly like the branded invitation email built by
+        the same-org REST/service path. Otherwise the SPA has no way to resolve
+        the reseller's branding for this invitation before the invitee
+        authenticates."""
         settings.HEADLESS_FRONTEND_URLS = {
             "account_accept_invitation": "https://app.example.com/auth/accept-invite/?token={token}",
             "account_accept_invitation_branded": (
@@ -683,8 +686,6 @@ class TestCreateSystemUserTokenProvisioning:
         This is the primary delegation story: the reseller mints a per-tenant token that
         itself carries the ORGANIZATION scope, so it can create child orgs autonomously.
         """
-        from public_api.models import SystemUser
-
         reseller_org = baker.make(Organization, name="Reseller", can_invite_organizations=True)
         auth_service = PublicAPIAuthService()
         reseller_su, reseller_token = auth_service.create_system_user(
@@ -749,8 +750,6 @@ class TestCreateSystemUserTokenProvisioning:
         - The mutation returns a GraphQL error referencing 'subtree'.
         - No SystemUser with the attempted integration_name is created.
         """
-        from public_api.models import SystemUser
-
         r1_org = baker.make(Organization, name="Reseller1", can_invite_organizations=True)
         r2_org = baker.make(Organization, name="Reseller2", can_invite_organizations=True)
         r2_child = baker.make(Organization, name="R2Child", parent=r2_org)

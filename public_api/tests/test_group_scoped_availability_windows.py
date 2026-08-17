@@ -1,5 +1,5 @@
 """Integration tests for the public GraphQL surface of group-scoped
-availability windows (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 1d).
+availability windows.
 
 Covers ``groupScopedAvailabilityWindows`` (query) and
 ``batchUpsertGroupScopedAvailabilityWindows`` (batch-upsert mutation):
@@ -13,6 +13,7 @@ existing (frozen) availability query/mutation are byte-for-byte unchanged.
 import datetime
 import uuid
 
+from django.contrib.auth import get_user_model
 from django.utils import timezone as django_timezone
 
 import pytest
@@ -127,8 +128,6 @@ class TestGroupScopedAvailabilityWindowsPublicAPI:
 
         Returns (user, membership, calendar).
         """
-        from django.contrib.auth import get_user_model
-
         user_model = get_user_model()
         unique = uuid.uuid4().hex[:8]
         owner = baker.make(user_model, email=f"owner_{unique}@example.com")
@@ -995,7 +994,7 @@ class TestGroupScopedAvailabilityWindowsPublicAPI:
 
     def test_existing_batch_update_availability_windows_response_shape_unchanged(self):
         """Byte-for-byte shape check: the frozen batchUpdateAvailabilityWindows
-        mutation's response is unaffected by this phase's additions."""
+        mutation's response is unaffected by the group-scoped additions."""
         org = self._setup_org()
         calendar = self._make_calendar(org)
         system_user, token, auth_service = self._make_org_wide_system_user(
@@ -1033,7 +1032,7 @@ class TestGroupScopedAvailabilityWindowsPublicAPI:
 
         # Exact shape: only these three top-level keys, and availableTimes
         # entries carry only id/startTime/endTime (as queried) -- unchanged
-        # from before this phase's additions.
+        # from before the group-scoped additions.
         assert set(result.keys()) == {"success", "errorMessage", "availableTimes"}
         assert result["success"] is True
         assert result["errorMessage"] is None

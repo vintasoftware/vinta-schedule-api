@@ -111,11 +111,10 @@ def _select_payment_intent_id(payments: object) -> str | None:
     document an ordering guarantee for this list, and a dunning-recovered
     invoice carries *both* the dead card's failed attempt and the new card's
     successful one: `data[0]` picked the failed attempt's PaymentIntent in
-    this phase's reproduction, whose status (`"pending"` in the reviewer's
-    repro) matches neither `APPROVED` nor any `FAILED_SUBSCRIPTION_PAYMENT
+    a real reproduction, whose status (`"pending"` in that repro) matches
+    neither `APPROVED` nor any `FAILED_SUBSCRIPTION_PAYMENT
     _STATUSES` member, so nothing happened even though the balance was
-    genuinely collected (Billing API Contract Hardening, Phase 4 reviewer
-    finding BLOCKER 2).
+    genuinely collected.
 
     Prefers the entry whose own `status` (`InvoicePayment.status`, one of
     `"open"`, `"paid"`, `"canceled"`) is `"paid"` -- the one that actually
@@ -340,7 +339,7 @@ class StripeSubscriptionAdapter(BaseSubscriptionAdapter):
         ``change_subscription_plan``: that method moves the subscription onto a
         plan/price and only invoices a *proration* as a side effect, which is
         exactly what collected $0.00 against a real past-due renewal invoice in
-        this phase's probe (see the base docstring for the numbers). This
+        a live probe of that path (see the base docstring for the numbers). This
         method instead looks up the subscription's own unpaid invoices -- the
         ones dunning is actually chasing -- and pays each directly, the same
         action Stripe's own dashboard "Retry now" button drives.
@@ -377,17 +376,16 @@ class StripeSubscriptionAdapter(BaseSubscriptionAdapter):
         links in that chain are always empty in practice -- which is exactly
         why the subscription-level default (the one `update_subscription_payment_token`
         pins) is the one that actually wins when `payment_token` is omitted,
-        not an accident of Stripe's ordering. This phase's original probe
-        could not confirm the subscription-vs-customer half of that
-        precedence because it had updated both to the new card. Passing
+        not an accident of Stripe's ordering. An early live-mode probe of
+        this behavior could not confirm the subscription-vs-customer half of
+        that precedence because it had updated both to the new card. Passing
         `payment_token` explicitly here removes the ambiguity entirely: every
         invoice paid here is always charged against the specific instrument
         `retry_payment` just attached (`update_subscription_payment_token`,
         called immediately before this).
 
-        When `payment_token` is **empty** (Billing API Contract Hardening,
-        Phase 5 -- the dunning ladder's own call, via
-        `SubscriptionService.retry_failed_charge`), `payment_method` is
+        When `payment_token` is **empty** -- the dunning ladder's own call,
+        via `SubscriptionService.retry_failed_charge` -- `payment_method` is
         omitted from `Invoice.pay` entirely rather than passed as `""` --
         Stripe rejects an explicit empty string, and omitting the key is what
         actually falls back to its own default-payment-method precedence.
@@ -408,9 +406,9 @@ class StripeSubscriptionAdapter(BaseSubscriptionAdapter):
 
         **`stripe.CardError` and `stripe.InvalidRequestError` are both
         translated into `ChargeDeclinedError`** -- a live Stripe test-mode
-        probe of this exact call (Billing API Contract Hardening, Phase 5
-        BLOCKER) proved a still-dead card on file (the *common* dunning-tick
-        outcome) raises `stripe.CardError` from `Invoice.pay`, uncaught. A
+        probe of this exact call proved a still-dead card on file (the
+        *common* dunning-tick outcome) raises `stripe.CardError` from
+        `Invoice.pay`, uncaught. A
         Tier 4 reviewer then proved, with a second runnable probe, that a
         customer with **no** default payment method at all -- the payer
         detached their card in the billing portal, also a canonical dunning
@@ -633,8 +631,7 @@ class StripeSubscriptionAdapter(BaseSubscriptionAdapter):
         `Invoice.pay` had genuinely collected the real balance on the *actual*
         past-due invoice named in the `invoice.paid` event -- money moved, but
         no `Payment` row, no `PaymentStatusUpdate`, and the subscription rode
-        GRACE straight to RESTRICTED (Billing API Contract Hardening, Phase 4
-        reviewer finding BLOCKER 1).
+        GRACE straight to RESTRICTED.
 
         `customer.subscription.*` events have no specific invoice to resolve
         against -- their `data.object` *is* the subscription itself, not

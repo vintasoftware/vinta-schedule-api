@@ -237,7 +237,7 @@ def test_exception_engine_master_date_creates_continuation_and_demotes_master(
     assert "delete_called" not in recorded
 
     # The original RecurrenceRule was deleted.
-    assert not RecurrenceRule.objects.filter(id=original_rule_id).exists()
+    assert not RecurrenceRule.original_manager.filter(id=original_rule_id).exists()
 
     # The master was re-fetched and demoted to non-recurring.
     assert result is not None

@@ -356,8 +356,7 @@ def test_pay_outstanding_invoice_refuses_explicitly(adapter, mock_subscription):
     refusal). A loud, typed failure beats shipping a second silent no-op on a
     money path. `CollectionNotSupportedError` (not the plain
     `PaymentAdapterError` this replaced) so `vinta_exception_handler` can
-    render it as a 409 instead of an unhandled 500 (Billing API Contract
-    Hardening, Phase 4 reviewer finding SHOULD-FIX 7)."""
+    render it as a 409 instead of an unhandled 500 (SHOULD-FIX 7)."""
     with pytest.raises(CollectionNotSupportedError):
         adapter.pay_outstanding_invoice(mock_subscription, "tok-new-card")
 

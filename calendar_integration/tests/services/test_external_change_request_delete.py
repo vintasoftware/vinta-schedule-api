@@ -332,14 +332,18 @@ def test_change_request_policy_creates_pending_delete_request_and_keeps_local_ev
     service._execute_calendar_sync(calendar_sync, sync_token="tok-prev")
 
     # Local event must still EXIST — it must NOT have been deleted.
-    assert CalendarEvent.objects.filter(
-        external_id="evt_del_cr_001",
-        organization_id=organization_change_request.id,
-    ).exists()
+    assert (
+        CalendarEvent.objects.filter_by_organization(organization_change_request.id)
+        .filter(
+            external_id="evt_del_cr_001",
+        )
+        .exists()
+    )
 
     # Exactly one PENDING delete change request must exist.
-    requests = ExternalEventChangeRequest.objects.filter(
-        organization_id=organization_change_request.id,
+    requests = ExternalEventChangeRequest.objects.filter_by_organization(
+        organization_change_request.id
+    ).filter(
         event=existing,
     )
     assert requests.count() == 1
@@ -401,26 +405,33 @@ def test_change_request_policy_deletion_external_id_in_matched_event_ids(
     service._execute_calendar_sync(calendar_sync, sync_token=None)
 
     # The intercepted event must still exist (matched_event_ids kept it from deletion).
-    assert CalendarEvent.objects.filter(
-        external_id="evt_del_intercept",
-        organization_id=organization_change_request.id,
-    ).exists()
+    assert (
+        CalendarEvent.objects.filter_by_organization(organization_change_request.id)
+        .filter(
+            external_id="evt_del_intercept",
+        )
+        .exists()
+    )
     intercepted.refresh_from_db()
     assert intercepted.title == "Will Not Be Deleted"
 
     # The truly vanished event must have been deleted by full-sync.
-    assert not CalendarEvent.objects.filter(
-        external_id="evt_del_vanished",
-        organization_id=organization_change_request.id,
-    ).exists()
+    assert (
+        not CalendarEvent.objects.filter_by_organization(organization_change_request.id)
+        .filter(
+            external_id="evt_del_vanished",
+        )
+        .exists()
+    )
 
     # One PENDING delete request created for the intercepted event.
     assert (
-        ExternalEventChangeRequest.objects.filter(
-            organization_id=organization_change_request.id,
+        ExternalEventChangeRequest.objects.filter_by_organization(organization_change_request.id)
+        .filter(
             event=intercepted,
             status=ExternalEventChangeRequestStatus.PENDING,
-        ).count()
+        )
+        .count()
         == 1
     )
 
@@ -460,8 +471,9 @@ def test_change_request_policy_re_cancel_marks_prior_stale_and_creates_new_pendi
     service._execute_calendar_sync(calendar_sync_1, sync_token="tok-prev-1")
 
     # Confirm first PENDING request exists.
-    first_request = ExternalEventChangeRequest.objects.get(
-        organization_id=organization_change_request.id,
+    first_request = ExternalEventChangeRequest.objects.filter_by_organization(
+        organization_change_request.id
+    ).get(
         event=existing,
         status=ExternalEventChangeRequestStatus.PENDING,
     )
@@ -486,10 +498,11 @@ def test_change_request_policy_re_cancel_marks_prior_stale_and_creates_new_pendi
 
     # Total of 2 rows: one STALE, one PENDING.
     all_requests = list(
-        ExternalEventChangeRequest.objects.filter(
-            organization_id=organization_change_request.id,
+        ExternalEventChangeRequest.objects.filter_by_organization(organization_change_request.id)
+        .filter(
             event=existing,
-        ).order_by("id")
+        )
+        .order_by("id")
     )
     assert len(all_requests) == 2
 
@@ -503,10 +516,13 @@ def test_change_request_policy_re_cancel_marks_prior_stale_and_creates_new_pendi
     assert all(r.kind == ExternalEventChangeKind.DELETE for r in all_requests)
 
     # Local event still present — never deleted during interception.
-    assert CalendarEvent.objects.filter(
-        external_id="evt_del_recancel",
-        organization_id=organization_change_request.id,
-    ).exists()
+    assert (
+        CalendarEvent.objects.filter_by_organization(organization_change_request.id)
+        .filter(
+            external_id="evt_del_recancel",
+        )
+        .exists()
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -548,14 +564,17 @@ def test_allow_policy_deletes_event_directly_and_creates_no_change_request(
     service._execute_calendar_sync(calendar_sync, sync_token="tok-prev")
 
     # Local event must be DELETED.
-    assert not CalendarEvent.objects.filter(
-        external_id="evt_del_allow_001",
-        organization_id=organization_allow.id,
-    ).exists()
+    assert (
+        not CalendarEvent.objects.filter_by_organization(organization_allow.id)
+        .filter(
+            external_id="evt_del_allow_001",
+        )
+        .exists()
+    )
 
     # No ExternalEventChangeRequest created.
-    assert not ExternalEventChangeRequest.objects.filter(
-        organization_id=organization_allow.id,
+    assert not ExternalEventChangeRequest.objects.filter_by_organization(
+        organization_allow.id
     ).exists()
 
 
@@ -673,9 +692,12 @@ def test_change_request_deletion_creation_records_audit_entry(
     assert payload["diff"]["end_time"]["new"] is None
 
     # The local event is still present (not deleted).
-    assert CalendarEvent.objects.filter(
-        external_id="evt_del_audit_cr",
-        organization_id=organization_change_request.id,
-    ).exists()
+    assert (
+        CalendarEvent.objects.filter_by_organization(organization_change_request.id)
+        .filter(
+            external_id="evt_del_audit_cr",
+        )
+        .exists()
+    )
     existing.refresh_from_db()
     assert existing.title == "Audited Event Title"

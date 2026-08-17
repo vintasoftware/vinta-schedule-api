@@ -1,5 +1,7 @@
 """Integration tests for WebhookConfiguration CRUD and WebhookEvent history over the public GraphQL API."""
 
+import datetime
+
 import pytest
 from model_bakery import baker
 from rest_framework.test import APIClient
@@ -196,8 +198,6 @@ class TestWebhookConfigurationsQuery:
 
     def test_list_excludes_deleted_configs(self, organization, system_user_with_webhook_access):
         """Soft-deleted configs are excluded from the list."""
-        import datetime
-
         system_user, token, _ = system_user_with_webhook_access
 
         live = baker.make(
@@ -560,8 +560,6 @@ class TestUpdateWebhookConfigurationMutation:
         self, organization, system_user_with_webhook_access
     ):
         """Updating a soft-deleted config returns a not-found error."""
-        import datetime
-
         system_user, token, _ = system_user_with_webhook_access
         deleted_cfg = baker.make(
             WebhookConfiguration,
@@ -704,8 +702,6 @@ class TestDeleteWebhookConfigurationMutation:
         self, organization, system_user_with_webhook_access
     ):
         """Deleting an already-deleted config returns a not-found error."""
-        import datetime
-
         system_user, token, _ = system_user_with_webhook_access
         deleted_cfg = baker.make(
             WebhookConfiguration,

@@ -1,18 +1,17 @@
-"""Membership-removal cleanup for quota rules (CALENDAR_GROUP_SCOPED_AVAILABILITY
-Phase 3a).
+"""Membership-removal cleanup for quota rules.
 
 ``CalendarGroupSlotQuotaRule.group_slot`` cascades (``on_delete=CASCADE``) when
 the slot or its group is deleted, but NOT when a calendar is simply removed
 from a slot's roster while the slot survives -- that's a
 ``CalendarGroupSlotMembership`` deletion, which the FK doesn't observe.
-``CalendarGroupService._reconcile_slot`` (extended in this phase, mirroring the
-Phase 1a/2a pattern already established for group-scoped windows and blocked
-time) explicitly deletes orphaned quota rules for removed calendars.
+``CalendarGroupService._reconcile_slot`` (mirroring the pattern already
+established for group-scoped windows and blocked time) explicitly deletes
+orphaned quota rules for removed calendars.
 
-There is no write-service method for quota rules yet (Phase 3b/3c adds one) --
-rules are created directly through the model/factory here, the same way Phase
-0's tests inserted group-scoped ``AvailableTime``/``BlockedTime`` rows directly
-before any write service existed for them.
+There is no write-service method for quota rules yet -- rules are created
+directly through the model/factory here, the same way group-scoped
+``AvailableTime``/``BlockedTime`` rows were once inserted directly before any
+write service existed for them.
 """
 
 from __future__ import annotations

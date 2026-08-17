@@ -1,5 +1,5 @@
 """Integration tests for the internal REST surface exposing group-scoped
-availability windows (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 1c).
+availability windows.
 
 Covers:
 - Full lifecycle through the nested routes (create -> list -> retrieve ->
@@ -35,7 +35,9 @@ from calendar_integration.models import (
     CalendarGroupSlot,
     CalendarGroupSlotMembership,
 )
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
+from organizations.tests.helpers import grant_membership_groups
 from users.factories import UserFactory
 
 
@@ -89,8 +91,9 @@ def organization() -> Organization:
 @pytest.fixture
 def admin_membership(organization: Organization) -> OrganizationMembership:
     user = UserFactory().create_user()
-    return OrganizationMembership.objects.create(
-        user=user, organization=organization, role=OrganizationRole.ADMIN, is_active=True
+    return grant_membership_groups(
+        OrganizationMembership.objects.create(user=user, organization=organization, is_active=True),
+        [GROUP_ORGANIZATION_ADMIN],
     )
 
 
@@ -98,7 +101,7 @@ def admin_membership(organization: Organization) -> OrganizationMembership:
 def owner_membership(organization: Organization) -> OrganizationMembership:
     user = UserFactory().create_user()
     return OrganizationMembership.objects.create(
-        user=user, organization=organization, role=OrganizationRole.MEMBER, is_active=True
+        user=user, organization=organization, is_active=True
     )
 
 
@@ -109,7 +112,7 @@ def other_owner_membership(organization: Organization) -> OrganizationMembership
     the caller does not own."""
     user = UserFactory().create_user()
     return OrganizationMembership.objects.create(
-        user=user, organization=organization, role=OrganizationRole.MEMBER, is_active=True
+        user=user, organization=organization, is_active=True
     )
 
 
@@ -117,7 +120,7 @@ def other_owner_membership(organization: Organization) -> OrganizationMembership
 def stranger_membership(organization: Organization) -> OrganizationMembership:
     user = UserFactory().create_user()
     return OrganizationMembership.objects.create(
-        user=user, organization=organization, role=OrganizationRole.MEMBER, is_active=True
+        user=user, organization=organization, is_active=True
     )
 
 

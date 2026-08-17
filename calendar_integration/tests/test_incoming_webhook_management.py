@@ -218,7 +218,7 @@ class TestWebhookAnalyticsService:
         assert deleted_count == 1
 
         # Verify only recent event remains
-        remaining_events = CalendarWebhookEvent.objects.filter(organization=self.organization)
+        remaining_events = CalendarWebhookEvent.objects.filter_by_organization(self.organization)
         assert remaining_events.count() == 1
         assert remaining_events.first().external_calendar_id == "recent-event"
 
@@ -272,7 +272,7 @@ class TestWebhookAdmin(TestCase):
         assert WebhookHealthDashboard is not None
 
 
-class TestPhase4Integration(TestCase):
+class TestWebhookGraphQLIntegration(TestCase):
     """Integration tests for the webhook GraphQL types and mutations."""
 
     def setUp(self):

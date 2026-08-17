@@ -5,7 +5,7 @@ description: Generate a markdown API-change handoff document for the client team
 
 # Handoff to client
 
-vinta_schedule_api (Django 6 + DRF + Strawberry GraphQL + Celery, multi-tenant (OrganizationModel), Postgres, deployed to Render) is an API-only repo — its consumers live in separate codebases: Web SPA (React), Partner integrations. Client implementers cannot read this repo's diff; this skill turns an API-changing branch into a self-contained markdown document they implement against.
+vinta_schedule_api (Django 6 + DRF + Strawberry GraphQL + Celery, multi-tenant (SingleOrganizationModelMixin), Postgres, deployed to Render) is an API-only repo — its consumers live in separate codebases: Web SPA (React), Partner integrations. Client implementers cannot read this repo's diff; this skill turns an API-changing branch into a self-contained markdown document they implement against.
 
 The document is a contract description, not a changelog: every change carries enough shape detail (fields, types, nullability, examples) that a client engineer can code against it without opening this repo.
 
@@ -39,6 +39,8 @@ Also sweep for non-endpoint contract changes clients still feel: auth flows (tok
 ## Step 2 — Write the document
 
 Path: `.vinta-ai-workflows/client-handoffs/{YYYY-MM-DD}-{branch-or-feature-slug}.md`. Create the directory if missing.
+
+**In this repo that directory is gitignored** (`.gitignore`), so a handoff written only there never reaches the branch, the PR, or the client teams. Write the committed copy to `ai-plans/{YYYY-MM-DD}-{FEATURE}_CLIENT_HANDOFF.md` instead — the established practice here, e.g. `ai-plans/2026-07-04-SMS_MFA_CONSENT_FRONTEND_HANDOFF.md`. Write **one** copy, not both; two copies of a 400-line document drift silently, and the untracked one is the copy people read last.
 
 ```markdown
 # API changes: {feature / branch title}

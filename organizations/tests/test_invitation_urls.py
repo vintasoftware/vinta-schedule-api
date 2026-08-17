@@ -1,10 +1,9 @@
 """Tests for organizations.invitation_urls.build_invitation_accept_url.
 
-Organization Auth-Area Branding plan, Phase 5 amendment (2026-08-06): the
-invitation accept link must carry the branding root's slug so the SPA's
+The invitation accept link must carry the branding root's slug so the SPA's
 accept-invite page can resolve that organization's branding before the user
-authenticates -- see the amendment note in the implementation plan for why
-this was missing from the original Phase 5 delivery.
+authenticates. Added after the fact (2026-08-06), once it became clear the
+accept-invite link had no way to carry that information to the SPA.
 """
 
 from model_bakery import baker
@@ -29,9 +28,18 @@ class TestBuildInvitationAcceptUrl:
 
         assert url == "https://frontend.example.com/auth/accept-invite/?token=tok123"
 
-    def test_branding_root_with_no_slug_uses_the_plain_template(self, settings, db):
+    def test_branding_root_with_no_slug_uses_the_plain_template(self, settings):
+        """The slug-less fallback branch, driven by an **unsaved** instance.
+
+        ``Organization.slug`` is NOT NULL with a ``save()``-time fallback and an
+        ``organization_slug_not_blank`` check constraint, so no persisted
+        organization can reach this branch any more. The branch is kept (the
+        function's contract still promises the plain template for a slug-less
+        root) and covered the only way it still can be, rather than deleted on
+        the strength of an invariant enforced two modules away.
+        """
         settings.HEADLESS_FRONTEND_URLS = ACCEPT_URLS
-        org = baker.make(Organization, slug=None)
+        org = Organization(name="Unsaved Org", slug="")
 
         url = build_invitation_accept_url(org, "tok123")
 

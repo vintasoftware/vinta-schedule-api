@@ -27,6 +27,7 @@ from calendar_integration.models import (
     RecurrenceRule,
     ResourceAllocation,
 )
+from public_api.scoping import scoped_calendar_ids
 from users.graphql import UserGraphQLType
 
 
@@ -73,9 +74,6 @@ def _owner_scoped_calendar_ids(info: strawberry.Info) -> set[int] | None:
     organization = getattr(request, "public_api_organization", None)
     if organization is None:
         return None
-
-    # Lazy import to break the public_api <-> calendar_integration import cycle.
-    from public_api.scoping import scoped_calendar_ids
 
     return scoped_calendar_ids(system_user, organization)
 
@@ -141,13 +139,15 @@ class OwnershipMembershipGraphQLType:
     """Membership identity for a calendar owner.
 
     A membership has no scalar id (it is identified by the ``(user_id,
-    organization_id)`` pair), so the external representation exposes that pair
-    plus the membership ``role``.
+    organization_id)`` pair), so the external representation exposes that pair.
+
+    ``role`` was removed with the rest of ``role``'s API surface -- see
+    ``calendar_integration.serializers.OwnershipMembershipSerializer`` for the
+    reasoning and for where a client reads capabilities instead.
     """
 
     user_id: int
     organization_id: int
-    role: str
 
 
 @strawberry_django.type(CalendarOwnership)
@@ -157,7 +157,7 @@ class CalendarOwnershipGraphQLType:
     ``id`` is the ownership row primary key, not the user id.
     ``is_default`` indicates whether this is the default calendar for the owning user.
     ``membership`` exposes the owning membership identity ``{ user_id,
-    organization_id, role }``. It is ``None`` for orphan ownership rows whose
+    organization_id }``. It is ``None`` for orphan ownership rows whose
     ``(user, organization)`` pair has no active membership.
     """
 
@@ -173,7 +173,6 @@ class CalendarOwnershipGraphQLType:
         return OwnershipMembershipGraphQLType(
             user_id=membership.user_id,
             organization_id=membership.organization_id,
-            role=membership.role,
         )
 
 
@@ -240,13 +239,14 @@ class AttendanceMembershipGraphQLType:
     """Membership identity for an internal event attendee.
 
     A membership has no scalar id (it is identified by the ``(user_id,
-    organization_id)`` pair), so the external representation exposes that pair
-    plus the membership ``role``.
+    organization_id)`` pair), so the external representation exposes that pair.
+
+    ``role`` was removed with the rest of ``role``'s API surface -- see
+    ``calendar_integration.serializers.OwnershipMembershipSerializer``.
     """
 
     user_id: int
     organization_id: int
-    role: str
 
 
 @strawberry_django.type(EventAttendance)
@@ -254,7 +254,7 @@ class EventAttendanceGraphQLType:
     """GraphQL type for an EventAttendance through-model row.
 
     ``membership`` exposes the attendee membership identity ``{ user_id,
-    organization_id, role }``. It is ``None`` for orphan attendances whose
+    organization_id }``. It is ``None`` for orphan attendances whose
     ``(user, organization)`` pair has no matching ``OrganizationMembership``.
     """
 
@@ -272,7 +272,6 @@ class EventAttendanceGraphQLType:
         return AttendanceMembershipGraphQLType(
             user_id=membership.user_id,
             organization_id=membership.organization_id,
-            role=membership.role,
         )
 
 
@@ -360,7 +359,6 @@ class CalendarEventGraphQLType:
             AttendanceMembershipGraphQLType(
                 user_id=attendance.membership.user_id,
                 organization_id=attendance.membership.organization_id,
-                role=attendance.membership.role,
             )
             for attendance in self.attendances.all()  # type: ignore[attr-defined]
             if attendance.membership is not None
@@ -593,12 +591,11 @@ class UnavailableTimeWindowGraphQLType:
 
 @strawberry.type
 class GroupScopedAvailabilityWindowGraphQLType:
-    """Public API representation of one group-scoped availability window
-    (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 1d).
+    """Public API representation of one group-scoped availability window.
 
     A raw window row -- one entry per recurring master or one-off window, not
     an expanded occurrence -- mirroring the internal REST surface's
-    ``GroupScopedAvailabilityWindowSerializer`` (Phase 1c) field shape.
+    ``GroupScopedAvailabilityWindowSerializer`` field shape.
     """
 
     id: int  # noqa: A003
@@ -638,8 +635,7 @@ def group_scoped_availability_window_from_model(
 
 @strawberry.type
 class GroupScopedBlockedTimeGraphQLType:
-    """Public API representation of one group-scoped blocked time
-    (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 2b).
+    """Public API representation of one group-scoped blocked time.
 
     A raw block row -- one entry per recurring master or one-off block, not
     an expanded occurrence -- mirroring the internal REST surface's
@@ -685,8 +681,7 @@ def group_scoped_blocked_time_from_model(
 
 @strawberry.type
 class GroupScopedQuotaRuleGraphQLType:
-    """Public API representation of one group-scoped quota rule
-    (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 3c).
+    """Public API representation of one group-scoped quota rule.
 
     Simpler than ``GroupScopedAvailabilityWindowGraphQLType``/
     ``GroupScopedBlockedTimeGraphQLType``: quota rules are non-recurring (no
@@ -1067,11 +1062,13 @@ class ResolvedByMembershipGraphQLType:
 
     A membership has no scalar id (it is identified by the ``(user_id,
     organization_id)`` pair), so the external representation exposes that pair.
+
+    ``role`` was removed with the rest of ``role``'s API surface -- see
+    ``calendar_integration.serializers.OwnershipMembershipSerializer``.
     """
 
     user_id: int
     organization_id: int
-    role: str
 
 
 @strawberry_django.type(ExternalEventChangeRequest)
@@ -1113,7 +1110,6 @@ class ExternalEventChangeRequestGraphQLType:
         return ResolvedByMembershipGraphQLType(
             user_id=membership.user_id,
             organization_id=membership.organization_id,
-            role=membership.role,
         )
 
 

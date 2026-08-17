@@ -151,8 +151,15 @@ class WebhookService:
             event_type (WebhookEventType): The type of the event to send.
             payload (dict): The payload data to include in the event.
         """
-        configurations = WebhookConfiguration.objects.filter(
-            organization=organization, event_type=event_type, deleted_at__isnull=True
+        # ``filter_by_organization(organization)`` rather than the implicit scope:
+        # this method is handed the organization to send for, and its callers
+        # (``OrganizationService``'s member/invitation events, the calendar
+        # services) run in contexts that may have a *different* organization
+        # bound or none at all -- a Celery task fanning out across organizations,
+        # or a request acting on a reseller child. Naming it is what makes the
+        # two agree.
+        configurations = WebhookConfiguration.objects.filter_by_organization(organization).filter(
+            event_type=event_type, deleted_at__isnull=True
         )
 
         webhook_events = []

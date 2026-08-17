@@ -19,7 +19,13 @@ from audit.constants import AuditAction, AuditActorType
 from audit.repositories import DjangoORMAuditRepository
 from audit.services import AuditService
 from audit.types import SubjectRef
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from calendar_integration.models import CalendarManagementToken
+from organizations.authorization import MEMBERSHIP_ROLE_LABEL_ADMIN, MEMBERSHIP_ROLE_LABEL_MEMBER
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
+from organizations.tests.helpers import grant_membership_groups
+from public_api.constants import PublicAPIResources
+from public_api.models import ResourceAccess, SystemUser
 
 
 # ---------------------------------------------------------------------------
@@ -57,7 +63,8 @@ class TestActorFromMembership:
         org = baker.make(Organization)
         user = baker.make("users.User")
         membership = OrganizationMembership.objects.create(
-            user=user, organization=org, role=OrganizationRole.MEMBER
+            user=user,
+            organization=org,
         )
 
         snapshot = AuditService.actor_from_membership(membership)
@@ -78,12 +85,13 @@ class TestActorFromMembership:
         org = baker.make(Organization)
         user = baker.make("users.User")
         membership = OrganizationMembership.objects.create(
-            user=user, organization=org, role=OrganizationRole.MEMBER
+            user=user,
+            organization=org,
         )
 
         snapshot = AuditService.actor_from_membership(membership)
 
-        assert snapshot.actor_role == OrganizationRole.MEMBER
+        assert snapshot.actor_role == MEMBERSHIP_ROLE_LABEL_MEMBER
 
     def test_no_system_user_scopes(self) -> None:
         org = baker.make(Organization)
@@ -101,8 +109,6 @@ class TestActorFromSystemUser:
     """actor_from_system_user captures scopes and scoped_to_membership synchronously."""
 
     def test_sets_actor_type_system_user(self) -> None:
-        from public_api.models import SystemUser
-
         org = baker.make(Organization)
         system_user = SystemUser.objects.create(
             organization=org,
@@ -115,8 +121,6 @@ class TestActorFromSystemUser:
         assert snapshot.actor_type == AuditActorType.SYSTEM_USER
 
     def test_captures_actor_id(self) -> None:
-        from public_api.models import SystemUser
-
         org = baker.make(Organization)
         system_user = SystemUser.objects.create(
             organization=org,
@@ -130,9 +134,6 @@ class TestActorFromSystemUser:
 
     def test_captures_scopes_at_call_time(self) -> None:
         """system_user_scopes are read from available_resources now, not in the worker."""
-        from public_api.constants import PublicAPIResources
-        from public_api.models import ResourceAccess, SystemUser
-
         org = baker.make(Organization)
         system_user = SystemUser.objects.create(
             organization=org,
@@ -153,8 +154,6 @@ class TestActorFromSystemUser:
         )
 
     def test_empty_scopes_when_no_resources(self) -> None:
-        from public_api.models import SystemUser
-
         org = baker.make(Organization)
         system_user = SystemUser.objects.create(
             organization=org,
@@ -167,8 +166,6 @@ class TestActorFromSystemUser:
         assert snapshot.system_user_scopes == []
 
     def test_captures_scoped_to_membership_user_id(self) -> None:
-        from public_api.models import SystemUser
-
         org = baker.make(Organization)
         user = baker.make("users.User")
         membership = OrganizationMembership.objects.create(user=user, organization=org)
@@ -185,8 +182,6 @@ class TestActorFromSystemUser:
         assert snapshot.system_user_scoped_to_membership == membership.user_id
 
     def test_scoped_to_membership_is_none_for_org_wide_token(self) -> None:
-        from public_api.models import SystemUser
-
         org = baker.make(Organization)
         system_user = SystemUser.objects.create(
             organization=org,
@@ -199,8 +194,6 @@ class TestActorFromSystemUser:
         assert snapshot.system_user_scoped_to_membership is None
 
     def test_no_actor_role(self) -> None:
-        from public_api.models import SystemUser
-
         org = baker.make(Organization)
         system_user = SystemUser.objects.create(
             organization=org,
@@ -218,8 +211,6 @@ class TestActorFromSingleUseCode:
     """actor_from_single_use_code captures token id."""
 
     def test_sets_actor_type_single_use_code(self) -> None:
-        from calendar_integration.models import CalendarManagementToken
-
         org = baker.make(Organization)
         token = baker.make(CalendarManagementToken, organization=org)
 
@@ -228,8 +219,6 @@ class TestActorFromSingleUseCode:
         assert snapshot.actor_type == AuditActorType.SINGLE_USE_CODE
 
     def test_captures_actor_id(self) -> None:
-        from calendar_integration.models import CalendarManagementToken
-
         org = baker.make(Organization)
         token = baker.make(CalendarManagementToken, organization=org)
 
@@ -238,8 +227,6 @@ class TestActorFromSingleUseCode:
         assert snapshot.actor_id == token.id
 
     def test_no_actor_role_or_scopes(self) -> None:
-        from calendar_integration.models import CalendarManagementToken
-
         org = baker.make(Organization)
         token = baker.make(CalendarManagementToken, organization=org)
 
@@ -257,15 +244,19 @@ class TestActorFromUser:
     def test_membership_actor_when_user_is_member(self) -> None:
         org = baker.make(Organization)
         user = baker.make("users.User")
-        membership = OrganizationMembership.objects.create(
-            user=user, organization=org, role=OrganizationRole.ADMIN
+        membership = grant_membership_groups(
+            OrganizationMembership.objects.create(
+                user=user,
+                organization=org,
+            ),
+            [GROUP_ORGANIZATION_ADMIN],
         )
 
         snapshot = AuditService.actor_from_user(user, org.pk)
 
         assert snapshot.actor_type == AuditActorType.MEMBERSHIP
         assert snapshot.actor_id == membership.user_id
-        assert snapshot.actor_role == OrganizationRole.ADMIN
+        assert snapshot.actor_role == MEMBERSHIP_ROLE_LABEL_ADMIN
 
     def test_system_actor_when_user_not_member(self) -> None:
         org = baker.make(Organization)
@@ -285,7 +276,8 @@ class TestActorFromUserOrToken:
         org = baker.make(Organization)
         user = baker.make("users.User")
         OrganizationMembership.objects.create(
-            user=user, organization=org, role=OrganizationRole.MEMBER
+            user=user,
+            organization=org,
         )
 
         snapshot = AuditService.actor_from_user_or_token(user, org.pk)
@@ -293,8 +285,6 @@ class TestActorFromUserOrToken:
         assert snapshot.actor_type == AuditActorType.MEMBERSHIP
 
     def test_system_user_resolves_to_system_user_actor(self) -> None:
-        from public_api.models import SystemUser
-
         org = baker.make(Organization)
         system_user = SystemUser.objects.create(
             organization=org,
@@ -313,8 +303,6 @@ class TestActorFromUserOrToken:
         assert snapshot.actor_type == AuditActorType.SYSTEM
 
     def test_token_string_with_resolved_token_is_single_use_code(self) -> None:
-        from calendar_integration.models import CalendarManagementToken
-
         org = baker.make(Organization)
         token = baker.make(CalendarManagementToken, organization=org)
 
@@ -413,8 +401,12 @@ class TestRecordEnqueues:
         service = make_service()
         org = baker.make(Organization)
         user = baker.make("users.User")
-        membership = OrganizationMembership.objects.create(
-            user=user, organization=org, role=OrganizationRole.ADMIN
+        membership = grant_membership_groups(
+            OrganizationMembership.objects.create(
+                user=user,
+                organization=org,
+            ),
+            [GROUP_ORGANIZATION_ADMIN],
         )
         actor = AuditService.actor_from_membership(membership)
         subject = make_subject()
@@ -431,7 +423,7 @@ class TestRecordEnqueues:
         payload = mock_task.delay.call_args[0][0]
         assert payload["actor"]["actor_type"] == AuditActorType.MEMBERSHIP
         assert payload["actor"]["actor_id"] == membership.user_id
-        assert payload["actor"]["actor_role"] == OrganizationRole.ADMIN
+        assert payload["actor"]["actor_role"] == MEMBERSHIP_ROLE_LABEL_ADMIN
 
     def test_payload_has_correct_subject_fields(self, django_capture_on_commit_callbacks) -> None:
         service = make_service()

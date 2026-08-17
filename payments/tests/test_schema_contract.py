@@ -1,7 +1,6 @@
-"""Billing API Contract Hardening, Phase 1: the *documented* contract is the
-point of this phase, not merely the runtime body -- a client generating a
-typed SDK off ``schema.yml`` needs ``code`` in the schema, not just in what the
-server happens to return.
+"""The *documented* contract is the point of these tests, not merely the
+runtime body -- a client generating a typed SDK off ``schema.yml`` needs
+``code`` in the schema, not just in what the server happens to return.
 
 Generates the OpenAPI schema in-process (mirroring
 ``common/tests/test_openapi.py``'s ``SchemaGenerator`` pattern) rather than
@@ -36,8 +35,8 @@ def _resolve_response_schema(
 
 
 class TestBillingErrorBodyIsDocumented:
-    """``code`` must be a documented property of the 400 bodies this phase adds
-    -- ``change-plan``'s ``payment_token_required`` and add-on purchase's
+    """``code`` must be a documented property of the 400 bodies --
+    ``change-plan``'s ``payment_token_required`` and add-on purchase's
     ``add_on_not_purchasable``."""
 
     def test_change_plan_400_documents_code(self, openapi_schema: dict) -> None:
@@ -69,8 +68,8 @@ class TestBillingErrorBodyIsDocumented:
         assert "code" in schema["properties"]
 
     def test_change_plan_request_documents_payment_token(self, openapi_schema: dict) -> None:
-        """The contract gap this phase also closes: ``payment_token`` finally
-        appears on the documented request body, not only the response."""
+        """A contract gap this closes: ``payment_token`` finally appears on the
+        documented request body, not only the response."""
         operation = openapi_schema["paths"]["/billing/subscription/change-plan/"]["post"]
         request_schema_ref = operation["requestBody"]["content"]["application/json"]["schema"][
             "$ref"
@@ -82,9 +81,8 @@ class TestBillingErrorBodyIsDocumented:
 
 
 class TestDocumentTypeIsDocumentedAsAnEnum:
-    """Billing API Contract Hardening, Phase 2: the generated client must see
-    ``document_type`` as an enum, not a free string, and the enum must carry
-    every member the API accepts."""
+    """The generated client must see ``document_type`` as an enum, not a free
+    string, and the enum must carry every member the API accepts."""
 
     def test_billing_profile_document_type_is_a_nine_member_enum(
         self, openapi_schema: dict

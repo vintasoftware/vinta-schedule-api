@@ -454,29 +454,36 @@ class CalendarGroupService:
         slot and a set of removed calendar ids).
 
         Shared by ``_reconcile_slot`` for group-scoped windows
-        (``AvailableTime``), group-scoped blocked time (``BlockedTime``,
-        Phase 2a), and quota rules (``CalendarGroupSlotQuotaRule``, Phase 3a)
+        (``AvailableTime``), group-scoped blocked time (``BlockedTime``),
+        and quota rules (``CalendarGroupSlotQuotaRule``)
         -- same cleanup shape, different model. No-op (still issues the
         delete) when no ``audit_service`` is bound.
         """
         rows = list(queryset)
-        for row in rows:
-            if self.audit_service is None or self.organization is None:
-                break
+        if rows and self.audit_service is not None and self.organization is not None:
             user_or_token = getattr(self.calendar_service, "user_or_token", None)
             permission_service = getattr(self.calendar_service, "calendar_permission_service", None)
-            self.audit_service.record(
-                organization_id=self.organization.id,
-                action=AuditAction.DELETE,
-                actor=self.audit_service.actor_from_user_or_token(
-                    user_or_token,
-                    self.organization.id,
-                    single_use_token=resolve_acting_single_use_token(
-                        user_or_token, permission_service
-                    ),
-                ),
-                subject=self.audit_service.subject_from_instance(row),
+            # One actor snapshot for every row. ``user_or_token``, the
+            # organization and the permission service are all loop-invariant, and
+            # ``ActorSnapshot`` is frozen, so the answer cannot differ between
+            # iterations -- but building it per row cost a membership lookup
+            # *plus* the permission query behind
+            # ``membership_role_label`` (which derives the published role name
+            # from the group catalog now that the ``role`` column is gone). That
+            # made a delete of N rows issue 2N round trips for one unchanging
+            # value; hoisting it also removes the pre-existing N+1 underneath.
+            actor = self.audit_service.actor_from_user_or_token(
+                user_or_token,
+                self.organization.id,
+                single_use_token=resolve_acting_single_use_token(user_or_token, permission_service),
             )
+            for row in rows:
+                self.audit_service.record(
+                    organization_id=self.organization.id,
+                    action=AuditAction.DELETE,
+                    actor=actor,
+                    subject=self.audit_service.subject_from_instance(row),
+                )
         queryset.delete()
 
     def _reconcile_slot(
@@ -541,8 +548,7 @@ class CalendarGroupService:
             )
 
     # ------------------------------------------------------------------
-    # Group-scoped availability windows (Phase 1a of
-    # CALENDAR_GROUP_SCOPED_AVAILABILITY -- writes)
+    # Group-scoped availability windows (writes)
     # ------------------------------------------------------------------
 
     def _resolve_group_scoped_membership(
@@ -634,8 +640,7 @@ class CalendarGroupService:
         ``calendar_service``. No-op when no ``audit_service`` / ``organization``
         is bound, so instrumentation never breaks a write path.
 
-        ``acting_user`` accepts a ``SystemUser`` too (public-API batch write,
-        CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 1d) --
+        ``acting_user`` accepts a ``SystemUser`` too (public-API batch write) --
         ``AuditService.actor_from_user_or_token`` already resolves either.
         """
         if self.audit_service is None or self.organization is None:
@@ -660,9 +665,9 @@ class CalendarGroupService:
 
         Mirrors ``AvailabilityService.get_available_times_expanded``, but reads
         through the group-scoped accessor instead of the default (base-rows-only)
-        manager. Delegates to ``slot_engine.expand_group_scoped_available_times``
-        (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 1b), the single-pair case of the
-        same batched implementation the discovery-side fetch uses. Occurrence
+        manager. Delegates to ``slot_engine.expand_group_scoped_available_times``,
+        the single-pair case of the same batched implementation the
+        discovery-side fetch uses. Occurrence
         expansion for group-scoped masters is safe because (a) no write path
         creates a group-scoped recurrence exception yet, and (b)
         ``RecurringMixin._get_occurrences_in_range`` now routes the
@@ -890,8 +895,9 @@ class CalendarGroupService:
         series (mirrors ``AvailabilityService.delete_blocked_time``). No
         orphaned-booking report is computed here -- the spec scopes that to
         narrowing UPDATEs (UC-6). Removing a calendar from a slot's roster
-        entirely (which cascades away its windows per the Phase 0 schema
-        constraint) is a distinct action, exercised through ``update_group``.
+        entirely (which cascades away its windows through the ``group_slot``
+        foreign key's ``on_delete=CASCADE``) is a distinct action, exercised
+        through ``update_group``.
         """
         self._assert_initialized()
         self._check_not_restricted()
@@ -912,9 +918,8 @@ class CalendarGroupService:
     ) -> AvailableTime | None:
         """Find an existing group-scoped window with identical content, if any.
 
-        Backs the batch-upsert write path's idempotent ``create``
-        (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 1d): an upstream system
-        that resends the same batch after a network timeout (spec UC-5) must
+        Backs the batch-upsert write path's idempotent ``create``: an upstream
+        system that resends the same batch after a network timeout (spec UC-5) must
         land on the identical final state, not accumulate duplicate rows.
         Matched on (calendar, group slot, start_time, end_time, timezone,
         rrule). ``start_time``/``end_time`` are compared as the aware
@@ -951,7 +956,7 @@ class CalendarGroupService:
     ) -> list[AvailableTime]:
         """Apply an atomic bulk-upsert batch of group-scoped availability
         window create/update/delete operations within one group slot's
-        roster (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 1d -- public API).
+        roster (public API).
 
         Mirrors ``AvailabilityService.batch_modify_available_times``'s
         transaction / entitlement / net-growth structure so the two batch
@@ -976,7 +981,7 @@ class CalendarGroupService:
           operations.
 
         Authorization is split between the CALLER and this method. Unlike the
-        single-window Phase 1a writes above, this method does not call
+        single-window writes above, this method does not call
         ``CalendarPermissionService`` -- every public-API availability write
         authorizes via ``OrganizationResourceAccess`` (token resource grant)
         plus owner-scope (``public_api.scoping.assert_calendar_in_owner_scope``),
@@ -1200,8 +1205,7 @@ class CalendarGroupService:
         )
 
     # ------------------------------------------------------------------
-    # Group-scoped blocked time (Phase 2a of
-    # CALENDAR_GROUP_SCOPED_AVAILABILITY -- writes)
+    # Group-scoped blocked time (writes)
     # ------------------------------------------------------------------
 
     def _get_group_scoped_block(self, block_id: int) -> BlockedTime:
@@ -1479,9 +1483,9 @@ class CalendarGroupService:
         orphaned-booking report is computed here -- deleting a block only
         WIDENS available time (the inverse of a window delete narrowing it),
         so it can never orphan a booking. Removing a calendar from a slot's
-        roster entirely (which cascades away its blocks per the Phase 0
-        schema constraint) is a distinct action, exercised through
-        ``update_group``.
+        roster entirely (which cascades away its blocks through the
+        ``group_slot`` foreign key's ``on_delete=CASCADE``) is a distinct
+        action, exercised through ``update_group``.
         """
         self._assert_initialized()
         self._check_not_restricted()
@@ -1543,12 +1547,12 @@ class CalendarGroupService:
     ) -> list[BlockedTime]:
         """Apply an atomic bulk-upsert batch of group-scoped blocked-time
         create/update/delete operations within one group slot's roster
-        (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 2b -- public API).
+        (public API).
 
         Mirrors ``batch_upsert_group_scoped_availability_windows``'s
         transaction / idempotent-create / IDOR-cross-check structure exactly,
-        with ONE deliberate difference: blocked time is not metered yet (that
-        is Phase 2c), so this method never calls ``check_limit`` and never
+        with ONE deliberate difference: blocked time is not metered yet,
+        so this method never calls ``check_limit`` and never
         locks the billing root -- there is no entitlement delta to protect a
         lock against. It still calls ``check_not_restricted`` up front, like
         every other guarded write, so a ``RESTRICTED`` organization cannot
@@ -1618,7 +1622,7 @@ class CalendarGroupService:
         # RESTRICTED must block the batch outright, including an update-only
         # or delete-only batch -- mirrors the window batch, minus the
         # limit/lock machinery that exists only to protect entitlement
-        # counting, which blocks don't have yet (Phase 2c).
+        # counting, which blocks don't have yet.
         if self.entitlement_service is not None and operations:
             self.entitlement_service.check_not_restricted(organization)
 
@@ -1746,8 +1750,7 @@ class CalendarGroupService:
         )
 
     # ------------------------------------------------------------------
-    # Group-scoped quota rules (Phase 3a model / Phase 3c writes of
-    # CALENDAR_GROUP_SCOPED_AVAILABILITY)
+    # Group-scoped quota rules
     # ------------------------------------------------------------------
 
     def _get_group_scoped_quota_rule(self, rule_id: int) -> CalendarGroupSlotQuotaRule:
@@ -1965,7 +1968,7 @@ class CalendarGroupService:
     ) -> list[CalendarGroupSlotQuotaRule]:
         """Apply an atomic bulk-upsert batch of group-scoped quota-rule
         create/update/delete operations within one group slot's roster
-        (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 3c -- public API).
+        (public API).
 
         Direct mirror of ``batch_upsert_group_scoped_blocked_times``'s
         transaction / idempotent-create / IDOR-cross-check structure -- same
@@ -2181,12 +2184,11 @@ class CalendarGroupService:
         ANY group-scoped quota rule configured for that slot (regardless of
         whether any of them overlaps a caller's search window).
 
-        This is the Phase 1b (windows) / Phase 2a (blocks) / Phase 3b (quota)
-        self-gating early-out mechanism (``CALENDAR_GROUP_SCOPED_AVAILABILITY``):
+        This is the windows / blocks / quota self-gating early-out mechanism:
         all three ``EXISTS`` clauses are folded into the SAME per-slot
-        membership query every caller of this method already issued before
-        Phase 1b, so an unconfigured group costs exactly as many round trips
-        as it did before any of the three phases -- zero added queries. Only
+        membership query every caller of this method already issues to build
+        the slot's calendar pool, so an unconfigured group costs exactly as
+        many round trips as computing that pool alone -- zero added queries. Only
         when the returned "window configured", "block configured", or "quota
         configured" map is non-empty for a slot does the caller go on to
         fetch the actual group-scoped spans / rules (a fixed, non-per-candidate
@@ -2273,21 +2275,21 @@ class CalendarGroupService:
         Set `with_bulk_modifications=True` to expand recurring events through
         their bulk-modification continuation series.
 
-        Group-scoped availability windows (``CALENDAR_GROUP_SCOPED_AVAILABILITY``
-        Phase 1b) are intersected in AFTER base availability: a calendar with no
+        Group-scoped availability windows are intersected in AFTER base
+        availability: a calendar with no
         group-scoped window configured for a slot is unaffected (fall-through
         default, zero added queries -- see
         ``_slot_pools_with_group_scoped_flags``); a calendar WITH one is listed
         as available for a range only when that range is fully covered by at
         least one of its group-scoped windows -- narrowing only, never widening.
 
-        Group-scoped blocked time (Phase 2a) is applied AFTER base availability
+        Group-scoped blocked time is applied AFTER base availability
         and BEFORE the window check, per the spec resolution order: a calendar
         with a configured block that OVERLAPS the range is excluded regardless
         of what any window says ("blocks beat everything"). Also zero added
         queries when unconfigured.
 
-        Group-scoped quota rules (Phase 3b) are checked LAST, after base
+        Group-scoped quota rules are checked LAST, after base
         availability, block, and window all pass: a calendar with a
         configured quota rule whose cap is already met for the period the
         range's start falls into is excluded, regardless of what any window
@@ -2622,9 +2624,9 @@ class CalendarGroupService:
         selections_by_slot_id = self._validate_selections(group, slots, data.slot_selections)
         all_selected_ids = {cid for sel in data.slot_selections for cid in sel.calendar_ids}
         self._assert_calendars_available(all_selected_ids, data.start_time, data.end_time)
-        # Group-scoped availability windows (CALENDAR_GROUP_SCOPED_AVAILABILITY
-        # Phase 1b): reject a directly-named calendar outside its configured
-        # window, AFTER base availability -- narrowing only ever narrows.
+        # Group-scoped availability windows: reject a directly-named calendar
+        # outside its configured window, AFTER base availability -- narrowing
+        # only ever narrows.
         self._assert_calendars_within_group_scoped_windows(
             ((sel.slot_id, cid) for sel in data.slot_selections for cid in sel.calendar_ids),
             data.start_time,
@@ -2801,14 +2803,12 @@ class CalendarGroupService:
         against base availability is therefore possible and intentionally
         unenforced for this time-only reschedule path.
 
-        Group-scoped availability windows (``CALENDAR_GROUP_SCOPED_AVAILABILITY``
-        Phase 1b) ARE re-checked here for every calendar currently selected for
-        this event (primary and non-primary alike, via
-        ``CalendarEventGroupSelection``) -- every enforcement surface must
-        agree, so a narrowed calendar cannot dodge the window it would have
-        been rejected for at booking time simply by rescheduling instead.
-        Group-scoped blocks (Phase 2a) and quota rules (Phase 3b) are checked
-        the same way.
+        Group-scoped availability windows ARE re-checked here for every
+        calendar currently selected for this event (primary and non-primary
+        alike, via ``CalendarEventGroupSelection``) -- every enforcement
+        surface must agree, so a narrowed calendar cannot dodge the window it
+        would have been rejected for at booking time simply by rescheduling
+        instead. Group-scoped blocks and quota rules are checked the same way.
 
         Quota self-exclusion: the count used to validate the NEW period is
         the live count as of THIS event's still-unmoved ``CalendarEvent`` row
@@ -2862,9 +2862,9 @@ class CalendarGroupService:
                 f"Event {event_id} is not a grouped event (calendar_group_fk is not set)."
             )
 
-        # Group-scoped availability windows (CALENDAR_GROUP_SCOPED_AVAILABILITY
-        # Phase 1b): reject the reschedule if ANY calendar currently selected
-        # for this event is outside its group-scoped window for the NEW time.
+        # Group-scoped availability windows: reject the reschedule if ANY
+        # calendar currently selected for this event is outside its
+        # group-scoped window for the NEW time.
         selection_pairs = list(
             CalendarEventGroupSelection.objects.filter_by_organization(
                 cast(Organization, self.organization).id
@@ -3317,26 +3317,25 @@ class CalendarGroupService:
         the candidate.  The intent is to never offer a slot that a participant
         would individually reject.
 
-        Group-scoped availability windows (``CALENDAR_GROUP_SCOPED_AVAILABILITY``
-        Phase 1b) are intersected in AFTER base availability, before the policy
-        filter: a calendar with no group-scoped window configured for its slot
+        Group-scoped availability windows are intersected in AFTER base
+        availability, before the policy filter: a calendar with no
+        group-scoped window configured for its slot
         is unaffected (fall-through default, zero added queries -- see
         ``_slot_pools_with_group_scoped_flags``); a calendar WITH one is only
         counted toward its slot's ``required_count`` when the candidate window
         is fully covered by at least one of its group-scoped windows --
         narrowing only, never widening base availability.
 
-        Group-scoped blocked time (Phase 2a) is applied AFTER base
-        availability and BEFORE the window check (spec resolution order,
+        Group-scoped blocked time is applied AFTER base availability and
+        BEFORE the window check (spec resolution order,
         "blocks beat everything"): a calendar with a configured block that
         OVERLAPS the candidate window is excluded from its slot's count
         regardless of what any window says. Also zero added queries when
         unconfigured.
 
-        Group-scoped quota rules (``CALENDAR_GROUP_SCOPED_AVAILABILITY``
-        Phase 3b) are checked LAST, after base availability, block, and
-        window all pass: a calendar with a configured quota rule at or over
-        its cap for the period a candidate window's start falls into is
+        Group-scoped quota rules are checked LAST, after base availability,
+        block, and window all pass: a calendar with a configured quota rule
+        at or over its cap for the period a candidate window's start falls into is
         excluded from its slot's count, regardless of what any window says.
         The counting call (see ``slot_engine.fetch_group_scoped_quota_period_counts``)
         is issued ONCE per ``(slot, period)`` combination actually
@@ -3386,8 +3385,7 @@ class CalendarGroupService:
         )
 
         # ------------------------------------------------------------------
-        # Group-scoped availability windows (CALENDAR_GROUP_SCOPED_AVAILABILITY
-        # Phase 1b) -- self-gating early-out.
+        # Group-scoped availability windows -- self-gating early-out.
         # ------------------------------------------------------------------
         # `group_scoped_calendar_ids_by_slot` was already computed above by
         # folding an EXISTS() subquery into the per-slot membership query that
@@ -3410,8 +3408,8 @@ class CalendarGroupService:
             )
 
         # ------------------------------------------------------------------
-        # Group-scoped blocked time (CALENDAR_GROUP_SCOPED_AVAILABILITY
-        # Phase 2a) -- self-gating early-out, same shape as windows above.
+        # Group-scoped blocked time -- self-gating early-out, same shape as
+        # windows above.
         # ------------------------------------------------------------------
         group_scoped_block_spans_by_slot: slot_engine.GroupScopedSpansBySlot = {}
         if group_scoped_block_calendar_ids_by_slot:
@@ -3428,8 +3426,8 @@ class CalendarGroupService:
             )
 
         # ------------------------------------------------------------------
-        # Group-scoped quota rules (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase
-        # 3b) -- self-gating early-out, same shape as windows/blocks above.
+        # Group-scoped quota rules -- self-gating early-out, same shape as
+        # windows/blocks above.
         # ------------------------------------------------------------------
         # `group_scoped_quota_calendar_ids_by_slot` was already computed above
         # by folding a THIRD EXISTS() subquery into the SAME per-slot

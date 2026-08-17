@@ -22,6 +22,9 @@ import datetime
 import io
 from unittest.mock import patch
 
+from django.core.exceptions import ValidationError
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
 
@@ -34,6 +37,7 @@ from organizations.branding_logo import (
     compute_logo_etag,
 )
 from organizations.models import Organization, OrganizationBranding
+from organizations.slug_validation import validate_organization_slug
 from payments.billing_constants import BillingState, Entitlement
 from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
 
@@ -298,21 +302,17 @@ class TestDefaultSentinelSlug:
         assert response["ETag"] == compute_logo_etag(DEFAULT_LOGO_ETAG_IDENTITY)
 
     def test_default_is_a_reserved_slug(self):
-        from django.core.exceptions import ValidationError
-
-        from organizations.slug_validation import validate_organization_slug
-
         with pytest.raises(ValidationError, match="reserved"):
             validate_organization_slug("default")
 
 
 @pytest.mark.django_db
 class TestForeignPrefixKeyNeverServed:
-    """BLOCKER 1 (Phase 2b security review), read-side defense in depth: even if a
-    key outside `uploads/branding_logos/` somehow ends up on a branding row
-    (bypassing the write-side rejection in `normalize_uploaded_logo_key` --
-    e.g. a row inserted directly), the delivery route must never stream it --
-    it must degrade to the default logo exactly like any other miss."""
+    """Read-side defense in depth: even if a key outside `uploads/branding_logos/`
+    somehow ends up on a branding row (bypassing the write-side rejection in
+    `normalize_uploaded_logo_key` -- e.g. a row inserted directly), the delivery
+    route must never stream it -- it must degrade to the default logo exactly
+    like any other miss."""
 
     def test_foreign_prefix_key_forced_into_db_serves_the_default_not_the_object(self, client):
         org = _org_with_entitlement(
@@ -347,10 +347,9 @@ class TestForeignPrefixKeyNeverServed:
 
 @pytest.mark.django_db
 class TestDeliveredContentTypeIsInertAndAllowlisted:
-    """BLOCKER 2 (Phase 2b security review): the delivery route must never let a
-    stored key's extension drive a browser-renderable Content-Type (stored XSS
-    via `.svg`/`.html`), and must always mark the response inert with
-    `X-Content-Type-Options: nosniff`."""
+    """The delivery route must never let a stored key's extension drive a
+    browser-renderable Content-Type (stored XSS via `.svg`/`.html`), and must
+    always mark the response inert with `X-Content-Type-Options: nosniff`."""
 
     def test_svg_extension_is_served_as_octet_stream_not_svg(self, client):
         org = _org_with_entitlement(
@@ -442,16 +441,15 @@ class TestDeliveredContentTypeIsInertAndAllowlisted:
 
 @pytest.mark.django_db
 class TestNoQueryCountOracleBetweenUnknownSlugAndExistingOrg:
-    """SHOULD-FIX 2 (Phase 2b security review): an unknown slug and a real,
-    unbranded organization's slug should cost close to the same number of DB
-    queries -- otherwise the response time / query count itself becomes an
-    enumeration oracle, even though the two responses are byte-identical.
+    """An unknown slug and a real, unbranded organization's slug should cost
+    close to the same number of DB queries -- otherwise the response time /
+    query count itself becomes an enumeration oracle, even though the two
+    responses are byte-identical.
 
-    **Organization Auth-Area Branding plan, Phase 5 note**: Phase 5 widens
-    ``get_branding_root()`` so a parentless organization resolves to *itself*
-    rather than ``None``. Before Phase 5, an unbranded non-reseller
-    organization's branding root was ``None`` at zero extra query cost,
-    matching an unknown slug exactly. After Phase 5, that same organization is
+    **Note**: ``get_branding_root()`` was widened so a parentless organization
+    resolves to *itself* rather than ``None``. Before that widening, an unbranded
+    non-reseller organization's branding root was ``None`` at zero extra query
+    cost, matching an unknown slug exactly. Now, that same organization is
     its own branding root, so ``resolve_branding_for_display`` must run the
     ``white_label_branding`` entitlement check against it -- exactly one extra
     query (the subscription/entitlement lookup) an unknown slug never reaches.
@@ -468,9 +466,6 @@ class TestNoQueryCountOracleBetweenUnknownSlugAndExistingOrg:
     """
 
     def test_unknown_slug_and_existing_unbranded_org_cost_at_most_one_extra_query(self, client):
-        from django.db import connection
-        from django.test.utils import CaptureQueriesContext
-
         baker.make(Organization, parent=None, slug="normalized-no-branding-row")
 
         with CaptureQueriesContext(connection) as unknown_ctx:
@@ -485,7 +480,7 @@ class TestNoQueryCountOracleBetweenUnknownSlugAndExistingOrg:
         existing_count = len(existing_ctx.captured_queries)
         assert existing_count - unknown_count == 1, (
             f"Query count diverges by more than the one expected extra query "
-            f"(the white_label_branding entitlement check Phase 5 now runs "
+            f"(the white_label_branding entitlement check that runs "
             f"against every parentless organization): unknown slug ran "
             f"{unknown_count} quer(ies), existing unbranded org ran "
             f"{existing_count} quer(ies)."

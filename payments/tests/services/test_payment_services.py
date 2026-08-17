@@ -2,11 +2,16 @@ import datetime
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
+from django.db.models.query import QuerySet
+
 import pytest
 from model_bakery import baker
 
-from audit.constants import AuditAction
-from organizations.models import Organization
+from audit.constants import AuditAction, AuditActorType
+from organizations.authorization import MEMBERSHIP_ROLE_LABEL_ADMIN
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
+from organizations.tests.helpers import grant_membership_groups
 from payments.billing_constants import BillingInterval, BillingState
 from payments.constants import (
     PaymentProviders,
@@ -15,12 +20,15 @@ from payments.constants import (
     SubscriptionStatuses,
 )
 from payments.exceptions import (
+    BillingProfileContactEmailMissingError,
     MissingBillingProfileError,
     PaymentProviderNotConfiguredError,
     UnknownPaymentProviderError,
 )
 from payments.models import BillingPlan, ProviderWebhookEvent
+from payments.models import BillingProfile as BillingProfileModel
 from payments.models import Payment as PaymentModel
+from payments.models import Refund as RefundModelForTest
 from payments.models import Subscription as SubscriptionModel
 from payments.services.dataclasses import (
     BillingAddress as BillingAddressDataclass,
@@ -31,6 +39,7 @@ from payments.services.dataclasses import (
 from payments.services.dataclasses import (
     CreatedPlan,
     RefundResult,
+    SubscriptionPayment,
 )
 from payments.services.dataclasses import (
     Payment as PaymentDataclass,
@@ -98,7 +107,7 @@ def billing_address():
 
 @pytest.fixture
 def billing_profile(organization, billing_address):
-    """Unpinned by default -- several Phase 2 tests below assert on the
+    """Unpinned by default -- several tests below assert on the
     "never pinned" (``payment_provider == ""``) starting state. Tests that
     exercise `create_payment`/`create_subscription` (Rule B: resolves the
     provider from the organization) pin this explicitly to MercadoPago, to
@@ -230,9 +239,6 @@ def test_create_payment_raises_when_billing_profile_missing_contact_email(
 ):
     """`_serialize_billing_profile` must raise a clear error rather than silently
     send the payment gateway a null payer email."""
-    from payments.exceptions import BillingProfileContactEmailMissingError
-    from payments.models import BillingProfile as BillingProfileModel
-
     billing_profile = BillingProfileModel.objects.create(
         organization=organization,
         contact_first_name="Ada",
@@ -688,8 +694,6 @@ def test_success_receive_subscription_payment_update(
     )
 
     # Set up mock for receive_payment_update method
-    from payments.services.dataclasses import SubscriptionPayment
-
     subscription_payment = SubscriptionPayment(
         id=None,
         value=Decimal("100"),
@@ -770,8 +774,6 @@ def test_receive_subscription_payment_update_without_billing_profile_returns_non
         payment_provider=PaymentProviders.MERCADOPAGO,
     )
 
-    from payments.services.dataclasses import SubscriptionPayment
-
     subscription_payment = SubscriptionPayment(
         id=None,
         value=Decimal("100"),
@@ -835,9 +837,9 @@ def test_get_subscription_adapter_raises_for_unknown_provider(payment_service):
 
 
 # ---------------------------------------------------------------------------
-# Provider routing (Payment Provider Selection, Phase 4) -- two resolution
-# rules: existing-row operations resolve from the row's own stored provider
-# (Rule A); new-row operations resolve from the organization (Rule B).
+# Provider routing -- two resolution rules: existing-row operations resolve
+# from the row's own stored provider (Rule A); new-row operations resolve
+# from the organization (Rule B).
 # ---------------------------------------------------------------------------
 
 
@@ -845,7 +847,7 @@ def test_get_subscription_adapter_raises_for_unknown_provider(payment_service):
 def test_mercadopago_payment_is_refunded_and_status_checked_via_mercadopago_even_when_org_pin_is_stripe(
     payment_service, payment_adapter, stripe_payment_adapter, billing_profile
 ):
-    """The single most important assertion in this phase: a `Payment` row
+    """The single most important assertion in this test module: a `Payment` row
     stamped `mercadopago` must be refunded and status-checked through the
     MercadoPago adapter even when its organization's *current* pin says
     `stripe` (Rule A). Using the org's pin here would send a MercadoPago
@@ -1092,8 +1094,6 @@ def test_handle_subscription_payment_webhook_is_idempotent(
         external_id="sub_12345",
         payment_provider=PaymentProviders.MERCADOPAGO,
     )
-    from payments.services.dataclasses import SubscriptionPayment
-
     subscription_payment = SubscriptionPayment(
         id=None,
         value=Decimal("100"),
@@ -1232,7 +1232,7 @@ def test_handle_subscription_payment_webhook_none_result_does_not_burn_the_deliv
 
 # ---------------------------------------------------------------------------
 # BillingProfile.payment_provider pin — SubscriptionService.record_payment_method
-# / SubscriptionService.set_payment_provider (Payment Provider Selection, Phase 2)
+# / SubscriptionService.set_payment_provider
 # ---------------------------------------------------------------------------
 
 
@@ -1296,10 +1296,6 @@ def test_record_payment_method_pin_write_is_a_conditional_update_not_read_then_w
     provider, and that the zero-row result is what drives the warning -- exactly
     the observable a real race would produce for the losing caller.
     """
-    from django.db.models.query import QuerySet
-
-    from payments.models import BillingProfile as BillingProfileModel
-
     billing_profile.payment_provider = PaymentProviders.MERCADOPAGO
     billing_profile.save(update_fields=["payment_provider"])
 
@@ -1377,12 +1373,10 @@ def test_set_payment_provider_succeeds_with_active_subscription_at_old_provider(
 
     ``set_payment_provider`` must repoint an organization's BillingProfile even
     while it holds a live Subscription at the provider being replaced. This is
-    not an oversight -- it is the plan's explicit **Pin mutability** guiding
-    decision (see the Payment Provider Selection implementation plan and the
-    resolved "no guard" entry in its Open Questions table): the lever exists
-    precisely for the migrate-a-customer-off-a-provider case, and a guard would
-    block it in exactly that scenario. A future reviewer must not reinstate a
-    guard here without revisiting that decision first.
+    not an oversight -- the pin is deliberately kept mutable in this case: the
+    lever exists precisely for the migrate-a-customer-off-a-provider scenario,
+    and a guard would block it in exactly that scenario. A future reviewer
+    must not reinstate a guard here without understanding why it was left out.
     """
     billing_profile.payment_provider = PaymentProviders.MERCADOPAGO
     billing_profile.save(update_fields=["payment_provider"])
@@ -1414,14 +1408,13 @@ def test_set_payment_provider_records_actor_from_user(
     """Passing ``actor`` (as ``BillingProfileAdmin.save_model`` does with
     ``request.user``) must name that staff member in the audit entry as a
     MEMBERSHIP actor, not the generic SYSTEM actor every other caller gets."""
-    from audit.constants import AuditActorType
-    from organizations.models import OrganizationMembership, OrganizationRole
-
     staff_user = baker.make("users.User")
-    membership = OrganizationMembership.objects.create(
-        user=staff_user,
-        organization=billing_profile.organization,
-        role=OrganizationRole.ADMIN,
+    membership = grant_membership_groups(
+        OrganizationMembership.objects.create(
+            user=staff_user,
+            organization=billing_profile.organization,
+        ),
+        [GROUP_ORGANIZATION_ADMIN],
     )
 
     with patch("audit.services.persist_audit_record") as mock_task:
@@ -1434,7 +1427,7 @@ def test_set_payment_provider_records_actor_from_user(
     payload = mock_task.delay.call_args_list[0].args[0]
     assert payload["actor"]["actor_type"] == AuditActorType.MEMBERSHIP
     assert payload["actor"]["actor_id"] == membership.user_id
-    assert payload["actor"]["actor_role"] == OrganizationRole.ADMIN
+    assert payload["actor"]["actor_role"] == MEMBERSHIP_ROLE_LABEL_ADMIN
 
 
 @pytest.mark.django_db
@@ -1669,10 +1662,6 @@ def test_create_refund_does_not_mislabel_a_local_data_error_as_a_provider_declin
     ``except Exception``, so it propagates instead of being recorded as a
     provider-declined ``FAILED`` refund (the exact mislabelling the pre-fetch of
     the adapter was added to avoid)."""
-    from payments.exceptions import BillingProfileContactEmailMissingError
-    from payments.models import BillingProfile as BillingProfileModel
-    from payments.models import Refund as RefundModelForTest
-
     billing_profile = BillingProfileModel.objects.create(
         organization=organization,
         contact_first_name="Ada",

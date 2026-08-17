@@ -34,8 +34,8 @@ class ReplyToDjangoEmailNotificationAdapter[
 
     The From address is untouched in every case, branded or not: it is always
     ``NotificationSettings().NOTIFICATION_DEFAULT_FROM_EMAIL``, exactly like the
-    base adapter. Per the Organization Auth-Area Branding plan's Non-goals, there is
-    no custom sender and no sending-domain verification -- only the reply-to is
+    base adapter. Per-organization branding deliberately stops short of a custom
+    sender and sending-domain verification -- only the reply-to is
     per-organization.
 
     When the context has no ``reply_to`` key (or its value is falsy, e.g. an

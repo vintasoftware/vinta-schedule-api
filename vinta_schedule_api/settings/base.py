@@ -1,8 +1,13 @@
 import os
+import re
 from collections.abc import Callable
 from datetime import timedelta
 from urllib.parse import quote
 
+from django.core.exceptions import ValidationError
+from django.core.validators import URLValidator
+
+from cuid2 import cuid_wrapper
 from decouple import Csv, config  # type: ignore
 from dj_database_url import parse as db_url
 
@@ -70,8 +75,77 @@ INSTALLED_APPS = [
     "django_filters",
     "vintasend_django",
     "s3direct",
+    # ``vinta-django-orgs``. Deliberately NOT in INTERNAL_INSTALLED_APPS: that list
+    # drives di_core's DI wiring and names only this project's own apps. Its Django
+    # app label is ``vinta_orgs`` (the package renamed itself in 0.2.0 precisely so
+    # it would not collide with a project app called ``organizations``), so our
+    # ``organizations`` app keeps its label and every one of its tables keeps its
+    # name -- see organizations/tests/test_app_identity.py, which is the regression
+    # gate for that. Listed *before* INTERNAL_INSTALLED_APPS so ``admin.autodiscover``
+    # reaches the package's admin module first; organizations/admin.py additionally
+    # imports it explicitly so the unregistration below does not depend on this order.
+    "vinta_orgs.apps.OrganizationsConfig",
     *INTERNAL_INSTALLED_APPS,
 ]
+
+# ``vinta-django-orgs`` reads these two as *top-level* settings (Django resolves
+# ``Meta.swappable`` with a plain ``getattr(settings, ...)``), which is why they sit
+# outside SHARED_SCHEMA_ORGANIZATIONS below. Pointing them at our models marks the
+# package's own concrete ``Organization`` / ``OrganizationMembership`` as swapped
+# out: no tables are created for them, and ``User.delete()`` does not carry a
+# phantom CASCADE to a second, unused membership table.
+ORGANIZATION_MODEL = "organizations.Organization"
+ORGANIZATION_MEMBERSHIP_MODEL = "organizations.OrganizationMembership"
+
+SHARED_SCHEMA_ORGANIZATIONS = {
+    # The one retriever we use. ``retrieve_by_domain`` (subdomain tenancy),
+    # ``retrieve_by_http_header`` (``Organization-Slug``) and ``retrieve_by_session``
+    # are all deliberately omitted: this API resolves the organization only from
+    # the ``X-Organization-Id`` header, never by subdomain, a differently-named
+    # header, or session state.
+    "ORGANIZATION_RETRIEVERS": [
+        "common.org_retrievers.retrieve_by_x_organization_id",
+    ],
+    # We have no catch-all organization. Left at the package default (``'default'``)
+    # this would make ``SingleOrganizationModelMixin.save()`` run a
+    # ``WHERE slug = 'default'`` lookup for every scoped row saved without an
+    # explicit organization -- and, worse, silently adopt a real organization that
+    # happened to claim that slug. ``organizations.slug_validation`` reserves the
+    # word, so no organization can; ``None`` makes the intent explicit and skips the
+    # query entirely.
+    "DEFAULT_ORGANIZATION_SLUG": None,
+    # The package's middleware is not installed (``TenantScopedViewMixin`` owns
+    # organization resolution, because its rules are membership-aware and it runs
+    # after DRF authentication), so nothing would write this -- stated so a future
+    # reader does not have to check.
+    "ADD_ORGANIZATION_TO_SESSION": False,
+    # An organization-scoped query that runs with nothing bound raises
+    # ``OrganizationNotFoundError`` rather than quietly returning no rows. Enabled
+    # together with the first models to scope implicitly: an
+    # empty result is indistinguishable from "no data yet" in a task or a
+    # management command, where a missing binding is the likelier explanation,
+    # and this is the whole safety argument for migrating without a feature flag.
+    #
+    # Reaching outside the bound organization stays available and stays explicit:
+    # ``filter_by_organization(...)`` / ``exclude_by_organization(...)`` (which
+    # start from the unscoped queryset) and ``original_manager``.
+    "STRICT_ORGANIZATION_FILTER": True,
+    # Points ``vinta_orgs.testing.reseed_organization_groups()`` (wired in via
+    # ``pytest_plugins = ["vinta_orgs.testing"]`` in the root ``conftest.py``) at
+    # *our* three seeded groups instead of the package's own
+    # ``organization_owner`` default. Reads the **live** catalog
+    # (``organizations.permission_catalog.GROUP_PERMISSIONS``), not
+    # ``organizations/migrations/0028_seed_permission_groups.py``'s frozen
+    # literals -- the migration is the production path and is deliberately
+    # allowed to drift from the code as it evolves; the seeder must not be.
+    # Without this a ``transaction=True`` test flushes ``auth_group`` /
+    # ``auth_group_permissions`` (data migrations are not replayed by ``flush``)
+    # and every membership built by a later test in that worker's session
+    # silently holds no permission at all.
+    "ORGANIZATION_GROUP_SEEDERS": [
+        "organizations.permission_catalog.seed_organization_groups",
+    ],
+}
 
 MIDDLEWARE = [
     "django.middleware.gzip.GZipMiddleware",
@@ -137,6 +211,46 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
+# Spelled out for the first time here. It was previously left at Django's implicit
+# default, which is exactly the first entry -- so this list *adds* the second
+# backend and changes nothing else.
+#
+# ``ModelBackend`` is kept rather than replaced even though
+# ``OrganizationModelBackend`` subclasses it and would answer every
+# authentication call identically: a live session records the dotted path of the
+# backend that authenticated it (``_auth_user_backend``), and
+# ``django.contrib.auth.get_user`` logs the session out when that path is no
+# longer in this list. Dropping the default entry would therefore sign out every
+# existing session on deploy for no gain.
+#
+# What the second backend adds is *permissions*, not authentication:
+# ``OrganizationModelBackend.get_all_permissions`` unions the user's global
+# permissions with the ones their ``OrganizationMembership`` in the
+# **currently-bound** organization carries (``vinta_orgs.state``'s contextvar,
+# which ``TenantScopedViewMixin`` / ``PublicApiSystemUserMiddleware`` bind for the
+# duration of a request). With nothing bound the organization half is empty, so an
+# unbound path answers exactly what ``ModelBackend`` alone answered.
+#
+# The two backends share cache attribute names on the user object
+# (``_perm_cache``, ``_user_perm_cache``, ``_group_perm_cache``) -- deliberate and
+# safe, because both fill them with the same *global* permission set;
+# organization permissions live in separate, organization-keyed caches
+# (``_organization_*_perm_cache``) that the stock backend never touches.
+#
+# Registered **unsubclassed**, as the package ships it -- not a repo-owned
+# subclass. Under ``0.2.0`` a deactivated membership still resolved its group
+# permissions (``_get_membership`` did not filter ``is_active``), which would
+# have forced a repo-owned subclass to close before any caller could safely
+# read ``has_perm``. ``0.3.0`` fixes that at the source: ``is_active`` now lives on
+# ``AbstractOrganizationMembership`` and is filtered *inside*
+# ``OrganizationModelBackend._get_membership``, so a deactivated administrator
+# resolves exactly what a non-member resolves -- nothing. See
+# ``organizations/tests/test_permission_backend.py`` for the pinned regression.
+AUTHENTICATION_BACKENDS = [
+    "django.contrib.auth.backends.ModelBackend",
+    "vinta_orgs.auth_backends.OrganizationModelBackend",
+]
+
 REST_FRAMEWORK = {
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.LimitOffsetPagination",
     "PAGE_SIZE": 10,
@@ -160,7 +274,7 @@ REST_FRAMEWORK = {
     # write actions (change-plan, add-on purchase/cancel in payments/billing_views.py)
     # — each drives a real provider round trip, so it is rate-limited rather than
     # left unbounded even behind auth. `payment-provider` covers the unauthenticated
-    # provider-credentials read endpoint (Phase 3) — cheap, no outbound provider call,
+    # provider-credentials read endpoint — cheap, no outbound provider call,
     # so a higher ceiling than the webhook scope.
     "DEFAULT_THROTTLE_RATES": {
         "payment-webhook": "60/min",
@@ -423,7 +537,7 @@ SPECTACULAR_SETTINGS = {
         # hash-suffixed name (e.g. "Provider331Enum").
         "ProviderEnum": "calendar_integration.constants.CalendarProvider.choices",
         # `legal.models.PolicyDocumentType` owns the published schema component
-        # `DocumentTypeEnum`. The new `BillingProfile.document_type` enum (Phase 2)
+        # `DocumentTypeEnum`. The new `BillingProfile.document_type` enum
         # would otherwise contest this name on a hash basis, risking a renamed
         # collision (e.g., "PolicyDocumentTypeEnum"). Pin `legal`'s existing,
         # already-published name so the legal app's client contract is not broken.
@@ -433,11 +547,6 @@ SPECTACULAR_SETTINGS = {
 
 
 def is_valid_url(s):
-    from django.core.exceptions import ValidationError
-
-    # pylint: disable=import-outside-toplevel
-    from django.core.validators import URLValidator
-
     if not s:
         return False
 
@@ -451,10 +560,6 @@ def is_valid_url(s):
 
 
 def append_uuid_to_filename(filename):
-    import os
-
-    from cuid2 import cuid_wrapper
-
     cuid_generator: Callable[[], str] = cuid_wrapper()
 
     filename_without_ext, ext = os.path.splitext(filename)
@@ -462,8 +567,6 @@ def append_uuid_to_filename(filename):
 
 
 def generate_s3direct_file_name(original_file_name, dest):
-    import re
-
     no_special_chars_file_name = re.sub(r"[^a-zA-Z0-9\\.]", "_", original_file_name)
     unique_file_name = append_uuid_to_filename(no_special_chars_file_name)
 
@@ -478,8 +581,7 @@ def generate_s3direct_file_name(original_file_name, dest):
 # strain storage or the unauthenticated delivery route's bandwidth.
 BRANDING_LOGO_MAX_SIZE_BYTES = 5 * 1024 * 1024
 # SVG is deliberately excluded: it can carry script and would render on our own
-# login page, making it a stored-XSS surface -- see the plan's "Logo limits"
-# guiding decision.
+# login page, making it a stored-XSS surface.
 BRANDING_LOGO_CONTENT_TYPES = ("image/png", "image/jpeg", "image/webp")
 
 
@@ -515,8 +617,7 @@ S3DIRECT_DESTINATIONS = {
         "key_args": "uploads/branding_logos",
         # Tightened from bare `is_authenticated`: the signing surface is not open
         # to every logged-in user on the platform, only to an admin of some
-        # branding-eligible organization -- see the plan's "Logo upload path"
-        # guiding decision.
+        # branding-eligible organization.
         "auth": _user_administers_branding_eligible_organization,
         # Same constraint as `profile_pictures` above: BucketOwnerEnforced rejects
         # every other canned ACL, and s3direct always sends one.
@@ -611,7 +712,7 @@ MERCADOPAGO_ACCESS_TOKEN = config("MERCADOPAGO_ACCESS_TOKEN", default="")
 MERCADOPAGO_WEBHOOK_SECRET = config("MERCADOPAGO_WEBHOOK_SECRET", default="")
 # Browser-safe public key used to initialize MercadoPago's payment form. Not a
 # secret — intentionally omitted from environment isolation. Served on unauthenticated
-# endpoints in Phase 3.
+# endpoints.
 MERCADOPAGO_PUBLIC_KEY = config("MERCADOPAGO_PUBLIC_KEY", default="")
 
 # Secret API key used to authenticate outbound calls to Stripe. No organization is
@@ -625,7 +726,7 @@ STRIPE_SECRET_KEY = config("STRIPE_SECRET_KEY", default="")
 STRIPE_WEBHOOK_SECRET = config("STRIPE_WEBHOOK_SECRET", default="")
 # Browser-safe public key used to initialize Stripe's payment form. Not a secret —
 # intentionally omitted from environment isolation. Served on unauthenticated
-# endpoints in Phase 3.
+# endpoints.
 STRIPE_PUBLISHABLE_KEY = config("STRIPE_PUBLISHABLE_KEY", default="")
 
 # System-wide default payment provider. Resolves to the organization's pinned

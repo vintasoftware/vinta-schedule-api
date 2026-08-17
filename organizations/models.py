@@ -1,76 +1,23 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, ClassVar
+from typing import Any, ClassVar
 
 from django.conf import settings
-from django.core.exceptions import FieldDoesNotExist, ObjectDoesNotExist
 from django.db import models
 
-from common.fields import (
-    OrganizationMembershipForeignKey,
-    SafeCompositePrimaryKey,
-    TenantSafeForeignKey,
-    TenantSafeOneToOneField,
-)
+from vinta_orgs.models import AbstractOrganization, AbstractOrganizationMembership
+
+from common.fields import OrganizationMembershipForeignKey
 from common.models import BaseModel
 from organizations.managers import (
-    BaseOrganizationModelManager,
     OrganizationInvitationManager,
     OrganizationMembershipManager,
 )
-from organizations.slug_validation import SLUG_MAX_LENGTH
+from organizations.permission_catalog import GROUP_ORGANIZATION_MEMBER, INVITABLE_GROUPS
+from organizations.slug_generation import derive_organization_slug
 from payments.billing_constants import Entitlement
 from payments.entitlement_cache import has_entitlement_cached
 from s3direct_overrides.model_fields import S3DirectImageField
-
-
-if TYPE_CHECKING:
-    from users.models import User
-
-
-# Sentinel distinguishes "not resolved yet" (off-DRF path) from ``None``
-# (resolved-to-gated / resolved-to-no-membership). Must be module-level so
-# the same object identity is checked everywhere.
-_UNSET: object = object()
-
-
-def get_active_organization_membership(
-    user: User | None,
-) -> OrganizationMembership | None:
-    """Return the user's active OrganizationMembership, or None.
-
-    This is the shared helper for all tenant-access checks. Call it wherever
-    a view, permission, or serializer needs to resolve an active membership:
-
-        membership = get_active_organization_membership(request.user)
-        if not membership:
-            return <empty queryset / clean denial>
-
-    On the DRF request path, ``TenantScopedViewMixin.initial()``
-    resolves the active membership from the ``X-Organization-Id`` header and
-    stashes it on ``user._active_membership``. This helper reads the stash so
-    the ~60 existing call sites are automatically header-aware without change.
-
-    Off the DRF request path (management commands, Celery tasks, tests that
-    bypass views), ``_active_membership`` is absent and the helper falls back
-    to the single-membership query so those callers keep working.
-
-    A user with no active memberships returns None (gated). An inactive
-    membership (is_active=False) is treated identically to no membership.
-    """
-    if user is None:
-        return None
-
-    stashed = getattr(user, "_active_membership", _UNSET)
-    if stashed is not _UNSET:
-        # DRF request path: the resolver has already run; trust its result
-        # (may be an OrganizationMembership or None for gated users).
-        return stashed  # type: ignore[return-value]
-
-    # Off-request path (management commands, Celery tasks, direct test calls):
-    # fall back to the single active membership query. Stable ordering ensures
-    # determinism if a user somehow ends up with two active memberships here.
-    return user.organization_memberships.filter(is_active=True).order_by("created").first()  # type: ignore[union-attr]
 
 
 class ExternalEventUpdatePolicy(models.TextChoices):
@@ -100,12 +47,31 @@ class WeekStart(models.TextChoices):
     SUNDAY = "sunday", "Sunday"
 
 
-class Organization(BaseModel):
+class Organization(AbstractOrganization):
     """
     Represents a calendar organization.
+
+    Inherited from ``vinta_orgs.models.AbstractOrganization``: ``name``,
+    ``slug`` (NOT NULL, unique), ``created`` and ``modified``. ``name`` is not
+    redeclared -- the base already declares exactly the field we had.
+
+    ``slug`` is inherited rather than overridden, which is what makes it NOT
+    NULL. Two consequences worth knowing:
+
+    * The column is now ``varchar(255)`` rather than ``varchar(63)``. The
+      *rules* did not move: ``organizations.slug_validation`` still caps a
+      written slug at ``SLUG_MAX_LENGTH`` (63) and still owns the format,
+      reserved-word and confusable checks at every write surface.
+    * A blank slug is refused by the database, not merely by ``save()`` -- see
+      the ``organization_slug_not_blank`` constraint below. That is what
+      retires ``evaluate_branding_write_gate``'s ``NO_SLUG`` condition
+      permanently rather than leaving it merely hard to reach.
+
+    ``BaseModel``'s ``meta`` JSONField and its ``db_index`` on
+    ``created`` / ``modified`` are gone with the base-class change: ``meta`` was
+    never read on this model and neither timestamp is queried by range.
     """
 
-    name = models.CharField(max_length=255)
     should_sync_rooms = models.BooleanField(
         default=False, help_text="Whether to sync rooms for this organization."
     )
@@ -148,36 +114,67 @@ class Organization(BaseModel):
             "Enables the whole reseller capability bundle."
         ),
     )
-    slug = models.SlugField(
-        max_length=SLUG_MAX_LENGTH,
-        unique=True,
-        null=True,
-        blank=True,
-        default=None,
-        help_text=(
-            "Public, URL-safe identifier used by the organization's branded login page "
-            "and by brandingForTenant. Optional until the organization sets one "
-            "self-serve; stored as NULL (never empty string) when unset — default=None "
-            "keeps a field left blank in a form/serializer NULL rather than '', which "
-            "is what lets the unique index admit any number of organizations with no "
-            "slug. Mutable after set: changing it orphans previously-issued branded "
-            "login URLs, which then fall back to the default identity rather than "
-            "erroring. Format, reserved-word, and confusable-character rules live in "
-            "organizations.slug_validation and are enforced by each write surface "
-            "(REST serializer, admin form, GraphQL input), not here."
-        ),
-    )
 
-    class Meta:
+    class Meta(AbstractOrganization.Meta):
+        # No ``db_table``. Our app label is still ``organizations`` (the package
+        # labels its own app ``vinta_orgs``), so Django's default already
+        # resolves to ``organizations_organization`` -- the table this model has
+        # always used. organizations/tests/test_app_identity.py pins that.
         constraints: ClassVar = [
             models.UniqueConstraint(
                 fields=["parent", "name"],
                 name="uniq_org_name_per_parent",
             ),
+            # ``slug`` is NOT NULL, but NOT NULL alone still admits ``''`` --
+            # and an empty slug is not a slug: it would collide on the unique
+            # index with any other blank row and it would resurrect the
+            # branding gate's retired ``NO_SLUG`` state through any write that
+            # goes around ``save()`` (``queryset.update(slug="")``, raw SQL, a
+            # data migration). Refused in the database so no write surface has
+            # to remember.
+            models.CheckConstraint(
+                condition=~models.Q(slug=""),
+                name="organization_slug_not_blank",
+            ),
+        ]
+        # Two of the four capability permissions in
+        # ``organizations.permission_catalog``. Named for what the
+        # holder may *do*, not for the model-CRUD triples ``auth.Permission``
+        # defaults to -- see that module's header.
+        #
+        # Declaring them here only makes ``post_migrate`` create the
+        # ``auth_permission`` rows; the grants come from the seeded groups. The
+        # ``AlterModelOptions`` migration this generates emits no SQL and
+        # touches no existing permission row or grant.
+        permissions: ClassVar = [
+            ("manage_organization", "Can manage the organization's settings"),
+            ("manage_branding", "Can manage the organization's branding"),
         ]
 
-    def __str__(self):
-        return self.name
+    def save(self, *args: Any, **kwargs: Any) -> None:
+        """Fill in an **opaque** slug when the caller left one out.
+
+        ``org-<token>``, never ``slugify(name)``: the slug is public, so a
+        name-derived default would publish the organization's name for every
+        row saved without an explicit slug from this point on. Name derivation
+        is opt-in and currently has exactly one runtime caller,
+        ``OrganizationService.create_organization``, which computes and passes
+        the slug itself -- see ``organizations.slug_generation``.
+
+        Skipped entirely when ``update_fields`` is given and does not mention
+        ``slug``: deriving one there would mutate the in-memory instance and
+        never persist it, so the object and the row would disagree.
+        """
+        update_fields = kwargs.get("update_fields")
+        if not self.slug and (update_fields is None or "slug" in update_fields):
+            self.slug = derive_organization_slug(
+                self.name,
+                slug_exists=lambda candidate: (
+                    type(self)._default_manager.filter(slug=candidate).exists()
+                ),
+                disclose_name=False,
+            )
+        return super().save(*args, **kwargs)
 
     def is_reseller(self) -> bool:
         """Return True if this org can invite/create other organizations."""
@@ -213,82 +210,68 @@ class Organization(BaseModel):
         return None
 
 
-class OrganizationForeignKey(TenantSafeForeignKey):
-    """
-    A ForeignKey that enforces the tenant_id in JOIN ON clauses.
-    This is used to ensure that calendar organizations are properly scoped to the tenant.
-    """
-
-    tenant_field = "organization_id"
-
-
-class OrganizationOneToOneField(TenantSafeOneToOneField):
-    """
-    A OneToOneField that enforces the tenant_id in JOIN ON clauses.
-    This is used to ensure that calendar organizations are properly scoped to the tenant.
-    """
-
-    tenant_field = "organization_id"
-
-
-class OrganizationRole(models.TextChoices):
-    """Role a user holds within an organization.
-
-    A flat two-role model — enough for current permission needs. Richer
-    hierarchies (e.g. owner/admin/member) can be layered later without a
-    disruptive migration.
-    """
-
-    MEMBER = "member", "Member"
-    ADMIN = "admin", "Admin"
-
-
-class OrganizationMembership(BaseModel):
+class OrganizationMembership(AbstractOrganizationMembership):
     """
     Represents a membership of a user in a calendar organization.
     This is used to link users to their respective calendar organizations.
 
     Access rule:
         Every authenticated user is in exactly one of two states:
-        1. **Has active membership** — ``get_active_organization_membership(user)``
-           returns an ``OrganizationMembership`` instance and all tenant-scoped
-           endpoints are open to them.
-        2. **Gated (zero active memberships)** — ``get_active_organization_membership``
-           returns ``None``. Only the onboarding endpoints respond:
+        1. **Has active membership** — the package resolver returns an
+           ``OrganizationMembership`` instance and all tenant-scoped endpoints
+           are open to them.
+        2. **Gated (zero active memberships)** — the package resolver returns
+           ``None``. Only the onboarding endpoints respond:
            ``POST /organizations/`` (create own org) and ``POST /invitations/accept``
            (join an invited org). All other tenant-scoped endpoints must return an
            empty queryset or permission denial — never a 500.
 
         A user may hold memberships in multiple organizations.
-        ``get_active_organization_membership`` resolves the *active* one: for a
-        single-membership user it returns that membership; for a multi-org user it
-        resolves the active org from the ``X-Organization-Id`` header.
+        ``memberships.resolve_for_user`` resolves the *active* one: for a
+        single-membership user it returns that membership; for a multi-org user
+        the DRF integration resolves the active org from the
+        ``X-Organization-Id`` header and stores it on the request.
 
-        Never read ``user.organization_memberships`` directly in permission /
-        scoping code — always go through ``get_active_organization_membership`` so
-        the resolution stays in one place.
+        Request code reads ``request.organization_membership``. Code outside a
+        request calls ``common.organization_services.memberships
+        .resolve_for_user`` directly so resolution stays owned by the package.
+
+    Inherited from ``vinta_orgs.models.AbstractOrganizationMembership``:
+    ``organization`` and ``user`` (both ``related_name="memberships"`` --
+    the user-side accessor used to be ``memberships``), the
+    ``groups`` / ``permissions`` many-to-many relations to ``auth.Group`` /
+    ``auth.Permission``, and ``created`` / ``modified``.
+
+    ``groups`` carries the three seeded groups from
+    ``organizations.permission_catalog`` and is **the** representation of what a
+    membership may do. It was backfilled from the two flat columns it replaced
+    (``role`` and ``is_billing_owner``) by migration ``0029``; those columns were
+    then dropped by ``0030``, leaving one representation.
+    ``organizations.services.assign_membership_groups`` is the single write
+    path. Readers: ``organizations.auth_backends.OrganizationModelBackend``
+    (which is what makes ``user.has_perm(...)`` answer per-organization),
+    ``OrganizationMembershipQuerySet.holding_permission`` /
+    ``billing_recipients``, and
+    ``organizations.auth_backends.resolve_membership_permissions`` (the API's
+    read projection). ``permissions`` -- the per-membership direct grant --
+    remains unwritten, but every one of those readers unions it in, so a row
+    written by hand into that table does grant the capability.
+
+    Both M2Ms use auto-created through tables with no ``organization`` column,
+    which the repo's usual rule for a many-to-many on a scoped model forbids.
+    They are the package's own fields, and the exception is sound here: the
+    traversal always starts from a *membership*, and a membership row is unique
+    per ``(user, organization)`` -- so the organization is already pinned by the
+    row the join starts from. Nothing reaches these tables from the group side.
+
+    The primary key is a surrogate ``id`` again. The composite
+    ``(user, organization)`` primary key it replaces is incompatible with a
+    ``ManyToManyField``, which the two inherited relations are.
+    ``uniq_membership_user_organization`` is kept -- it is a *constraint*, and
+    the five raw-SQL composite PROTECT FKs in ``calendar_integration`` bind to
+    it rather than to the primary key, so they survive the swap untouched.
     """
 
-    user = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name="organization_memberships",
-    )
-    organization = models.ForeignKey(
-        Organization,
-        on_delete=models.CASCADE,
-        related_name="memberships",
-    )
-    role = models.CharField(
-        max_length=20,
-        choices=OrganizationRole,
-        default=OrganizationRole.MEMBER,
-        help_text=(
-            "Role the user holds in this organization. Admins can manage "
-            "organization-scoped resources (e.g. CalendarGroups) regardless of "
-            "direct ownership."
-        ),
-    )
     is_active = models.BooleanField(
         default=True,
         db_default=True,
@@ -297,51 +280,45 @@ class OrganizationMembership(BaseModel):
             "Whether this membership is active. Inactive memberships are treated as "
             "gated: the user still has a row but loses all tenant-scoped access until "
             "reactivated. Use this to disable a user without deleting their membership "
-            "record (which would lose role/history). Default True keeps every existing "
-            "read unchanged."
-        ),
-    )
-    is_billing_owner = models.BooleanField(
-        default=False,
-        db_default=False,
-        help_text=(
-            "Whether this membership may manage the organization's billing (change "
-            "plan, purchase add-ons, manage payment method) in addition to admins. "
-            "This flag only marks the membership; the permission check that reads it "
-            "is IsBillingOwnerOrAdmin."
+            "record (which would lose their groups and history). Default True keeps "
+            "every existing read unchanged."
         ),
     )
 
-    # Composite primary key on (user, organization) — a membership's identity is the
-    # (user, org) pair. The implicit ``id`` BigAutoField is dropped; this composite
-    # key replaces it. The legacy ``uniq_membership_user_organization`` unique
-    # constraint is kept (it is what the three raw-SQL calendar PROTECT FKs bind to);
-    # it is redundant with the composite-PK unique index but kept so the FKs need no
-    # rebind.
-    #
-    # ``SafeCompositePrimaryKey`` (not stock ``models.CompositePrimaryKey``) is used so
-    # class-level ``OrganizationMembership.pk`` access does not crash third-party model
-    # introspection (e.g. ``django_virtual_models``' method discovery). See
-    # ``common.fields.SafeCompositePrimaryKey``.
-    pk = SafeCompositePrimaryKey("user", "organization")
+    # ``ClassVar`` because the base declares its own ``objects`` as one, and
+    # mypy refuses to let an instance variable shadow a class variable. This
+    # narrows the base's ``SingleOrganizationUnscopedManager`` to a subclass of
+    # it -- the domain methods are added, the unscoped behaviour is kept.
+    objects: ClassVar[OrganizationMembershipManager] = OrganizationMembershipManager()
 
-    objects: OrganizationMembershipManager = OrganizationMembershipManager()
-
-    class Meta:
+    class Meta(AbstractOrganizationMembership.Meta):
+        # No ``db_table`` -- see ``Organization.Meta``.
+        #
+        # ``unique_together`` is emptied deliberately. The base declares
+        # ``[('user', 'organization')]``, which would build a *second* unique
+        # index over the same two columns next to the
+        # ``uniq_membership_user_organization`` constraint below. That
+        # constraint is the one five raw-SQL composite FKs point at, so it is
+        # the one that must survive verbatim; a duplicate buys nothing and
+        # costs an index on every write.
+        unique_together: ClassVar = []
+        default_manager_name = "objects"
         constraints: ClassVar = [
             models.UniqueConstraint(
                 fields=["user", "organization"],
                 name="uniq_membership_user_organization",
             ),
         ]
+        # The membership half of the capability catalog -- see
+        # ``organizations.permission_catalog`` and ``Organization.Meta`` above.
+        permissions: ClassVar = [
+            ("manage_members", "Can manage the organization's members"),
+        ]
 
     def __str__(self):
+        # Overrides the base, which renders every group name and therefore
+        # costs a query per row anywhere a membership is stringified.
         return f"{self.user} in {self.organization}"
-
-    @property
-    def is_admin(self) -> bool:
-        """True if this membership confers admin rights in the organization."""
-        return self.role == OrganizationRole.ADMIN
 
 
 class OrganizationInvitation(BaseModel):
@@ -353,6 +330,13 @@ class OrganizationInvitation(BaseModel):
     may hold concurrent pending invitations in different organizations (multi-org invite
     accept). A duplicate invite to the *same* org is still rejected by the
     ``uniq_invitation_email_organization`` constraint.
+
+    ``group`` replaced the dropped ``role`` column.
+    It holds a *single* seeded group name rather than a list, because
+    an invitation confers at most one of ``INVITABLE_GROUPS`` -- a many-to-many
+    would be a table and a join for one enumerated value, and
+    ``organization_billing_owner`` is refused at invitation time regardless (see
+    ``organizations.permission_catalog.INVITABLE_GROUPS``).
     """
 
     objects: OrganizationInvitationManager = OrganizationInvitationManager()
@@ -372,13 +356,14 @@ class OrganizationInvitation(BaseModel):
         null=True,
         blank=True,
     )
-    role = models.CharField(
-        max_length=20,
-        choices=OrganizationRole,
-        default=OrganizationRole.MEMBER,
+    group = models.CharField(
+        max_length=50,
+        choices=[(name, name) for name in INVITABLE_GROUPS],
+        default=GROUP_ORGANIZATION_MEMBER,
         help_text=(
-            "Role the invited user should receive on accepting the invitation. "
-            "Defaults to MEMBER. Admin invitations must be explicit."
+            "Seeded group the membership created on acceptance joins. Defaults "
+            "to 'organization_member', which confers no capability; admin "
+            "invitations must name 'organization_admin' explicitly."
         ),
     )
     accepted_at = models.DateTimeField(null=True, blank=True)
@@ -413,94 +398,6 @@ class OrganizationInvitation(BaseModel):
 
     def __str__(self):
         return f"Invitation for {self.email} to join {self.organization}"
-
-
-class OrganizationModel(BaseModel):
-    """
-    Represents a model that can be associated with a calendar organization.
-    This is used to link calendars to an organization.
-    """
-
-    organization = models.ForeignKey(
-        Organization,
-        on_delete=models.CASCADE,
-        related_name="+",
-        help_text="The organization this model is associated with. Queries should use the `organization` field.",
-    )
-
-    objects: BaseOrganizationModelManager = BaseOrganizationModelManager()
-    original_manager = models.Manager()
-
-    class Meta:
-        abstract = True
-
-    @classmethod
-    def is_field_organization_foreign_key(cls, field: models.Field) -> bool:
-        try:
-            fk_field = cls._meta.get_field(f"{field.name}_fk")
-        except FieldDoesNotExist:
-            fk_field = None
-
-        return (
-            isinstance(field, models.ForeignObject)
-            and bool(fk_field)
-            and isinstance(fk_field, models.ForeignKey)
-        )
-
-    def __init__(self, *args, **kwargs):
-        # find model fields that are OrganizationForeignKey
-        foreign_key_fields_in_kwargs = [
-            field.name
-            for field in self._meta.get_fields()
-            if (
-                self.is_field_organization_foreign_key(field)
-                and (field.name in kwargs.keys() or f"{field.name}_id" in kwargs.keys())
-            )
-        ]
-
-        for field_name in foreign_key_fields_in_kwargs:
-            if field_name in kwargs.keys() and not kwargs.get(f"{field_name}_fk", None):
-                kwargs[f"{field_name}_fk"] = kwargs.pop(field_name)
-                continue
-            if f"{field_name}_id" in kwargs.keys() and not kwargs.get(f"{field_name}_fk_id", None):
-                kwargs[f"{field_name}_fk_id"] = kwargs.pop(f"{field_name}_id")
-                continue
-
-        super().__init__(*args, **kwargs)
-
-    def save(self, *args, **kwargs):
-        # find model fields that are OrganizationForeignKey
-        foreign_key_fields = [
-            field.name
-            for field in self._meta.get_fields()
-            if (self.is_field_organization_foreign_key(field))
-        ]
-
-        is_create = self.id is None
-
-        if is_create:
-            for field_name in foreign_key_fields:
-                try:
-                    foreign_object_field_value = getattr(self, field_name, None)
-                except (FieldDoesNotExist, ObjectDoesNotExist):
-                    foreign_object_field_value = None
-                if foreign_object_field_value and not getattr(self, f"{field_name}_fk", None):
-                    setattr(self, f"{field_name}_fk", foreign_object_field_value)
-        else:
-            for field_name in foreign_key_fields:
-                old_instance = self.__class__.original_manager.filter(id=self.id).first()
-                try:
-                    foreign_object_field_value = getattr(self, field_name, None)
-                except (FieldDoesNotExist, ObjectDoesNotExist):
-                    foreign_object_field_value = None
-
-                if old_instance and foreign_object_field_value != getattr(
-                    old_instance, field_name, None
-                ):
-                    self.organization = old_instance.organization
-                    setattr(self, f"{field_name}_fk", foreign_object_field_value)
-
-        return super().save(*args, **kwargs)
 
 
 class OrganizationBranding(models.Model):
@@ -586,7 +483,7 @@ def resolve_branding(org: Organization) -> OrganizationBranding | None:
 
     If no reseller ancestor exists, returns None (vinta default branding applies).
 
-    **Deliberately ungated and, as of this phase, uncalled in production code.**
+    **Deliberately ungated, and currently uncalled in production code.**
     The ``white_label_branding`` entitlement is applied by ``resolve_branding_for_display``
     instead, because not every caller of this function is presenting branding. Its only
     caller was ``public_api.queries.validate_return_url``, which read
@@ -594,11 +491,10 @@ def resolve_branding(org: Organization) -> OrganizationBranding | None:
     permitted — an **auth-flow** decision, not a cosmetic one, which is why it was never
     gated: a reseller downgrading off a cosmetic entitlement must not silently break the
     OAuth return flow for every tenant underneath it. ``validate_return_url`` and the
-    allowlist it read are gone (see the Organization Auth-Area Branding plan, Phase 2a),
-    which leaves this function with no caller. It is kept rather than deleted here because
-    Phase 5 of that plan (branding resolution) is expected to need the same ungated
-    parent-walk semantics for a non-cosmetic decision; re-examine whether it still earns
-    its keep once that phase lands.
+    allowlist it read have both been removed, which leaves this function with no caller.
+    It is kept rather than deleted because the next non-cosmetic branding decision is
+    expected to need the same ungated parent-walk semantics; re-examine whether it still
+    earns its keep if that does not materialise.
 
     Args:
         org: The Organization instance to resolve branding for.
@@ -664,6 +560,10 @@ def resolve_branding_for_display(org: Organization | None) -> OrganizationBrandi
     if branding_root is None:
         return None
 
+    # Late, and it has to be -- see the docstring above: `di_core.containers
+    # .container` is only assigned in `DICoreConfig.ready()`, so a module-level
+    # `from ... import container` binds the `None` the module starts with and
+    # never sees the wired container.
     from di_core.containers import container
 
     if container is None:

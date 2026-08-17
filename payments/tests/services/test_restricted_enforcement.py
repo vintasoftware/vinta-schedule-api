@@ -51,14 +51,19 @@ from organizations.models import (
     Organization,
     OrganizationInvitation,
     OrganizationMembership,
-    OrganizationRole,
 )
+from organizations.permission_catalog import (
+    GROUP_ORGANIZATION_ADMIN,
+    GROUP_ORGANIZATION_BILLING_OWNER,
+)
+from organizations.tests.helpers import make_membership
 from payments.billing_constants import BillingInterval, BillingState, LimitedResource, LimitKind
 from payments.exceptions import OverLimitError
 from payments.models import BillingPlan, PlanLimit, Subscription, SubscriptionPlanLimit
 from payments.services.entitlement_service import EntitlementService
 from payments.services.subscription_service import SubscriptionService
 from public_api.models import SystemUser
+from users.factories import UserFactory
 from users.models import User
 from webhooks.constants import WebhookEventType
 from webhooks.models import WebhookConfiguration
@@ -141,8 +146,6 @@ def _invite_member(organization: Organization) -> None:
 
 
 def _reactivate_member(organization: Organization) -> None:
-    from users.factories import UserFactory
-
     membership = baker.make(
         OrganizationMembership,
         organization=organization,
@@ -231,14 +234,11 @@ def _group_scoped_membership(
     ``CalendarOwnership`` row -- ``can_manage_group_scoped_calendar_config``
     grants org admins unconditionally.
     """
-    from users.factories import UserFactory
-
     admin_user = UserFactory().create_user()
-    baker.make(
-        OrganizationMembership,
+    make_membership(
         user=admin_user,
         organization=organization,
-        role=OrganizationRole.ADMIN,
+        groups=[GROUP_ORGANIZATION_ADMIN],
         is_active=True,
     )
     calendar = baker.make(
@@ -601,7 +601,7 @@ RESTRICTED_WRITE_PROBES: dict[str, WriteProbe] = {
 }
 
 
-#: Group-scoped single-write probes (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 2b).
+#: Group-scoped single-write probes.
 #: These six ``CalendarGroupService`` methods are NOT tied to a ``LimitedResource``
 #: ceiling -- they call ``_check_not_restricted()`` directly, never ``check_limit``
 #: -- so they cannot live in ``RESTRICTED_WRITE_PROBES`` (keyed exhaustively against
@@ -640,7 +640,7 @@ GUARDED_MUTATING_SERVICE_METHODS: list[tuple[type, str]] = [
     (CalendarGroupService, "delete_group"),
     (WebhookService, "update_configuration"),
     (WebhookService, "delete_configuration"),
-    # Group-scoped single-write methods (Phase 2b): none call check_limit, so
+    # Group-scoped single-write methods: none call check_limit, so
     # (unlike the base creates above) their create half is guarded the same
     # way as update/delete -- all six belong here, not just update/delete.
     (CalendarGroupService, "create_group_scoped_availability_window"),
@@ -782,7 +782,7 @@ class TestRestrictedOrganizationBlocksEveryWrite:
 @pytest.mark.django_db
 class TestRestrictedOrganizationBlocksGroupScopedWrites:
     """Sibling of ``TestRestrictedOrganizationBlocksEveryWrite`` for the six
-    group-scoped single-write ``CalendarGroupService`` methods (Phase 2b) --
+    group-scoped single-write ``CalendarGroupService`` methods --
     kept separate because they are not ``LimitedResource``-keyed (see
     ``GROUP_SCOPED_WRITE_PROBES``), but proven with the exact same shape:
     drive the real guarded method against a RESTRICTED org and assert it is
@@ -909,8 +909,6 @@ class TestRestrictedOrganizationBillingSurfaceStaysOpen:
     driving the real HTTP endpoints for a RESTRICTED organization."""
 
     def _client_for_restricted_org(self):
-        from users.factories import UserFactory
-
         user = UserFactory().create_user()
         organization = baker.make(Organization, parent=None, can_invite_organizations=False)
         pro_plan = _plan({LimitedResource.ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50"))
@@ -922,12 +920,11 @@ class TestRestrictedOrganizationBillingSurfaceStaysOpen:
         subscription.billing_state = BillingState.RESTRICTED
         subscription.external_id = ""
         subscription.save(update_fields=["billing_state", "external_id"])
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
             is_active=True,
-            is_billing_owner=True,
+            groups=[GROUP_ORGANIZATION_BILLING_OWNER],
         )
         client = APIClient()
         client.force_authenticate(user=user)

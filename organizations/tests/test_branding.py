@@ -2,15 +2,19 @@
 validation."""
 
 import datetime
+from unittest.mock import patch
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.contrib.auth.models import AnonymousUser
+from django.contrib.auth.models import AnonymousUser, Permission
+from django.contrib.contenttypes.models import ContentType
 from django.core import mail
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils import timezone
 
 import pytest
 from model_bakery import baker
+from s3direct.utils import AWSCredentials
 from vintasend.app_settings import NotificationSettings
 from vintasend.constants import NotificationTypes
 from vintasend.services.dataclasses import NotificationContextDict
@@ -32,7 +36,6 @@ from organizations.models import (
     OrganizationBranding,
     OrganizationInvitation,
     OrganizationMembership,
-    OrganizationRole,
     resolve_branding,
     resolve_branding_for_display,
 )
@@ -42,6 +45,7 @@ from organizations.notification_contexts import (
     VINTA_DEFAULT_SECONDARY_COLOR,
     organization_invitation_context,
 )
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN, GROUP_ORGANIZATION_MEMBER
 from organizations.permissions import (
     BrandingWriteGateReason,
     evaluate_branding_write_gate,
@@ -49,8 +53,10 @@ from organizations.permissions import (
 )
 from organizations.redirect_url_validation import validate_redirect_url
 from organizations.serializers import CurrentMembershipSerializer, MyMembershipSerializer
+from organizations.tests.helpers import make_membership
 from payments.billing_constants import BillingState, Entitlement
 from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
+from payments.services.subscription_service import SubscriptionService
 from users.factories import UserFactory
 
 
@@ -165,17 +171,17 @@ class TestResolveBranding:
 
 @pytest.mark.django_db
 class TestGetBrandingRootParentlessResolution:
-    """``Organization.get_branding_root()`` -- Organization Auth-Area Branding plan,
-    Phase 5. Widens resolution so a branded parentless organization can be its own
-    branding root. The reseller branch is checked FIRST and is unchanged -- that
-    ordering is what preserves reseller precedence; only a parentless organization
-    that is NOT a reseller newly resolves to itself. A child under a non-reseller
-    parent must still resolve to ``None`` -- it cannot brand itself (enforced by the
-    write gate) and must not silently pick up its own identity as a fallback.
+    """``Organization.get_branding_root()`` widened so a branded parentless
+    organization can be its own branding root. The reseller branch is checked FIRST
+    and is unchanged -- that ordering is what preserves reseller precedence; only a
+    parentless organization that is NOT a reseller newly resolves to itself. A child
+    under a non-reseller parent must still resolve to ``None`` -- it cannot brand
+    itself (enforced by the write gate) and must not silently pick up its own
+    identity as a fallback.
     """
 
     def test_parentless_non_reseller_returns_itself(self):
-        """The one new behavior this phase adds."""
+        """The one new behavior this widened resolution adds."""
         org = baker.make(Organization, parent=None, can_invite_organizations=False)
 
         assert org.get_branding_root() == org
@@ -301,8 +307,6 @@ class TestResolveBrandingForDisplayEntitlementGate:
     def test_unlimited_plan_reseller_is_never_blocked(self):
         """The rollout's kill switch: every organization is on ``unlimited`` until
         deliberately migrated, so this must see byte-for-byte unchanged behavior."""
-        from payments.services.subscription_service import SubscriptionService
-
         reseller = baker.make(Organization, can_invite_organizations=True)
         plan = BillingPlan.objects.get(slug="unlimited")
         SubscriptionService().create_subscription_for_organization(reseller, plan=plan)
@@ -320,8 +324,8 @@ class TestResolveBrandingIsUngated:
     Its former caller, ``public_api.queries.validate_return_url``, read
     ``return_url_allowlist`` off this row to decide whether an OAuth return URL may be
     honoured -- a non-cosmetic, auth-flow decision. That query and the allowlist it
-    read are gone as of Phase 2a of the Organization Auth-Area Branding plan (see
-    ``resolve_branding``'s docstring), which leaves this function with no caller today.
+    read are gone now (see ``resolve_branding``'s docstring), which leaves this
+    function with no caller today.
     It stays deliberately separate from ``resolve_branding_for_display`` (and
     deliberately ungated) so a future non-cosmetic caller -- e.g. an auth-flow
     decision -- is not silently broken by a reseller downgrading off the cosmetic
@@ -423,11 +427,11 @@ def _org_with_entitlement(entitlement_key: str, is_enabled: bool, **org_kwargs) 
 
 @pytest.mark.django_db
 class TestResolveBrandingForDisplayParentlessOrganization:
-    """``resolve_branding_for_display`` for a parentless, non-reseller organization
-    -- Organization Auth-Area Branding plan, Phase 5. Exercises the same entitlement
-    gate as ``TestResolveBrandingForDisplayEntitlementGate`` above, but through the
-    newly-widened root (a parentless org resolving to itself) rather than through a
-    reseller ancestor -- pinning Use-case 6 (a branded organization downgrades): the
+    """``resolve_branding_for_display`` for a parentless, non-reseller organization.
+    Exercises the same entitlement gate as
+    ``TestResolveBrandingForDisplayEntitlementGate`` above, but through the
+    widened root (a parentless org resolving to itself) rather than through a
+    reseller ancestor -- pinning the downgrade case for a branded organization: the
     saved values are retained in the database but stop being applied the moment the
     entitlement is lost, and re-apply with no re-entry once it returns.
     """
@@ -474,9 +478,9 @@ class TestResolveBrandingForDisplayParentlessOrganization:
 @pytest.mark.django_db
 class TestEvaluateBrandingWriteGate:
     """``organizations.permissions.evaluate_branding_write_gate`` -- the full
-    three-condition write gate (Organization Auth-Area Branding plan, Phase 3):
-    parentless AND entitled AND slug-set. Composes on top of the two-condition
-    ``is_branding_eligible_organization`` (Phase 2b), which stays the
+    branding write gate: parentless AND entitled. Its third condition (slug-set) is
+    retired -- see ``evaluate_branding_write_gate``. Composes on top of the
+    two-condition ``is_branding_eligible_organization``, which stays the
     logo-signing surface's gate -- see ``test_two_condition_helper_stays_free_
     of_the_slug_condition`` below for that split pinned as a regression test.
     """
@@ -505,75 +509,101 @@ class TestEvaluateBrandingWriteGate:
 
         assert evaluate_branding_write_gate(org) is BrandingWriteGateReason.NOT_ENTITLED
 
-    def test_refuses_an_organization_with_no_slug(self):
+    def test_admits_a_freshly_created_parentless_entitled_organization(self):
+        """The slug condition is retired, and this is what proves it.
+
+        ``Organization.slug`` is NOT NULL with a ``save()``-time fallback and an
+        ``organization_slug_not_blank`` check constraint, so an organization that
+        is parentless and entitled now passes the gate outright -- no separate
+        "pick a slug first" step.
+        """
         org = _org_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None)
-        assert org.slug is None
 
-        assert evaluate_branding_write_gate(org) is BrandingWriteGateReason.NO_SLUG
+        assert org.slug
+        assert evaluate_branding_write_gate(org) is BrandingWriteGateReason.OK
 
-    def test_the_three_refusals_are_distinguishable(self):
+    def test_a_blank_slug_no_longer_refuses_anything(self):
+        """The retired condition, pinned as *retired* rather than as absent.
+
+        ``NO_SLUG`` was deleted, along with its branch, when the slug precondition
+        for branding writes was retired. The only value that ever still reached that
+        branch was an unsaved, in-memory ``Organization`` -- no persisted one
+        can have a blank slug -- so that is what this drives, and it is now
+        admitted rather than refused. Written this way so a future
+        reintroduction of the rule is a red test rather than a silent
+        re-narrowing.
+        """
+        entitled = _org_with_entitlement(
+            Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="entitled-org-gate"
+        )
+        unsaved = Organization(pk=entitled.pk, name=entitled.name, slug="")
+
+        assert evaluate_branding_write_gate(unsaved) is BrandingWriteGateReason.OK
+        assert not hasattr(BrandingWriteGateReason, "NO_SLUG")
+
+    def test_the_two_refusals_are_distinguishable(self):
         """Each failure mode produces its own reason, not a bare False -- this is
-        the whole point of the enum-returning gate over a boolean helper."""
+        the whole point of the enum-returning gate over a boolean helper.
+
+        Two reasons, not three: ``NO_SLUG`` first became unreachable when ``slug``
+        became NOT NULL, then was deleted outright along with its branch (see
+        ``test_a_blank_slug_no_longer_refuses_anything``).
+        """
         parent_org = _org_with_entitlement(
             Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="parent-org-2"
         )
-        child_org = baker.make(Organization, parent=parent_org)
+        child_org = baker.make(Organization, parent=parent_org, slug="child-org-2")
         unentitled_org = _org_with_entitlement(
             Entitlement.WHITE_LABEL_BRANDING, is_enabled=False, parent=None, slug="unentitled-org"
-        )
-        no_slug_org = _org_with_entitlement(
-            Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None
         )
 
         reasons = {
             evaluate_branding_write_gate(child_org),
             evaluate_branding_write_gate(unentitled_org),
-            evaluate_branding_write_gate(no_slug_org),
         }
 
         assert reasons == {
             BrandingWriteGateReason.HAS_PARENT,
             BrandingWriteGateReason.NOT_ENTITLED,
-            BrandingWriteGateReason.NO_SLUG,
         }
 
-    def test_two_condition_helper_stays_free_of_the_slug_condition(self):
-        """The logo-signing surface's gate (`is_branding_eligible_organization`)
-        must still admit a slug-less eligible organization -- requiring a slug
-        before an admin can upload a logo would order the branding form around
-        an implementation detail (Write gate guiding decision). Pins the split
-        between the two-condition and three-condition gates as a regression
-        test: a future change that folds the slug condition into
-        `is_branding_eligible_organization` would flip this assertion."""
-        org = _org_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None)
-        assert org.slug is None
+    def test_the_two_gates_now_agree_on_every_persisted_organization(self):
+        """``is_branding_eligible_organization`` (logo signing, capability signal)
+        and ``evaluate_branding_write_gate`` (branding writes) used to differ by
+        exactly the slug condition. With that condition retired they admit the
+        same set, which is the property callers may rely on -- and which a
+        future change reintroducing a third condition to only one of them would
+        break here."""
+        org = _org_with_entitlement(
+            Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="agreeing-org"
+        )
 
         assert is_branding_eligible_organization(org) is True
-        assert evaluate_branding_write_gate(org) is BrandingWriteGateReason.NO_SLUG
+        assert evaluate_branding_write_gate(org) is BrandingWriteGateReason.OK
 
 
 @pytest.mark.django_db
 class TestCanManageBrandingCapabilityField:
     """``can_manage_branding`` on ``CurrentMembershipSerializer`` and
-    ``MyMembershipSerializer`` (Organization Auth-Area Branding plan, Phase 4
-    Capability signal guiding decision).
+    ``MyMembershipSerializer`` -- a capability signal exposed to clients so they
+    can decide whether to show branding-management UI.
 
-    Must track ``is_branding_eligible_organization`` (the two-condition,
-    parentless-and-entitled gate) exactly -- NOT ``evaluate_branding_write_gate``
-    (the three-condition write gate). The key regression this pins: a
-    parentless, entitled organization with NO slug still reports
-    ``can_manage_branding is True`` -- folding the slug condition in would hide
-    the branding page from exactly the admins who are one step away from using
-    it (spec: "Eligible org with no public identifier yet").
+    Must track ``is_branding_eligible_organization`` (the parentless-and-entitled
+    gate) rather than ``evaluate_branding_write_gate``. The two admit the same
+    set today -- the write gate's slug condition is retired -- so the
+    distinction is pinned structurally instead of by finding an organization
+    they disagree about; see
+    ``test_reads_the_two_condition_helper_rather_than_the_write_gate``.
     """
 
-    def _membership(self, organization: Organization, role: str = OrganizationRole.ADMIN):
+    def _membership(
+        self, organization: Organization, groups: tuple[str, ...] = (GROUP_ORGANIZATION_ADMIN,)
+    ):
         user = baker.make(User)
-        return baker.make(
-            OrganizationMembership,
+        return make_membership(
             user=user,
             organization=organization,
-            role=role,
+            groups=groups,
             is_active=True,
         )
 
@@ -586,18 +616,33 @@ class TestCanManageBrandingCapabilityField:
         assert CurrentMembershipSerializer(membership).data["can_manage_branding"] is True
         assert MyMembershipSerializer(membership).data["can_manage_branding"] is True
 
-    def test_true_for_a_parentless_entitled_organization_with_no_slug(self):
-        """The key case: NOT including the slug condition. Pins the split against
-        `evaluate_branding_write_gate`, which would return NO_SLUG (falsy) for
-        this exact organization."""
-        org = _org_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None)
-        assert org.slug is None
-        membership = self._membership(org)
+    def test_reads_the_two_condition_helper_rather_than_the_write_gate(self):
+        """``can_manage_branding`` is derived from
+        ``is_branding_eligible_organization``, not from the write gate.
 
-        assert CurrentMembershipSerializer(membership).data["can_manage_branding"] is True
-        assert MyMembershipSerializer(membership).data["can_manage_branding"] is True
-        # ... and pin the split explicitly: the three-condition gate refuses here.
-        assert evaluate_branding_write_gate(org) is BrandingWriteGateReason.NO_SLUG
+        The two agree today, now that the write gate's slug condition is retired,
+        so the distinction can no longer be observed by picking an organization
+        they disagree about. It is pinned structurally instead: an organization
+        the two-condition helper admits reports ``True``, and one it refuses
+        reports ``False``, with the write gate never consulted.
+        """
+        eligible = _org_with_entitlement(
+            Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="capability-org"
+        )
+        unentitled = _org_with_entitlement(
+            Entitlement.WHITE_LABEL_BRANDING,
+            is_enabled=False,
+            parent=None,
+            slug="capability-org-off",
+        )
+
+        assert is_branding_eligible_organization(eligible) is True
+        assert is_branding_eligible_organization(unentitled) is False
+
+        for organization, expected in ((eligible, True), (unentitled, False)):
+            membership = self._membership(organization)
+            assert CurrentMembershipSerializer(membership).data["can_manage_branding"] is expected
+            assert MyMembershipSerializer(membership).data["can_manage_branding"] is expected
 
     def test_false_for_a_parented_organization(self):
         parent_org = _org_with_entitlement(
@@ -618,23 +663,40 @@ class TestCanManageBrandingCapabilityField:
         assert CurrentMembershipSerializer(membership).data["can_manage_branding"] is False
         assert MyMembershipSerializer(membership).data["can_manage_branding"] is False
 
-    def test_non_admin_membership_reports_the_same_org_level_capability(self):
-        """`can_manage_branding` is an organization-level fact, not a per-role
-        one -- a non-admin member's entry reports it identically to an admin's.
-        Write authorization (who may actually POST/PATCH) is a separate,
-        role-based check (`IsOrganizationAdmin`) on the branding endpoints
-        themselves."""
+    def test_entitled_member_without_branding_permission_reports_false(self):
+        """The field is the published composite capability, not eligibility alone."""
         org = _org_with_entitlement(
             Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="member-org-cap"
         )
-        admin_membership = self._membership(org, role=OrganizationRole.ADMIN)
-        member_membership = self._membership(org, role=OrganizationRole.MEMBER)
+        admin_membership = self._membership(org, groups=(GROUP_ORGANIZATION_ADMIN,))
+        member_membership = self._membership(org, groups=(GROUP_ORGANIZATION_MEMBER,))
 
-        assert (
-            CurrentMembershipSerializer(admin_membership).data["can_manage_branding"]
-            is CurrentMembershipSerializer(member_membership).data["can_manage_branding"]
-            is True
+        assert CurrentMembershipSerializer(admin_membership).data["can_manage_branding"] is True
+        assert CurrentMembershipSerializer(member_membership).data["can_manage_branding"] is False
+
+    @pytest.mark.parametrize(
+        ("permission_codename", "permission_model", "expected"),
+        [
+            ("manage_branding", Organization, True),
+            ("manage_members", OrganizationMembership, False),
+        ],
+    )
+    def test_direct_capability_controls_branding_for_both_serializers(
+        self, permission_codename, permission_model, expected
+    ):
+        org = _org_with_entitlement(
+            Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="direct-branding"
         )
+        membership = self._membership(org, groups=(GROUP_ORGANIZATION_MEMBER,))
+        membership.permissions.add(
+            Permission.objects.get(
+                codename=permission_codename,
+                content_type=ContentType.objects.get_for_model(permission_model),
+            )
+        )
+
+        assert CurrentMembershipSerializer(membership).data["can_manage_branding"] is expected
+        assert MyMembershipSerializer(membership).data["can_manage_branding"] is expected
 
     def test_tracks_the_shared_helper_rather_than_duplicating_it(self):
         """Every case above is also directly pinned against
@@ -667,17 +729,14 @@ class TestBrandingLogoDestinationAuth:
     """
 
     def _auth_callable(self):
-        from django.conf import settings
-
         return settings.S3DIRECT_DESTINATIONS["branding_logos"]["auth"]
 
     def _make_admin(self, organization: Organization):
         user = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         return user
@@ -702,7 +761,6 @@ class TestBrandingLogoDestinationAuth:
             OrganizationMembership,
             user=user,
             organization=org,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -736,10 +794,6 @@ class TestSignBrandingLogoUpload:
         """Only the accepted-upload cases below reach the presigned-URL step --
         the rejection cases raise before ever needing a bucket/region/endpoint or
         credentials, so they're unaffected by this fixture."""
-        from unittest.mock import patch
-
-        from s3direct.utils import AWSCredentials
-
         settings.AWS_STORAGE_BUCKET_NAME = "test-bucket"
         settings.AWS_S3_REGION_NAME = "us-east-1"
         settings.AWS_S3_ENDPOINT_URL = "https://s3.us-east-1.amazonaws.com"
@@ -765,15 +819,11 @@ class TestSignBrandingLogoUpload:
             sign_branding_logo_upload("logo.gif", "image/gif", 1024)
 
     def test_rejects_an_oversized_file(self):
-        from django.conf import settings
-
         oversized = settings.BRANDING_LOGO_MAX_SIZE_BYTES + 1
         with pytest.raises(BrandingLogoUploadRejectedError, match="size"):
             sign_branding_logo_upload("logo.png", "image/png", oversized)
 
     def test_accepts_a_file_at_exactly_the_size_cap(self):
-        from django.conf import settings
-
         payload = sign_branding_logo_upload(
             "logo.png", "image/png", settings.BRANDING_LOGO_MAX_SIZE_BYTES
         )
@@ -841,10 +891,9 @@ class TestInvitationContextLogoUrl:
         assert logo_url.endswith("/branding/logo/default/"), logo_url
 
     def test_branded_parentless_non_reseller_organization_carries_its_own_identity(self):
-        """Organization Auth-Area Branding plan, Phase 5 -- Use-case 2. A parentless
-        organization that is NOT a reseller can now be its own branding root, so its
-        invitation email carries its own app name, logo, and colors -- not the vinta
-        default and not some other organization's."""
+        """A parentless organization that is NOT a reseller can now be its own
+        branding root, so its invitation email carries its own app name, logo, and
+        colors -- not the vinta default and not some other organization's."""
         org = _org_with_entitlement(
             Entitlement.WHITE_LABEL_BRANDING,
             is_enabled=True,
@@ -930,13 +979,13 @@ def _build_email_notification_service() -> NotificationService:
 
 @pytest.mark.django_db
 class TestInvitationReplyToEmailSend:
-    """Organization Auth-Area Branding plan, Phase 6 -- Use-case 2's reply-to half.
+    """The reply-to half of a branded invitation email.
 
     Sends a real invitation email end-to-end (context resolution -> template
     rendering -> ReplyToDjangoEmailNotificationAdapter) and inspects
     ``django.core.mail.outbox``. The From address must be identical in every case
-    -- branded, unbranded, or downgraded -- because Non-goals forbid a custom
-    sender; only the reply-to may vary.
+    -- branded, unbranded, or downgraded -- because branding deliberately stops
+    short of a custom sender; only the reply-to may vary.
     """
 
     def _make_invitation(self, organization: Organization) -> OrganizationInvitation:

@@ -23,6 +23,7 @@ from django.conf import settings as django_settings
 from django.urls import reverse
 
 import pytest
+from allauth.account.models import EmailAddress
 from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
@@ -33,8 +34,9 @@ from organizations.models import (
     Organization,
     OrganizationBranding,
     OrganizationMembership,
-    OrganizationRole,
 )
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
+from organizations.tests.helpers import make_membership
 from users.factories import UserFactory
 from users.models import User
 
@@ -123,11 +125,10 @@ class TestEmailSignupReachesTheOrganizationDestination:
             redirect_url="https://scheduling.acme.example.com/app",
         )
         user = User.objects.get(email=email)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
@@ -178,8 +179,6 @@ class TestLoginReachesTheOrganizationDestination:
     """Every completed authentication answers the same way, not just signup."""
 
     def _verified_user(self, email: str) -> User:
-        from allauth.account.models import EmailAddress
-
         user = UserFactory().create_user(email=email)
         user.set_password(SIGNUP_PASSWORD)
         user.save()
@@ -199,7 +198,6 @@ class TestLoginReachesTheOrganizationDestination:
             OrganizationMembership,
             user=user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -225,7 +223,6 @@ class TestLoginReachesTheOrganizationDestination:
             OrganizationMembership,
             user=user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -267,7 +264,6 @@ class TestLoginReachesTheOrganizationDestination:
             OrganizationMembership,
             user=user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -297,11 +293,10 @@ class TestMiddlewareLeavesEverythingElseAlone:
     def test_rest_endpoints_are_untouched(self):
         user = UserFactory().create_user(email="rest-caller@example.com")
         organization = baker.make(Organization)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         client = APIClient()

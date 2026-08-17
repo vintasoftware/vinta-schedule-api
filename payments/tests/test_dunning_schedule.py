@@ -18,7 +18,9 @@ import stripe
 from freezegun import freeze_time
 from model_bakery import baker
 
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
+from organizations.tests.helpers import make_membership
 from payments.billing_constants import BillingState, LimitedResource, LimitKind
 from payments.constants import PaymentProviders
 from payments.models import BillingPlan, PlanLimit, Subscription
@@ -102,13 +104,19 @@ def _subscription_for(
 
 
 def _add_admin_membership(organization: Organization) -> OrganizationMembership:
-    return baker.make(
-        OrganizationMembership,
+    """A billing-notification recipient.
+
+    ``OrganizationMembershipQuerySet.billing_recipients`` reads
+    ``payments.manage_billing``, which a membership only holds through its
+    groups -- and a bare ``baker.make`` assigns none.
+    """
+    membership = make_membership(
         organization=organization,
         user=baker.make(User),
-        role=OrganizationRole.ADMIN,
+        groups=[GROUP_ORGANIZATION_ADMIN],
         is_active=True,
     )
+    return membership
 
 
 def _seed_members(organization: Organization, count: int) -> None:
@@ -120,7 +128,6 @@ def _seed_members(organization: Organization, count: int) -> None:
             OrganizationMembership,
             organization=organization,
             user=baker.make(User),
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -151,8 +158,8 @@ def billing_profile(organization):
         # Pinned to MercadoPago to match the SDK-mocked
         # ``mercadopago_subscription_adapter`` slot below:
         # ``create_subscription_for_organization`` stamps the organization's
-        # resolved provider onto the ``Subscription`` (Rule B, Payment Provider
-        # Selection Phase 4), and that column is what every dunning retry
+        # resolved provider onto the ``Subscription`` (Rule B), and that
+        # column is what every dunning retry
         # resolves its adapter from. Leaving it unpinned would resolve to
         # ``settings.DEFAULT_PAYMENT_PROVIDER`` (``stripe``).
         payment_provider=PaymentProviders.MERCADOPAGO,
@@ -223,7 +230,7 @@ def subscription_service(di_container):
 @pytest.mark.django_db
 class TestProcessDunningFanOut:
     def test_fans_out_only_grace_and_restricted_subscriptions(
-        self, subscription_service, organization, billing_profile
+        self, assert_no_unbound_scoped_queries, subscription_service, organization, billing_profile
     ):
         plan = make_complete_plan()
         grace_sub = _subscription_for(
@@ -281,6 +288,7 @@ class TestProcessDunningFanOut:
 class TestDunningLadder:
     def test_retries_daily_escalates_then_restricts_on_expiry(
         self,
+        assert_no_unbound_scoped_queries,
         subscription_service,
         mercadopago_subscription_adapter,
         mock_notification_service,
@@ -342,6 +350,7 @@ class TestDunningLadder:
 
     def test_expires_promptly_even_when_the_retry_throttle_gate_is_still_open(
         self,
+        assert_no_unbound_scoped_queries,
         subscription_service,
         mercadopago_subscription_adapter,
         mock_notification_service,
@@ -392,6 +401,7 @@ class TestDunningLadder:
 
     def test_does_not_retry_once_resolved(
         self,
+        assert_no_unbound_scoped_queries,
         subscription_service,
         mercadopago_subscription_adapter,
         mock_notification_service,
@@ -438,6 +448,7 @@ class TestDunningLadder:
 
     def test_second_retry_before_the_next_calendar_day_reaches_the_provider_with_a_distinct_key(
         self,
+        assert_no_unbound_scoped_queries,
         subscription_service,
         mercadopago_subscription_adapter,
         organization,
@@ -493,6 +504,7 @@ class TestDunningLadder:
 
     def test_retry_idempotency_key_is_stable_across_a_same_attempt_redelivery(
         self,
+        assert_no_unbound_scoped_queries,
         subscription_service,
         mercadopago_subscription_adapter,
         organization,
@@ -537,6 +549,7 @@ class TestDunningLadder:
 class TestDunningLadderFreeFallback:
     def test_retries_across_grace_then_falls_back_to_free_only_at_expiry(
         self,
+        assert_no_unbound_scoped_queries,
         subscription_service,
         mercadopago_subscription_adapter,
         organization,
@@ -584,8 +597,7 @@ class TestDunningLadderFreeFallback:
 
 @pytest.mark.django_db
 class TestDunningTickToleratesADeclinedStripeCharge:
-    """Billing API Contract Hardening, Phase 5 live-probe BLOCKER: a live
-    Stripe test-mode probe of the exact call ``retry_failed_charge`` makes
+    """A live Stripe test-mode probe of the exact call ``retry_failed_charge`` makes
     (``pay_outstanding_invoice(subscription, payment_token="")``), against a
     card still dead on file -- the *common* dunning-tick outcome, since a dead
     card is why the subscription is in dunning at all -- raised an uncaught
@@ -617,6 +629,7 @@ class TestDunningTickToleratesADeclinedStripeCharge:
 
     def test_declined_charge_tick_returns_without_raising(
         self,
+        assert_no_unbound_scoped_queries,
         di_container,
         subscription_service,
         mercadopago_subscription_adapter,
@@ -702,6 +715,7 @@ class TestDunningTickToleratesADeclinedStripeCharge:
 
     def test_not_attemptable_charge_tick_returns_without_raising(
         self,
+        assert_no_unbound_scoped_queries,
         di_container,
         subscription_service,
         mercadopago_subscription_adapter,

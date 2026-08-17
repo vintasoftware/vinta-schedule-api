@@ -6,7 +6,7 @@ description: |
   lock-aware schema changes on hot tables, raw-SQL DB-defined code (functions, views,
   materialized views, triggers, procedures) through the project's bespoke framework at
   common/raw_sql_migration_managers.py, version bumps to existing raw-SQL structures,
-  multi-tenant column / index additions on OrganizationModel subclasses, deferred
+  multi-tenant column / index additions on SingleOrganizationModelMixin subclasses, deferred
   constraints, and the reverse path for every operation. Read-write. Same git posture
   as the implementer.
 access: read-write
@@ -39,7 +39,7 @@ body: |
   - **Non-null without `db_default`:** the historical pattern (add nullable → backfill
     in a data migration → make non-null) is allowed but discouraged unless the table is
     small. Document the choice in the migration's docstring.
-  - **Adding an `OrganizationForeignKey`** to an existing model that did not have one →
+  - **Adding an `OrganizationSafeForeignKey`** to an existing model that did not have one →
     you are about to convert a non-tenant table to a tenant-scoped one. This is
     architectural; surface it to the orchestrator before authoring. The field generates
     a `<name>_fk` concrete column plus the `ForeignObject` join — both must be present
@@ -50,7 +50,7 @@ body: |
   - Always `CREATE INDEX CONCURRENTLY` — use `AddIndexConcurrently` from
     `django.contrib.postgres.operations` (atomic = `False` migration) on tables that
     receive non-trivial write traffic.
-  - On `OrganizationModel` subclasses, the most useful index is usually a composite on
+  - On `SingleOrganizationModelMixin` subclasses, the most useful index is usually a composite on
     `(organization_id, <other column>)` — confirm with the queryset where the read
     happens before choosing the column order.
   - Drop with `RemoveIndexConcurrently` if you ever need to roll back.

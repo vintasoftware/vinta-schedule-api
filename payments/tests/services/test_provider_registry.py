@@ -1,6 +1,6 @@
 """Adapter conformance suite.
 
-This phase's acceptance criterion is explicit: "no interface method exists that
+The acceptance criterion here is explicit: "no interface method exists that
 only one provider can implement." This suite proves that mechanically —
 enumerating every ``@abstractmethod`` declared on ``BasePaymentAdapter`` /
 ``BaseSubscriptionAdapter`` and asserting every *registered* adapter actually
@@ -117,7 +117,7 @@ class TestPaymentAdapterConformance:
         """Every *public* method — not just the formally-``@abstractmethod``
         ones — must be shared by every registered payment adapter. A method
         only one provider implements is exactly the kind of interface leak
-        this phase's acceptance criterion rules out, whether or not it was
+        the acceptance criterion above rules out, whether or not it was
         declared abstract on the base."""
         method_sets = {cls: _public_method_names(cls) for cls in PAYMENT_ADAPTER_CLASSES}
         common = set.intersection(*method_sets.values())
@@ -198,8 +198,8 @@ class TestPaymentAdapterConformance:
         minimal duck-typed double) rather than subclassing ``BasePaymentAdapter``
         without implementing its other abstract methods — mypy statically
         enforces ``@abstractmethod`` regardless of ``BasePaymentAdapter`` not
-        inheriting ``ABC`` at runtime (see this suite's ``verify_signature``
-        docstring / the phase's NIT on leaving that pre-existing gap alone).
+        inheriting ``ABC`` at runtime -- a known, pre-existing gap that is left
+        alone deliberately.
         """
 
         class _NarrowManifestAdapterDouble:
@@ -489,8 +489,8 @@ class TestProviderRegistryDIWiring:
     def test_payment_service_still_resolves_both_registries_without_singular_gateways(
         self, di_container
     ):
-        """Payment Provider Selection, Phase 4: ``PaymentService`` no longer takes
-        the singular ``payment_gateway``/``subscription_gateway`` DI providers --
+        """``PaymentService`` no longer takes the singular
+        ``payment_gateway``/``subscription_gateway`` DI providers --
         the two registries are its only adapter source. Proves the DI wiring
         still constructs a working ``PaymentService`` (auto-resolving
         ``payment_provider_resolver``/``payment_provider_registry``/

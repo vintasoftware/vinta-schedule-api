@@ -17,6 +17,7 @@ from calendar_integration.constants import (
 )
 from calendar_integration.exceptions import (
     ServiceNotAuthenticatedError,
+    WebhookIgnoredError,
     WebhookProcessingFailedError,
 )
 from calendar_integration.models import (
@@ -76,8 +77,6 @@ class GoogleCalendarAdapterWebhookTest(TestCase):
             # Missing other required headers
         }
 
-        from calendar_integration.exceptions import WebhookProcessingFailedError
-
         with pytest.raises(
             WebhookProcessingFailedError, match="Missing required Google webhook headers"
         ):
@@ -86,8 +85,6 @@ class GoogleCalendarAdapterWebhookTest(TestCase):
     @patch("calendar_integration.services.calendar_adapters.google_calendar_adapter.build")
     def test_validate_webhook_notification_invalid_resource_uri(self, mock_build):
         """Test validation with invalid resource URI."""
-        from calendar_integration.exceptions import WebhookProcessingFailedError
-
         adapter = GoogleCalendarAdapter(self.credentials)
 
         headers = {
@@ -119,8 +116,6 @@ class GoogleCalendarAdapterWebhookTest(TestCase):
 
     def test_validate_webhook_notification_sync_ignored(self):
         """Test that sync notifications are ignored."""
-        from calendar_integration.exceptions import WebhookIgnoredError
-
         headers = {
             "X-Goog-Resource-ID": "test-resource-id",
             "X-Goog-Resource-URI": "https://www.googleapis.com/calendar/v3/calendars/test-calendar/events",
@@ -260,7 +255,7 @@ class CalendarServiceWebhookTest(TestCase):
         assert result == recent_sync
 
         # Check that no new sync was created
-        assert CalendarSync.objects.filter(organization=self.organization).count() == 1
+        assert CalendarSync.objects.filter_by_organization(self.organization).count() == 1
 
         # Verify webhook event was updated
         webhook_event.refresh_from_db()
@@ -376,7 +371,7 @@ class GoogleCalendarWebhookViewTest(TestCase):
 
         assert response.status_code == 200
         # No webhook event should be created for sync notifications
-        assert CalendarWebhookEvent.objects.filter(organization=self.organization).count() == 0
+        assert CalendarWebhookEvent.objects.filter_by_organization(self.organization).count() == 0
 
     @patch("calendar_integration.services.calendar_service.CalendarService.handle_webhook")
     def test_google_webhook_exists_notification(self, mock_handle_webhook):
@@ -571,4 +566,4 @@ class GoogleCalendarWebhookOverLimitEntitlementTest(TestCase):
 
         assert response.status_code != 500
         assert response.status_code == 200
-        assert CalendarWebhookEvent.objects.filter(organization=self.organization).exists()
+        assert CalendarWebhookEvent.objects.filter_by_organization(self.organization).exists()

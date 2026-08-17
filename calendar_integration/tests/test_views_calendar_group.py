@@ -27,7 +27,9 @@ from calendar_integration.models import (
     CalendarGroupSlotMembership,
     CalendarManagementToken,
 )
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
+from organizations.tests.helpers import grant_membership_groups
 
 
 def _grant_calendar_owner_token(user, calendar):
@@ -69,13 +71,11 @@ def organization(user):
 def admin_user(user, organization):
     """Promote `user`'s membership in `organization` to admin.
 
-    Group create/update/delete is admin-only (CALENDAR_GROUP_SCOPED_AVAILABILITY
-    membership-permissions fix). Depend on this fixture -- in addition to
-    `auth_client` -- in any test that expects a write to succeed.
+    Group create/update/delete is admin-only. Depend on this fixture -- in
+    addition to `auth_client` -- in any test that expects a write to succeed.
     """
     membership = OrganizationMembership.objects.get(user=user, organization=organization)
-    membership.role = OrganizationRole.ADMIN
-    membership.save(update_fields=["role"])
+    grant_membership_groups(membership, [GROUP_ORGANIZATION_ADMIN])
     return user
 
 
@@ -273,7 +273,7 @@ class TestCalendarGroupCrud:
         url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
         response = auth_client.delete(url)
         _assert_status(response, status.HTTP_403_FORBIDDEN)
-        assert CalendarGroup.objects.filter(id=owned_group.id).exists()
+        assert CalendarGroup.original_manager.filter(id=owned_group.id).exists()
 
     def test_create_group(self, auth_client, organization, internal_calendars, user, admin_user):
         # The create endpoint uses the serializer which delegates to
@@ -363,7 +363,7 @@ class TestCalendarGroupCrud:
         url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
         response = auth_client.delete(url)
         _assert_status(response, status.HTTP_204_NO_CONTENT)
-        assert not CalendarGroup.objects.filter(id=owned_group.id).exists()
+        assert not CalendarGroup.original_manager.filter(id=owned_group.id).exists()
 
     def test_destroy_refused_when_group_has_events(
         self, auth_client, owned_group, internal_calendars, organization, admin_user

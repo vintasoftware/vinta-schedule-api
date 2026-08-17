@@ -18,16 +18,25 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+from unittest.mock import MagicMock
 
 import pytest
 from model_bakery import baker
 
 from audit.constants import AuditAction, AuditActorType
 from audit.models import Audit, AuditAffectedMembership
+from audit.repositories import DjangoORMAuditRepository
 from audit.services import AuditService
 from audit.tasks import persist_audit_record
 from audit.types import ActorSnapshot, AuditRecordData, SubjectRef
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.authorization import (
+    MEMBERSHIP_ROLE_LABEL_ADMIN,
+    MEMBERSHIP_ROLE_LABEL_MEMBER,
+    membership_role_label,
+)
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
+from organizations.tests.helpers import grant_membership_groups
 
 
 # ---------------------------------------------------------------------------
@@ -79,8 +88,12 @@ class TestPersistAuditRecordTask:
     def test_persists_membership_actor(self) -> None:
         org = baker.make(Organization)
         user = baker.make("users.User")
-        membership = OrganizationMembership.objects.create(
-            user=user, organization=org, role=OrganizationRole.ADMIN
+        membership = grant_membership_groups(
+            OrganizationMembership.objects.create(
+                user=user,
+                organization=org,
+            ),
+            [GROUP_ORGANIZATION_ADMIN],
         )
         data = AuditRecordData(
             organization_id=org.pk,
@@ -88,7 +101,7 @@ class TestPersistAuditRecordTask:
             actor=ActorSnapshot(
                 actor_type=AuditActorType.MEMBERSHIP,
                 actor_id=membership.user_id,
-                actor_role=OrganizationRole.ADMIN,
+                actor_role=MEMBERSHIP_ROLE_LABEL_ADMIN,
             ),
             subject=make_subject(org),
         )
@@ -100,7 +113,7 @@ class TestPersistAuditRecordTask:
         assert audit is not None
         assert audit.actor_type == AuditActorType.MEMBERSHIP
         assert audit.actor_id == membership.user_id
-        assert audit.actor_role == OrganizationRole.ADMIN
+        assert audit.actor_role == MEMBERSHIP_ROLE_LABEL_ADMIN
 
     def test_persists_affected_membership_ids(self) -> None:
         """Affected membership links are created in the through table."""
@@ -179,12 +192,11 @@ class TestPersistAuditRecordTask:
 
     def test_full_round_trip_via_service_record(self, django_capture_on_commit_callbacks) -> None:
         """AuditService.record() + eager task results in a correct persisted Audit."""
-        from audit.repositories import DjangoORMAuditRepository
-
         org = baker.make(Organization)
         user = baker.make("users.User")
         membership = OrganizationMembership.objects.create(
-            user=user, organization=org, role=OrganizationRole.MEMBER
+            user=user,
+            organization=org,
         )
 
         repository = DjangoORMAuditRepository()
@@ -215,7 +227,7 @@ class TestPersistAuditRecordTask:
         assert audit is not None
         assert audit.actor_type == AuditActorType.MEMBERSHIP
         assert audit.actor_id == membership.user_id
-        assert audit.actor_role == OrganizationRole.MEMBER
+        assert audit.actor_role == MEMBERSHIP_ROLE_LABEL_MEMBER
         assert audit.diff == diff
         assert AuditAffectedMembership.original_manager.filter(
             audit_fk_id=audit.pk, membership_user_id=membership.user_id
@@ -234,7 +246,7 @@ class TestSnapshotAtEmitProof:
     Sequence:
     1. Create a membership with role=MEMBER.
     2. Build an ActorSnapshot (captures role=MEMBER synchronously).
-    3. Change membership.role to ADMIN in the DB.
+    3. Promote the membership to admin in the DB.
     4. Run the task with the payload built from step 2.
     5. Assert the persisted Audit.actor_role == MEMBER (the OLD role).
     """
@@ -243,20 +255,20 @@ class TestSnapshotAtEmitProof:
         org = baker.make(Organization)
         user = baker.make("users.User")
         membership = OrganizationMembership.objects.create(
-            user=user, organization=org, role=OrganizationRole.MEMBER
+            user=user,
+            organization=org,
         )
 
         # Step 2: snapshot captures MEMBER role right now.
         actor = AuditService.actor_from_membership(membership)
-        assert actor.actor_role == OrganizationRole.MEMBER
+        assert actor.actor_role == MEMBERSHIP_ROLE_LABEL_MEMBER
 
-        # Step 3: change role to ADMIN in the DB AFTER the snapshot was built.
-        membership.role = OrganizationRole.ADMIN
-        membership.save(update_fields=["role"])
+        # Step 3: promote to admin in the DB AFTER the snapshot was built.
+        grant_membership_groups(membership, [GROUP_ORGANIZATION_ADMIN])
 
-        # Confirm the DB now has ADMIN.
+        # Confirm the DB now says admin.
         membership.refresh_from_db()
-        assert membership.role == OrganizationRole.ADMIN
+        assert membership_role_label(membership) == MEMBERSHIP_ROLE_LABEL_ADMIN
 
         # Step 4: build payload from the snapshot and run the task.
         data = AuditRecordData(
@@ -271,8 +283,8 @@ class TestSnapshotAtEmitProof:
         # Step 5: the persisted row must have the SNAPSHOTTED role (MEMBER), not ADMIN.
         audit = Audit.original_manager.filter(organization_id=org.pk).first()
         assert audit is not None
-        assert audit.actor_role == OrganizationRole.MEMBER, (
-            f"Expected snapshotted role {OrganizationRole.MEMBER!r} "
+        assert audit.actor_role == MEMBERSHIP_ROLE_LABEL_MEMBER, (
+            f"Expected snapshotted role {MEMBERSHIP_ROLE_LABEL_MEMBER!r} "
             f"but found {audit.actor_role!r}. "
             "The worker must never re-read mutable actor state."
         )
@@ -297,8 +309,6 @@ class TestPersistAuditRecordErrorHandling:
         Injection itself is proven by the happy-path test test_full_round_trip_via_service_record,
         which goes record() → on_commit → .delay() → task with @inject and NO explicit repository.
         """
-        from audit.repositories import DjangoORMAuditRepository
-
         repository = DjangoORMAuditRepository()
 
         with caplog.at_level(logging.ERROR, logger="audit.tasks"):
@@ -315,8 +325,6 @@ class TestPersistAuditRecordErrorHandling:
         Injection itself is proven by the happy-path test test_full_round_trip_via_service_record,
         which goes record() → on_commit → .delay() → task with @inject and NO explicit repository.
         """
-        from unittest.mock import MagicMock
-
         org = baker.make(Organization)
         data = AuditRecordData(
             organization_id=org.pk,

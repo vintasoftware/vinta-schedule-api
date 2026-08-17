@@ -1,4 +1,4 @@
-"""Payment Provider Selection, Phase 4 data migrations.
+"""Data migrations that repoint subscription payment providers.
 
 - ``0018_repoint_subscription_payment_provider`` -- brings every existing
   ``Subscription.payment_provider`` into agreement with its organization's own
@@ -150,9 +150,9 @@ class TestRepointSubscriptionPaymentProvider:
         ``DEFAULT_PAYMENT_PROVIDER``, or one the forward pass left alone because
         it already agreed) must survive the reverse untouched -- the bug this
         fixes rewrote every ``Subscription`` in the table on reverse, which would
-        also destroy the plan's rollback runbook evidence (Risk & Rollout Notes:
-        "verify ... that no Stripe-provider Payment or Subscription rows were
-        created in the window")."""
+        also destroy the evidence needed to verify, on rollback, that no
+        Stripe-provider Payment or Subscription rows were created in the
+        window."""
         settings.DEFAULT_PAYMENT_PROVIDER = PaymentProviders.STRIPE
         repointed_org = baker.make(Organization, parent=None)
         _billing_profile_for(repointed_org, PaymentProviders.STRIPE)

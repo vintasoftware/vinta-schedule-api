@@ -11,7 +11,7 @@ Null-user rows
 ``EventAttendance.user_id`` is currently ``NOT NULL`` at the DB level, so no
 null-user rows can exist today; the ``AND ea.user_id IS NOT NULL`` guard in the
 backfill and orphan queries is defensive / forward-compatible (the sync service
-references ``user=None`` in code, a latent inconsistency this phase does not
+references ``user=None`` in code, a latent inconsistency this migration does not
 change). Were such rows to exist, they would legitimately have no membership and
 would NOT be reported as orphans.
 

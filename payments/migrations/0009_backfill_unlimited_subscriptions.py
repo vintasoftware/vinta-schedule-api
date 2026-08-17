@@ -1,12 +1,10 @@
-# Phase 4 of billing plans and limits: every organization always has exactly one
-# active plan, from creation, with no plan-less state. This backfills every
-# *pre-existing* billing-root organization onto `unlimited` — deliberately not
-# `free`. `free` carries real ceilings; applying them to organizations that
-# predate this feature would block them as a side effect of the rollout itself,
-# which the plan's objective 6 ("no organization is blocked as a consequence of
-# the rollout itself") sets at zero. `unlimited` is this plan's declared rollout
-# switch (every `PlanLimit.limit_value` is NULL), so this migration changes no
-# organization's observable behavior.
+# Every organization always has exactly one active plan, from creation, with no
+# plan-less state. This backfills every *pre-existing* billing-root organization
+# onto `unlimited` — deliberately not `free`. `free` carries real ceilings;
+# applying them to organizations that predate this feature would block them as a
+# side effect of the rollout itself, which must never happen. `unlimited` is the
+# declared rollout switch (every `PlanLimit.limit_value` is NULL), so this
+# migration changes no organization's observable behavior.
 #
 # A billing root is an organization with no parent, OR an organization that can
 # itself invite/create other organizations (a nested reseller is its own billing
@@ -54,7 +52,7 @@ def backfill_unlimited_subscriptions(apps, schema_editor):
     try:
         unlimited_plan = BillingPlan.objects.get(slug=UNLIMITED_PLAN_SLUG)
     except BillingPlan.DoesNotExist as exc:
-        # The Phase 3 seed migration (0007) should already have created this. A
+        # The seed migration (0007) should already have created this. A
         # missing seed plan means a corrupted or out-of-order deploy: every
         # organization would otherwise stay plan-less permanently with no signal
         # and no re-run path (the reverse is not a delete). Fail loudly instead.

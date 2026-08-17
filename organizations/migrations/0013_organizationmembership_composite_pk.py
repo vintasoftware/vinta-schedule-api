@@ -1,4 +1,8 @@
-"""Phase 7b (FINAL): swap ``OrganizationMembership`` to a composite primary key.
+"""Swap ``OrganizationMembership`` to a composite primary key.
+
+This is the final step of the membership-FK migration: earlier migrations
+introduced the ``(user_id, organization_id)`` unique constraint and moved
+callers onto it, and this migration promotes that pair to the real primary key.
 
 Goal
 ----
@@ -10,7 +14,9 @@ Chosen sequencing — Option A (keep ``uniq_membership_user_organization``)
 ------------------------------------------------------------------------
 Three raw-SQL composite PROTECT FKs reference
 ``organizations_organizationmembership (user_id, organization_id)`` and bind to the
-``uniq_membership_user_organization`` UNIQUE constraint (added in Phases 2b/4b/6):
+``uniq_membership_user_organization`` UNIQUE constraint (added by
+``0006_alter_organizationmembership_user_and_more``; each calendar FK below was
+added by its own later migration, binding to that same constraint):
 
   * ``calownership_membership_protect_fk``  (calendar_integration_calendarownership)
   * ``evattendance_membership_protect_fk``  (calendar_integration_eventattendance)
@@ -39,8 +45,8 @@ Why this is NOT a plain ``RemoveField(id) + AddField(pk)`` auto-migration
 ``models.CompositePrimaryKey`` is a *virtual* ORM-level field: Django's autodetector
 emits ``DROP COLUMN id`` for the removed ``id`` and treats ``AddField(pk)`` as a
 DB no-op. That leaves the table with **no real PRIMARY KEY** — it merely relies on
-the pre-existing unique constraint for ORM identity. The acceptance contract for
-this phase requires an actual composite ``PRIMARY KEY (user_id, organization_id)``
+the pre-existing unique constraint for ORM identity. This migration's design
+requires an actual composite ``PRIMARY KEY (user_id, organization_id)``
 visible in ``psql \\d``. We therefore use ``SeparateDatabaseAndState``: the *state* half
 runs Django's expected ``RemoveField`` + ``AddField`` (so ``makemigrations --check``
 stays clean), while the *database* half runs hand-written raw SQL that drops the
@@ -62,8 +68,8 @@ existing data already satisfies uniqueness (guaranteed by
 
 Lock / downtime audit (PRODUCTION COST)
 ---------------------------------------
-This is the riskiest lock in the plan: a PK swap on a referenced, multi-tenant
-table. Every statement here takes ``ACCESS EXCLUSIVE`` on
+This is the riskiest lock in the whole membership-FK migration: a PK swap on a
+referenced, multi-tenant table. Every statement here takes ``ACCESS EXCLUSIVE`` on
 ``organizations_organizationmembership``:
 
   1. ``DROP CONSTRAINT ..._pkey`` — instant (drops the id PK index).
@@ -92,11 +98,23 @@ Restores the previous schema exactly: drop the composite PK, re-add ``id`` as a
 ``BigAutoField`` shape). ``uniq_membership_user_organization`` is untouched
 throughout, so the 3 calendar FKs remain valid across both directions. The state
 half reverses to ``RemoveField(pk)`` + ``AddField(id)``.
+
+**Historical edit.** The state half below originally declared
+``common.fields.SafeCompositePrimaryKey``, a ``CompositePrimaryKey`` subclass whose
+only difference was a descriptor tolerating class-level ``Model.pk`` access. Adopting
+the ``vinta_orgs`` package's own tenancy layer retired that repo-owned class along
+with the rest of the bespoke tenancy code, so this migration now names Django's stock
+``models.CompositePrimaryKey``.
+The two carry identical field *arguments*; ``Field.deconstruct()`` also returns an
+import path, and that part does differ. It is immaterial here for two reasons: no
+migration -- forward or reverse -- reads the descriptor the path resolves to, and
+``0023`` removes this virtual field from the state again, so the field is gone
+before any state comparison reaches the final model. Edited rather than kept alive
+because the alternative was retaining a deleted class purely so an
+already-superseded migration could import it.
 """
 
-from django.db import migrations
-
-import common.fields
+from django.db import migrations, models
 
 
 # ``organizations_organizationmembership_pkey`` is Postgres's deterministic default
@@ -134,8 +152,8 @@ class Migration(migrations.Migration):
         ("calendar_integration", "0036_calendarmanagementtoken_membership_protect_fk"),
         # CRITICAL ordering: ``public_api.SystemUser.scoped_to_membership`` was a real
         # FK to ``OrganizationMembership.id`` whose DB constraint depends on the *id PK
-        # index* (``organizations_organizationmembership_pkey``). Phase 7a's public_api
-        # 0008 drops that legacy FK column. If this migration ran first, ``DROP
+        # index* (``organizations_organizationmembership_pkey``). public_api's
+        # 0008 migration drops that legacy FK column. If this migration ran first, ``DROP
         # CONSTRAINT ..._pkey`` would fail: "other objects depend on it". Depend on
         # 0008 so the legacy FK is gone before we drop the id PK. (Organizations 0012
         # likewise dropped ``OrganizationInvitation.membership_id`` — its dependency is
@@ -153,7 +171,7 @@ class Migration(migrations.Migration):
                 migrations.AddField(
                     model_name="organizationmembership",
                     name="pk",
-                    field=common.fields.SafeCompositePrimaryKey(
+                    field=models.CompositePrimaryKey(
                         "user",
                         "organization",
                         blank=True,

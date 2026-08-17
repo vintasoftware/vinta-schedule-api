@@ -3,6 +3,7 @@ import uuid
 import zoneinfo
 from datetime import timedelta
 from unittest.mock import MagicMock, Mock, patch
+from zoneinfo import ZoneInfo
 
 from django.db import transaction
 from django.utils import timezone
@@ -49,6 +50,10 @@ from calendar_integration.models import (
     RecurrenceRule,
     ResourceAllocation,
 )
+from calendar_integration.serializers import (
+    AvailableTimeWindowSerializer,
+    UnavailableTimeWindowSerializer,
+)
 from calendar_integration.services.calendar_permission_service import (
     DEFAULT_ATTENDEE_PERMISSIONS,
     DEFAULT_CALENDAR_OWNER_PERMISSIONS,
@@ -59,6 +64,7 @@ from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.dataclasses import (
     ApplicationCalendarData,
     AvailableTimeWindow,
+    BlockedTimeData,
     CalendarEventAdapterInputData,
     CalendarEventAdapterOutputData,
     CalendarEventInputData,
@@ -162,10 +168,9 @@ def patch_get_calendar(calendar):
         else:
             # For other external IDs, try to find or create
             try:
-                return Calendar.objects.get(
+                return Calendar.objects.filter_by_organization(calendar.organization).get(
                     external_id=external_id,
                     provider=CalendarProvider.GOOGLE,
-                    organization=calendar.organization,
                 )
             except Calendar.DoesNotExist as exc:
                 raise Calendar.DoesNotExist(
@@ -591,6 +596,12 @@ def test_get_calendar_adapter_for_google_service_account(
     google_service_account, mock_google_adapter
 ):
     """Test getting Google adapter for service account."""
+    # Deferred deliberately: the ``mock_google_adapter`` fixture above patches
+    # ``calendar_integration.services.calendar_adapters.google_calendar_adapter.GoogleCalendarAdapter``,
+    # and the assertions below read ``from_service_account`` off that mock. A module-scope
+    # import would bind the real class into this module before the patch is installed, so
+    # the name here would no longer be the mock and the call assertions would go green
+    # against the wrong object (or fail outright).
     from calendar_integration.services.calendar_adapters.google_calendar_adapter import (
         GoogleCalendarAdapter,
     )
@@ -690,36 +701,58 @@ def test_import_account_calendars(social_account, social_token, mock_google_adap
     service.import_account_calendars()
 
     # Verify calendars were created
-    assert Calendar.objects.filter(organization=organization, external_id="cal_123").exists()
-    assert Calendar.objects.filter(organization=organization, external_id="cal_456").exists()
+    assert (
+        Calendar.objects.filter_by_organization(organization)
+        .filter(
+            external_id="cal_123",
+        )
+        .exists()
+    )
+    assert (
+        Calendar.objects.filter_by_organization(organization)
+        .filter(
+            external_id="cal_456",
+        )
+        .exists()
+    )
 
     # Verify calendar details
-    primary_calendar = Calendar.objects.get(organization=organization, external_id="cal_123")
+    primary_calendar = Calendar.objects.filter_by_organization(organization).get(
+        external_id="cal_123",
+    )
     assert primary_calendar.name == "Primary Calendar"
     assert primary_calendar.description == "User's primary calendar"
     assert primary_calendar.email == "user@example.com"
     assert primary_calendar.provider == CalendarProvider.GOOGLE
     assert primary_calendar.calendar_type == CalendarType.PERSONAL
 
-    work_calendar = Calendar.objects.get(organization=organization, external_id="cal_456")
+    work_calendar = Calendar.objects.filter_by_organization(organization).get(
+        external_id="cal_456",
+    )
     assert work_calendar.name == "Work Calendar"
     assert work_calendar.description == "Work events"
     assert work_calendar.email == "work@example.com"
 
     # Verify CalendarOwnership was created
-    primary_ownership = CalendarOwnership.objects.filter(
-        organization=organization,
-        calendar=primary_calendar,
-        membership_user_id=social_account.user.id,
-    ).first()
+    primary_ownership = (
+        CalendarOwnership.objects.filter_by_organization(organization)
+        .filter(
+            calendar=primary_calendar,
+            membership_user_id=social_account.user.id,
+        )
+        .first()
+    )
     assert primary_ownership is not None
     assert primary_ownership.is_default is True
 
-    work_ownership = CalendarOwnership.objects.filter(
-        organization=organization,
-        calendar=work_calendar,
-        membership_user_id=social_account.user.id,
-    ).first()
+    work_ownership = (
+        CalendarOwnership.objects.filter_by_organization(organization)
+        .filter(
+            calendar=work_calendar,
+            membership_user_id=social_account.user.id,
+        )
+        .first()
+    )
     assert work_ownership is not None
     assert work_ownership.is_default is False
 
@@ -779,14 +812,22 @@ def test_import_with_nonmember_owner_and_preexisting_orphans_does_not_raise(
 
     # The two pre-existing orphan rows are preserved; no new member ownership added.
     assert (
-        CalendarOwnership.objects.filter(
-            organization=organization, calendar=calendar, membership_user_id__isnull=True
-        ).count()
+        CalendarOwnership.objects.filter_by_organization(organization)
+        .filter(
+            calendar=calendar,
+            membership_user_id__isnull=True,
+        )
+        .count()
         == 2
     )
-    assert not CalendarOwnership.objects.filter(
-        organization=organization, calendar=calendar, membership_user_id__isnull=False
-    ).exists()
+    assert (
+        not CalendarOwnership.objects.filter_by_organization(organization)
+        .filter(
+            calendar=calendar,
+            membership_user_id__isnull=False,
+        )
+        .exists()
+    )
 
 
 @pytest.mark.django_db
@@ -825,12 +866,28 @@ def test_import_seeds_sync_enabled_from_access_role(
     service.authenticate(account=social_account.user, organization=organization)
     service.import_account_calendars(sync_after_import=False)
 
-    assert Calendar.objects.get(organization=organization, external_id="own_cal").sync_enabled
-    assert not Calendar.objects.get(
-        organization=organization, external_id="shared_cal"
-    ).sync_enabled
+    assert (
+        Calendar.objects.filter_by_organization(organization)
+        .get(
+            external_id="own_cal",
+        )
+        .sync_enabled
+    )
+    assert (
+        not Calendar.objects.filter_by_organization(organization)
+        .get(
+            external_id="shared_cal",
+        )
+        .sync_enabled
+    )
     # Unknown access role preserves prior behavior (enabled).
-    assert Calendar.objects.get(organization=organization, external_id="unknown_cal").sync_enabled
+    assert (
+        Calendar.objects.filter_by_organization(organization)
+        .get(
+            external_id="unknown_cal",
+        )
+        .sync_enabled
+    )
 
 
 @pytest.mark.django_db
@@ -853,7 +910,9 @@ def test_import_preserves_sync_enabled_on_reimport(
     service.authenticate(account=social_account.user, organization=organization)
     service.import_account_calendars(sync_after_import=False)
 
-    cal = Calendar.objects.get(organization=organization, external_id="shared_cal")
+    cal = Calendar.objects.filter_by_organization(organization).get(
+        external_id="shared_cal",
+    )
     assert cal.sync_enabled is False
     # User opts in.
     cal.sync_enabled = True
@@ -931,7 +990,9 @@ def test_import_account_calendars_updates_existing(
         service.import_account_calendars()
 
     # Verify calendar was updated, not duplicated
-    calendars = Calendar.objects.filter(organization=organization, external_id="cal_123")
+    calendars = Calendar.objects.filter_by_organization(organization).filter(
+        external_id="cal_123",
+    )
     assert calendars.count() == 1
 
     updated_calendar = calendars.first()
@@ -955,8 +1016,8 @@ def test_import_account_calendars_no_calendars(
         service.import_account_calendars()
 
     # Verify no calendars were created
-    assert Calendar.objects.filter(organization=organization).count() == 0
-    assert CalendarOwnership.objects.filter(organization=organization).count() == 0
+    assert Calendar.objects.filter_by_organization(organization).count() == 0
+    assert CalendarOwnership.objects.filter_by_organization(organization).count() == 0
     assert mock_subscribe.call_count == 0
 
 
@@ -1021,7 +1082,9 @@ def test_create_application_calendar(
         mock_task.assert_called_once()
 
     # Verify database object was created
-    calendar = Calendar.objects.get(organization=organization, external_id="new_cal_123")
+    calendar = Calendar.objects.filter_by_organization(organization).get(
+        external_id="new_cal_123",
+    )
     assert calendar.name == "_virtual_Test Calendar"
     assert calendar.description == "Test description"
     assert calendar.provider == CalendarProvider.GOOGLE
@@ -1055,7 +1118,9 @@ def test_create_application_calendar_with_service_account(
         service.create_application_calendar("Service Calendar", organization=organization)
 
     # Verify database object was created
-    calendar = Calendar.objects.get(external_id="service_cal_123", organization=organization)
+    calendar = Calendar.objects.filter_by_organization(organization).get(
+        external_id="service_cal_123",
+    )
     assert calendar.name == "_virtual_Service Calendar"
     assert calendar.description == "Service calendar"
     assert calendar.provider == CalendarProvider.GOOGLE
@@ -1161,9 +1226,8 @@ def test_create_recurring_event(
     assert result.calendar == calendar
 
     # Check if the CalendarEvent was created with recurrence_rule relationship
-    calendar_event = CalendarEvent.objects.get(
+    calendar_event = CalendarEvent.objects.filter_by_organization(calendar.organization.id).get(
         external_id="recurring_event_123",
-        organization_id=calendar.organization.id,
     )
     assert calendar_event.recurrence_rule is not None
     assert calendar_event.recurrence_rule.to_rrule_string() == "FREQ=WEEKLY;COUNT=10;BYDAY=MO"
@@ -1550,7 +1614,7 @@ def test_create_recurring_exception_on_master_event_with_future_occurrences(
     assert mock_google_adapter.create_event.call_count == 2
 
     # Verify the original recurrence rule was deleted
-    assert not RecurrenceRule.objects.filter(id=original_recurrence_rule_id).exists()
+    assert not RecurrenceRule.original_manager.filter(id=original_recurrence_rule_id).exists()
 
 
 @pytest.mark.django_db
@@ -1633,7 +1697,7 @@ def test_create_recurring_exception_on_master_event_no_future_occurrences(
     assert mock_google_adapter.create_event.call_count == 1
 
     # Verify the original recurrence rule was deleted
-    assert not RecurrenceRule.objects.filter(id=original_recurrence_rule_id).exists()
+    assert not RecurrenceRule.original_manager.filter(id=original_recurrence_rule_id).exists()
 
     # Verify any existing exceptions were deleted
     assert parent_event.recurrence_exceptions.count() == 0
@@ -1777,8 +1841,8 @@ def test_create_recurring_exception_on_master_preserves_attendances_and_resource
 
     # Verify new recurring event has attendances and resources
     # Note: The new recurring event should be created with the same attendances as the original
-    new_recurring_events = CalendarEvent.objects.filter(
-        organization_id=calendar.organization.id,
+    new_recurring_events = CalendarEvent.objects.filter_by_organization(
+        calendar.organization.id
     ).exclude(id=parent_event.id)
     assert new_recurring_events.count() == 1
     new_recurring_event = new_recurring_events.first()
@@ -2747,31 +2811,38 @@ def test_delete_recurring_event_series_deletes_all(
     )
     # Parent, rule, modified instance, and exception gone
     assert (
-        CalendarEvent.objects.filter(
-            organization_id=calendar.organization_id, id=parent_event.id
-        ).count()
+        CalendarEvent.objects.filter_by_organization(calendar.organization_id)
+        .filter(
+            id=parent_event.id,
+        )
+        .count()
         == 0
     )
     if modified_instance.id:
         assert (
-            CalendarEvent.objects.filter(
-                organization_id=calendar.organization_id, id=modified_instance.id
-            ).count()
+            CalendarEvent.objects.filter_by_organization(calendar.organization_id)
+            .filter(
+                id=modified_instance.id,
+            )
+            .count()
             == 0
         )
     # Recurrence rule deleted
     assert (
-        RecurrenceRule.objects.filter(
-            organization_id=calendar.organization_id,
+        RecurrenceRule.objects.filter_by_organization(calendar.organization_id)
+        .filter(
             id=getattr(parent_event.recurrence_rule, "id", None),
-        ).count()
+        )
+        .count()
         == 0
     )
     # Exceptions deleted
     assert (
-        EventRecurrenceException.objects.filter(
-            organization_id=calendar.organization_id, parent_event=parent_event
-        ).count()
+        EventRecurrenceException.objects.filter_by_organization(calendar.organization_id)
+        .filter(
+            parent_event=parent_event,
+        )
+        .count()
         == 0
     )
 
@@ -2885,7 +2956,7 @@ def test_delete_recurring_modified_instance_creates_cancellation_exception(
     # for the modified event
     assert parent_event.recurrence_exceptions.count() == pre_exception_count
     # The modified instance still exists (current implementation behavior)
-    assert not CalendarEvent.objects.filter(id=modified_instance.id).exists()
+    assert not CalendarEvent.original_manager.filter(id=modified_instance.id).exists()
 
 
 @pytest.mark.django_db
@@ -2991,9 +3062,9 @@ def test_delete_recurring_instance_with_delete_series_true_deletes_instance_only
         calendar.external_id, modified_instance.external_id
     )
     # Instance removed
-    assert not CalendarEvent.objects.filter(id=modified_instance.id).exists()
+    assert not CalendarEvent.original_manager.filter(id=modified_instance.id).exists()
     # Parent still exists
-    assert CalendarEvent.objects.filter(id=parent_event.id).exists()
+    assert CalendarEvent.original_manager.filter(id=parent_event.id).exists()
 
 
 @pytest.mark.django_db
@@ -3146,7 +3217,7 @@ def test_create_event_with_attendances(
     assert set(external_emails) == set(expected_emails)
 
     # Verify external attendees were created
-    assert ExternalAttendee.objects.filter(organization=calendar.organization).count() == 2
+    assert ExternalAttendee.objects.filter_by_organization(calendar.organization).count() == 2
 
     mock_google_adapter.create_event.assert_called_once()
 
@@ -3236,7 +3307,7 @@ def test_update_event_with_attendances(
     assert set(user_ids) == {new_user1.id, new_user2.id}
 
     # Verify old attendance was removed
-    assert not EventAttendance.objects.filter(
+    assert not EventAttendance.original_manager.filter(
         membership_user_id=user1.id, event=calendar_event
     ).exists()
 
@@ -3247,7 +3318,9 @@ def test_update_event_with_attendances(
     assert external_attendee.name == "New External User"
 
     # Verify old external attendee was removed
-    assert not ExternalAttendee.objects.filter(email="initial_external@example.com").exists()
+    assert not ExternalAttendee.original_manager.filter(
+        email="initial_external@example.com"
+    ).exists()
 
     mock_google_adapter.update_event.assert_called_once()
 
@@ -3484,7 +3557,7 @@ def test_update_event_with_resource_allocations(
     assert resource_allocation.calendar_fk_id == new_resource.id
 
     # Verify old resource allocation was removed
-    assert not ResourceAllocation.objects.filter(
+    assert not ResourceAllocation.original_manager.filter(
         calendar=initial_resource, event=calendar_event
     ).exists()
 
@@ -3501,9 +3574,13 @@ def test_delete_event(
     service.delete_event(calendar_event.calendar.id, calendar_event.id)
 
     # Verify database object was deleted
-    assert not CalendarEvent.objects.filter(
-        id=calendar_event.id, organization=calendar_event.organization
-    ).exists()
+    assert (
+        not CalendarEvent.objects.filter_by_organization(calendar_event.organization)
+        .filter(
+            id=calendar_event.id,
+        )
+        .exists()
+    )
     mock_google_adapter.delete_event.assert_called_once_with(
         calendar_event.calendar.external_id, calendar_event.external_id
     )
@@ -3579,7 +3656,7 @@ def test_transfer_event(
         result = service.transfer_event(calendar_event, target_calendar)
 
         # Verify old event was deleted
-        assert not CalendarEvent.objects.filter(id=calendar_event.id).exists()
+        assert not CalendarEvent.original_manager.filter(id=calendar_event.id).exists()
 
         # Verify new event was created
         assert result.external_id == "new_event_123"
@@ -3661,7 +3738,7 @@ def test_transfer_event_with_resources(
     result = service.transfer_event(calendar_event, target_calendar)
 
     # Verify old event was deleted
-    assert not CalendarEvent.objects.filter(id=calendar_event.id).exists()
+    assert not CalendarEvent.original_manager.filter(id=calendar_event.id).exists()
 
     # Verify new event was created
     assert result.external_id == "new_event_123"
@@ -3751,7 +3828,7 @@ def test_request_calendar_sync_skipped_when_sync_disabled(
         mock_task.assert_not_called()
 
     assert result is None
-    assert not CalendarSync.objects.filter(calendar=calendar).exists()
+    assert not CalendarSync.original_manager.filter(calendar=calendar).exists()
 
 
 @pytest.mark.django_db
@@ -3877,7 +3954,7 @@ def test_execute_calendar_sync(
     assert calendar_sync.status == CalendarSyncStatus.IN_PROGRESS
 
     # Verify new blocked time was created (since this is a new event)
-    blocked_times = BlockedTime.objects.filter(
+    blocked_times = BlockedTime.original_manager.filter(
         calendar=calendar, external_id=sample_event_data.external_id
     )
     assert blocked_times.exists()
@@ -3922,7 +3999,7 @@ def test_resync_with_non_covering_window_is_idempotent(
     sync1.refresh_from_db()
     assert sync1.status == CalendarSyncStatus.SUCCESS
     assert (
-        BlockedTime.objects.filter(
+        BlockedTime.original_manager.filter(
             calendar=calendar, external_id=sample_event_data.external_id
         ).count()
         == 1
@@ -3944,7 +4021,7 @@ def test_resync_with_non_covering_window_is_idempotent(
     # Must succeed and leave exactly one BlockedTime — no IntegrityError, no dup.
     assert sync2.status == CalendarSyncStatus.SUCCESS, sync2.error_message
     assert (
-        BlockedTime.objects.filter(
+        BlockedTime.original_manager.filter(
             calendar=calendar, external_id=sample_event_data.external_id
         ).count()
         == 1
@@ -4302,13 +4379,13 @@ def test_process_event_attendees_non_member_becomes_external_and_is_idempotent(
     assert len(changes.external_attendances_to_create) == 0
 
     assert (
-        EventExternalAttendance.objects.filter(
+        EventExternalAttendance.original_manager.filter(
             event=calendar_event,
             external_attendee__email="nonmember@example.com",
         ).count()
         == 1
     )
-    assert not EventAttendance.objects.filter(event=calendar_event).exists()
+    assert not EventAttendance.original_manager.filter(event=calendar_event).exists()
 
 
 @pytest.mark.django_db
@@ -4343,8 +4420,10 @@ def test_process_event_attendees_external_user(
     assert external_attendance.status == "pending"
 
     # Verify external attendee was created
-    external_attendee = ExternalAttendee.objects.get(
-        email="external@example.com", organization=calendar_event.organization
+    external_attendee = ExternalAttendee.objects.filter_by_organization(
+        calendar_event.organization
+    ).get(
+        email="external@example.com",
     )
     assert external_attendee.name == "External Attendee"
 
@@ -4392,8 +4471,8 @@ def test_handle_deletions_for_full_sync(
     )
 
     # Verify event_2 was deleted (not matched)
-    assert CalendarEvent.objects.filter(id=event1.id).exists()
-    assert not CalendarEvent.objects.filter(id=event2.id).exists()
+    assert CalendarEvent.original_manager.filter(id=event1.id).exists()
+    assert not CalendarEvent.original_manager.filter(id=event2.id).exists()
 
 
 @pytest.mark.django_db
@@ -4432,7 +4511,7 @@ def test_apply_sync_changes(social_account, social_token, mock_google_adapter, c
     service._apply_sync_changes(calendar.id, changes)
 
     # Verify blocked time was created
-    assert BlockedTime.objects.filter(external_id="block_new").exists()
+    assert BlockedTime.original_manager.filter(external_id="block_new").exists()
 
     # Verify event was updated
     existing_event.refresh_from_db()
@@ -4473,8 +4552,8 @@ def test_apply_sync_changes_with_recurrence_rules_and_events(
     service._apply_sync_changes(calendar.id, changes)
 
     # Assertions
-    created_event = CalendarEvent.objects.get(
-        organization_id=calendar.organization_id, external_id="recurring_event_1"
+    created_event = CalendarEvent.objects.filter_by_organization(calendar.organization_id).get(
+        external_id="recurring_event_1",
     )
     assert created_event.recurrence_rule is not None, "Recurrence rule should be linked to event"
     # Ensure recurrence rule persisted with expected fields
@@ -4549,12 +4628,20 @@ def test_remove_available_time_windows_overlap(
     )
 
     # Verify both available time windows were deleted due to overlaps
-    assert not AvailableTime.objects.filter(
-        organization_id=calendar.organization_id, id=available_time1.id
-    ).exists()
-    assert not AvailableTime.objects.filter(
-        organization_id=calendar.organization_id, id=available_time2.id
-    ).exists()
+    assert (
+        not AvailableTime.objects.filter_by_organization(calendar.organization_id)
+        .filter(
+            id=available_time1.id,
+        )
+        .exists()
+    )
+    assert (
+        not AvailableTime.objects.filter_by_organization(calendar.organization_id)
+        .filter(
+            id=available_time2.id,
+        )
+        .exists()
+    )
 
 
 @pytest.mark.django_db
@@ -5226,8 +5313,10 @@ def test_request_organization_calendar_resources_import(
 
             assert len(captured_callbacks) == 1
             captured_callbacks[0]()
-            import_workflow_state = CalendarOrganizationResourcesImport.objects.get(
-                organization=organization
+            import_workflow_state = (
+                CalendarOrganizationResourcesImport.objects.filter_by_organization(
+                    organization
+                ).get()
             )
             mock_task.assert_called_once_with(
                 account_type="social_account",
@@ -5784,8 +5873,8 @@ def test_apply_sync_changes_events_to_create(
     service._apply_sync_changes(calendar.id, changes)
 
     # Verify event was created
-    created_event = CalendarEvent.objects.get(
-        external_id="new_event_123", organization=calendar.organization
+    created_event = CalendarEvent.objects.filter_by_organization(calendar.organization).get(
+        external_id="new_event_123",
     )
     assert created_event.title == "New Event"
     assert created_event.description == "A new event"
@@ -5817,9 +5906,13 @@ def test_apply_sync_changes_events_to_delete(
     service._apply_sync_changes(calendar.id, changes)
 
     # Verify event was deleted
-    assert not CalendarEvent.objects.filter(
-        external_id="delete_event_123", organization=calendar.organization
-    ).exists()
+    assert (
+        not CalendarEvent.objects.filter_by_organization(calendar.organization)
+        .filter(
+            external_id="delete_event_123",
+        )
+        .exists()
+    )
 
 
 @pytest.mark.django_db
@@ -5846,8 +5939,8 @@ def test_apply_sync_changes_blocked_times_to_create(
     service._apply_sync_changes(calendar.id, changes)
 
     # Verify blocked time was created
-    created_block = BlockedTime.objects.get(
-        external_id="new_block_123", organization=calendar.organization
+    created_block = BlockedTime.objects.filter_by_organization(calendar.organization).get(
+        external_id="new_block_123",
     )
     assert created_block.reason == "New blocked time"
     assert created_block.calendar_fk == calendar
@@ -5913,9 +6006,13 @@ def test_apply_sync_changes_blocks_to_delete(
     service._apply_sync_changes(calendar.id, changes)
 
     # Verify blocked time was deleted
-    assert not BlockedTime.objects.filter(
-        external_id="delete_block_123", organization=calendar.organization
-    ).exists()
+    assert (
+        not BlockedTime.objects.filter_by_organization(calendar.organization)
+        .filter(
+            external_id="delete_block_123",
+        )
+        .exists()
+    )
 
 
 @pytest.mark.django_db
@@ -5953,8 +6050,9 @@ def test_apply_sync_changes_attendances_to_create(
     service._apply_sync_changes(calendar.id, changes)
 
     # Verify attendance was created
-    created_attendance = EventAttendance.objects.get(
-        event_fk=event, membership_user_id=user.id, organization=calendar.organization
+    created_attendance = EventAttendance.objects.filter_by_organization(calendar.organization).get(
+        event_fk=event,
+        membership_user_id=user.id,
     )
     assert created_attendance.organization == calendar.organization
 
@@ -5997,8 +6095,11 @@ def test_apply_sync_changes_external_attendances_to_create(
     service._apply_sync_changes(calendar.id, changes)
 
     # Verify external attendance was created
-    created_external_attendance = EventExternalAttendance.objects.get(
-        event_fk=event, external_attendee_fk=external_attendee, organization=calendar.organization
+    created_external_attendance = EventExternalAttendance.objects.filter_by_organization(
+        calendar.organization
+    ).get(
+        event_fk=event,
+        external_attendee_fk=external_attendee,
     )
     assert created_external_attendance.organization == calendar.organization
 
@@ -6110,25 +6211,33 @@ def test_apply_sync_changes_comprehensive(
 
     # Verify all changes were applied
     # New event created
-    assert CalendarEvent.objects.filter(
-        external_id="new_event_456", organization=calendar.organization
-    ).exists()
-    new_created_event = CalendarEvent.objects.get(
-        external_id="new_event_456", organization=calendar.organization
+    assert (
+        CalendarEvent.objects.filter_by_organization(calendar.organization)
+        .filter(
+            external_id="new_event_456",
+        )
+        .exists()
+    )
+    new_created_event = CalendarEvent.objects.filter_by_organization(calendar.organization).get(
+        external_id="new_event_456",
     )
     assert new_created_event.title == "New Event"
 
     # New blocked time created
-    assert BlockedTime.objects.filter(
-        external_id="new_block_456", organization=calendar.organization
-    ).exists()
-    new_created_block = BlockedTime.objects.get(
-        external_id="new_block_456", organization=calendar.organization
+    assert (
+        BlockedTime.objects.filter_by_organization(calendar.organization)
+        .filter(
+            external_id="new_block_456",
+        )
+        .exists()
+    )
+    new_created_block = BlockedTime.objects.filter_by_organization(calendar.organization).get(
+        external_id="new_block_456",
     )
     assert new_created_block.reason == "New block reason"
 
     # Recurrence rule created
-    assert RecurrenceRule.objects.filter(frequency="DAILY", count=5).exists()
+    assert RecurrenceRule.original_manager.filter(frequency="DAILY", count=5).exists()
 
     # Existing event updated
     existing_event.refresh_from_db()
@@ -6139,9 +6248,13 @@ def test_apply_sync_changes_comprehensive(
     assert existing_block.reason == "Updated reason"
 
     # Event deleted
-    assert not CalendarEvent.objects.filter(
-        external_id="delete_event_789", organization=calendar.organization
-    ).exists()
+    assert (
+        not CalendarEvent.objects.filter_by_organization(calendar.organization)
+        .filter(
+            external_id="delete_event_789",
+        )
+        .exists()
+    )
 
 
 # Bundle Calendar Tests
@@ -6736,7 +6849,7 @@ def test_delete_bundle_event(organization, bundle_calendar):
         assert mock_delete_event.call_count == 2
 
         # Check blocked time was deleted
-        assert not BlockedTime.objects.filter(id=blocked_time.id).exists()
+        assert not BlockedTime.original_manager.filter(id=blocked_time.id).exists()
 
 
 @pytest.mark.django_db
@@ -7337,8 +7450,8 @@ def test_get_blocked_times_expanded_with_cancelled_exception(organization, calen
     assert len(sept_8_occurrences) == 0, "Cancelled occurrence should not appear"
 
     # Verify the exception was created
-    exceptions = BlockedTimeRecurrenceException.objects.filter(
-        parent_blocked_time=blocked_time, organization=organization
+    exceptions = BlockedTimeRecurrenceException.objects.filter_by_organization(organization).filter(
+        parent_blocked_time=blocked_time,
     )
     assert exceptions.count() == 1
     exception = exceptions.first()
@@ -7420,8 +7533,8 @@ def test_get_blocked_times_expanded_with_modified_exception(organization, calend
     assert modified_occurrence.is_recurring_exception is True
 
     # Verify the exception was created
-    exceptions = BlockedTimeRecurrenceException.objects.filter(
-        parent_blocked_time=blocked_time, organization=organization
+    exceptions = BlockedTimeRecurrenceException.objects.filter_by_organization(organization).filter(
+        parent_blocked_time=blocked_time,
     )
     assert exceptions.count() == 1
     exception = exceptions.first()
@@ -7483,8 +7596,10 @@ def test_get_available_times_expanded_with_cancelled_exception(organization):
     assert len(sept_9_occurrences) == 0, "Cancelled occurrence should not appear"
 
     # Verify the exception was created
-    exceptions = AvailableTimeRecurrenceException.objects.filter(
-        parent_available_time=available_time, organization=organization
+    exceptions = AvailableTimeRecurrenceException.objects.filter_by_organization(
+        organization
+    ).filter(
+        parent_available_time=available_time,
     )
     assert exceptions.count() == 1
     exception = exceptions.first()
@@ -7570,8 +7685,10 @@ def test_get_available_times_expanded_with_modified_exception(organization):
     assert modified_occurrence.is_recurring_exception is True
 
     # Verify the exception was created
-    exceptions = AvailableTimeRecurrenceException.objects.filter(
-        parent_available_time=available_time, organization=organization
+    exceptions = AvailableTimeRecurrenceException.objects.filter_by_organization(
+        organization
+    ).filter(
+        parent_available_time=available_time,
     )
     assert exceptions.count() == 1
     exception = exceptions.first()
@@ -7681,8 +7798,8 @@ def test_get_blocked_times_expanded_with_multiple_exceptions(organization, calen
     assert len(sept_6_occurrences) == 0
 
     # Verify we have the expected number of exceptions
-    exceptions = BlockedTimeRecurrenceException.objects.filter(
-        parent_blocked_time=blocked_time, organization=organization
+    exceptions = BlockedTimeRecurrenceException.objects.filter_by_organization(organization).filter(
+        parent_blocked_time=blocked_time,
     )
     assert exceptions.count() == 3
 
@@ -7773,8 +7890,10 @@ def test_get_available_times_expanded_with_multiple_exceptions(organization):
     assert modified_occurrence.end_time == modified_end
 
     # Verify we have the expected number of exceptions
-    exceptions = AvailableTimeRecurrenceException.objects.filter(
-        parent_available_time=available_time, organization=organization
+    exceptions = AvailableTimeRecurrenceException.objects.filter_by_organization(
+        organization
+    ).filter(
+        parent_available_time=available_time,
     )
     assert exceptions.count() == 2
 
@@ -8865,10 +8984,9 @@ class TestCalendarServicePermissionIntegration:
         service._grant_calendar_owner_permissions(calendar)
 
         # Check that a token was created for the owner
-        token = CalendarManagementToken.objects.get(
+        token = CalendarManagementToken.objects.filter_by_organization(organization).get(
             calendar_fk=calendar,
             membership_user_id=user.id,
-            organization=organization,
         )
 
         # Check that the token has the expected permissions
@@ -8912,15 +9030,13 @@ class TestCalendarServicePermissionIntegration:
         service._grant_event_attendee_permissions(calendar_event)
 
         # Check that tokens were created for attendees
-        internal_token = CalendarManagementToken.objects.get(
+        internal_token = CalendarManagementToken.objects.filter_by_organization(organization).get(
             event_fk=calendar_event,
             membership_user_id=attendee_user.id,
-            organization=organization,
         )
-        external_token = CalendarManagementToken.objects.get(
+        external_token = CalendarManagementToken.objects.filter_by_organization(organization).get(
             event_fk=calendar_event,
             external_attendee_fk=external_attendee,
-            organization=organization,
         )
 
         # Check permissions
@@ -8952,11 +9068,14 @@ class TestCalendarServicePermissionIntegration:
         service = CalendarService(calendar_permission_service=permission_service)
         service._grant_event_attendee_permissions(calendar_event)
 
-        assert not CalendarManagementToken.objects.filter(
-            event_fk=calendar_event,
-            membership_user_id=orphan_user.id,
-            organization=organization,
-        ).exists()
+        assert (
+            not CalendarManagementToken.objects.filter_by_organization(organization)
+            .filter(
+                event_fk=calendar_event,
+                membership_user_id=orphan_user.id,
+            )
+            .exists()
+        )
 
     @pytest.mark.django_db
     def test_grant_permissions_without_permission_service(self, calendar, calendar_event):
@@ -8970,7 +9089,8 @@ class TestCalendarServicePermissionIntegration:
 
         # No tokens should be created
         assert (
-            CalendarManagementToken.objects.filter(organization=calendar.organization).count() == 0
+            CalendarManagementToken.objects.filter_by_organization(calendar.organization).count()
+            == 0
         )
 
     @pytest.mark.django_db
@@ -9090,18 +9210,24 @@ class TestCalendarServicePermissionIntegration:
 
         # Grant permissions twice
         service._grant_calendar_owner_permissions(calendar)
-        initial_token_count = CalendarManagementToken.objects.filter(
-            calendar_fk=calendar,
-            membership_user_id=user.id,
-            organization=organization,
-        ).count()
+        initial_token_count = (
+            CalendarManagementToken.objects.filter_by_organization(organization)
+            .filter(
+                calendar_fk=calendar,
+                membership_user_id=user.id,
+            )
+            .count()
+        )
 
         service._grant_calendar_owner_permissions(calendar)
-        final_token_count = CalendarManagementToken.objects.filter(
-            calendar_fk=calendar,
-            membership_user_id=user.id,
-            organization=organization,
-        ).count()
+        final_token_count = (
+            CalendarManagementToken.objects.filter_by_organization(organization)
+            .filter(
+                calendar_fk=calendar,
+                membership_user_id=user.id,
+            )
+            .count()
+        )
 
         # Should not create duplicate tokens
         assert initial_token_count == final_token_count == 1
@@ -9127,18 +9253,24 @@ class TestCalendarServicePermissionIntegration:
 
         # Grant permissions twice
         service._grant_event_attendee_permissions(calendar_event)
-        initial_token_count = CalendarManagementToken.objects.filter(
-            event_fk=calendar_event,
-            membership_user_id=attendee_user.id,
-            organization=organization,
-        ).count()
+        initial_token_count = (
+            CalendarManagementToken.objects.filter_by_organization(organization)
+            .filter(
+                event_fk=calendar_event,
+                membership_user_id=attendee_user.id,
+            )
+            .count()
+        )
 
         service._grant_event_attendee_permissions(calendar_event)
-        final_token_count = CalendarManagementToken.objects.filter(
-            event_fk=calendar_event,
-            membership_user_id=attendee_user.id,
-            organization=organization,
-        ).count()
+        final_token_count = (
+            CalendarManagementToken.objects.filter_by_organization(organization)
+            .filter(
+                event_fk=calendar_event,
+                membership_user_id=attendee_user.id,
+            )
+            .count()
+        )
 
         # Should not create duplicate tokens
         assert initial_token_count == final_token_count == 1
@@ -9242,10 +9374,9 @@ class TestCalendarServicePermissionScenarios:
         service._grant_event_attendee_permissions(calendar_event)
 
         # Get the created token
-        token = CalendarManagementToken.objects.get(
+        token = CalendarManagementToken.objects.filter_by_organization(organization).get(
             event_fk=calendar_event,
             external_attendee_fk=external_attendee,
-            organization=organization,
         )
 
         # Check permissions
@@ -9318,15 +9449,17 @@ class TestCalendarServicePermissionScenarios:
                 created_event = service.create_event(calendar.id, event_data)
 
                 # Check that both calendar and event tokens exist
-                calendar_token = CalendarManagementToken.objects.get(
+                calendar_token = CalendarManagementToken.objects.filter_by_organization(
+                    organization
+                ).get(
                     calendar_fk=calendar,
                     membership_user_id=user.id,
-                    organization=organization,
                 )
-                event_token = CalendarManagementToken.objects.get(
+                event_token = CalendarManagementToken.objects.filter_by_organization(
+                    organization
+                ).get(
                     event_fk=created_event,
                     membership_user_id=user.id,
-                    organization=organization,
                 )
 
                 assert calendar_token is not None
@@ -9402,8 +9535,6 @@ def test_get_availability_windows_subtracts_busy_for_managed_calendar(organizati
 
 def test_available_time_window_serializer_renders_local_timezone():
     """The window serializer emits start/end in the window's timezone, not UTC."""
-    from calendar_integration.serializers import AvailableTimeWindowSerializer
-
     window = AvailableTimeWindow(
         start_time=datetime.datetime(2024, 1, 1, 12, 0, tzinfo=datetime.UTC),  # 09:00 Recife
         end_time=datetime.datetime(2024, 1, 1, 20, 0, tzinfo=datetime.UTC),  # 17:00 Recife
@@ -9460,10 +9591,6 @@ def test_recurring_availability_windows_keep_local_time(organization):
 
     Exercises the occurrence-materialization path (weeks beyond the master) end to end.
     """
-    from zoneinfo import ZoneInfo
-
-    from calendar_integration.serializers import AvailableTimeWindowSerializer
-
     recife = ZoneInfo("America/Recife")
     calendar = Calendar.objects.create(
         name="Recife Calendar",
@@ -9502,9 +9629,6 @@ def test_recurring_availability_windows_keep_local_time(organization):
 
 def test_unavailable_time_window_serializer_renders_local_timezone():
     """Unavailable windows render in the underlying record's timezone, not UTC."""
-    from calendar_integration.serializers import UnavailableTimeWindowSerializer
-    from calendar_integration.services.dataclasses import BlockedTimeData
-
     window = UnavailableTimeWindow(
         start_time=datetime.datetime(2024, 1, 1, 12, 0, tzinfo=datetime.UTC),  # 09:00 Recife
         end_time=datetime.datetime(2024, 1, 1, 20, 0, tzinfo=datetime.UTC),  # 17:00 Recife
@@ -10132,7 +10256,7 @@ class TestDeleteBlockedTimeService:
             blocked_time_id=blocked_time_id,
         )
 
-        assert not BlockedTime.objects.filter(id=blocked_time_id).exists()
+        assert not BlockedTime.original_manager.filter(id=blocked_time_id).exists()
 
     def test_missing_id_raises_value_error(self, organization):
         """A non-existent blocked_time_id raises ValueError."""
@@ -10170,7 +10294,7 @@ class TestDeleteBlockedTimeService:
             )
 
         # Confirm the row in calendar_a is still intact
-        assert BlockedTime.objects.filter(id=blocked_time_a.id).exists()
+        assert BlockedTime.original_manager.filter(id=blocked_time_a.id).exists()
 
     def test_org_scoping_rejects_cross_org_id(self, organization):
         """A blocked time from a different org raises ValueError and other org's row is preserved."""
@@ -10204,7 +10328,7 @@ class TestDeleteBlockedTimeService:
             )
 
         # Confirm the other org's row was not deleted
-        assert BlockedTime.objects.filter(id=other_blocked_time.id).exists()
+        assert BlockedTime.original_manager.filter(id=other_blocked_time.id).exists()
 
 
 class TestDisableBundleCalendarService:

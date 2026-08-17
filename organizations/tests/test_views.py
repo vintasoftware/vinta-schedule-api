@@ -1,7 +1,10 @@
+import datetime
 import json
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Permission
+from django.contrib.contenttypes.models import ContentType
 from django.urls import reverse
 from django.utils import timezone
 
@@ -9,20 +12,26 @@ import pytest
 from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
+from rest_framework_simplejwt.tokens import AccessToken
 
 from calendar_integration.models import GoogleCalendarServiceAccount
+from common.organization_context import get_current_organization
 from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
+from organizations.authorization import membership_holds_permission
 from organizations.exceptions import InvalidInvitationTokenError
 from organizations.models import (
     ExternalEventUpdatePolicy,
     Organization,
     OrganizationInvitation,
     OrganizationMembership,
-    OrganizationRole,
     WeekStart,
 )
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN, MANAGE_MEMBERS
+from organizations.tests.helpers import grant_membership_groups, make_membership
+from organizations.views import OrganizationViewSet
 from payments.billing_constants import BillingState
 from payments.models import Subscription
+from users.factories import UserFactory
 
 
 User = get_user_model()
@@ -186,8 +195,6 @@ class TestOrganizationViewSet:
         was never exercised. This drives the actual reported flow end-to-end (no
         mocks) over a Bearer access token.
         """
-        from rest_framework_simplejwt.tokens import AccessToken
-
         client = APIClient()
         client.credentials(HTTP_AUTHORIZATION=f"Bearer {AccessToken.for_user(user)}")
 
@@ -197,7 +204,7 @@ class TestOrganizationViewSet:
         assert_response_status_code(response, status.HTTP_201_CREATED)
         membership = OrganizationMembership.objects.get(user=user)
         assert membership.organization.name == "JWT Org"
-        assert membership.role == OrganizationRole.ADMIN
+        assert membership_holds_permission(membership, MANAGE_MEMBERS)
 
     @patch("organizations.views.OrganizationViewSet.get_queryset")
     @patch("organizations.services.OrganizationService.create_organization")
@@ -256,10 +263,51 @@ class TestOrganizationViewSet:
         # Creator must now have TWO active memberships.
         assert OrganizationMembership.objects.filter(user=user, is_active=True).count() == 2
 
-        # The new org's membership must be ADMIN.
+        # The new org's membership must administer it.
         new_org_id = response_data["id"]
         new_membership = OrganizationMembership.objects.get(user=user, organization_id=new_org_id)
-        assert new_membership.role == OrganizationRole.ADMIN
+        assert membership_holds_permission(new_membership, MANAGE_MEMBERS)
+
+    def test_create_organization_binds_the_new_organization(
+        self, auth_client, user, organization_with_membership
+    ):
+        """The context follows ``request.organization`` through the post-create half.
+
+        ``create`` is overridden here and skips the base mixin's post-write
+        ``resolve_organization`` (and therefore its re-bind), stashing the
+        new organization on the request by hand instead. Everything after that --
+        the ``get_queryset`` re-fetch, the retrieve serializer, any virtual-model
+        annotation -- reads through organization-scoped default managers. With an
+        existing member creating a *second* organization while naming their first
+        in ``X-Organization-Id``, a missing re-bind leaves those lines scoped to
+        organization A while the request says B, which is the disagreement this
+        pins.
+        """
+        observed: list[int | None] = []
+        original_get_retrieve_serializer = OrganizationViewSet.get_retrieve_serializer
+
+        def _recording_get_retrieve_serializer(self, *args, **kwargs):
+            bound = get_current_organization()
+            observed.append(None if bound is None else bound.pk)
+            return original_get_retrieve_serializer(self, *args, **kwargs)
+
+        url = reverse("api:Organizations-list")
+        with patch.object(
+            OrganizationViewSet, "get_retrieve_serializer", _recording_get_retrieve_serializer
+        ):
+            response = auth_client.post(
+                url,
+                {"name": "Bound Organization"},
+                format="json",
+                HTTP_X_ORGANIZATION_ID=str(organization_with_membership.pk),
+            )
+
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        new_org_id = response.json()["id"]
+        assert new_org_id != organization_with_membership.pk
+        assert observed == [new_org_id]
+        # ...and the request left nothing bound behind it.
+        assert get_current_organization() is None
 
     def test_create_organization_unauthenticated(self, anonymous_client):
         """Test creating an organization without authentication"""
@@ -297,9 +345,8 @@ class TestOrganizationViewSet:
     ):
         """Test updating an organization when user has a non-admin membership.
 
-        The organization_with_membership fixture creates a MEMBER-role membership.
-        IsOrganizationAdmin (applied to update/partial_update) rejects non-admin
-        members with 403.
+        The organization_with_membership fixture creates a MEMBER-role membership
+        with no direct capabilities. ``CanManageOrganization`` rejects it with 403.
         """
         url = reverse("api:Organizations-detail", kwargs={"pk": organization_with_membership.pk})
         data = {
@@ -314,11 +361,10 @@ class TestOrganizationViewSet:
     def test_update_organization_admin_returns_200(self, user):
         """Admin can PATCH their own organization — the configure-org use-case works."""
         organization = OrganizationTestFactory.create_organization(name="Admin Org")
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         admin_client = APIClient()
@@ -330,14 +376,50 @@ class TestOrganizationViewSet:
         assert_response_status_code(response, status.HTTP_200_OK)
         assert response.json()["name"] == "Admin Updated Name"
 
+    @pytest.mark.parametrize(
+        ("permission_codename", "permission_model", "expected_status"),
+        [
+            ("manage_organization", Organization, status.HTTP_200_OK),
+            ("manage_members", OrganizationMembership, status.HTTP_403_FORBIDDEN),
+        ],
+    )
+    def test_patch_organization_requires_manage_organization_exactly(
+        self, user, permission_codename, permission_model, expected_status
+    ):
+        """PATCH reads its declared capability, not the broader admin capability."""
+        organization = OrganizationTestFactory.create_organization(name="Direct Capability Org")
+        membership = make_membership(
+            user=user,
+            organization=organization,
+            is_active=True,
+        )
+        membership.permissions.add(
+            Permission.objects.get(
+                codename=permission_codename,
+                content_type=ContentType.objects.get_for_model(permission_model),
+            )
+        )
+        client = APIClient()
+        client.force_authenticate(user=user)
+        client.credentials(HTTP_X_ORGANIZATION_ID=str(organization.id))
+
+        response = client.patch(
+            reverse("api:Organizations-detail", kwargs={"pk": organization.pk}),
+            {"name": "Updated by Direct Capability"},
+            format="json",
+        )
+
+        assert response.status_code == expected_status
+        if expected_status == status.HTTP_200_OK:
+            assert response.json()["name"] == "Updated by Direct Capability"
+
     def test_update_organization_external_event_update_policy(self, user):
         """Admin can PATCH external_event_update_policy alongside should_sync_rooms."""
         organization = OrganizationTestFactory.create_organization(name="Policy Org")
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         admin_client = APIClient()
@@ -363,11 +445,10 @@ class TestOrganizationViewSet:
     def test_update_organization_external_event_update_policy_invalid_choice(self, user):
         """An out-of-range policy value is rejected with 400."""
         organization = OrganizationTestFactory.create_organization(name="Policy Org")
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         admin_client = APIClient()
@@ -383,11 +464,10 @@ class TestOrganizationViewSet:
     def test_update_organization_admin_cross_org_returns_404(self, user):
         """Admin cannot PATCH an organization they don't belong to — 404."""
         own_org = OrganizationTestFactory.create_organization(name="Own Org")
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=own_org,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         other_org = OrganizationTestFactory.create_organization(name="Other Org")
@@ -453,22 +533,19 @@ class TestOrganizationViewSet:
 
 @pytest.mark.django_db
 class TestOrganizationSlugUpdate:
-    """Integration tests: self-serve slug via PATCH /organizations/{id}/ (Phase 1).
+    """Integration tests: self-serve slug via PATCH /organizations/{id}/.
 
-    Covers the acceptance criteria from the plan's Phase 1: an admin sets a unique
+    Covers: an admin sets a unique
     slug; a non-admin is refused; a duplicate is rejected with a message naming the
     conflict (not a 500); changing an existing slug succeeds.
     """
 
     def _make_admin_client(self, organization):
-        from users.factories import UserFactory
-
         user = UserFactory().create_user()
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         client = APIClient()
@@ -491,13 +568,14 @@ class TestOrganizationSlugUpdate:
     def test_non_admin_member_cannot_set_slug(
         self, auth_client, user, organization_with_membership
     ):
-        """A non-admin member is refused (IsOrganizationAdmin gates the whole update)."""
+        """A membership without ``manage_organization`` is refused."""
+        before = organization_with_membership.slug
         url = reverse("api:Organizations-detail", kwargs={"pk": organization_with_membership.pk})
         response = auth_client.patch(url, {"slug": "member-org"}, format="json")
 
         assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
         organization_with_membership.refresh_from_db()
-        assert organization_with_membership.slug is None
+        assert organization_with_membership.slug == before
 
     def test_duplicate_slug_returns_400_naming_the_collision(self):
         """A second organization claiming a taken slug gets 400, not a 500."""
@@ -506,6 +584,7 @@ class TestOrganizationSlugUpdate:
         existing.save()
 
         organization = OrganizationTestFactory.create_organization(name="Second Org")
+        before = organization.slug
         _user, client = self._make_admin_client(organization)
 
         url = reverse("api:Organizations-detail", kwargs={"pk": organization.pk})
@@ -516,7 +595,7 @@ class TestOrganizationSlugUpdate:
         assert "slug" in body
         assert "taken-slug" in body["slug"][0]
         organization.refresh_from_db()
-        assert organization.slug is None
+        assert organization.slug == before
 
     def test_changing_an_existing_slug_succeeds(self):
         """An admin can change an already-set slug to a new unique value."""
@@ -543,8 +622,14 @@ class TestOrganizationSlugUpdate:
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
         assert "reserved" in response.json()["slug"][0]
 
-    def test_blank_slug_clears_to_none(self):
-        """Submitting a blank slug clears it to NULL rather than storing ''."""
+    def test_blank_slug_is_refused_rather_than_clearing_or_replacing_the_slug(self):
+        """``slug`` is NOT NULL, so a blank submission has nothing to write.
+
+        Refused rather than ignored: ``Organization.save()`` mints a replacement
+        for a blank slug, so accepting it would swap the organization's public
+        identifier for a different one -- orphaning every branded login URL
+        already issued -- while telling the caller it had cleared it.
+        """
         organization = OrganizationTestFactory.create_organization(name="Clear Org")
         organization.slug = "clearable"
         organization.save()
@@ -553,9 +638,31 @@ class TestOrganizationSlugUpdate:
         url = reverse("api:Organizations-detail", kwargs={"pk": organization.pk})
         response = client.patch(url, {"slug": ""}, format="json")
 
-        assert_response_status_code(response, status.HTTP_200_OK)
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        assert "cannot be cleared" in response.json()["slug"][0]
         organization.refresh_from_db()
-        assert organization.slug is None
+        assert organization.slug == "clearable"
+
+    def test_null_slug_is_rejected_with_400(self):
+        """An explicit ``null`` is refused with a 400, matching the blank-string
+        case -- ``slug`` is NOT NULL, so there is nothing sensible to write, and
+        the field itself (``allow_null=False``) is what makes a client generated
+        from the schema unable to send a value that always 400s. See the
+        GraphQL surface's ``TestUpdateBrandingSlugInOneCall
+        .test_an_explicit_null_slug_is_refused_rather_than_ignored`` for the
+        same contract on the other write surface.
+        """
+        organization = OrganizationTestFactory.create_organization(name="Null Slug Org")
+        organization.slug = "not-nullable"
+        organization.save()
+        _user, client = self._make_admin_client(organization)
+
+        url = reverse("api:Organizations-detail", kwargs={"pk": organization.pk})
+        response = client.patch(url, {"slug": None}, format="json")
+
+        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
+        organization.refresh_from_db()
+        assert organization.slug == "not-nullable"
 
     def test_confusable_slug_returns_400_naming_the_confusable_rule(self):
         """A mixed-script lookalike slug is rejected by the confusables rule, not
@@ -565,6 +672,7 @@ class TestOrganizationSlugUpdate:
         the generic DRF message before the confusable-specific one is reached).
         """
         organization = OrganizationTestFactory.create_organization(name="Confusable Org")
+        before = organization.slug
         _user, client = self._make_admin_client(organization)
 
         url = reverse("api:Organizations-detail", kwargs={"pk": organization.pk})
@@ -580,13 +688,14 @@ class TestOrganizationSlugUpdate:
         assert "non-ASCII character" in message
         assert "lookalike" in message
         organization.refresh_from_db()
-        assert organization.slug is None
+        assert organization.slug == before
 
     def test_super_route_slug_is_rejected_as_reserved(self):
         """The real admin path segment ``super`` (see ``vinta_schedule_api/urls.py``)
         is rejected as reserved, naming the reserved-word rule.
         """
         organization = OrganizationTestFactory.create_organization(name="Super Org")
+        before = organization.slug
         _user, client = self._make_admin_client(organization)
 
         url = reverse("api:Organizations-detail", kwargs={"pk": organization.pk})
@@ -595,7 +704,7 @@ class TestOrganizationSlugUpdate:
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
         assert "reserved" in response.json()["slug"][0]
         organization.refresh_from_db()
-        assert organization.slug is None
+        assert organization.slug == before
 
 
 @pytest.mark.django_db
@@ -606,7 +715,7 @@ class TestOrganizationPermissions:
         """Test organization permissions when user has a non-admin (MEMBER) membership.
 
         retrieve/delete: still gated by OrganizationManagementPermission → 403.
-        update: gated by IsOrganizationAdmin → non-admin member gets 403.
+        update: gated by ``CanManageOrganization`` → a member without the capability gets 403.
         """
         organization = OrganizationTestFactory.create_organization()
         # create_organization_membership uses baker default role = MEMBER
@@ -617,7 +726,7 @@ class TestOrganizationPermissions:
         response = auth_client.get(url)
         assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
 
-        # Should NOT be able to update — IsOrganizationAdmin blocks non-admin members
+        # Should NOT be able to update — no ``manage_organization`` capability.
         response = auth_client.patch(url, {"name": "Updated Name"}, format="json")
         assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
 
@@ -717,14 +826,13 @@ class TestCurrentMembershipAction:
     parent viewset's ``OrganizationManagementPermission`` which would block members).
     """
 
-    def test_current_admin_returns_200_with_role_and_org(self, auth_client, user):
-        """Onboarded ADMIN gets 200 with role='admin' and correct org data."""
+    def test_current_admin_returns_200_with_permissions_and_org(self, auth_client, user):
+        """An onboarded admin gets 200 with their capabilities and the org data."""
         organization = OrganizationTestFactory.create_organization(name="Admin Org")
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
 
         url = reverse("api:Organizations-current")
@@ -732,18 +840,18 @@ class TestCurrentMembershipAction:
 
         assert_response_status_code(response, status.HTTP_200_OK)
         body = response.json()
-        assert body["role"] == OrganizationRole.ADMIN
+        assert "role" not in body
+        assert MANAGE_MEMBERS in body["permissions"]
         assert body["organization"]["id"] == organization.id
         assert body["organization"]["name"] == "Admin Org"
 
-    def test_current_member_returns_200_with_role_member(self, auth_client, user):
-        """Onboarded MEMBER gets 200 with role='member'."""
+    def test_current_member_returns_200_with_no_permissions(self, auth_client, user):
+        """An onboarded plain member gets 200 with an empty capability list."""
         organization = OrganizationTestFactory.create_organization(name="Member Org")
         baker.make(
             OrganizationMembership,
             user=user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
 
         url = reverse("api:Organizations-current")
@@ -751,7 +859,8 @@ class TestCurrentMembershipAction:
 
         assert_response_status_code(response, status.HTTP_200_OK)
         body = response.json()
-        assert body["role"] == OrganizationRole.MEMBER
+        assert "role" not in body
+        assert body["permissions"] == []
         assert body["organization"]["id"] == organization.id
 
     def test_current_gated_user_returns_404(self, auth_client):
@@ -780,7 +889,6 @@ class TestCurrentMembershipAction:
             OrganizationMembership,
             user=user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
 
         url = reverse("api:Organizations-current")
@@ -1547,11 +1655,10 @@ class TestOrganizationMembershipViewSet:
         """Test that admin can list all members (active and inactive) of their organization"""
         # Create organization with admin membership for the user
         organization = OrganizationTestFactory.create_organization(name="Test Org")
-        admin_membership = baker.make(
-            OrganizationMembership,
+        admin_membership = make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
@@ -1559,13 +1666,11 @@ class TestOrganizationMembershipViewSet:
         baker.make(
             OrganizationMembership,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
         inactive_member = baker.make(
             OrganizationMembership,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=False,
         )
 
@@ -1580,7 +1685,8 @@ class TestOrganizationMembershipViewSet:
         for result in results:
             assert "user_id" in result
             assert "organization_id" in result
-            assert "role" in result
+            assert "role" not in result
+            assert "permissions" in result
             assert "is_active" in result
             assert "user_email" in result
             assert "user_first_name" in result
@@ -1612,7 +1718,6 @@ class TestOrganizationMembershipViewSet:
             OrganizationMembership,
             user=user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -1633,11 +1738,10 @@ class TestOrganizationMembershipViewSet:
         """Test that users with inactive membership get 403"""
         organization = OrganizationTestFactory.create_organization(name="Test Org")
         # Create inactive admin membership
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=False,
         )
 
@@ -1650,11 +1754,10 @@ class TestOrganizationMembershipViewSet:
         """Test that admin only sees members of their own organization"""
         # Create org1 with admin membership for the user
         org1 = OrganizationTestFactory.create_organization(name="Org 1")
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=org1,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
@@ -1663,7 +1766,6 @@ class TestOrganizationMembershipViewSet:
         baker.make(
             OrganizationMembership,
             organization=org2,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -1674,23 +1776,21 @@ class TestOrganizationMembershipViewSet:
         results = response.json()["results"]
         # Should only see 1 member (the admin from org1)
         assert len(results) == 1
-        assert results[0]["user_id"] == user.organization_memberships.get().user_id
+        assert results[0]["user_id"] == user.memberships.get().user_id
 
     def test_retrieve_member_admin_success(self, auth_client, user):
         """Test that admin can retrieve a specific member"""
         organization = OrganizationTestFactory.create_organization(name="Test Org")
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
         member = baker.make(
             OrganizationMembership,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -1700,18 +1800,18 @@ class TestOrganizationMembershipViewSet:
         assert_response_status_code(response, status.HTTP_200_OK)
         result = response.json()
         assert result["user_id"] == member.user_id
-        assert result["role"] == OrganizationRole.MEMBER
+        assert "role" not in result
+        assert result["permissions"] == []
         assert result["is_active"] is True
         assert result["user_email"] == member.user.email
 
     def test_retrieve_member_cross_org_not_found(self, auth_client, user):
         """Test that admin cannot retrieve a member from a different organization"""
         org1 = OrganizationTestFactory.create_organization(name="Org 1")
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=org1,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
@@ -1719,7 +1819,6 @@ class TestOrganizationMembershipViewSet:
         member_in_org2 = baker.make(
             OrganizationMembership,
             organization=org2,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -1735,14 +1834,12 @@ class TestOrganizationMembershipViewSet:
             OrganizationMembership,
             user=user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
         other_member = baker.make(
             OrganizationMembership,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -1753,14 +1850,11 @@ class TestOrganizationMembershipViewSet:
 
     def test_retrieve_member_includes_profile_info(self, auth_client, user):
         """Test that member serialization includes user profile information"""
-        from users.factories import UserFactory
-
         organization = OrganizationTestFactory.create_organization(name="Test Org")
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
@@ -1774,7 +1868,6 @@ class TestOrganizationMembershipViewSet:
             OrganizationMembership,
             user=member_user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -1790,26 +1883,23 @@ class TestOrganizationMembershipViewSet:
     def test_deactivate_member_admin_success(self, auth_client, user):
         """Test that admin can deactivate another active member"""
         organization = OrganizationTestFactory.create_organization(name="Test Org")
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
         # Create another admin so we can safely deactivate without triggering last-admin guard
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
         target_member = baker.make(
             OrganizationMembership,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -1830,18 +1920,16 @@ class TestOrganizationMembershipViewSet:
     def test_deactivate_member_idempotent(self, auth_client, user):
         """Test that deactivating an already-inactive member is a no-op success"""
         organization = OrganizationTestFactory.create_organization(name="Test Org")
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
         target_member = baker.make(
             OrganizationMembership,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=False,
         )
 
@@ -1857,19 +1945,17 @@ class TestOrganizationMembershipViewSet:
     def test_deactivate_self_forbidden(self, auth_client, user):
         """Test that admin cannot deactivate their own membership"""
         organization = OrganizationTestFactory.create_organization(name="Test Org")
-        admin_membership = baker.make(
-            OrganizationMembership,
+        admin_membership = make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
         # Create another admin to prevent last-admin guard interference
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
@@ -1892,11 +1978,10 @@ class TestOrganizationMembershipViewSet:
         the last-admin guard can fire. The org always keeps at least one admin via this path.
         """
         organization = OrganizationTestFactory.create_organization(name="Test Org")
-        sole_admin_membership = baker.make(
-            OrganizationMembership,
+        sole_admin_membership = make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
@@ -1919,19 +2004,17 @@ class TestOrganizationMembershipViewSet:
         is the ONLY admin. When there are multiple admins, deactivating one is allowed.
         """
         organization = OrganizationTestFactory.create_organization(name="Test Org")
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
         # Create another admin so we can safely deactivate without hitting the last-admin guard
-        other_admin = baker.make(
-            OrganizationMembership,
+        other_admin = make_membership(
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
@@ -1943,6 +2026,48 @@ class TestOrganizationMembershipViewSet:
         other_admin.refresh_from_db()
         assert other_admin.is_active is False
 
+    def test_a_member_holding_manage_members_directly_counts_as_a_remaining_admin(
+        self, auth_client, user
+    ):
+        """The last-admin guard must count by capability, the same way
+        ``assign_groups``'s does -- not by the ``role`` column.
+
+        The caller holds ``organizations.manage_members`` through a direct
+        per-membership grant rather than the ``organization_admin`` group, so
+        ``role`` is ``MEMBER``. A guard counting ``role=ADMIN`` rows would not
+        see the caller as a remaining administrator and would refuse to
+        deactivate the sole ``role=ADMIN`` membership -- exactly the
+        divergence between ``deactivate`` and ``assign_groups`` this guard was
+        made to close.
+        """
+        organization = OrganizationTestFactory.create_organization(name="Test Org")
+        caller_membership = make_membership(
+            user=user,
+            organization=organization,
+            is_active=True,
+        )
+        caller_membership.permissions.add(
+            Permission.objects.get(
+                codename="manage_members",
+                content_type=ContentType.objects.get_for_model(OrganizationMembership),
+            )
+        )
+
+        target_admin = make_membership(
+            organization=organization,
+            groups=[GROUP_ORGANIZATION_ADMIN],
+            is_active=True,
+        )
+
+        url = reverse(
+            "api:OrganizationMembers-deactivate", kwargs={"user_id": target_admin.user_id}
+        )
+        response = auth_client.post(url)
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        target_admin.refresh_from_db()
+        assert target_admin.is_active is False
+
     def test_deactivate_non_admin_forbidden(self, auth_client, user):
         """Test that non-admin member cannot deactivate another member"""
         organization = OrganizationTestFactory.create_organization(name="Test Org")
@@ -1950,14 +2075,12 @@ class TestOrganizationMembershipViewSet:
             OrganizationMembership,
             user=user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
         target_member = baker.make(
             OrganizationMembership,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -1971,11 +2094,10 @@ class TestOrganizationMembershipViewSet:
     def test_deactivate_cross_org_not_found(self, auth_client, user):
         """Test that admin cannot deactivate a member from a different organization"""
         org1 = OrganizationTestFactory.create_organization(name="Org 1")
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=org1,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
@@ -1983,7 +2105,6 @@ class TestOrganizationMembershipViewSet:
         member_in_org2 = baker.make(
             OrganizationMembership,
             organization=org2,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -2001,11 +2122,10 @@ class TestOrganizationMembershipViewSet:
         inactive and returns 404 (membership-less) for tenant-scoped endpoints.
         """
         organization = OrganizationTestFactory.create_organization(name="Test Org")
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
@@ -2014,7 +2134,6 @@ class TestOrganizationMembershipViewSet:
             OrganizationMembership,
             user=target_user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -2040,18 +2159,16 @@ class TestOrganizationMembershipViewSet:
     def test_reactivate_member_admin_success(self, auth_client, user):
         """Test that admin can reactivate an inactive member"""
         organization = OrganizationTestFactory.create_organization(name="Test Org")
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
         target_member = baker.make(
             OrganizationMembership,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=False,
         )
 
@@ -2072,18 +2189,16 @@ class TestOrganizationMembershipViewSet:
     def test_reactivate_member_idempotent(self, auth_client, user):
         """Test that reactivating an already-active member is a no-op success"""
         organization = OrganizationTestFactory.create_organization(name="Test Org")
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
         target_member = baker.make(
             OrganizationMembership,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -2103,14 +2218,12 @@ class TestOrganizationMembershipViewSet:
             OrganizationMembership,
             user=user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
         target_member = baker.make(
             OrganizationMembership,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=False,
         )
 
@@ -2124,11 +2237,10 @@ class TestOrganizationMembershipViewSet:
     def test_reactivate_cross_org_not_found(self, auth_client, user):
         """Test that admin cannot reactivate a member from a different organization"""
         org1 = OrganizationTestFactory.create_organization(name="Org 1")
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=org1,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
@@ -2136,7 +2248,6 @@ class TestOrganizationMembershipViewSet:
         member_in_org2 = baker.make(
             OrganizationMembership,
             organization=org2,
-            role=OrganizationRole.MEMBER,
             is_active=False,
         )
 
@@ -2154,11 +2265,10 @@ class TestOrganizationMembershipViewSet:
         active and returns 200 with org data for tenant-scoped endpoints.
         """
         organization = OrganizationTestFactory.create_organization(name="Test Org")
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
@@ -2167,7 +2277,6 @@ class TestOrganizationMembershipViewSet:
             OrganizationMembership,
             user=target_user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=False,
         )
 
@@ -2192,176 +2301,25 @@ class TestOrganizationMembershipViewSet:
         result = response.json()
         assert result["organization"]["id"] == organization.id
 
-    def test_update_role_promote_member_to_admin(self, auth_client, user):
-        """Test that admin can promote a member to admin"""
-        organization = OrganizationTestFactory.create_organization(name="Test Org")
-        baker.make(
-            OrganizationMembership,
-            user=user,
-            organization=organization,
-            role=OrganizationRole.ADMIN,
-            is_active=True,
-        )
-
-        target_member = baker.make(
-            OrganizationMembership,
-            organization=organization,
-            role=OrganizationRole.MEMBER,
-            is_active=True,
-        )
-
-        url = reverse(
-            "api:OrganizationMembers-update-role", kwargs={"user_id": target_member.user_id}
-        )
-        response = auth_client.post(url, {"role": OrganizationRole.ADMIN}, format="json")
-
-        assert_response_status_code(response, status.HTTP_200_OK)
-        result = response.json()
-        assert result["role"] == OrganizationRole.ADMIN
-        assert result["user_id"] == target_member.user_id
-
-        target_member.refresh_from_db()
-        assert target_member.role == OrganizationRole.ADMIN
-
-    def test_update_role_demote_admin_with_other_admins(self, auth_client, user):
-        """Test that admin can demote another admin when other admins remain"""
-        organization = OrganizationTestFactory.create_organization(name="Test Org")
-        baker.make(
-            OrganizationMembership,
-            user=user,
-            organization=organization,
-            role=OrganizationRole.ADMIN,
-            is_active=True,
-        )
-
-        other_admin = baker.make(
-            OrganizationMembership,
-            organization=organization,
-            role=OrganizationRole.ADMIN,
-            is_active=True,
-        )
-
-        url = reverse(
-            "api:OrganizationMembers-update-role", kwargs={"user_id": other_admin.user_id}
-        )
-        response = auth_client.post(url, {"role": OrganizationRole.MEMBER}, format="json")
-
-        assert_response_status_code(response, status.HTTP_200_OK)
-        other_admin.refresh_from_db()
-        assert other_admin.role == OrganizationRole.MEMBER
-
-    def test_update_role_demote_last_active_admin_forbidden(self, auth_client, user):
-        """Test that demoting the last active admin is rejected (org lockout prevention)"""
-        organization = OrganizationTestFactory.create_organization(name="Test Org")
-        sole_admin = baker.make(
-            OrganizationMembership,
-            user=user,
-            organization=organization,
-            role=OrganizationRole.ADMIN,
-            is_active=True,
-        )
-
-        url = reverse("api:OrganizationMembers-update-role", kwargs={"user_id": sole_admin.user_id})
-        response = auth_client.post(url, {"role": OrganizationRole.MEMBER}, format="json")
-
-        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
-        sole_admin.refresh_from_db()
-        assert sole_admin.role == OrganizationRole.ADMIN
-
-    def test_update_role_invalid_choice(self, auth_client, user):
-        """Test that an invalid role value is rejected"""
-        organization = OrganizationTestFactory.create_organization(name="Test Org")
-        baker.make(
-            OrganizationMembership,
-            user=user,
-            organization=organization,
-            role=OrganizationRole.ADMIN,
-            is_active=True,
-        )
-
-        target_member = baker.make(
-            OrganizationMembership,
-            organization=organization,
-            role=OrganizationRole.MEMBER,
-            is_active=True,
-        )
-
-        url = reverse(
-            "api:OrganizationMembers-update-role", kwargs={"user_id": target_member.user_id}
-        )
-        response = auth_client.post(url, {"role": "superuser"}, format="json")
-
-        assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
-        target_member.refresh_from_db()
-        assert target_member.role == OrganizationRole.MEMBER
-
-    def test_update_role_non_admin_forbidden(self, auth_client, user):
-        """Test that a non-admin member cannot change roles"""
-        organization = OrganizationTestFactory.create_organization(name="Test Org")
-        baker.make(
-            OrganizationMembership,
-            user=user,
-            organization=organization,
-            role=OrganizationRole.MEMBER,
-            is_active=True,
-        )
-
-        target_member = baker.make(
-            OrganizationMembership,
-            organization=organization,
-            role=OrganizationRole.MEMBER,
-            is_active=True,
-        )
-
-        url = reverse(
-            "api:OrganizationMembers-update-role", kwargs={"user_id": target_member.user_id}
-        )
-        response = auth_client.post(url, {"role": OrganizationRole.ADMIN}, format="json")
-
-        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
-        target_member.refresh_from_db()
-        assert target_member.role == OrganizationRole.MEMBER
-
-    def test_update_role_cross_org_not_found(self, auth_client, user):
-        """Test that admin cannot change the role of a member in another organization"""
-        org1 = OrganizationTestFactory.create_organization(name="Org 1")
-        baker.make(
-            OrganizationMembership,
-            user=user,
-            organization=org1,
-            role=OrganizationRole.ADMIN,
-            is_active=True,
-        )
-
-        org2 = OrganizationTestFactory.create_organization(name="Org 2")
-        member_in_org2 = baker.make(
-            OrganizationMembership,
-            organization=org2,
-            role=OrganizationRole.MEMBER,
-            is_active=True,
-        )
-
-        url = reverse(
-            "api:OrganizationMembers-update-role", kwargs={"user_id": member_in_org2.user_id}
-        )
-        response = auth_client.post(url, {"role": OrganizationRole.ADMIN}, format="json")
-
-        assert_response_status_code(response, status.HTTP_404_NOT_FOUND)
+    # The ``update-role`` action this class used to cover was replaced by
+    # ``POST /organization-members/{user_id}/groups/``. Its whole test surface --
+    # promotion, demotion, the last-admin guard (now counted by capability),
+    # rejection of an unknown group, the non-admin 403 and the cross-organization
+    # 404 -- moved to ``organizations/tests/test_group_assignment_endpoint.py``
+    # rather than being converted in place, so the endpoint's rules are read in
+    # one file.
 
     def _setup_admin_org(self, user):
         organization = OrganizationTestFactory.create_organization(name="Search Org")
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         return organization
 
     def _make_member(self, organization, first_name, last_name, email):
-        from users.factories import UserFactory
-
         member_user = UserFactory().create_user(email=email)
         member_user.profile.first_name = first_name
         member_user.profile.last_name = last_name
@@ -2370,7 +2328,6 @@ class TestOrganizationMembershipViewSet:
             OrganizationMembership,
             user=member_user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -2508,11 +2465,10 @@ class TestSyncRoomsAction:
 
     def _make_admin_client(self, user, organization):
         """Return an APIClient force-authenticated as an active admin of ``organization``."""
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         client = APIClient()
@@ -2563,8 +2519,6 @@ class TestSyncRoomsAction:
         The view calls request_rooms_sync directly (no view-level
         on_commit); the service owns the on_commit deferral internally.
         """
-        import datetime
-
         organization = OrganizationTestFactory.create_organization(name="Explicit Sync Org")
         admin_client = self._make_admin_client(user, organization)
         # Pre-flight requires a service account; provide one.
@@ -2602,7 +2556,6 @@ class TestSyncRoomsAction:
             OrganizationMembership,
             user=user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
         client = APIClient()
@@ -2657,8 +2610,8 @@ class TestShouldSyncRoomsTransition:
     """Verify the False→True transition in OrganizationViewSet.update fires exactly once.
 
     These tests use a real admin membership — no permission patching.
-    The update/partial_update actions are now gated by IsOrganizationAdmin so
-    the transition trigger is genuinely reachable by an admin PATCH.
+    The update/partial_update actions are now gated by ``CanManageOrganization`` so
+    the transition trigger is genuinely reachable by a permitted PATCH.
     """
 
     def _make_admin_client_and_org(self, user, should_sync_rooms=False):
@@ -2666,11 +2619,10 @@ class TestShouldSyncRoomsTransition:
         organization = baker.make(
             Organization, name="Transition Org", should_sync_rooms=should_sync_rooms
         )
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         client = APIClient()
@@ -2757,7 +2709,6 @@ class TestShouldSyncRoomsTransition:
             OrganizationMembership,
             user=user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
         client = APIClient()
@@ -2774,8 +2725,6 @@ class TestShouldSyncRoomsTransition:
     @patch("organizations.services.OrganizationService.request_rooms_sync")
     def test_patch_membership_less_user_returns_403(self, mock_sync):
         """Membership-less authenticated user PATCH → 403; sync NOT fired."""
-        from users.factories import UserFactory
-
         membership_less_user = UserFactory().create_user()
         organization = baker.make(Organization, name="No Member Org", should_sync_rooms=False)
 
@@ -2850,7 +2799,7 @@ _SA_PAYLOAD = {
 
 
 @pytest.mark.django_db
-class TestPhase18ServiceAccountConfig:
+class TestServiceAccountConfigPatch:
     """Admin configures the org's Google service-account credentials via PATCH.
 
     Security invariant: private_key and private_key_id are never returned in
@@ -2859,11 +2808,10 @@ class TestPhase18ServiceAccountConfig:
 
     def _make_admin(self, user, organization):
         """Return an admin APIClient force-authenticated as an ADMIN of ``organization``."""
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         client = APIClient()
@@ -3017,7 +2965,6 @@ class TestPhase18ServiceAccountConfig:
             OrganizationMembership,
             user=user,
             organization=org,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
         url = reverse("api:Organizations-detail", kwargs={"pk": org.pk})
@@ -3027,11 +2974,10 @@ class TestPhase18ServiceAccountConfig:
     def test_patch_service_account_cross_org_returns_404(self, user):
         """Admin cannot configure a service account on a different org → 404."""
         own_org = baker.make(Organization, name="Own Org")
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=own_org,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         other_org = baker.make(Organization, name="Other Org")
@@ -3052,7 +2998,7 @@ class TestPhase18ServiceAccountConfig:
 
 
 @pytest.mark.django_db
-class TestPhase18SyncRoomsTrigger:
+class TestSyncRoomsTrigger:
     """POST sync-rooms works when creds configured; 400 (never 500) when not.
 
     Mocks ``calendar_service.authenticate`` and
@@ -3062,11 +3008,10 @@ class TestPhase18SyncRoomsTrigger:
     """
 
     def _make_admin(self, user, organization):
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         client = APIClient()
@@ -3124,18 +3069,17 @@ class TestPhase18SyncRoomsTrigger:
 
 
 @pytest.mark.django_db
-class TestPhase18TransitionWithNoCredentials:
+class TestSyncRoomsTransitionWithNoCredentials:
     """Enabling should_sync_rooms False→True without creds → 400 (not 500)."""
 
     def _make_admin_client_and_org(self, user, should_sync_rooms=False):
         organization = baker.make(
             Organization, name="Creds Transition Org", should_sync_rooms=should_sync_rooms
         )
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         client = APIClient()
@@ -3242,7 +3186,7 @@ class TestPhase18TransitionWithNoCredentials:
 
 
 @pytest.mark.django_db
-class TestPhase18CreateOrganizationNoCredentials:
+class TestCreateOrganizationWithNoCredentials:
     """create_organization(should_sync_rooms=True) with no creds must not crash."""
 
     def test_create_organization_with_sync_rooms_no_creds_does_not_crash(self, user):
@@ -3274,7 +3218,7 @@ class TestPhase18CreateOrganizationNoCredentials:
 
 
 @pytest.mark.django_db
-class TestPhase20ServiceAccountCRUD:
+class TestServiceAccountCRUD:
     """Admin-only CRUD for the org-level Google Calendar service account.
 
     Security invariant: private_key / private_key_id are never
@@ -3283,11 +3227,10 @@ class TestPhase20ServiceAccountCRUD:
     """
 
     def _make_admin(self, user, organization):
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         client = APIClient()
@@ -3310,6 +3253,50 @@ class TestPhase20ServiceAccountCRUD:
         assert "private_key" not in body
         assert "private_key_id" not in body
         assert "public_key" not in body
+
+    @pytest.mark.parametrize(
+        ("permission_codename", "permission_model", "operation", "expected_status"),
+        [
+            ("manage_members", OrganizationMembership, "list", status.HTTP_200_OK),
+            ("manage_branding", Organization, "list", status.HTTP_403_FORBIDDEN),
+            ("manage_members", OrganizationMembership, "rotate", status.HTTP_200_OK),
+            ("manage_branding", Organization, "rotate", status.HTTP_403_FORBIDDEN),
+        ],
+    )
+    def test_service_account_uses_manage_members_not_manage_branding(
+        self, user, permission_codename, permission_model, operation, expected_status
+    ):
+        """Credential reads and rotation retain the service-account admin contract."""
+        organization = baker.make(Organization, name="Direct service account capability org")
+        membership = make_membership(
+            user=user,
+            organization=organization,
+            is_active=True,
+        )
+        membership.permissions.add(
+            Permission.objects.get(
+                codename=permission_codename,
+                content_type=ContentType.objects.get_for_model(permission_model),
+            )
+        )
+        account = self._create_account(organization)
+        client = APIClient()
+        client.force_authenticate(user=user)
+        client.credentials(HTTP_X_ORGANIZATION_ID=str(organization.id))
+
+        if operation == "list":
+            response = client.get(reverse("api:ServiceAccounts-list"))
+        else:
+            response = client.patch(
+                reverse("api:ServiceAccounts-detail", kwargs={"pk": account.pk}),
+                {"email": "rotated@example.iam.gserviceaccount.com"},
+                format="json",
+            )
+
+        assert response.status_code == expected_status
+        if expected_status == status.HTTP_200_OK and operation == "rotate":
+            account.refresh_from_db()
+            assert account.email == "rotated@example.iam.gserviceaccount.com"
 
     def test_create_returns_201_persists_and_no_secrets(self, user):
         org = baker.make(Organization, name="SA CRUD Org")
@@ -3458,7 +3445,7 @@ class TestPhase20ServiceAccountCRUD:
         response = client.delete(url)
 
         assert_response_status_code(response, status.HTTP_204_NO_CONTENT)
-        assert not GoogleCalendarServiceAccount.objects.filter(id=account.id).exists()
+        assert not GoogleCalendarServiceAccount.original_manager.filter(id=account.id).exists()
 
     def test_create_non_admin_returns_403(self, user):
         org = baker.make(Organization, name="NonAdmin Org")
@@ -3466,7 +3453,6 @@ class TestPhase20ServiceAccountCRUD:
             OrganizationMembership,
             user=user,
             organization=org,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
         client = APIClient()
@@ -3496,10 +3482,10 @@ class TestPhase20ServiceAccountCRUD:
 
 
 @pytest.mark.django_db
-class TestPhase11ServiceAccountRestrictedGuard:
+class TestServiceAccountRestrictedGuard:
     """A ``RESTRICTED`` organization cannot write its service account.
 
-    ``GoogleCalendarServiceAccount`` is an ``OrganizationModel`` subclass, so
+    ``GoogleCalendarServiceAccount`` is organization-scoped, so
     create/rotate/delete of the org-level service account are real user-initiated
     writes that the restricted-state check must block -- consulting the same
     ``EntitlementService.check_not_restricted`` helper every other blocked write
@@ -3508,11 +3494,10 @@ class TestPhase11ServiceAccountRestrictedGuard:
     """
 
     def _make_admin(self, user, organization):
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         client = APIClient()
@@ -3591,7 +3576,7 @@ class TestPhase11ServiceAccountRestrictedGuard:
         response = client.delete(url)
 
         assert_response_status_code(response, status.HTTP_402_PAYMENT_REQUIRED)
-        assert GoogleCalendarServiceAccount.objects.filter(id=account.id).exists()
+        assert GoogleCalendarServiceAccount.original_manager.filter(id=account.id).exists()
 
     @pytest.mark.parametrize("billing_state", [BillingState.ACTIVE, BillingState.GRACE])
     def test_non_restricted_org_can_create_service_account(self, user, billing_state):
@@ -3615,19 +3600,18 @@ class TestPhase11ServiceAccountRestrictedGuard:
         response = client.delete(url)
 
         assert_response_status_code(response, status.HTTP_204_NO_CONTENT)
-        assert not GoogleCalendarServiceAccount.objects.filter(id=account.id).exists()
+        assert not GoogleCalendarServiceAccount.original_manager.filter(id=account.id).exists()
 
 
 @pytest.mark.django_db
-class TestPhase20SyncAllCalendars:
+class TestSyncAllCalendars:
     """POST /organizations/{id}/sync-calendars/ — admin triggers a sync of all calendars."""
 
     def _make_admin(self, user, organization):
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         client = APIClient()
@@ -3680,7 +3664,6 @@ class TestPhase20SyncAllCalendars:
             OrganizationMembership,
             user=user,
             organization=org,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
         client = APIClient()
@@ -3737,16 +3720,17 @@ class TestOrganizationMineAction:
         """Multi-org user without X-Organization-Id header gets 200 with all memberships."""
         org_a = baker.make(Organization, name="Alpha Corp")
         org_b = baker.make(Organization, name="Beta LLC")
-        membership_a = OrganizationMembership.objects.create(
-            user=user,
-            organization=org_a,
-            role=OrganizationRole.ADMIN,
-            is_active=True,
+        membership_a = grant_membership_groups(
+            OrganizationMembership.objects.create(
+                user=user,
+                organization=org_a,
+                is_active=True,
+            ),
+            [GROUP_ORGANIZATION_ADMIN],
         )
         membership_b = OrganizationMembership.objects.create(
             user=user,
             organization=org_b,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -3764,23 +3748,26 @@ class TestOrganizationMineAction:
         returned_org_ids = {item["organization"]["id"] for item in data}
         assert returned_org_ids == {org_a.id, org_b.id}
 
-        # Verify role is reported correctly for each membership.
-        role_by_org = {item["organization"]["id"]: item["role"] for item in data}
-        assert role_by_org[org_a.id] == OrganizationRole.ADMIN
-        assert role_by_org[org_b.id] == OrganizationRole.MEMBER
+        # Verify the capabilities are reported per membership.
+        permissions_by_org = {item["organization"]["id"]: item["permissions"] for item in data}
+        assert MANAGE_MEMBERS in permissions_by_org[org_a.id]
+        assert permissions_by_org[org_b.id] == []
+        assert all("role" not in item for item in data)
 
-        # Verify the membership objects that were created are retrievable from the DB
-        # by composite PK — confirming the (user_id, organization_id) identity is
-        # persisted correctly by the composite PK.
+        # Verify the membership objects that were created are retrievable from the
+        # DB by their (user, organization) identity. That pair is no longer the
+        # primary key -- the composite PK was unwound by
+        # ``0023_unwind_organizationmembership_composite_pk`` -- but it is still
+        # unique, enforced by ``uniq_membership_user_organization``.
         assert (
             OrganizationMembership.objects.get(
-                pk=(membership_a.user_id, membership_a.organization_id)
+                user_id=membership_a.user_id, organization_id=membership_a.organization_id
             )
             == membership_a
         )
         assert (
             OrganizationMembership.objects.get(
-                pk=(membership_b.user_id, membership_b.organization_id)
+                user_id=membership_b.user_id, organization_id=membership_b.organization_id
             )
             == membership_b
         )
@@ -3791,7 +3778,6 @@ class TestOrganizationMineAction:
         OrganizationMembership.objects.create(
             user=user,
             organization=org,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -3818,14 +3804,16 @@ class TestOrganizationMineAction:
         assert_response_status_code(response, status.HTTP_200_OK)
         assert response.json() == []
 
-    def test_mine_role_admin_is_reported_correctly(self, user):
-        """Admin role is serialised correctly."""
+    def test_mine_admin_capabilities_are_reported_correctly(self, user):
+        """An admin membership serialises its four capabilities."""
         org = baker.make(Organization, name="Admin Org")
-        OrganizationMembership.objects.create(
-            user=user,
-            organization=org,
-            role=OrganizationRole.ADMIN,
-            is_active=True,
+        grant_membership_groups(
+            OrganizationMembership.objects.create(
+                user=user,
+                organization=org,
+                is_active=True,
+            ),
+            [GROUP_ORGANIZATION_ADMIN],
         )
 
         client = APIClient()
@@ -3834,15 +3822,14 @@ class TestOrganizationMineAction:
         response = client.get(url)
 
         assert_response_status_code(response, status.HTTP_200_OK)
-        assert response.json()[0]["role"] == OrganizationRole.ADMIN
+        assert MANAGE_MEMBERS in response.json()[0]["permissions"]
 
-    def test_mine_role_member_is_reported_correctly(self, user):
-        """Member role is serialised correctly."""
+    def test_mine_member_capabilities_are_reported_correctly(self, user):
+        """A plain-member membership serialises an empty capability list."""
         org = baker.make(Organization, name="Member Org")
         OrganizationMembership.objects.create(
             user=user,
             organization=org,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -3852,7 +3839,7 @@ class TestOrganizationMineAction:
         response = client.get(url)
 
         assert_response_status_code(response, status.HTTP_200_OK)
-        assert response.json()[0]["role"] == OrganizationRole.MEMBER
+        assert response.json()[0]["permissions"] == []
 
     # ------------------------------------------------------------------
     # Inactive memberships are excluded
@@ -3865,13 +3852,11 @@ class TestOrganizationMineAction:
         OrganizationMembership.objects.create(
             user=user,
             organization=active_org,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
         OrganizationMembership.objects.create(
             user=user,
             organization=inactive_org,
-            role=OrganizationRole.MEMBER,
             is_active=False,
         )
 
@@ -3891,7 +3876,6 @@ class TestOrganizationMineAction:
         OrganizationMembership.objects.create(
             user=user,
             organization=org,
-            role=OrganizationRole.MEMBER,
             is_active=False,
         )
 
@@ -3910,7 +3894,7 @@ class TestOrganizationMineAction:
     def test_mine_with_stale_org_id_header_returns_200_not_403(self, user):
         """A stale/foreign X-Organization-Id on mine → 200, NOT 403.
 
-        The per-action opt-out (active_org_optional_actions = ("mine",)) ensures
+        The per-action opt-out (organization_optional_actions = ("mine",)) ensures
         that even when the header names an org the user is not a member of, the
         mine action still returns the list rather than raising PermissionDenied.
         """
@@ -3919,7 +3903,6 @@ class TestOrganizationMineAction:
         OrganizationMembership.objects.create(
             user=user,
             organization=own_org,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -3943,16 +3926,17 @@ class TestOrganizationMineAction:
         """
         org_a = baker.make(Organization, name="Gamma A")
         org_b = baker.make(Organization, name="Gamma B")
-        OrganizationMembership.objects.create(
-            user=user,
-            organization=org_a,
-            role=OrganizationRole.ADMIN,
-            is_active=True,
+        grant_membership_groups(
+            OrganizationMembership.objects.create(
+                user=user,
+                organization=org_a,
+                is_active=True,
+            ),
+            [GROUP_ORGANIZATION_ADMIN],
         )
         OrganizationMembership.objects.create(
             user=user,
             organization=org_b,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -3984,22 +3968,23 @@ class TestOrganizationMineAction:
         """The mine opt-out is isolated: /organizations/current/ still returns 400
         for a multi-org caller who omits the X-Organization-Id header.
 
-        This proves that ``active_org_optional_actions = ("mine",)`` only exempts
+        This proves that ``organization_optional_actions = ("mine",)`` only exempts
         the ``mine`` action and does not accidentally make ``current`` (or any
         other sibling action) header-optional.
         """
         org_a = baker.make(Organization, name="Isolation Org A")
         org_b = baker.make(Organization, name="Isolation Org B")
-        OrganizationMembership.objects.create(
-            user=user,
-            organization=org_a,
-            role=OrganizationRole.ADMIN,
-            is_active=True,
+        grant_membership_groups(
+            OrganizationMembership.objects.create(
+                user=user,
+                organization=org_a,
+                is_active=True,
+            ),
+            [GROUP_ORGANIZATION_ADMIN],
         )
         OrganizationMembership.objects.create(
             user=user,
             organization=org_b,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -4019,11 +4004,10 @@ class TestOrganizationWeekStart:
     def test_organization_week_start_default_monday(self, user):
         """Newly created organizations default to Monday week start."""
         organization = OrganizationTestFactory.create_organization(name="Default Week Org")
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         admin_client = APIClient()
@@ -4040,11 +4024,10 @@ class TestOrganizationWeekStart:
     def test_update_organization_week_start_admin(self, user):
         """Admin can PATCH week_start for their organization."""
         organization = OrganizationTestFactory.create_organization(name="Week Start Org")
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         admin_client = APIClient()
@@ -4069,7 +4052,6 @@ class TestOrganizationWeekStart:
             OrganizationMembership,
             user=user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -4086,11 +4068,10 @@ class TestOrganizationWeekStart:
     def test_update_organization_week_start_invalid_choice(self, user):
         """An out-of-range week_start value is rejected with 400."""
         organization = OrganizationTestFactory.create_organization(name="Week Start Org")
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         admin_client = APIClient()
@@ -4119,11 +4100,13 @@ class TestCreateAdditionalOrganization:
         """Core case: user in org A creates org C → 201, becomes ADMIN of C, 2 memberships."""
         # Existing org A with membership
         org_a = baker.make(Organization, name="Org A")
-        OrganizationMembership.objects.create(
-            user=user,
-            organization=org_a,
-            role=OrganizationRole.ADMIN,
-            is_active=True,
+        grant_membership_groups(
+            OrganizationMembership.objects.create(
+                user=user,
+                organization=org_a,
+                is_active=True,
+            ),
+            [GROUP_ORGANIZATION_ADMIN],
         )
 
         client = APIClient()
@@ -4140,18 +4123,20 @@ class TestCreateAdditionalOrganization:
         # Creator now has TWO active memberships
         assert OrganizationMembership.objects.filter(user=user, is_active=True).count() == 2
 
-        # The new membership must be ADMIN
+        # The new membership must administer the organization
         new_membership = OrganizationMembership.objects.get(user=user, organization_id=body["id"])
-        assert new_membership.role == OrganizationRole.ADMIN
+        assert membership_holds_permission(new_membership, MANAGE_MEMBERS)
 
     def test_member_with_one_existing_org_mine_lists_both_after_create(self, user):
         """After creating org C, GET /organizations/mine/ lists both A and C."""
         org_a = baker.make(Organization, name="Org A Mine")
-        OrganizationMembership.objects.create(
-            user=user,
-            organization=org_a,
-            role=OrganizationRole.ADMIN,
-            is_active=True,
+        grant_membership_groups(
+            OrganizationMembership.objects.create(
+                user=user,
+                organization=org_a,
+                is_active=True,
+            ),
+            [GROUP_ORGANIZATION_ADMIN],
         )
 
         client = APIClient()
@@ -4174,11 +4159,13 @@ class TestCreateAdditionalOrganization:
     def test_member_can_scope_new_org_with_header(self, user):
         """After creating org C, sending X-Organization-Id: <C> scopes to C."""
         org_a = baker.make(Organization, name="Org A Header")
-        OrganizationMembership.objects.create(
-            user=user,
-            organization=org_a,
-            role=OrganizationRole.ADMIN,
-            is_active=True,
+        grant_membership_groups(
+            OrganizationMembership.objects.create(
+                user=user,
+                organization=org_a,
+                is_active=True,
+            ),
+            [GROUP_ORGANIZATION_ADMIN],
         )
 
         client = APIClient()
@@ -4204,16 +4191,17 @@ class TestCreateAdditionalOrganization:
         """
         org_a = baker.make(Organization, name="Multi Org A")
         org_b = baker.make(Organization, name="Multi Org B")
-        OrganizationMembership.objects.create(
-            user=user,
-            organization=org_a,
-            role=OrganizationRole.ADMIN,
-            is_active=True,
+        grant_membership_groups(
+            OrganizationMembership.objects.create(
+                user=user,
+                organization=org_a,
+                is_active=True,
+            ),
+            [GROUP_ORGANIZATION_ADMIN],
         )
         OrganizationMembership.objects.create(
             user=user,
             organization=org_b,
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -4231,9 +4219,9 @@ class TestCreateAdditionalOrganization:
         # User now has THREE active memberships
         assert OrganizationMembership.objects.filter(user=user, is_active=True).count() == 3
 
-        # New membership is ADMIN
+        # The new membership administers the organization
         new_membership = OrganizationMembership.objects.get(user=user, organization_id=body["id"])
-        assert new_membership.role == OrganizationRole.ADMIN
+        assert membership_holds_permission(new_membership, MANAGE_MEMBERS)
 
     def test_gated_user_first_org_create_still_works(self, user):
         """Regression: a gated user (0 memberships) can still create their first org → 201."""
@@ -4253,7 +4241,7 @@ class TestCreateAdditionalOrganization:
         # Now the user has exactly one membership
         assert OrganizationMembership.objects.filter(user=user, is_active=True).count() == 1
         membership = OrganizationMembership.objects.get(user=user)
-        assert membership.role == OrganizationRole.ADMIN
+        assert membership_holds_permission(membership, MANAGE_MEMBERS)
 
     def test_unauthenticated_post_returns_401(self, anonymous_client):
         """Unauthenticated POST /organizations/ must still return 401 (no regression)."""

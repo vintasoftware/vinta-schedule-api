@@ -13,7 +13,10 @@ import pytest
 
 from audit.constants import AuditAction, AuditActorType
 from audit.models import Audit, AuditAffectedMembership
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.authorization import MEMBERSHIP_ROLE_LABEL_ADMIN
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
+from organizations.tests.helpers import grant_membership_groups
 
 
 User = get_user_model()
@@ -240,7 +243,7 @@ class TestAuditAdminExportFilters:
             action=AuditAction.DELETE,
             actor_type=AuditActorType.MEMBERSHIP,
             actor_id=999,
-            actor_role=OrganizationRole.ADMIN,
+            actor_role=MEMBERSHIP_ROLE_LABEL_ADMIN,
             subject_type="app.Model",
             subject_id="3",
         )
@@ -419,10 +422,12 @@ class TestAuditAdminExportSerialization:
     def membership(self, org):
         """Test membership."""
         user = User.objects.create_user(email="member@test.com", password="test")
-        return OrganizationMembership.objects.create(
-            organization=org,
-            user=user,
-            role=OrganizationRole.ADMIN,
+        return grant_membership_groups(
+            OrganizationMembership.objects.create(
+                organization=org,
+                user=user,
+            ),
+            [GROUP_ORGANIZATION_ADMIN],
         )
 
     def test_diff_serializes_as_json_string(self, admin_client, org):
@@ -494,7 +499,7 @@ class TestAuditAdminExportSerialization:
             action=AuditAction.CREATE,
             actor_type=AuditActorType.MEMBERSHIP,
             actor_id=1,
-            actor_role=OrganizationRole.ADMIN,
+            actor_role=MEMBERSHIP_ROLE_LABEL_ADMIN,
             system_user_scopes=None,
             subject_type="app.Model",
             subject_id="1",
@@ -556,7 +561,7 @@ class TestAuditAdminExportSerialization:
             action=AuditAction.UPDATE,
             actor_type=AuditActorType.MEMBERSHIP,
             actor_id=123,
-            actor_role=OrganizationRole.ADMIN,
+            actor_role=MEMBERSHIP_ROLE_LABEL_ADMIN,
             subject_type="app.Model",
             subject_id="1",
         )
@@ -565,7 +570,7 @@ class TestAuditAdminExportSerialization:
         content = b"".join(response.streaming_content).decode("utf-8")
         reader = csv.DictReader(StringIO(content))
         rows = list(reader)
-        assert rows[0]["actor_role"] == OrganizationRole.ADMIN
+        assert rows[0]["actor_role"] == MEMBERSHIP_ROLE_LABEL_ADMIN
 
     def test_actor_role_none_maps_to_empty_string(self, admin_client, org):
         """actor_role=None maps to empty string."""

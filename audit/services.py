@@ -33,6 +33,10 @@ from audit.constants import AuditActorType
 from audit.repositories import AuditRepository
 from audit.tasks import persist_audit_record
 from audit.types import ActorSnapshot, AuditRecordData, SubjectRef
+from organizations.authorization import membership_role_label
+from organizations.models import OrganizationMembership
+from public_api.models import SystemUser
+from users.models import User
 
 
 logger = logging.getLogger(__name__)
@@ -61,8 +65,16 @@ class AuditService:
     def actor_from_membership(membership: object) -> ActorSnapshot:
         """Build an ActorSnapshot from an OrganizationMembership.
 
-        Captures membership.role at call time so the Celery task never needs to
-        re-read a membership row that may have changed or been deleted.
+        Captures the membership's role *label* at call time so the Celery task
+        never needs to re-read a membership row that may have changed or been
+        deleted.
+
+        The label comes off ``organizations.manage_members``, which names the
+        same set the retired ``membership.role`` column used to. The two
+        published values (``"admin"`` / ``"member"``) are deliberately unchanged
+        -- every ``audit_audit.actor_role`` row already on disk holds one of
+        them, and ``AuditRepository.query`` matches the value exactly, so
+        writing a new spelling would silently split the audit history in two.
 
         Args:
             membership: An OrganizationMembership instance.
@@ -73,7 +85,7 @@ class AuditService:
         return ActorSnapshot(
             actor_type=AuditActorType.MEMBERSHIP,
             actor_id=membership.user_id,  # type: ignore[attr-defined]
-            actor_role=membership.role,  # type: ignore[attr-defined]
+            actor_role=membership_role_label(membership),  # type: ignore[arg-type]
         )
 
     @staticmethod
@@ -147,10 +159,6 @@ class AuditService:
         Returns:
             A MEMBERSHIP ActorSnapshot when a membership exists, else a SYSTEM one.
         """
-        # Lazy import: audit is a leaf app; importing organizations at module load
-        # would create an import cycle (organizations services import audit_service).
-        from organizations.models import OrganizationMembership
-
         membership = OrganizationMembership.objects.filter(
             user_id=user.id,  # type: ignore[attr-defined]
             organization_id=organization_id,
@@ -187,10 +195,6 @@ class AuditService:
         Returns:
             The most specific ActorSnapshot resolvable from the principal.
         """
-        # Lazy imports for the same import-cycle reason as actor_from_user.
-        from public_api.models import SystemUser
-        from users.models import User
-
         if isinstance(user_or_token, User):
             return AuditService.actor_from_user(user_or_token, organization_id)
         if isinstance(user_or_token, SystemUser):

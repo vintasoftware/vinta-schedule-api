@@ -12,7 +12,9 @@ from model_bakery import baker
 from rest_framework import status
 from rest_framework.throttling import ScopedRateThrottle
 
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
+from organizations.tests.helpers import make_membership
 from payments.constants import PaymentProviders
 from payments.models import BillingAddress, BillingProfile
 
@@ -35,11 +37,10 @@ def organization():
 
 @pytest.fixture
 def admin_membership(user, organization):
-    return baker.make(
-        OrganizationMembership,
+    return make_membership(
         user=user,
         organization=organization,
-        role=OrganizationRole.ADMIN,
+        groups=[GROUP_ORGANIZATION_ADMIN],
         is_active=True,
     )
 

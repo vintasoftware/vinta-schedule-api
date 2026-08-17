@@ -84,9 +84,11 @@ class TestCreateConfigurationLimit:
         assert exc_info.value.resource_key == LimitedResource.WEBHOOK_SUBSCRIPTIONS
         assert exc_info.value.current_usage == 1
         assert exc_info.value.limit == 1
-        assert not WebhookConfiguration.objects.filter(
-            organization=organization, url="https://example.com/blocked"
-        ).exists()
+        assert (
+            not WebhookConfiguration.objects.filter_by_organization(organization)
+            .filter(url="https://example.com/blocked")
+            .exists()
+        )
 
     def test_soft_deleted_configurations_free_capacity(self, service):
         """A soft-deleted row must not count against the ceiling -- it feeds the

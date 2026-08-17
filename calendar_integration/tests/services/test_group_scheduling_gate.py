@@ -27,6 +27,7 @@ from calendar_integration.constants import (
     CalendarType,
     EventManagementPermissions,
 )
+from calendar_integration.exceptions import CalendarGroupValidationError
 from calendar_integration.models import (
     AvailableTime,
     Calendar,
@@ -500,11 +501,12 @@ def test_group_authorized_flag_bypasses_private_member_calendar_gate(organizatio
 
 
 @pytest.mark.django_db
-def test_can_perform_scheduling_unchanged_by_phase_7(organization):
+def test_can_perform_scheduling_still_gates_single_calendar_bookings(organization):
     """can_perform_scheduling still gates single-calendar bookings exactly as before.
 
-    The CalendarPermissionService.can_perform_scheduling signature and behavior
-    for single-calendar booking cases are unchanged.
+    The group-scheduling gate added around it must not disturb the
+    CalendarPermissionService.can_perform_scheduling signature or its behavior
+    for single-calendar booking cases.
     """
     cal = Calendar.objects.create(
         organization=organization,
@@ -598,8 +600,6 @@ def test_bundle_can_perform_scheduling_still_keys_on_accepts_public_scheduling(o
     This is a backward-compat unit test: CalendarPermissionService.can_perform_scheduling
     is unchanged for bundle calendars.
     """
-    from calendar_integration.constants import CalendarType
-
     bundle_cal = Calendar.objects.create(
         organization=organization,
         name="Bundle",
@@ -656,9 +656,6 @@ def test_bundle_calendar_in_group_slot_is_rejected_by_create_grouped_event(
     CalendarGroupValidationError (not silently create a BlockedTime).
     This test locks in the existing _create_non_primary_blocked_times guard.
     """
-    from calendar_integration.constants import CalendarType
-    from calendar_integration.exceptions import CalendarGroupValidationError
-
     bundle_cal = Calendar.objects.create(
         organization=organization,
         name="Bundle",

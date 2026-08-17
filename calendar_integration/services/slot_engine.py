@@ -15,19 +15,17 @@ single-calendar / bundle walker both depend on:
 - :func:`apply_policy_filter` — drop candidate proposals that violate a resolved
   :class:`EffectivePolicy` (lead-time, max-horizon, buffer envelope).
 - :func:`fetch_group_scoped_available_spans` / :func:`expand_group_scoped_available_times`
-  — batched group-scoped ``AvailableTime`` windows (``CALENDAR_GROUP_SCOPED_AVAILABILITY``
-  Phase 1b).
+  — batched group-scoped ``AvailableTime`` windows.
 - :func:`fetch_group_scoped_blocking_spans` / :func:`expand_group_scoped_blocked_times`
-  — the block analog (``CALENDAR_GROUP_SCOPED_AVAILABILITY`` Phase 2a): applied
+  — the block analog: applied
   in :func:`calendar_free_for_window` AFTER base availability and BEFORE the
   window intersection, since a group-scoped block wins regardless of what any
   window says.
 - :func:`fetch_group_scoped_quota_rules` / :func:`fetch_group_scoped_quota_period_counts`
-  / :func:`quota_period_start_utc` — the quota analog
-  (``CALENDAR_GROUP_SCOPED_AVAILABILITY`` Phase 3b): applied in
+  / :func:`quota_period_start_utc` — the quota analog: applied in
   :func:`calendar_free_for_window` LAST, after base availability, block, and
-  window all pass. The counting call (``GetCalendarGroupQuotaPeriodCountsJSON``,
-  Phase 3a) is issued ONCE per ``(group_slot, period)`` combination actually
+  window all pass. The counting call (``GetCalendarGroupQuotaPeriodCountsJSON``)
+  is issued ONCE per ``(group_slot, period)`` combination actually
   configured, covering the WHOLE search window in one shot; each candidate
   then only does an in-memory dict lookup keyed by the period its start time
   falls into (:func:`quota_period_start_utc`, which mirrors the SQL function's
@@ -36,7 +34,7 @@ single-calendar / bundle walker both depend on:
 Everything here is **stateless and org-scoped through the passed organization
 id**.  The functions are factored out of ``CalendarGroupService`` verbatim so the
 existing group walker keeps byte-for-byte behaviour; the only addition is the
-policy filter, which the group walker does not call in this phase.
+policy filter, which the group walker does not call.
 
 Boundary semantics (decided once, applied consistently):
 
@@ -84,16 +82,15 @@ from organizations.models import WeekStart
 
 Span = tuple[datetime.datetime, datetime.datetime]
 SpansByCalendarId = dict[int, list[Span]]
-# Group-scoped AvailableTime (Phase 1b) / BlockedTime (Phase 2a) spans, keyed
+# Group-scoped AvailableTime / BlockedTime spans, keyed
 # first by CalendarGroupSlot id, then by calendar id -- a window or block
-# applies only within the one slot it was configured for
-# (CALENDAR_GROUP_SCOPED_AVAILABILITY).
+# applies only within the one slot it was configured for.
 GroupScopedSpansBySlot = dict[int, SpansByCalendarId]
 
 
 class GroupScopedQuotaRule(NamedTuple):
     """One ``CalendarGroupSlotQuotaRule`` row, flattened for the discovery /
-    booking-validation lookup (``CALENDAR_GROUP_SCOPED_AVAILABILITY`` Phase 3b).
+    booking-validation lookup.
     A calendar may have several of these for the same ``(slot_id, calendar_id)``
     -- one per period -- and ALL of them must have headroom (spec: "at most 1 a
     day AND 3 a week" is two rules, both enforced).
@@ -245,8 +242,8 @@ def window_fully_covered_by_spans(
     """Return True if ``[window_start, window_end)`` is fully inside AT LEAST
     ONE of ``spans`` -- not their union. This is the "one span must cover it
     whole" rule both base ``AvailableTime`` coverage and group-scoped
-    availability windows use (``CALENDAR_GROUP_SCOPED_AVAILABILITY`` spec
-    resolution order: "T fully inside one of them?").
+    availability windows use (resolution order: "T fully inside one of
+    them?").
     """
     return any(sp_start <= window_start and sp_end >= window_end for sp_start, sp_end in spans)
 
@@ -273,16 +270,17 @@ def calendar_free_for_window(
       window.
     - Unmanaged calendars must not overlap any blocking span.
 
-    ``group_scoped_calendar_ids`` / ``group_scoped_spans`` add the Phase 1b
+    ``group_scoped_calendar_ids`` / ``group_scoped_spans`` add the
     window intersection, ``group_scoped_block_calendar_ids`` /
-    ``group_scoped_block_spans`` add the Phase 2a block exclusion, and
+    ``group_scoped_block_spans`` add the block exclusion, and
     ``group_scoped_quota_calendar_ids`` / ``group_scoped_quota_rules`` /
-    ``group_scoped_quota_counts`` add the Phase 3b quota cap
-    (``CALENDAR_GROUP_SCOPED_AVAILABILITY``): all default to ``None``, which
-    reproduces the exact pre-Phase-1b behavior byte-for-byte -- this is the
+    ``group_scoped_quota_counts`` add the quota cap: all default to
+    ``None``, which reproduces the exact group-unaware behavior
+    byte-for-byte -- this is the
     single-calendar / bundle walker's call shape
     (``BookableSlotsService._walk_candidates``), which passes none of them and
-    must stay untouched (spec non-goal: single-calendar booking).
+    must stay untouched -- single-calendar booking is explicitly out of scope
+    for the group-scoping work.
 
     Resolution order (spec "State transitions & edge cases" flowchart): base
     availability, then block, then window, then quota -- QUOTA IS CHECKED
@@ -302,7 +300,7 @@ def calendar_free_for_window(
     not overlap ``[window_start, window_end)`` at all contributes an empty
     span list here, which correctly yields ``False``).
 
-    Quota (Phase 3b): when ``calendar_id`` is NOT in
+    Quota: when ``calendar_id`` is NOT in
     ``group_scoped_quota_calendar_ids`` (or that set is falsy), the quota step
     is a no-op -- same self-gating fall-through as windows and blocks. When it
     IS in that set, EVERY rule in ``group_scoped_quota_rules[calendar_id]``
@@ -418,8 +416,8 @@ def apply_policy_filter(
 
 
 # ---------------------------------------------------------------------------
-# Group-scoped availability windows (CALENDAR_GROUP_SCOPED_AVAILABILITY
-# Phase 1b -- discovery + booking-validation intersection).
+# Group-scoped availability windows (discovery + booking-validation
+# intersection).
 # ---------------------------------------------------------------------------
 
 
@@ -501,7 +499,7 @@ def expand_group_scoped_available_times(
     included, sorted by start time.
 
     Shared by ``CalendarGroupService._group_scoped_available_times_expanded``
-    (single-pair write-path use: orphaned-booking detection, Phase 1a) and the
+    (single-pair write-path use: orphaned-booking detection) and the
     batched discovery-side fetch below -- one implementation, so the two paths
     cannot drift apart on the annotate-first exception-trap avoidance the
     write path already relies on.
@@ -547,8 +545,8 @@ def fetch_group_scoped_available_spans(
 
 
 # ---------------------------------------------------------------------------
-# Group-scoped blocked time (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 2a --
-# writes, discovery, and booking-validation enforcement).
+# Group-scoped blocked time (writes, discovery, and booking-validation
+# enforcement).
 # ---------------------------------------------------------------------------
 
 
@@ -632,7 +630,7 @@ def expand_group_scoped_blocked_times(
     included, sorted by start time.
 
     Shared by ``CalendarGroupService._group_scoped_blocked_times_expanded``
-    (single-pair write-path use: orphaned-booking detection, Phase 2a) and the
+    (single-pair write-path use: orphaned-booking detection) and the
     batched discovery-side fetch below -- one implementation, so the two paths
     cannot drift apart on the annotate-first exception-trap avoidance the
     write path already relies on. Mirrors
@@ -680,10 +678,9 @@ def fetch_group_scoped_blocking_spans(
 
 
 # ---------------------------------------------------------------------------
-# Group-scoped quota rules (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 3b --
-# discovery + booking-validation enforcement). The rule model and the
-# per-period counting SQL function/wrapper were added in Phase 3a; nothing
-# read them until now.
+# Group-scoped quota rules (discovery + booking-validation enforcement). The
+# rule model and the per-period counting SQL function/wrapper already
+# existed; nothing read them until now.
 # ---------------------------------------------------------------------------
 
 
@@ -737,8 +734,8 @@ def quota_period_start_utc(
 ) -> datetime.datetime:
     """Return the UTC start of the fixed calendar period (day / week / month)
     that ``instant`` falls into -- the Python-side mirror of
-    ``calculate_calendar_group_quota_period_counts``'s bucketing (Phase 3a
-    SQL), so a candidate time and a counted booking with the same real instant
+    ``calculate_calendar_group_quota_period_counts``'s SQL bucketing, so a
+    candidate time and a counted booking with the same real instant
     always land in the SAME bucket.
 
     Bucketing happens in ONE consistent frame -- UTC -- regardless of
@@ -852,13 +849,13 @@ def fetch_group_scoped_quota_period_counts(
     ``check_group_availability``) MUST widen first via
     :func:`quota_covering_range`.
 
-    **Query-count discipline (the headline risk of this phase):** issues
+    **Query-count discipline (the headline risk of quota counting):** issues
     exactly ONE query per distinct ``(slot_id, period)`` pair present in
     ``rules`` -- NOT one per calendar and NOT one per candidate time. Calendar
     ids sharing a ``(slot_id, period)`` are folded into a single annotated
     ``Calendar`` queryset (``GetCalendarGroupQuotaPeriodCountsJSON`` evaluates
-    once per matched row, inside ONE SQL round trip -- the Phase 3a function
-    only accepts one calendar id as a positional argument, but that argument
+    once per matched row, inside ONE SQL round trip -- the underlying SQL
+    function only accepts one calendar id as a positional argument, but that argument
     becomes a per-row column reference when annotating a multi-row queryset,
     so a whole roster shares one query). In the common case (one slot, one or
     two period types configured) this is 1-2 queries total for the entire

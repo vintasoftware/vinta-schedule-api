@@ -4,13 +4,16 @@ from unittest.mock import MagicMock, patch
 
 from django.conf import settings
 from django.http import HttpResponseRedirect, JsonResponse
+from django.test.client import RequestFactory
 from django.urls import reverse
 from django.utils import timezone
 
 import pytest
+from allauth.headless.socialaccount.forms import RedirectToProviderForm
 from allauth.socialaccount.providers.base import ProviderException
 from model_bakery import baker
 
+from accounts.views import ProviderRedirectAPIView
 from organizations.models import Organization, OrganizationBranding, OrganizationMembership
 from payments.billing_constants import BillingState, Entitlement
 from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
@@ -107,7 +110,7 @@ class TestProviderCallbackAPIView:
 
 @pytest.mark.django_db
 class TestProviderCallbackDestinationResolution:
-    """Phase 7 -- the callback's response carries the resolved post-authentication
+    """The callback's response carries the resolved post-authentication
     destination, and no client-supplied value (``state["next"]``, which doubles as the
     OAuth ``callback_url``) can influence it.
 
@@ -280,10 +283,10 @@ class TestProviderCallbackDestinationResolution:
 
 @pytest.mark.django_db
 class TestGenericLoginPathUnaffectedByBrowserContext:
-    """Phase 8 -- Branded login by organization slug.
+    """Branded login by organization slug.
 
     The organization-scoped login URL is resolved entirely on the SPA side through
-    ``brandingForTenant(slug=...)`` (Phase 5): there is no backend routing to add for
+    ``brandingForTenant(slug=...)``: there is no backend routing to add for
     it, because the OAuth redirect/callback endpoints below take no
     organization/slug/tenant input and never acquire one from the request. This class
     pins that guarantee so it survives future refactors:
@@ -292,7 +295,7 @@ class TestGenericLoginPathUnaffectedByBrowserContext:
       still goes through ``ProviderRedirectAPIView`` with no organization concept at
       all, and ``ProviderCallbackAPIView`` still resolves the post-authentication
       destination purely from the authenticated user's own active membership
-      (``get_active_organization_membership`` / Phase 7) -- never from the request.
+      (package membership resolution) -- never from the request.
     - Nothing about the destination changes when the request carries an
       ``X-Organization-Id`` header (the header ordinary tenant-scoped REST endpoints
       honor via ``TenantScopedViewMixin``), a ``Referer`` header naming a different
@@ -313,8 +316,6 @@ class TestGenericLoginPathUnaffectedByBrowserContext:
         and ``process`` -- there is no organization/tenant/slug field for a client to
         supply in the first place, so there is nothing for the view to read even if a
         caller tried to smuggle one in."""
-        from allauth.headless.socialaccount.forms import RedirectToProviderForm
-
         assert set(RedirectToProviderForm.base_fields) == {"provider", "callback_url", "process"}
 
     def _complete_login(
@@ -430,8 +431,6 @@ class TestGenericLoginPathUnaffectedByBrowserContext:
 class TestProviderRedirectAPIView:
     @staticmethod
     def get_url():
-        from django.urls import reverse
-
         return reverse("provider_redirect_json")
 
     @pytest.mark.django_db
@@ -484,14 +483,10 @@ class TestProviderRedirectAPIView:
                     return self.get("session_key", "sessiontoken")
 
             # Patch request.session
-            from django.test.client import RequestFactory
-
             rf = RequestFactory()
             request = rf.post(self.get_url(), data=json.dumps({}), content_type="application/json")
             request.session = DummySession()
             # Actually call the view
-            from accounts.views import ProviderRedirectAPIView
-
             view = ProviderRedirectAPIView.as_view()
             response = view(request)
             assert response.status_code == 200

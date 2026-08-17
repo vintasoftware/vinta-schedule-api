@@ -1,10 +1,9 @@
-"""Integration tests for group-slot scoping on AvailableTime/BlockedTime (Phase 0 of
-CALENDAR_GROUP_SCOPED_AVAILABILITY).
+"""Integration tests for group-slot scoping on AvailableTime/BlockedTime.
 
-Phase 0 adds a nullable ``group_slot`` reference to both models and makes the
-default manager exclude scoped rows. Nothing yet *writes* the column and no
-service consumes it as a scoping signal — Phase 0's job is only to prove that a
-group-scoped row, inserted directly (as a stand-in for what a later phase's
+Both models carry a nullable ``group_slot`` reference, and the default
+manager excludes scoped rows. Nothing yet *writes* the column and no
+service consumes it as a scoping signal — this suite's job is only to prove
+that a group-scoped row, inserted directly (as a stand-in for what a future
 write path will do), is invisible on every existing read path with zero call
 site edits: the availability service (single-calendar), the calendar-group
 service (group discovery / availability), and the REST/public-API queryset
@@ -87,7 +86,7 @@ def test_group_scoped_available_time_invisible_to_single_calendar_availability_s
 ) -> None:
     """A group-scoped-only window must not make a managed calendar available on the
     single-calendar read path — that path has no group context and must not gain one
-    (spec non-goal: "no changes to single-calendar booking").
+    -- "no changes to single-calendar booking" is an explicit constraint.
     """
     start, end = _search_window()
 
@@ -128,8 +127,8 @@ def test_group_scoped_available_time_invisible_to_group_availability_check(
     group_slot: CalendarGroupSlot,
 ) -> None:
     """A group-scoped-only window must not make the calendar count toward its own
-    slot's availability in group discovery — Phase 0 does not wire group-scoped
-    configuration into group reads yet, so this must behave exactly as "nothing
+    slot's availability in group discovery — group-scoped configuration is not
+    wired into group reads yet, so this must behave exactly as "nothing
     configured" (the calendar has no *base* availability).
     """
     start, end = _search_window()
@@ -198,8 +197,8 @@ def test_group_scoped_available_time_invisible_to_rest_and_public_api_queryset_p
     """Mirrors the exact queryset construction used by the REST viewset
     (``AvailableTimeViewSet.get_queryset``) and the public GraphQL API
     (``public_api/queries.py``): ``AvailableTime.objects.filter_by_organization(...)``.
-    Both call sites go through the default manager with zero changes required
-    for this phase, so a group-scoped row must not appear in either.
+    Both call sites go through the default manager with zero changes required,
+    so a group-scoped row must not appear in either.
     """
     start, end = _search_window()
 

@@ -297,8 +297,6 @@ class MSOutlookCalendarAdapter(CalendarAdapter):
             rrule_parts.append(f"COUNT={recurrence_range['numberOfOccurrences']}")
         elif range_type == "endDate" and "endDate" in recurrence_range:
             # Convert endDate to UNTIL format (YYYYMMDDTHHMMSSZ)
-            import datetime
-
             end_date = datetime.datetime.strptime(recurrence_range["endDate"], "%Y-%m-%d")
             rrule_parts.append(f"UNTIL={end_date.strftime('%Y%m%dT%H%M%SZ')}")
 
@@ -367,8 +365,6 @@ class MSOutlookCalendarAdapter(CalendarAdapter):
             # Parse UNTIL date (YYYYMMDDTHHMMSSZ format)
             until_str = rule_data["UNTIL"]
             if until_str.endswith("Z"):
-                import datetime
-
                 until_dt = datetime.datetime.strptime(until_str, "%Y%m%dT%H%M%SZ")
                 recurrence_range["endDate"] = until_dt.strftime("%Y-%m-%d")
         else:

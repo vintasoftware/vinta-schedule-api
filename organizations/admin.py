@@ -1,3 +1,19 @@
+"""Admin for ``Organization`` and ``OrganizationBranding`` -- intentionally cross-organization.
+
+The convention across this codebase is that an admin over organization-scoped models
+routes its querysets through ``original_manager`` rather than binding an
+``organization_context``, so the cross-org intent is written down rather than
+inferred (see ``audit/admin.py::AuditAdmin.get_queryset`` for the precedent this mirrors).
+There is nothing to change in *this* file to satisfy that: neither ``Organization`` nor
+``OrganizationBranding`` is organization-scoped -- ``Organization`` is the tenant itself,
+and ``OrganizationBranding`` is a plain ``models.Model`` keyed on it, so neither inherits
+``vinta_orgs.mixins.SingleOrganizationModelMixin``. Every ``.objects`` query below
+(``Organization.objects.filter(slug=...)`` in ``OrganizationAdminForm.clean_slug``, and
+the admin's own unfiltered changelist queries) therefore already runs on Django's stock,
+unscoped manager rather than on a context-scoped one. This note exists so that fact is
+recorded rather than silently assumed.
+"""
+
 from typing import Annotated, Any
 
 from django import forms
@@ -5,11 +21,44 @@ from django.contrib import admin
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.http import HttpRequest
 
+# Imported for its registration side effect, so the unregistration below runs
+# after it no matter which order ``admin.autodiscover()`` reaches the two apps
+# in. Without this, ours could be imported first and the package's
+# ``admin.site.register`` would then raise ``AlreadyRegistered``.
+import vinta_orgs.admin  # noqa: F401
 from dependency_injector.wiring import Provide, inject
 
-from organizations.models import Organization, OrganizationBranding
+from organizations.models import Organization, OrganizationBranding, OrganizationMembership
+from organizations.slug_generation import opaque_organization_slug
 from organizations.slug_validation import validate_organization_slug
 from payments.services.subscription_service import SubscriptionService
+
+
+# ``vinta_orgs.admin`` registers a ``ModelAdmin`` against whatever
+# ``ORGANIZATION_MODEL`` / ``ORGANIZATION_MEMBERSHIP_MODEL`` name -- which, since
+# this project swapped both, means *our* models. Both registrations are dropped
+# here, using the supported ``unregister`` call the package's own admin module
+# points projects at.
+#
+# This is an authorization change, not tidying:
+#
+# * ``OrganizationMembershipAdmin`` exposes ``groups`` and ``permissions`` as
+#   plain, staff-editable fields, with none of the rules the REST viewset
+#   enforces -- the seat limit, and the refusal to demote the last member who
+#   can manage members. Those two relations are now the *entire* authorization
+#   surface of a membership, so any staff user with the change permission could
+#   grant themselves organization admin or billing management in a single form
+#   post. It is left unregistered outright; a membership admin that carries
+#   those rules does not exist yet, and re-registering one without them would
+#   reopen the escalation.
+# * ``OrganizationAdmin`` is replaced (below) rather than merely dropped: ours
+#   validates the slug, refuses a parent cycle, and puts every new organization
+#   on a billing plan. The package's also inlines ``OrganizationSite``, which we
+#   do not use at all -- this project does not do domain-based tenancy.
+for _package_registered_model in (Organization, OrganizationMembership):
+    if admin.site.is_registered(_package_registered_model):
+        admin.site.unregister(_package_registered_model)
+del _package_registered_model
 
 
 class OrganizationAdminForm(forms.ModelForm):
@@ -24,12 +73,10 @@ class OrganizationAdminForm(forms.ModelForm):
     immutability, is what protects the rule.
     """
 
-    # Explicitly declared as CharField (rather than left to ModelForm
-    # auto-build from Organization.slug's models.SlugField, and NOT as
-    # forms.SlugField) so Django does NOT auto-attach the SlugField's
-    # ASCII-only RegexValidator: it would run before clean_slug() below and
-    # preempt the confusables/reserved-word rules, which are the sole source
-    # of format/confusable/reserved validation on this form.
+    # Explicitly declared, and ``required=False`` where the model field is not,
+    # so a blank submission reaches ``clean_slug`` below (which mints an opaque
+    # slug on create and refuses the clear on update) instead of being rejected
+    # by the auto-built field with a bare "This field is required."
     slug = forms.CharField(required=False)
 
     class Meta:
@@ -44,17 +91,34 @@ class OrganizationAdminForm(forms.ModelForm):
             "can_invite_organizations",
         )
 
-    def clean_slug(self) -> str | None:
+    def clean_slug(self) -> str:
         """Run the shared slug rules, then check uniqueness against the DB.
 
-        A blank submission normalizes to ``None`` (the model's NULL-when-unset
-        contract) before the uniqueness check — otherwise two organizations both
-        left blank would collide on the stored empty string, which is not the
-        "multiple NULLs coexist" behavior the field is nullable for.
+        ``slug`` is NOT NULL and the ``organization_slug_not_blank`` check
+        constraint refuses ``""``, so a blank submission has to resolve to
+        *something*:
+
+        * On an existing organization it is refused. Clearing the slug is not a
+          supported operation -- and because ``Organization.save()`` mints a
+          replacement for an empty slug, silently accepting it would swap the
+          organization's public identifier for a different one rather than
+          removing it, orphaning every branded login URL already issued.
+        * On a new organization it mints an **opaque** ``org-<token>`` slug.
+          Deliberately not ``slugify(name)``: the slug is public, and an
+          operator creating an organization on someone's behalf has not
+          consented to publishing its name. The organization can pick a
+          readable slug itself later.
         """
         value = self.cleaned_data.get("slug")
         if not value:
-            return None
+            if self.instance.pk is not None:
+                raise forms.ValidationError(
+                    "Slug cannot be cleared once set. Enter a new slug, or leave this "
+                    "field as it was."
+                )
+            return opaque_organization_slug(
+                slug_exists=lambda candidate: Organization.objects.filter(slug=candidate).exists()
+            )
 
         try:
             validate_organization_slug(value)
@@ -203,8 +267,8 @@ class OrganizationAdmin(admin.ModelAdmin):
 class OrganizationBrandingAdminForm(forms.ModelForm):
     """Refuses to save branding for an organization that has a parent.
 
-    Admin is not an escape hatch: "no branding for organizations inside a
-    hierarchy" (see the plan's Non-goals) holds for staff too, mirroring here
+    Admin is not an escape hatch: the product rule "no branding for
+    organizations inside a hierarchy" holds for staff too, mirroring here
     what the other two write surfaces (``OrganizationBrandingView``,
     ``update_branding``) enforce via ``organizations.permissions.
     evaluate_branding_write_gate``. Deliberately checks ONLY the parent

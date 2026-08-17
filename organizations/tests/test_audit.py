@@ -8,18 +8,22 @@ enqueue happens, then inspect the serialized payloads.
 
 from __future__ import annotations
 
+import datetime
 from unittest.mock import Mock, patch
 
 import pytest
 from model_bakery import baker
 
 from audit.constants import AuditAction
+from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
+from organizations.authorization import MEMBERSHIP_ROLE_LABEL_ADMIN
 from organizations.models import (
     Organization,
     OrganizationInvitation,
-    OrganizationRole,
 )
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN, GROUP_ORGANIZATION_MEMBER
 from organizations.services import OrganizationService
+from organizations.tests.helpers import make_membership
 
 
 def _payloads(mock_task) -> list[dict]:
@@ -59,16 +63,15 @@ class TestOrganizationServiceAudit:
             assert p["action"] == AuditAction.CREATE
             assert p["actor"]["actor_type"] == "membership"
             assert p["actor"]["actor_id"] == user.id
-            assert p["actor"]["actor_role"] == OrganizationRole.ADMIN
+            assert p["actor"]["actor_role"] == MEMBERSHIP_ROLE_LABEL_ADMIN
 
     def test_invite_user_records_create(self, django_capture_on_commit_callbacks) -> None:
         org = baker.make(Organization)
         inviter = baker.make("users.User")
-        baker.make(
-            "organizations.OrganizationMembership",
+        make_membership(
             user=inviter,
             organization=org,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
         service = self._service()
 
@@ -92,21 +95,14 @@ class TestOrganizationServiceAudit:
     def test_accept_invitation_records_membership_and_invitation(
         self, django_capture_on_commit_callbacks
     ) -> None:
-        from common.utils.authentication_utils import (
-            generate_long_lived_token,
-            hash_long_lived_token,
-        )
-
         org = baker.make(Organization)
         user = baker.make("users.User", email="joiner@example.com")
         raw = generate_long_lived_token()
-        import datetime
-
         invitation = OrganizationInvitation.objects.create(
             email="joiner@example.com",
             organization=org,
             token_hash=hash_long_lived_token(raw),
-            role=OrganizationRole.MEMBER,
+            group=GROUP_ORGANIZATION_MEMBER,
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=1),
         )
         service = self._service()
@@ -127,14 +123,12 @@ class TestOrganizationServiceAudit:
     def test_revoke_invitation_records_update_with_system_actor(
         self, django_capture_on_commit_callbacks
     ) -> None:
-        import datetime
-
         org = baker.make(Organization)
         invitation = OrganizationInvitation.objects.create(
             email="x@example.com",
             organization=org,
             token_hash="hash",
-            role=OrganizationRole.MEMBER,
+            group=GROUP_ORGANIZATION_MEMBER,
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=5),
         )
         service = self._service()

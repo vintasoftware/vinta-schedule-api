@@ -1,5 +1,5 @@
 """Integration tests for the internal REST surface exposing group-scoped
-quota rules (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 3c).
+quota rules.
 
 Direct mirror of ``test_views_group_scoped_blocked_times.py`` for quota
 rules, minus the recurrence/orphaned-booking machinery (quota rules are
@@ -36,7 +36,9 @@ from calendar_integration.models import (
     CalendarGroupSlotMembership,
     CalendarGroupSlotQuotaRule,
 )
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
+from organizations.tests.helpers import grant_membership_groups
 from users.factories import UserFactory
 
 
@@ -82,8 +84,9 @@ def organization() -> Organization:
 @pytest.fixture
 def admin_membership(organization: Organization) -> OrganizationMembership:
     user = UserFactory().create_user()
-    return OrganizationMembership.objects.create(
-        user=user, organization=organization, role=OrganizationRole.ADMIN, is_active=True
+    return grant_membership_groups(
+        OrganizationMembership.objects.create(user=user, organization=organization, is_active=True),
+        [GROUP_ORGANIZATION_ADMIN],
     )
 
 
@@ -91,7 +94,7 @@ def admin_membership(organization: Organization) -> OrganizationMembership:
 def owner_membership(organization: Organization) -> OrganizationMembership:
     user = UserFactory().create_user()
     return OrganizationMembership.objects.create(
-        user=user, organization=organization, role=OrganizationRole.MEMBER, is_active=True
+        user=user, organization=organization, is_active=True
     )
 
 
@@ -102,7 +105,7 @@ def other_owner_membership(organization: Organization) -> OrganizationMembership
     the caller does not own."""
     user = UserFactory().create_user()
     return OrganizationMembership.objects.create(
-        user=user, organization=organization, role=OrganizationRole.MEMBER, is_active=True
+        user=user, organization=organization, is_active=True
     )
 
 
@@ -110,7 +113,7 @@ def other_owner_membership(organization: Organization) -> OrganizationMembership
 def stranger_membership(organization: Organization) -> OrganizationMembership:
     user = UserFactory().create_user()
     return OrganizationMembership.objects.create(
-        user=user, organization=organization, role=OrganizationRole.MEMBER, is_active=True
+        user=user, organization=organization, is_active=True
     )
 
 
@@ -251,7 +254,7 @@ class TestGroupScopedQuotaRuleLifecycle:
         # Delete.
         delete_response = client.delete(_detail_url(group.id, group_slot.id, rule_id))
         assert delete_response.status_code == status.HTTP_204_NO_CONTENT
-        assert not CalendarGroupSlotQuotaRule.objects.filter(id=rule_id).exists()
+        assert not CalendarGroupSlotQuotaRule.original_manager.filter(id=rule_id).exists()
 
         # Now invisible everywhere, including the group-scoped read path.
         retrieve_after_delete = client.get(_detail_url(group.id, group_slot.id, rule_id))
@@ -533,7 +536,9 @@ class TestGroupScopedQuotaRuleNonDisclosure:
         assert other_owner_response.status_code == status.HTTP_404_NOT_FOUND
         assert stranger_response.status_code == status.HTTP_404_NOT_FOUND
         assert other_owner_response.data == stranger_response.data
-        assert not CalendarGroupSlotQuotaRule.objects.filter(group_slot_fk=group_slot).exists()
+        assert not CalendarGroupSlotQuotaRule.original_manager.filter(
+            group_slot_fk=group_slot
+        ).exists()
 
     def test_other_owner_can_see_and_manage_their_own_slot_in_the_group(
         self,

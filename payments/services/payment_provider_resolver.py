@@ -3,16 +3,16 @@
 A sibling of ``payments.services.payment_service`` rather than a method on
 ``PaymentService`` itself: ``PaymentService`` is generic over the adapter types
 (``PaymentAdapter``/``SubscriptionAdapter``/``SubscriptionPlanFactory``) and its
-constructor is exactly what Phase 4 of the payment-provider-selection plan rewires
-(dropping the singular ``payment_gateway``/``subscription_gateway`` injections). This
+constructor takes adapters through a provider registry rather than the singular
+``payment_gateway``/``subscription_gateway`` injections it used to take. This
 resolver has zero dependency on any adapter -- it only reads
 ``settings.DEFAULT_PAYMENT_PROVIDER`` and ``BillingProfile.payment_provider`` -- so keeping
-it out of ``PaymentService`` means Phase 3 (this module's only consumer today) does not
-touch, and cannot destabilize, the class Phase 4 is about to refactor.
+it out of ``PaymentService`` means changes to provider-resolution logic never
+touch, and cannot destabilize, the adapter-registry class.
 
-Single place both the provider-credentials endpoints (Phase 3,
-``payments.views.PaymentProviderViewSet``) and the charge-routing refactor (Phase 4,
-``PaymentService.create_payment``/``create_subscription``) call to resolve an
+Single place both the provider-credentials endpoints
+(``payments.views.PaymentProviderViewSet``) and the charge-routing path
+(``PaymentService.create_payment``/``create_subscription``) call to resolve an
 organization's provider -- so the pin -> default resolution rule cannot drift between the
 read path and the write path.
 """

@@ -218,7 +218,7 @@ class BillingUsageViewSet(TenantScopedViewMixin, ViewSet):
             # a period boundary between the two reads can still see
             # `estimated_overage_total` and the `event_occurrences` row disagree by
             # one cycle. Closing that requires a way to inject a period override
-            # into the counter signature, which Phase 1's `UsageContext` does not
+            # into the counter signature, which `UsageContext` does not
             # support -- out of scope here.
             period_start, period_end = resolve_billing_period(subscription, timezone.now())
             billing_period = {"start": period_start, "end": period_end}
@@ -314,9 +314,9 @@ class BillingPeriodViewSet(
     """``GET /billing/usage/periods/`` and ``GET /billing/usage/periods/{id}/``
     -- the durable statements ``CycleCloseService`` writes at cycle close (see
     ``BillingPeriodSummary``'s docstring). List and detail are bundled
-    deliberately: they share a queryset, a permission, and a serializer tree
-    (see the plan's "Bundled phase granularity" decision) rather than shipping
-    as two PRs whose second one is fifty lines.
+    deliberately: they share a queryset, a permission, and a serializer tree,
+    so shipping them together avoided a second PR that would only add fifty
+    lines.
 
     Scoped to the caller's resolved pool exactly like ``BillingUsageViewSet``:
     ``resolve_billing_root`` then ``get_pooled_organization_ids``, both
@@ -330,7 +330,7 @@ class BillingPeriodViewSet(
     organization needs in order to resolve billing, including while
     ``RESTRICTED``.
 
-    History is forward-only (see the plan's Non-goals / Risk & Rollout Notes):
+    History is forward-only:
     an organization with no closed periods yet gets ``200`` with an empty list,
     never a ``404`` -- there is nothing wrong with that organization, cycle
     close simply has not run for it yet. A caller with **no active
@@ -417,15 +417,16 @@ class MeteredOccurrenceViewSet(TenantScopedViewMixin, mixins.ListModelMixin, Gen
     ``IsBillingOwnerOrAdmin``. A ledger row carries an ``event_id`` and an exact
     ``occurrence_start`` -- that is calendar content, and it spans every
     calendar in the caller's pooled subtree, including ones the caller has no
-    membership scope on. A count is not. See the plan's Guiding Decisions.
+    membership scope on. A count is not.
 
     ``check_object_permissions`` is called explicitly in ``list()`` against the
     resolved billing root -- the same two-step dance
     ``SubscriptionViewSet.get_subscription`` and ``AddOnViewSet.create`` already
     perform, and for the same reason their comments document:
-    ``has_permission`` cannot know *which* organization this read is for,
-    because ``request.organization`` is not resolved yet at that point in
-    ``TenantScopedViewMixin.initial()``'s ordering (see
+    ``has_permission`` cannot know *which* organization this read is for: the
+    read is against the billing **root**, which is frequently an ancestor of the
+    organization the request resolved, and only the caller of
+    ``check_object_permissions`` knows which one that is (see
     ``IsBillingOwnerOrAdmin``'s docstring).
     """
 
@@ -534,17 +535,19 @@ class MeteredOccurrenceViewSet(TenantScopedViewMixin, mixins.ListModelMixin, Gen
         # already allowed to show can only belong to an organization in that
         # same pool.
         pooled_organization_ids = getattr(self.request, "pooled_organization_ids", ())
+        # ``unscoped()`` on both: the pool spans a reseller subtree, which no
+        # single-organization binding can express; ``pooled_organization_ids`` is
+        # the tenant boundary and is applied in each filter.
         events = (
-            CalendarEvent.objects.filter(
-                pk__in=event_ids, organization_id__in=pooled_organization_ids
-            )
+            CalendarEvent.objects.unscoped()
+            .filter(pk__in=event_ids, organization_id__in=pooled_organization_ids)
             .select_related("calendar")
             .prefetch_related(
                 Prefetch(
                     "calendar__ownerships",
-                    queryset=CalendarOwnership.objects.filter(
-                        organization_id__in=pooled_organization_ids
-                    ).select_related("membership__user__profile"),
+                    queryset=CalendarOwnership.objects.unscoped()
+                    .filter(organization_id__in=pooled_organization_ids)
+                    .select_related("membership__user__profile"),
                 )
             )
         )
@@ -604,10 +607,11 @@ class SubscriptionViewSet(TenantScopedViewMixin, GenericVirtualModelViewMixin, G
             raise NotFound("This organization has no subscription.")
         if check_object_perms:
             # `has_permission` alone cannot decide *which* organization a write
-            # is for -- `request.organization` is not resolved yet at that
-            # point in `TenantScopedViewMixin.initial()`'s ordering (see
-            # `IsBillingOwnerOrAdmin`'s docstring). This is the object-level
-            # check against the actually-resolved billing root.
+            # is for: the write acts on the billing *root*, which is frequently
+            # an ancestor of the organization the request resolved, and only
+            # this line knows which one that is (see `IsBillingOwnerOrAdmin`'s
+            # docstring). This is the object-level check against the
+            # actually-resolved billing root.
             self.check_object_permissions(self.request, resolve_billing_root(organization))
         return subscription
 
@@ -749,9 +753,8 @@ class SubscriptionViewSet(TenantScopedViewMixin, GenericVirtualModelViewMixin, G
 
         # `RetryPaymentNotApplicableError`, `SubscriptionNotAttachedError`,
         # `NoOutstandingBalanceError`, and `CollectionNotSupportedError` (all
-        # 409), and `ChargeDeclinedError` (402 -- Billing API Contract
-        # Hardening, Phase 5: the provider actually attempted the charge and
-        # declined it) are rendered centrally by
+        # 409), and `ChargeDeclinedError` (402 -- the provider actually
+        # attempted the charge and declined it) are rendered centrally by
         # `common.exception_handlers.vinta_exception_handler` -- no local
         # try/except needed here.
         self.subscription_service.retry_payment(
@@ -844,10 +847,10 @@ class AddOnViewSet(TenantScopedViewMixin, GenericViewSet):
         organization = _require_organization(request)
         billing_root = resolve_billing_root(organization)
         # See `SubscriptionViewSet.get_subscription`'s comment: `has_permission`
-        # cannot know *which* organization this write is for, since
-        # `request.organization` is not resolved yet at that point --
-        # `has_object_permission` is the real gate, run here against the
-        # resolved billing root.
+        # cannot know *which* organization this write is for, since the write
+        # acts on the billing root rather than on the organization the request
+        # resolved -- `has_object_permission` is the real gate, run here against
+        # that root.
         self.check_object_permissions(request, billing_root)
         subscription = self._get_subscription(organization)
 

@@ -4,6 +4,7 @@ import uuid
 from unittest.mock import Mock
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth import get_user_model as _get_user_model
 from django.urls import reverse
 
 import icalendar
@@ -11,6 +12,7 @@ import pytest
 from allauth.socialaccount.models import SocialAccount, SocialToken
 from model_bakery import baker
 from rest_framework import status
+from rest_framework.test import APIClient
 
 from calendar_integration.constants import (
     CalendarProvider,
@@ -18,6 +20,7 @@ from calendar_integration.constants import (
     CalendarVisibility,
     RecurrenceFrequency,
 )
+from calendar_integration.exceptions import InvalidCalendarTokenError, NoAvailableTimeWindowsError
 from calendar_integration.models import (
     AvailableTime,
     BlockedTime,
@@ -34,7 +37,9 @@ from calendar_integration.services.dataclasses import (
     AvailableTimeWindow,
     UnavailableTimeWindow,
 )
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
+from organizations.tests.helpers import grant_membership_groups, make_membership
 
 
 User = get_user_model()
@@ -515,7 +520,6 @@ class TestCalendarEventViewSet:
         self, auth_client, calendar, user, social_account
     ):
         """A booking with no available window must be a 400, not a 500."""
-        from calendar_integration.exceptions import NoAvailableTimeWindowsError
         from di_core.containers import container
 
         mock_calendar_service = Mock()
@@ -646,17 +650,14 @@ class TestCalendarEventViewSet:
 
     def test_transfer_event_success(self, organization, calendar, calendar_event):
         """Admin transfers an in-org event to an in-org target calendar."""
-        from rest_framework.test import APIClient
-
         from di_core.containers import container
 
         # Admin user
         admin_user = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin_user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
 
         # Source calendar owner
@@ -665,7 +666,6 @@ class TestCalendarEventViewSet:
             OrganizationMembership,
             user=source_owner,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
         CalendarIntegrationTestFactory.create_calendar_ownership(source_owner, calendar)
 
@@ -722,17 +722,14 @@ class TestCalendarEventViewSet:
 
     def test_transfer_event_same_calendar_no_op(self, organization, calendar, calendar_event):
         """Admin tries to transfer event to its own calendar → 400, no service call."""
-        from rest_framework.test import APIClient
-
         from di_core.containers import container
 
         # Admin user
         admin_user = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin_user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
 
         # Mock calendar service
@@ -756,14 +753,11 @@ class TestCalendarEventViewSet:
 
     def test_transfer_event_non_admin_forbidden(self, organization, calendar, calendar_event):
         """Non-admin active member receives 403."""
-        from rest_framework.test import APIClient
-
         member_user = baker.make(User)
         baker.make(
             OrganizationMembership,
             user=member_user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
 
         target_calendar = CalendarIntegrationTestFactory.create_calendar(organization=organization)
@@ -777,14 +771,11 @@ class TestCalendarEventViewSet:
 
     def test_transfer_event_cross_org_event_not_found(self, organization):
         """Event from a different org yields 404 (org-scoped queryset)."""
-        from rest_framework.test import APIClient
-
         admin_user = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin_user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
 
         other_org = CalendarIntegrationTestFactory.create_organization(name="Other Org")
@@ -802,14 +793,11 @@ class TestCalendarEventViewSet:
         self, organization, calendar, calendar_event
     ):
         """Missing target_calendar_id body field yields 400."""
-        from rest_framework.test import APIClient
-
         admin_user = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin_user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
 
         source_owner = baker.make(User)
@@ -817,7 +805,6 @@ class TestCalendarEventViewSet:
             OrganizationMembership,
             user=source_owner,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
         CalendarIntegrationTestFactory.create_calendar_ownership(source_owner, calendar)
 
@@ -832,14 +819,11 @@ class TestCalendarEventViewSet:
         self, organization, calendar, calendar_event
     ):
         """Non-existent target_calendar_id yields 400."""
-        from rest_framework.test import APIClient
-
         admin_user = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin_user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
 
         source_owner = baker.make(User)
@@ -847,7 +831,6 @@ class TestCalendarEventViewSet:
             OrganizationMembership,
             user=source_owner,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
         CalendarIntegrationTestFactory.create_calendar_ownership(source_owner, calendar)
 
@@ -863,14 +846,11 @@ class TestCalendarEventViewSet:
         self, organization, calendar, calendar_event
     ):
         """target_calendar_id from a different org yields 400."""
-        from rest_framework.test import APIClient
-
         admin_user = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin_user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
 
         source_owner = baker.make(User)
@@ -878,7 +858,6 @@ class TestCalendarEventViewSet:
             OrganizationMembership,
             user=source_owner,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
         CalendarIntegrationTestFactory.create_calendar_ownership(source_owner, calendar)
 
@@ -897,14 +876,11 @@ class TestCalendarEventViewSet:
         self, organization, calendar, calendar_event
     ):
         """Source calendar owner has no linked social account → 400."""
-        from rest_framework.test import APIClient
-
         admin_user = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin_user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
 
         source_owner = baker.make(User)
@@ -912,7 +888,6 @@ class TestCalendarEventViewSet:
             OrganizationMembership,
             user=source_owner,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
         CalendarIntegrationTestFactory.create_calendar_ownership(source_owner, calendar)
         # Intentionally do NOT create a SocialAccount for source_owner
@@ -935,16 +910,13 @@ class TestCalendarEventViewSet:
         An ex-member (orphan ownership, no backing membership) must not provide the
         credentials used to read the source calendar from the provider.
         """
-        from rest_framework.test import APIClient
-
         from di_core.containers import container
 
         admin_user = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin_user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
 
         # Orphan ownership: membership_user_id is NULL so the membership-scoped
@@ -1113,8 +1085,6 @@ class TestCalendarEventExpandedAction:
 
     def test_expanded_membership_less_user_returns_empty_list(self, calendar):
         """User without an active membership gets an empty 200 list (mirrors sibling expanded actions)."""
-        from rest_framework.test import APIClient
-
         no_membership_user = baker.make(User)
         client = APIClient()
         client.force_authenticate(user=no_membership_user)
@@ -2133,16 +2103,13 @@ class TestCalendarViewSet:
 
     def test_create_resource_calendar_admin(self, organization):
         """Org admin creates a manual resource calendar via POST /calendar/resource/."""
-        from rest_framework.test import APIClient
-
         from di_core.containers import container
 
         admin_user = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin_user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
 
         created_calendar = CalendarIntegrationTestFactory.create_calendar(
@@ -2189,14 +2156,11 @@ class TestCalendarViewSet:
 
     def test_update_resource_calendar_capacity_admin(self, organization):
         """Admin can PATCH capacity on a RESOURCE calendar."""
-        from rest_framework.test import APIClient
-
         admin_user = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin_user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
         resource = CalendarIntegrationTestFactory.create_calendar(
             organization=organization,
@@ -2216,14 +2180,11 @@ class TestCalendarViewSet:
 
     def test_update_capacity_on_non_resource_rejected(self, organization):
         """Capacity can only be set on resource calendars."""
-        from rest_framework.test import APIClient
-
         admin_user = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin_user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
         personal = CalendarIntegrationTestFactory.create_calendar(
             organization=organization,
@@ -2474,10 +2435,6 @@ class TestCalendarViewSet:
 
     def test_membership_less_user_gets_empty_list(self):
         """User without org membership gets an empty list (not 500)."""
-        from django.contrib.auth import get_user_model as _get_user_model
-
-        from rest_framework.test import APIClient
-
         user_model = _get_user_model()
         memberless_user = baker.make(user_model)
 
@@ -2681,7 +2638,6 @@ class TestCalendarViewSet:
 
     def test_request_import_reports_per_account_failure(self, auth_client, user, organization):
         """A failing account is reported under `skipped` (400) instead of an opaque error."""
-        from calendar_integration.exceptions import InvalidCalendarTokenError
         from di_core.containers import container
 
         google_account = baker.make(SocialAccount, user=user, provider=CalendarProvider.GOOGLE)
@@ -2960,11 +2916,10 @@ class TestCalendarViewSet:
 
         # Create admin user in the organization
         admin_user = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin_user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
 
         # Create calendar owner (different user)
@@ -2973,7 +2928,6 @@ class TestCalendarViewSet:
             OrganizationMembership,
             user=calendar_owner,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
 
         # Create calendar ownership linking owner to calendar
@@ -3009,8 +2963,6 @@ class TestCalendarViewSet:
         mock_calendar_service.request_calendar_sync.return_value = mock_calendar_sync
 
         # Authenticate as admin and make request
-        from rest_framework.test import APIClient
-
         client = APIClient()
         client.force_authenticate(user=admin_user)
 
@@ -3051,7 +3003,6 @@ class TestCalendarViewSet:
             OrganizationMembership,
             user=member_user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
 
         # Create calendar owner (another user)
@@ -3060,15 +3011,12 @@ class TestCalendarViewSet:
             OrganizationMembership,
             user=calendar_owner,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
 
         # Create calendar ownership
         CalendarIntegrationTestFactory.create_calendar_ownership(calendar_owner, calendar)
 
         # Authenticate as regular member
-        from rest_framework.test import APIClient
-
         client = APIClient()
         client.force_authenticate(user=member_user)
 
@@ -3089,11 +3037,10 @@ class TestCalendarViewSet:
         """Test admin cannot sync calendar from different organization"""
         # Create admin in first organization
         admin_user = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin_user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
 
         # Create calendar in different organization
@@ -3101,8 +3048,6 @@ class TestCalendarViewSet:
         other_calendar = CalendarIntegrationTestFactory.create_calendar(organization=other_org)
 
         # Authenticate as admin and try to sync cross-org calendar
-        from rest_framework.test import APIClient
-
         client = APIClient()
         client.force_authenticate(user=admin_user)
 
@@ -3123,11 +3068,10 @@ class TestCalendarViewSet:
         """Test admin cannot sync if calendar owner has no linked account for provider"""
         # Create admin user
         admin_user = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin_user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
 
         # Create calendar owner
@@ -3136,7 +3080,6 @@ class TestCalendarViewSet:
             OrganizationMembership,
             user=calendar_owner,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
 
         # Create calendar ownership
@@ -3145,8 +3088,6 @@ class TestCalendarViewSet:
         # Do NOT create social account for the owner - this is the test case
 
         # Authenticate as admin and make request
-        from rest_framework.test import APIClient
-
         client = APIClient()
         client.force_authenticate(user=admin_user)
 
@@ -3169,19 +3110,16 @@ class TestCalendarViewSet:
         """Test admin cannot sync calendar with no owner"""
         # Create admin user
         admin_user = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin_user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
 
         # Create calendar with no ownership
         calendar = CalendarIntegrationTestFactory.create_calendar(organization=organization)
 
         # Authenticate as admin and make request
-        from rest_framework.test import APIClient
-
         client = APIClient()
         client.force_authenticate(user=admin_user)
 
@@ -3205,11 +3143,10 @@ class TestCalendarViewSet:
         An ex-member (orphan ownership, no backing membership) must not drive sync.
         """
         admin_user = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin_user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
 
         calendar = CalendarIntegrationTestFactory.create_calendar(organization=organization)
@@ -3221,8 +3158,6 @@ class TestCalendarViewSet:
             calendar=calendar,
             organization=organization,
         )
-
-        from rest_framework.test import APIClient
 
         client = APIClient()
         client.force_authenticate(user=admin_user)
@@ -3245,11 +3180,10 @@ class TestCalendarViewSet:
         """Test admin-sync with invalid datetimes returns 400"""
         # Create admin user
         admin_user = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin_user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
 
         # Create calendar owner
@@ -3258,15 +3192,12 @@ class TestCalendarViewSet:
             OrganizationMembership,
             user=calendar_owner,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
 
         # Create calendar ownership
         CalendarIntegrationTestFactory.create_calendar_ownership(calendar_owner, calendar)
 
         # Authenticate as admin
-        from rest_framework.test import APIClient
-
         client = APIClient()
         client.force_authenticate(user=admin_user)
 
@@ -3304,11 +3235,10 @@ class TestCalendarViewSet:
 
         # Create admin user
         admin_user = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin_user,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
 
         # Create calendar owner
@@ -3317,7 +3247,6 @@ class TestCalendarViewSet:
             OrganizationMembership,
             user=calendar_owner,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
 
         # Create calendar and ownership
@@ -3354,8 +3283,6 @@ class TestCalendarViewSet:
         mock_calendar_sync.error_message = ""
         mock_calendar_sync.trigger_source = "manual"
         mock_calendar_service.request_calendar_sync.return_value = mock_calendar_sync
-
-        from rest_framework.test import APIClient
 
         client = APIClient()
         client.force_authenticate(user=admin_user)
@@ -3407,9 +3334,11 @@ class TestCalendarViewSetOwnerScoping:
 
     @staticmethod
     def _make_admin(user, organization):
-        OrganizationMembership.objects.filter(user=user, organization=organization).update(
-            role=OrganizationRole.ADMIN
-        )
+        membership = OrganizationMembership.objects.get(user=user, organization=organization)
+        # A ``queryset.update(role=...)`` used to be enough. The admin decision
+        # reads ``organizations.manage_members`` through the membership's
+        # groups, so promotion is a group assignment and nothing else.
+        grant_membership_groups(membership, [GROUP_ORGANIZATION_ADMIN])
 
     @staticmethod
     def _own_calendar(user, organization):
@@ -4043,7 +3972,7 @@ class TestBlockedTimeViewSet:
 
         # Create a recurring blocked time
         recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
-            organization=user.organization_memberships.get().organization,
+            organization=user.memberships.get().organization,
             frequency=RecurrenceFrequency.WEEKLY,
         )
 
@@ -4086,7 +4015,7 @@ class TestBlockedTimeViewSet:
 
         # Create a recurring blocked time
         recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
-            organization=user.organization_memberships.get().organization,
+            organization=user.memberships.get().organization,
             frequency=RecurrenceFrequency.WEEKLY,
         )
 
@@ -4162,7 +4091,7 @@ class TestBlockedTimeViewSet:
 
         # Create a recurring blocked time
         recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
-            organization=user.organization_memberships.get().organization,
+            organization=user.memberships.get().organization,
             frequency=RecurrenceFrequency.WEEKLY,
         )
 
@@ -4209,7 +4138,7 @@ class TestBlockedTimeViewSet:
 
         # Create a recurring blocked time
         recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
-            organization=user.organization_memberships.get().organization,
+            organization=user.memberships.get().organization,
             frequency=RecurrenceFrequency.WEEKLY,
         )
 
@@ -4260,7 +4189,7 @@ class TestBlockedTimeViewSet:
 
         # Create a recurring blocked time
         recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
-            organization=user.organization_memberships.get().organization,
+            organization=user.memberships.get().organization,
             frequency=RecurrenceFrequency.WEEKLY,
         )
 
@@ -4301,7 +4230,7 @@ class TestBlockedTimeViewSet:
 
         # Create a recurring blocked time
         recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
-            organization=user.organization_memberships.get().organization,
+            organization=user.memberships.get().organization,
             frequency=RecurrenceFrequency.WEEKLY,
         )
 
@@ -4370,7 +4299,7 @@ class TestBlockedTimeViewSet:
 
         # Create a recurring blocked time
         recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
-            organization=user.organization_memberships.get().organization,
+            organization=user.memberships.get().organization,
             frequency=RecurrenceFrequency.WEEKLY,
         )
 
@@ -4564,8 +4493,6 @@ class TestAvailableTimeViewSet:
 
     def test_batch_create_update_delete(self, auth_client, calendar, user):
         """A single batch creates, updates, and deletes available times atomically."""
-        from calendar_integration.models import AvailableTime
-
         calendar.manage_available_windows = True
         calendar.save()
         CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
@@ -4606,8 +4533,6 @@ class TestAvailableTimeViewSet:
 
     def test_batch_is_transactional_on_bad_operation(self, auth_client, calendar, user):
         """A failing operation rolls back the whole batch — no partial application."""
-        from calendar_integration.models import AvailableTime
-
         calendar.manage_available_windows = True
         calendar.save()
         CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
@@ -4640,8 +4565,6 @@ class TestAvailableTimeViewSet:
 
     def test_batch_defaults_to_user_default_calendar(self, auth_client, calendar, user):
         """Omitting calendar applies the batch to the user's default calendar."""
-        from calendar_integration.models import AvailableTime
-
         calendar.manage_available_windows = True
         calendar.save()
         CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar, is_default=True)
@@ -4820,7 +4743,7 @@ class TestAvailableTimeViewSet:
 
         # Create a recurring available time
         recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
-            organization=user.organization_memberships.get().organization,
+            organization=user.memberships.get().organization,
             frequency=RecurrenceFrequency.WEEKLY,
         )
 
@@ -4866,7 +4789,7 @@ class TestAvailableTimeViewSet:
 
         # Create a recurring available time
         recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
-            organization=user.organization_memberships.get().organization,
+            organization=user.memberships.get().organization,
             frequency=RecurrenceFrequency.WEEKLY,
         )
 
@@ -4945,7 +4868,7 @@ class TestAvailableTimeViewSet:
 
         # Create a recurring available time
         recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
-            organization=user.organization_memberships.get().organization,
+            organization=user.memberships.get().organization,
             frequency=RecurrenceFrequency.WEEKLY,
         )
 
@@ -4995,7 +4918,7 @@ class TestAvailableTimeViewSet:
 
         # Create a recurring available time
         recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
-            organization=user.organization_memberships.get().organization,
+            organization=user.memberships.get().organization,
             frequency=RecurrenceFrequency.WEEKLY,
         )
 
@@ -5046,7 +4969,7 @@ class TestAvailableTimeViewSet:
 
         # Create a recurring available time
         recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
-            organization=user.organization_memberships.get().organization,
+            organization=user.memberships.get().organization,
             frequency=RecurrenceFrequency.WEEKLY,
         )
 
@@ -5090,7 +5013,7 @@ class TestAvailableTimeViewSet:
 
         # Create a recurring available time
         recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
-            organization=user.organization_memberships.get().organization,
+            organization=user.memberships.get().organization,
             frequency=RecurrenceFrequency.WEEKLY,
         )
 
@@ -5163,7 +5086,7 @@ class TestAvailableTimeViewSet:
 
         # Create a recurring available time
         recurrence_rule = CalendarIntegrationTestFactory.create_recurrence_rule(
-            organization=user.organization_memberships.get().organization,
+            organization=user.memberships.get().organization,
             frequency=RecurrenceFrequency.WEEKLY,
         )
 
@@ -5406,14 +5329,11 @@ class TestCalendarBundleUpdateAction:
     @staticmethod
     def _make_admin(organization):
         """Create an admin user and membership; return (user, APIClient)."""
-        from rest_framework.test import APIClient
-
         admin = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
         client = APIClient()
         client.force_authenticate(user=admin)
@@ -5422,14 +5342,11 @@ class TestCalendarBundleUpdateAction:
     @staticmethod
     def _make_member(organization):
         """Create a regular member and return (user, APIClient)."""
-        from rest_framework.test import APIClient
-
         member = baker.make(User)
         baker.make(
             OrganizationMembership,
             user=member,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
         client = APIClient()
         client.force_authenticate(user=member)
@@ -5461,39 +5378,50 @@ class TestCalendarBundleUpdateAction:
         assert response.data["id"] == bundle.id
 
         # child1 should be gone
-        assert not ChildrenCalendarRelationship.objects.filter(
-            bundle_calendar=bundle,
-            child_calendar_fk_id=child1.id,
-            organization=organization,
-        ).exists()
+        assert (
+            not ChildrenCalendarRelationship.objects.filter_by_organization(organization)
+            .filter(
+                bundle_calendar=bundle,
+                child_calendar_fk_id=child1.id,
+            )
+            .exists()
+        )
 
         # child2 retained, child3 added
-        assert ChildrenCalendarRelationship.objects.filter(
-            bundle_calendar=bundle,
-            child_calendar_fk_id=child2.id,
-            organization=organization,
-        ).exists()
-        assert ChildrenCalendarRelationship.objects.filter(
-            bundle_calendar=bundle,
-            child_calendar_fk_id=child3.id,
-            organization=organization,
-        ).exists()
+        assert (
+            ChildrenCalendarRelationship.objects.filter_by_organization(organization)
+            .filter(
+                bundle_calendar=bundle,
+                child_calendar_fk_id=child2.id,
+            )
+            .exists()
+        )
+        assert (
+            ChildrenCalendarRelationship.objects.filter_by_organization(organization)
+            .filter(
+                bundle_calendar=bundle,
+                child_calendar_fk_id=child3.id,
+            )
+            .exists()
+        )
 
         # Exactly one primary — child3
         assert (
-            ChildrenCalendarRelationship.objects.filter(
+            ChildrenCalendarRelationship.objects.filter_by_organization(organization)
+            .filter(
                 bundle_calendar=bundle,
-                organization=organization,
                 is_primary=True,
-            ).count()
+            )
+            .count()
             == 1
         )
         assert (
-            ChildrenCalendarRelationship.objects.get(
+            ChildrenCalendarRelationship.objects.filter_by_organization(organization)
+            .get(
                 bundle_calendar=bundle,
-                organization=organization,
                 is_primary=True,
-            ).child_calendar_fk_id
+            )
+            .child_calendar_fk_id
             == child3.id
         )
 
@@ -5661,19 +5589,25 @@ class TestCalendarBundleUpdateAction:
         assert response.data["id"] == bundle.id
 
         # child_disabled should still be a child
-        assert ChildrenCalendarRelationship.objects.filter(
-            bundle_calendar=bundle,
-            child_calendar_fk_id=child_disabled.id,
-            organization=organization,
-        ).exists()
+        assert (
+            ChildrenCalendarRelationship.objects.filter_by_organization(organization)
+            .filter(
+                bundle_calendar=bundle,
+                child_calendar_fk_id=child_disabled.id,
+            )
+            .exists()
+        )
 
         # child_active should still be a child and marked primary
-        assert ChildrenCalendarRelationship.objects.filter(
-            bundle_calendar=bundle,
-            child_calendar_fk_id=child_active.id,
-            organization=organization,
-            is_primary=True,
-        ).exists()
+        assert (
+            ChildrenCalendarRelationship.objects.filter_by_organization(organization)
+            .filter(
+                bundle_calendar=bundle,
+                child_calendar_fk_id=child_active.id,
+                is_primary=True,
+            )
+            .exists()
+        )
 
     def test_bundle_update_rejects_new_disabled_child(self, organization):
         """
@@ -5704,11 +5638,14 @@ class TestCalendarBundleUpdateAction:
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
 
         # disabled_new should NOT be a child
-        assert not ChildrenCalendarRelationship.objects.filter(
-            bundle_calendar=bundle,
-            child_calendar_fk_id=disabled_new.id,
-            organization=organization,
-        ).exists()
+        assert (
+            not ChildrenCalendarRelationship.objects.filter_by_organization(organization)
+            .filter(
+                bundle_calendar=bundle,
+                child_calendar_fk_id=disabled_new.id,
+            )
+            .exists()
+        )
 
 
 @pytest.mark.django_db
@@ -5762,14 +5699,11 @@ class TestCalendarDisableGating:
     @staticmethod
     def _make_admin(organization):
         """Create an admin user+membership; return (user, APIClient)."""
-        from rest_framework.test import APIClient
-
         admin = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin,
             organization=organization,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
         )
         client = APIClient()
         client.force_authenticate(user=admin)
@@ -5778,14 +5712,11 @@ class TestCalendarDisableGating:
     @staticmethod
     def _make_member(organization):
         """Create a regular member; return (user, APIClient)."""
-        from rest_framework.test import APIClient
-
         member = baker.make(User)
         baker.make(
             OrganizationMembership,
             user=member,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
         client = APIClient()
         client.force_authenticate(user=member)
@@ -5874,10 +5805,10 @@ class TestCalendarDisableGating:
         admin_client.delete(url)
 
         # Events must still exist
-        assert CalendarEvent.objects.filter(id=primary_event.id).exists()
-        assert CalendarEvent.objects.filter(id=representation_event.id).exists()
+        assert CalendarEvent.original_manager.filter(id=primary_event.id).exists()
+        assert CalendarEvent.original_manager.filter(id=representation_event.id).exists()
         # BlockedTime must still exist
-        assert BlockedTime.objects.filter(id=representation_blocked.id).exists()
+        assert BlockedTime.original_manager.filter(id=representation_blocked.id).exists()
 
     def test_bundle_disable_by_non_admin_member_403(self, organization):
         """Non-admin org member cannot disable a bundle → 403, bundle unchanged."""
@@ -5895,14 +5826,11 @@ class TestCalendarDisableGating:
 
     def test_personal_calendar_disable_by_owner_204(self, organization):
         """Calendar owner can disable their own personal calendar → 204."""
-        from rest_framework.test import APIClient
-
         owner = baker.make(User)
         baker.make(
             OrganizationMembership,
             user=owner,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
         personal = CalendarIntegrationTestFactory.create_calendar(
             organization=organization,
@@ -5926,7 +5854,6 @@ class TestCalendarDisableGating:
             OrganizationMembership,
             user=other_user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
         personal = CalendarIntegrationTestFactory.create_calendar(
             organization=organization,
@@ -6139,15 +6066,12 @@ class TestCalendarEventDownloadICS:
         PermissionDenied (403) from has_object_permission's False branch rather than
         Http404 — distinguishing an unauthorized member from a cross-org/unknown event.
         """
-        from rest_framework.test import APIClient
-
         organization = CalendarIntegrationTestFactory.create_organization()
         member_user = baker.make(User)
         baker.make(
             OrganizationMembership,
             user=member_user,
             organization=organization,
-            role=OrganizationRole.MEMBER,
         )
 
         # Calendar owned by someone else — member_user has NO CalendarOwnership on it.

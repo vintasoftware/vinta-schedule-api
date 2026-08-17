@@ -538,7 +538,7 @@ class NoOutstandingBalanceError(PaymentError):
     collect, even though ``SubscriptionService.retry_payment`` only reaches
     this call for a subscription that is GRACE or RESTRICTED.
 
-    Billing API Contract Hardening, Phase 4: this is the error that makes the
+    This is the error that makes the
     "collect the balance" primitive fail loudly instead of silently -- see
     ``BaseSubscriptionAdapter.pay_outstanding_invoice``'s docstring for the
     probe evidence of what used to happen instead (a $0.00 proration invoice
@@ -567,8 +567,7 @@ class CollectionNotSupportedError(PaymentAdapterError):
     carries the base ``BillingError``/``ValueError`` lineage but had no
     ``common.exception_handlers.vinta_exception_handler`` branch, so it reached
     ``SubscriptionViewSet.retry_payment`` callers as an *unhandled* 500 rather
-    than a typed response (Billing API Contract Hardening, Phase 4 reviewer
-    finding SHOULD-FIX 7). This subclass exists so the handler can special-case
+    than a typed response. This subclass exists so the handler can special-case
     it without also changing how every other ``PaymentAdapterError`` renders.
     """
 
@@ -593,8 +592,7 @@ class ChargeDeclinedError(PaymentError):
     translation and why only these two -- never every ``stripe.StripeError``
     subclass -- are caught there).
 
-    Billing API Contract Hardening, Phase 5 live-probe BLOCKER: a Stripe
-    test-mode probe of the exact call ``retry_failed_charge`` makes, against a
+    A live Stripe test-mode probe of the exact call ``retry_failed_charge`` makes, against a
     card still dead (the *common* dunning-tick outcome -- a dead card is why a
     payer is in dunning at all), raised an uncaught ``stripe.CardError`` before
     this class existed. A Tier 4 reviewer then proved a second, related gap

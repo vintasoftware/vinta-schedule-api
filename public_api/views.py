@@ -14,7 +14,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.viewsets import GenericViewSet, ViewSet
 
-from organizations.models import get_active_organization_membership
+from common.utils.view_utils import TenantScopedViewMixin
 from organizations.permissions import IsOrganizationAdmin
 from payments.services.entitlement_service import EntitlementService
 from public_api.constants import PROVIDER_SCOPED_RESOURCES
@@ -35,7 +35,9 @@ from webhooks.constants import WEBHOOK_EVENT_DESCRIPTIONS, WebhookEventType
 logger = logging.getLogger(__name__)
 
 
-class SystemUserTokenViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
+class SystemUserTokenViewSet(
+    TenantScopedViewMixin, ListModelMixin, RetrieveModelMixin, GenericViewSet
+):
     """Admin-only viewset for managing public-API tokens (SystemUser + ResourceAccess rows).
 
     Supports create, list, retrieve, revoke, and editing resource grants.
@@ -46,8 +48,32 @@ class SystemUserTokenViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet)
 
     ``GET /public-api-tokens/`` lists the caller's org tokens without secrets.
     ``GET /public-api-tokens/{id}/`` retrieves a single token without secrets.
+
+    Every route here selects its organization with ``X-Organization-Id``, on the
+    terms the header is documented with everywhere else: optional for a caller
+    with one active membership, required (400) for a caller with two or more, and
+    403 when it names an organization the caller is not an active member of.
     """
 
+    # ``TenantScopedViewMixin`` resolves ``X-Organization-Id`` before the
+    # queryset and create serializer choose a membership. Without it, this
+    # would be a plain ``GenericViewSet``, and a multi-organization admin
+    # could list and mint the tokens of an organization the header did not
+    # name. The mixin also puts these routes in front of
+    # ``common.openapi.TenantScopedAutoSchema``, which is what documents the
+    # header in ``schema.yml``.
+
+    # This viewset no longer carries a local ``initial()`` override that
+    # re-ran ``check_permissions`` after the mixin's resolver. That override
+    # was the repo's only defence against ``IsOrganizationAdmin.has_permission``
+    # being asked about the caller's *oldest* membership rather than the
+    # organization the header names -- an admin of A, plain member of B,
+    # passing the collection-level gate for a request that then listed and
+    # minted B's tokens. ``TenantScopedViewMixin.perform_authentication`` now
+    # resolves before ``check_permissions`` for every view on the mixin, so
+    # keeping the override would only run the same check twice.
+    # ``public_api/tests/test_views.py::TestSystemUserTokenViewSetHonoursTheOrganizationHeader``
+    # still pins the 403, now through the general fix.
     permission_classes = (IsOrganizationAdmin,)
     serializer_class = SystemUserTokenCreateSerializer
 
@@ -67,15 +93,26 @@ class SystemUserTokenViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet)
         Prefetches available_resources (related_name on ResourceAccess.system_user FK)
         to avoid N+1 queries when serializing available_resources.
         """
+        # The implicit scope, not ``filter_by_organization(...)``:
+        # ``TenantScopedViewMixin`` binds the organization this request resolved,
+        # so ``objects`` is already confined to it and naming it again would only
+        # be a second chance to name the wrong one.
+        #
+        # The membership check stays. It is not the narrowing -- it is the guard
+        # for the rows of the resolution table that bind *nothing*: a caller with
+        # no active membership resolves to gated, and a scoped read with no
+        # organization bound raises ``OrganizationNotFoundError`` under
+        # ``STRICT_ORGANIZATION_FILTER`` rather than returning empty.
+        # (``objects.none()`` needs no organization; the package builds it off the
+        # unscoped queryset precisely because an empty result can leak nothing.)
         user = self.request.user
         if not user.is_authenticated:
             return SystemUser.objects.none()
-        membership = get_active_organization_membership(user)
+        membership = self.request.organization_membership
         if membership:
-            return SystemUser.objects.filter(
-                organization_id=membership.organization_id,
-                deleted_at__isnull=True,
-            ).prefetch_related("available_resources")
+            return SystemUser.objects.filter(deleted_at__isnull=True).prefetch_related(
+                "available_resources"
+            )
         return SystemUser.objects.none()
 
     def get_serializer_class(self):  # type: ignore[override]

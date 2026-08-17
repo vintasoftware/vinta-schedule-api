@@ -18,6 +18,8 @@ import datetime
 import uuid
 from unittest.mock import patch
 
+from django.contrib.auth import get_user_model
+
 import pytest
 from model_bakery import baker
 from rest_framework.test import APIClient
@@ -32,6 +34,8 @@ from calendar_integration.models import (
     CalendarOwnership,
     EventManagementPermissions,
 )
+from calendar_integration.services.bookable_slots_service import BookableSlotsService
+from calendar_integration.services.booking_policy_service import BookingPolicyService
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from organizations.models import Organization, OrganizationMembership
 from public_api.constants import PublicAPIResources
@@ -85,8 +89,6 @@ def _org() -> Organization:
 
 def _owner_calendar(org: Organization) -> tuple:
     """Return (owner_user, membership, calendar) — personal managed calendar with ownership."""
-    from django.contrib.auth import get_user_model
-
     user_model = get_user_model()
     unique = uuid.uuid4().hex[:6]
     user = user_model.objects.create_user(email=f"owner_{unique}@example.com", password="pw")
@@ -468,9 +470,6 @@ class TestCreateCalendarEventWithCodePolicyEnforcement:
         This test asserts the discovery/enforcement agreement: a slot the
         ``BookableSlotsService`` would reject is also rejected by ``create_event``.
         """
-        from calendar_integration.services.bookable_slots_service import BookableSlotsService
-        from calendar_integration.services.booking_policy_service import BookingPolicyService
-
         org = _org()
         cal = _code_calendar(org)
         _booking_code(org, cal)
@@ -503,9 +502,6 @@ class TestCreateCalendarEventWithCodePolicyEnforcement:
 
     def test_discovery_enforcement_agreement_horizon(self):
         """A slot beyond the max-horizon is rejected by both discovery and enforcement."""
-        from calendar_integration.services.bookable_slots_service import BookableSlotsService
-        from calendar_integration.services.booking_policy_service import BookingPolicyService
-
         org = _org()
         cal = _code_calendar(org)
 
@@ -537,9 +533,6 @@ class TestCreateCalendarEventWithCodePolicyEnforcement:
 
     def test_discovery_enforcement_agreement_buffer(self):
         """A slot inside an existing event's buffer dead zone is rejected by both."""
-        from calendar_integration.services.bookable_slots_service import BookableSlotsService
-        from calendar_integration.services.booking_policy_service import BookingPolicyService
-
         org = _org()
         cal = _code_calendar(org)
 
@@ -580,9 +573,6 @@ class TestCreateCalendarEventWithCodePolicyEnforcement:
 
     def test_discovery_enforcement_agreement_positive(self):
         """A slot the engine DOES offer is accepted by the mutation (positive agreement)."""
-        from calendar_integration.services.bookable_slots_service import BookableSlotsService
-        from calendar_integration.services.booking_policy_service import BookingPolicyService
-
         org = _org()
         cal = _code_calendar(org)
 

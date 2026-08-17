@@ -2159,15 +2159,16 @@ paths:
         ``IsBillingOwnerOrAdmin``. A ledger row carries an ``event_id`` and an exact
         ``occurrence_start`` -- that is calendar content, and it spans every
         calendar in the caller's pooled subtree, including ones the caller has no
-        membership scope on. A count is not. See the plan's Guiding Decisions.
+        membership scope on. A count is not.
 
         ``check_object_permissions`` is called explicitly in ``list()`` against the
         resolved billing root -- the same two-step dance
         ``SubscriptionViewSet.get_subscription`` and ``AddOnViewSet.create`` already
         perform, and for the same reason their comments document:
-        ``has_permission`` cannot know *which* organization this read is for,
-        because ``request.organization`` is not resolved yet at that point in
-        ``TenantScopedViewMixin.initial()``'s ordering (see
+        ``has_permission`` cannot know *which* organization this read is for: the
+        read is against the billing **root**, which is frequently an ancestor of the
+        organization the request resolved, and only the caller of
+        ``check_object_permissions`` knows which one that is (see
         ``IsBillingOwnerOrAdmin``'s docstring).
       summary: List metered occurrences behind post-paid charges
       parameters:
@@ -2268,15 +2269,16 @@ paths:
         ``IsBillingOwnerOrAdmin``. A ledger row carries an ``event_id`` and an exact
         ``occurrence_start`` -- that is calendar content, and it spans every
         calendar in the caller's pooled subtree, including ones the caller has no
-        membership scope on. A count is not. See the plan's Guiding Decisions.
+        membership scope on. A count is not.
 
         ``check_object_permissions`` is called explicitly in ``list()`` against the
         resolved billing root -- the same two-step dance
         ``SubscriptionViewSet.get_subscription`` and ``AddOnViewSet.create`` already
         perform, and for the same reason their comments document:
-        ``has_permission`` cannot know *which* organization this read is for,
-        because ``request.organization`` is not resolved yet at that point in
-        ``TenantScopedViewMixin.initial()``'s ordering (see
+        ``has_permission`` cannot know *which* organization this read is for: the
+        read is against the billing **root**, which is frequently an ancestor of the
+        organization the request resolved, and only the caller of
+        ``check_object_permissions`` knows which one that is (see
         ``IsBillingOwnerOrAdmin``'s docstring).
       summary: List metered occurrences behind post-paid charges
       parameters:
@@ -2375,9 +2377,9 @@ paths:
         ``GET /billing/usage/periods/`` and ``GET /billing/usage/periods/{id}/``
         -- the durable statements ``CycleCloseService`` writes at cycle close (see
         ``BillingPeriodSummary``'s docstring). List and detail are bundled
-        deliberately: they share a queryset, a permission, and a serializer tree
-        (see the plan's "Bundled phase granularity" decision) rather than shipping
-        as two PRs whose second one is fifty lines.
+        deliberately: they share a queryset, a permission, and a serializer tree,
+        so shipping them together avoided a second PR that would only add fifty
+        lines.
 
         Scoped to the caller's resolved pool exactly like ``BillingUsageViewSet``:
         ``resolve_billing_root`` then ``get_pooled_organization_ids``, both
@@ -2391,7 +2393,7 @@ paths:
         organization needs in order to resolve billing, including while
         ``RESTRICTED``.
 
-        History is forward-only (see the plan's Non-goals / Risk & Rollout Notes):
+        History is forward-only:
         an organization with no closed periods yet gets ``200`` with an empty list,
         never a ``404`` -- there is nothing wrong with that organization, cycle
         close simply has not run for it yet. A caller with **no active
@@ -2459,9 +2461,9 @@ paths:
         ``GET /billing/usage/periods/`` and ``GET /billing/usage/periods/{id}/``
         -- the durable statements ``CycleCloseService`` writes at cycle close (see
         ``BillingPeriodSummary``'s docstring). List and detail are bundled
-        deliberately: they share a queryset, a permission, and a serializer tree
-        (see the plan's "Bundled phase granularity" decision) rather than shipping
-        as two PRs whose second one is fifty lines.
+        deliberately: they share a queryset, a permission, and a serializer tree,
+        so shipping them together avoided a second PR that would only add fifty
+        lines.
 
         Scoped to the caller's resolved pool exactly like ``BillingUsageViewSet``:
         ``resolve_billing_root`` then ``get_pooled_organization_ids``, both
@@ -2475,7 +2477,7 @@ paths:
         organization needs in order to resolve billing, including while
         ``RESTRICTED``.
 
-        History is forward-only (see the plan's Non-goals / Risk & Rollout Notes):
+        History is forward-only:
         an organization with no closed periods yet gets ``200`` with an empty list,
         never a ``404`` -- there is nothing wrong with that organization, cycle
         close simply has not run for it yet. A caller with **no active
@@ -2550,9 +2552,9 @@ paths:
         ``GET /billing/usage/periods/`` and ``GET /billing/usage/periods/{id}/``
         -- the durable statements ``CycleCloseService`` writes at cycle close (see
         ``BillingPeriodSummary``'s docstring). List and detail are bundled
-        deliberately: they share a queryset, a permission, and a serializer tree
-        (see the plan's "Bundled phase granularity" decision) rather than shipping
-        as two PRs whose second one is fifty lines.
+        deliberately: they share a queryset, a permission, and a serializer tree,
+        so shipping them together avoided a second PR that would only add fifty
+        lines.
 
         Scoped to the caller's resolved pool exactly like ``BillingUsageViewSet``:
         ``resolve_billing_root`` then ``get_pooled_organization_ids``, both
@@ -2566,7 +2568,7 @@ paths:
         organization needs in order to resolve billing, including while
         ``RESTRICTED``.
 
-        History is forward-only (see the plan's Non-goals / Risk & Rollout Notes):
+        History is forward-only:
         an organization with no closed periods yet gets ``200`` with an empty list,
         never a ``404`` -- there is nothing wrong with that organization, cycle
         close simply has not run for it yet. A caller with **no active
@@ -2610,9 +2612,9 @@ paths:
         ``GET /billing/usage/periods/`` and ``GET /billing/usage/periods/{id}/``
         -- the durable statements ``CycleCloseService`` writes at cycle close (see
         ``BillingPeriodSummary``'s docstring). List and detail are bundled
-        deliberately: they share a queryset, a permission, and a serializer tree
-        (see the plan's "Bundled phase granularity" decision) rather than shipping
-        as two PRs whose second one is fifty lines.
+        deliberately: they share a queryset, a permission, and a serializer tree,
+        so shipping them together avoided a second PR that would only add fifty
+        lines.
 
         Scoped to the caller's resolved pool exactly like ``BillingUsageViewSet``:
         ``resolve_billing_root`` then ``get_pooled_organization_ids``, both
@@ -2626,7 +2628,7 @@ paths:
         organization needs in order to resolve billing, including while
         ``RESTRICTED``.
 
-        History is forward-only (see the plan's Non-goals / Risk & Rollout Notes):
+        History is forward-only:
         an organization with no closed periods yet gets ``200`` with an empty list,
         never a ``404`` -- there is nothing wrong with that organization, cycle
         close simply has not run for it yet. A caller with **no active
@@ -4401,10 +4403,10 @@ paths:
       description: |-
         GET /branding/ — retrieve the acting org's branding.
 
-        Uses the two-condition eligibility gate, not the full write gate: a
-        slug-less-but-otherwise-eligible org is admitted here (and falls
-        through to the normal 404-no-row-yet / 200-with-a-row branch below)
-        -- see ``_check_branding_read_gate``.
+        Uses the two-condition eligibility gate (parentless, entitled) rather
+        than the write gate; the two admit the same set -- see
+        ``_check_branding_read_gate``. An eligible org with no branding row yet
+        falls through to the 404-no-row-yet / 200-with-a-row branch below.
       summary: Retrieve the acting organization's branding
       parameters:
       - in: header
@@ -4430,9 +4432,8 @@ paths:
                 $ref: '#/components/schemas/OrganizationBranding'
           description: ''
         '403':
-          description: Organization has a parent or lacks the entitlement; or not
-            an admin. A slug-less-but-otherwise-eligible org is NOT refused here --
-            see 404.
+          description: Organization has a parent, lacks the entitlement, or lacks
+            branding permission.
         '404':
           description: Branding not yet configured
     put:
@@ -4440,7 +4441,7 @@ paths:
       description: |-
         PUT /branding/ — create or replace the acting org's branding.
 
-        Audited (Organization Auth-Area Branding plan, Phase 4): a refused write
+        Audited: a refused write
         (gate failure or serializer validation error) raises before this method
         reaches the upsert, so nothing is ever recorded for a refused write. A
         first-time upsert records a CREATE with no diff; an upsert that replaces
@@ -4491,14 +4492,14 @@ paths:
         '400':
           description: Invalid input (color format, URL validation)
         '403':
-          description: Organization has a parent, lacks the entitlement, or has no
-            slug; or not an admin
+          description: Organization has a parent, lacks the entitlement, or lacks
+            branding permission
     patch:
       operationId: branding_partial_update
       description: |-
         PATCH /branding/ — update the acting org's branding (partial).
 
-        Audited (Organization Auth-Area Branding plan, Phase 4): a refused write
+        Audited: a refused write
         (gate failure, 404-not-configured, or serializer validation error) raises
         before this method reaches ``serializer.save()``, so nothing is ever
         recorded for a refused write. Always an UPDATE (PATCH never creates —
@@ -4542,15 +4543,15 @@ paths:
         '400':
           description: Invalid input (color format, URL validation)
         '403':
-          description: Organization has a parent, lacks the entitlement, or has no
-            slug; or not an admin
+          description: Organization has a parent, lacks the entitlement, or lacks
+            branding permission
         '404':
           description: Branding not yet configured
   /branding/logo-upload-params/:
     post:
       operationId: branding_logo_upload_params_create
       description: |-
-        Signs a ``branding_logos`` S3 upload for the acting organization's admin.
+        Signs a ``branding_logos`` S3 upload for a caller with branding capability.
 
         The shipped ``django-s3direct`` signing view (``POST
         /s3direct/get_upload_params/``) is a plain Django view authenticated only
@@ -4561,12 +4562,13 @@ paths:
         reusing the same ``sign_branding_logo_upload`` signing helper so the S3
         key/credential logic has one implementation.
 
-        Gated on the two-condition branding **eligibility** check
+        Gated on ``organizations.manage_branding`` and the branding **eligibility** check
         (``organizations.permissions.check_branding_read_eligibility`` -- parentless
-        AND entitled), not the three-condition write gate: the frontend uploads a
-        logo on file-picker change, before the slug/branding PUT on form submit, so
-        requiring a slug here would refuse an upload the write gate itself never
-        sees. Matches ``OrganizationBrandingView.get``'s read gate.
+        AND entitled) rather than on the write gate. The two admit the same set now
+        that the write gate's slug condition is retired, but the split is kept: the
+        frontend uploads a logo on file-picker change, before the branding PUT on
+        form submit, so this surface deliberately depends on the read-side gate.
+        Matches ``OrganizationBrandingView.get``'s read gate.
       summary: Sign a branding logo upload
       parameters:
       - in: header
@@ -4606,8 +4608,8 @@ paths:
         '400':
           description: Disallowed content type or file size
         '403':
-          description: Organization has a parent or lacks the entitlement; or not
-            an admin
+          description: Organization has a parent, lacks the entitlement, or lacks
+            branding permission
   /branding/logo/{org_slug}/:
     get:
       operationId: branding_logo_retrieve
@@ -6266,11 +6268,10 @@ paths:
       operationId: calendar_groups_slots_availability_windows_list
       description: |-
         Nested under a group's slot: manage group-scoped availability windows
-        for calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
-        Phase 1c).
+        for calendars in that slot's roster.
 
         Reads go through ``AvailableTime.objects.for_group_slot(...)``. Every
-        write delegates to ``CalendarGroupService`` (Phase 1a) -- this view holds
+        write delegates to ``CalendarGroupService`` -- this view holds
         no business logic of its own, only request/response translation. Route
         visibility is gated by ``GroupScopedAvailabilityWindowPermission``; the
         per-calendar write authorization is re-checked by the service and its
@@ -6379,11 +6380,10 @@ paths:
       operationId: calendar_groups_slots_availability_windows_formatted_list
       description: |-
         Nested under a group's slot: manage group-scoped availability windows
-        for calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
-        Phase 1c).
+        for calendars in that slot's roster.
 
         Reads go through ``AvailableTime.objects.for_group_slot(...)``. Every
-        write delegates to ``CalendarGroupService`` (Phase 1a) -- this view holds
+        write delegates to ``CalendarGroupService`` -- this view holds
         no business logic of its own, only request/response translation. Route
         visibility is gated by ``GroupScopedAvailabilityWindowPermission``; the
         per-calendar write authorization is re-checked by the service and its
@@ -6506,11 +6506,10 @@ paths:
       operationId: calendar_groups_slots_availability_windows_retrieve
       description: |-
         Nested under a group's slot: manage group-scoped availability windows
-        for calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
-        Phase 1c).
+        for calendars in that slot's roster.
 
         Reads go through ``AvailableTime.objects.for_group_slot(...)``. Every
-        write delegates to ``CalendarGroupService`` (Phase 1a) -- this view holds
+        write delegates to ``CalendarGroupService`` -- this view holds
         no business logic of its own, only request/response translation. Route
         visibility is gated by ``GroupScopedAvailabilityWindowPermission``; the
         per-calendar write authorization is re-checked by the service and its
@@ -6653,11 +6652,10 @@ paths:
       operationId: calendar_groups_slots_availability_windows_formatted_retrieve
       description: |-
         Nested under a group's slot: manage group-scoped availability windows
-        for calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
-        Phase 1c).
+        for calendars in that slot's roster.
 
         Reads go through ``AvailableTime.objects.for_group_slot(...)``. Every
-        write delegates to ``CalendarGroupService`` (Phase 1a) -- this view holds
+        write delegates to ``CalendarGroupService`` -- this view holds
         no business logic of its own, only request/response translation. Route
         visibility is gated by ``GroupScopedAvailabilityWindowPermission``; the
         per-calendar write authorization is re-checked by the service and its
@@ -6821,12 +6819,11 @@ paths:
       operationId: calendar_groups_slots_blocked_times_list
       description: |-
         Nested under a group's slot: manage group-scoped blocked times for
-        calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
-        Phase 2b).
+        calendars in that slot's roster.
 
         Direct mirror of ``GroupScopedAvailabilityWindowViewSet`` -- reads go
         through ``BlockedTime.objects.for_group_slot(...)``, every write
-        delegates to the Phase 2a ``CalendarGroupService`` block-write methods,
+        delegates to the ``CalendarGroupService`` block-write methods,
         and route visibility is gated by ``GroupScopedBlockedTimePermission``.
         See that viewset's docstring for the full rationale; only the resource
         it manages differs (blocks instead of windows).
@@ -6932,12 +6929,11 @@ paths:
       operationId: calendar_groups_slots_blocked_times_formatted_list
       description: |-
         Nested under a group's slot: manage group-scoped blocked times for
-        calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
-        Phase 2b).
+        calendars in that slot's roster.
 
         Direct mirror of ``GroupScopedAvailabilityWindowViewSet`` -- reads go
         through ``BlockedTime.objects.for_group_slot(...)``, every write
-        delegates to the Phase 2a ``CalendarGroupService`` block-write methods,
+        delegates to the ``CalendarGroupService`` block-write methods,
         and route visibility is gated by ``GroupScopedBlockedTimePermission``.
         See that viewset's docstring for the full rationale; only the resource
         it manages differs (blocks instead of windows).
@@ -7057,12 +7053,11 @@ paths:
       operationId: calendar_groups_slots_blocked_times_retrieve
       description: |-
         Nested under a group's slot: manage group-scoped blocked times for
-        calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
-        Phase 2b).
+        calendars in that slot's roster.
 
         Direct mirror of ``GroupScopedAvailabilityWindowViewSet`` -- reads go
         through ``BlockedTime.objects.for_group_slot(...)``, every write
-        delegates to the Phase 2a ``CalendarGroupService`` block-write methods,
+        delegates to the ``CalendarGroupService`` block-write methods,
         and route visibility is gated by ``GroupScopedBlockedTimePermission``.
         See that viewset's docstring for the full rationale; only the resource
         it manages differs (blocks instead of windows).
@@ -7203,12 +7198,11 @@ paths:
       operationId: calendar_groups_slots_blocked_times_formatted_retrieve
       description: |-
         Nested under a group's slot: manage group-scoped blocked times for
-        calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
-        Phase 2b).
+        calendars in that slot's roster.
 
         Direct mirror of ``GroupScopedAvailabilityWindowViewSet`` -- reads go
         through ``BlockedTime.objects.for_group_slot(...)``, every write
-        delegates to the Phase 2a ``CalendarGroupService`` block-write methods,
+        delegates to the ``CalendarGroupService`` block-write methods,
         and route visibility is gated by ``GroupScopedBlockedTimePermission``.
         See that viewset's docstring for the full rationale; only the resource
         it manages differs (blocks instead of windows).
@@ -7370,13 +7364,12 @@ paths:
       operationId: calendar_groups_slots_quota_rules_list
       description: |-
         Nested under a group's slot: manage group-scoped quota rules for
-        calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
-        Phase 3c).
+        calendars in that slot's roster.
 
         Mirrors ``GroupScopedAvailabilityWindowViewSet``/``GroupScopedBlockedTimeViewSet``
         exactly -- reads go through
         ``CalendarGroupSlotQuotaRule.objects.for_group_slot(...)``, every write
-        delegates to the Phase 3c ``CalendarGroupService`` quota-write methods,
+        delegates to the ``CalendarGroupService`` quota-write methods,
         and route visibility is gated by ``GroupScopedQuotaRulePermission``. The
         resource is simpler than windows/blocks: quota rules are non-recurring
         (no ``rrule_string``/``timezone``/time range) and unmetered (no
@@ -7490,13 +7483,12 @@ paths:
       operationId: calendar_groups_slots_quota_rules_formatted_list
       description: |-
         Nested under a group's slot: manage group-scoped quota rules for
-        calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
-        Phase 3c).
+        calendars in that slot's roster.
 
         Mirrors ``GroupScopedAvailabilityWindowViewSet``/``GroupScopedBlockedTimeViewSet``
         exactly -- reads go through
         ``CalendarGroupSlotQuotaRule.objects.for_group_slot(...)``, every write
-        delegates to the Phase 3c ``CalendarGroupService`` quota-write methods,
+        delegates to the ``CalendarGroupService`` quota-write methods,
         and route visibility is gated by ``GroupScopedQuotaRulePermission``. The
         resource is simpler than windows/blocks: quota rules are non-recurring
         (no ``rrule_string``/``timezone``/time range) and unmetered (no
@@ -7624,13 +7616,12 @@ paths:
       operationId: calendar_groups_slots_quota_rules_retrieve
       description: |-
         Nested under a group's slot: manage group-scoped quota rules for
-        calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
-        Phase 3c).
+        calendars in that slot's roster.
 
         Mirrors ``GroupScopedAvailabilityWindowViewSet``/``GroupScopedBlockedTimeViewSet``
         exactly -- reads go through
         ``CalendarGroupSlotQuotaRule.objects.for_group_slot(...)``, every write
-        delegates to the Phase 3c ``CalendarGroupService`` quota-write methods,
+        delegates to the ``CalendarGroupService`` quota-write methods,
         and route visibility is gated by ``GroupScopedQuotaRulePermission``. The
         resource is simpler than windows/blocks: quota rules are non-recurring
         (no ``rrule_string``/``timezone``/time range) and unmetered (no
@@ -7738,13 +7729,12 @@ paths:
       operationId: calendar_groups_slots_quota_rules_destroy
       description: |-
         Nested under a group's slot: manage group-scoped quota rules for
-        calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
-        Phase 3c).
+        calendars in that slot's roster.
 
         Mirrors ``GroupScopedAvailabilityWindowViewSet``/``GroupScopedBlockedTimeViewSet``
         exactly -- reads go through
         ``CalendarGroupSlotQuotaRule.objects.for_group_slot(...)``, every write
-        delegates to the Phase 3c ``CalendarGroupService`` quota-write methods,
+        delegates to the ``CalendarGroupService`` quota-write methods,
         and route visibility is gated by ``GroupScopedQuotaRulePermission``. The
         resource is simpler than windows/blocks: quota rules are non-recurring
         (no ``rrule_string``/``timezone``/time range) and unmetered (no
@@ -7797,13 +7787,12 @@ paths:
       operationId: calendar_groups_slots_quota_rules_formatted_retrieve
       description: |-
         Nested under a group's slot: manage group-scoped quota rules for
-        calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
-        Phase 3c).
+        calendars in that slot's roster.
 
         Mirrors ``GroupScopedAvailabilityWindowViewSet``/``GroupScopedBlockedTimeViewSet``
         exactly -- reads go through
         ``CalendarGroupSlotQuotaRule.objects.for_group_slot(...)``, every write
-        delegates to the Phase 3c ``CalendarGroupService`` quota-write methods,
+        delegates to the ``CalendarGroupService`` quota-write methods,
         and route visibility is gated by ``GroupScopedQuotaRulePermission``. The
         resource is simpler than windows/blocks: quota rules are non-recurring
         (no ``rrule_string``/``timezone``/time range) and unmetered (no
@@ -7925,13 +7914,12 @@ paths:
       operationId: calendar_groups_slots_quota_rules_formatted_destroy
       description: |-
         Nested under a group's slot: manage group-scoped quota rules for
-        calendars in that slot's roster (CALENDAR_GROUP_SCOPED_AVAILABILITY
-        Phase 3c).
+        calendars in that slot's roster.
 
         Mirrors ``GroupScopedAvailabilityWindowViewSet``/``GroupScopedBlockedTimeViewSet``
         exactly -- reads go through
         ``CalendarGroupSlotQuotaRule.objects.for_group_slot(...)``, every write
-        delegates to the Phase 3c ``CalendarGroupService`` quota-write methods,
+        delegates to the ``CalendarGroupService`` quota-write methods,
         and route visibility is gated by ``GroupScopedQuotaRulePermission``. The
         resource is simpler than windows/blocks: quota rules are non-recurring
         (no ``rrule_string``/``timezone``/time range) and unmetered (no
@@ -11536,7 +11524,8 @@ paths:
         - `deactivate`: POST to disable a member (prevent self-deactivation and
           protect the last active admin).
         - `reactivate`: POST to re-enable a member.
-        - `update-role`: POST to change a member's role (protect the last active admin).
+        - `groups`: POST to set a member's groups, and with them their capabilities
+          (protects the last member who can manage members).
       parameters:
       - in: header
         name: X-Organization-Id
@@ -11605,7 +11594,8 @@ paths:
         - `deactivate`: POST to disable a member (prevent self-deactivation and
           protect the last active admin).
         - `reactivate`: POST to re-enable a member.
-        - `update-role`: POST to change a member's role (protect the last active admin).
+        - `groups`: POST to set a member's groups, and with them their capabilities
+          (protects the last member who can manage members).
       parameters:
       - in: header
         name: X-Organization-Id
@@ -11681,7 +11671,8 @@ paths:
         - `deactivate`: POST to disable a member (prevent self-deactivation and
           protect the last active admin).
         - `reactivate`: POST to re-enable a member.
-        - `update-role`: POST to change a member's role (protect the last active admin).
+        - `groups`: POST to set a member's groups, and with them their capabilities
+          (protects the last member who can manage members).
       parameters:
       - in: header
         name: X-Organization-Id
@@ -11723,7 +11714,8 @@ paths:
         - `deactivate`: POST to disable a member (prevent self-deactivation and
           protect the last active admin).
         - `reactivate`: POST to re-enable a member.
-        - `update-role`: POST to change a member's role (protect the last active admin).
+        - `groups`: POST to set a member's groups, and with them their capabilities
+          (protects the last member who can manage members).
       parameters:
       - in: header
         name: X-Organization-Id
@@ -11880,6 +11872,165 @@ paths:
           description: Not an admin
         '404':
           description: Member not found or cross-org
+  /organization-members/{user_id}/groups/:
+    post:
+      operationId: organization_members_groups_create
+      description: |-
+        Replace a member's groups, and with them the capabilities they hold.
+
+        Replaces the former ``update-role`` action. The request names *groups*
+        -- the one write where a group name is the natural input, since
+        assigning a group is the act of choosing one -- and the response
+        reports the resulting *permissions*, which is what every authorization
+        check actually reads.
+
+        Guards:
+
+        - **The organization keeps at least one member who can manage
+          members.** Restated from "cannot demote the last active admin": the
+          rule counts by capability (``organizations.manage_members``) rather
+          than by the ``role`` column, so it holds for any future group that
+          carries the capability and does not depend on a representation the
+          API no longer exposes.
+        - A restricted organization may not write at all. See ``deactivate``
+          above for why the check is here rather than in
+          ``OrganizationService``.
+
+        Idempotency: assigning the groups a member already holds is a no-op
+        success, including for the sole administrator re-assigning
+        ``organization_admin`` to themselves -- the guard fires on *losing* the
+        capability, not on writing it again.
+      summary: Set an organization member's groups
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: user_id
+        schema:
+          type: string
+        required: true
+      tags:
+      - organization-members
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssignMembershipGroups'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/AssignMembershipGroups'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/AssignMembershipGroups'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationMembership'
+          description: ''
+        '400':
+          description: Unknown group name, empty group list, or the assignment would
+            leave the organization with nobody who can manage members
+        '403':
+          description: Not an admin
+        '404':
+          description: Member not found or cross-org
+  /organization-members/{user_id}/groups{format}:
+    post:
+      operationId: organization_members_groups_formatted_create
+      description: |-
+        Replace a member's groups, and with them the capabilities they hold.
+
+        Replaces the former ``update-role`` action. The request names *groups*
+        -- the one write where a group name is the natural input, since
+        assigning a group is the act of choosing one -- and the response
+        reports the resulting *permissions*, which is what every authorization
+        check actually reads.
+
+        Guards:
+
+        - **The organization keeps at least one member who can manage
+          members.** Restated from "cannot demote the last active admin": the
+          rule counts by capability (``organizations.manage_members``) rather
+          than by the ``role`` column, so it holds for any future group that
+          carries the capability and does not depend on a representation the
+          API no longer exposes.
+        - A restricted organization may not write at all. See ``deactivate``
+          above for why the check is here rather than in
+          ``OrganizationService``.
+
+        Idempotency: assigning the groups a member already holds is a no-op
+        success, including for the sole administrator re-assigning
+        ``organization_admin`` to themselves -- the guard fires on *losing* the
+        capability, not on writing it again.
+      summary: Set an organization member's groups
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: user_id
+        schema:
+          type: string
+        required: true
+      tags:
+      - organization-members
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssignMembershipGroups'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/AssignMembershipGroups'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/AssignMembershipGroups'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationMembership'
+          description: ''
+        '400':
+          description: Unknown group name, empty group list, or the assignment would
+            leave the organization with nobody who can manage members
+        '403':
+          description: Not an admin
+        '404':
+          description: Member not found or cross-org
   /organization-members/{user_id}/reactivate/:
     post:
       operationId: organization_members_reactivate_create
@@ -11999,127 +12150,6 @@ paths:
           description: Not an admin
         '404':
           description: Member not found or cross-org
-  /organization-members/{user_id}/update-role/:
-    post:
-      operationId: organization_members_update_role_create
-      description: |-
-        Update a member's role (member <-> admin).
-
-        Guards:
-        - Cannot demote the last active admin (org lockout prevention).
-
-        Idempotency: setting the role to its current value is a no-op success.
-      summary: Update an organization member's role
-      parameters:
-      - in: header
-        name: X-Organization-Id
-        schema:
-          type: string
-        description: Selects the active organization for this request. Optional for
-          callers that belong to exactly one active organization — the single membership
-          is resolved implicitly. **Required** when the caller has two or more active
-          memberships; omitting it in that case returns **400**. If the header names
-          an organization the caller is not an active member of, the server returns
-          **403**.
-      - in: path
-        name: user_id
-        schema:
-          type: string
-        required: true
-      tags:
-      - organization-members
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/UpdateMembershipRole'
-          application/x-www-form-urlencoded:
-            schema:
-              $ref: '#/components/schemas/UpdateMembershipRole'
-          multipart/form-data:
-            schema:
-              $ref: '#/components/schemas/UpdateMembershipRole'
-        required: true
-      security:
-      - jwtAuth: []
-      - cookieAuth: []
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/OrganizationMembership'
-          description: ''
-        '400':
-          description: Invalid role or would demote the last active admin
-        '403':
-          description: Not an admin
-        '404':
-          description: Member not found or cross-org
-  /organization-members/{user_id}/update-role{format}:
-    post:
-      operationId: organization_members_update_role_formatted_create
-      description: |-
-        Update a member's role (member <-> admin).
-
-        Guards:
-        - Cannot demote the last active admin (org lockout prevention).
-
-        Idempotency: setting the role to its current value is a no-op success.
-      summary: Update an organization member's role
-      parameters:
-      - in: header
-        name: X-Organization-Id
-        schema:
-          type: string
-        description: Selects the active organization for this request. Optional for
-          callers that belong to exactly one active organization — the single membership
-          is resolved implicitly. **Required** when the caller has two or more active
-          memberships; omitting it in that case returns **400**. If the header names
-          an organization the caller is not an active member of, the server returns
-          **403**.
-      - in: path
-        name: format
-        schema:
-          type: string
-          enum:
-          - .json
-        required: true
-      - in: path
-        name: user_id
-        schema:
-          type: string
-        required: true
-      tags:
-      - organization-members
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/UpdateMembershipRole'
-          application/x-www-form-urlencoded:
-            schema:
-              $ref: '#/components/schemas/UpdateMembershipRole'
-          multipart/form-data:
-            schema:
-              $ref: '#/components/schemas/UpdateMembershipRole'
-        required: true
-      security:
-      - jwtAuth: []
-      - cookieAuth: []
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/OrganizationMembership'
-          description: ''
-        '400':
-          description: Invalid role or would demote the last active admin
-        '403':
-          description: Not an admin
-        '404':
-          description: Member not found or cross-org
   /organizations/:
     post:
       operationId: organizations_create
@@ -12129,16 +12159,18 @@ paths:
         Overrides ``CreateModelMixin.create`` to handle the post-write refetch
         correctly for members who already have one or more memberships.
 
-        We skip the base mixin's post-write ``_resolve_active_organization`` call
+        We skip the base mixin's post-write ``resolve_organization`` call
         entirely.  For the ``create`` action — exempted via
-        ``active_org_optional_actions = ("mine", "create")`` — that re-resolve
+        ``organization_optional_actions = ("mine", "create")`` — that re-resolve
         would leave a multi-org caller with no ``X-Organization-Id`` header
         resolved to ``None``, making ``get_queryset`` return nothing and causing
         the re-fetch to raise ``DoesNotExist`` / 500.
 
         Instead, after ``perform_create`` we look up the just-created membership
         directly and stash it on the request so the re-fetch (via
-        ``get_queryset``) is scoped to the new organization.
+        ``get_queryset``) is scoped to the new organization -- and bind that
+        organization to the context, which is the half of the base mixin's
+        re-resolve that still applies here.
       tags:
       - organizations
       requestBody:
@@ -12172,16 +12204,18 @@ paths:
         Overrides ``CreateModelMixin.create`` to handle the post-write refetch
         correctly for members who already have one or more memberships.
 
-        We skip the base mixin's post-write ``_resolve_active_organization`` call
+        We skip the base mixin's post-write ``resolve_organization`` call
         entirely.  For the ``create`` action — exempted via
-        ``active_org_optional_actions = ("mine", "create")`` — that re-resolve
+        ``organization_optional_actions = ("mine", "create")`` — that re-resolve
         would leave a multi-org caller with no ``X-Organization-Id`` header
         resolved to ``None``, making ``get_queryset`` return nothing and causing
         the re-fetch to raise ``DoesNotExist`` / 500.
 
         Instead, after ``perform_create`` we look up the just-created membership
         directly and stash it on the request so the re-fetch (via
-        ``get_queryset``) is scoped to the new organization.
+        ``get_queryset``) is scoped to the new organization -- and bind that
+        organization to the context, which is the half of the base mixin's
+        re-resolve that still applies here.
       parameters:
       - in: path
         name: format
@@ -12808,11 +12842,11 @@ paths:
     get:
       operationId: organizations_current_retrieve
       description: |-
-        Return the caller's organization and role.
+        Return the caller's organization and the capabilities they hold in it.
 
         HTTP 200 — the user is onboarded (has a membership).
         HTTP 404 — the user is gated (no membership yet).
-      summary: Current organization + role for the authenticated user
+      summary: Current organization + permissions for the authenticated user
       parameters:
       - in: header
         name: X-Organization-Id
@@ -12842,11 +12876,11 @@ paths:
     get:
       operationId: organizations_current_formatted_retrieve
       description: |-
-        Return the caller's organization and role.
+        Return the caller's organization and the capabilities they hold in it.
 
         HTTP 200 — the user is onboarded (has a membership).
         HTTP 404 — the user is gated (no membership yet).
-      summary: Current organization + role for the authenticated user
+      summary: Current organization + permissions for the authenticated user
       parameters:
       - in: header
         name: X-Organization-Id
@@ -13976,7 +14010,22 @@ paths:
 
         ``GET /public-api-tokens/`` lists the caller's org tokens without secrets.
         ``GET /public-api-tokens/{id}/`` retrieves a single token without secrets.
+
+        Every route here selects its organization with ``X-Organization-Id``, on the
+        terms the header is documented with everywhere else: optional for a caller
+        with one active membership, required (400) for a caller with two or more, and
+        403 when it names an organization the caller is not an active member of.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - name: limit
         required: false
         in: query
@@ -14016,6 +14065,17 @@ paths:
         - Duplicate ``integration_name`` (unique constraint).
 
         HTTP 403 is returned for non-admin callers; HTTP 401 for unauthenticated.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       tags:
       - public-api-tokens
       requestBody:
@@ -14054,7 +14114,22 @@ paths:
 
         ``GET /public-api-tokens/`` lists the caller's org tokens without secrets.
         ``GET /public-api-tokens/{id}/`` retrieves a single token without secrets.
+
+        Every route here selects its organization with ``X-Organization-Id``, on the
+        terms the header is documented with everywhere else: optional for a caller
+        with one active membership, required (400) for a caller with two or more, and
+        403 when it names an organization the caller is not an active member of.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: format
         schema:
@@ -14102,6 +14177,16 @@ paths:
 
         HTTP 403 is returned for non-admin callers; HTTP 401 for unauthenticated.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: format
         schema:
@@ -14147,7 +14232,22 @@ paths:
 
         ``GET /public-api-tokens/`` lists the caller's org tokens without secrets.
         ``GET /public-api-tokens/{id}/`` retrieves a single token without secrets.
+
+        Every route here selects its organization with ``X-Organization-Id``, on the
+        terms the header is documented with everywhere else: optional for a caller
+        with one active membership, required (400) for a caller with two or more, and
+        403 when it names an organization the caller is not an active member of.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: id
         schema:
@@ -14180,6 +14280,16 @@ paths:
         HTTP 403 is returned for non-admin callers; HTTP 404 if the token does not
         exist or belongs to another organization; HTTP 401 for unauthenticated.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: id
         schema:
@@ -14227,6 +14337,16 @@ paths:
         HTTP 403 is returned for non-admin callers; HTTP 404 if the token does not
         exist or belongs to another organization; HTTP 401 for unauthenticated.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: id
         schema:
@@ -14269,7 +14389,22 @@ paths:
 
         ``GET /public-api-tokens/`` lists the caller's org tokens without secrets.
         ``GET /public-api-tokens/{id}/`` retrieves a single token without secrets.
+
+        Every route here selects its organization with ``X-Organization-Id``, on the
+        terms the header is documented with everywhere else: optional for a caller
+        with one active membership, required (400) for a caller with two or more, and
+        403 when it names an organization the caller is not an active member of.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: format
         schema:
@@ -14309,6 +14444,16 @@ paths:
         HTTP 403 is returned for non-admin callers; HTTP 404 if the token does not
         exist or belongs to another organization; HTTP 401 for unauthenticated.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: format
         schema:
@@ -14363,6 +14508,16 @@ paths:
         HTTP 403 is returned for non-admin callers; HTTP 404 if the token does not
         exist or belongs to another organization; HTTP 401 for unauthenticated.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: format
         schema:
@@ -14411,6 +14566,16 @@ paths:
         HTTP 403 is returned for non-admin callers; HTTP 404 if the token does not
         exist or belongs to another organization; HTTP 401 for unauthenticated.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: id
         schema:
@@ -14452,6 +14617,16 @@ paths:
         HTTP 403 is returned for non-admin callers; HTTP 404 if the token does not
         exist or belongs to another organization; HTTP 401 for unauthenticated.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: format
         schema:
@@ -14747,6 +14922,16 @@ paths:
         PUT/PATCH or DELETE first). Cross-org ids resolve to 404 via the org-scoped
         queryset; non-admins get 403; anonymous requests 401.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - name: limit
         required: false
         in: query
@@ -14779,6 +14964,17 @@ paths:
         HTTP 201 with the secret-free representation. HTTP 400 if an org-level
         account already exists (rotate via PUT/PATCH or DELETE first) or the
         payload is invalid.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       tags:
       - service-accounts
       requestBody:
@@ -14819,6 +15015,16 @@ paths:
         PUT/PATCH or DELETE first). Cross-org ids resolve to 404 via the org-scoped
         queryset; non-admins get 403; anonymous requests 401.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: format
         schema:
@@ -14859,6 +15065,16 @@ paths:
         account already exists (rotate via PUT/PATCH or DELETE first) or the
         payload is invalid.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: format
         schema:
@@ -14906,6 +15122,16 @@ paths:
         PUT/PATCH or DELETE first). Cross-org ids resolve to 404 via the org-scoped
         queryset; non-admins get 403; anonymous requests 401.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: id
         schema:
@@ -14932,6 +15158,16 @@ paths:
         (secrets are retained when omitted). Returns HTTP 200 with the
         secret-free representation.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: id
         schema:
@@ -14976,6 +15212,16 @@ paths:
         PUT/PATCH or DELETE first). Cross-org ids resolve to 404 via the org-scoped
         queryset; non-admins get 403; anonymous requests 401.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: id
         schema:
@@ -15008,6 +15254,16 @@ paths:
       operationId: service_accounts_destroy
       description: Delete the org-level service account. HTTP 204.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: id
         schema:
@@ -15037,6 +15293,16 @@ paths:
         PUT/PATCH or DELETE first). Cross-org ids resolve to 404 via the org-scoped
         queryset; non-admins get 403; anonymous requests 401.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: format
         schema:
@@ -15070,6 +15336,16 @@ paths:
         (secrets are retained when omitted). Returns HTTP 200 with the
         secret-free representation.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: format
         schema:
@@ -15121,6 +15397,16 @@ paths:
         PUT/PATCH or DELETE first). Cross-org ids resolve to 404 via the org-scoped
         queryset; non-admins get 403; anonymous requests 401.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: format
         schema:
@@ -15160,6 +15446,16 @@ paths:
       operationId: service_accounts_formatted_destroy
       description: Delete the org-level service account. HTTP 204.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: format
         schema:
@@ -16006,6 +16302,34 @@ components:
       - idempotency_key
       - quantity
       - resource_key
+    AssignMembershipGroups:
+      type: object
+      description: |-
+        Request serializer for ``POST /organization-members/{user_id}/groups/``.
+
+        The one place in the API where a *group* name is accepted rather than a
+        permission: assigning a group is the act of choosing one, so there is
+        nothing to abstract. Reads report capabilities instead (``permissions``
+        above), which is why a later per-organization group layer would not be a
+        second client break.
+
+        ``ChoiceField`` over the seeded names rather than a free ``CharField``: an
+        unknown group must be a 400 that names the acceptable values, not a silent
+        no-op. The list may not be empty -- "no groups at all" is not a state any
+        write path produces; a member with no capabilities is
+        ``["organization_member"]``.
+      properties:
+        groups:
+          type: array
+          items:
+            $ref: '#/components/schemas/GroupsEnum'
+          description: Groups to assign to this membership, replacing the ones it
+            holds. ``organization_admin`` carries every capability; ``organization_billing_owner``
+            carries ``payments.manage_billing``; ``organization_member`` carries none
+            and is what a member with no capabilities holds. Naming a capability group
+            alongside ``organization_member`` stores the capability group alone.
+      required:
+      - groups
     AvailableResourcesEnum:
       enum:
       - calendar_event
@@ -16367,7 +16691,7 @@ components:
         ``reconciliation_unmetered``/``reconciliation_orphaned`` live on the parent
         ``BillingPeriodSummary`` row, not here, and neither is serialized anywhere
         in this module -- internal investigation data, surfaced only in Django
-        admin (see the plan's Non-goals).
+        admin.
       properties:
         resource_key:
           type: string
@@ -16430,7 +16754,7 @@ components:
 
         ``reconciliation_unmetered``/``reconciliation_orphaned`` are deliberately
         absent from every field below -- internal investigation data, surfaced only
-        in Django admin (see the plan's Non-goals).
+        in Django admin.
       properties:
         id:
           type: integer
@@ -17478,18 +17802,26 @@ components:
       description: |-
         Read-only serializer for the caller's current organization membership.
 
-        Returns the membership role and the nested organization so the frontend
-        can distinguish between an onboarded user and a gated (membership-less) user.
+        Returns the caller's resolved permissions and the nested organization so the
+        frontend can distinguish between an onboarded user and a gated
+        (membership-less) user, and can gate its own UI on the same capability
+        strings the server enforces.
       properties:
-        role:
-          allOf:
-          - $ref: '#/components/schemas/RoleEnum'
+        permissions:
+          type: array
+          items:
+            type: string
+          description: 'Capabilities this membership confers in this organization,
+            as ``app_label.codename`` strings (for example ``organizations.manage_members``).
+            Resolved from the membership''s groups and direct grants -- the same source
+            every server-side authorization check reads -- so a client can gate UI
+            on the exact string the API will enforce. Only organization-scoped capabilities
+            appear: a global Django permission or superuser status grants nothing
+            here, because it grants nothing in this organization either. An inactive
+            membership resolves an empty list. The set of possible values grows over
+            time; treat an unrecognised entry as an unknown capability rather than
+            an error.'
           readOnly: true
-          description: |-
-            Role the user holds in this organization. Admins can manage organization-scoped resources (e.g. CalendarGroups) regardless of direct ownership.
-
-            * `member` - Member
-            * `admin` - Admin
         organization:
           type: object
           additionalProperties: {}
@@ -17498,22 +17830,17 @@ components:
         can_manage_branding:
           type: boolean
           description: |-
-            Whether the membership's organization is branding-eligible.
+            Whether this membership can manage branding.
 
-            Computed as parentless-and-entitled -- deliberately excludes the slug
-            condition (Organization Auth-Area Branding plan, Phase 4 Capability
-            signal guiding decision), so an organization missing only a slug still
-            sees the branding page instead of it being silently absent. Shares
-            ``organizations.permissions.is_branding_eligible_organization`` rather
-            than restating the two-condition check, so this tracks the same gate
-            that governs ``GET /branding/`` (see
-            ``OrganizationBrandingView._check_branding_read_gate``) rather than
-            the three-condition write gate.
+            Computed from ``organizations.manage_branding`` plus parentless-and-
+            entitled eligibility. Uses
+            ``organizations.permissions.is_branding_eligible_organization`` for
+            that eligibility, matching ``GET /branding/`` and logo-upload signing.
           readOnly: true
       required:
       - can_manage_branding
       - organization
-      - role
+      - permissions
     DocumentTypeEnum:
       enum:
       - privacy_policy
@@ -17897,8 +18224,7 @@ components:
     GroupScopedAvailabilityWindow:
       type: object
       description: |-
-        Read representation of a group-scoped availability window
-        (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 1c).
+        Read representation of a group-scoped availability window.
 
         Deliberately narrower than ``AvailableTimeSerializer``: there is no nested
         ``recurrence_rule`` write path here, only ``rrule_string`` -- matching
@@ -18065,8 +18391,7 @@ components:
     GroupScopedBlockedTime:
       type: object
       description: |-
-        Read representation of a group-scoped blocked time
-        (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 2b).
+        Read representation of a group-scoped blocked time.
 
         Mirrors ``GroupScopedAvailabilityWindowSerializer`` exactly, plus
         ``reason`` -- there is no nested ``recurrence_rule`` write path here,
@@ -18164,8 +18489,7 @@ components:
     GroupScopedQuotaRule:
       type: object
       description: |-
-        Read representation of a group-scoped quota rule
-        (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 3c).
+        Read representation of a group-scoped quota rule.
 
         Simpler than ``GroupScopedAvailabilityWindowSerializer``/
         ``GroupScopedBlockedTimeSerializer``: quota rules are non-recurring (no
@@ -18246,6 +18570,16 @@ components:
       - calendar
       - cap
       - period
+    GroupsEnum:
+      enum:
+      - organization_admin
+      - organization_billing_owner
+      - organization_member
+      type: string
+      description: |-
+        * `organization_admin` - organization_admin
+        * `organization_billing_owner` - organization_billing_owner
+        * `organization_member` - organization_member
     LedgerCalendar:
       type: object
       description: |-
@@ -18397,7 +18731,8 @@ components:
         Read-only serializer for the caller's active organization memberships.
 
         Used by ``GET /organizations/mine/`` to power the frontend org switcher.
-        Returns a list of ``{organization: {id, name}, role, can_manage_branding}``
+        Returns a list of
+        ``{organization: {id, name}, permissions, can_manage_branding}``
         entries — one per active membership — without requiring the
         ``X-Organization-Id`` header.
       properties:
@@ -18405,26 +18740,31 @@ components:
           allOf:
           - $ref: '#/components/schemas/OrganizationBrief'
           readOnly: true
-        role:
-          allOf:
-          - $ref: '#/components/schemas/RoleEnum'
+        permissions:
+          type: array
+          items:
+            type: string
+          description: 'Capabilities this membership confers in this organization,
+            as ``app_label.codename`` strings (for example ``organizations.manage_members``).
+            Resolved from the membership''s groups and direct grants -- the same source
+            every server-side authorization check reads -- so a client can gate UI
+            on the exact string the API will enforce. Only organization-scoped capabilities
+            appear: a global Django permission or superuser status grants nothing
+            here, because it grants nothing in this organization either. An inactive
+            membership resolves an empty list. The set of possible values grows over
+            time; treat an unrecognised entry as an unknown capability rather than
+            an error.'
           readOnly: true
-          description: |-
-            Role the user holds in this organization. Admins can manage organization-scoped resources (e.g. CalendarGroups) regardless of direct ownership.
-
-            * `member` - Member
-            * `admin` - Admin
         can_manage_branding:
           type: boolean
           description: |-
-            Whether this membership's organization is branding-eligible
-            (parentless-and-entitled, excluding the slug condition) -- see
+            Whether this membership can manage branding: its
+            ``organizations.manage_branding`` capability plus the parentless,
+            entitled organization gate -- see
             ``CurrentMembershipSerializer.get_can_manage_branding`` for the full
-            rationale. Computed per-membership (not per-role): a non-admin
-            member's entry reports the same organization-level capability as an
-            admin's, matching the read gate's own admin-agnostic eligibility
-            check -- role-based write authorization is enforced separately by
-            ``IsOrganizationAdmin`` on the branding endpoints themselves.
+            rationale. Computed per membership, so a permitted member and an
+            unpermitted member in the same eligible organization receive different
+            values.
 
             Reads from the batch ``_MyMembershipListSerializer`` precomputes on the
             shared context when serializing a list (the ``many=True`` path this
@@ -18437,7 +18777,7 @@ components:
       required:
       - can_manage_branding
       - organization
-      - role
+      - permissions
     Notification:
       type: object
       description: |-
@@ -18522,7 +18862,14 @@ components:
           maxLength: 255
         slug:
           type: string
-          nullable: true
+          description: 'Public, URL-safe identifier used by the organization''s branded
+            login page and by brandingForTenant. Always set: an organization saved
+            without one is given an opaque ``org-<token>`` slug, and the database
+            refuses a blank value. Mutable, but not clearable -- changing it orphans
+            previously-issued branded login URLs, which then fall back to the default
+            identity rather than erroring. Format, reserved-word, and confusable-character
+            rules live in organizations.slug_validation and are enforced by each write
+            surface (REST serializer, admin form, GraphQL input), not on the model.'
           maxLength: 63
         should_sync_rooms:
           type: boolean
@@ -18683,18 +19030,14 @@ components:
         slug:
           type: string
           readOnly: true
-          nullable: true
           description: 'Public, URL-safe identifier used by the organization''s branded
-            login page and by brandingForTenant. Optional until the organization sets
-            one self-serve; stored as NULL (never empty string) when unset — default=None
-            keeps a field left blank in a form/serializer NULL rather than '''', which
-            is what lets the unique index admit any number of organizations with no
-            slug. Mutable after set: changing it orphans previously-issued branded
-            login URLs, which then fall back to the default identity rather than erroring.
-            Format, reserved-word, and confusable-character rules live in organizations.slug_validation
-            and are enforced by each write surface (REST serializer, admin form, GraphQL
-            input), not here.'
-          pattern: ^[-a-zA-Z0-9_]+$
+            login page and by brandingForTenant. Always set: an organization saved
+            without one is given an opaque ``org-<token>`` slug, and the database
+            refuses a blank value. Mutable, but not clearable -- changing it orphans
+            previously-issued branded login URLs, which then fall back to the default
+            identity rather than erroring. Format, reserved-word, and confusable-character
+            rules live in organizations.slug_validation and are enforced by each write
+            surface (REST serializer, admin form, GraphQL input), not on the model.'
       required:
       - id
       - name
@@ -18754,8 +19097,8 @@ components:
       description: |-
         Read-only serializer for listing and retrieving organization members.
 
-        Exposes membership role, active status, and flattened user information
-        (email, first_name, last_name) for the admin datatable.
+        Exposes each member's resolved capabilities, active status, and flattened
+        user information (email, first_name, last_name) for the admin datatable.
       properties:
         user_id:
           type: integer
@@ -18763,23 +19106,29 @@ components:
         organization_id:
           type: integer
           readOnly: true
-        role:
-          allOf:
-          - $ref: '#/components/schemas/RoleEnum'
+        permissions:
+          type: array
+          items:
+            type: string
+          description: 'Capabilities this membership confers in this organization,
+            as ``app_label.codename`` strings (for example ``organizations.manage_members``).
+            Resolved from the membership''s groups and direct grants -- the same source
+            every server-side authorization check reads -- so a client can gate UI
+            on the exact string the API will enforce. Only organization-scoped capabilities
+            appear: a global Django permission or superuser status grants nothing
+            here, because it grants nothing in this organization either. An inactive
+            membership resolves an empty list. The set of possible values grows over
+            time; treat an unrecognised entry as an unknown capability rather than
+            an error.'
           readOnly: true
-          description: |-
-            Role the user holds in this organization. Admins can manage organization-scoped resources (e.g. CalendarGroups) regardless of direct ownership.
-
-            * `member` - Member
-            * `admin` - Admin
         is_active:
           type: boolean
           readOnly: true
           description: 'Whether this membership is active. Inactive memberships are
             treated as gated: the user still has a row but loses all tenant-scoped
             access until reactivated. Use this to disable a user without deleting
-            their membership record (which would lose role/history). Default True
-            keeps every existing read unchanged.'
+            their membership record (which would lose their groups and history). Default
+            True keeps every existing read unchanged.'
         user_email:
           type: string
           format: email
@@ -18793,7 +19142,7 @@ components:
       required:
       - is_active
       - organization_id
-      - role
+      - permissions
       - user_email
       - user_first_name
       - user_id
@@ -18812,8 +19161,13 @@ components:
         Membership identity for a calendar owner.
 
         A membership has no scalar id (it is identified by the ``(user_id,
-        organization_id)`` pair), so the representation exposes that pair plus the
-        membership ``role``.
+        organization_id)`` pair), so the representation exposes that pair.
+
+        It used to carry the membership's ``role`` as well. That left with the rest
+        of ``role``'s API surface: authorization is answered from permissions, and
+        this identity representation is not the place to publish a member's
+        capabilities -- ``GET /organization-members/`` is. Consumers that read
+        ``role`` here to decide what to render should read ``permissions`` there.
       properties:
         user_id:
           type: integer
@@ -18821,12 +19175,8 @@ components:
         organization_id:
           type: integer
           readOnly: true
-        role:
-          type: string
-          readOnly: true
       required:
       - organization_id
-      - role
       - user_id
     PaginatedAvailableTimeList:
       type: object
@@ -19849,7 +20199,14 @@ components:
           maxLength: 255
         slug:
           type: string
-          nullable: true
+          description: 'Public, URL-safe identifier used by the organization''s branded
+            login page and by brandingForTenant. Always set: an organization saved
+            without one is given an opaque ``org-<token>`` slug, and the database
+            refuses a blank value. Mutable, but not clearable -- changing it orphans
+            previously-issued branded login URLs, which then fall back to the default
+            identity rather than erroring. Format, reserved-word, and confusable-character
+            rules live in organizations.slug_validation and are enforced by each write
+            surface (REST serializer, admin form, GraphQL input), not on the model.'
           maxLength: 63
         should_sync_rooms:
           type: boolean
@@ -20423,14 +20780,6 @@ components:
       required:
       - idempotency_key
       - payment_token
-    RoleEnum:
-      enum:
-      - member
-      - admin
-      type: string
-      description: |-
-        * `member` - Member
-        * `admin` - Admin
     ServiceAccountRead:
       type: object
       description: |-
@@ -20797,14 +21146,6 @@ components:
       - reason
       - reason_description
       - start_time
-    UpdateMembershipRole:
-      type: object
-      description: Request serializer for updating an organization member's role.
-      properties:
-        role:
-          $ref: '#/components/schemas/RoleEnum'
-      required:
-      - role
     UsageByOrganization:
       type: object
       description: |-

@@ -1,5 +1,5 @@
 """Integration tests for the public GraphQL surface of group-scoped quota
-rules (CALENDAR_GROUP_SCOPED_AVAILABILITY Phase 3c).
+rules.
 
 Direct mirror of ``test_group_scoped_blocked_times.py`` for quota rules,
 minus the recurrence/reason machinery (quota rules are non-recurring and
@@ -18,12 +18,15 @@ guard that DOES apply to an unmetered resource).
 import datetime
 import uuid
 
+from django.contrib.auth import get_user_model
+
 import pytest
 from model_bakery import baker
 from rest_framework.test import APIClient
 
 from calendar_integration.constants import CalendarProvider, CalendarType, QuotaPeriod
 from calendar_integration.models import (
+    BlockedTime,
     Calendar,
     CalendarGroup,
     CalendarGroupSlot,
@@ -106,8 +109,6 @@ class TestGroupScopedQuotaRulesPublicAPI:
 
         Returns (user, membership, calendar).
         """
-        from django.contrib.auth import get_user_model
-
         user_model = get_user_model()
         unique = uuid.uuid4().hex[:8]
         owner = baker.make(user_model, email=f"owner_{unique}@example.com")
@@ -1139,9 +1140,7 @@ class TestGroupScopedQuotaRulesPublicAPI:
 
     def test_existing_group_scoped_blocked_times_query_shape_unchanged(self):
         """Byte-for-byte shape check: the pre-existing groupScopedBlockedTimes
-        query's response is unaffected by this phase's additions."""
-        from calendar_integration.models import BlockedTime
-
+        query's response is unaffected by the group-scoped additions."""
         org = self._setup_org()
         calendar = self._make_calendar(org)
         slot = self._make_group_slot(org, calendar)

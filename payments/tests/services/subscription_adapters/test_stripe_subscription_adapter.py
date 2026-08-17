@@ -348,9 +348,9 @@ def test_update_subscription_payment_token_without_external_id(adapter, mock_sub
 
 @patch("payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice")
 def test_pay_outstanding_invoice_pays_the_open_invoice(mock_invoice, adapter, mock_subscription):
-    """The money-moving line this phase exists to fix: locate the subscription's
-    outstanding invoice and pay *that* -- not a proration on a freshly-minted
-    price (`change_subscription_plan`), which is what previously collected
+    """The money-moving line: locate the subscription's outstanding invoice
+    and pay *that* -- not a proration on a freshly-minted price
+    (`change_subscription_plan`), which is what previously collected
     $0.00 against a real past-due renewal (see `BaseSubscriptionAdapter
     .pay_outstanding_invoice`'s docstring for the probe numbers). Both `open`
     and `uncollectible` are queried (SHOULD-FIX 5) -- only `open` has a match
@@ -436,7 +436,7 @@ def test_pay_outstanding_invoice_raises_when_no_open_invoice_exists(
 ):
     """No open or uncollectible invoice means nothing to collect right now --
     this must raise a typed error, never silently succeed (that silent-success
-    shape is exactly the defect this phase exists to remove)."""
+    shape previously masked a $0.00 collection)."""
     mock_invoice.list.return_value = Mock(data=[])
 
     with pytest.raises(NoOutstandingBalanceError):
@@ -478,12 +478,12 @@ def test_pay_outstanding_invoice_without_external_id(adapter, mock_subscription)
 def test_pay_outstanding_invoice_with_empty_token_omits_payment_method(
     mock_customer, mock_payment_method, mock_invoice, adapter, mock_subscription
 ):
-    """Billing API Contract Hardening, Phase 5: the dunning ladder calls this
-    with `payment_token=""` -- it has no new instrument to attach, only the
-    one already on file. `Invoice.pay` must be called with no `payment_method`
-    key at all (not `payment_method=""`, which Stripe would reject) so Stripe
-    falls back to its own default-payment-method precedence. Critically, this
-    must not attach or repoint anything: `PaymentMethod.attach` and
+    """The dunning ladder calls this with `payment_token=""` -- it has no new
+    instrument to attach, only the one already on file. `Invoice.pay` must be
+    called with no `payment_method` key at all (not `payment_method=""`, which
+    Stripe would reject) so Stripe falls back to its own default-payment-method
+    precedence. Critically, this must not attach or repoint anything:
+    `PaymentMethod.attach` and
     `Customer.modify` are asserted *not* called -- this method must not do
     what only `update_subscription_payment_token` is allowed to do."""
     mock_invoice.list.side_effect = [
@@ -503,8 +503,8 @@ def test_pay_outstanding_invoice_with_empty_token_omits_payment_method(
 def test_pay_outstanding_invoice_with_empty_token_still_namespaces_idempotency_key(
     mock_invoice, adapter, mock_subscription
 ):
-    """The per-invoice idempotency-key namespacing (SHOULD-FIX from Phase 4)
-    is unaffected by whether a token is passed."""
+    """The per-invoice idempotency-key namespacing (SHOULD-FIX) is unaffected
+    by whether a token is passed."""
     mock_invoice.list.side_effect = [
         Mock(data=[Mock(id="in_a", created=1000)]),
         Mock(data=[]),
@@ -536,9 +536,9 @@ def test_pay_outstanding_invoice_default_token_is_empty(mock_invoice, adapter, m
 def test_pay_outstanding_invoice_translates_card_error_into_charge_declined(
     mock_invoice, adapter, mock_subscription
 ):
-    """Billing API Contract Hardening, Phase 5 live-probe BLOCKER: a real
-    Stripe test-mode probe of this exact call, against a card still dead (the
-    *common* dunning-tick outcome), raised an uncaught `stripe.CardError`.
+    """Live-probe BLOCKER: a real Stripe test-mode probe of this exact call,
+    against a card still dead (the *common* dunning-tick outcome), raised an
+    uncaught `stripe.CardError`.
     Left untranslated, that would reach `SubscriptionService` as a raw
     provider exception -- the adapter abstraction this codebase maintains
     everywhere else forbids that. This must translate into the typed
@@ -582,10 +582,10 @@ def test_pay_outstanding_invoice_does_not_swallow_non_charge_stripe_errors(
 def test_pay_outstanding_invoice_translates_invalid_request_error_into_charge_declined(
     mock_invoice, adapter, mock_subscription
 ):
-    """Billing API Contract Hardening, Phase 5 Tier 4 reviewer BLOCKER: a
-    customer with no default payment method at all (the payer detached their
-    card in the billing portal -- also a canonical dunning population) makes
-    `Invoice.pay` raise `stripe.InvalidRequestError`, not `CardError`. Left
+    """Tier 4 reviewer BLOCKER: a customer with no default payment method at
+    all (the payer detached their card in the billing portal -- also a
+    canonical dunning population) makes `Invoice.pay` raise
+    `stripe.InvalidRequestError`, not `CardError`. Left
     untranslated, that reached `process_dunning_for_subscription` unhandled
     and, per that task's own docstring, redelivered identically forever. This
     must translate into the same typed `ChargeDeclinedError` as a `CardError`
@@ -796,9 +796,9 @@ def test_get_payment_external_id_from_subscription_payload_no_payments_yet(adapt
 def test_get_payment_external_id_from_subscription_payload_picks_the_paid_entry_not_index_zero(
     adapter,
 ):
-    """BLOCKER 2 (Billing API Contract Hardening, Phase 4 reviewer finding): a
-    dunning-recovered invoice carries both the dead card's failed attempt and
-    the new card's successful one, in an order Stripe does not document as
+    """BLOCKER 2: a dunning-recovered invoice carries both the dead card's
+    failed attempt and the new card's successful one, in an order Stripe does
+    not document as
     stable. `data[0]` is the dead card's failed `InvoicePayment` here (Stripe
     does not order this list) -- blindly taking it, as the code used to,
     resolves to the failed attempt's PaymentIntent, whose status is neither
@@ -874,9 +874,8 @@ def test_get_payment_external_id_from_subscription_payload_falls_back_to_most_re
 def test_receive_payment_update_invoice_event_resolves_off_the_events_own_invoice(
     mock_invoice, mock_payment_intent, adapter
 ):
-    """BLOCKER 1 (Billing API Contract Hardening, Phase 4 reviewer finding):
-    `invoice.paid` for a **non-latest** invoice must resolve the payment off
-    the invoice the event was actually about (`Invoice.retrieve(event's
+    """BLOCKER 1: `invoice.paid` for a **non-latest** invoice must resolve the
+    payment off the invoice the event was actually about (`Invoice.retrieve(event's
     invoice id, expand=["payments"])`), never `Subscription.latest_invoice` --
     the most recently *created* invoice, which the dunning ladder's $0
     proration tick makes a different, unrelated, PaymentIntent-less invoice

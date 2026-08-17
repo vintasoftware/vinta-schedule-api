@@ -1,4 +1,5 @@
 import datetime
+import datetime as _datetime
 import json
 import uuid
 from unittest.mock import Mock, patch
@@ -6,6 +7,7 @@ from unittest.mock import Mock, patch
 from django.contrib.auth import get_user_model
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
+from django.utils import timezone as _timezone
 
 import icalendar
 import pytest
@@ -33,9 +35,14 @@ from calendar_integration.services.dataclasses import (
     UnavailableTimeWindow,
 )
 from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
+from organizations.tests.helpers import grant_membership_groups
+from payments.billing_constants import BillingState, Entitlement
+from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess, SystemUser
+from public_api.queries import _vinta_default_branding
 from public_api.services import PublicAPIAuthService
 from users.factories import UserFactory
 from users.models import User
@@ -1295,6 +1302,70 @@ class TestGraphQLQueries:
         assert events[0]["id"] == str(event.id)
         assert events[0]["title"] == "Test Event"
 
+    def test_calendar_events_query_returns_external_attendees(
+        self, mock_rate_limiter, graphql_client, calendar
+    ):
+        """``externalAttendees`` carries real rows on the partner-facing API.
+
+        It used to be permanently ``[]``: the many-to-many went through an
+        auto-created table with no ``organization`` column, so the join could not
+        be made organization-safe and the field returned nothing. It was
+        repointed at ``EventExternalAttendance`` with ``through_fields``
+        naming the safe relations, which is a visible change to this contract --
+        pinned here so the decision is auditable from the API surface rather than
+        only from the model layer.
+        """
+        mock_rate_limiter.return_value = iter([None])
+
+        event = baker.make(
+            CalendarEvent,
+            calendar_fk=calendar,
+            organization=calendar.organization,
+            title="Event With Guests",
+            start_time_tz_unaware=datetime.datetime(2025, 9, 2, 10, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2025, 9, 2, 11, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+            external_id="event-with-guests",
+        )
+        attendee = baker.make(
+            ExternalAttendee,
+            organization=calendar.organization,
+            email="guest@example.com",
+            name="Guest",
+        )
+        baker.make(
+            EventExternalAttendance,
+            organization=calendar.organization,
+            event_fk=event,
+            external_attendee_fk=attendee,
+        )
+
+        query = """
+            query GetCalendarEvents($eventId: Int) {
+                calendarEvents(eventId: $eventId) {
+                    id
+                    externalAttendees {
+                        id
+                        email
+                        name
+                    }
+                }
+            }
+        """
+
+        response = graphql_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": {"eventId": event.id}}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        events = data["calendarEvents"]
+        assert len(events) == 1
+        assert events[0]["externalAttendees"] == [
+            {"id": str(attendee.id), "email": "guest@example.com", "name": "Guest"}
+        ]
+
     def test_calendar_events_query_missing_required_params(self, mock_rate_limiter, graphql_client):
         """Test calendar events query without required parameters."""
         # Mock rate limiter to allow requests
@@ -1505,7 +1576,7 @@ class TestGraphQLQueries:
 
         # user_with_organization is already created by the fixture
         user = user_with_organization
-        organization = user.organization_memberships.get().organization
+        organization = user.memberships.get().organization
 
         # Create another user in the same organization to ensure filtering works
         user_model = get_user_model()
@@ -2223,7 +2294,7 @@ class TestBrandingForTenantQuery:
     def test_branding_for_tenant_by_slug_returns_the_organizations_branding(
         self, mock_rate_limiter, anonymous_client
     ):
-        """Phase 5 -- ``brandingForTenant`` resolves by slug as an alternative to
+        """``brandingForTenant`` resolves by slug as an alternative to
         ``tenantId``."""
         mock_rate_limiter.return_value = iter([None])
 
@@ -2531,13 +2602,12 @@ class TestBrandingForTenantQuery:
     def test_branding_for_tenant_by_slug_resolves_a_standalone_entitled_organizations_own_branding(
         self, mock_rate_limiter, anonymous_client
     ):
-        """Phase 8 -- Use-case 3 (a returning user opens the organization-scoped
-        login URL and it resolves that organization's own branding). Every slug
-        test above uses a reseller; this pins the shape that Phase 5 widened
-        ``get_branding_root`` to cover and that most branded organizations will
-        actually have going forward: a parentless, non-reseller, entitled
-        organization resolving to ITS OWN branding row via its own slug, not a
-        reseller ancestor's."""
+        """Covers a returning user opening the organization-scoped login URL and
+        it resolving that organization's own branding. Every slug test above uses
+        a reseller; this pins the shape that ``get_branding_root`` was widened to
+        cover and that most branded organizations will actually have going
+        forward: a parentless, non-reseller, entitled organization resolving to
+        ITS OWN branding row via its own slug, not a reseller ancestor's."""
         mock_rate_limiter.return_value = iter([None])
 
         org = baker.make(
@@ -2586,10 +2656,9 @@ class TestBrandingForTenantQuery:
 
 @pytest.mark.django_db
 class TestValidateReturnUrlRemoved:
-    """``validateReturnUrl`` was deleted along with ``return_url_allowlist`` (Phase 2a
-    of the Organization Auth-Area Branding plan) -- there is no longer a caller-supplied
-    redirect target to validate. Pin its absence from the published schema so it cannot
-    silently reappear."""
+    """``validateReturnUrl`` was deleted along with ``return_url_allowlist`` --
+    there is no longer a caller-supplied redirect target to validate. Pin its
+    absence from the published schema so it cannot silently reappear."""
 
     def test_validate_return_url_errors_as_an_unknown_field(self):
         """Querying the removed field returns a GraphQL validation error, not data."""
@@ -2608,7 +2677,9 @@ class TestValidateReturnUrlRemoved:
         )
 
         body = response.json()
-        assert body.get("errors"), "validateReturnUrl must not resolve — it was removed in Phase 2a"
+        assert body.get("errors"), (
+            "validateReturnUrl must not resolve — it was removed along with return_url_allowlist"
+        )
         assert "validateReturnUrl" in str(body["errors"])
 
     def test_validate_return_url_absent_from_schema_introspection(self):
@@ -4583,7 +4654,6 @@ _CALENDARS_WITH_OWNERS_QUERY = """
                 membership {
                     userId
                     organizationId
-                    role
                 }
             }
         }
@@ -4641,11 +4711,12 @@ class TestCalendarOwnersField:
             email="owner_b@shape.test", first_name="Bob", last_name="Jones"
         )
 
-        OrganizationMembership.objects.get_or_create(
-            user=user_a, organization=organization, defaults={"role": OrganizationRole.ADMIN}
+        _membership, _ = OrganizationMembership.objects.get_or_create(
+            user=user_a, organization=organization
         )
         OrganizationMembership.objects.get_or_create(user=user_b, organization=organization)
 
+        grant_membership_groups(_membership, [GROUP_ORGANIZATION_ADMIN])
         ownership_a = baker.make(
             CalendarOwnership,
             calendar=calendar,
@@ -4679,7 +4750,7 @@ class TestCalendarOwnersField:
 
         owners_by_user_id = {o["membership"]["userId"]: o for o in owners}
 
-        # Verify ownership A — membership identity shape { userId, organizationId, role }
+        # Verify ownership A — membership identity shape { userId, organizationId }
         owner_a = owners_by_user_id[user_a.id]
         assert int(owner_a["id"]) == ownership_a.id, (
             "Ownership id must be CalendarOwnership pk, not user id"
@@ -4687,7 +4758,7 @@ class TestCalendarOwnersField:
         assert owner_a["isDefault"] is True
         assert owner_a["membership"]["userId"] == user_a.id
         assert owner_a["membership"]["organizationId"] == organization.id
-        assert owner_a["membership"]["role"] == OrganizationRole.ADMIN
+        assert "role" not in owner_a["membership"]
 
         # Verify ownership B
         owner_b = owners_by_user_id[user_b.id]
@@ -4697,7 +4768,7 @@ class TestCalendarOwnersField:
         assert owner_b["isDefault"] is False
         assert owner_b["membership"]["userId"] == user_b.id
         assert owner_b["membership"]["organizationId"] == organization.id
-        assert owner_b["membership"]["role"] == OrganizationRole.MEMBER
+        assert "role" not in owner_b["membership"]
 
     # ------------------------------------------------------------------ #
     # (b) Org-scoping / cross-org leak                                    #
@@ -4890,7 +4961,6 @@ _CALENDAR_GROUPS_WITH_OWNERS_QUERY = """
                         membership {
                             userId
                             organizationId
-                            role
                         }
                     }
                 }
@@ -4913,7 +4983,6 @@ _CALENDAR_BUNDLES_WITH_OWNERS_QUERY = """
                     membership {
                         userId
                         organizationId
-                        role
                     }
                 }
             }
@@ -5456,7 +5525,6 @@ _CALENDAR_BUNDLES_PARENT_OWNERS_QUERY = """
                 membership {
                     userId
                     organizationId
-                    role
                 }
             }
         }
@@ -6700,9 +6768,9 @@ class TestBrandingForTenantEntitlementDowngrade:
     This class used to also cover ``validateReturnUrl``, which read the *ungated*
     ``resolve_branding`` so a reseller downgrading off the cosmetic
     ``white_label_branding`` entitlement would not lock every tenant in its subtree
-    out of the OAuth return flow. That query is gone (Phase 2a of the Organization
-    Auth-Area Branding plan removed it along with ``return_url_allowlist``); only the
-    cosmetic half of the split remains to test here.
+    out of the OAuth return flow. That query is gone now, removed along with
+    ``return_url_allowlist``; only the cosmetic half of the split remains to test
+    here.
     """
 
     def _post(self, client, query, variables):
@@ -6713,13 +6781,6 @@ class TestBrandingForTenantEntitlementDowngrade:
         )
 
     def _reseller_without_branding_entitlement(self):
-        import datetime as _datetime
-
-        from django.utils import timezone as _timezone
-
-        from payments.billing_constants import BillingState, Entitlement
-        from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
-
         reseller = baker.make(Organization, name="Downgraded", can_invite_organizations=True)
         now = _timezone.now()
         subscription = baker.make(
@@ -6758,6 +6819,4 @@ class TestBrandingForTenantEntitlementDowngrade:
         response = self._post(anonymous_client, query, {"tenantId": str(reseller.id)})
 
         data = assert_graphql_success(response)
-        from public_api.queries import _vinta_default_branding
-
         assert data["brandingForTenant"]["appName"] == _vinta_default_branding().app_name

@@ -11,7 +11,9 @@ from rest_framework import status
 from rest_framework.test import APIClient
 from s3direct.utils import AWSCredentials
 
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
+from organizations.tests.helpers import make_membership
 from organizations.tests.test_branding_rest import _make_unentitled_org
 
 
@@ -50,9 +52,14 @@ def eligible_org():
 
 
 @pytest.fixture
-def no_slug_org():
-    """Parentless and entitled, but no slug -- logo upload must still be admitted
-    (uploads happen before the slug/branding write on form submit)."""
+def second_eligible_org():
+    """A second parentless, entitled organization.
+
+    This used to be a ``no_slug_org``: parentless and entitled but deliberately
+    slug-less, pinning that logo upload goes through the eligibility gate rather
+    than the (then three-condition) write gate. ``Organization.slug`` is NOT
+    NULL now, so that state is unreachable -- what the fixture still buys is a
+    second eligible organization that is not the one every other test uses."""
     return baker.make(Organization, can_invite_organizations=False, parent=None)
 
 
@@ -63,11 +70,10 @@ def parented_org(eligible_org):
 
 @pytest.fixture
 def eligible_org_admin(user, eligible_org):
-    return baker.make(
-        OrganizationMembership,
+    return make_membership(
         user=user,
         organization=eligible_org,
-        role=OrganizationRole.ADMIN,
+        groups=[GROUP_ORGANIZATION_ADMIN],
         is_active=True,
     )
 
@@ -79,30 +85,27 @@ def eligible_org_member(eligible_org):
         OrganizationMembership,
         user=member,
         organization=eligible_org,
-        role=OrganizationRole.MEMBER,
         is_active=True,
     )
     return member
 
 
 @pytest.fixture
-def no_slug_org_admin(user, no_slug_org):
-    return baker.make(
-        OrganizationMembership,
+def second_eligible_org_admin(user, second_eligible_org):
+    return make_membership(
         user=user,
-        organization=no_slug_org,
-        role=OrganizationRole.ADMIN,
+        organization=second_eligible_org,
+        groups=[GROUP_ORGANIZATION_ADMIN],
         is_active=True,
     )
 
 
 @pytest.fixture
 def parented_org_admin(user, parented_org):
-    return baker.make(
-        OrganizationMembership,
+    return make_membership(
         user=user,
         organization=parented_org,
-        role=OrganizationRole.ADMIN,
+        groups=[GROUP_ORGANIZATION_ADMIN],
         is_active=True,
     )
 
@@ -200,15 +203,14 @@ class TestOrganizationBrandingLogoUploadParamsView:
         assert "access_key_id" not in data
         assert "session_token" not in data
 
-    def test_admin_of_a_no_slug_org_still_gets_signed_params(
-        self, client, user, no_slug_org, no_slug_org_admin
+    def test_admin_of_any_eligible_org_gets_signed_params(
+        self, client, user, second_eligible_org, second_eligible_org_admin
     ):
-        """Logo upload uses the two-condition eligibility gate, not the
-        three-condition write gate -- a slug-less-but-otherwise-eligible org
-        must still be able to upload a logo (the slug/branding write happens
-        later, on form submit)."""
+        """Logo upload goes through the eligibility gate (parentless and
+        entitled), not the branding write gate -- uploads happen on file-picker
+        change, before the branding write on form submit."""
         client.force_authenticate(user)
-        client.credentials(HTTP_X_ORGANIZATION_ID=str(no_slug_org.id))
+        client.credentials(HTTP_X_ORGANIZATION_ID=str(second_eligible_org.id))
 
         response = client.post(UPLOAD_PARAMS_URL, data=VALID_PAYLOAD, format="json")
         assert_response_status_code(response, status.HTTP_200_OK)
@@ -232,11 +234,10 @@ class TestOrganizationBrandingLogoUploadParamsView:
     @pytest.mark.no_auto_subscription
     def test_admin_of_an_unentitled_org_returns_403(self, client, user):
         org = _make_unentitled_org(can_invite_organizations=False, slug="unentitled-org")
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=org,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         client.force_authenticate(user)
@@ -279,18 +280,16 @@ class TestOrganizationBrandingLogoUploadParamsView:
         user = baker.make(User)
         org_a = baker.make(Organization, can_invite_organizations=False, slug="multi-a")
         org_b = baker.make(Organization, can_invite_organizations=False, slug="multi-b")
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=org_a,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=org_b,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 

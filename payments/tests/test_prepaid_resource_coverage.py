@@ -121,7 +121,13 @@ def _probe_resource_calendars() -> None:
         service.create_resource_calendar(name="Blocked Room")
 
     assert exc_info.value.resource_key == LimitedResource.RESOURCE_CALENDARS
-    assert not Calendar.objects.filter(organization=organization, name="Blocked Room").exists()
+    assert (
+        not Calendar.objects.filter_by_organization(organization)
+        .filter(
+            name="Blocked Room",
+        )
+        .exists()
+    )
 
 
 def _probe_calendar_groups() -> None:
@@ -135,9 +141,13 @@ def _probe_calendar_groups() -> None:
         service.create_group(CalendarGroupInputData(name="Blocked Group"))
 
     assert exc_info.value.resource_key == LimitedResource.CALENDAR_GROUPS
-    assert not CalendarGroup.objects.filter(
-        organization=organization, name="Blocked Group"
-    ).exists()
+    assert (
+        not CalendarGroup.objects.filter_by_organization(organization)
+        .filter(
+            name="Blocked Group",
+        )
+        .exists()
+    )
 
 
 def _probe_bundle_calendars() -> None:
@@ -156,7 +166,13 @@ def _probe_bundle_calendars() -> None:
         service.create_bundle_calendar(name="Blocked Bundle")
 
     assert exc_info.value.resource_key == LimitedResource.BUNDLE_CALENDARS
-    assert not Calendar.objects.filter(organization=organization, name="Blocked Bundle").exists()
+    assert (
+        not Calendar.objects.filter_by_organization(organization)
+        .filter(
+            name="Blocked Bundle",
+        )
+        .exists()
+    )
 
 
 def _probe_availability_windows() -> None:
@@ -180,7 +196,14 @@ def _probe_availability_windows() -> None:
         )
 
     assert exc_info.value.resource_key == LimitedResource.AVAILABILITY_WINDOWS
-    assert AvailableTime.objects.filter(organization=organization, calendar=calendar).count() == 1
+    assert (
+        AvailableTime.objects.filter_by_organization(organization)
+        .filter(
+            calendar=calendar,
+        )
+        .count()
+        == 1
+    )
 
 
 def _probe_webhook_subscriptions() -> None:
@@ -203,9 +226,11 @@ def _probe_webhook_subscriptions() -> None:
         )
 
     assert exc_info.value.resource_key == LimitedResource.WEBHOOK_SUBSCRIPTIONS
-    assert not WebhookConfiguration.objects.filter(
-        organization=organization, url="https://example.com/coverage-blocked"
-    ).exists()
+    assert not (
+        WebhookConfiguration.objects.filter_by_organization(organization)
+        .filter(url="https://example.com/coverage-blocked")
+        .exists()
+    )
 
 
 def _probe_public_api_system_users() -> None:
@@ -226,9 +251,11 @@ def _probe_public_api_system_users() -> None:
         )
 
     assert exc_info.value.resource_key == LimitedResource.PUBLIC_API_SYSTEM_USERS
-    assert not SystemUser.objects.filter(
-        organization=organization, integration_name="coverage-blocked-integration"
-    ).exists()
+    assert not (
+        SystemUser.objects.filter_by_organization(organization)
+        .filter(integration_name="coverage-blocked-integration")
+        .exists()
+    )
 
 
 # Every currently-known ``kind=prepaid`` ``LimitedResource`` member maps to a probe

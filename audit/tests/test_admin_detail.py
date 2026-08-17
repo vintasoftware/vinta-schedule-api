@@ -25,9 +25,11 @@ from model_bakery import baker
 
 from audit.constants import AuditAction, AuditActorType
 from audit.factories import AuditAffectedMembershipFactory, AuditFactory
+from audit.models import Audit
 from audit.repositories import AuditRepository
 from audit.types import ActorSnapshot, AuditRecord, SubjectRef
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.authorization import MEMBERSHIP_ROLE_LABEL_ADMIN
+from organizations.models import Organization, OrganizationMembership
 
 
 User = get_user_model()
@@ -290,7 +292,7 @@ class TestAuditAdminDetailActors:
             org,
             actor_type=AuditActorType.MEMBERSHIP,
             actor_id=123,
-            actor_role=OrganizationRole.ADMIN,
+            actor_role=MEMBERSHIP_ROLE_LABEL_ADMIN,
         )
         url = f"/super/audit/audit/{record.pk}/view/"
 
@@ -301,7 +303,7 @@ class TestAuditAdminDetailActors:
         assert "membership" in content.lower()
         assert "123" in content  # Actor ID
         assert "Actor Role (Membership)" in content
-        # The role value should appear (the value or label from OrganizationRole)
+        # The role label should appear (see organizations.authorization)
         assert "admin" in content.lower()
         # No System User Scopes for MEMBERSHIP
         assert "System User Scopes" not in content
@@ -417,8 +419,6 @@ class TestAuditAdminDetailReadOnly:
 
     def test_post_to_detail_url_does_not_mutate(self, admin_client: Client, db: Any) -> None:
         """POST to the detail view URL does not mutate the record."""
-        from audit.models import Audit
-
         org = baker.make(Organization)
         record = AuditFactory().create(org)
         url = f"/super/audit/audit/{record.pk}/view/"

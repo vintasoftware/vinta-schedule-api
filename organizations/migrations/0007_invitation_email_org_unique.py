@@ -5,11 +5,11 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-    """Phase 4 — Relax OrganizationInvitation.email uniqueness from global to per-org.
+    """Relax OrganizationInvitation.email uniqueness from global to per-org.
 
     Previously ``email`` carried a field-level ``unique=True`` which prevented the
     same email address from having concurrent pending invitations across different
-    organizations.  Phase 4 enables multi-org invite accept (Use-case 6): a user
+    organizations.  This relaxation enables multi-org invite accept: a user
     already in org A can receive and accept an invitation from org B.  The global
     unique blocks that flow, so we relax it to a composite
     ``unique(email, organization)`` — the same email can now appear once per org,

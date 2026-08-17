@@ -261,18 +261,18 @@ class MercadoPagoSubscriptionAdapter(BaseSubscriptionAdapter):
         already make), which lets MercadoPago resume charging *on its own
         schedule* rather than collecting the specific missed amount right now.
 
-        That is very likely the same defect this phase exists to fix on
-        Stripe -- re-authorizing does not obviously charge the missed period,
-        so it may just as easily reactivate the subscription while collecting
-        nothing, the exact false-recovery shape the Phase 4 probe caught. But
+        That is very likely the same defect fixed on Stripe's equivalent path --
+        re-authorizing does not obviously charge the missed period, so it may
+        just as easily reactivate the subscription while collecting nothing,
+        the same false-recovery shape a live probe caught there. But
         it is **unverified**: no MercadoPago test credentials were available to
         run an equivalent probe (real sandbox account + a genuine renewal
         failure via a declined test card + inspecting whether the reauthorized
         preapproval's next charge actually recovers the missed amount or only
-        the next period's). No organization is routed to MercadoPago today
-        (see the payment-provider-selection plan), so shipping a second,
-        unverified "looks like it works" no-op on a money path is strictly
-        worse than refusing loudly here until someone can actually check.
+        the next period's). No organization is routed to MercadoPago today, so
+        shipping a second, unverified "looks like it works" no-op on a money
+        path is strictly worse than refusing loudly here until someone can
+        actually check.
 
         **Probe recipe for whoever enables MercadoPago and needs to verify
         this before removing the refusal:**

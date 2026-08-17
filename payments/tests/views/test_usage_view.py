@@ -31,7 +31,9 @@ from rest_framework import status
 
 from calendar_integration.constants import CalendarType
 from calendar_integration.models import AvailableTime, Calendar, CalendarGroup
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
+from organizations.tests.helpers import make_membership
 from payments.billing_constants import BillingState, LimitedResource, LimitKind
 from payments.models import BillingPlan, MeteredOccurrence, PlanLimit
 from payments.services.entitlement_service import EntitlementService
@@ -194,11 +196,10 @@ def _seed_every_resource(organization, subscription):
 
 @pytest.fixture
 def admin_membership(organization, user):
-    return baker.make(
-        OrganizationMembership,
+    return make_membership(
         organization=organization,
         user=user,
-        role=OrganizationRole.ADMIN,
+        groups=[GROUP_ORGANIZATION_ADMIN],
         is_active=True,
     )
 
@@ -255,18 +256,19 @@ class TestUsageMatchesEnforcement:
 
 @pytest.mark.django_db
 class TestBackwardsCompatibility:
-    """**Acceptance criterion for Phase 3.** Every key ``GET /billing/usage/``
-    returned *before* this phase must still be present, with the same type and
-    the same value, against a fixture that predates the change (this module's
-    own auto-seeded ``_seed_every_resource`` fixture, untouched by this phase).
+    """**Backwards-compatibility acceptance criterion.** Every key ``GET
+    /billing/usage/`` returned before the enrichment fields were added must
+    still be present, with the same type and the same value, against a
+    fixture that predates the change (this module's own auto-seeded
+    ``_seed_every_resource`` fixture, untouched by that addition).
 
-    A failure here means an existing caller of the pre-Phase-3 response shape
-    would observe something different -- which is exactly what this phase
-    promises never happens. Do not edit this test to make it pass; if it
-    fails, the view change is wrong.
+    A failure here means an existing caller of the original response shape
+    would observe something different -- which is exactly what this
+    guarantee promises never happens. Do not edit this test to make it pass;
+    if it fails, the view change is wrong.
     """
 
-    def test_every_pre_phase_3_key_is_present_and_unchanged(
+    def test_every_pre_enrichment_key_is_present_and_unchanged(
         self, auth_client, admin_membership, organization, subscription
     ):
         entitlement_service = EntitlementService()
@@ -283,7 +285,8 @@ class TestBackwardsCompatibility:
 
         for resource_key in LimitedResource.values:
             row = rows[resource_key]
-            # Every key this row carried before Phase 3 is still present.
+            # Every key this row carried before the enrichment fields were added
+            # is still present.
             assert {
                 "resource_key",
                 "kind",
@@ -322,11 +325,10 @@ class TestPooledAttributionOmitsNonContributors:
         silent_child = baker.make(Organization, parent=root, can_invite_organizations=False)
         plan = make_complete_plan()
         SubscriptionService().create_subscription_for_organization(root, plan=plan)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             organization=contributing_child,
             user=user,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         for i in range(2):
@@ -402,11 +404,10 @@ class TestEstimatedOverageTotal:
         sibling_subscription = SubscriptionService().create_subscription_for_organization(
             sibling_root, plan=sibling_plan
         )
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             organization=contributing_child,
             user=user,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
@@ -446,11 +447,10 @@ class TestEstimatedOverageTotal:
 class TestNoSubscriptionOrganization:
     def test_free_organization_gets_200_with_null_plan_and_period(self, auth_client, user):
         free_organization = baker.make(Organization, parent=None, can_invite_organizations=False)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             organization=free_organization,
             user=user,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 
@@ -467,7 +467,7 @@ class TestNoSubscriptionOrganization:
 @pytest.mark.django_db
 class TestRestrictedOrganizationCanStillReadEnrichedUsage:
     """The read-never-blocks rule in the viewset docstring extends to every
-    additive Phase 3 field, not just the pre-existing ones -- a RESTRICTED
+    additive enrichment field, not just the pre-existing ones -- a RESTRICTED
     organization needs the plan/period/overage figures to resolve billing at
     least as much as an ACTIVE one does."""
 
@@ -488,7 +488,7 @@ class TestRestrictedOrganizationCanStillReadEnrichedUsage:
 
 @pytest.mark.django_db
 class TestRootResolutionAndSubtreeWalkHappenOnce:
-    """Query-count regression gate for the N+1 fix: before Phase 3, the loop
+    """Query-count regression gate for the N+1 fix: previously, the loop
     over ``LimitedResource`` called ``get_effective_limit``/``get_current_usage``
     per resource, each independently re-walking the ``parent`` chain and
     re-running the subtree BFS -- sixteen root resolutions and eight subtree
@@ -501,11 +501,10 @@ class TestRootResolutionAndSubtreeWalkHappenOnce:
         child = baker.make(Organization, parent=root, can_invite_organizations=False)
         plan = make_complete_plan()
         SubscriptionService().create_subscription_for_organization(root, plan=plan)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             organization=child,
             user=user,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
 

@@ -1,5 +1,5 @@
 """Tests for group-scoped availability windows in discovery and booking
-validation (Phase 1b of ``CALENDAR_GROUP_SCOPED_AVAILABILITY``).
+validation.
 
 Covers:
 - The surgeon scenario end to end: a Tuesday/Thursday window in one group
@@ -11,8 +11,9 @@ Covers:
   calendar id and rule type (spec Acceptance 4, UC-4).
 - The required "unchanged path" test: a group with NO group-scoped
   configuration produces byte-for-byte identical discovery output AND issues
-  the SAME number of queries as the pre-Phase-1b engine (spec Objective 2 /
-  Acceptance 2 -- this plan's substitute for a flag-off test).
+  the SAME number of queries as the engine without group-scoped window
+  support (spec Objective 2 / Acceptance 2 -- the substitute for a flag-off
+  test).
 """
 
 from __future__ import annotations
@@ -25,22 +26,32 @@ from django.test.utils import CaptureQueriesContext
 
 import pytest
 
-from calendar_integration.constants import CalendarProvider, CalendarType, GroupScopedRuleType
+from calendar_integration.constants import (
+    CalendarProvider,
+    CalendarType,
+    GroupScopedRuleType,
+    RecurrenceFrequency,
+)
 from calendar_integration.exceptions import CalendarGroupScopedRuleViolationError
 from calendar_integration.models import (
     AvailableTime,
+    AvailableTimeRecurrenceException,
     Calendar,
     CalendarGroup,
     CalendarGroupSlot,
     CalendarGroupSlotMembership,
+    RecurrenceRule,
 )
 from calendar_integration.services.calendar_group_service import CalendarGroupService
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.dataclasses import (
+    CalendarGroupEventInputData,
     CalendarGroupSlotSelectionInputData,
 )
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
+from organizations.tests.helpers import grant_membership_groups
 from users.models import Profile, User
 
 
@@ -83,8 +94,12 @@ def audit_service():
 def admin_user(db: Any, organization: Organization) -> User:
     u = User.objects.create_user(email="admin@example.com", password="pass")
     Profile.objects.create(user=u)
-    OrganizationMembership.objects.create(
-        user=u, organization=organization, role=OrganizationRole.ADMIN
+    grant_membership_groups(
+        OrganizationMembership.objects.create(
+            user=u,
+            organization=organization,
+        ),
+        [GROUP_ORGANIZATION_ADMIN],
     )
     return u
 
@@ -285,8 +300,6 @@ def test_create_grouped_event_rejects_calendar_outside_group_scoped_window(
         rrule_string="RRULE:FREQ=WEEKLY;BYDAY=TU,TH",
     )
 
-    from calendar_integration.services.dataclasses import CalendarGroupEventInputData
-
     with pytest.raises(CalendarGroupScopedRuleViolationError) as exc_info:
         service.create_grouped_event(
             CalendarGroupEventInputData(
@@ -333,8 +346,6 @@ def test_create_grouped_event_allows_calendar_inside_group_scoped_window(
         rrule_string="RRULE:FREQ=WEEKLY;BYDAY=TU,TH",
     )
 
-    from calendar_integration.services.dataclasses import CalendarGroupEventInputData
-
     event = service.create_grouped_event(
         CalendarGroupEventInputData(
             title="Surgery",
@@ -369,8 +380,6 @@ def test_reschedule_grouped_event_rejects_move_outside_group_scoped_window(
         tz="UTC",
         rrule_string="RRULE:FREQ=WEEKLY;BYDAY=TU,TH",
     )
-
-    from calendar_integration.services.dataclasses import CalendarGroupEventInputData
 
     event = service.create_grouped_event(
         CalendarGroupEventInputData(
@@ -446,16 +455,16 @@ def test_unconfigured_group_discovery_is_byte_for_byte_unchanged(
     surgery_slot: CalendarGroupSlot,
 ) -> None:
     """No group-scoped window, block, or quota rule exists anywhere in the
-    group -- discovery must take the early-out before any new (Phase 1b) work
-    runs.
+    group -- discovery must take the early-out before any new group-scoped
+    work runs.
 
     The query counts below (6 for ``find_bookable_slots``, 5 for
     ``check_group_availability``, against this exact fixture shape: a
     single-slot group with one managed calendar and one 5-day AvailableTime
-    row) were captured against the pre-Phase-1b engine (this file's Phase 1b
-    changes reverted via ``git stash``) using the identical scenario, then
-    asserted unchanged here -- the flag-off-test substitute (spec Objective 2
-    / Acceptance 2).
+    row) were captured against the engine without group-scoped window support
+    (this file's group-scoped-window changes reverted via ``git stash``)
+    using the identical scenario, then asserted unchanged here -- the
+    flag-off-test substitute (spec Objective 2 / Acceptance 2).
     """
     window_start = MONDAY
     window_end = SATURDAY
@@ -470,7 +479,8 @@ def test_unconfigured_group_discovery_is_byte_for_byte_unchanged(
         )
     assert len(captured.captured_queries) == 6
     # Full base availability, unaffected: every 2h-stepped candidate across all
-    # 5 days (Mon-Fri), matching the pre-Phase-1b engine's output.
+    # 5 days (Mon-Fri), matching output captured before group-scoped window
+    # support existed.
     assert len(proposals) == 60
     assert {p.start_time.weekday() for p in proposals} == {0, 1, 2, 3, 4}
 
@@ -508,9 +518,6 @@ def test_group_scoped_recurring_exception_is_honored_when_master_is_group_scoped
     instead of being silently skipped by the default manager.
     """
     # Create a group-scoped recurring master: 9-10 AM every Tuesday and Thursday.
-    from calendar_integration.constants import RecurrenceFrequency
-    from calendar_integration.models import RecurrenceRule
-
     rule = RecurrenceRule.objects.create(
         organization=organization,
         frequency=RecurrenceFrequency.WEEKLY,
@@ -531,8 +538,6 @@ def test_group_scoped_recurring_exception_is_honored_when_master_is_group_scoped
 
     # The second occurrence would be Thursday of the first week (Sept 4).
     # Create a group-scoped exception for it: move it to 10-11 AM.
-    from calendar_integration.models import AvailableTimeRecurrenceException
-
     exception_original_start = THURSDAY.replace(hour=9)
     exception_new_start = THURSDAY.replace(hour=10)
     exception_new_end = THURSDAY.replace(hour=11)
@@ -557,7 +562,7 @@ def test_group_scoped_recurring_exception_is_honored_when_master_is_group_scoped
     )
 
     # Fetch the group-scoped master with recurring_occurrences pre-annotated.
-    # This simulates how slot_engine fetches group-scoped masters (Phase 1b).
+    # This simulates how slot_engine fetches group-scoped masters.
     master_with_occurrences = (
         AvailableTime.objects.unscoped()
         .filter_by_organization(organization.id)
@@ -635,7 +640,7 @@ def test_reschedule_grouped_event_with_non_primary_calendar_outside_window(
     outside that non-primary calendar's group-scoped window is rejected.
 
     Verifies that reschedule_grouped_event enforces windows for ALL selected
-    calendars (not just primary), as per Phase 1b spec Acceptance 4.
+    calendars (not just primary), per spec Acceptance 4.
     """
     # Add the secondary calendar as a member of the surgery slot.
     CalendarGroupSlotMembership.objects.create(
@@ -663,8 +668,6 @@ def test_reschedule_grouped_event_with_non_primary_calendar_outside_window(
         tz="UTC",
         rrule_string="RRULE:FREQ=WEEKLY;BYDAY=TU,TH",
     )
-
-    from calendar_integration.services.dataclasses import CalendarGroupEventInputData
 
     # Create event inside both windows (Tuesday 10-10:30 AM).
     event = service.create_grouped_event(
@@ -739,8 +742,6 @@ def test_reschedule_grouped_event_with_non_primary_calendar_inside_windows(
         tz="UTC",
         rrule_string="RRULE:FREQ=WEEKLY;BYDAY=TU,TH",
     )
-
-    from calendar_integration.services.dataclasses import CalendarGroupEventInputData
 
     # Create event inside both windows (Tuesday 10-10:30 AM).
     event = service.create_grouped_event(

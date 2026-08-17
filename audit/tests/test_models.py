@@ -12,10 +12,12 @@ from django.db import IntegrityError, transaction
 
 import pytest
 from model_bakery import baker
+from vinta_orgs.exceptions import OrganizationNotFoundError
 
 from audit.constants import AuditAction, AuditActorType
 from audit.factories import AuditAffectedMembershipFactory, AuditFactory
 from audit.models import Audit, AuditAffectedMembership
+from common.organization_context import organization_context
 from organizations.models import Organization, OrganizationMembership
 
 
@@ -204,8 +206,16 @@ class TestAuditTenantCorrectness:
         assert total >= 2
 
     def test_objects_manager_requires_organization_filter(self) -> None:
-        """Calling objects.create without organization must raise ValueError."""
-        with pytest.raises(ValueError, match="`organization` is required"):
+        """``objects.create`` with no organization named and none bound must raise.
+
+        The message changed with the base class -- the retired
+        ``BaseOrganizationModelManager`` raised ``ValueError("`organization` is
+        required")`` from the manager, where the package resolves the
+        organization from the context and raises ``OrganizationNotFoundError``
+        when nothing is bound. The contract this pins is the same one: a row
+        cannot be written into an organization nobody named.
+        """
+        with pytest.raises(OrganizationNotFoundError):
             Audit.objects.create(
                 action=AuditAction.CREATE,
                 actor_type=AuditActorType.SYSTEM,
@@ -213,14 +223,32 @@ class TestAuditTenantCorrectness:
                 subject_id="1",
             )
 
+    def test_objects_manager_adopts_the_bound_organization(self) -> None:
+        """The other half of the contract: *bound*, the same call succeeds and scopes.
+
+        Without this the test above would also pass if ``objects.create`` were
+        broken outright.
+        """
+        org = baker.make(Organization)
+
+        with organization_context(org):
+            audit = Audit.objects.create(
+                action=AuditAction.CREATE,
+                actor_type=AuditActorType.SYSTEM,
+                subject_type="organizations.Organization",
+                subject_id="1",
+            )
+
+        assert audit.organization_id == org.pk
+
     def test_affected_membership_objects_manager_requires_organization(self) -> None:
-        """AuditAffectedMembership.objects.create without organization must raise ValueError."""
+        """``AuditAffectedMembership.objects.create`` with no organization must raise."""
         org = baker.make(Organization)
         audit = AuditFactory().create(organization=org)
         user = baker.make(User)
         membership = OrganizationMembership.objects.create(user=user, organization=org)
 
-        with pytest.raises(ValueError, match="`organization` is required"):
+        with pytest.raises(OrganizationNotFoundError):
             AuditAffectedMembership.objects.create(
                 audit_fk=audit,
                 membership_user_id=membership.user_id,
@@ -230,8 +258,8 @@ class TestAuditTenantCorrectness:
     def test_cross_org_audit_affected_membership_persists_without_rejection(self) -> None:
         """Cross-org link (audit from org A, membership from org B) persists at the DB layer.
 
-        Empirical finding: OrganizationModel.save() and BaseOrganizationModelManager.create()
-        do not validate that audit_fk and membership_user_id belong to the same organization
+        Empirical finding: neither ``SingleOrganizationModelMixin.save()`` nor the scoped
+        manager's ``create()`` validates that audit_fk and membership_user_id belong to the same organization
         as the AuditAffectedMembership row.  The concrete column (membership_user_id) still
         holds the org-B user_id, and the row is stored successfully.
 

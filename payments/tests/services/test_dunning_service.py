@@ -29,7 +29,9 @@ import pytest
 from model_bakery import baker
 from vintasend.constants import NotificationTypes
 
-from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
+from organizations.tests.helpers import make_membership
 from payments.billing_constants import BillingState, LimitedResource, LimitKind
 from payments.constants import PaymentProviders
 from payments.exceptions import (
@@ -153,16 +155,19 @@ def _subscription_for(
 def _add_admin_membership(organization: Organization) -> OrganizationMembership:
     """A recipient for ``DunningService``'s notifications --
     ``OrganizationMembershipQuerySet.billing_recipients`` reads active
-    admin/billing-owner memberships, and a bare ``baker.make(Organization, ...)``
-    (unlike ``OrganizationService.create_organization``) creates none on its
-    own."""
-    return baker.make(
-        OrganizationMembership,
+    memberships holding ``payments.manage_billing``, and a bare
+    ``baker.make(Organization, ...)`` (unlike
+    ``OrganizationService.create_organization``) creates none on its own.
+
+    A membership holds ``manage_billing`` only through its groups, and
+    ``make_membership`` is what assigns them."""
+    membership = make_membership(
         organization=organization,
         user=baker.make(User),
-        role=OrganizationRole.ADMIN,
+        groups=[GROUP_ORGANIZATION_ADMIN],
         is_active=True,
     )
+    return membership
 
 
 def _seed_members(organization: Organization, count: int) -> None:
@@ -175,7 +180,6 @@ def _seed_members(organization: Organization, count: int) -> None:
             OrganizationMembership,
             organization=organization,
             user=baker.make(User),
-            role=OrganizationRole.MEMBER,
             is_active=True,
         )
 
@@ -187,10 +191,9 @@ class FakePaymentService:
 
     ``raise_collection_not_supported``/``raise_no_outstanding_balance`` let a
     test drive ``pay_outstanding_invoice`` down the two error branches
-    ``SubscriptionService.retry_failed_charge`` (Billing API Contract
-    Hardening, Phase 5) must tolerate: MercadoPago's typed refusal (falls back
-    to ``change_subscription_plan``) and "nothing owed right now" (swallowed,
-    the tick is a no-op).
+    ``SubscriptionService.retry_failed_charge`` must tolerate: MercadoPago's
+    typed refusal (falls back to ``change_subscription_plan``) and "nothing
+    owed right now" (swallowed, the tick is a no-op).
     """
 
     plan_external_id: str = "ext-plan-1"
@@ -198,7 +201,7 @@ class FakePaymentService:
     idempotency_keys: list[str] = field(default_factory=list)
     create_subscription_plan_providers: list[str] = field(default_factory=list)
     pay_outstanding_invoice_calls: list[tuple[str, str]] = field(default_factory=list)
-    #: Rule A pin (Payment Provider Selection, Phase 4): which provider each
+    #: Rule A pin: which provider each
     #: `pay_outstanding_invoice` call actually resolved from `subscription`'s
     #: own stored `payment_provider` -- recorded separately from
     #: `pay_outstanding_invoice_calls` (token, key) so a test can assert the
@@ -805,10 +808,10 @@ class TestProcessSubscriptionDispatch:
             dunning_service.process_subscription(subscription)
 
         subscription.refresh_from_db()
-        # Billing API Contract Hardening, Phase 5: the ladder's Stripe retry
-        # drives `pay_outstanding_invoice` -- the primitive that actually
-        # collects -- never `change_subscription_plan` (proven $0.00 against a
-        # real past-due invoice, see `retry_failed_charge`'s docstring).
+        # The ladder's Stripe retry drives `pay_outstanding_invoice` -- the
+        # primitive that actually collects -- never `change_subscription_plan`
+        # (proven $0.00 against a real past-due invoice, see
+        # `retry_failed_charge`'s docstring).
         assert "pay_outstanding_invoice" in fake_payment_service.calls
         assert "change_subscription_plan" not in fake_payment_service.calls
         # Called with an empty token (the ladder has no new instrument to
@@ -821,8 +824,8 @@ class TestProcessSubscriptionDispatch:
             ("", dunning_retry_idempotency_key(subscription.pk, current_ordinal))
         ]
         assert subscription.last_dunning_attempt_at is not None
-        # Payment Provider Selection, Phase 4, Rule A: the retry drives the
-        # provider resolved from the *subscription's own* stored provider.
+        # Rule A: the retry drives the provider resolved from the
+        # *subscription's own* stored provider.
         # `billing_profile` above is unpinned, so `create_subscription_for_organization`
         # resolved this subscription onto `settings.DEFAULT_PAYMENT_PROVIDER`
         # (`stripe`) -- asserted as the literal rather than by reading the column
@@ -854,9 +857,9 @@ class TestProcessSubscriptionDispatch:
 
         ``raise_collection_not_supported`` simulates
         ``MercadoPagoSubscriptionAdapter.pay_outstanding_invoice``'s real,
-        typed refusal (Billing API Contract Hardening, Phase 5) -- exercising
-        `retry_failed_charge`'s fallback path, which is the one that still
-        drives `_ensure_provider_plan`/`create_subscription_plan` against the
+        typed refusal -- exercising `retry_failed_charge`'s fallback path,
+        which is the one that still drives
+        `_ensure_provider_plan`/`create_subscription_plan` against the
         subscription's own provider."""
         fake_payment_service.raise_collection_not_supported = True
         billing_profile.payment_provider = PaymentProviders.STRIPE
@@ -880,7 +883,8 @@ class TestProcessSubscriptionDispatch:
         ]
         # `pay_outstanding_invoice` is tried first (and refused), and the
         # fallback still lands on `change_subscription_plan` -- MercadoPago's
-        # ladder is byte-identical to before this phase.
+        # ladder is byte-identical to its behavior before `pay_outstanding_invoice`
+        # became the ladder's primary collection attempt.
         assert fake_payment_service.calls == [
             "pay_outstanding_invoice",
             "create_subscription_plan",
@@ -916,8 +920,8 @@ class TestProcessSubscriptionDispatch:
             dunning_service.process_subscription(subscription)
 
         # No fallback drove `_ensure_provider_plan`/`change_subscription_plan`
-        # against Stripe -- the $0.00-collection operation this phase exists
-        # to keep the ladder away from.
+        # against Stripe -- the $0.00-collection operation the fallback guard
+        # exists to keep the ladder away from.
         assert fake_payment_service.calls == ["pay_outstanding_invoice"]
 
     def test_dispatches_restricted_to_the_free_fallback_check_only(
@@ -953,10 +957,10 @@ class TestProcessSubscriptionDispatch:
 
 @pytest.mark.django_db
 class TestRetryFailedChargeTolerantOfNonFatalOutcomes:
-    """Billing API Contract Hardening, Phase 5: ``retry_failed_charge`` is a
-    background beat tick (``CELERY_TASK_ACKS_LATE``) -- it must never raise
-    out of a legitimate "nothing to do" outcome, unlike ``retry_payment``
-    (the user-facing endpoint), which surfaces the analogous 409s instead."""
+    """``retry_failed_charge`` is a background beat tick
+    (``CELERY_TASK_ACKS_LATE``) -- it must never raise out of a legitimate
+    "nothing to do" outcome, unlike ``retry_payment`` (the user-facing
+    endpoint), which surfaces the analogous 409s instead."""
 
     def test_blank_external_id_returns_unchanged_without_raising(
         self, subscription_service, fake_payment_service, organization, billing_profile
@@ -998,11 +1002,10 @@ class TestRetryFailedChargeTolerantOfNonFatalOutcomes:
     def test_charge_declined_returns_unchanged_without_raising(
         self, subscription_service, fake_payment_service, organization, billing_profile
     ):
-        """Billing API Contract Hardening, Phase 5 live-probe BLOCKER: a card
-        still dead on the retry -- the *common* dunning-tick outcome -- must
-        not raise out of ``retry_failed_charge``. Left unhandled, this would
-        reach ``process_dunning_for_subscription`` and, per that task's own
-        docstring, redeliver identically forever."""
+        """Live-probe BLOCKER: a card still dead on the retry -- the *common*
+        dunning-tick outcome -- must not raise out of ``retry_failed_charge``.
+        Left unhandled, this would reach ``process_dunning_for_subscription``
+        and, per that task's own docstring, redeliver identically forever."""
         fake_payment_service.raise_charge_declined = True
         plan = make_complete_plan()
         subscription = _subscription_for(

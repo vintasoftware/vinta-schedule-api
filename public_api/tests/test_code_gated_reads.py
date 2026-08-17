@@ -13,14 +13,18 @@ code authorizes access to its bound calendar / calendar group.  Reads never
 consume the code (used_at remains NULL after any read).
 """
 
+import base64
 import datetime
 from unittest.mock import Mock, patch
+
+from django.utils import timezone as tz
 
 import pytest
 from model_bakery import baker
 from rest_framework.test import APIClient
 
 from calendar_integration.constants import CalendarProvider, CalendarType
+from calendar_integration.factories import create_booking_policy
 from calendar_integration.models import (
     AvailableTime,
     Calendar,
@@ -40,6 +44,9 @@ from calendar_integration.services.dataclasses import (
     UnavailableTimeWindow,
 )
 from organizations.models import Organization
+from public_api.constants import PublicAPIResources
+from public_api.models import ResourceAccess
+from public_api.services import PublicAPIAuthService
 
 
 # ---------------------------------------------------------------------------
@@ -240,7 +247,6 @@ class TestAvailableTimesWithCode:
         self, mock_rate_limiter, anon_client, calendar_booking_code, organization, calendar
     ):
         """A calendar booking code returns available times with no Authorization header."""
-        from calendar_integration.models import AvailableTime
         from di_core.containers import container
 
         mock_rate_limiter.return_value = iter([None])
@@ -390,7 +396,7 @@ class TestAvailableTimesWithCode:
             permissions=[EventManagementPermissions.CREATE],
             calendar_id=calendar.id,
         )
-        CalendarManagementToken.objects.filter(id=token.id).update(
+        CalendarManagementToken.original_manager.filter(id=token.id).update(
             used_at=datetime.datetime(2025, 1, 1, tzinfo=datetime.UTC)
         )
 
@@ -1015,8 +1021,6 @@ class TestTamperedSecretCode:
         3. Re-encode base64 → tampered code.
         The id is real (token exists in DB) but the secret does not match the stored hash.
         """
-        import base64
-
         mock_rate_limiter.return_value = iter([None])
         token, real_code = permission_service.create_booking_token(
             organization_id=organization.id,
@@ -1055,8 +1059,6 @@ class TestTamperedSecretCode:
         calendar_group,
     ):
         """Same tampered-secret test for the group availability field."""
-        import base64
-
         mock_rate_limiter.return_value = iter([None])
         token, real_code = permission_service.create_booking_token(
             organization_id=organization.id,
@@ -1113,8 +1115,6 @@ class TestRealCrossOrgIsolation:
         - Call availableTimesWithCode.
         - Assert only org A's AvailableTime id is in the response (not org B's).
         """
-        from calendar_integration.models import AvailableTime
-
         mock_rate_limiter.return_value = iter([None])
 
         org_a = baker.make(Organization, name="Real Org A")
@@ -1532,10 +1532,6 @@ def _calendar_event(
 
 def _authed_client_with_bookable_slots(org):
     """Return an APIClient authenticated as a system user with BOOKABLE_SLOTS resource."""
-    from public_api.constants import PublicAPIResources
-    from public_api.models import ResourceAccess
-    from public_api.services import PublicAPIAuthService
-
     auth_service = PublicAPIAuthService()
     system_user, token = auth_service.create_system_user(
         integration_name="slots_integration",
@@ -1652,10 +1648,6 @@ class TestCalendarBookableSlotsWithCodeStrengthened:
         A 4-hour lead time is set on the calendar.  An availability window close to now
         (1 hour from now) must be excluded; one 6 hours from now must be present.
         """
-        from django.utils import timezone as tz
-
-        from calendar_integration.factories import create_booking_policy
-
         mock_rate_limiter.return_value = iter([None])
 
         org = baker.make(Organization, name="Policy Lead Org", should_sync_rooms=False)
@@ -1959,7 +1951,7 @@ class TestCalendarBookableSlotsWithCodeStrengthened:
             permissions=[EventManagementPermissions.CREATE],
             calendar_id=calendar.id,
         )
-        CalendarManagementToken.objects.filter(id=token.id).update(
+        CalendarManagementToken.original_manager.filter(id=token.id).update(
             used_at=datetime.datetime(2025, 1, 1, tzinfo=datetime.UTC)
         )
 

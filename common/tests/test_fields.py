@@ -43,9 +43,12 @@ from django.db import connection, models
 from django.test.utils import isolate_apps
 
 import pytest
+from vinta_orgs.mixins import SingleOrganizationModelMixin
 
 from common.fields import OrganizationMembershipForeignKey
-from organizations.models import Organization, OrganizationMembership, OrganizationModel
+from common.managers import OrganizationScopedManager
+from common.models import BaseModel, SafeRelationNullInitMixin
+from organizations.models import Organization, OrganizationMembership
 
 
 User = get_user_model()
@@ -58,7 +61,7 @@ class TestOrganizationMembershipForeignKey:
     def test_user_id_is_concrete_biginteger_field(self) -> None:
         """``<name>_user_id`` is a real concrete BigIntegerField on the model."""
 
-        class SampleModel(OrganizationModel):
+        class SampleModel(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel):
             membership = OrganizationMembershipForeignKey(
                 on_delete=models.CASCADE,
                 null=True,
@@ -86,7 +89,7 @@ class TestOrganizationMembershipForeignKey:
     def test_foreignobject_descriptor_is_on_model(self) -> None:
         """The ``<name>`` ForeignObject descriptor is registered on the model."""
 
-        class SampleModel(OrganizationModel):
+        class SampleModel(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel):
             membership = OrganizationMembershipForeignKey(
                 on_delete=models.CASCADE,
                 null=True,
@@ -115,7 +118,7 @@ class TestOrganizationMembershipForeignKey:
     def test_null_kwarg_propagates_to_both_fields(self) -> None:
         """``null=True`` makes both the concrete column and ForeignObject nullable."""
 
-        class NullableModel(OrganizationModel):
+        class NullableModel(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel):
             membership = OrganizationMembershipForeignKey(
                 on_delete=models.SET_NULL,
                 null=True,
@@ -139,7 +142,7 @@ class TestOrganizationMembershipForeignKey:
     def test_non_null_default(self) -> None:
         """Without ``null=True``, both fields are non-nullable (the default)."""
 
-        class NonNullModel(OrganizationModel):
+        class NonNullModel(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel):
             membership = OrganizationMembershipForeignKey(
                 on_delete=models.CASCADE,
                 related_name="non_null_models",
@@ -177,7 +180,7 @@ class TestOrganizationMembershipForeignKey:
             ``organization_id`` — attname of OrganizationMembership.organization FK
         """
 
-        class SampleModel(OrganizationModel):
+        class SampleModel(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel):
             membership = OrganizationMembershipForeignKey(
                 on_delete=models.CASCADE,
                 null=True,
@@ -239,7 +242,14 @@ def probe_host_table(transactional_db):
     warnings.
     """
 
-    class _ProbeHost(OrganizationModel):
+    class _ProbeHost(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel):
+        # Declared exactly as every real organization-scoped model in this project
+        # is, so the probe exercises the manager those models actually get --
+        # notably ``create(organization=...)``, which this project's manager
+        # routes around the implicit scope because the write already names its
+        # organization.
+        objects = OrganizationScopedManager()
+
         membership = OrganizationMembershipForeignKey(
             on_delete=models.PROTECT,
             related_name="probe_hosts",
@@ -284,8 +294,10 @@ class TestOrganizationMembershipForeignKeyBehavior:
             membership_user_id=user.pk,
         )
 
-        # Reload from DB to avoid cached instance state.
-        host = probe_host_table.objects.get(pk=host.pk, organization=org)
+        # Reload from DB to avoid cached instance state. ``filter_by_organization``
+        # rather than the implicit scope: no organization is bound outside a
+        # request, and naming it is what the read would say in application code.
+        host = probe_host_table.objects.filter_by_organization(org).get(pk=host.pk)
         assert host.membership == membership
 
     def test_select_related_issues_one_query(self, probe_host_table, django_assert_num_queries):
@@ -301,27 +313,38 @@ class TestOrganizationMembershipForeignKeyBehavior:
 
         with django_assert_num_queries(1):
             hosts = list(
-                probe_host_table.objects.filter(organization=org).select_related("membership")
+                probe_host_table.objects.filter_by_organization(org).select_related("membership")
             )
         assert len(hosts) == 1
 
-    def test_filter_traversal_via_membership_role(self, probe_host_table):
-        """filter(membership__role='admin') returns the host row for an admin member."""
-        from organizations.models import OrganizationRole
+    def test_filter_traversal_via_a_membership_column(self, probe_host_table):
+        """``filter(membership__<field>=...)`` discriminates on the joined row.
 
-        user = User.objects.create_user(email="role@example.com", password="pw")  # type: ignore[attr-defined]
+        Used to filter on ``membership__role``; ``role`` is gone, and
+        ``membership__groups__name`` is not a usable substitute *here* --
+        this class is ``transaction=True``, which truncates ``auth_group``
+        between tests and takes the three seeded groups with it, so a
+        group-shaped assertion would silently match nothing. ``is_active`` is a
+        plain column on the same joined row and exercises the same join.
+
+        Two rows, so the filter has to actually discriminate rather than return
+        everything.
+        """
+        active_user = User.objects.create_user(email="active@example.com", password="pw")  # type: ignore[attr-defined]
+        inactive_user = User.objects.create_user(email="inactive@example.com", password="pw")  # type: ignore[attr-defined]
         org = Organization.objects.create(name="Test Org Role")
-        OrganizationMembership.objects.create(
-            user=user, organization=org, role=OrganizationRole.ADMIN
-        )
+        OrganizationMembership.objects.create(user=active_user, organization=org, is_active=True)
+        OrganizationMembership.objects.create(user=inactive_user, organization=org, is_active=False)
 
-        host = probe_host_table.objects.create(
+        active_host = probe_host_table.objects.create(
             organization=org,
-            membership_user_id=user.pk,
+            membership_user_id=active_user.pk,
+        )
+        probe_host_table.objects.create(
+            organization=org,
+            membership_user_id=inactive_user.pk,
         )
 
-        qs = probe_host_table.objects.filter(
-            organization=org, membership__role=OrganizationRole.ADMIN
-        )
+        qs = probe_host_table.objects.filter_by_organization(org).filter(membership__is_active=True)
         assert qs.count() == 1
-        assert qs.first().pk == host.pk
+        assert qs.first().pk == active_host.pk

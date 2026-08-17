@@ -386,8 +386,7 @@ class GroupScopedAvailabilityWriteResult:
 
 @dataclass
 class GroupScopedBlockWriteResult:
-    """Result of a group-scoped blocked-time write (create/update/delete)
-    (``CALENDAR_GROUP_SCOPED_AVAILABILITY`` Phase 2a).
+    """Result of a group-scoped blocked-time write (create/update/delete).
 
     ``block`` is the saved ``BlockedTime`` row, or ``None`` after a delete.
     ``orphaned_bookings`` lists confirmed future ``CalendarEvent`` bookings in

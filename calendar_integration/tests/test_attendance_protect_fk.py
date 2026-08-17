@@ -119,8 +119,8 @@ def test_delete_organization_cascade_with_member_attendance_succeeds(
 
     assert not Organization.objects.filter(pk=organization.pk).exists()
     assert not OrganizationMembership.objects.filter(pk=membership.pk).exists()
-    assert not EventAttendance.objects.filter(pk=attendance.pk).exists()
-    assert not CalendarEvent.objects.filter(pk=event.pk).exists()
+    assert not EventAttendance.original_manager.filter(pk=attendance.pk).exists()
+    assert not CalendarEvent.original_manager.filter(pk=event.pk).exists()
 
 
 @pytest.mark.django_db(transaction=True)

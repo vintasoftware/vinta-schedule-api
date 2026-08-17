@@ -1,9 +1,9 @@
-# Payment Provider Selection, Phase 4: repoint every existing
-# `Subscription.payment_provider` so it agrees with its organization's own
-# provider resolution (Rule B: the `BillingProfile.payment_provider` pin when set,
-# `settings.DEFAULT_PAYMENT_PROVIDER` otherwise).
+# Repoint every existing `Subscription.payment_provider` so it agrees with its
+# organization's own provider resolution (Rule B: the
+# `BillingProfile.payment_provider` pin when set, `settings.DEFAULT_PAYMENT_PROVIDER`
+# otherwise).
 #
-# Why rows need repointing at all: until this phase,
+# Why rows need repointing at all: before this migration,
 # `SubscriptionService.create_subscription_for_organization` hardcoded
 # `payment_provider="mercadopago"` on the one `Subscription` every billing-root
 # organization ever gets, and `payments.0009_backfill_unlimited_subscriptions`
@@ -17,10 +17,9 @@
 # `record_payment_method`. Left alone, a Stripe-pinned organization would send a
 # Stripe card token to MercadoPago and then be permanently pinned there.
 #
-# Safe to run: no organization has a paid subscription yet (the fact the whole
-# plan's no-feature-flag decision rests on), so no row here has provider-side
-# state that this could strand. It only makes the local column agree with the
-# provider the organization would actually be charged through.
+# Safe to run: no organization has a paid subscription yet, so no row here has
+# provider-side state that this could strand. It only makes the local column
+# agree with the provider the organization would actually be charged through.
 #
 # `settings.DEFAULT_PAYMENT_PROVIDER` is read rather than hardcoded so this
 # applies exactly the rule `PaymentProviderResolver.resolve_for_organization`
@@ -30,13 +29,12 @@
 # setting is validated against the provider slug list at import
 # (`vinta_schedule_api/settings/base.py`), so it cannot be a bad value here.
 #
-# Reverse safety (second-pass Tier 4 fix): a blanket "every row back to
-# mercadopago" reverse -- what this migration originally did -- would also
-# rewrite `Subscription` rows created *after* this migration under
-# `DEFAULT_PAYMENT_PROVIDER=stripe`, destroying the exact evidence the plan's
-# rollback runbook (Risk & Rollout Notes) says to check before reversing:
-# "verify ... that no Stripe-provider Payment or Subscription rows were created
-# in the window". So the forward pass stamps the pre-repoint value onto each row
+# Reverse safety: a blanket "every row back to mercadopago" reverse -- what this
+# migration originally did -- would also rewrite `Subscription` rows created
+# *after* this migration under `DEFAULT_PAYMENT_PROVIDER=stripe`, destroying the
+# evidence needed to verify, before reversing, that no Stripe-provider Payment or
+# Subscription rows were created in the window. So the forward pass stamps the
+# pre-repoint value onto each row
 # it actually changes (`meta[REPOINT_META_KEY]`, following the stamp-and-scope
 # precedent in `payments.0009_backfill_unlimited_subscriptions`), and the
 # reverse restores only rows carrying that stamp -- from the value stamped on

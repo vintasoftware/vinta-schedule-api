@@ -31,8 +31,7 @@ rather than a partial allowlist:
    other malformed URLs that the checks above don't cover.
 
 An empty value is valid: ``redirect_url`` is optional, and ``""`` means "no configured
-destination" (falls back to the dashboard — see the plan's **Redirect resolution**
-guiding decision).
+destination" — the caller falls back to the dashboard.
 """
 
 from __future__ import annotations

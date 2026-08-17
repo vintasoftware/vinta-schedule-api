@@ -1,5 +1,7 @@
 import datetime
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
+
+from django.db import IntegrityError as DjangoIntegrityError
 
 import pytest
 from allauth.socialaccount.models import SocialAccount
@@ -12,6 +14,11 @@ from calendar_integration.constants import (
     CalendarVisibility,
 )
 from calendar_integration.models import Calendar, CalendarOwnership
+from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
+from organizations.authorization import (
+    MEMBERSHIP_ROLE_LABEL_ADMIN,
+    MEMBERSHIP_ROLE_LABEL_MEMBER,
+)
 from organizations.exceptions import (
     InvalidInvitationTokenError,
     InvitationNotFoundError,
@@ -22,10 +29,20 @@ from organizations.models import (
     OrganizationBranding,
     OrganizationInvitation,
     OrganizationMembership,
-    OrganizationRole,
+)
+from organizations.permission_catalog import (
+    GROUP_ORGANIZATION_ADMIN,
+    GROUP_ORGANIZATION_MEMBER,
 )
 from organizations.services import OrganizationService
 from users.models import User
+from webhooks.constants import WebhookEventType
+from webhooks.models import WebhookConfiguration, WebhookEvent
+
+
+def _group_names(membership) -> set[str]:
+    """The seeded groups a membership holds -- what ``role`` used to say."""
+    return set(membership.groups.values_list("name", flat=True))
 
 
 @pytest.mark.django_db
@@ -169,8 +186,6 @@ class TestOrganizationService:
         assert org2.name == "Organization 2"
         assert org1.id != org2.id
         # User now holds two memberships, one in each org.
-        from organizations.models import OrganizationMembership
-
         assert OrganizationMembership.objects.filter(user=user).count() == 2
 
     def test_create_organization_with_sync_rooms_calendar_service_exception(
@@ -281,8 +296,6 @@ class TestOrganizationService:
                 )
 
         # Verify invitation was created
-        from organizations.models import OrganizationInvitation
-
         invitation = OrganizationInvitation.objects.get(email=email, organization=organization)
         assert invitation.invited_by == user
         assert invitation.accepted_at is None
@@ -301,8 +314,6 @@ class TestOrganizationService:
         self, organization_service_with_mocks, user, organization, mock_notification_service
     ):
         """Test inviting a user who already has a pending invitation."""
-        from organizations.models import OrganizationInvitation
-
         email = "existing@example.com"
         first_name = "Jane"
         last_name = "Smith"
@@ -355,9 +366,9 @@ class TestOrganizationService:
     def test_invite_user_to_organization_branded_org_gets_the_branded_invitation_url(
         self, organization_service_with_mocks, user, mock_notification_service, settings
     ):
-        """Organization Auth-Area Branding plan, Phase 5 amendment (2026-08-06): the
-        accept-invite link must carry the branding root's slug, or the SPA has no way
-        to resolve that organization's branding before the invitee authenticates."""
+        """Added after the fact (2026-08-06): the accept-invite link must carry the
+        branding root's slug, or the SPA has no way to resolve that organization's
+        branding before the invitee authenticates."""
         settings.HEADLESS_FRONTEND_URLS = {
             "account_accept_invitation": "https://app.example.com/auth/accept-invite/?token={token}",
             "account_accept_invitation_branded": (
@@ -421,12 +432,6 @@ class TestOrganizationService:
 
     def test_accept_invitation_valid_token(self, organization_service, user, organization):
         """Test accepting an invitation with a valid token."""
-        from common.utils.authentication_utils import (
-            generate_long_lived_token,
-            hash_long_lived_token,
-        )
-        from organizations.models import OrganizationInvitation, OrganizationMembership
-
         # Create an invitation with a known token
         token = generate_long_lived_token()
         token_hash = hash_long_lived_token(token)
@@ -459,11 +464,6 @@ class TestOrganizationService:
         An ADMIN invitation accepted via the token/REST path must produce an
         OrganizationMembership with role=ADMIN, not the default MEMBER.
         """
-        from common.utils.authentication_utils import (
-            generate_long_lived_token,
-            hash_long_lived_token,
-        )
-
         admin_user = baker.make(User, email="admin_accept@example.com")
         token = generate_long_lived_token()
         token_hash = hash_long_lived_token(token)
@@ -475,20 +475,15 @@ class TestOrganizationService:
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
             accepted_at=None,
             membership_user_id=None,
-            role=OrganizationRole.ADMIN,
+            group=GROUP_ORGANIZATION_ADMIN,
         )
 
         membership = organization_service.accept_invitation(token=token, user=admin_user)
 
-        assert membership.role == OrganizationRole.ADMIN
+        assert _group_names(membership) == {GROUP_ORGANIZATION_ADMIN}
 
     def test_accept_invitation_member_role_default(self, organization_service, organization):
         """accept_invitation with MEMBER role (default) produces MEMBER membership."""
-        from common.utils.authentication_utils import (
-            generate_long_lived_token,
-            hash_long_lived_token,
-        )
-
         member_user = baker.make(User, email="member_accept@example.com")
         token = generate_long_lived_token()
         token_hash = hash_long_lived_token(token)
@@ -500,21 +495,15 @@ class TestOrganizationService:
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
             accepted_at=None,
             membership_user_id=None,
-            role=OrganizationRole.MEMBER,
+            group=GROUP_ORGANIZATION_MEMBER,
         )
 
         membership = organization_service.accept_invitation(token=token, user=member_user)
 
-        assert membership.role == OrganizationRole.MEMBER
+        assert _group_names(membership) == {GROUP_ORGANIZATION_MEMBER}
 
     def test_accept_invitation_invalid_token(self, organization_service, user, organization):
         """Test accepting an invitation with an invalid token."""
-        from common.utils.authentication_utils import (
-            generate_long_lived_token,
-            hash_long_lived_token,
-        )
-        from organizations.models import OrganizationInvitation
-
         # Create an invitation with a different token
         real_token = generate_long_lived_token()
         token_hash = hash_long_lived_token(real_token)
@@ -535,12 +524,6 @@ class TestOrganizationService:
 
     def test_accept_invitation_expired_token(self, organization_service, user, organization):
         """Test accepting an invitation with an expired token."""
-        from common.utils.authentication_utils import (
-            generate_long_lived_token,
-            hash_long_lived_token,
-        )
-        from organizations.models import OrganizationInvitation
-
         # Create an expired invitation
         token = generate_long_lived_token()
         token_hash = hash_long_lived_token(token)
@@ -560,8 +543,6 @@ class TestOrganizationService:
 
     def test_accept_invitation_no_matching_email(self, organization_service, organization):
         """Test accepting an invitation when user email doesn't match any invitations."""
-        from common.utils.authentication_utils import generate_long_lived_token
-
         # Create a user with different email
         different_user = baker.make(User, email="different@example.com")
 
@@ -572,8 +553,6 @@ class TestOrganizationService:
 
     def test_revoke_invitation_existing_invitation(self, organization_service, user, organization):
         """Test revoking an existing invitation."""
-        from organizations.models import OrganizationInvitation
-
         # Create an invitation
         invitation = baker.make(
             OrganizationInvitation,
@@ -605,11 +584,6 @@ class TestOrganizationService:
         The hardened accept_invitation raises UserAlreadyHasMembershipError before
         attempting the DB create, so we get a typed error instead of a raw IntegrityError.
         """
-        from common.utils.authentication_utils import (
-            generate_long_lived_token,
-            hash_long_lived_token,
-        )
-
         # Create a unique user for this test to avoid membership conflicts
         test_user = baker.make(User, email="unique_accepted@example.com")
 
@@ -677,7 +651,7 @@ class TestOrganizationService:
         assert membership is not None
         assert membership.user == invitee
         assert membership.organization == organization
-        assert membership.role == OrganizationRole.MEMBER
+        assert _group_names(membership) == {GROUP_ORGANIZATION_MEMBER}
 
         # Invitation must be marked accepted and linked.
         invitation.refresh_from_db()
@@ -697,7 +671,7 @@ class TestOrganizationService:
 
         assert membership is not None
         assert membership.user == user
-        assert membership.role == OrganizationRole.ADMIN
+        assert _group_names(membership) == {GROUP_ORGANIZATION_ADMIN}
         assert membership.organization.name == "My Org"
 
     def test_provision_tenant_for_user_already_has_membership_no_invite_no_name_returns_none(
@@ -752,11 +726,6 @@ class TestOrganizationService:
         only refuses a duplicate in the SAME organization.  Accepting into a DIFFERENT org
         must succeed and yield a second OrganizationMembership.
         """
-        from common.utils.authentication_utils import (
-            generate_long_lived_token,
-            hash_long_lived_token,
-        )
-
         user = baker.make(User, email="already_member@example.com")
         baker.make(OrganizationMembership, user=user, organization=organization)
         user.refresh_from_db()
@@ -783,11 +752,6 @@ class TestOrganizationService:
 
     def test_accept_invitation_same_org_duplicate_raises(self, organization_service, organization):
         """Accepting an invitation to an org the user already belongs to raises UserAlreadyHasMembershipError."""
-        from common.utils.authentication_utils import (
-            generate_long_lived_token,
-            hash_long_lived_token,
-        )
-
         user = baker.make(User, email="same_org_member@example.com")
         baker.make(OrganizationMembership, user=user, organization=organization)
         user.refresh_from_db()
@@ -850,8 +814,6 @@ class TestOrganizationService:
         Simulates a race-condition duplicate-key error that bypasses the upfront hasattr guard
         (e.g. concurrent requests both passed the guard before either committed).
         """
-        from django.db import IntegrityError as DjangoIntegrityError
-
         inviter = baker.make(User, email="inviter_backstop@example.com")
         invitee = baker.make(User, email="invitee_backstop@example.com")
         self._make_invitation(email=invitee.email, organization=organization, invited_by=inviter)
@@ -871,8 +833,6 @@ class TestOrganizationService:
 
         Simulates a race where create_organization raises IntegrityError (duplicate membership).
         """
-        from django.db import IntegrityError as DjangoIntegrityError
-
         user = baker.make(User, email="race_org_creator@example.com")
 
         with patch.object(
@@ -906,7 +866,7 @@ class TestOrganizationService:
         assert membership is not None
         assert membership.user == invitee
         assert membership.organization == organization
-        assert membership.role == OrganizationRole.MEMBER
+        assert _group_names(membership) == {GROUP_ORGANIZATION_MEMBER}
 
         invitation.refresh_from_db()
         assert invitation.accepted_at is not None
@@ -918,13 +878,6 @@ class TestOrganizationService:
         Simulates a race where the user gets a membership between the hasattr check and the
         DB create call. Under ATOMIC_REQUESTS the savepoint protects the outer transaction.
         """
-        from django.db import IntegrityError as DjangoIntegrityError
-
-        from common.utils.authentication_utils import (
-            generate_long_lived_token,
-            hash_long_lived_token,
-        )
-
         user = baker.make(User, email="accept_race@example.com")
         token = generate_long_lived_token()
         token_hash = hash_long_lived_token(token)
@@ -956,13 +909,6 @@ class TestOrganizationService:
     def test_accept_invitation_integrity_error_from_invitation_save_is_not_misreported(
         self, organization_service, organization
     ):
-        from django.db import IntegrityError as DjangoIntegrityError
-
-        from common.utils.authentication_utils import (
-            generate_long_lived_token,
-            hash_long_lived_token,
-        )
-
         user = baker.make(User, email="accept_invitation_save_fails@example.com")
         token = generate_long_lived_token()
         token_hash = hash_long_lived_token(token)
@@ -991,8 +937,6 @@ class TestOrganizationService:
     def test_provision_tenant_for_user_integrity_error_from_invitation_save_is_not_misreported(
         self, organization_service, organization
     ):
-        from django.db import IntegrityError as DjangoIntegrityError
-
         inviter = baker.make(User, email="inviter_provision_save_fails@example.com")
         invitee = baker.make(User, email="invitee_provision_save_fails@example.com")
         self._make_invitation(email=invitee.email, organization=organization, invited_by=inviter)
@@ -1027,8 +971,6 @@ class TestOrganizationService:
         a subsequent DB query must succeed without raising
         TransactionManagementError or InternalError.
         """
-        from django.db import IntegrityError as DjangoIntegrityError
-
         inviter = baker.make(User, email="inviter_sp@example.com")
         invitee = baker.make(User, email="invitee_sp@example.com")
         self._make_invitation(email=invitee.email, organization=organization, invited_by=inviter)
@@ -1054,8 +996,6 @@ class TestOrganizationService:
         Same as the invite-branch savepoint test but for the name-only branch,
         where ``create_organization`` is wrapped in ``with transaction.atomic():``.
         """
-        from django.db import IntegrityError as DjangoIntegrityError
-
         user = baker.make(User, email="race_sp_creator@example.com")
 
         with patch.object(
@@ -1099,7 +1039,7 @@ class TestOrganizationService:
         assert membership is not None
         assert membership.user == user
         assert membership.organization == org_b
-        assert membership.role == OrganizationRole.MEMBER
+        assert _group_names(membership) == {GROUP_ORGANIZATION_MEMBER}
         # User now has TWO memberships.
         assert OrganizationMembership.objects.filter(user=user).count() == 2
 
@@ -1265,11 +1205,6 @@ class TestOrganizationService:
 
         If someone later adds is_active=True to the filter, this test turns red.
         """
-        from common.utils.authentication_utils import (
-            generate_long_lived_token,
-            hash_long_lived_token,
-        )
-
         user = baker.make(User, email="inactive_block@example.com")
         # An inactive (deactivated) membership in the SAME org as the invitation.
         baker.make(OrganizationMembership, user=user, organization=organization, is_active=False)
@@ -1320,8 +1255,6 @@ class TestOrganizationService:
     @pytest.fixture
     def mock_webhook_membership_side_effects_service(self):
         """Return a MagicMock that stands in for WebhookMembershipSideEffectsService."""
-        from unittest.mock import MagicMock
-
         mock = MagicMock()
         mock.on_member_created.return_value = None
         return mock
@@ -1348,11 +1281,6 @@ class TestOrganizationService:
         organization,
     ):
         """Integration: accepting a valid invitation calls on_member_created with the created membership."""
-        from common.utils.authentication_utils import (
-            generate_long_lived_token,
-            hash_long_lived_token,
-        )
-
         invitee = baker.make(User, email="webhook_invitee@example.com")
         token = generate_long_lived_token()
         token_hash = hash_long_lived_token(token)
@@ -1364,7 +1292,7 @@ class TestOrganizationService:
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
             accepted_at=None,
             membership_user_id=None,
-            role=OrganizationRole.MEMBER,
+            group=GROUP_ORGANIZATION_MEMBER,
         )
 
         membership = organization_service_with_webhook_mock.accept_invitation(
@@ -1384,11 +1312,6 @@ class TestOrganizationService:
         organization,
     ):
         """Integration: the membership passed to on_member_created has the invitation's role."""
-        from common.utils.authentication_utils import (
-            generate_long_lived_token,
-            hash_long_lived_token,
-        )
-
         admin_invitee = baker.make(User, email="webhook_admin_invitee@example.com")
         token = generate_long_lived_token()
         token_hash = hash_long_lived_token(token)
@@ -1400,7 +1323,7 @@ class TestOrganizationService:
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
             accepted_at=None,
             membership_user_id=None,
-            role=OrganizationRole.ADMIN,
+            group=GROUP_ORGANIZATION_ADMIN,
         )
 
         membership = organization_service_with_webhook_mock.accept_invitation(
@@ -1410,7 +1333,7 @@ class TestOrganizationService:
         call_args = mock_webhook_membership_side_effects_service.on_member_created.call_args
         passed_membership = call_args[0][0]
         assert passed_membership == membership
-        assert passed_membership.role == OrganizationRole.ADMIN
+        assert _group_names(passed_membership) == {GROUP_ORGANIZATION_ADMIN}
 
     def test_accept_invitation_no_webhook_emission_when_no_subscribed_config(
         self,
@@ -1423,12 +1346,7 @@ class TestOrganizationService:
         and asserts that accepting an invitation with no matching configuration produces
         zero WebhookEvent rows.
         """
-        from common.utils.authentication_utils import (
-            generate_long_lived_token,
-            hash_long_lived_token,
-        )
         from di_core.containers import container
-        from webhooks.models import WebhookEvent
 
         invitee = baker.make(User, email="no_config_invitee@example.com")
         token = generate_long_lived_token()
@@ -1446,13 +1364,11 @@ class TestOrganizationService:
         with container.calendar_service.override(Mock()):
             service = OrganizationService()
 
-        from unittest.mock import patch
-
         with patch("webhooks.services.webhook_service.process_webhook_event.delay"):
             with django_capture_on_commit_callbacks(execute=True):
                 service.accept_invitation(token=token, user=invitee)
 
-        assert WebhookEvent.objects.filter(organization=organization).count() == 0
+        assert WebhookEvent.objects.filter_by_organization(organization).count() == 0
 
     def test_accept_invitation_webhook_emission_with_subscribed_config(
         self,
@@ -1465,13 +1381,7 @@ class TestOrganizationService:
         invitation that creates an active membership, and asserts that exactly one
         WebhookEvent row exists with the correct payload and organization scope.
         """
-        from common.utils.authentication_utils import (
-            generate_long_lived_token,
-            hash_long_lived_token,
-        )
         from di_core.containers import container
-        from webhooks.constants import WebhookEventType
-        from webhooks.models import WebhookConfiguration, WebhookEvent
 
         invitee = baker.make(User, email="with_config_invitee@example.com")
         token = generate_long_lived_token()
@@ -1484,7 +1394,7 @@ class TestOrganizationService:
             expires_at=datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=7),
             accepted_at=None,
             membership_user_id=None,
-            role=OrganizationRole.MEMBER,
+            group=GROUP_ORGANIZATION_MEMBER,
         )
         baker.make(
             WebhookConfiguration,
@@ -1498,14 +1408,11 @@ class TestOrganizationService:
         with container.calendar_service.override(Mock()):
             service = OrganizationService()
 
-        from unittest.mock import patch
-
         with patch("webhooks.services.webhook_service.process_webhook_event.delay"):
             with django_capture_on_commit_callbacks(execute=True):
                 service.accept_invitation(token=token, user=invitee)
 
-        events = WebhookEvent.objects.filter(
-            organization=organization,
+        events = WebhookEvent.objects.filter_by_organization(organization).filter(
             event_type=WebhookEventType.ORGANIZATION_MEMBER_CREATED,
         )
         assert events.count() == 1
@@ -1516,7 +1423,7 @@ class TestOrganizationService:
         assert event.payload["email"] == invitee.email
         assert event.payload["organization_id"] == organization.id
         assert event.payload["organization_name"] == organization.name
-        assert event.payload["membership_role"] == OrganizationRole.MEMBER
+        assert event.payload["membership_role"] == MEMBERSHIP_ROLE_LABEL_MEMBER
 
     # -----------------------------------------------------------------------
     # organization_member_created webhook emission on create_organization
@@ -1539,7 +1446,7 @@ class TestOrganizationService:
             mock_webhook_membership_side_effects_service.on_member_created.call_args[0][0]
         )
         assert passed_membership.user == creator
-        assert passed_membership.role == OrganizationRole.ADMIN
+        assert _group_names(passed_membership) == {GROUP_ORGANIZATION_ADMIN}
         assert passed_membership.is_active is True
 
     def test_create_organization_no_webhook_emission_when_no_subscribed_config(
@@ -1551,10 +1458,7 @@ class TestOrganizationService:
         Exercises the full stack (no mocks on the webhook path) to confirm that creating an
         organization with no matching config produces zero WebhookEvent rows.
         """
-        from unittest.mock import patch
-
         from di_core.containers import container
-        from webhooks.models import WebhookEvent
 
         creator = baker.make(User, email="no_config_creator@example.com")
 
@@ -1565,7 +1469,7 @@ class TestOrganizationService:
             with django_capture_on_commit_callbacks(execute=True):
                 org = service.create_organization(creator=creator, name="No Config Org")
 
-        assert WebhookEvent.objects.filter(organization=org).count() == 0
+        assert WebhookEvent.objects.filter_by_organization(org).count() == 0
 
     def test_create_organization_webhook_emission_payload_and_role(
         self,
@@ -1578,10 +1482,7 @@ class TestOrganizationService:
         the call and assert the payload without needing a config row. The no-config gate is
         already covered by test_create_organization_no_webhook_emission_when_no_subscribed_config.
         """
-        from unittest.mock import patch
-
         from di_core.containers import container
-        from webhooks.constants import WebhookEventType
 
         creator = baker.make(User, email="with_config_creator@example.com")
 
@@ -1607,7 +1508,7 @@ class TestOrganizationService:
         assert call["payload"]["email"] == creator.email
         assert call["payload"]["organization_id"] == org.id
         assert call["payload"]["organization_name"] == org.name
-        assert call["payload"]["membership_role"] == OrganizationRole.ADMIN
+        assert call["payload"]["membership_role"] == MEMBERSHIP_ROLE_LABEL_ADMIN
 
     # -----------------------------------------------------------------------
     # provision_tenant_for_user pending-invitation branch + multi-org
@@ -1639,11 +1540,7 @@ class TestOrganizationService:
     ):
         """Integration: provision via pending-invitation emits exactly one ORGANIZATION_MEMBER_CREATED
         event scoped to the invitation's org, with membership_role=MEMBER."""
-        from unittest.mock import Mock, patch
-
         from di_core.containers import container
-        from webhooks.constants import WebhookEventType
-        from webhooks.models import WebhookConfiguration, WebhookEvent
 
         invitee = baker.make(User, email="provision_with_config_invitee@example.com")
         inviter = baker.make(User, email="provision_with_config_inviter@example.com")
@@ -1665,8 +1562,7 @@ class TestOrganizationService:
                 membership = service.provision_tenant_for_user(invitee)
 
         assert membership is not None
-        events = WebhookEvent.objects.filter(
-            organization=organization,
+        events = WebhookEvent.objects.filter_by_organization(organization).filter(
             event_type=WebhookEventType.ORGANIZATION_MEMBER_CREATED,
         )
         assert events.count() == 1
@@ -1675,7 +1571,7 @@ class TestOrganizationService:
         assert event.payload["user_id"] == invitee.id
         assert event.payload["email"] == invitee.email
         assert event.payload["organization_id"] == organization.id
-        assert event.payload["membership_role"] == OrganizationRole.MEMBER
+        assert event.payload["membership_role"] == MEMBERSHIP_ROLE_LABEL_MEMBER
 
     def test_provision_org_creation_emits_exactly_once_not_twice(
         self,
@@ -1699,7 +1595,7 @@ class TestOrganizationService:
         passed_membership = (
             mock_webhook_membership_side_effects_service.on_member_created.call_args[0][0]
         )
-        assert passed_membership.role == OrganizationRole.ADMIN
+        assert _group_names(passed_membership) == {GROUP_ORGANIZATION_ADMIN}
         assert passed_membership.is_active is True
 
     def test_provision_multi_org_emits_to_second_org_only(
@@ -1709,11 +1605,7 @@ class TestOrganizationService:
     ):
         """Integration: a user already active in org A who provisions into org B via pending invitation
         produces exactly one delivery scoped to org B's config — zero deliveries to org A."""
-        from unittest.mock import Mock, patch
-
         from di_core.containers import container
-        from webhooks.constants import WebhookEventType
-        from webhooks.models import WebhookConfiguration, WebhookEvent
 
         user = baker.make(User, email="multi_org_provision@example.com")
         # User already has an active membership in org A (fixture `organization`).
@@ -1756,15 +1648,13 @@ class TestOrganizationService:
         assert membership.organization == org_b
 
         # Exactly one event scoped to org B.
-        org_b_events = WebhookEvent.objects.filter(
-            organization=org_b,
+        org_b_events = WebhookEvent.objects.filter_by_organization(org_b).filter(
             event_type=WebhookEventType.ORGANIZATION_MEMBER_CREATED,
         )
         assert org_b_events.count() == 1
 
         # Zero events scoped to org A.
-        org_a_events = WebhookEvent.objects.filter(
-            organization=organization,
+        org_a_events = WebhookEvent.objects.filter_by_organization(organization).filter(
             event_type=WebhookEventType.ORGANIZATION_MEMBER_CREATED,
         )
         assert org_a_events.count() == 0
@@ -1782,10 +1672,7 @@ class TestOrganizationService:
     ):
         """Integration: send_event is called exactly once when user with existing org A membership
         provisions into org B via pending invitation — guards against any double-call."""
-        from unittest.mock import Mock, patch
-
         from di_core.containers import container
-        from webhooks.constants import WebhookEventType
 
         user = baker.make(User, email="multi_org_count_check@example.com")
         baker.make(OrganizationMembership, user=user, organization=organization, is_active=True)

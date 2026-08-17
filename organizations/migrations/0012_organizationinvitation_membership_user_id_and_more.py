@@ -50,11 +50,12 @@ UPDATE organizations_organizationinvitation AS oi
 
 
 class Migration(migrations.Migration):
-    """Phase 7a: convert OrganizationInvitation.membership off the real OneToOne.
+    """Convert OrganizationInvitation.membership off the real OneToOne.
 
     Replaces the ``membership`` OneToOneField (real FK to ``OrganizationMembership.id``)
     with the ``(organization_id, membership_user_id)`` ForeignObject pattern so the
-    relation survives Phase 7b's composite-PK swap. OneToOne semantics are preserved by
+    relation survives the composite-PK swap performed by
+    ``0013_organizationmembership_composite_pk``. OneToOne semantics are preserved by
     a partial unique constraint on ``(organization, membership_user_id)``.
     """
 

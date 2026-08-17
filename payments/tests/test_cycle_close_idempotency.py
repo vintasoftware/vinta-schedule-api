@@ -37,8 +37,8 @@ class DedupingPaymentService:
     charges. The **local** ``Payment`` row is a different story: exactly like the
     real ``PaymentService.create_payment`` (see its docstring), a fresh row is
     created on every call regardless of the key, because the local row cannot
-    itself dedupe across a rolled-back transaction -- only the provider can. Phase
-    2's ``BillingPeriodSummary.payment_id`` is a genuine foreign key, so returning
+    itself dedupe across a rolled-back transaction -- only the provider can.
+    ``BillingPeriodSummary.payment_id`` is a genuine foreign key, so returning
     a stable Python stand-in across calls (as an earlier version of this fake did)
     would link a statement to a ``Payment`` row a rolled-back attempt never
     actually persisted.
@@ -205,7 +205,7 @@ def test_rerunning_close_writes_no_second_statement(
     organization: Organization,
     payment_service: DedupingPaymentService,
 ):
-    """Phase 2: the ``BillingPeriodSummary`` statement is exactly as idempotent as
+    """The ``BillingPeriodSummary`` statement is exactly as idempotent as
     the charge it is written alongside. A second ``close_subscription`` pass over
     an already-closed period is a no-op at the sweep-guard level (the rolled
     period is never re-entered), so it writes no second statement and raises

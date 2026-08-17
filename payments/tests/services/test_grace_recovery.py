@@ -1,7 +1,6 @@
 """Integration tests for grace/restricted recovery via
 ``SubscriptionService.retry_payment`` -- the service behind
-``POST /billing/subscription/retry-payment/`` (Billing API Contract Hardening,
-Phase 3, updated for Phase 4).
+``POST /billing/subscription/retry-payment/``.
 
 The headline test proves four things in one flow:
 
@@ -10,8 +9,8 @@ The headline test proves four things in one flow:
    charge the dead instrument one more time, which is exactly what a payer
    submitting a new card is trying to avoid.
 2. **The right primitive** -- ``retry_payment`` drives ``pay_outstanding_invoice``
-   and *never* ``change_subscription_plan``. Phase 3 drove the latter (via
-   ``retry_failed_charge``), which collected $0.00 against a real past-due
+   and *never* ``change_subscription_plan``. The latter was previously driven
+   via ``retry_failed_charge``, which collected $0.00 against a real past-due
    Stripe invoice in production-mode testing -- see
    ``SubscriptionService.retry_payment``'s docstring for the probe numbers.
    This module's ``FakePaymentService`` still implements
@@ -165,10 +164,9 @@ class FakePaymentService:
     exactly what this module's assertions need.
 
     Implements ``change_subscription_plan`` too, even though ``retry_payment``
-    must never reach it (Phase 4) -- ``retry_failed_charge`` (the dunning
-    ladder's own primitive, unchanged by this phase) still calls it, and
-    ``TestRetryFailedChargeDunningCallerUnchanged`` below needs the same double
-    to support both call paths.
+    must never reach it -- ``retry_failed_charge`` (the dunning ladder's own
+    primitive) still calls it, and ``TestRetryFailedChargeDunningCallerUnchanged``
+    below needs the same double to support both call paths.
     """
 
     plan_external_id: str = "ext-plan-1"
@@ -232,7 +230,7 @@ def dunning_service(subscription_service, entitlement_service):
 
 @pytest.mark.django_db
 class TestRetryPaymentGraceRecovery:
-    """The phase's headline flow: ``retry_payment`` attaches + charges, and the
+    """The headline flow: ``retry_payment`` attaches + charges, and the
     simulated webhook confirms recovery. The webhook is simulated by calling
     ``DunningService.resolve_payment_success`` followed by
     ``SubscriptionService.confirm_plan_change`` directly -- the exact two
@@ -272,8 +270,8 @@ class TestRetryPaymentGraceRecovery:
 
         # 1. Ordering: the new instrument is attached strictly before the
         # outstanding balance is collected -- and `change_subscription_plan`
-        # (Phase 3's mistaken primitive, still on the double for
-        # `retry_failed_charge`'s benefit) is never reached at all.
+        # (previously used here as a mistaken primitive, still on the double
+        # for `retry_failed_charge`'s benefit) is never reached at all.
         assert fake_payment_service.calls.index(
             "update_subscription_payment_token"
         ) < fake_payment_service.calls.index("pay_outstanding_invoice")
@@ -399,7 +397,7 @@ class TestRetryPaymentStateGuards:
         billing_profile,
         billing_state,
     ):
-        """BLOCKER 1 (Phase 3 review): `_schedule_downgrade` also drives a
+        """BLOCKER 1: `_schedule_downgrade` also drives a
         subscription into GRACE/RESTRICTED, with `pending_plan` set, when an
         org is over its *new, lower* limits -- with no failed charge behind
         it. `retry_payment` must refuse this exactly like `DunningService`
@@ -435,8 +433,8 @@ class TestRetryPaymentStateGuards:
 
 @pytest.mark.django_db
 class TestRetryPaymentIdempotencyKeyDedup:
-    """Phase 3 review, revised: `retry_payment` dedups on the *caller's*
-    `idempotency_key`, not on the dunning bucket. The row lock (see the
+    """`retry_payment` dedups on the *caller's* `idempotency_key`, not on the
+    dunning bucket. The row lock (see the
     method's docstring) only serializes concurrent calls -- it does not
     decide whether a second call is a duplicate or a deliberate new attempt.
     That decision is delegated entirely to the provider via the namespaced

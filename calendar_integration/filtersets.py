@@ -13,7 +13,6 @@ from calendar_integration.models import (
     CalendarGroup,
     ExternalEventChangeRequest,
 )
-from organizations.models import get_active_organization_membership
 
 
 class CalendarFilterSet(filters.FilterSet):
@@ -93,10 +92,7 @@ class CalendarEventFilterSet(filters.FilterSet):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        user = self.request.user if self.request else None
-        membership = (
-            get_active_organization_membership(user) if user and user.is_authenticated else None
-        )
+        membership = self.request.organization_membership if self.request else None
         self.filters["calendar"] = filters.ModelChoiceFilter(
             field_name="calendar_fk_id",
             label="Filter by calendar ID",
@@ -136,10 +132,7 @@ class BlockedTimeFilterSet(filters.FilterSet):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        user = self.request.user if self.request else None
-        membership = (
-            get_active_organization_membership(user) if user and user.is_authenticated else None
-        )
+        membership = self.request.organization_membership if self.request else None
         self.filters["calendar"] = filters.ModelChoiceFilter(
             field_name="calendar_fk_id",
             label="Filter by calendar ID",
@@ -167,10 +160,7 @@ class CalendarGroupFilterSet(filters.FilterSet):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        user = self.request.user if self.request else None
-        membership = (
-            get_active_organization_membership(user) if user and user.is_authenticated else None
-        )
+        membership = self.request.organization_membership if self.request else None
         self.filters["calendar"] = filters.ModelChoiceFilter(
             field_name="slots__memberships__calendar_fk_id",
             label="Filter to groups whose slot pools include this calendar",
@@ -204,10 +194,7 @@ class AvailableTimeFilterSet(filters.FilterSet):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        user = self.request.user if self.request else None
-        membership = (
-            get_active_organization_membership(user) if user and user.is_authenticated else None
-        )
+        membership = self.request.organization_membership if self.request else None
         self.filters["calendar"] = filters.ModelChoiceFilter(
             field_name="calendar_fk_id",
             label="Filter by calendar ID",

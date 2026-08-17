@@ -124,7 +124,7 @@ def reverse_backfill_membership_user_id(apps, schema_editor):
 
 
 class Migration(migrations.Migration):
-    """Backfill CalendarManagementToken.membership_user_id (Phase 5 data migration)."""
+    """Backfill CalendarManagementToken.membership_user_id (data migration)."""
 
     atomic = False
 

@@ -1,5 +1,4 @@
-"""Audit-emission tests for the ``OrganizationBrandingView`` REST write paths
-(Organization Auth-Area Branding plan, Phase 4).
+"""Audit-emission tests for the ``OrganizationBrandingView`` REST write paths.
 
 Mirrors ``organizations/tests/test_audit.py``'s approach for ``OrganizationService``
 and ``public_api/tests/test_booking_policy_graphql.py``'s ``test_create_audited`` /
@@ -16,12 +15,13 @@ from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
 
+from organizations.authorization import MEMBERSHIP_ROLE_LABEL_ADMIN
 from organizations.models import (
     Organization,
     OrganizationBranding,
-    OrganizationMembership,
-    OrganizationRole,
 )
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
+from organizations.tests.helpers import make_membership
 from users.factories import UserFactory
 
 
@@ -48,11 +48,10 @@ def eligible_org():
 @pytest.fixture
 def admin_user(eligible_org):
     user = UserFactory().create_user(email="brand-admin@example.com")
-    baker.make(
-        OrganizationMembership,
+    make_membership(
         user=user,
         organization=eligible_org,
-        role=OrganizationRole.ADMIN,
+        groups=[GROUP_ORGANIZATION_ADMIN],
         is_active=True,
     )
     return user
@@ -94,7 +93,7 @@ class TestOrganizationBrandingViewAudit:
         assert record["subject"]["subject_type"] == "organizations.OrganizationBranding"
         assert record["actor"]["actor_type"] == "membership"
         assert record["actor"]["actor_id"] == admin_user.id
-        assert record["actor"]["actor_role"] == OrganizationRole.ADMIN
+        assert record["actor"]["actor_role"] == MEMBERSHIP_ROLE_LABEL_ADMIN
         assert record["diff"] is None
 
     def test_put_over_existing_row_records_update_with_diff_of_changed_fields_only(
@@ -174,11 +173,10 @@ class TestOrganizationBrandingViewAudit:
         parent_org = baker.make(Organization, can_invite_organizations=False, slug="audit-parent")
         child_org = baker.make(Organization, parent=parent_org, slug="audit-child")
         user = UserFactory().create_user(email="child-admin@example.com")
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=child_org,
-            role=OrganizationRole.ADMIN,
+            groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
         self._authed_client(client, user, child_org)
