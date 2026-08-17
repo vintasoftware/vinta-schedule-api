@@ -34,6 +34,7 @@ from collections.abc import Callable
 from django.core.exceptions import ValidationError
 from django.utils.text import slugify
 
+from organizations.exceptions import SlugDerivationError
 from organizations.slug_validation import SLUG_MAX_LENGTH, validate_organization_slug
 
 
@@ -50,10 +51,6 @@ _OPAQUE_SLUG_TOKEN_BYTES = 6
 #: ``slug_exists`` cannot spin forever; large enough that reaching the limit
 #: means something is genuinely wrong rather than merely crowded.
 _MAX_ATTEMPTS = 1000
-
-
-class SlugDerivationError(RuntimeError):
-    """Raised when no free, valid slug could be derived within the attempt budget."""
 
 
 def _is_valid(candidate: str) -> bool:

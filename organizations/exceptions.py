@@ -89,3 +89,15 @@ class BrandingLogoUploadRejectedError(Exception):
     create_branding_logo_upload``), which maps it to a ``GraphQLError`` itself.
     The message names the specific rule broken.
     """
+
+
+class SlugDerivationError(RuntimeError):
+    """Raised when no free, valid slug could be derived within the attempt budget.
+
+    A ``RuntimeError`` rather than a DRF ``ValidationError``: nothing the caller
+    submitted is wrong. Reaching the budget means either every candidate the
+    generator produced was already taken -- which needs a namespace crowded far
+    past anything ``organizations.slug_generation`` is sized for -- or
+    ``validate_organization_slug`` is rejecting the shape the generator emits.
+    Both are bugs here, not user input to be reported back over the API.
+    """

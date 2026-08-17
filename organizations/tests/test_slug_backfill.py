@@ -24,9 +24,9 @@ from django.db.migrations.executor import MigrationExecutor
 import pytest
 from model_bakery import baker
 
+from organizations.exceptions import SlugDerivationError
 from organizations.models import Organization
 from organizations.slug_generation import (
-    SlugDerivationError,
     derive_organization_slug,
     disambiguate_slug,
     name_derived_slug_base,
