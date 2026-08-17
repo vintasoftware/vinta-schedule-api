@@ -249,11 +249,66 @@ helpers — the resolver now has four branches with a duplicated owner-scope blo
 warned that a future edit to one copy and not the other is how an owner-scope bypass gets
 introduced. Deferred so the BLOCKER fix stayed reviewable. See follow-ups.
 
+### Phase 4 — Carry event identifiers in webhook payloads ✅
+
+- **Branch**: `plan/external-client-identifiers/phase-4` (base: `plan/external-client-identifiers/phase-3`)
+- **Implementer**: `claude-sonnet-5` (plan Tier 2, stepped up — 5 files)
+- **Reviewer**: `claude-sonnet-5` (Tier 3) — 0 BLOCKER, 3 SHOULD-FIX, 2 NIT
+- **Fixer**: `claude-sonnet-5`
+- **Commits**: `51867b76` (payload plumbing), `15665283` (query fix + tests)
+
+`CalendarEventWebhookPayload` gains `external_client_identifiers`. Both builders in
+`calendar_service_utils.py` populate it — the ORM path from the prefetched generic relation,
+the input path from the input data. `_serialize_event` always emits a list: `[]` when there
+are none, never `null`, never absent. `WEBHOOK_EVENT_DESCRIPTIONS` updated for the three
+event webhooks, and (from review) for the three attendee webhooks, whose embedded event
+object now carries the field.
+
+**The delete-snapshot trap.** `delete_event` already serialized before deleting, so the real
+risk was subtler: `serialize_event` must **materialize** identifiers at call time. A lazy
+queryset stored on `CalendarEventData` would only evaluate later, inside the
+`transaction.on_commit` callback that builds the payload — by which point the
+`GenericRelation` cascade has removed the rows and every deletion webhook would ship `[]`.
+Proven by substituting the lazy expression and watching the test go red.
+
+**Review caught a real regression hiding behind a bumped assertion.** Phase 4 raised a
+Phase 2 test's pinned query count 28 → 29, justified as "one unavoidable query". It was not:
+
+- The captured query feeds `can_perform_update`, which never reads identifiers — so it is
+  wasted, not unavoidable.
+- The assertion is not wrapped in `django_capture_on_commit_callbacks`, so it never ran the
+  deferred `call_side_effects()` closure at all. That is where the real cost lives:
+  `_serialize_event(event)` runs once for the update **plus once per attendee dispatch**,
+  each re-issuing an uncached identifier query. A production `update_event` with N attendee
+  dispatches paid N extra queries that no test measured.
+
+Fixed by prefetching once **inside** the closure, after `replace_for_target` has written the
+new identifiers. The fixer's first attempt put the prefetch at the top of `update_event` and
+caught its own error via the test — that placement caches the *pre-write* identifiers, so
+the first update that sets them would ship an empty payload. **Conductor-verified**: the new
+on-commit test pins 75 queries and reports 77 with the prefetch removed. The saving is flat
+(1 query) regardless of attendee count, where the old code was linear.
+
+Also added: a test for the `parent_recurring_object` fallback (a webhook for a modified
+occurrence of a tagged series carries the master's identifiers), which had zero coverage.
+
+The 28 → 29 bump on the synchronous test was **kept**, not reverted — that path legitimately
+reads pre-write identifiers and cannot share the closure's cache. Its docstring now says
+exactly which query it is and why it cannot be removed.
+
+**Verification** (conductor re-ran): `ruff check` clean · `ruff format --check` 647 files ·
+`makemigrations --check` no changes · `check --deploy` 0 errors · `mypy` 291 pre-existing,
+0 new · **full repo `pytest -n auto` → 6087 passed, 0 failed**.
+
+**Ship value is currently dormant — see follow-up 4.** Phase 4's code is correct and the
+reviewer confirmed it is not masking another defect, but calendar webhooks do not dispatch
+at all in the container-wired path today.
+
 ## Current phase
 
-**Phase 4 — Carry event identifiers in webhook payloads**
-- Branch: `plan/external-client-identifiers/phase-4`
-- Base: `plan/external-client-identifiers/phase-3`
+**Phase 5 — Internal REST read, write and filtering**
+- Branch: `plan/external-client-identifiers/phase-5`
+- Base: `plan/external-client-identifiers/phase-4`
 - Status: not started
 
 ## Follow-ups (not blocking this plan)
@@ -281,11 +336,50 @@ introduced. Deferred so the BLOCKER fix stayed reviewable. See follow-ups.
    helpers. Flagged by the Phase 3 reviewer as the shape in which an owner-scope bypass
    would eventually be introduced by editing one copy and not the other.
 
+4. **Calendar-event webhooks never dispatch — `di_core/containers.py:225`.** HIGH IMPACT,
+   and a production decision rather than a code one. The provider is wired as
+
+   ```python
+   side_effects_pipeline=(webhook_calendar_side_effects_service,)   # tuple, not providers.List
+   ```
+
+   `dependency_injector` only auto-resolves a provider passed as a direct kwarg; nested in a
+   plain tuple it stays unresolved. Confirmed live by both the conductor and the Phase 4
+   reviewer: resolving the container yields a raw `Factory` object in the pipeline, and
+   `isinstance(handler, OnCreateEventHandler)` is `False`. Every dispatch method guards on
+   exactly that `isinstance`, so the handler is silently skipped. Nothing outside the
+   container constructs `CalendarSideEffectsService`, so there is no other production path,
+   and every existing test passes a `Mock()` or `None` — which is why it went unnoticed.
+   `git log -S` dates the line to **2025-09-08**. Untouched by this plan.
+
+   All six calendar-event webhook types (created, updated, deleted, attendee
+   added/removed/updated) appear dead end to end.
+
+   **Deliberately not fixed here.** The change is one line, but flipping it on would begin
+   delivering webhooks that have been silent for ~11 months; partners with registered
+   subscriptions could see a sudden burst. That needs a product and partner-communication
+   decision, plus a check on whether any queue drains retroactively. Until it is fixed,
+   Phase 4 ships correct-but-dormant code — the reviewer confirmed the payload logic itself
+   is right and is not masking a second defect.
+
+5. **Webhook and GraphQL disagree about recurring occurrences.** A webhook for a persisted
+   modified occurrence of a tagged series carries the master's identifiers (via
+   `serialize_event`'s `parent_recurring_object` fallback), but the same occurrence read
+   through `CalendarEventGraphQLType.external_client_identifiers` returns `[]` — that field
+   has no parent fallback. Systemic on that type rather than identifier-specific:
+   `attendances`, `external_attendances` and `resources` lack the same fallback. Not fixed
+   in Phase 4, because making identifiers the lone exception would trade one inconsistency
+   for a subtler one. Worth resolving uniformly across the type.
+
+6. **`delete_event` has the same serialize-per-dispatch shape** as `update_event` did, in
+   its own `call_side_effects` closure. Moot today — delete does not reconcile attendees, so
+   there are no extra dispatches — but the pattern is copy-pasted and would pay the same
+   per-dispatch cost if that ever changes.
+
 ## Remaining phases
 
 | Phase | Title | Depends on |
 |---|---|---|
-| 4 | Carry event identifiers in webhook payloads | 1, 2 |
 | 5 | Internal REST read, write and filtering | 1, 2 |
 | 6 | Public `updateCalendarEvent` mutation | 1, 2, 3 |
 
