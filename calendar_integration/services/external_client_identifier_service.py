@@ -24,6 +24,7 @@ from calendar_integration.exceptions import (
     CalendarServiceOrganizationNotSetError,
     ExternalClientIdentifierBlankIdentifierError,
     ExternalClientIdentifierCrossOrganizationError,
+    ExternalClientIdentifierDuplicateSystemError,
     ExternalClientIdentifierInvalidTargetError,
     ExternalClientIdentifierTooLongError,
 )
@@ -99,11 +100,11 @@ class ExternalClientIdentifierService:
     ) -> dict[str, str]:
         """Normalize ``system`` and validate ``identifier`` for every incoming pair.
 
-        Returns a ``{normalized_system: identifier}`` mapping -- the model's
-        ``extclientid_uniq_target_system`` constraint means at most one identifier per
-        system per target, so a caller supplying two pairs for the same (normalized)
-        system has the later one win silently overwrite the earlier one in this dict,
-        same as the DB constraint would allow only one to survive.
+        Returns a ``{normalized_system: identifier}`` mapping. The model's
+        ``extclientid_uniq_target_system`` constraint allows at most one identifier
+        per system per target. So if two incoming pairs normalize to the same
+        system, this raises ``ExternalClientIdentifierDuplicateSystemError`` instead
+        of silently keeping the last one and dropping the first.
         """
         normalized: dict[str, str] = {}
         for item in identifiers:
@@ -112,7 +113,10 @@ class ExternalClientIdentifierService:
                 raise ExternalClientIdentifierBlankIdentifierError()
             if len(identifier_value) > MAX_IDENTIFIER_LENGTH:
                 raise ExternalClientIdentifierTooLongError()
-            normalized[normalize_system(item.system)] = identifier_value
+            normalized_system = normalize_system(item.system)
+            if normalized_system in normalized:
+                raise ExternalClientIdentifierDuplicateSystemError()
+            normalized[normalized_system] = identifier_value
         return normalized
 
     def replace_for_target(

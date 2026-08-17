@@ -451,3 +451,17 @@ class ExternalClientIdentifierTooLongError(ExternalClientIdentifierError):
     """Raised when an incoming ``identifier`` exceeds the 255-character column limit."""
 
     default_message = "identifier must be at most 255 characters."
+
+
+class ExternalClientIdentifierDuplicateSystemError(ExternalClientIdentifierError):
+    """Raised when one incoming list has two pairs that normalize to the same ``system``.
+
+    We reject this instead of picking the last one. Picking the last one would be a
+    silent trap: a caller who sends ``[{crm, "A"}, {crm, "B"}]`` would get ``B``
+    stored, while believing ``A`` was set. A later lookup for ``A`` would find
+    nothing, with no error to explain why. Phase 3 passes this list straight through
+    from an external API caller, so the ambiguity must surface as an error here
+    instead of being resolved by list order.
+    """
+
+    default_message = "Duplicate system in identifiers list; each system must appear at most once."

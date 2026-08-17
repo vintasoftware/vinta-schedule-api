@@ -363,6 +363,71 @@ def test_update_event_empty_list_clears_identifiers(
 
 
 # ---------------------------------------------------------------------------
+# Omitted attendee identifiers must not cost an extra query
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_update_event_omitting_attendee_identifiers_issues_no_extra_query(
+    event_service,
+    mock_google_adapter,
+    calendar,
+    calendar_management_token,
+    social_account,
+    django_capture_on_commit_callbacks,
+    django_assert_num_queries,
+):
+    """Regression: an attendee whose payload omits ``external_client_identifiers``
+    must not cost a query against ``ExternalClientIdentifier``.
+
+    ``replace_for_target`` runs a SELECT before it notices ``identifiers is None``,
+    so the write-pass loop must skip the call entirely for an omitted attendee -- the
+    same way the clear-pass loop right above it already does. This test counts the
+    exact number of queries for an update that matches one existing attendee by id
+    and omits identifiers for it; a broken implementation that calls
+    ``replace_for_target`` unconditionally issues one extra query and fails this
+    assertion."""
+    mock_google_adapter.create_event.return_value = _adapter_output("evt-noquery-omit")
+    mock_google_adapter.update_event.return_value = _adapter_output("evt-noquery-omit")
+
+    with django_capture_on_commit_callbacks(execute=True):
+        created = event_service.create_event(
+            calendar.id,
+            _base_event_input(
+                external_attendances=[
+                    EventExternalAttendanceInputData(
+                        external_attendee=ExternalAttendeeInputData(
+                            email="ext@example.com",
+                            name="Ext Attendee",
+                        )
+                    )
+                ]
+            ),
+        )
+    _grant_event_owner_token(created, social_account.user, calendar.organization)
+
+    attendance = created.external_attendances.get()
+    attendee_id = attendance.external_attendee_fk_id
+
+    # Same attendee, matched by id (so it goes through the update path, not the
+    # create path) -- `external_client_identifiers` omitted (`None`).
+    updated_input = _base_event_input(
+        external_attendances=[
+            EventExternalAttendanceInputData(
+                external_attendee=ExternalAttendeeInputData(
+                    id=attendee_id,
+                    email="ext@example.com",
+                    name="Ext Attendee",
+                )
+            )
+        ]
+    )
+
+    with django_assert_num_queries(28):
+        event_service.update_event(calendar.id, created.id, updated_input)
+
+
+# ---------------------------------------------------------------------------
 # Attendee delete-and-recreate reconciliation
 # ---------------------------------------------------------------------------
 
@@ -768,9 +833,10 @@ def test_update_event_audit_diff_omits_identifier_key_when_unchanged(
     social_account,
     django_capture_on_commit_callbacks,
 ):
-    """When the caller omits identifiers (and nothing else changes), no audit record is
-    even emitted for a diff-less update -- and when something else DOES change, the
-    ``external_client_identifiers`` key must be absent."""
+    """When the caller omits identifiers but something else changes, the audit diff
+    must not carry an ``external_client_identifiers`` key. (A diff-less update still
+    emits an audit record with ``diff=None`` -- see
+    ``test_update_event_audit_has_no_diff_when_nothing_changes`` below.)"""
     mock_google_adapter.create_event.return_value = _adapter_output("evt-audit-noident")
     mock_google_adapter.update_event.return_value = _adapter_output("evt-audit-noident")
 

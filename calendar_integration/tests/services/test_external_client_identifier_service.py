@@ -25,6 +25,7 @@ from calendar_integration.exceptions import (
     CalendarServiceOrganizationNotSetError,
     ExternalClientIdentifierBlankIdentifierError,
     ExternalClientIdentifierCrossOrganizationError,
+    ExternalClientIdentifierDuplicateSystemError,
     ExternalClientIdentifierInvalidTargetError,
     ExternalClientIdentifierTooLongError,
 )
@@ -404,6 +405,61 @@ def test_invalid_write_leaves_target_untouched(
 
 
 # ---------------------------------------------------------------------------
+# duplicate system in one payload
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_duplicate_system_in_one_payload_is_rejected(
+    service: ExternalClientIdentifierService, event: CalendarEvent
+) -> None:
+    """Two pairs with the same system in one call must raise, not silently keep the
+    last one and drop the first."""
+    with pytest.raises(ExternalClientIdentifierDuplicateSystemError):
+        service.replace_for_target(
+            event,
+            [
+                ExternalClientIdentifierData(system="https://crm.example.com", identifier="A"),
+                ExternalClientIdentifierData(system="https://crm.example.com", identifier="B"),
+            ],
+        )
+
+
+@pytest.mark.django_db
+def test_duplicate_system_spelled_two_ways_in_one_payload_is_rejected(
+    service: ExternalClientIdentifierService, event: CalendarEvent
+) -> None:
+    """The duplicate check runs on the normalized system, so different casing and a
+    trailing slash for the same system still count as a duplicate."""
+    with pytest.raises(ExternalClientIdentifierDuplicateSystemError):
+        service.replace_for_target(
+            event,
+            [
+                ExternalClientIdentifierData(system="https://crm.example.com", identifier="A"),
+                ExternalClientIdentifierData(system="HTTPS://CRM.EXAMPLE.COM/", identifier="B"),
+            ],
+        )
+
+
+@pytest.mark.django_db
+def test_distinct_systems_in_one_payload_still_succeeds(
+    service: ExternalClientIdentifierService, event: CalendarEvent
+) -> None:
+    old, new = service.replace_for_target(
+        event,
+        [
+            ExternalClientIdentifierData(system="https://crm.example.com", identifier="A"),
+            ExternalClientIdentifierData(system="https://erp.example.com", identifier="B"),
+        ],
+    )
+    assert old == []
+    assert sorted((d.system, d.identifier) for d in new) == [
+        ("https://crm.example.com", "A"),
+        ("https://erp.example.com", "B"),
+    ]
+
+
+# ---------------------------------------------------------------------------
 # get_for_targets
 # ---------------------------------------------------------------------------
 
@@ -460,3 +516,81 @@ def test_get_for_targets_empty_sequence_returns_empty_dict(
     service: ExternalClientIdentifierService,
 ) -> None:
     assert service.get_for_targets([]) == {}
+
+
+@pytest.mark.django_db
+def test_get_for_targets_mixed_type_pk_collision_does_not_leak_unrequested_data(
+    service: ExternalClientIdentifierService,
+    organization: Organization,
+    event: CalendarEvent,
+    calendar: Calendar,
+) -> None:
+    """Pins the ``if key in result`` check in ``get_for_targets``.
+
+    ``get_for_targets`` builds ``content_type_id__in`` and ``identified_key__in`` as
+    two separate sets, not as matched (content_type, pk) pairs. For a batch that mixes
+    content types, this reads as a cross product: it can match a row for a
+    content-type/pk combination that nobody in the batch actually asked for.
+
+    This test forces that combination to exist. It creates a third, unrequested
+    ``CalendarEvent`` whose pk equals the requested ``ExternalAttendee``'s pk, and
+    gives it its own identifier. The unrequested event's content type is the same as
+    the requested event's, so the cross product now includes a row that belongs to
+    neither requested target. Without the ``if key in result`` check, that row would
+    end up under a key nobody asked for, or attached to the wrong target.
+    """
+    # Explicit, far-apart pks: the fixture `event` already holds a low auto-assigned
+    # pk, so picking a large explicit pk for both `attendee` and `unrequested_event`
+    # guarantees the forced collision is between those two, not an accidental one
+    # with `event`.
+    collision_pk = 900_001
+    attendee = baker.make(
+        ExternalAttendee, id=collision_pk, organization=organization, email="a@example.com"
+    )
+    unrequested_event = baker.make(
+        CalendarEvent,
+        id=collision_pk,
+        organization=organization,
+        calendar=calendar,
+        title="Unrequested event sharing the attendee's pk",
+        external_id="event-pk-collision",
+        start_time_tz_unaware=datetime.datetime(2026, 1, 1, 9, 0, 0),
+        end_time_tz_unaware=datetime.datetime(2026, 1, 1, 10, 0, 0),
+        timezone="UTC",
+    )
+    create_external_client_identifier(
+        organization=organization,
+        identified_object=event,
+        system="https://crm.example.com",
+        identifier="event-ident",
+    )
+    create_external_client_identifier(
+        organization=organization,
+        identified_object=attendee,
+        system="https://crm.example.com",
+        identifier="attendee-ident",
+    )
+    create_external_client_identifier(
+        organization=organization,
+        identified_object=unrequested_event,
+        system="https://crm.example.com",
+        identifier="unrequested-event-ident",
+    )
+
+    result = service.get_for_targets([event, attendee])
+
+    from django.contrib.contenttypes.models import ContentType
+
+    event_key = (ContentType.objects.get_for_model(event).id, event.pk)
+    attendee_key = (ContentType.objects.get_for_model(attendee).id, attendee.pk)
+
+    # Only the two requested keys are present -- the unrequested event's key never
+    # entered `result`, so a matched row for it has nowhere to be discarded except by
+    # the guard.
+    assert set(result.keys()) == {event_key, attendee_key}
+    assert [(d.system, d.identifier) for d in result[event_key]] == [
+        ("https://crm.example.com", "event-ident")
+    ]
+    assert [(d.system, d.identifier) for d in result[attendee_key]] == [
+        ("https://crm.example.com", "attendee-ident")
+    ]
