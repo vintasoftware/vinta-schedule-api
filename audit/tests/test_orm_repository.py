@@ -26,7 +26,7 @@ from model_bakery import baker
 from audit.constants import AuditAction, AuditActorType
 from audit.models import Audit, AuditAffectedMembership
 from audit.repositories import DjangoORMAuditRepository
-from audit.types import ActorSnapshot, AuditRecord, AuditRecordData, SubjectRef
+from audit.types import ActorSnapshot, AuditQuery, AuditRecord, AuditRecordData, SubjectRef
 from organizations.authorization import MEMBERSHIP_ROLE_LABEL_ADMIN, MEMBERSHIP_ROLE_LABEL_MEMBER
 from organizations.models import Organization, OrganizationMembership
 
@@ -352,8 +352,6 @@ class TestDjangoORMAuditRepositoryAddDiff:
         empty dict ({}) carries no change information and is normalized to None
         at write time so that the has_diff filter (diff__isnull) is correct.
         """
-        from audit.types import AuditQuery
-
         org = baker.make(Organization)
         repo = DjangoORMAuditRepository()
 

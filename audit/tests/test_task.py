@@ -18,12 +18,14 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+from unittest.mock import MagicMock
 
 import pytest
 from model_bakery import baker
 
 from audit.constants import AuditAction, AuditActorType
 from audit.models import Audit, AuditAffectedMembership
+from audit.repositories import DjangoORMAuditRepository
 from audit.services import AuditService
 from audit.tasks import persist_audit_record
 from audit.types import ActorSnapshot, AuditRecordData, SubjectRef
@@ -190,8 +192,6 @@ class TestPersistAuditRecordTask:
 
     def test_full_round_trip_via_service_record(self, django_capture_on_commit_callbacks) -> None:
         """AuditService.record() + eager task results in a correct persisted Audit."""
-        from audit.repositories import DjangoORMAuditRepository
-
         org = baker.make(Organization)
         user = baker.make("users.User")
         membership = OrganizationMembership.objects.create(
@@ -309,8 +309,6 @@ class TestPersistAuditRecordErrorHandling:
         Injection itself is proven by the happy-path test test_full_round_trip_via_service_record,
         which goes record() → on_commit → .delay() → task with @inject and NO explicit repository.
         """
-        from audit.repositories import DjangoORMAuditRepository
-
         repository = DjangoORMAuditRepository()
 
         with caplog.at_level(logging.ERROR, logger="audit.tasks"):
@@ -327,8 +325,6 @@ class TestPersistAuditRecordErrorHandling:
         Injection itself is proven by the happy-path test test_full_round_trip_via_service_record,
         which goes record() → on_commit → .delay() → task with @inject and NO explicit repository.
         """
-        from unittest.mock import MagicMock
-
         org = baker.make(Organization)
         data = AuditRecordData(
             organization_id=org.pk,
