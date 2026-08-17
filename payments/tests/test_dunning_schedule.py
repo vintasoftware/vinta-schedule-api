@@ -223,7 +223,7 @@ def subscription_service(di_container):
 @pytest.mark.django_db
 class TestProcessDunningFanOut:
     def test_fans_out_only_grace_and_restricted_subscriptions(
-        self, subscription_service, organization, billing_profile
+        self, assert_no_unbound_scoped_queries, subscription_service, organization, billing_profile
     ):
         plan = make_complete_plan()
         grace_sub = _subscription_for(
@@ -281,6 +281,7 @@ class TestProcessDunningFanOut:
 class TestDunningLadder:
     def test_retries_daily_escalates_then_restricts_on_expiry(
         self,
+        assert_no_unbound_scoped_queries,
         subscription_service,
         mercadopago_subscription_adapter,
         mock_notification_service,
@@ -342,6 +343,7 @@ class TestDunningLadder:
 
     def test_expires_promptly_even_when_the_retry_throttle_gate_is_still_open(
         self,
+        assert_no_unbound_scoped_queries,
         subscription_service,
         mercadopago_subscription_adapter,
         mock_notification_service,
@@ -392,6 +394,7 @@ class TestDunningLadder:
 
     def test_does_not_retry_once_resolved(
         self,
+        assert_no_unbound_scoped_queries,
         subscription_service,
         mercadopago_subscription_adapter,
         mock_notification_service,
@@ -438,6 +441,7 @@ class TestDunningLadder:
 
     def test_second_retry_before_the_next_calendar_day_reaches_the_provider_with_a_distinct_key(
         self,
+        assert_no_unbound_scoped_queries,
         subscription_service,
         mercadopago_subscription_adapter,
         organization,
@@ -493,6 +497,7 @@ class TestDunningLadder:
 
     def test_retry_idempotency_key_is_stable_across_a_same_attempt_redelivery(
         self,
+        assert_no_unbound_scoped_queries,
         subscription_service,
         mercadopago_subscription_adapter,
         organization,
@@ -537,6 +542,7 @@ class TestDunningLadder:
 class TestDunningLadderFreeFallback:
     def test_retries_across_grace_then_falls_back_to_free_only_at_expiry(
         self,
+        assert_no_unbound_scoped_queries,
         subscription_service,
         mercadopago_subscription_adapter,
         organization,
@@ -617,6 +623,7 @@ class TestDunningTickToleratesADeclinedStripeCharge:
 
     def test_declined_charge_tick_returns_without_raising(
         self,
+        assert_no_unbound_scoped_queries,
         di_container,
         subscription_service,
         mercadopago_subscription_adapter,
@@ -702,6 +709,7 @@ class TestDunningTickToleratesADeclinedStripeCharge:
 
     def test_not_attemptable_charge_tick_returns_without_raising(
         self,
+        assert_no_unbound_scoped_queries,
         di_container,
         subscription_service,
         mercadopago_subscription_adapter,

@@ -56,7 +56,7 @@ def calendar(organization: Organization) -> Calendar:
 @pytest.mark.django_db
 class TestMeterSubscriptionEventOccurrences:
     def test_the_task_meters_through_a_really_injected_service(
-        self, subscription: Subscription, calendar: Calendar
+        self, assert_no_unbound_scoped_queries, subscription: Subscription, calendar: Calendar
     ):
         """No mocks: if ``@inject`` silently did nothing, this raises instead of passing."""
         occurred_at = timezone.now() - datetime.timedelta(hours=1)
@@ -80,7 +80,7 @@ class TestMeterSubscriptionEventOccurrences:
         assert MeteredOccurrence.objects.filter(subscription=subscription).count() == 1
 
     def test_running_the_task_twice_records_one_row(
-        self, subscription: Subscription, calendar: Calendar
+        self, assert_no_unbound_scoped_queries, subscription: Subscription, calendar: Calendar
     ):
         """``CELERY_TASK_ACKS_LATE`` means redelivery is expected, not exceptional."""
         occurred_at = timezone.now() - datetime.timedelta(hours=1)
@@ -105,7 +105,7 @@ class TestMeterSubscriptionEventOccurrences:
         assert MeteredOccurrence.objects.filter(subscription=subscription).count() == 1
 
     def test_a_subscription_deleted_between_fan_out_and_execution_is_skipped(
-        self, subscription: Subscription
+        self, assert_no_unbound_scoped_queries, subscription: Subscription
     ):
         """A raising task would be redelivered and fail identically forever."""
         subscription_id = subscription.pk
@@ -122,7 +122,9 @@ class TestMeterSubscriptionEventOccurrences:
 
 @pytest.mark.django_db
 class TestMeterEventOccurrencesFanOut:
-    def test_every_subscription_is_swept_over_one_shared_window(self, subscription: Subscription):
+    def test_every_subscription_is_swept_over_one_shared_window(
+        self, assert_no_unbound_scoped_queries, subscription: Subscription
+    ):
         Organization.objects.create(name="Second Org", should_sync_rooms=False)
         expected_ids = set(Subscription.objects.values_list("pk", flat=True))
         assert len(expected_ids) >= 2
@@ -135,7 +137,9 @@ class TestMeterEventOccurrencesFanOut:
         windows = {(call.args[1], call.args[2]) for call in calls}
         assert len(windows) == 1, "each run must sweep one window, not one per subscription"
 
-    def test_the_window_is_wider_than_the_beat_interval(self, subscription: Subscription):
+    def test_the_window_is_wider_than_the_beat_interval(
+        self, assert_no_unbound_scoped_queries, subscription: Subscription
+    ):
         """The overlap is the self-healing mechanism, so assert it exists.
 
         The beat entry runs every 15 minutes; a window narrower than that would

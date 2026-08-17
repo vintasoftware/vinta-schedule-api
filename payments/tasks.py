@@ -24,9 +24,11 @@ import logging
 from typing import Annotated
 
 from django.utils import timezone
+from django.utils.functional import SimpleLazyObject
 
 from dependency_injector.wiring import Provide, inject
 
+from common.organization_context import organization_context
 from payments.billing_constants import BillingState
 from payments.models import Subscription
 from payments.services.cycle_close_service import CycleCloseService
@@ -37,6 +39,21 @@ from vinta_schedule_api.celery import app
 
 
 logger = logging.getLogger(__name__)
+
+#: `payments` models are plain ``BaseModel`` (not ``OrganizationModel`` --
+#: see the plan's "Open Questions": billing is read at the billing root,
+#: often an ancestor of a single organization, so binding one is
+#: deliberately out of scope for this migration). What each per-subscription
+#: task below binds is the subscription's *own* organization -- the
+#: obvious, single-organization boundary for a per-subscription unit of
+#: work, and the same organization every deleted-subscription early-return
+#: above it is keyed on. It does **not** cover the pooled-reseller-subtree
+#: reads inside ``MeteringService`` (e.g. ``expand_occurrence_identities``,
+#: which explicitly reads ``CalendarEvent`` across every organization
+#: ``EntitlementService.get_pooled_organization_ids`` returns via
+#: ``organization_id__in=...``) -- that is the exact cross-organization
+#: case Phase 2a's guidance covers by switching to ``original_manager``,
+#: not by binding a single context.
 
 
 #: How far back each sweep re-reads. Deliberately **wider than the beat interval**
@@ -105,11 +122,13 @@ def meter_subscription_event_occurrences(
         )
         return
 
-    result = metering_service.meter_occurrences_for_period(
-        subscription,
-        datetime.datetime.fromisoformat(window_start),
-        datetime.datetime.fromisoformat(window_end),
-    )
+    organization = SimpleLazyObject(lambda: subscription.organization)
+    with organization_context(organization):
+        result = metering_service.meter_occurrences_for_period(
+            subscription,
+            datetime.datetime.fromisoformat(window_start),
+            datetime.datetime.fromisoformat(window_end),
+        )
     logger.info(
         "Metered subscription %s over [%s, %s): %s occurrences seen, %s newly recorded.",
         result.subscription_id,
@@ -181,8 +200,10 @@ def process_dunning_for_subscription(
             subscription_id,
         )
         return
+    organization = SimpleLazyObject(lambda: subscription.organization)
     try:
-        dunning_service.process_subscription(subscription)
+        with organization_context(organization):
+            dunning_service.process_subscription(subscription)
     except Exception:  # noqa: BLE001 - best-effort: never let one tick poison the ladder
         logger.exception(
             "Dunning tick failed for subscription %s; the ladder's own bookkeeping "
@@ -241,8 +262,10 @@ def close_subscription_billing_period(
             subscription_id,
         )
         return
+    organization = SimpleLazyObject(lambda: subscription.organization)
     try:
-        closed = cycle_close_service.close_subscription(subscription)
+        with organization_context(organization):
+            closed = cycle_close_service.close_subscription(subscription)
     except Exception:  # noqa: BLE001 - best-effort: never let one close abort the sweep
         logger.exception(
             "Cycle close failed for subscription %s; the period is left unrolled and will be "
@@ -306,4 +329,6 @@ def check_approaching_limits_for_subscription(
             subscription_id,
         )
         return
-    usage_warning_service.check_subscription(subscription)
+    organization = SimpleLazyObject(lambda: subscription.organization)
+    with organization_context(organization):
+        usage_warning_service.check_subscription(subscription)

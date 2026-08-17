@@ -250,3 +250,52 @@ def di_container():
     from di_core.containers import container
 
     return container
+
+
+@pytest.fixture
+def assert_no_unbound_scoped_queries():
+    """Tripwire: fail the test if an ``OrganizationModel``-scoped query executes
+    while no organization is bound via ``common.organization_context``.
+
+    Phase 0 of the vinta-django-orgs migration
+    (``ai-plans/2026-08-12-VINTA_DJANGO_ORGS_MIGRATION_IMPLEMENTATION_PLAN.md``)
+    threads an explicit ``organization_context(...)`` binding through every
+    Celery task and management command that touches a scoped model, while the
+    manager itself (``organizations.managers.BaseOrganizationModelManager`` /
+    ``organizations.querysets.BaseOrganizationModelQuerySet``) keeps enforcing
+    only its own, unrelated contract: an explicit ``organization`` filter on the
+    query, checked independently of this binding. That is what makes Phase 0
+    behavior-neutral -- today, a query can run unbound and still succeed, as
+    long as it carries the explicit filter.
+
+    Phase 2 changes that: the manager swaps to implicit, context-bound scoping,
+    and (`STRICT_ORGANIZATION_FILTER = True`) an unbound query raises instead of
+    silently returning nothing. Requesting this fixture in a test lets that test
+    assert the *new* contract now, ahead of the flip. A call site that passes
+    today (explicit filter present, no binding) but would raise in Phase 2
+    (nothing bound) fails under this fixture now, while the diff that caused it
+    is still in front of the reviewer -- not three phases later.
+
+    Deliberately **opt-in**, not autouse: today's managers ignore the binding
+    project-wide, and almost nothing in the suite binds one yet (that is
+    Phase 0's own scope: tasks and management commands, not the whole app).
+    Making this autouse before Phase 2b's ``TenantScopedViewMixin`` binding
+    lands would fail nearly every test that exercises a scoped model.
+
+    Implementation lives in ``common.organization_context_test_support`` (kept
+    independent of pytest's fixture protocol so it is unit-testable on its own
+    -- see that module's tests).
+    """
+    # Deferred: pytest imports this root ``conftest.py`` (module scope, see
+    # its top-of-file imports above) during collection, before pytest-django
+    # calls ``django.setup()`` -- so anything that touches the Django ORM
+    # must wait until a fixture actually runs, not sit at module scope here.
+    from common.organization_context_test_support import (
+        assert_all_scoped_queries_are_bound,
+        raise_if_unbound_scoped_queries_occurred,
+    )
+
+    with assert_all_scoped_queries_are_bound() as unbound_calls:
+        yield unbound_calls
+
+    raise_if_unbound_scoped_queries_occurred(unbound_calls)

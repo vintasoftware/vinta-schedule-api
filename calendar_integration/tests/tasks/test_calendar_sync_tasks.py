@@ -72,7 +72,7 @@ def google_service_account(db, organization):
 
 # Tests for sync_calendar_task
 def test_sync_calendar_task_with_social_account(
-    social_account, social_token, calendar, organization
+    assert_no_unbound_scoped_queries, social_account, social_token, calendar, organization
 ):
     """Test sync_calendar_task with a social account."""
 
@@ -99,7 +99,7 @@ def test_sync_calendar_task_with_social_account(
 
 
 def test_sync_calendar_task_with_google_service_account(
-    google_service_account, calendar, organization
+    assert_no_unbound_scoped_queries, google_service_account, calendar, organization
 ):
     """Test sync_calendar_task with a Google service account."""
 
@@ -125,7 +125,9 @@ def test_sync_calendar_task_with_google_service_account(
     mock_service.sync_events.assert_called_once_with(calendar_sync)
 
 
-def test_sync_calendar_task_with_invalid_social_account(calendar, organization):
+def test_sync_calendar_task_with_invalid_social_account(
+    assert_no_unbound_scoped_queries, calendar, organization
+):
     """Test sync_calendar_task with an invalid social account ID."""
 
     calendar_sync = CalendarSync.objects.create(
@@ -150,7 +152,9 @@ def test_sync_calendar_task_with_invalid_social_account(calendar, organization):
         mock_service.sync_events.assert_not_called()
 
 
-def test_sync_calendar_task_with_invalid_google_service_account(calendar, organization):
+def test_sync_calendar_task_with_invalid_google_service_account(
+    assert_no_unbound_scoped_queries, calendar, organization
+):
     """Test sync_calendar_task with an invalid Google service account ID."""
 
     calendar_sync = CalendarSync.objects.create(
@@ -175,7 +179,9 @@ def test_sync_calendar_task_with_invalid_google_service_account(calendar, organi
         mock_service.sync_events.assert_not_called()
 
 
-def test_sync_calendar_task_with_invalid_calendar_sync(social_account, social_token, organization):
+def test_sync_calendar_task_with_invalid_calendar_sync(
+    assert_no_unbound_scoped_queries, social_account, social_token, organization
+):
     """Test sync_calendar_task with an invalid calendar sync ID."""
 
     with patch(
@@ -193,7 +199,7 @@ def test_sync_calendar_task_with_invalid_calendar_sync(social_account, social_to
 
 
 def test_sync_calendar_task_with_already_started_calendar_sync(
-    social_account, social_token, calendar, organization
+    assert_no_unbound_scoped_queries, social_account, social_token, calendar, organization
 ):
     """Test sync_calendar_task with a calendar sync that has already started."""
 
@@ -225,7 +231,9 @@ def test_sync_calendar_task_with_already_started_calendar_sync(
     mock_service.sync_events.assert_not_called()
 
 
-def test_sync_calendar_task_service_exception(social_account, social_token, calendar, organization):
+def test_sync_calendar_task_service_exception(
+    assert_no_unbound_scoped_queries, social_account, social_token, calendar, organization
+):
     """Test sync_calendar_task when CalendarService raises an exception."""
 
     calendar_sync = CalendarSync.objects.create(
@@ -256,7 +264,7 @@ def test_sync_calendar_task_service_exception(social_account, social_token, cale
 
 
 def test_import_organization_calendar_resources_with_social_account(
-    social_account, organization, db
+    assert_no_unbound_scoped_queries, social_account, organization, db
 ):
     """Test import_organization_calendar_resources_task with a social account."""
     import_workflow_state = CalendarOrganizationResourcesImport.objects.create(
@@ -283,7 +291,7 @@ def test_import_organization_calendar_resources_with_social_account(
 
 
 def test_import_organization_calendar_resources_with_google_service_account(
-    google_service_account, organization, db
+    assert_no_unbound_scoped_queries, google_service_account, organization, db
 ):
     """Test import_organization_calendar_resources_task with a Google service account."""
     import_workflow_state = CalendarOrganizationResourcesImport.objects.create(
@@ -308,7 +316,9 @@ def test_import_organization_calendar_resources_with_google_service_account(
     )
 
 
-def test_import_organization_calendar_resources_with_invalid_organization(db):
+def test_import_organization_calendar_resources_with_invalid_organization(
+    assert_no_unbound_scoped_queries, db
+):
     """Test import_organization_calendar_resources_task with invalid organization ID."""
 
     mock_service = MagicMock()
@@ -318,7 +328,7 @@ def test_import_organization_calendar_resources_with_invalid_organization(db):
 
 
 def test_import_organization_calendar_resources_with_invalid_import_state(
-    social_account, organization, db
+    assert_no_unbound_scoped_queries, social_account, organization, db
 ):
     """Test import_organization_calendar_resources_task with invalid import_workflow_state_id."""
     mock_service = MagicMock()
@@ -333,7 +343,9 @@ def test_import_organization_calendar_resources_with_invalid_import_state(
     mock_service.import_organization_calendar_resources.assert_not_called()
 
 
-def test_import_organization_calendar_resources_with_invalid_account(organization, db):
+def test_import_organization_calendar_resources_with_invalid_account(
+    assert_no_unbound_scoped_queries, organization, db
+):
     """Test import_organization_calendar_resources_task with invalid account ID (social_account)."""
     import_workflow_state = CalendarOrganizationResourcesImport.objects.create(
         organization=organization,
@@ -354,7 +366,7 @@ def test_import_organization_calendar_resources_with_invalid_account(organizatio
 
 
 def test_import_organization_calendar_resources_with_invalid_google_service_account(
-    organization, db
+    assert_no_unbound_scoped_queries, organization, db
 ):
     """Test import_organization_calendar_resources_task with invalid account ID (google_service_account)."""
     import_workflow_state = CalendarOrganizationResourcesImport.objects.create(
@@ -376,7 +388,7 @@ def test_import_organization_calendar_resources_with_invalid_google_service_acco
 
 
 def test_import_organization_calendar_resources_service_exception(
-    social_account, social_token, organization, db
+    assert_no_unbound_scoped_queries, social_account, social_token, organization, db
 ):
     """Test import_organization_calendar_resources_task when CalendarService raises an exception."""
     import_workflow_state = CalendarOrganizationResourcesImport.objects.create(
@@ -404,7 +416,7 @@ def test_import_organization_calendar_resources_service_exception(
 
 
 def test_sync_calendar_task_with_changes_applied(
-    social_account, social_token, calendar, organization
+    assert_no_unbound_scoped_queries, social_account, social_token, calendar, organization
 ):
     """Test sync_calendar_task properly applies changes through CalendarService."""
     calendar_sync = CalendarSync.objects.create(
@@ -445,7 +457,7 @@ def test_sync_calendar_task_with_changes_applied(
 
 
 def test_sync_calendar_task_handles_sync_failures(
-    social_account, social_token, calendar, organization
+    assert_no_unbound_scoped_queries, social_account, social_token, calendar, organization
 ):
     """Test sync_calendar_task handles failures during sync process."""
     calendar_sync = CalendarSync.objects.create(
@@ -488,7 +500,7 @@ def test_sync_calendar_task_handles_sync_failures(
 
 
 def test_sync_calendar_task_with_google_service_account_changes_applied(
-    google_service_account, calendar, organization
+    assert_no_unbound_scoped_queries, google_service_account, calendar, organization
 ):
     """Test sync_calendar_task with Google service account applies changes."""
     calendar_sync = CalendarSync.objects.create(
@@ -539,7 +551,7 @@ def test_sync_calendar_task_with_google_service_account_changes_applied(
 
 
 def test_import_organization_calendar_resources_task_with_changes_simulation(
-    social_account, organization, db
+    assert_no_unbound_scoped_queries, social_account, organization, db
 ):
     """Test import_organization_calendar_resources_task simulates applying resource changes."""
     import_workflow_state = CalendarOrganizationResourcesImport.objects.create(
@@ -590,7 +602,7 @@ def test_import_organization_calendar_resources_task_with_changes_simulation(
 
 
 def test_sync_calendar_task_tracks_matched_event_ids(
-    social_account, social_token, calendar, organization
+    assert_no_unbound_scoped_queries, social_account, social_token, calendar, organization
 ):
     """Test that sync_calendar_task properly tracks matched event IDs for deletions."""
     calendar_sync = CalendarSync.objects.create(

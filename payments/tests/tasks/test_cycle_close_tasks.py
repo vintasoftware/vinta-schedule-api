@@ -38,7 +38,7 @@ def subscription(organization: Organization) -> Subscription:
 @pytest.mark.django_db
 class TestCloseBillingPeriodsFanOut:
     def test_only_subscriptions_with_an_ended_period_are_dispatched(
-        self, subscription: Subscription
+        self, assert_no_unbound_scoped_queries, subscription: Subscription
     ):
         """One subscription is past its period end, another is not — only the ended
         one is dispatched."""
@@ -64,14 +64,18 @@ class TestCloseBillingPeriodsFanOut:
 
 @pytest.mark.django_db
 class TestCloseSubscriptionBillingPeriodTask:
-    def test_a_deleted_subscription_is_skipped(self, subscription: Subscription):
+    def test_a_deleted_subscription_is_skipped(
+        self, assert_no_unbound_scoped_queries, subscription: Subscription
+    ):
         subscription_id = subscription.pk
         subscription.delete()
 
         # Must not raise.
         close_subscription_billing_period(subscription_id)
 
-    def test_a_close_failure_is_caught_and_does_not_propagate(self, subscription: Subscription):
+    def test_a_close_failure_is_caught_and_does_not_propagate(
+        self, assert_no_unbound_scoped_queries, subscription: Subscription
+    ):
         """Best-effort: a failing close is logged, not re-raised, so the sweep of
         other subscriptions is unaffected."""
         with patch(

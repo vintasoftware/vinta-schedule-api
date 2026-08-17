@@ -6,6 +6,7 @@ from typing import Any
 from django.core.management.base import BaseCommand, CommandParser
 
 from calendar_integration.models import CalendarWebhookSubscription
+from common.organization_context import organization_context
 from organizations.models import Organization
 
 
@@ -49,8 +50,15 @@ class Command(BaseCommand):
         now = datetime.datetime.now(tz=datetime.UTC)
         expiry_threshold = now + datetime.timedelta(hours=hours_before_expiry)
 
-        # Get subscriptions to refresh
-        subscriptions_qs = CalendarWebhookSubscription.objects.filter(
+        # Get subscriptions to refresh. `original_manager` (the unscoped
+        # manager `OrganizationModel` attaches) rather than the tenant-scoped
+        # `objects` -- this driving scan is intentionally cross-organization
+        # by design (mirroring `organizations/admin.py`'s explicit
+        # `original_manager` usage): it is what makes the unfiltered "refresh
+        # everything expiring soon" default (no `--organization-id`) work at
+        # all. Each subscription's own organization is bound per-iteration
+        # below instead.
+        subscriptions_qs = CalendarWebhookSubscription.original_manager.filter(
             is_active=True,
             expires_at__lte=expiry_threshold,
             expires_at__gt=now,  # Not yet expired
@@ -91,37 +99,43 @@ class Command(BaseCommand):
         failed_count = 0
 
         for subscription in subscriptions:
+            # `subscriptions_qs` above spans every organization (unless
+            # --organization-id narrowed it), so each iteration binds its own
+            # subscription's organization rather than binding once outside
+            # the loop -- one iteration's failure/binding never leaks into
+            # the next organization's.
             try:
-                # Get calendar service for this organization
-                calendar_service = container.calendar_service()
-                calendar_service.organization = subscription.organization
+                with organization_context(subscription.organization):
+                    # Get calendar service for this organization
+                    calendar_service = container.calendar_service()
+                    calendar_service.organization = subscription.organization
 
-                self.stdout.write(
-                    f"Processing subscription {subscription.id} for "
-                    f"{subscription.organization.name} / {subscription.calendar.name} "
-                    f"({subscription.provider}) - expires {subscription.expires_at}"
-                )
-
-                if not dry_run:
-                    refreshed_subscription = calendar_service.refresh_webhook_subscription(
-                        subscription_id=subscription.id
+                    self.stdout.write(
+                        f"Processing subscription {subscription.id} for "
+                        f"{subscription.organization.name} / {subscription.calendar.name} "
+                        f"({subscription.provider}) - expires {subscription.expires_at}"
                     )
 
-                    if refreshed_subscription:
-                        self.stdout.write(
-                            self.style.SUCCESS(
-                                f"  ✓ Refreshed - new expiry: {refreshed_subscription.expires_at}"
+                    if not dry_run:
+                        refreshed_subscription = calendar_service.refresh_webhook_subscription(
+                            subscription_id=subscription.id
+                        )
+
+                        if refreshed_subscription:
+                            self.stdout.write(
+                                self.style.SUCCESS(
+                                    f"  ✓ Refreshed - new expiry: {refreshed_subscription.expires_at}"
+                                )
                             )
-                        )
-                        refreshed_count += 1
+                            refreshed_count += 1
+                        else:
+                            self.stdout.write(
+                                self.style.ERROR("  ✗ Failed to refresh - subscription not found")
+                            )
+                            failed_count += 1
                     else:
-                        self.stdout.write(
-                            self.style.ERROR("  ✗ Failed to refresh - subscription not found")
-                        )
-                        failed_count += 1
-                else:
-                    self.stdout.write("  → Would refresh this subscription")
-                    refreshed_count += 1
+                        self.stdout.write("  → Would refresh this subscription")
+                        refreshed_count += 1
 
             except Exception as e:  # noqa: BLE001
                 self.stdout.write(self.style.ERROR(f"  ✗ Failed to refresh: {e!s}"))

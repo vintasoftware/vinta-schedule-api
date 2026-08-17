@@ -19,6 +19,7 @@ from calendar_integration.models import (
     GoogleCalendarServiceAccount,
 )
 from calendar_integration.services.calendar_service import CalendarService
+from common.organization_context import organization_context
 from organizations.models import Organization
 from payments.exceptions import OverLimitError
 from payments.services.entitlement_service import EntitlementService
@@ -112,29 +113,31 @@ def import_account_calendars_task(
     organization = Organization.objects.filter(id=organization_id).first()
     if not organization:
         return
-    if _restricted_or_skip(entitlement_service, organization):
-        return
 
-    if account_type == "social_account":
-        social_account = SocialAccount.objects.filter(id=account_id).first()
-        if social_account:
-            account = social_account.user
+    with organization_context(organization):
+        if _restricted_or_skip(entitlement_service, organization):
+            return
+
+        if account_type == "social_account":
+            social_account = SocialAccount.objects.filter(id=account_id).first()
+            if social_account:
+                account = social_account.user
+            else:
+                account = None
         else:
-            account = None
-    else:
-        account = (
-            GoogleCalendarServiceAccount.objects.filter_by_organization(
-                organization_id=organization_id
+            account = (
+                GoogleCalendarServiceAccount.objects.filter_by_organization(
+                    organization_id=organization_id
+                )
+                .filter(id=account_id)
+                .first()
             )
-            .filter(id=account_id)
-            .first()
-        )
 
-    if not account:
-        return
-    if not _authenticate_or_skip(calendar_service, account, organization):
-        return
-    calendar_service.import_account_calendars(sync_after_import=sync_after_import)
+        if not account:
+            return
+        if not _authenticate_or_skip(calendar_service, account, organization):
+            return
+        calendar_service.import_account_calendars(sync_after_import=sync_after_import)
 
 
 @app.task
@@ -154,33 +157,35 @@ def sync_calendar_task(
     organization = Organization.objects.filter(id=organization_id).first()
     if not organization:
         return
-    if _restricted_or_skip(entitlement_service, organization):
-        return
 
-    calendar_sync = CalendarSync.objects.filter_by_organization(
-        organization_id=organization_id
-    ).get_not_started_calendar_sync(calendar_sync_id)
-    if account_type == "social_account":
-        social_account = SocialAccount.objects.filter(id=account_id).first()
-        if social_account:
-            account = social_account.user
+    with organization_context(organization):
+        if _restricted_or_skip(entitlement_service, organization):
+            return
+
+        calendar_sync = CalendarSync.objects.filter_by_organization(
+            organization_id=organization_id
+        ).get_not_started_calendar_sync(calendar_sync_id)
+        if account_type == "social_account":
+            social_account = SocialAccount.objects.filter(id=account_id).first()
+            if social_account:
+                account = social_account.user
+            else:
+                account = None
         else:
-            account = None
-    else:
-        account = (
-            GoogleCalendarServiceAccount.objects.filter_by_organization(
-                organization_id=organization_id
+            account = (
+                GoogleCalendarServiceAccount.objects.filter_by_organization(
+                    organization_id=organization_id
+                )
+                .filter(id=account_id)
+                .first()
             )
-            .filter(id=account_id)
-            .first()
-        )
 
-    if not account or not calendar_sync:
-        return
+        if not account or not calendar_sync:
+            return
 
-    if not _authenticate_or_skip(calendar_service, account, organization):
-        return
-    calendar_service.sync_events(calendar_sync)
+        if not _authenticate_or_skip(calendar_service, account, organization):
+            return
+        calendar_service.sync_events(calendar_sync)
 
 
 @app.task
@@ -201,43 +206,46 @@ def import_organization_calendar_resources_task(
     organization = Organization.objects.filter(id=organization_id).first()
     if not organization:
         return
-    if _restricted_or_skip(entitlement_service, organization):
-        return
 
-    import_workflow_state = (
-        CalendarOrganizationResourcesImport.objects.filter_by_organization(
-            organization_id=organization_id
-        )
-        .filter(
-            id=import_workflow_state_id, status=CalendarOrganizationResourceImportStatus.NOT_STARTED
-        )
-        .first()
-    )
+    with organization_context(organization):
+        if _restricted_or_skip(entitlement_service, organization):
+            return
 
-    if not import_workflow_state:
-        return
-
-    if account_type == "social_account":
-        social_account = SocialAccount.objects.filter(id=account_id).first()
-        if social_account:
-            account = social_account.user
-        else:
-            account = None
-    else:
-        account = (
-            GoogleCalendarServiceAccount.objects.filter_by_organization(
+        import_workflow_state = (
+            CalendarOrganizationResourcesImport.objects.filter_by_organization(
                 organization_id=organization_id
             )
-            .filter(id=account_id)
+            .filter(
+                id=import_workflow_state_id,
+                status=CalendarOrganizationResourceImportStatus.NOT_STARTED,
+            )
             .first()
         )
 
-    if not account:
-        return
+        if not import_workflow_state:
+            return
 
-    if not _authenticate_or_skip(calendar_service, account, organization):
-        return
-    calendar_service.import_organization_calendar_resources(import_workflow_state)
+        if account_type == "social_account":
+            social_account = SocialAccount.objects.filter(id=account_id).first()
+            if social_account:
+                account = social_account.user
+            else:
+                account = None
+        else:
+            account = (
+                GoogleCalendarServiceAccount.objects.filter_by_organization(
+                    organization_id=organization_id
+                )
+                .filter(id=account_id)
+                .first()
+            )
+
+        if not account:
+            return
+
+        if not _authenticate_or_skip(calendar_service, account, organization):
+            return
+        calendar_service.import_organization_calendar_resources(import_workflow_state)
 
 
 #: How far back a recovery resync (``resync_organization_calendars_task``) looks.
@@ -293,37 +301,39 @@ def resync_organization_calendars_task(
     organization = Organization.objects.filter(id=organization_id).first()
     if not organization:
         return
-    if _restricted_or_skip(entitlement_service, organization):
-        return
 
-    now = timezone.now()
-    start_datetime = now - RESYNC_AFTER_RECOVERY_LOOKBACK
-    end_datetime = now + RESYNC_AFTER_RECOVERY_LOOKAHEAD
+    with organization_context(organization):
+        if _restricted_or_skip(entitlement_service, organization):
+            return
 
-    calendars = Calendar.objects.filter_by_organization(organization_id).exclude_inactive()
-    for calendar in calendars:
-        ownership = (
-            CalendarOwnership.objects.filter_by_organization(organization_id)
-            .filter(calendar=calendar, membership_user_id__isnull=False)
-            .order_by("-is_default", "id")
-            .first()
-        )
-        if ownership is None:
-            continue
+        now = timezone.now()
+        start_datetime = now - RESYNC_AFTER_RECOVERY_LOOKBACK
+        end_datetime = now + RESYNC_AFTER_RECOVERY_LOOKAHEAD
 
-        social_account = SocialAccount.objects.filter(
-            user_id=ownership.membership_user_id, provider=calendar.provider
-        ).first()
-        if social_account is None:
-            continue
+        calendars = Calendar.objects.filter_by_organization(organization_id).exclude_inactive()
+        for calendar in calendars:
+            ownership = (
+                CalendarOwnership.objects.filter_by_organization(organization_id)
+                .filter(calendar=calendar, membership_user_id__isnull=False)
+                .order_by("-is_default", "id")
+                .first()
+            )
+            if ownership is None:
+                continue
 
-        if not _authenticate_or_skip(calendar_service, social_account.user, organization):
-            continue
+            social_account = SocialAccount.objects.filter(
+                user_id=ownership.membership_user_id, provider=calendar.provider
+            ).first()
+            if social_account is None:
+                continue
 
-        calendar_service.request_calendar_sync(
-            calendar=calendar,
-            start_datetime=start_datetime,
-            end_datetime=end_datetime,
-            should_update_events=True,
-            trigger_source=CalendarSyncTriggerSource.ADMIN,
-        )
+            if not _authenticate_or_skip(calendar_service, social_account.user, organization):
+                continue
+
+            calendar_service.request_calendar_sync(
+                calendar=calendar,
+                start_datetime=start_datetime,
+                end_datetime=end_datetime,
+                should_update_events=True,
+                trigger_source=CalendarSyncTriggerSource.ADMIN,
+            )
