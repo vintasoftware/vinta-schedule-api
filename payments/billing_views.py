@@ -423,9 +423,10 @@ class MeteredOccurrenceViewSet(TenantScopedViewMixin, mixins.ListModelMixin, Gen
     resolved billing root -- the same two-step dance
     ``SubscriptionViewSet.get_subscription`` and ``AddOnViewSet.create`` already
     perform, and for the same reason their comments document:
-    ``has_permission`` cannot know *which* organization this read is for,
-    because ``request.organization`` is not resolved yet at that point in
-    ``TenantScopedViewMixin.initial()``'s ordering (see
+    ``has_permission`` cannot know *which* organization this read is for: the
+    read is against the billing **root**, which is frequently an ancestor of the
+    organization the request resolved, and only the caller of
+    ``check_object_permissions`` knows which one that is (see
     ``IsBillingOwnerOrAdmin``'s docstring).
     """
 
@@ -606,10 +607,11 @@ class SubscriptionViewSet(TenantScopedViewMixin, GenericVirtualModelViewMixin, G
             raise NotFound("This organization has no subscription.")
         if check_object_perms:
             # `has_permission` alone cannot decide *which* organization a write
-            # is for -- `request.organization` is not resolved yet at that
-            # point in `TenantScopedViewMixin.initial()`'s ordering (see
-            # `IsBillingOwnerOrAdmin`'s docstring). This is the object-level
-            # check against the actually-resolved billing root.
+            # is for: the write acts on the billing *root*, which is frequently
+            # an ancestor of the organization the request resolved, and only
+            # this line knows which one that is (see `IsBillingOwnerOrAdmin`'s
+            # docstring). This is the object-level check against the
+            # actually-resolved billing root.
             self.check_object_permissions(self.request, resolve_billing_root(organization))
         return subscription
 
@@ -846,10 +848,10 @@ class AddOnViewSet(TenantScopedViewMixin, GenericViewSet):
         organization = _require_organization(request)
         billing_root = resolve_billing_root(organization)
         # See `SubscriptionViewSet.get_subscription`'s comment: `has_permission`
-        # cannot know *which* organization this write is for, since
-        # `request.organization` is not resolved yet at that point --
-        # `has_object_permission` is the real gate, run here against the
-        # resolved billing root.
+        # cannot know *which* organization this write is for, since the write
+        # acts on the billing root rather than on the organization the request
+        # resolved -- `has_object_permission` is the real gate, run here against
+        # that root.
         self.check_object_permissions(request, billing_root)
         subscription = self._get_subscription(organization)
 

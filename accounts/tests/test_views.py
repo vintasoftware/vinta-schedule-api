@@ -292,7 +292,7 @@ class TestGenericLoginPathUnaffectedByBrowserContext:
       still goes through ``ProviderRedirectAPIView`` with no organization concept at
       all, and ``ProviderCallbackAPIView`` still resolves the post-authentication
       destination purely from the authenticated user's own active membership
-      (``get_active_organization_membership`` / Phase 7) -- never from the request.
+      (package membership resolution / Phase 7) -- never from the request.
     - Nothing about the destination changes when the request carries an
       ``X-Organization-Id`` header (the header ordinary tenant-scoped REST endpoints
       honor via ``TenantScopedViewMixin``), a ``Referer`` header naming a different

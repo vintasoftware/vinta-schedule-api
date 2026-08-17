@@ -17,7 +17,6 @@ from organizations.models import (
     OrganizationInvitation,
     OrganizationMembership,
     OrganizationRole,
-    get_active_organization_membership,
 )
 from payments.billing_constants import Entitlement
 from payments.entitlement_cache import has_entitlement_cached
@@ -260,10 +259,9 @@ def user_administers_branding_eligible_organization(user: "User | None") -> bool
 class OrganizationManagementPermission(BasePermission):
     def has_permission(self, request, view):
         # Anonymous / unauthenticated users have no user attribute at all.
-        try:
-            user = request.user
-        except AttributeError:
+        if not hasattr(request, "user"):
             return True
+        user = request.user
 
         # Any authenticated user may create an additional organisation
         # (they become its admin via a fresh membership). Restricting create to
@@ -273,23 +271,20 @@ class OrganizationManagementPermission(BasePermission):
         if view.action == "create":
             return bool(user and user.is_authenticated)
 
-        # get_active_organization_membership handles both missing membership
-        # (RelatedObjectDoesNotExist) and inactive membership, returning None
-        # for both cases.  Only membership-LESS (or inactive) users may reach
-        # the remaining onboarding endpoints on this viewset.
-        membership = get_active_organization_membership(user)
+        # The package resolver represents missing and inactive membership as
+        # ``None``. Only those callers may reach the remaining onboarding
+        # endpoints on this viewset.
+        membership = request.organization_membership
         return membership is None
 
     def has_object_permission(self, request, view, obj):
         # Anonymous / unauthenticated users propagate to here only in edge
         # cases; treat them the same as membership-less (allow the framework
         # to deny them via IsAuthenticated first).
-        try:
-            user = request.user
-        except AttributeError:
+        if not hasattr(request, "user"):
             return True
 
-        membership = get_active_organization_membership(user)
+        membership = request.organization_membership
         if membership is None:
             # Membership-less OR inactive members never have object-level
             # access (they can only CREATE an org — handled in has_permission).
@@ -316,11 +311,11 @@ class OrganizationInvitationPermission(BasePermission):
             return False
 
         # User must have an active organization membership
-        return get_active_organization_membership(request.user) is not None
+        return request.organization_membership is not None
 
     def has_object_permission(self, request, view, obj):
         # User must have an active organization membership
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         if not membership:
             return False
 
@@ -347,12 +342,11 @@ class IsOrganizationAdmin(BasePermission):
         user: User = request.user
         if not user or not user.is_authenticated:
             return False
-        membership = get_active_organization_membership(user)
+        membership = request.organization_membership
         return membership is not None and membership.is_admin
 
     def has_object_permission(self, request, view, obj) -> bool:
-        user: User = request.user
-        membership = get_active_organization_membership(user)
+        membership = request.organization_membership
         if membership is None:
             return False
 
@@ -374,7 +368,7 @@ class IsOrganizationAdmin(BasePermission):
         if membership.organization_id != obj_organization_id:
             return False
 
-        return user.is_organization_admin(membership.organization_id)
+        return request.user.is_organization_admin(membership.organization_id)
 
 
 class IsBillingOwnerOrAdmin(BasePermission):
@@ -382,16 +376,23 @@ class IsBillingOwnerOrAdmin(BasePermission):
     change plan, purchase/cancel an add-on, cancel the subscription.
 
     Split across ``has_permission``/``has_object_permission`` rather than doing
-    everything in ``has_permission``, deliberately: ``TenantScopedViewMixin.initial()``
-    calls ``super().initial()`` (which runs DRF's ``check_permissions()``, and
-    therefore every ``has_permission``) **before** it resolves and stashes
-    ``request.organization`` — the same ordering ``IsOrganizationAdmin`` above
-    already works around by never reading ``request.organization`` in
-    ``has_permission``. ``request.organization`` only becomes reliable once the
-    view body itself runs, which is exactly when ``has_object_permission`` runs
-    too (views call ``check_object_permissions`` explicitly against the
-    resolved billing-root ``Organization``; see ``SubscriptionViewSet`` /
-    ``AddOnViewSet``).
+    everything in ``has_permission``, because the two answer different
+    questions: ``has_permission`` cannot know *which* organization is being
+    billed. The billing endpoints act on the **billing root**, which is
+    frequently an ancestor of the organization the request resolved
+    (``resolve_billing_root``), and the views hand that resolved root to
+    ``check_object_permissions`` explicitly (see ``SubscriptionViewSet`` /
+    ``AddOnViewSet``). So the coarse gate runs first and the real decision runs
+    against ``obj``.
+
+    (Historical note: this split was originally *forced* by an ordering defect —
+    ``TenantScopedViewMixin`` resolved the active organization after DRF had
+    already run ``check_permissions``, so nothing organization-specific was
+    reliable in ``has_permission`` at all. Phase 3.5 of the vinta-django-orgs
+    migration fixed the ordering; the split stays because of the billing-root
+    reason above, which is independent of it. ``request.organization`` and
+    ``request.organization_membership`` are now both correct
+    inside ``has_permission``.)
 
     - ``has_permission``: coarse gate -- an active membership that is ``ADMIN``
       **or** has ``is_billing_owner=True``, in *some* organization. Does not by
@@ -426,12 +427,11 @@ class IsBillingOwnerOrAdmin(BasePermission):
         user: User = request.user
         if not user or not user.is_authenticated:
             return False
-        membership = get_active_organization_membership(user)
+        membership = request.organization_membership
         return membership is not None and (membership.is_admin or membership.is_billing_owner)
 
     def has_object_permission(self, request, view, obj) -> bool:
-        user: User = request.user
-        membership = get_active_organization_membership(user)
+        membership = request.organization_membership
         if membership is None:
             return False
         target_organization = self._resolve_target_organization(obj)

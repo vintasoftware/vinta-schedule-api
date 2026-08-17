@@ -15,7 +15,6 @@ from rest_framework.response import Response
 from rest_framework.viewsets import GenericViewSet, ViewSet
 
 from common.utils.view_utils import TenantScopedViewMixin
-from organizations.models import get_active_organization_membership
 from organizations.permissions import IsOrganizationAdmin
 from payments.services.entitlement_service import EntitlementService
 from public_api.constants import PROVIDER_SCOPED_RESOURCES
@@ -57,37 +56,26 @@ class SystemUserTokenViewSet(
     """
 
     # ``TenantScopedViewMixin``, added in Phase 2b of the vinta-django-orgs
-    # migration. Before it, this was a plain ``GenericViewSet``: nothing stashed
-    # ``request.user._active_membership``, so every
-    # ``get_active_organization_membership`` call below -- the queryset, the
-    # create serializer -- fell through to the caller's *oldest* active
-    # membership, and a multi-organization admin listed and minted the tokens of
-    # an organization the header did not name. The mixin also puts these routes
+    # migration. Before it, this was a plain ``GenericViewSet`` and did not
+    # resolve the header before the queryset and create serializer chose a
+    # membership. A multi-organization admin could therefore list and mint the
+    # tokens of an organization the header did not name. The mixin also puts these routes
     # in front of ``common.openapi.TenantScopedAutoSchema``, which is what
     # documents the header in ``schema.yml``.
 
+    # Phase 3.5 removed this viewset's local ``initial()`` override, which
+    # re-ran ``check_permissions`` after the mixin's resolver. That was the
+    # repo's only defence against ``IsOrganizationAdmin.has_permission`` being
+    # asked about the caller's *oldest* membership rather than the organization
+    # the header names -- an admin of A, plain member of B, passing the
+    # collection-level gate for a request that then listed and minted B's
+    # tokens. ``TenantScopedViewMixin.perform_authentication`` now resolves
+    # before ``check_permissions`` for every view on the mixin, so keeping the
+    # override would only run the same check twice.
+    # ``public_api/tests/test_views.py::TestSystemUserTokenViewSetHonoursTheOrganizationHeader``
+    # still pins the 403, now through the general fix.
     permission_classes = (IsOrganizationAdmin,)
     serializer_class = SystemUserTokenCreateSerializer
-
-    def initial(self, request: Request, *args, **kwargs) -> None:
-        """Resolve the active organization, then check permissions *again*.
-
-        ``APIView.initial`` runs ``check_permissions`` before the mixin's
-        resolver (authentication has to have populated ``request.user`` first),
-        so ``IsOrganizationAdmin.has_permission`` asks
-        ``get_active_organization_membership`` a question the header has not been
-        applied to yet -- it sees the oldest-membership fallback. Everywhere else
-        that only weakens a *narrowing*; here it would let an admin of their
-        oldest organization pass the collection-level gate and then read and mint
-        tokens in a second organization they are a plain member of, because the
-        queryset and the create serializer both re-ask after resolution.
-
-        Re-running ``check_permissions`` once the stash is correct closes that.
-        It is a repeat of a check that has already passed, so it can only ever
-        turn a 200 into a 403, never the other way round.
-        """
-        super().initial(request, *args, **kwargs)
-        self.check_permissions(request)
 
     @inject
     def __init__(
@@ -120,7 +108,7 @@ class SystemUserTokenViewSet(
         user = self.request.user
         if not user.is_authenticated:
             return SystemUser.objects.none()
-        membership = get_active_organization_membership(user)
+        membership = self.request.organization_membership
         if membership:
             return SystemUser.objects.filter(deleted_at__isnull=True).prefetch_related(
                 "available_resources"

@@ -356,7 +356,7 @@ class TestInactiveMemberWebhookAccess:
     def test_create_webhook_configuration_inactive_member_denied(self, auth_client, user):
         """POST webhook-configuration by inactive member must be rejected.
 
-        With is_active=False the serializer's get_active_organization_membership()
+        With is_active=False the package resolver
         returns None, so the create path raises a ValidationError → 400.  The
         key contract: the webhook is NOT created for the inactive user's org.
         """

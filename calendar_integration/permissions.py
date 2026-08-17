@@ -8,7 +8,6 @@ from calendar_integration.services.booking_policy_permission_service import (
     BookingPolicyPermissionService,
 )
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
-from organizations.models import get_active_organization_membership
 
 
 class BookingPolicyPermission(BasePermission):
@@ -51,7 +50,7 @@ class BookingPolicyPermission(BasePermission):
         if request.method in SAFE_METHODS:
             return True
 
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         if membership is None:
             return False
         if membership.is_admin:
@@ -77,7 +76,7 @@ class BookingPolicyPermission(BasePermission):
         """Detail writes: admins always; members only for their own target."""
         if request.method in SAFE_METHODS:
             return True
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         return self.booking_policy_permission_service.can_member_manage_policy(
             user=request.user,
             membership=membership,
@@ -99,7 +98,7 @@ class ExternalEventChangeRequestPermission(BasePermission):
         """Allow access only to authenticated users with an active membership."""
         if not request.user.is_authenticated:
             return False
-        return get_active_organization_membership(request.user) is not None
+        return request.organization_membership is not None
 
 
 class CalendarEventPermission(BasePermission):
@@ -175,7 +174,7 @@ class CalendarGroupPermission(BasePermission):
         user = request.user
         if not user.is_authenticated:
             return False
-        membership = get_active_organization_membership(user)
+        membership = request.organization_membership
         if membership is None:
             return False
         if getattr(view, "action", None) == "create":
@@ -183,7 +182,7 @@ class CalendarGroupPermission(BasePermission):
         return True
 
     def has_object_permission(self, request, view, obj):
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         if membership is None or obj.organization_id != membership.organization_id:
             return False
 
@@ -259,7 +258,7 @@ class GroupScopedAvailabilityWindowPermission(BasePermission):
         user = request.user
         if not user.is_authenticated:
             return False
-        membership = get_active_organization_membership(user)
+        membership = request.organization_membership
         if membership is None:
             return False
 
@@ -317,7 +316,7 @@ class GroupScopedBlockedTimePermission(BasePermission):
         user = request.user
         if not user.is_authenticated:
             return False
-        membership = get_active_organization_membership(user)
+        membership = request.organization_membership
         if membership is None:
             return False
 
@@ -376,7 +375,7 @@ class GroupScopedQuotaRulePermission(BasePermission):
         user = request.user
         if not user.is_authenticated:
             return False
-        membership = get_active_organization_membership(user)
+        membership = request.organization_membership
         if membership is None:
             return False
 

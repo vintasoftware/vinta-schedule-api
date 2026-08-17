@@ -22,9 +22,10 @@ from vintasend.services.dataclasses import NotificationContextDict
 from vintasend.services.notification_service import NotificationService
 
 from accounts.exceptions import ConsentRequiredError
+from common.organization_services import memberships
 from legal.services import ConsentService
 from organizations.exceptions import UserAlreadyHasMembershipError
-from organizations.models import get_active_organization_membership
+from organizations.models import OrganizationMembership
 from organizations.services import OrganizationService
 from payments.exceptions import OverLimitError
 from users.models import Profile, User
@@ -142,11 +143,16 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):
         # membership-less (gated).
         # UserAlreadyHasMembershipError is treated as a no-op so a social
         # re-login for a user who is already a member does not raise.
-        self._provision_org_membership(user)
-        self._request_calendar_import(user, sociallogin)
+        membership = self._provision_org_membership(user)
+        self._request_calendar_import(user, sociallogin, membership)
         return user
 
-    def _request_calendar_import(self, user: User, sociallogin: SocialLogin) -> None:
+    def _request_calendar_import(
+        self,
+        user: User,
+        sociallogin: SocialLogin,
+        membership: OrganizationMembership | None,
+    ) -> None:
         """Trigger an import of the user's external calendars on social signup.
 
         No service account is required: a user's own calendars import through
@@ -170,12 +176,19 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):
         ):
             return
 
-        membership = get_active_organization_membership(user)
-        if membership is None:
-            return
-
+        # Provisioning selected the inviting organization explicitly. Reusing
+        # that row avoids resolving an arbitrary membership for a user who has
+        # just accepted an invitation to an additional organization. A social
+        # account import is optional when no organization was selected, so the
+        # non-strict lookup deliberately skips ambiguous users instead of
+        # guessing from membership creation order.
         account_id = account.id
-        organization_id = membership.organization_id
+        organization_id = membership.organization_id if membership is not None else None
+        if organization_id is None:
+            resolved_membership = memberships.resolve_for_user(user, strict=False)
+            if resolved_membership is None:
+                return
+            organization_id = resolved_membership.organization_id
         transaction.on_commit(
             lambda: import_account_calendars_task.delay(
                 account_type="social_account",
@@ -184,7 +197,7 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):
             )
         )
 
-    def _provision_org_membership(self, user: User) -> None:
+    def _provision_org_membership(self, user: User) -> OrganizationMembership | None:
         """Attempt to auto-join the user to an inviting organisation.
 
         Uses the DI-injected OrganizationService (supplied via ``__init__``,
@@ -214,7 +227,7 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):
                 "Social user %s has no email; skipping org provisioning.",
                 user.pk,
             )
-            return
+            return None
 
         if not is_verified_for_provisioning(user):
             logger.debug(
@@ -222,7 +235,7 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):
                 "(and any pending invitation) to email confirmation.",
                 user.pk,
             )
-            return
+            return None
 
         try:
             membership = self.organization_service.provision_tenant_for_user(user=user)
@@ -232,7 +245,7 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):
                 "Social user %s already has a membership; skipping re-provisioning.",
                 user.pk,
             )
-            return
+            return None
         except OverLimitError:
             # Inviting org is at its seat limit: leave the user membership-less
             # (gated) instead of raising a 500 out of a headless view.
@@ -241,7 +254,7 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):
                 "reached. User remains membership-less (gated).",
                 user.pk,
             )
-            return
+            return None
 
         if membership is not None:
             logger.info(
@@ -255,6 +268,8 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):
                 "No pending invite for social user %s; user remains membership-less (gated).",
                 user.pk,
             )
+
+        return membership
 
     @staticmethod
     def _enqueue_profile_picture_download(profile: Profile, sociallogin) -> None:

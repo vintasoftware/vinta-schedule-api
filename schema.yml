@@ -2165,9 +2165,10 @@ paths:
         resolved billing root -- the same two-step dance
         ``SubscriptionViewSet.get_subscription`` and ``AddOnViewSet.create`` already
         perform, and for the same reason their comments document:
-        ``has_permission`` cannot know *which* organization this read is for,
-        because ``request.organization`` is not resolved yet at that point in
-        ``TenantScopedViewMixin.initial()``'s ordering (see
+        ``has_permission`` cannot know *which* organization this read is for: the
+        read is against the billing **root**, which is frequently an ancestor of the
+        organization the request resolved, and only the caller of
+        ``check_object_permissions`` knows which one that is (see
         ``IsBillingOwnerOrAdmin``'s docstring).
       summary: List metered occurrences behind post-paid charges
       parameters:
@@ -2274,9 +2275,10 @@ paths:
         resolved billing root -- the same two-step dance
         ``SubscriptionViewSet.get_subscription`` and ``AddOnViewSet.create`` already
         perform, and for the same reason their comments document:
-        ``has_permission`` cannot know *which* organization this read is for,
-        because ``request.organization`` is not resolved yet at that point in
-        ``TenantScopedViewMixin.initial()``'s ordering (see
+        ``has_permission`` cannot know *which* organization this read is for: the
+        read is against the billing **root**, which is frequently an ancestor of the
+        organization the request resolved, and only the caller of
+        ``check_object_permissions`` knows which one that is (see
         ``IsBillingOwnerOrAdmin``'s docstring).
       summary: List metered occurrences behind post-paid charges
       parameters:
@@ -12130,9 +12132,9 @@ paths:
         Overrides ``CreateModelMixin.create`` to handle the post-write refetch
         correctly for members who already have one or more memberships.
 
-        We skip the base mixin's post-write ``_resolve_active_organization`` call
+        We skip the base mixin's post-write ``resolve_organization`` call
         entirely.  For the ``create`` action — exempted via
-        ``active_org_optional_actions = ("mine", "create")`` — that re-resolve
+        ``organization_optional_actions = ("mine", "create")`` — that re-resolve
         would leave a multi-org caller with no ``X-Organization-Id`` header
         resolved to ``None``, making ``get_queryset`` return nothing and causing
         the re-fetch to raise ``DoesNotExist`` / 500.
@@ -12175,9 +12177,9 @@ paths:
         Overrides ``CreateModelMixin.create`` to handle the post-write refetch
         correctly for members who already have one or more memberships.
 
-        We skip the base mixin's post-write ``_resolve_active_organization`` call
+        We skip the base mixin's post-write ``resolve_organization`` call
         entirely.  For the ``create`` action — exempted via
-        ``active_org_optional_actions = ("mine", "create")`` — that re-resolve
+        ``organization_optional_actions = ("mine", "create")`` — that re-resolve
         would leave a multi-org caller with no ``X-Organization-Id`` header
         resolved to ``None``, making ``get_queryset`` return nothing and causing
         the re-fetch to raise ``DoesNotExist`` / 500.
@@ -14893,6 +14895,16 @@ paths:
         PUT/PATCH or DELETE first). Cross-org ids resolve to 404 via the org-scoped
         queryset; non-admins get 403; anonymous requests 401.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - name: limit
         required: false
         in: query
@@ -14925,6 +14937,17 @@ paths:
         HTTP 201 with the secret-free representation. HTTP 400 if an org-level
         account already exists (rotate via PUT/PATCH or DELETE first) or the
         payload is invalid.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       tags:
       - service-accounts
       requestBody:
@@ -14965,6 +14988,16 @@ paths:
         PUT/PATCH or DELETE first). Cross-org ids resolve to 404 via the org-scoped
         queryset; non-admins get 403; anonymous requests 401.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: format
         schema:
@@ -15005,6 +15038,16 @@ paths:
         account already exists (rotate via PUT/PATCH or DELETE first) or the
         payload is invalid.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: format
         schema:
@@ -15052,6 +15095,16 @@ paths:
         PUT/PATCH or DELETE first). Cross-org ids resolve to 404 via the org-scoped
         queryset; non-admins get 403; anonymous requests 401.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: id
         schema:
@@ -15078,6 +15131,16 @@ paths:
         (secrets are retained when omitted). Returns HTTP 200 with the
         secret-free representation.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: id
         schema:
@@ -15122,6 +15185,16 @@ paths:
         PUT/PATCH or DELETE first). Cross-org ids resolve to 404 via the org-scoped
         queryset; non-admins get 403; anonymous requests 401.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: id
         schema:
@@ -15154,6 +15227,16 @@ paths:
       operationId: service_accounts_destroy
       description: Delete the org-level service account. HTTP 204.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: id
         schema:
@@ -15183,6 +15266,16 @@ paths:
         PUT/PATCH or DELETE first). Cross-org ids resolve to 404 via the org-scoped
         queryset; non-admins get 403; anonymous requests 401.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: format
         schema:
@@ -15216,6 +15309,16 @@ paths:
         (secrets are retained when omitted). Returns HTTP 200 with the
         secret-free representation.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: format
         schema:
@@ -15267,6 +15370,16 @@ paths:
         PUT/PATCH or DELETE first). Cross-org ids resolve to 404 via the org-scoped
         queryset; non-admins get 403; anonymous requests 401.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: format
         schema:
@@ -15306,6 +15419,16 @@ paths:
       operationId: service_accounts_formatted_destroy
       description: Delete the org-level service account. HTTP 204.
       parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
       - in: path
         name: format
         schema:

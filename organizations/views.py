@@ -1,6 +1,6 @@
 import datetime
 import logging
-from typing import Annotated, ClassVar
+from typing import Annotated, Any, ClassVar, cast
 
 from django.db import transaction
 from django.http import FileResponse
@@ -63,7 +63,6 @@ from organizations.models import (
     OrganizationInvitation,
     OrganizationMembership,
     OrganizationRole,
-    get_active_organization_membership,
     resolve_branding_for_display,
 )
 from organizations.permissions import (
@@ -111,13 +110,13 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
     #:
     #: The ``create`` action is also exempt so that a member with existing
     #: memberships can POST /organizations/ without a header. Without
-    #: this exemption, the multi-org 400 would fire in ``initial()`` before
-    #: ``perform_create`` runs, and the post-create re-resolve in
+    #: this exemption, the multi-org 400 would fire in ``perform_authentication()``
+    #: before ``perform_create`` runs, and the post-create re-resolve in
     #: ``CreateModelMixin.create`` would again raise 400 (the user now has one
     #: more membership than before the write).
     #:
     #: All other actions keep the standard header enforcement (400 / 403).
-    active_org_optional_actions = ("mine", "create")
+    organization_optional_actions = ("mine", "create")
 
     def get_permissions(self):
         """
@@ -146,8 +145,7 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
         self.organization_service = organization_service
 
     def get_queryset(self):
-        user = self.request.user
-        membership = get_active_organization_membership(user)
+        membership = self.request.organization_membership
         if membership:
             return Organization.objects.filter(id=membership.organization_id)
         return Organization.objects.none()
@@ -158,9 +156,9 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
         Overrides ``CreateModelMixin.create`` to handle the post-write refetch
         correctly for members who already have one or more memberships.
 
-        We skip the base mixin's post-write ``_resolve_active_organization`` call
+        We skip the base mixin's post-write ``resolve_organization`` call
         entirely.  For the ``create`` action — exempted via
-        ``active_org_optional_actions = ("mine", "create")`` — that re-resolve
+        ``organization_optional_actions = ("mine", "create")`` — that re-resolve
         would leave a multi-org caller with no ``X-Organization-Id`` header
         resolved to ``None``, making ``get_queryset`` return nothing and causing
         the re-fetch to raise ``DoesNotExist`` / 500.
@@ -176,7 +174,7 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
         self.perform_create(serializer)
         instance = serializer.instance
 
-        # Stash the newly-created membership so get_queryset can scope to the
+        # Put the newly-created membership on the request so get_queryset can scope to the
         # new org for the re-fetch below.  The membership was created by
         # create_organization; it exists in the DB at this point.
         new_membership = (
@@ -198,20 +196,19 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
                 "this is a bug; the response will be misconfigured.",
                 instance.pk,
             )
-        request.user._active_membership = new_membership  # type: ignore[union-attr]
         request.organization_membership = new_membership  # type: ignore[attr-defined]
         request.organization = (  # type: ignore[attr-defined]
             new_membership.organization if new_membership is not None else None
         )
-        # ...and bind what was just stashed. Skipping the base mixin's
-        # post-create ``_resolve_active_organization`` also skips its re-bind, so
+        # ...and bind what was just resolved. Skipping the base mixin's
+        # post-create ``resolve_organization`` also skips its re-bind, so
         # without this line the context stays on whatever ``initial()`` resolved
         # -- ``None`` for a first-time creator, or organization A for an existing
         # member who sent ``X-Organization-Id: A`` while creating organization B
         # -- while every line below reads the *new* organization off the request.
         # The re-fetch and the serializer would then run through default managers
         # scoped to a different organization than the one being returned.
-        self._bind_active_organization(request.organization)  # type: ignore[attr-defined]
+        self.bind_organization(request.organization)  # type: ignore[attr-defined]
 
         # Re-fetch the instance so any annotations/virtual-model fields on
         # OrganizationVirtualModel are populated.  Mirror the base
@@ -330,7 +327,7 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
         HTTP 200 — the user is onboarded (has a membership).
         HTTP 404 — the user is gated (no membership yet).
         """
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         if membership is None:
             raise NotFound(detail="No organization membership.")
         serializer = CurrentMembershipSerializer(membership, context={"request": request})
@@ -481,7 +478,9 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
         return Response(result, status=status.HTTP_202_ACCEPTED)
 
 
-class ServiceAccountViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
+class ServiceAccountViewSet(
+    TenantScopedViewMixin, ListModelMixin, RetrieveModelMixin, GenericViewSet
+):
     """Admin-only CRUD for the organization's Google Calendar service account.
 
     Manages **only** the org-level service account (``calendar_fk IS NULL``) — the
@@ -513,7 +512,7 @@ class ServiceAccountViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
         user = self.request.user
         if not user.is_authenticated:
             return GoogleCalendarServiceAccount.objects.none()
-        membership = get_active_organization_membership(user)
+        membership = self.request.organization_membership
         if membership is None:
             return GoogleCalendarServiceAccount.objects.none()
         return GoogleCalendarServiceAccount.objects.filter_by_organization(
@@ -536,7 +535,7 @@ class ServiceAccountViewSet(ListModelMixin, RetrieveModelMixin, GenericViewSet):
         account already exists (rotate via PUT/PATCH or DELETE first) or the
         payload is invalid.
         """
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         if membership is None:
             # IsOrganizationAdmin already guards this; defensive fallback.
             return Response(
@@ -647,8 +646,7 @@ class OrganizationInvitationViewSet(NoUpdateVintaScheduleModelViewSet):
 
     def get_queryset(self):
         """Filter invitations by the user's organization."""
-        user = self.request.user
-        membership = get_active_organization_membership(user)
+        membership = self.request.organization_membership
         if membership:
             return OrganizationInvitation.objects.filter(organization_id=membership.organization_id)
         # Return empty queryset for users without an active membership
@@ -657,8 +655,7 @@ class OrganizationInvitationViewSet(NoUpdateVintaScheduleModelViewSet):
     def get_serializer_context(self):
         """Add organization to serializer context."""
         context = super().get_serializer_context()
-        user = self.request.user
-        membership = get_active_organization_membership(user)
+        membership = self.request.organization_membership
         if membership:
             context["organization"] = membership.organization
         return context
@@ -694,7 +691,7 @@ class OrganizationInvitationViewSet(NoUpdateVintaScheduleModelViewSet):
             raise ValidationError(detail="Invitation already accepted.")
 
         # Resolve the requesting user's organization (mirror how the viewset resolves context)
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         if membership is None:
             # This shouldn't happen because OrganizationInvitationPermission.has_permission
             # already checked for active membership, but guard for clarity
@@ -750,8 +747,7 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
 
     def get_queryset(self):
         """Org-scoped queryset: return members of the caller's organization only."""
-        user = self.request.user
-        membership = get_active_organization_membership(user)
+        membership = self.request.organization_membership
         if membership:
             return (
                 OrganizationMembership.objects.filter(organization_id=membership.organization_id)
@@ -1049,11 +1045,11 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
     before any handler runs, so multi-org admins always operate on the
     header-named org. Without the header a multi-org caller receives 400;
     a header naming a non-member org receives 403 — identical to every other
-    org-scoped endpoint. ``TenantScopedViewMixin._is_active_org_resolution_optional``
-    uses ``getattr(self, "action", None)``, so the absent ``self.action`` attribute
-    (ViewSetMixin is not in the MRO) is safe — ``None`` is never in the default
-    ``active_org_optional_actions = ()`` tuple, so full 400/403 enforcement runs
-    on every HTTP method.
+    org-scoped endpoint. ``OrganizationScopedAPIViewMixin
+    .is_organization_resolution_optional`` uses ``getattr(self, "action", None)``,
+    so the absent ``self.action`` attribute (ViewSetMixin is not in the MRO) is
+    safe — ``None`` is never in the default ``organization_optional_actions = ()``
+    tuple, so full 400/403 enforcement runs on every HTTP method.
     """
 
     permission_classes = (IsOrganizationAdmin,)
@@ -1085,7 +1081,7 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
         # IsOrganizationAdmin already blocks anonymous callers before this runs.
         if not user.is_authenticated:
             raise PermissionDenied("No active organization membership.")
-        membership = get_active_organization_membership(user)
+        membership = cast("Any", self.request).organization_membership
         if membership is None:
             raise PermissionDenied("No active organization membership.")
         reason = evaluate_branding_write_gate(membership.organization)
@@ -1103,14 +1099,14 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
         user = self.request.user
         if not user.is_authenticated:
             raise PermissionDenied("No active organization membership.")
-        membership = get_active_organization_membership(user)
+        membership = cast("Any", self.request).organization_membership
         if membership is None:
             raise PermissionDenied("No active organization membership.")
         check_branding_read_eligibility(membership.organization)
 
     def _get_branding_or_404(self):
         """Get the acting org's branding, or raise 404 if not set."""
-        membership = get_active_organization_membership(self.request.user)
+        membership = self.request.organization_membership
         if membership is None:
             raise PermissionDenied("No active organization membership.")
 
@@ -1165,7 +1161,7 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
         actually changed, using the before-state captured BEFORE the write.
         """
         self._check_branding_write_gate()
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         if membership is None:
             raise PermissionDenied("No active organization membership.")
 
@@ -1223,7 +1219,7 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
 
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         if membership is None:
             raise PermissionDenied("No active organization membership.")
         self._record_branding_audit(membership, instance, created=False, before=before)
@@ -1301,7 +1297,7 @@ class OrganizationBrandingLogoUploadParamsView(TenantScopedViewMixin, views.APIV
         },
     )
     def post(self, request, *args, **kwargs):
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         if membership is None:
             raise PermissionDenied("No active organization membership.")
         check_branding_read_eligibility(membership.organization)

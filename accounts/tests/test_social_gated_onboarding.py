@@ -145,12 +145,12 @@ class TestSocialGatedOnboarding:
         descriptor), the gating invariant is confirmed by checking the queryset
         is empty rather than expecting RelatedObjectDoesNotExist.
         """
-        from organizations.models import get_active_organization_membership
+        from common.organization_services import memberships
 
         user = _social_save_user("gated@social.example.com")
 
         assert user.memberships.count() == 0
-        assert get_active_organization_membership(user) is None
+        assert memberships.resolve_for_user(user) is None
 
     # ------------------------------------------------------------------
     # Scenario 2 — gated user creates org and becomes ADMIN
@@ -277,7 +277,7 @@ class TestSocialSignupCrossOrgInviteAccept:
     creates a second membership.  The user ends with TWO active memberships.
     """
 
-    def _social_save_existing_user(self, user: User) -> User:
+    def _social_save_existing_user(self, user: User, provider: str) -> User:
         """Simulate save_user for a user who already exists in the DB (e.g. re-login).
 
         Uses the same stub pattern as _social_save_user but operates on an already-
@@ -286,7 +286,7 @@ class TestSocialSignupCrossOrgInviteAccept:
         adapter = SocialAccountAdapter()
         sociallogin = MagicMock(spec=SocialLogin)
         sociallogin.user = user
-        sociallogin.account = MagicMock(extra_data={})
+        sociallogin.account = MagicMock(provider=provider, id=123, extra_data={})
 
         def _super_save(request, sociallogin, form=None):
             # User is already saved; just return it.
@@ -296,7 +296,10 @@ class TestSocialSignupCrossOrgInviteAccept:
         with patch.object(SocialAccountAdapter.__bases__[0], "save_user", side_effect=_super_save):
             return adapter.save_user(None, sociallogin, form=None)
 
-    def test_existing_org_a_member_social_signup_with_org_b_invite_gains_second_membership(self):
+    @pytest.mark.parametrize("provider", ("google", "microsoft"))
+    def test_existing_org_a_member_social_signup_with_org_b_invite_gains_second_membership(
+        self, provider: str
+    ):
         """Existing org-A member + pending org-B invite → TWO memberships.
 
         Simulates the real-world cross-org-via-invite path through the adapter:
@@ -336,7 +339,17 @@ class TestSocialSignupCrossOrgInviteAccept:
         user.refresh_from_db()
 
         # Trigger the adapter's save_user (the cross-org invite accept path).
-        returned_user = self._social_save_existing_user(user)
+        # Google and Microsoft run the calendar-import branch. It must use the
+        # newly provisioned org-B membership rather than resolve the oldest
+        # membership (org A), and must not reject the social signup as ambiguous.
+        with (
+            patch(
+                "accounts.account_adapters.transaction.on_commit",
+                side_effect=lambda callback: callback(),
+            ),
+            patch("calendar_integration.tasks.import_account_calendars_task.delay") as import_task,
+        ):
+            returned_user = self._social_save_existing_user(user, provider)
 
         assert returned_user.pk == user.pk, "save_user must return the same user"
 
@@ -356,4 +369,9 @@ class TestSocialSignupCrossOrgInviteAccept:
         assert invite.accepted_at is not None, "org-B invitation must be marked accepted"
         assert invite.membership is not None, (
             "org-B invitation must be linked to the new membership"
+        )
+        import_task.assert_called_once_with(
+            account_type="social_account",
+            account_id=123,
+            organization_id=org_b.id,
         )

@@ -269,7 +269,7 @@ class TestOrganizationViewSet:
         """The context follows ``request.organization`` through the post-create half.
 
         ``create`` is overridden here and skips the base mixin's post-write
-        ``_resolve_active_organization`` (and therefore its re-bind), stashing the
+        ``resolve_organization`` (and therefore its re-bind), stashing the
         new organization on the request by hand instead. Everything after that --
         the ``get_queryset`` re-fetch, the retrieve serializer, any virtual-model
         annotation -- reads through organization-scoped default managers. With an
@@ -3995,7 +3995,7 @@ class TestOrganizationMineAction:
     def test_mine_with_stale_org_id_header_returns_200_not_403(self, user):
         """A stale/foreign X-Organization-Id on mine → 200, NOT 403.
 
-        The per-action opt-out (active_org_optional_actions = ("mine",)) ensures
+        The per-action opt-out (organization_optional_actions = ("mine",)) ensures
         that even when the header names an org the user is not a member of, the
         mine action still returns the list rather than raising PermissionDenied.
         """
@@ -4069,7 +4069,7 @@ class TestOrganizationMineAction:
         """The mine opt-out is isolated: /organizations/current/ still returns 400
         for a multi-org caller who omits the X-Organization-Id header.
 
-        This proves that ``active_org_optional_actions = ("mine",)`` only exempts
+        This proves that ``organization_optional_actions = ("mine",)`` only exempts
         the ``mine`` action and does not accidentally make ``current`` (or any
         other sibling action) header-optional.
         """

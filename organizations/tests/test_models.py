@@ -10,13 +10,13 @@ from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
 
+from common.organization_services import memberships
 from organizations.models import (
     ExternalEventUpdatePolicy,
     Organization,
     OrganizationMembership,
     OrganizationRole,
     WeekStart,
-    get_active_organization_membership,
 )
 
 
@@ -338,7 +338,7 @@ class TestMultiOrgMembership:
 
         assert user.is_organization_admin(org) is False
 
-    def test_get_active_membership_ignores_inactive_membership_in_other_org(self):
+    def test_resolver_ignores_inactive_membership_in_other_org(self):
         """With one active (org A) and one inactive (org B) membership, the active one wins."""
         user = baker.make(User)
         org_a = baker.make(Organization)
@@ -349,7 +349,7 @@ class TestMultiOrgMembership:
         )
         OrganizationMembership.objects.create(user=user, organization=org_b, is_active=False)
 
-        resolved = get_active_organization_membership(user)
+        resolved = memberships.resolve_for_user(user)
 
         assert resolved == active
         assert resolved.organization == org_a

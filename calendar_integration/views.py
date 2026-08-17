@@ -112,7 +112,6 @@ from calendar_integration.services.external_event_change_request_service import 
 )
 from calendar_integration.services.ics_service import CalendarEventICSService
 from common.utils.view_utils import ReadOnlyVintaScheduleModelViewSet, VintaScheduleModelViewSet
-from organizations.models import get_active_organization_membership
 from organizations.permissions import IsOrganizationAdmin
 
 
@@ -196,7 +195,7 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         if not user.is_authenticated:
             return Calendar.original_manager.none()
 
-        membership = get_active_organization_membership(user)
+        membership = self.request.organization_membership
         if not membership:
             # Membership-less or inactive members get an empty queryset, not a 500.
             return Calendar.original_manager.none()
@@ -277,7 +276,7 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         Resolved via the user's ``CalendarOwnership`` with ``is_default=True`` in
         their active organization, restricted to active calendars. 404 if none.
         """
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         if not membership:
             raise NotFound("User has no default calendar.")
 
@@ -467,7 +466,7 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         """Request import of external calendars for the authenticated user."""
         user = request.user
 
-        membership = get_active_organization_membership(user)
+        membership = request.organization_membership
         if not membership:
             return Response(
                 {"detail": "User is not an active member of any organization."},
@@ -595,7 +594,7 @@ class CalendarViewSet(VintaScheduleModelViewSet):
                 }
             )
 
-        membership = get_active_organization_membership(user)
+        membership = request.organization_membership
         if not membership:
             return Response(
                 {"detail": "User is not an active member of any organization."},
@@ -651,8 +650,6 @@ class CalendarViewSet(VintaScheduleModelViewSet):
     ):
         """Admin syncs any calendar in the organization over a date range."""
         calendar = self.get_object()  # org-scoped via get_queryset
-        user = request.user
-
         # Validate request input using serializer
         input_serializer = CalendarSyncRequestSerializer(data=request.data)
         input_serializer.is_valid(raise_exception=True)
@@ -694,7 +691,7 @@ class CalendarViewSet(VintaScheduleModelViewSet):
             )
 
         # Get the admin's organization membership (already checked by IsOrganizationAdmin)
-        membership = get_active_organization_membership(user)
+        membership = request.organization_membership
         if not membership:
             return Response(
                 {"detail": "User is not an active member of any organization."},
@@ -909,7 +906,7 @@ class CalendarEventViewSet(VintaScheduleModelViewSet):
         rather than raising Http404, so the response is a clean empty list /
         404-on-object rather than a 500.
         """
-        membership = get_active_organization_membership(self.request.user)
+        membership = self.request.organization_membership
         if not membership:
             return CalendarEvent.original_manager.none()
         return super().get_queryset().filter_by_organization(membership.organization_id)
@@ -1108,7 +1105,7 @@ class CalendarEventViewSet(VintaScheduleModelViewSet):
                 {"non_field_errors": ["calendar_id, start_time, and end_time are required"]}
             )
 
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         if not membership:
             return Response([], status=status.HTTP_200_OK)
 
@@ -1227,7 +1224,7 @@ class CalendarEventViewSet(VintaScheduleModelViewSet):
             )
 
         # Use admin's organization for service context
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         if not membership:
             return Response(
                 {"detail": "User is not an active member of any organization."},
@@ -1309,7 +1306,7 @@ class BlockedTimeViewSet(VintaScheduleModelViewSet):
         if not user.is_authenticated:
             return BlockedTime.original_manager.none()
 
-        membership = get_active_organization_membership(user)
+        membership = self.request.organization_membership
         if not membership:
             return BlockedTime.original_manager.none()
 
@@ -1407,7 +1404,7 @@ class BlockedTimeViewSet(VintaScheduleModelViewSet):
                 {"non_field_errors": ["calendar_id, start_time, and end_time are required"]}
             )
 
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         if not membership:
             return Response([], status=status.HTTP_200_OK)
 
@@ -1551,7 +1548,7 @@ class AvailableTimeViewSet(VintaScheduleModelViewSet):
         if not user.is_authenticated:
             return AvailableTime.original_manager.none()
 
-        membership = get_active_organization_membership(user)
+        membership = self.request.organization_membership
         if not membership:
             return AvailableTime.original_manager.none()
 
@@ -1648,7 +1645,7 @@ class AvailableTimeViewSet(VintaScheduleModelViewSet):
                 {"non_field_errors": ["calendar_id, start_time, and end_time are required"]}
             )
 
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         if not membership:
             return Response([], status=status.HTTP_200_OK)
 
@@ -1801,7 +1798,7 @@ class GroupScopedAvailabilityWindowViewSet(VintaScheduleModelViewSet):
         user = self.request.user
         if not user.is_authenticated:
             return AvailableTime.original_manager.none()
-        membership = get_active_organization_membership(user)
+        membership = self.request.organization_membership
         if not membership:
             return AvailableTime.original_manager.none()
         slot_id = self.kwargs.get("slot_id")
@@ -1843,7 +1840,7 @@ class GroupScopedAvailabilityWindowViewSet(VintaScheduleModelViewSet):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         if membership is None:
             # Unreachable in practice -- `GroupScopedAvailabilityWindowPermission`
             # already requires an active membership -- but narrows the type for
@@ -1895,7 +1892,7 @@ class GroupScopedAvailabilityWindowViewSet(VintaScheduleModelViewSet):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         if membership is None:
             raise Http404
         calendar_group_service.initialize(organization=membership.organization)
@@ -1943,7 +1940,7 @@ class GroupScopedAvailabilityWindowViewSet(VintaScheduleModelViewSet):
         **kwargs,
     ):
         instance = self.get_object()
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         if membership is None:
             raise Http404
         calendar_group_service.initialize(organization=membership.organization)
@@ -1983,7 +1980,7 @@ class GroupScopedBlockedTimeViewSet(VintaScheduleModelViewSet):
         user = self.request.user
         if not user.is_authenticated:
             return BlockedTime.original_manager.none()
-        membership = get_active_organization_membership(user)
+        membership = self.request.organization_membership
         if not membership:
             return BlockedTime.original_manager.none()
         slot_id = self.kwargs.get("slot_id")
@@ -2024,7 +2021,7 @@ class GroupScopedBlockedTimeViewSet(VintaScheduleModelViewSet):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         if membership is None:
             # Unreachable in practice -- `GroupScopedBlockedTimePermission`
             # already requires an active membership -- but narrows the type for
@@ -2077,7 +2074,7 @@ class GroupScopedBlockedTimeViewSet(VintaScheduleModelViewSet):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         if membership is None:
             raise Http404
         calendar_group_service.initialize(organization=membership.organization)
@@ -2126,7 +2123,7 @@ class GroupScopedBlockedTimeViewSet(VintaScheduleModelViewSet):
         **kwargs,
     ):
         instance = self.get_object()
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         if membership is None:
             raise Http404
         calendar_group_service.initialize(organization=membership.organization)
@@ -2177,7 +2174,7 @@ class GroupScopedQuotaRuleViewSet(VintaScheduleModelViewSet):
         user = self.request.user
         if not user.is_authenticated:
             return CalendarGroupSlotQuotaRule.objects.none()
-        membership = get_active_organization_membership(user)
+        membership = self.request.organization_membership
         if not membership:
             return CalendarGroupSlotQuotaRule.objects.none()
         slot_id = self.kwargs.get("slot_id")
@@ -2212,7 +2209,7 @@ class GroupScopedQuotaRuleViewSet(VintaScheduleModelViewSet):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         if membership is None:
             # Unreachable in practice -- `GroupScopedQuotaRulePermission`
             # already requires an active membership -- but narrows the type for
@@ -2262,7 +2259,7 @@ class GroupScopedQuotaRuleViewSet(VintaScheduleModelViewSet):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         if membership is None:
             raise Http404
         calendar_group_service.initialize(organization=membership.organization)
@@ -2300,7 +2297,7 @@ class GroupScopedQuotaRuleViewSet(VintaScheduleModelViewSet):
         **kwargs,
     ):
         instance = self.get_object()
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         if membership is None:
             raise Http404
         calendar_group_service.initialize(organization=membership.organization)
@@ -2336,7 +2333,7 @@ class CalendarGroupViewSet(VintaScheduleModelViewSet):
         user = self.request.user
         if not user.is_authenticated:
             return CalendarGroup.original_manager.none()
-        membership = get_active_organization_membership(user)
+        membership = self.request.organization_membership
         if not membership:
             return CalendarGroup.original_manager.none()
         qs = super().get_queryset().filter_by_organization(membership.organization_id)
@@ -2616,7 +2613,7 @@ class BookingPolicyViewSet(VintaScheduleModelViewSet):
         if not user.is_authenticated:
             return BookingPolicy.original_manager.none()
 
-        membership = get_active_organization_membership(user)
+        membership = self.request.organization_membership
         if not membership:
             return BookingPolicy.original_manager.none()
 
@@ -2627,7 +2624,7 @@ class BookingPolicyViewSet(VintaScheduleModelViewSet):
         booking_policy_service: "BookingPolicyService",
     ) -> "BookingPolicyService":
         """Initialize the service for this request's organization + actor."""
-        membership = get_active_organization_membership(cast("Any", self.request.user))
+        membership = cast("Any", self.request).organization_membership
         if membership is None:
             # Callers without a membership are gated at the permission layer;
             # this branch is a safeguard only.
@@ -2741,7 +2738,7 @@ class BookingPolicyViewSet(VintaScheduleModelViewSet):
 
         # Try to resolve the policy but do not 404 when absent — the contract
         # is idempotent no-op.
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         if membership is None:
             # Gated — permission layer should catch this first.
             return Response(status=status.HTTP_204_NO_CONTENT)
@@ -2802,7 +2799,7 @@ class ExternalEventChangeRequestViewSet(ReadOnlyVintaScheduleModelViewSet):
         query string (detected by checking ``self.request.query_params``).  The
         filterset later narrows by ``?status=...`` or ``?event=...`` when provided.
         """
-        membership = get_active_organization_membership(self.request.user)
+        membership = self.request.organization_membership
         if not membership:
             return ExternalEventChangeRequest.original_manager.none()
 
@@ -2844,7 +2841,7 @@ class ExternalEventChangeRequestViewSet(ReadOnlyVintaScheduleModelViewSet):
     ) -> Response:
         """POST /change-requests/{id}/approve/ — apply the change locally."""
         change_request = self.get_object()
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         if not membership:
             return Response(
                 {"detail": "User is not an active member of any organization."},
@@ -2892,7 +2889,7 @@ class ExternalEventChangeRequestViewSet(ReadOnlyVintaScheduleModelViewSet):
     ) -> Response:
         """POST /change-requests/{id}/reject/ — outbound undo on the provider."""
         change_request = self.get_object()
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         if not membership:
             return Response(
                 {"detail": "User is not an active member of any organization."},

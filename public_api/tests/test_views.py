@@ -1651,7 +1651,7 @@ class TestSystemUserTokenViewSetHonoursTheOrganizationHeader:
 
     This viewset used to be a plain ``GenericViewSet``, outside the
     ``TenantScopedViewMixin`` bases, so nothing stashed the resolved membership
-    and ``get_active_organization_membership`` fell through to
+    and membership resolution fell through to
     ``memberships.filter(is_active=True).order_by("created").first()``. A
     multi-organization admin therefore listed -- and minted -- the tokens of
     their *oldest* membership's organization whatever the header said, and the
@@ -1765,11 +1765,19 @@ class TestSystemUserTokenViewSetHonoursTheOrganizationHeader:
     ):
         """Admin of the *oldest* organization, plain member of the named one.
 
-        ``IsOrganizationAdmin.has_permission`` runs inside ``APIView.initial``,
-        before the resolver -- so it sees the oldest-membership fallback and says
-        yes. Everything after it (the queryset, the create serializer) re-asks
-        once the header has been applied and would answer with the named
-        organization, which is why ``initial`` re-checks permissions.
+        ``IsOrganizationAdmin.has_permission`` used to run before the resolver,
+        so it saw the oldest-membership fallback and said yes -- while
+        everything after it (the queryset, the create serializer) re-asked once
+        the header had been applied and answered with the named organization.
+        This viewset carried a local ``initial()`` override that re-ran
+        ``check_permissions`` to close that.
+
+        Phase 3.5 of the vinta-django-orgs migration made
+        ``TenantScopedViewMixin`` resolve between authentication and
+        ``check_permissions`` for every view on the mixin, and the local
+        override went away. The expectation below is unchanged -- 403 on both
+        the read and the write -- which is the point: the general fix subsumes
+        the local one.
         """
         user = baker.make(User, email="admin-here-member-there@example.com")
         baker.make(Profile, user=user)
@@ -1810,3 +1818,58 @@ class TestSystemUserTokenViewSetHonoursTheOrganizationHeader:
         assert_response_status_code(list_response, status.HTTP_403_FORBIDDEN)
         assert_response_status_code(create_response, status.HTTP_403_FORBIDDEN)
         assert not SystemUser.original_manager.filter(integration_name="not_yours_to_mint").exists()
+
+    def test_being_a_plain_member_of_your_oldest_organization_does_not_bar_you_from_the_one_you_administer(
+        self, organization, other_organization
+    ):
+        """The mirror of ``test_being_an_admin_elsewhere_does_not_admit_you_to_the_named_organization``,
+        and the direction Phase 3.5 actually changed here: this viewset's local
+        ``initial()`` override made denial the *conjunction* of the
+        oldest-membership check and the resolved-membership check. Removing it
+        left the resolved check alone -- so a caller who is only a plain member
+        of their oldest organization, but administers the organization the
+        header names, is now admitted to list and mint that organization's
+        tokens. ``two_org_admin_client`` above can't see this: it is admin of
+        *both* organizations.
+        """
+        user = baker.make(User, email="member-here-admin-there@example.com")
+        baker.make(Profile, user=user)
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=organization,
+            role=OrganizationRole.MEMBER,
+            is_active=True,
+        )
+        baker.make(
+            OrganizationMembership,
+            user=user,
+            organization=other_organization,
+            role=OrganizationRole.ADMIN,
+            is_active=True,
+        )
+        client = APIClient()
+        client.force_authenticate(user=user)
+        named_orgs_token = baker.make(
+            SystemUser,
+            organization=other_organization,
+            integration_name="yours-to-read",
+            is_active=True,
+        )
+
+        list_response = client.get(self._url(), HTTP_X_ORGANIZATION_ID=str(other_organization.pk))
+        create_response = client.post(
+            self._url(),
+            {
+                "integration_name": "yours_to_mint",
+                "available_resources": [PublicAPIResources.CALENDAR],
+            },
+            format="json",
+            HTTP_X_ORGANIZATION_ID=str(other_organization.pk),
+        )
+
+        assert_response_status_code(list_response, status.HTTP_200_OK)
+        assert [entry["id"] for entry in list_response.json()["results"]] == [named_orgs_token.id]
+        assert_response_status_code(create_response, status.HTTP_201_CREATED)
+        created = SystemUser.original_manager.get(pk=create_response.json()["id"])
+        assert created.organization_id == other_organization.pk

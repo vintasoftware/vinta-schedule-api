@@ -6,7 +6,7 @@ from dependency_injector.wiring import Provide, inject
 from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
 
-from organizations.models import OrganizationMembership, get_active_organization_membership
+from organizations.models import OrganizationMembership
 from public_api.constants import PROVIDER_SCOPED_RESOURCES, PublicAPIResources
 from public_api.models import ResourceAccess, SystemUser
 from public_api.services import PublicAPIAuthService
@@ -64,9 +64,7 @@ class SystemUserTokenCreateSerializer(serializers.Serializer):
             return attrs
 
         request = self.context["request"]
-        caller_membership: OrganizationMembership | None = get_active_organization_membership(
-            request.user
-        )
+        caller_membership: OrganizationMembership | None = request.organization_membership
         if caller_membership is None:
             raise PermissionDenied("No active organisation membership.")
 
@@ -108,7 +106,7 @@ class SystemUserTokenCreateSerializer(serializers.Serializer):
 
     def create(self, validated_data: dict) -> SystemUser:
         request = self.context["request"]
-        membership = get_active_organization_membership(request.user)
+        membership = request.organization_membership
         if membership is None:
             # IsOrganizationAdmin already guards this; defensive fallback.
             raise PermissionDenied("No active organisation membership.")

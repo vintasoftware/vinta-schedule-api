@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from django.shortcuts import get_object_or_404
 
@@ -11,58 +10,71 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.viewsets import ModelViewSet, ViewSetMixin
+from vinta_orgs.drf import OrganizationScopedAPIViewMixin
+from vinta_orgs.resolution import UNRESOLVED_ORGANIZATION, OrganizationSelection
 
 from common.constants import ACTIVE_ORG_HEADER
-from common.organization_context import (
-    OrganizationToken,
-    reset_current_organization,
-    set_current_organization,
-)
 
 
 logger = logging.getLogger(__name__)
 
 
-class TenantScopedViewMixin:
+#: Body of the ``2+ memberships / no header`` refusal, rendered as
+#: ``400 {"detail": ...}``. Ours, not the package's: clients match on this
+#: string, so it survives the delegation to
+#: ``common.organization_services.memberships.resolve_for_user`` verbatim.
+AMBIGUOUS_ORGANIZATION_DETAIL = "X-Organization-Id header required."
+
+#: Body of the ``header names an organization you do not actively belong to``
+#: refusal, rendered as ``403 {"detail": ...}``. Same reasoning as above.
+NON_MEMBER_ORGANIZATION_DETAIL = (
+    "X-Organization-Id header names an organization you are not an active member of."
+)
+
+
+class TenantScopedViewMixin(OrganizationScopedAPIViewMixin):
     """Resolve the active organization for every DRF request.
 
     This mixin must be included in every base viewset so that all internal REST
-    endpoints automatically pick up the ``X-Organization-Id`` header.  The resolver
-    runs **after** ``super().initial()`` so that DRF authentication has already
-    populated ``request.user`` — the JWT user is not available at Django-middleware
-    time.
+    endpoints automatically pick up the ``X-Organization-Id`` header.
 
-    After this mixin runs, three attributes are available on every DRF request:
+    **The seam is the package's.**
+    :class:`vinta_orgs.drf.OrganizationScopedAPIViewMixin` owns the
+    ``perform_authentication`` override that puts resolution in the one place it
+    can be correct -- between "``request.user`` is now real" and
+    "``check_permissions`` runs" -- and the ``finally`` around ``dispatch`` that
+    releases the binding on every exit path, including the ones DRF does not
+    funnel through ``finalize_response``. A binding that leaked there would be
+    read by the *next* request the worker thread serves. Read that class's
+    docstrings before changing anything here; this subclass exists for the two
+    things that are *ours*:
 
-    - ``request.organization_membership`` — the resolved ``OrganizationMembership``
-      or ``None`` (gated / unauthenticated user).
-    - ``request.organization`` — the resolved ``Organization`` or ``None``.
-    - ``request.user._active_membership`` — same value as
-      ``request.organization_membership``.  ``get_active_organization_membership``
-      reads this stash so all ~60 existing call sites are header-aware without
-      change.
+    1. **The header.** :meth:`get_organization_slug` reads ``X-Organization-Id``
+       (an integer primary key) rather than the package's ``Organization-Slug``,
+       and translates it into the slug the package's resolver matches on.
+    2. **The refusal bodies.** :meth:`resolve_organization` restates the 400 and
+       the 403 in the wording our clients already match on.
+    After this mixin runs, two attributes are available on every DRF request:
 
-    It also **binds** the resolved organization to the ``contextvars`` context
-    ``vinta-django-orgs`` scopes every organization-scoped model against, and
-    unbinds it before ``dispatch()`` returns — on every exit path, including the
-    ones DRF does not funnel through ``finalize_response``.  See
-    :meth:`dispatch` and :meth:`_bind_active_organization` for the lifecycle and
-    for why a leak here would be a cross-tenant read on the *next* request that
-    the worker thread serves.
+    - ``request.organization_membership`` -- the resolved
+      ``OrganizationMembership`` or ``None`` (gated / unauthenticated caller).
+    - ``request.organization`` -- the resolved ``Organization`` or ``None``.
 
-    Resolution table (multi-org with no header → 400; non-member → 403):
+    Resolution table (multi-org with no header -> 400; non-member -> 403). It is
+    ``memberships.resolve_for_user``'s table, restated in terms of our header:
 
     +-----------------------+---------------------------------+------------------------------------------+
     | Memberships (active)  | Header                          | Result                                   |
     +-----------------------+---------------------------------+------------------------------------------+
-    | 0                     | any                             | gated (membership = None)                |
+    | 0                     | absent                          | gated (membership = None)                |
     | 1                     | absent                          | resolve to that membership               |
     | 1                     | present, matches                | resolve to it                            |
     | 2+                    | present, matches member         | resolve to named org                     |
     | 2+                    | absent                          | **400** (X-Organization-Id required)     |
     | any                   | present, non-member org         | **403** (PermissionDenied)               |
+    | any                   | present, no such org            | **403** -- the same refusal, on purpose  |
     | any                   | present, non-integer            | treated as absent header                 |
-    |                       |                                 | (1 → resolve · 2+ → 400 · 0 → gated)     |
+    |                       |                                 | (1 -> resolve; 2+ -> 400; 0 -> gated)    |
     +-----------------------+---------------------------------+------------------------------------------+
 
     The ``2+ / absent`` row raises ``rest_framework.exceptions.ValidationError``
@@ -72,267 +84,144 @@ class TenantScopedViewMixin:
 
     **Opt-out (class-level):** a concrete view that must serve multi-org callers
     *without* the header (e.g. the org-discovery ``GET /organizations/mine/``
-    endpoint and the onboarding/gated flows) sets the class attribute
-    ``active_org_resolution_optional = True``.  When set, the ``2+ / absent``
-    case does **not** raise a 400, and the ``non-member org`` case does **not**
-    raise a 403 — the active org simply resolves to ``None`` (left gated) so the
-    view can list the caller's memberships.  Defaults to ``False``.
+    endpoint and the onboarding / gated flows) sets the package's
+    ``organization_resolution_optional = True``. When set, the ``2+ / absent``
+    case does **not** raise a 400 and the ``non-member org`` case does **not**
+    raise a 403 -- the active organization simply resolves to ``None`` (left
+    gated) so the view can list the caller's memberships. Defaults to ``False``.
 
     **Opt-out (per-action):** when only a *specific* action on an otherwise
     strict viewset must bypass the header requirement, list that action name in
-    the ``active_org_optional_actions`` tuple instead.  The resolver treats a
-    request as opted-out when ``active_org_resolution_optional is True`` **or**
-    ``self.action in self.active_org_optional_actions``.  ``self.action`` is set
-    by ``ViewSetMixin.initialize_request`` before ``initial()`` runs, so the
-    check is always current.  Example: ``active_org_optional_actions = ("mine",)``
-    on ``OrganizationViewSet`` waives the header for the ``mine`` action only,
-    leaving ``current``, ``update``, and ``sync-rooms`` with the full 400/403
-    enforcement.
+    the package's ``organization_optional_actions`` tuple instead. ``self.action``
+    is set by ``ViewSetMixin.initialize_request`` before ``initial()`` runs, so
+    the check is always current. Example:
+    ``organization_optional_actions = ("mine",)`` on ``OrganizationViewSet``
+    waives the header for the ``mine`` action only, leaving ``current``,
+    ``update`` and ``sync-rooms`` with the full 400 / 403 enforcement.
 
-    Unauthenticated requests pass through untouched (the mixin sets ``None`` on
-    all three attributes so downstream code doesn't KeyError); DRF's own
-    authentication / permission stack returns 401 before any business logic runs.
+    Unauthenticated requests pass through untouched -- the resolver sets ``None``
+    on ``request.organization`` and ``request.organization_membership`` so
+    downstream code does not ``AttributeError``, and DRF's own authentication /
+    permission stack answers 401 before any business logic runs. **401 stays
+    ahead of 400 / 403** for two independent reasons: a bad credential raises
+    out of ``super().perform_authentication`` before the resolver is reached at
+    all, and ``memberships.resolve_for_user`` returns ``None`` for an anonymous
+    user rather than consulting the table, so no row above can fire without a
+    caller.
     """
 
-    #: When ``True``, a multi-org caller that omits ``X-Organization-Id`` is *not*
-    #: rejected with a 400, and a header naming a non-member org is *not* rejected
-    #: with a 403 — the active org resolves to ``None`` instead.  Concrete views
-    #: that must function without the header (org discovery, onboarding) opt in.
-    #: See the class docstring's resolution table for the affected rows.
-    active_org_resolution_optional: bool = False
+    def get_organization_slug(self, request: Request) -> OrganizationSelection:
+        """Translate our ``X-Organization-Id`` header into what the package resolves on.
 
-    #: Per-action opt-out: list action names for which the header requirement is
-    #: waived.  When ``self.action`` (set by ``ViewSetMixin.initialize_request``
-    #: before ``initial()`` runs) is in this tuple, the resolver behaves exactly
-    #: as if ``active_org_resolution_optional = True`` for that single action —
-    #: the multi-org 400 and non-member 403 are suppressed, and the active org
-    #: resolves to ``None`` instead.  Use this on a viewset where *most* actions
-    #: require the header but a specific action (e.g. ``mine``) must not.
-    #:
-    #: Example::
-    #:
-    #:     class OrganizationViewSet(NoListVintaScheduleModelViewSet):
-    #:         active_org_optional_actions = ("mine",)
-    active_org_optional_actions: tuple[str, ...] = ()
+        This is the package's designated override point: the table, the
+        refusals and the binding all stay the package's, and only "what did the
+        caller name?" is ours.
 
-    def _is_active_org_resolution_optional(self) -> bool:
-        """Return ``True`` when strict org resolution should be skipped for this request.
+        Three answers, and the difference between them is the whole contract:
 
-        Resolution is optional when either the class-level
-        ``active_org_resolution_optional`` flag is set, *or* the current action
-        name is listed in ``active_org_optional_actions``.  The latter allows a
-        single action on an otherwise strict viewset to opt out without affecting
-        the other actions.
+        * **``None``** -- the caller named nothing. An absent, an empty *and* a
+          non-integer header all land here, because a garbage header has to be
+          answered by the same rules as a missing one (1 -> resolve, 2+ -> 400,
+          0 -> gated) rather than silently picking an organization.
+        * **A real slug** -- the caller named an organization that exists.
+          Whether they may *have* it is the package's decision, taken against
+          their memberships.
+        * **:data:`~vinta_orgs.resolution.UNRESOLVED_ORGANIZATION`** -- the
+          caller named an integer that is not an organization, whether because
+          no row holds it or because it is too wide for the primary key column
+          and no row could. Answering ``None`` here would downgrade a 403 into
+          "no header was sent", which for a single-membership caller quietly
+          succeeds against an organization they never asked for.
+
+        That third answer is the package's own, not a value we invent. Our
+        header carries an integer *pk* while the resolver matches on *slug*, so
+        "supplied but not found" has no slug to be spelled as; ``0.4.0`` adds
+        the ``UNRESOLVED_ORGANIZATION`` singleton for exactly this shape of
+        retriever. ``resolve_for_user`` compares it by identity before it reads
+        a single row, so it can never collide with a stored slug the way a
+        deliberately-malformed string sentinel had to be argued not to.
+        (Imported from ``vinta_orgs.resolution`` rather than through a
+        project-owned wrapper: that module is a typing leaf with no Django
+        imports, this file already takes the seam itself from ``vinta_orgs.drf``,
+        and a wrapper here would have to be re-imported by the one module that
+        already defers ``organizations.models`` to dodge a cycle.)
+
+        The whole body is skipped for a caller who is not authenticated. The
+        package evaluates this method *eagerly*, as an argument to
+        ``memberships.resolve_for_user``, so it runs before that function's
+        ``is_anonymous`` short-circuit -- and resolution as a whole now precedes
+        ``check_throttles``. Without the guard below, an anonymous request
+        carrying a header would spend an ``Organization`` query before the 401
+        and before any throttle bucket was consulted. Returning ``None`` is
+        behaviour-identical: the resolver answers ``None`` for an anonymous user
+        whatever it is handed.
         """
-        if getattr(self, "active_org_resolution_optional", False):
-            return True
-        action_name = getattr(self, "action", None)
-        optional_actions: tuple[str, ...] = getattr(self, "active_org_optional_actions", ())
-        return action_name in optional_actions if action_name is not None else False
-
-    #: Set by :meth:`_bind_active_organization`, consumed by
-    #: :meth:`_unbind_active_organization`. ``None`` means "nothing bound by this
-    #: view". A DRF view instance is constructed per request (``APIView.as_view``
-    #: builds ``cls(**initkwargs)`` inside the ``view`` closure), so this is
-    #: request state despite living on ``self``.
-    _active_organization_token: OrganizationToken | None = None
-
-    def dispatch(self, request: Any, *args: Any, **kwargs: Any) -> Any:
-        """``super().dispatch``, guaranteeing the organization binding is released.
-
-        The unbind lives here rather than in ``finalize_response`` because
-        ``finalize_response`` is not on every path out of ``APIView.dispatch``:
-        that method catches into ``handle_exception``, which **re-raises**
-        anything it does not have a DRF response for (any non-``APIException``,
-        and ``PermissionDenied`` / ``NotAuthenticated`` re-raised by
-        ``raise_uncaught_exception``). On those paths ``dispatch`` propagates and
-        never reaches ``finalize_response`` or ``self.response``.
-
-        A binding that outlived the request would be read by the *next* request
-        the worker serves — a WSGI worker thread reuses its context — so the
-        default manager on every scoped model would silently answer with the
-        previous caller's organization. ``try/finally`` around the whole of
-        ``dispatch`` is the only placement with no exit path around it.
-
-        The reset restores whatever was bound *before* this view ran rather than
-        clearing outright, so a request dispatched from inside an
-        ``organization_context(...)`` block (tests, ``self.client`` calls under a
-        binding) leaves that block's binding intact.
-        """
-        try:
-            return super().dispatch(request, *args, **kwargs)  # type: ignore[misc]
-        finally:
-            self._unbind_active_organization()
-
-    def initial(self, request: Request, *args: Any, **kwargs: Any) -> None:
-        """Run DRF initialisation, then resolve, stash and bind the active org.
-
-        The bind lives here, next to ``dispatch``'s ``finally``, rather than
-        inside ``_resolve_active_organization``: the resolver is a pure function
-        of the request that tests and subclasses call in isolation (see its
-        docstring), and a call from outside ``dispatch`` has nothing to release
-        the contextvar it would otherwise set -- leaking an organization into
-        the worker for the rest of the session.
-        """
-        super().initial(request, *args, **kwargs)  # type: ignore[misc]
-        self._resolve_active_organization(request)
-        self._bind_active_organization(request.organization)  # type: ignore[attr-defined]
-
-    def _bind_active_organization(self, organization: Any) -> None:
-        """Bind ``organization`` (possibly ``None``) for the rest of this request.
-
-        ``None`` is bound explicitly rather than skipped. A gated caller — zero
-        active memberships, or an opted-out action whose header named an
-        organization they do not belong to — must not inherit an ambient binding
-        from whatever ran before; under ``STRICT_ORGANIZATION_FILTER`` an
-        unbound scoped read then raises instead of returning someone else's rows.
-
-        Idempotent: the resolution is re-run and re-bound a second time by
-        ``CreateModelMixin.create`` (a service may have created the caller's
-        first membership during ``perform_create``), and re-binding without
-        releasing the first token would leak one contextvar frame per call --
-        and leave the *first* organization bound once ``dispatch``'s ``finally``
-        resets only the second. ``common/tests/test_tenant_scoped_binding.py``
-        dispatches that path so the release is asserted rather than described.
-        """
-        self._unbind_active_organization()
-        self._active_organization_token = set_current_organization(organization)
-
-    def _unbind_active_organization(self) -> None:
-        """Release this view's binding, restoring the one that preceded it.
-
-        A no-op when nothing was bound — the 400/403 rows of the resolution table
-        raise *before* the bind, and an unauthenticated request never reaches it.
-        """
-        token = self._active_organization_token
-        if token is None:
-            return
-        # Cleared before the reset so a raising ``reset`` (a token used in a
-        # different context than the one that created it) cannot leave a stale
-        # token behind for a second, wrong reset.
-        self._active_organization_token = None
-        reset_current_organization(token)
-
-    def _resolve_active_organization(self, request: Request) -> None:  # noqa: C901
-        """Resolve ``X-Organization-Id`` → membership and stash on ``request`` + user.
-
-        This method is extracted from ``initial()`` so tests can call it in isolation
-        and so subclasses can override or extend it without touching ``initial()``.
-
-        It touches nothing but the request and its user -- in particular it does
-        **not** bind the organization to the context. Binding is
-        ``initial()``'s (and ``CreateModelMixin.create``'s) job, because only a
-        caller inside ``dispatch`` has the ``finally`` that releases it again.
-        """
-        # Lazily import to avoid a circular import (organizations → common → organizations).
-        from organizations.models import OrganizationMembership  # noqa: PLC0415
-
-        # Default: nothing resolved yet.
-        resolved_membership: OrganizationMembership | None = None
+        # Deferred: ``organizations`` imports ``common``, so a module-level
+        # import here is a cycle.
+        from organizations.models import Organization  # noqa: PLC0415
 
         user = getattr(request, "user", None)
-        is_authenticated = user is not None and getattr(user, "is_authenticated", False)
+        if user is None or not getattr(user, "is_authenticated", False):
+            return None
 
-        if is_authenticated:
-            org_id_header: str | None = request.headers.get(ACTIVE_ORG_HEADER)
+        raw_value: str | None = request.headers.get(ACTIVE_ORG_HEADER)
+        if not raw_value:
+            return None
 
-            if org_id_header:
-                # Validate that the header value is a valid integer before using it
-                # in a DB lookup. A non-coercible value (e.g. "abc") is treated as
-                # an absent header rather than raising a ValueError / 500 from the
-                # ORM. We intentionally apply the *same* rules as a missing header
-                # (single → resolve, multi-org → 400, gated → gated) so a garbage
-                # header can never silently pick an org for a multi-org caller.
-                try:
-                    int(org_id_header)
-                except (TypeError, ValueError):
-                    logger.debug(
-                        "X-Organization-Id header '%s' is not a valid integer for "
-                        "user %s; treating it as an absent header.",
-                        org_id_header,
-                        user.pk,  # type: ignore[union-attr]
-                    )
-                    # Fall through to the absent-header branch below.
-                    org_id_header = None
+        try:
+            organization_id = int(raw_value)
+        except (TypeError, ValueError):
+            logger.debug(
+                "X-Organization-Id header '%s' is not a valid integer; "
+                "treating it as an absent header.",
+                raw_value,
+            )
+            return None
 
-            if org_id_header:
-                # Header present and is a valid integer: try to find a matching active membership.
-                matching = (
-                    user.memberships.filter(  # type: ignore[union-attr]
-                        is_active=True,
-                        organization_id=org_id_header,
-                    )
-                    .select_related("organization")
-                    .first()
-                )
-                if matching is not None:
-                    # Happy path: header names an org the user actively belongs to.
-                    resolved_membership = matching
-                else:
-                    # Header names an org the caller is not an active member of
-                    # (either the org doesn't exist, the user has no membership in
-                    # it, or the membership exists but is inactive).  Raise 403
-                    # unless the concrete view opted out of strict resolution
-                    # (active_org_resolution_optional = True).
-                    if not self._is_active_org_resolution_optional():
-                        logger.debug(
-                            "X-Organization-Id header '%s' did not match any active membership for "
-                            "user %s; raising PermissionDenied (403).",
-                            org_id_header,
-                            user.pk,  # type: ignore[union-attr]
-                        )
-                        raise PermissionDenied(
-                            "X-Organization-Id header names an organization you are not an "
-                            "active member of."
-                        )
-                    logger.debug(
-                        "X-Organization-Id header '%s' did not match any active membership for "
-                        "user %s; view opted out of the 403 — resolving to gated (None).",
-                        org_id_header,
-                        user.pk,  # type: ignore[union-attr]
-                    )
-            else:
-                # Header absent: resolve to the single active membership when there
-                # is exactly one. A multi-org caller who omits the header is
-                # rejected with 400 (unless the view opts out via
-                # ``active_org_resolution_optional``); zero memberships → gated.
-                active_memberships = list(
-                    user.memberships.filter(  # type: ignore[union-attr]
-                        is_active=True,
-                    )
-                    .select_related("organization")
-                    .order_by("created")[:2]  # only need the first two to detect multi-org
-                )
-                if len(active_memberships) == 1:
-                    # Single-membership happy path: identical to today's behaviour.
-                    resolved_membership = active_memberships[0]
-                elif len(active_memberships) > 1:
-                    # Multi-org caller with no header: the active org is ambiguous.
-                    # Reject with 400 so we never silently pick one — unless the
-                    # concrete view opted out (org discovery / onboarding), in which
-                    # case resolution falls through to gated (None).
-                    if not self._is_active_org_resolution_optional():
-                        raise ValidationError(
-                            {"detail": "X-Organization-Id header required."},
-                        )
-                    logger.debug(
-                        "User %s has multiple active memberships and no X-Organization-Id "
-                        "header; view opted out of the 400 — resolving to gated (None).",
-                        user.pk,  # type: ignore[union-attr]
-                    )
-                # else: zero memberships → gated; resolved_membership stays None.
-
-        # Stash resolved values on the request and user so all downstream code
-        # (permissions, serializers, get_active_organization_membership) picks them up.
-        request.organization_membership = resolved_membership  # type: ignore[attr-defined]
-        request.organization = (  # type: ignore[attr-defined]
-            resolved_membership.organization if resolved_membership is not None else None
+        # No range check on ``organization_id`` before the lookup, deliberately.
+        # An integer too wide for the ``bigint`` primary key is adapted by
+        # psycopg 3 as ``numeric``, which Postgres compares against ``bigint``
+        # without error and matches nothing -- so it takes the ordinary
+        # "names no organization" road below and is answered 403 like any other
+        # unused id, rather than raising ``NumericValueOutOfRange`` into a 500.
+        # ``int()`` above is what bounds the input: CPython refuses to parse a
+        # string past ``sys.get_int_max_str_digits()``, and that ``ValueError``
+        # is already handled as an absent header.
+        # ``TestAHeaderTooWideForThePrimaryKey`` pins all of this.
+        #
+        # ``Organization`` is the tenant root, not tenant-scoped data: it is not
+        # organization-scoped, so ``objects`` here is Django's stock manager and
+        # this lookup neither needs nor bypasses an organization filter.
+        slug: str | None = (
+            Organization.objects.filter(pk=organization_id).values_list("slug", flat=True).first()
         )
-        if is_authenticated and user is not None:
-            # Set even when None so get_active_organization_membership can
-            # distinguish "DRF request path resolved to gated" from
-            # "not on a DRF request at all" (_UNSET sentinel).
-            user._active_membership = resolved_membership  # type: ignore[union-attr]
+        if slug is None:
+            logger.debug(
+                "X-Organization-Id header '%s' names no organization; refusing it as a "
+                "non-member organization would be refused.",
+                raw_value,
+            )
+            return UNRESOLVED_ORGANIZATION
+
+        return slug
+
+    def resolve_organization(self, request: Request) -> None:
+        """Run the package's resolution while preserving our refusal bodies.
+
+        The package translates ``AmbiguousOrganizationError`` into a DRF
+        ``ValidationError`` and ``OrganizationAccessDeniedError`` into a DRF
+        ``PermissionDenied`` -- the right status codes, in its own wording. The
+        two re-raises below put our wording back: those strings predate the
+        package and are a wire contract, and a client matching on them must not
+        have to care that resolution moved upstream.
+
+        """
+        try:
+            super().resolve_organization(request)
+        except ValidationError as exc:
+            raise ValidationError({"detail": AMBIGUOUS_ORGANIZATION_DETAIL}) from exc
+        except PermissionDenied as exc:
+            raise PermissionDenied(NON_MEMBER_ORGANIZATION_DETAIL) from exc
 
 
 class RefetchReturnInstanceAfterWriteMixin:
@@ -528,17 +417,19 @@ class CreateModelMixin(RefetchReturnInstanceAfterWriteMixin, mixins.CreateModelM
 
         # A service may have created the user's first membership during perform_create
         # (e.g. OrganizationService.create_organization), making the stash set in
-        # TenantScopedViewMixin.initial() stale. Re-resolve so the post-create re-fetch
-        # honors the X-Organization-Id header (and any newly-created membership) instead
-        # of silently dropping to the header-blind single-membership fallback.
+        # TenantScopedViewMixin.perform_authentication() stale. Re-resolve so the
+        # post-create re-fetch honors the X-Organization-Id header (and any
+        # newly-created membership) instead of silently dropping to the
+        # header-blind single-membership fallback.
         # Re-bind too: the re-fetch below reads through organization-scoped default
-        # managers, and leaving the context on the organization ``initial()`` resolved
-        # would scope it to a different one than the stash the same lines consult.
-        # ``_bind_active_organization`` releases the first binding before taking the
+        # managers, and leaving the context on the organization
+        # ``perform_authentication()`` resolved would scope it to a different one
+        # than the stash the same lines consult.
+        # ``bind_organization`` releases the first binding before taking the
         # second, so ``dispatch``'s ``finally`` still restores the pre-request value.
-        if hasattr(self, "_resolve_active_organization"):
-            self._resolve_active_organization(request)
-            self._bind_active_organization(request.organization)
+        if hasattr(self, "resolve_organization"):
+            self.resolve_organization(request)
+            self.bind_organization(request.organization)
 
         # re-fetches the instance so we get annotations, prefetches, and selects
         if hasattr(self, "get_return_queryset"):

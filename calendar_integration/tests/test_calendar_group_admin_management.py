@@ -159,12 +159,13 @@ def test_demoted_admin_cannot_manage_group(organization, group):
 @pytest.mark.django_db
 def test_calendar_group_permission_passes_for_admin_without_ownership(organization, group):
     admin = User.objects.create_user(email="perm-admin@example.com")
-    OrganizationMembership.objects.create(
+    membership = OrganizationMembership.objects.create(
         user=admin, organization=organization, role=OrganizationRole.ADMIN
     )
     perm = CalendarGroupPermission(calendar_permission_service=CalendarPermissionService())
     request = Mock()
     request.user = admin
+    request.organization_membership = membership
     assert perm.has_permission(request, view=Mock()) is True
     assert perm.has_object_permission(request, view=Mock(), obj=group) is True
 
