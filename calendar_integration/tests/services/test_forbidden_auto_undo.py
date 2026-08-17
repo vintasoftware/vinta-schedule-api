@@ -55,7 +55,10 @@ from calendar_integration.models import (
 )
 from calendar_integration.services.calendar_service_context import CalendarServiceContext
 from calendar_integration.services.calendar_sync_service import CalendarSyncService
-from calendar_integration.services.dataclasses import CalendarEventAdapterOutputData
+from calendar_integration.services.dataclasses import (
+    CalendarEventAdapterOutputData,
+    EventsSyncChanges,
+)
 from calendar_integration.services.external_event_change_request_service import (
     ExternalEventChangeRequestService,
 )
@@ -778,8 +781,6 @@ def test_forbidden_update_adapter_none_raises_improperly_configured(
 
     # Drive via a direct _process_existing_event call to isolate the FORBIDDEN guard
     # without needing to drive a full sync cycle with a broken adapter.
-    from calendar_integration.services.dataclasses import EventsSyncChanges
-
     service = CalendarSyncService(
         context=context_no_adapter,
         calendar_cache={},
@@ -812,8 +813,6 @@ def test_forbidden_delete_adapter_none_raises_improperly_configured(
         calendar_side_effects_service=None,
     )
     _make_existing_event(calendar_forbidden, external_id="evt_fb_adpnone_del")
-
-    from calendar_integration.services.dataclasses import EventsSyncChanges
 
     service = CalendarSyncService(
         context=context_no_adapter,

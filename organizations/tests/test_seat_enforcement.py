@@ -24,6 +24,7 @@ from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
 
+from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
 from organizations.models import (
     Organization,
     OrganizationInvitation,
@@ -259,11 +260,6 @@ class TestAcceptInvitationBlockedAtTheLimit:
     would be blocked at exactly the ceiling it is trying to fill."""
 
     def _pending_invitation(self, organization, email):
-        from common.utils.authentication_utils import (
-            generate_long_lived_token,
-            hash_long_lived_token,
-        )
-
         token = generate_long_lived_token()
         invitation = baker.make(
             OrganizationInvitation,
@@ -333,11 +329,6 @@ class TestAcceptInvitationMarksAcceptedInsideTheSameTransaction:
     permanent double-count of that seat."""
 
     def test_a_failure_marking_the_invitation_accepted_rolls_back_the_membership_too(self):
-        from common.utils.authentication_utils import (
-            generate_long_lived_token,
-            hash_long_lived_token,
-        )
-
         organization = _organization_with_seat_limit(seat_limit=2, existing_active_members=0)
         invitee = baker.make(get_user_model(), email="atomic-accept@example.com")
         token = generate_long_lived_token()
@@ -375,11 +366,6 @@ class TestProvisionTenantForUserMarksAcceptedInsideTheSameTransaction:
     instead of inside it. Signup is the higher-traffic of the two paths."""
 
     def test_a_failure_marking_the_invitation_accepted_rolls_back_the_membership_too(self):
-        from common.utils.authentication_utils import (
-            generate_long_lived_token,
-            hash_long_lived_token,
-        )
-
         organization = _organization_with_seat_limit(seat_limit=2, existing_active_members=0)
         invitee = baker.make(get_user_model(), email="atomic-provision@example.com")
         token = generate_long_lived_token()

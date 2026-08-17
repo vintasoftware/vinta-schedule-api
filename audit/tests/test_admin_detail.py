@@ -25,6 +25,7 @@ from model_bakery import baker
 
 from audit.constants import AuditAction, AuditActorType
 from audit.factories import AuditAffectedMembershipFactory, AuditFactory
+from audit.models import Audit
 from audit.repositories import AuditRepository
 from audit.types import ActorSnapshot, AuditRecord, SubjectRef
 from organizations.authorization import MEMBERSHIP_ROLE_LABEL_ADMIN
@@ -418,8 +419,6 @@ class TestAuditAdminDetailReadOnly:
 
     def test_post_to_detail_url_does_not_mutate(self, admin_client: Client, db: Any) -> None:
         """POST to the detail view URL does not mutate the record."""
-        from audit.models import Audit
-
         org = baker.make(Organization)
         record = AuditFactory().create(org)
         url = f"/super/audit/audit/{record.pk}/view/"

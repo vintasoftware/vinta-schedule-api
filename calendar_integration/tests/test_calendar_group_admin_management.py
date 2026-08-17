@@ -32,6 +32,7 @@ from organizations.permission_catalog import (
     GROUP_ORGANIZATION_MEMBER,
     MANAGE_MEMBERS,
 )
+from organizations.services import OrganizationService
 from organizations.tests.helpers import grant_membership_groups
 from users.models import User
 
@@ -216,10 +217,7 @@ def test_calendar_group_permission_passes_for_admin_without_ownership(organizati
 # ---------------------------------------------------------------------------
 @pytest.mark.django_db
 def test_create_organization_grants_admin_to_creator():
-    from unittest.mock import Mock
-
     from di_core.containers import container
-    from organizations.services import OrganizationService
 
     mock_calendar_service = Mock()
     with container.calendar_service.override(mock_calendar_service):

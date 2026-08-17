@@ -14,21 +14,23 @@ could silently invert.
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from model_bakery import baker
 from rest_framework.test import APIClient
 
-from organizations.models import Organization, OrganizationInvitation
+from organizations.models import Organization, OrganizationInvitation, OrganizationMembership
 from organizations.permission_catalog import (
     GROUP_ORGANIZATION_ADMIN,
     GROUP_ORGANIZATION_BILLING_OWNER,
     GROUP_ORGANIZATION_MEMBER,
 )
+from organizations.services import OrganizationService
 from public_api.models import ResourceAccess
 from public_api.schema import schema
 from public_api.services import PublicAPIAuthService
+from users.models import User
 
 
 CREATE_INVITATION_MUTATION = """
@@ -140,12 +142,7 @@ class TestAcceptedGroups:
         membership in groups; only the pair together delivers what the partner
         asked for, and only this test crosses both.
         """
-        from unittest.mock import Mock
-
         from di_core.containers import container
-        from organizations.models import OrganizationMembership
-        from organizations.services import OrganizationService
-        from users.models import User
 
         user = baker.make(User, email="boss2@example.com")
         result = invite(

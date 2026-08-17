@@ -16,6 +16,7 @@ from django.utils import timezone
 import pytest
 from model_bakery import baker
 
+from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
 from organizations.models import Organization, OrganizationInvitation, OrganizationMembership
 from organizations.services import OrganizationService
 from payments.billing_constants import BillingState, LimitedResource, LimitKind
@@ -222,8 +223,6 @@ class TestPendingInvitationsCountTowardTheCeiling:
 
 
 def _pending_invitation_and_token(organization: Organization, email: str):
-    from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
-
     token = generate_long_lived_token()
     invitation = baker.make(
         OrganizationInvitation,

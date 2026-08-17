@@ -2,12 +2,14 @@ import datetime
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
+from django.db.models.query import QuerySet
+
 import pytest
 from model_bakery import baker
 
-from audit.constants import AuditAction
+from audit.constants import AuditAction, AuditActorType
 from organizations.authorization import MEMBERSHIP_ROLE_LABEL_ADMIN
-from organizations.models import Organization
+from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import grant_membership_groups
 from payments.billing_constants import BillingInterval, BillingState
@@ -18,12 +20,15 @@ from payments.constants import (
     SubscriptionStatuses,
 )
 from payments.exceptions import (
+    BillingProfileContactEmailMissingError,
     MissingBillingProfileError,
     PaymentProviderNotConfiguredError,
     UnknownPaymentProviderError,
 )
 from payments.models import BillingPlan, ProviderWebhookEvent
+from payments.models import BillingProfile as BillingProfileModel
 from payments.models import Payment as PaymentModel
+from payments.models import Refund as RefundModelForTest
 from payments.models import Subscription as SubscriptionModel
 from payments.services.dataclasses import (
     BillingAddress as BillingAddressDataclass,
@@ -34,6 +39,7 @@ from payments.services.dataclasses import (
 from payments.services.dataclasses import (
     CreatedPlan,
     RefundResult,
+    SubscriptionPayment,
 )
 from payments.services.dataclasses import (
     Payment as PaymentDataclass,
@@ -233,9 +239,6 @@ def test_create_payment_raises_when_billing_profile_missing_contact_email(
 ):
     """`_serialize_billing_profile` must raise a clear error rather than silently
     send the payment gateway a null payer email."""
-    from payments.exceptions import BillingProfileContactEmailMissingError
-    from payments.models import BillingProfile as BillingProfileModel
-
     billing_profile = BillingProfileModel.objects.create(
         organization=organization,
         contact_first_name="Ada",
@@ -691,8 +694,6 @@ def test_success_receive_subscription_payment_update(
     )
 
     # Set up mock for receive_payment_update method
-    from payments.services.dataclasses import SubscriptionPayment
-
     subscription_payment = SubscriptionPayment(
         id=None,
         value=Decimal("100"),
@@ -772,8 +773,6 @@ def test_receive_subscription_payment_update_without_billing_profile_returns_non
         external_id="sub_no_profile",
         payment_provider=PaymentProviders.MERCADOPAGO,
     )
-
-    from payments.services.dataclasses import SubscriptionPayment
 
     subscription_payment = SubscriptionPayment(
         id=None,
@@ -1095,8 +1094,6 @@ def test_handle_subscription_payment_webhook_is_idempotent(
         external_id="sub_12345",
         payment_provider=PaymentProviders.MERCADOPAGO,
     )
-    from payments.services.dataclasses import SubscriptionPayment
-
     subscription_payment = SubscriptionPayment(
         id=None,
         value=Decimal("100"),
@@ -1299,10 +1296,6 @@ def test_record_payment_method_pin_write_is_a_conditional_update_not_read_then_w
     provider, and that the zero-row result is what drives the warning -- exactly
     the observable a real race would produce for the losing caller.
     """
-    from django.db.models.query import QuerySet
-
-    from payments.models import BillingProfile as BillingProfileModel
-
     billing_profile.payment_provider = PaymentProviders.MERCADOPAGO
     billing_profile.save(update_fields=["payment_provider"])
 
@@ -1415,9 +1408,6 @@ def test_set_payment_provider_records_actor_from_user(
     """Passing ``actor`` (as ``BillingProfileAdmin.save_model`` does with
     ``request.user``) must name that staff member in the audit entry as a
     MEMBERSHIP actor, not the generic SYSTEM actor every other caller gets."""
-    from audit.constants import AuditActorType
-    from organizations.models import OrganizationMembership
-
     staff_user = baker.make("users.User")
     membership = grant_membership_groups(
         OrganizationMembership.objects.create(
@@ -1672,10 +1662,6 @@ def test_create_refund_does_not_mislabel_a_local_data_error_as_a_provider_declin
     ``except Exception``, so it propagates instead of being recorded as a
     provider-declined ``FAILED`` refund (the exact mislabelling the pre-fetch of
     the adapter was added to avoid)."""
-    from payments.exceptions import BillingProfileContactEmailMissingError
-    from payments.models import BillingProfile as BillingProfileModel
-    from payments.models import Refund as RefundModelForTest
-
     billing_profile = BillingProfileModel.objects.create(
         organization=organization,
         contact_first_name="Ada",

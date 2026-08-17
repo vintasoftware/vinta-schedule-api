@@ -14,6 +14,7 @@ from allauth.account.models import EmailAddress
 from allauth.account.utils import has_verified_email
 from allauth.headless.adapter import DefaultHeadlessAdapter
 from allauth.socialaccount.adapter import DefaultSocialAccountAdapter
+from allauth.socialaccount.adapter import get_adapter as get_socialaccount_adapter
 from allauth.socialaccount.models import SocialLogin
 from allauth.utils import build_absolute_uri
 from dependency_injector.wiring import Provide, inject
@@ -22,6 +23,8 @@ from vintasend.services.dataclasses import NotificationContextDict
 from vintasend.services.notification_service import NotificationService
 
 from accounts.exceptions import ConsentRequiredError
+from calendar_integration.constants import CalendarProvider
+from calendar_integration.tasks import import_account_calendars_task
 from common.organization_services import memberships
 from legal.services import ConsentService
 from organizations.exceptions import UserAlreadyHasMembershipError
@@ -29,6 +32,7 @@ from organizations.models import OrganizationMembership
 from organizations.services import OrganizationService
 from payments.exceptions import OverLimitError
 from users.models import Profile, User
+from users.tasks import download_social_profile_picture
 
 
 logger = logging.getLogger(__name__)
@@ -166,9 +170,6 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):
         signup) the import is skipped here and runs later when they hit the
         request-import endpoint after provisioning.
         """
-        from calendar_integration.constants import CalendarProvider
-        from calendar_integration.tasks import import_account_calendars_task
-
         account = getattr(sociallogin, "account", None)
         if account is None or account.provider not in (
             CalendarProvider.GOOGLE,
@@ -274,8 +275,6 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):
     @staticmethod
     def _enqueue_profile_picture_download(profile: Profile, sociallogin) -> None:
         """Pull the provider avatar into S3 asynchronously, if any and not set."""
-        from users.tasks import download_social_profile_picture
-
         if profile.profile_picture:
             return
         account = getattr(sociallogin, "account", None)
@@ -386,12 +385,10 @@ class AccountAdapter(DefaultAccountAdapter):
         """
         Sends a confirmation email to the user.
         """
-        from allauth.account import app_settings
-
         ctx = {
             "user_id": emailconfirmation.email_address.user_id,
         }
-        if app_settings.EMAIL_VERIFICATION_BY_CODE_ENABLED:
+        if account_settings.EMAIL_VERIFICATION_BY_CODE_ENABLED:
             ctx.update({"code": emailconfirmation.key})
         else:
             ctx.update(
@@ -703,8 +700,6 @@ class HeadlessAdapter(DefaultHeadlessAdapter):
         """
         Serialize the user object to a dictionary.
         """
-        from allauth.socialaccount.adapter import get_adapter
-
-        data = get_adapter().serialize_instance(user)
+        data = get_socialaccount_adapter().serialize_instance(user)
         data["has_usable_password"] = user.has_usable_password()
         return data

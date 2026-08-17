@@ -2,15 +2,19 @@
 validation."""
 
 import datetime
+from unittest.mock import patch
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.contrib.auth.models import AnonymousUser
+from django.contrib.auth.models import AnonymousUser, Permission
+from django.contrib.contenttypes.models import ContentType
 from django.core import mail
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils import timezone
 
 import pytest
 from model_bakery import baker
+from s3direct.utils import AWSCredentials
 from vintasend.app_settings import NotificationSettings
 from vintasend.constants import NotificationTypes
 from vintasend.services.dataclasses import NotificationContextDict
@@ -52,6 +56,7 @@ from organizations.serializers import CurrentMembershipSerializer, MyMembershipS
 from organizations.tests.helpers import make_membership
 from payments.billing_constants import BillingState, Entitlement
 from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
+from payments.services.subscription_service import SubscriptionService
 from users.factories import UserFactory
 
 
@@ -302,8 +307,6 @@ class TestResolveBrandingForDisplayEntitlementGate:
     def test_unlimited_plan_reseller_is_never_blocked(self):
         """The rollout's kill switch: every organization is on ``unlimited`` until
         deliberately migrated, so this must see byte-for-byte unchanged behavior."""
-        from payments.services.subscription_service import SubscriptionService
-
         reseller = baker.make(Organization, can_invite_organizations=True)
         plan = BillingPlan.objects.get(slug="unlimited")
         SubscriptionService().create_subscription_for_organization(reseller, plan=plan)
@@ -681,9 +684,6 @@ class TestCanManageBrandingCapabilityField:
     def test_direct_capability_controls_branding_for_both_serializers(
         self, permission_codename, permission_model, expected
     ):
-        from django.contrib.auth.models import Permission
-        from django.contrib.contenttypes.models import ContentType
-
         org = _org_with_entitlement(
             Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="direct-branding"
         )
@@ -729,8 +729,6 @@ class TestBrandingLogoDestinationAuth:
     """
 
     def _auth_callable(self):
-        from django.conf import settings
-
         return settings.S3DIRECT_DESTINATIONS["branding_logos"]["auth"]
 
     def _make_admin(self, organization: Organization):
@@ -796,10 +794,6 @@ class TestSignBrandingLogoUpload:
         """Only the accepted-upload cases below reach the presigned-URL step --
         the rejection cases raise before ever needing a bucket/region/endpoint or
         credentials, so they're unaffected by this fixture."""
-        from unittest.mock import patch
-
-        from s3direct.utils import AWSCredentials
-
         settings.AWS_STORAGE_BUCKET_NAME = "test-bucket"
         settings.AWS_S3_REGION_NAME = "us-east-1"
         settings.AWS_S3_ENDPOINT_URL = "https://s3.us-east-1.amazonaws.com"
@@ -825,15 +819,11 @@ class TestSignBrandingLogoUpload:
             sign_branding_logo_upload("logo.gif", "image/gif", 1024)
 
     def test_rejects_an_oversized_file(self):
-        from django.conf import settings
-
         oversized = settings.BRANDING_LOGO_MAX_SIZE_BYTES + 1
         with pytest.raises(BrandingLogoUploadRejectedError, match="size"):
             sign_branding_logo_upload("logo.png", "image/png", oversized)
 
     def test_accepts_a_file_at_exactly_the_size_cap(self):
-        from django.conf import settings
-
         payload = sign_branding_logo_upload(
             "logo.png", "image/png", settings.BRANDING_LOGO_MAX_SIZE_BYTES
         )

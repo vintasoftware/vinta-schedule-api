@@ -32,6 +32,7 @@ from __future__ import annotations
 import pytest
 from vinta_orgs.exceptions import OrganizationCannotBeUpdatedError
 
+import common.exceptions
 from calendar_integration.models import Calendar, CalendarSync
 from organizations.models import Organization
 
@@ -121,8 +122,6 @@ class TestTheProjectAliasIsThePackageClass:
         ``update_or_create()`` / conflict-updating ``bulk_create()`` only ever
         raised the package's.
         """
-        import common.exceptions
-
         assert (
             common.exceptions.OrganizationCannotBeUpdatedError is OrganizationCannotBeUpdatedError
         )

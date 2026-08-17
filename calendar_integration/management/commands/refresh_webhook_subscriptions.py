@@ -89,7 +89,10 @@ class Command(BaseCommand):
         if dry_run:
             self.stdout.write(self.style.WARNING("DRY RUN MODE - No changes will be made"))
 
-        # Get DI container
+        # Deferred import, and it has to be: `di_core.containers.container` is
+        # only assigned in `DICoreConfig.ready()`, so a module-level
+        # `from ... import container` binds the `None` the module starts with
+        # and never sees the wired container.
         from di_core.containers import container
 
         if not container:

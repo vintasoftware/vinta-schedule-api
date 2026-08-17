@@ -195,8 +195,6 @@ class RecurringQuerySetMixin:
             object_ids = [obj.id for obj in all_objects if hasattr(obj, "id")]
             if object_ids:
                 # Create a case-when ordering to preserve the sorted order
-                from django.db.models import Case, IntegerField, When
-
                 preserved_order = Case(
                     *[When(pk=pk, then=pos) for pos, pk in enumerate(object_ids)],
                     output_field=IntegerField(),

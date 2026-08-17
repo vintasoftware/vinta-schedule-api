@@ -1,5 +1,6 @@
 """Django management command for cleaning up old webhook events."""
 
+import datetime
 from typing import Any
 
 from django.core.management.base import BaseCommand, CommandParser
@@ -59,11 +60,15 @@ class Command(BaseCommand):
                 analytics_service = WebhookAnalyticsService(org)
 
                 if dry_run:
-                    # Count what would be deleted
-                    import datetime
-
+                    # Late, and it has to be: ``CalendarWebhookEvent`` is the seam
+                    # ``calendar_integration/tests/management/commands/
+                    # test_cleanup_webhook_events.py`` patches, at its definition
+                    # module (``@patch("calendar_integration.models
+                    # .CalendarWebhookEvent")``). Bound at module scope here, the
+                    # command would hold the real model and ignore the patch.
                     from calendar_integration.models import CalendarWebhookEvent
 
+                    # Count what would be deleted
                     cutoff_date = datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(
                         days=days_to_keep
                     )

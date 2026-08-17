@@ -17,6 +17,7 @@ Behaviors covered:
 """
 
 from collections.abc import Iterable
+from unittest.mock import Mock
 
 from django.contrib.auth import get_user_model
 from django.urls import reverse
@@ -28,6 +29,8 @@ from rest_framework.request import Request
 from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
 from vinta_orgs.exceptions import AmbiguousOrganizationError
 
+from calendar_integration.models import Calendar
+from calendar_integration.tests.test_views import CalendarIntegrationTestFactory
 from common.organization_services import memberships
 from common.utils.view_utils import TenantScopedViewMixin
 from organizations.models import (
@@ -39,6 +42,7 @@ from organizations.permission_catalog import (
     GROUP_ORGANIZATION_MEMBER,
 )
 from organizations.tests.helpers import grant_membership_groups
+from users.factories import DEFAULT_TEST_USER_PASSWORD
 
 
 User = get_user_model()
@@ -83,8 +87,6 @@ def _make_membership(
 
 def _auth_client_for(user: User) -> APIClient:  # type: ignore[valid-type]
     """Return an API client authenticated as *user* via session login."""
-    from users.factories import DEFAULT_TEST_USER_PASSWORD
-
     client = APIClient()
     client.login(email=user.email, password=DEFAULT_TEST_USER_PASSWORD)
     return client
@@ -350,8 +352,6 @@ class TestCalendarViewSetOrgScoping:
         org_b: Organization,
     ) -> None:
         """GET /calendar/ with header A returns only Org A calendars, not Org B."""
-        from calendar_integration.tests.test_views import CalendarIntegrationTestFactory
-
         cal_a = CalendarIntegrationTestFactory.create_calendar(organization=org_a)
         cal_b = CalendarIntegrationTestFactory.create_calendar(organization=org_b)
         # A second Org A calendar the caller does *not* own. It is what keeps
@@ -389,8 +389,6 @@ class TestCalendarViewSetOrgScoping:
         org_b: Organization,
     ) -> None:
         """GET /calendar/ with header B returns only Org B calendars, not Org A."""
-        from calendar_integration.tests.test_views import CalendarIntegrationTestFactory
-
         cal_a = CalendarIntegrationTestFactory.create_calendar(organization=org_a)
         cal_b = CalendarIntegrationTestFactory.create_calendar(organization=org_b)
         # The unowned Org B calendar; see the sibling test for why it is here.
@@ -434,10 +432,6 @@ class TestCalendarViewSetOrgScoping:
         DB-backed ``Calendar`` row seeded under Org B so the viewset's post-create
         ``get_queryset().get(pk=...)`` is a genuine org-scoped lookup.
         """
-        from unittest.mock import Mock
-
-        from calendar_integration.models import Calendar
-        from calendar_integration.tests.test_views import CalendarIntegrationTestFactory
         from di_core.containers import container
 
         assert container is not None, "DI container must be wired during tests"

@@ -38,14 +38,16 @@ from __future__ import annotations
 from functools import reduce
 from typing import TYPE_CHECKING
 
+from django.contrib.auth.models import Group, Permission
+from django.contrib.contenttypes.models import ContentType
 from django.db import transaction
 from django.db.models import F, Q
+
+from organizations.exceptions import OrganizationGroupNotAssignableError
 
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
-
-    from django.contrib.auth.models import Group, Permission
 
 
 def _label(app_label: str, _model: str, codename: str, _name: str) -> str:
@@ -146,8 +148,6 @@ def _permissions_by_label() -> dict[str, Permission]:
     ``vinta_orgs.querysets.filter_memberships_holding_permission`` spells it that way
     too. A codename declared in another app must not satisfy half of the condition.
     """
-    from django.contrib.auth.models import Permission
-
     permissions_query = reduce(
         lambda left, right: left | right,
         [
@@ -265,12 +265,6 @@ def group_for_invitation_groups(group_names: Iterable[str]) -> str:
         seeded group, and for ``organization_billing_owner`` (see
         ``INVITABLE_GROUPS``). Both are refusals, not silent no-ops.
     """
-    # Imported here rather than at module scope: ``organizations.exceptions``
-    # imports from ``rest_framework``, and this module is imported by data
-    # migrations' test helpers and by ``public_api`` types that have no reason
-    # to pull DRF in.
-    from organizations.exceptions import OrganizationGroupNotAssignableError
-
     names = list(group_names)
     unusable = [name for name in names if name not in INVITABLE_GROUPS]
     if unusable:
@@ -311,9 +305,6 @@ def seed_capability_permissions() -> list[Permission]:
     equivalent thing against historical models with its own frozen literals, and does
     not call this.
     """
-    from django.contrib.auth.models import Permission
-    from django.contrib.contenttypes.models import ContentType
-
     permissions: list[Permission] = []
     for app_label, model, codename, name in PERMISSIONS:
         content_type, _created = ContentType.objects.get_or_create(app_label=app_label, model=model)
@@ -339,8 +330,6 @@ def seed_capability_groups() -> list[Group]:
     admin group denies everything, and the denial surfaces as an authorization failure
     somewhere else entirely.
     """
-    from django.contrib.auth.models import Group
-
     permissions_by_label = _permissions_by_label()
 
     groups: list[Group] = []

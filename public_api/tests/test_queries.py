@@ -1,4 +1,5 @@
 import datetime
+import datetime as _datetime
 import json
 import uuid
 from unittest.mock import Mock, patch
@@ -6,6 +7,7 @@ from unittest.mock import Mock, patch
 from django.contrib.auth import get_user_model
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
+from django.utils import timezone as _timezone
 
 import icalendar
 import pytest
@@ -36,8 +38,11 @@ from common.utils.authentication_utils import generate_long_lived_token, hash_lo
 from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import grant_membership_groups
+from payments.billing_constants import BillingState, Entitlement
+from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess, SystemUser
+from public_api.queries import _vinta_default_branding
 from public_api.services import PublicAPIAuthService
 from users.factories import UserFactory
 from users.models import User
@@ -6776,13 +6781,6 @@ class TestBrandingForTenantEntitlementDowngrade:
         )
 
     def _reseller_without_branding_entitlement(self):
-        import datetime as _datetime
-
-        from django.utils import timezone as _timezone
-
-        from payments.billing_constants import BillingState, Entitlement
-        from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
-
         reseller = baker.make(Organization, name="Downgraded", can_invite_organizations=True)
         now = _timezone.now()
         subscription = baker.make(
@@ -6821,6 +6819,4 @@ class TestBrandingForTenantEntitlementDowngrade:
         response = self._post(anonymous_client, query, {"tenantId": str(reseller.id)})
 
         data = assert_graphql_success(response)
-        from public_api.queries import _vinta_default_branding
-
         assert data["brandingForTenant"]["appName"] == _vinta_default_branding().app_name

@@ -3,6 +3,9 @@ from pathlib import Path
 
 from django.core.management.base import BaseCommand, CommandError
 
+import yaml
+from allauth.headless.spec.internal.schema import get_schema
+
 
 class Command(BaseCommand):
     help = (
@@ -28,9 +31,6 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        # Imported lazily so the command only pulls allauth in when actually run.
-        from allauth.headless.spec.internal.schema import get_schema
-
         spec = get_schema()
         self._patch_refresh_token_meta(spec)
         self._patch_post_auth_destination(spec)
@@ -60,8 +60,6 @@ class Command(BaseCommand):
     def _render(spec: dict, suffix: str) -> str:
         """Serialize the spec to YAML or JSON, deterministically (sorted keys)."""
         if suffix in {".yaml", ".yml"}:
-            import yaml
-
             return yaml.dump(spec, Dumper=yaml.Dumper, sort_keys=True)
         return json.dumps(spec, indent=2, sort_keys=True)
 

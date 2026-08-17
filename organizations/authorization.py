@@ -97,11 +97,12 @@ from typing import TYPE_CHECKING
 
 from vinta_orgs import authorization as vinta_orgs_authorization
 
+from organizations.models import OrganizationMembership
 from organizations.permission_catalog import MANAGE_MEMBERS as _MANAGE_MEMBERS
 
 
 if TYPE_CHECKING:
-    from organizations.models import Organization, OrganizationMembership
+    from organizations.models import Organization
     from users.models import User
 
 
@@ -228,13 +229,11 @@ def membership_holds_permission(membership: OrganizationMembership, permission: 
     rather than enforced; a caller that starts building memberships in memory
     must assign groups and save before asking.
     """
-    # Late, for symmetry with this module's other model imports rather than out of
-    # necessity: ``organizations.models`` does not reach back here today, but it is
-    # imported by ``users.models``, which this module is imported *from*, so a
-    # module-scope import here is one refactor away from a cycle.
-    from organizations.models import OrganizationMembership as MembershipModel
-
-    return MembershipModel.objects.filter(pk=membership.pk).holding_permission(permission).exists()
+    return (
+        OrganizationMembership.objects.filter(pk=membership.pk)
+        .holding_permission(permission)
+        .exists()
+    )
 
 
 #: The two values published as a *description* of a membership's standing: the

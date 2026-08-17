@@ -36,7 +36,9 @@ from calendar_integration.models import (
     CalendarGroupSlot,
     CalendarGroupSlotMembership,
     CalendarManagementToken,
+    EventExternalAttendance,
     EventManagementPermissions,
+    ExternalAttendee,
 )
 from calendar_integration.services.calendar_group_service import CalendarGroupService
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
@@ -187,8 +189,6 @@ def grouped_event(organization, group, primary_calendar, secondary_calendar):
     - BlockedTime on secondary_calendar with the standard external_id pattern.
     - One EventExternalAttendance (patient@example.com) on the primary event.
     """
-    from calendar_integration.models import EventExternalAttendance, ExternalAttendee
-
     event = baker.make(
         CalendarEvent,
         organization=organization,

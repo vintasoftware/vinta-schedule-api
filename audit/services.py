@@ -34,6 +34,9 @@ from audit.repositories import AuditRepository
 from audit.tasks import persist_audit_record
 from audit.types import ActorSnapshot, AuditRecordData, SubjectRef
 from organizations.authorization import membership_role_label
+from organizations.models import OrganizationMembership
+from public_api.models import SystemUser
+from users.models import User
 
 
 logger = logging.getLogger(__name__)
@@ -156,10 +159,6 @@ class AuditService:
         Returns:
             A MEMBERSHIP ActorSnapshot when a membership exists, else a SYSTEM one.
         """
-        # Lazy import: audit is a leaf app; importing organizations at module load
-        # would create an import cycle (organizations services import audit_service).
-        from organizations.models import OrganizationMembership
-
         membership = OrganizationMembership.objects.filter(
             user_id=user.id,  # type: ignore[attr-defined]
             organization_id=organization_id,
@@ -196,10 +195,6 @@ class AuditService:
         Returns:
             The most specific ActorSnapshot resolvable from the principal.
         """
-        # Lazy imports for the same import-cycle reason as actor_from_user.
-        from public_api.models import SystemUser
-        from users.models import User
-
         if isinstance(user_or_token, User):
             return AuditService.actor_from_user(user_or_token, organization_id)
         if isinstance(user_or_token, SystemUser):

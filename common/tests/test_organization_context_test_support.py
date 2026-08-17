@@ -14,12 +14,13 @@ that neither binds nor names one.
 from __future__ import annotations
 
 from django.db.models import Count
+from django.db.models.sql.compiler import SQLCompiler
 from django.utils.functional import SimpleLazyObject
 
 import pytest
 
 from calendar_integration.constants import CalendarProvider
-from calendar_integration.models import Calendar, CalendarWebhookEvent
+from calendar_integration.models import Calendar, CalendarSync, CalendarWebhookEvent
 from common.organization_context import organization_context
 from common.organization_context_test_support import (
     _clauses_of,
@@ -220,8 +221,6 @@ def test_does_not_report_a_query_organization_matched_through_a_safe_relation(
     therefore already organization-matched, and reporting it would push callers
     towards a redundant second filter.
     """
-    from calendar_integration.models import CalendarSync
-
     with assert_all_scoped_queries_are_bound() as violations:
         list(CalendarSync.objects.unscoped().filter(calendar=calendar))
 
@@ -229,8 +228,6 @@ def test_does_not_report_a_query_organization_matched_through_a_safe_relation(
 
 
 def test_restores_the_original_method_on_exit(organization, calendar):
-    from django.db.models.sql.compiler import SQLCompiler
-
     original = SQLCompiler.execute_sql
 
     with assert_all_scoped_queries_are_bound():
@@ -240,8 +237,6 @@ def test_restores_the_original_method_on_exit(organization, calendar):
 
 
 def test_restores_the_original_method_even_when_the_block_raises(organization):
-    from django.db.models.sql.compiler import SQLCompiler
-
     original = SQLCompiler.execute_sql
 
     with pytest.raises(ValueError, match="boom"):

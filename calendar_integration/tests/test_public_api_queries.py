@@ -1,13 +1,18 @@
 """Tests for public API queries."""
 
+import datetime
 from unittest.mock import Mock, patch
+
+from django.utils import timezone
+from django.utils import timezone as tz
 
 import pytest
 from graphql import GraphQLError
 from model_bakery import baker
 
 from calendar_integration.constants import CalendarVisibility
-from public_api.queries import QueryDependencies, get_query_dependencies
+from calendar_integration.models import Calendar
+from public_api.queries import Query, QueryDependencies, get_query_dependencies
 
 
 class TestQueryDependencies:
@@ -112,8 +117,6 @@ class TestCalendarQueries:
 
     def test_calendars_query_success(self, mock_request, calendar, mock_dependencies) -> None:
         """Test successful calendars query."""
-        from public_api.queries import Query
-
         # Fix context structure
         mock_info = Mock()
         mock_info.context = Mock()
@@ -129,12 +132,6 @@ class TestCalendarQueries:
 
     def test_calendar_events_query_success(self, mock_request, calendar, mock_dependencies) -> None:
         """Test successful calendar events query."""
-        import datetime
-
-        from django.utils import timezone as tz
-
-        from public_api.queries import Query
-
         # Create test event with valid timezone
         baker.make(
             "calendar_integration.CalendarEvent",
@@ -166,12 +163,6 @@ class TestCalendarQueries:
 
     def test_available_times_query_success(self, mock_request, calendar, mock_dependencies) -> None:
         """Test successful available times query."""
-        import datetime
-
-        from django.utils import timezone as tz
-
-        from public_api.queries import Query
-
         # Create test available time with valid timezone
         baker.make(
             "calendar_integration.AvailableTime",
@@ -202,12 +193,6 @@ class TestCalendarQueries:
 
     def test_blocked_times_query_success(self, mock_request, calendar, mock_dependencies) -> None:
         """Test successful blocked times query."""
-        import datetime
-
-        from django.utils import timezone as tz
-
-        from public_api.queries import Query
-
         # Create test blocked time with valid timezone
         baker.make(
             "calendar_integration.BlockedTime",
@@ -238,8 +223,6 @@ class TestCalendarQueries:
 
     def test_users_query_success(self, mock_request, user, mock_dependencies) -> None:
         """Test successful users query."""
-        from public_api.queries import Query
-
         # Fix context structure
         mock_info = Mock()
         mock_info.context = Mock()
@@ -257,8 +240,6 @@ class TestCalendarQueries:
         self, mock_request, calendar, mock_dependencies
     ) -> None:
         """Test successful webhook subscriptions query."""
-        from public_api.queries import Query
-
         # Skip creating actual subscriptions due to OrganizationForeignKey issues
         # Just test that the query method returns the expected format
 
@@ -277,8 +258,6 @@ class TestCalendarQueries:
 
     def test_webhook_events_query_success(self, mock_request, mock_dependencies) -> None:
         """Test successful webhook events query."""
-        from public_api.queries import Query
-
         # Create test webhook event
         baker.make(
             "calendar_integration.CalendarWebhookEvent",
@@ -302,12 +281,6 @@ class TestCalendarQueries:
         self, mock_request, calendar, mock_dependencies
     ) -> None:
         """Test successful availability windows query."""
-        import datetime
-
-        from django.utils import timezone
-
-        from public_api.queries import Query
-
         start_datetime = timezone.now()
         end_datetime = start_datetime + datetime.timedelta(days=7)
 
@@ -335,12 +308,6 @@ class TestCalendarQueries:
         self, mock_request, calendar, mock_dependencies
     ) -> None:
         """Test successful unavailable windows query."""
-        import datetime
-
-        from django.utils import timezone
-
-        from public_api.queries import Query
-
         start_datetime = timezone.now()
         end_datetime = start_datetime + datetime.timedelta(days=7)
 
@@ -368,8 +335,6 @@ class TestCalendarQueries:
         self, mock_request, calendar, mock_dependencies
     ) -> None:
         """Test successful webhook health status query."""
-        from public_api.queries import Query
-
         # Skip creating actual subscription due to OrganizationForeignKey issues
 
         mock_health_data = {
@@ -399,8 +364,6 @@ class TestCalendarQueries:
 
     def test_webhook_subscription_status_not_found(self, mock_request, mock_dependencies) -> None:
         """Test webhook health status with no subscriptions."""
-        from public_api.queries import Query
-
         mock_health_data = {
             "total_subscriptions": 0,
             "active_subscriptions": 0,
@@ -429,9 +392,6 @@ class TestCalendarQueries:
         self, mock_request, mock_dependencies
     ) -> None:
         """The public GraphQL calendars query must exclude non-active calendars."""
-        from calendar_integration.models import Calendar
-        from public_api.queries import Query
-
         organization = mock_request.organization
 
         active_calendar: Calendar = baker.make(

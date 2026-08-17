@@ -9,6 +9,7 @@ from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpHeaders, HttpRequest
 
+from allauth.socialaccount.models import SocialToken
 from google.auth.transport.requests import Request
 from google.oauth2 import service_account as google_service_account
 from google.oauth2.credentials import Credentials
@@ -168,8 +169,6 @@ class GoogleCalendarAdapter(CalendarAdapter):
         """
         if not social_token_id:
             return
-
-        from allauth.socialaccount.models import SocialToken
 
         new_expiry = credentials.expiry
         if new_expiry is not None:

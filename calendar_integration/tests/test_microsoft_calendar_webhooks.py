@@ -10,7 +10,7 @@ from model_bakery import baker
 
 from calendar_integration.constants import CalendarProvider, IncomingWebhookProcessingStatus
 from calendar_integration.exceptions import WebhookProcessingFailedError
-from calendar_integration.models import Calendar, CalendarWebhookEvent
+from calendar_integration.models import Calendar, CalendarSync, CalendarWebhookEvent
 from calendar_integration.services.calendar_adapters.ms_outlook_calendar_adapter import (
     MSOutlookCalendarAdapter,
 )
@@ -324,8 +324,6 @@ def test_calendar_service_request_webhook_triggered_sync_success(
     mock_auth_check.return_value = True
 
     # Create a real CalendarSync instance
-    from calendar_integration.models import CalendarSync
-
     calendar_sync = baker.make(CalendarSync, calendar=calendar, organization=organization)
     mock_sync.return_value = calendar_sync
 

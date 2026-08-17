@@ -38,7 +38,8 @@ one -- is ``TestReGroupingRemovesCapabilities`` below.
 
 from __future__ import annotations
 
-from django.contrib.auth.models import Group
+from django.contrib.auth.models import Group, Permission
+from django.contrib.contenttypes.models import ContentType
 
 import pytest
 from model_bakery import baker
@@ -208,8 +209,6 @@ class TestWhoReceivesBilling:
         upstream change that dropped the direct half would go unnoticed until a
         dunning email stopped being sent.
         """
-        from django.contrib.auth.models import Permission
-
         organization = baker.make(Organization, name="Direct Grant Co", slug="direct-grant-co")
         manage_billing = Permission.objects.get(
             content_type__app_label="payments", codename="manage_billing"
@@ -231,8 +230,6 @@ class TestWhoReceivesBilling:
     def test_a_deactivated_membership_with_a_direct_grant_is_still_excluded(self):
         """``active()`` runs before ``holding_permission()``, so the direct
         grant does not smuggle a soft-deleted membership back onto the list."""
-        from django.contrib.auth.models import Permission
-
         organization = baker.make(Organization, name="Direct Gone Co", slug="direct-gone-co")
         manage_billing = Permission.objects.get(
             content_type__app_label="payments", codename="manage_billing"
@@ -258,9 +255,6 @@ class TestWhoReceivesBilling:
         ever relaxed upstream, this repo's dunning list is where it would first
         do damage.
         """
-        from django.contrib.auth.models import Permission
-        from django.contrib.contenttypes.models import ContentType
-
         organization = baker.make(Organization, name="Impostor Co", slug="impostor-co")
         impostor_content_type = ContentType.objects.get(
             app_label="organizations", model="organizationinvitation"

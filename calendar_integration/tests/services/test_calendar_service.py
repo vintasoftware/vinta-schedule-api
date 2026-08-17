@@ -3,6 +3,7 @@ import uuid
 import zoneinfo
 from datetime import timedelta
 from unittest.mock import MagicMock, Mock, patch
+from zoneinfo import ZoneInfo
 
 from django.db import transaction
 from django.utils import timezone
@@ -49,6 +50,10 @@ from calendar_integration.models import (
     RecurrenceRule,
     ResourceAllocation,
 )
+from calendar_integration.serializers import (
+    AvailableTimeWindowSerializer,
+    UnavailableTimeWindowSerializer,
+)
 from calendar_integration.services.calendar_permission_service import (
     DEFAULT_ATTENDEE_PERMISSIONS,
     DEFAULT_CALENDAR_OWNER_PERMISSIONS,
@@ -59,6 +64,7 @@ from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.dataclasses import (
     ApplicationCalendarData,
     AvailableTimeWindow,
+    BlockedTimeData,
     CalendarEventAdapterInputData,
     CalendarEventAdapterOutputData,
     CalendarEventInputData,
@@ -590,6 +596,12 @@ def test_get_calendar_adapter_for_google_service_account(
     google_service_account, mock_google_adapter
 ):
     """Test getting Google adapter for service account."""
+    # Deferred deliberately: the ``mock_google_adapter`` fixture above patches
+    # ``calendar_integration.services.calendar_adapters.google_calendar_adapter.GoogleCalendarAdapter``,
+    # and the assertions below read ``from_service_account`` off that mock. A module-scope
+    # import would bind the real class into this module before the patch is installed, so
+    # the name here would no longer be the mock and the call assertions would go green
+    # against the wrong object (or fail outright).
     from calendar_integration.services.calendar_adapters.google_calendar_adapter import (
         GoogleCalendarAdapter,
     )
@@ -9523,8 +9535,6 @@ def test_get_availability_windows_subtracts_busy_for_managed_calendar(organizati
 
 def test_available_time_window_serializer_renders_local_timezone():
     """The window serializer emits start/end in the window's timezone, not UTC."""
-    from calendar_integration.serializers import AvailableTimeWindowSerializer
-
     window = AvailableTimeWindow(
         start_time=datetime.datetime(2024, 1, 1, 12, 0, tzinfo=datetime.UTC),  # 09:00 Recife
         end_time=datetime.datetime(2024, 1, 1, 20, 0, tzinfo=datetime.UTC),  # 17:00 Recife
@@ -9581,10 +9591,6 @@ def test_recurring_availability_windows_keep_local_time(organization):
 
     Exercises the occurrence-materialization path (weeks beyond the master) end to end.
     """
-    from zoneinfo import ZoneInfo
-
-    from calendar_integration.serializers import AvailableTimeWindowSerializer
-
     recife = ZoneInfo("America/Recife")
     calendar = Calendar.objects.create(
         name="Recife Calendar",
@@ -9623,9 +9629,6 @@ def test_recurring_availability_windows_keep_local_time(organization):
 
 def test_unavailable_time_window_serializer_renders_local_timezone():
     """Unavailable windows render in the underlying record's timezone, not UTC."""
-    from calendar_integration.serializers import UnavailableTimeWindowSerializer
-    from calendar_integration.services.dataclasses import BlockedTimeData
-
     window = UnavailableTimeWindow(
         start_time=datetime.datetime(2024, 1, 1, 12, 0, tzinfo=datetime.UTC),  # 09:00 Recife
         end_time=datetime.datetime(2024, 1, 1, 20, 0, tzinfo=datetime.UTC),  # 17:00 Recife

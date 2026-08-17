@@ -14,6 +14,7 @@ from vinta_orgs.drf import OrganizationScopedAPIViewMixin
 from vinta_orgs.resolution import UNRESOLVED_ORGANIZATION, OrganizationSelection
 
 from common.constants import ACTIVE_ORG_HEADER
+from organizations.models import Organization
 
 
 logger = logging.getLogger(__name__)
@@ -156,10 +157,6 @@ class TenantScopedViewMixin(OrganizationScopedAPIViewMixin):
         behaviour-identical: the resolver answers ``None`` for an anonymous user
         whatever it is handed.
         """
-        # Deferred: ``organizations`` imports ``common``, so a module-level
-        # import here is a cycle.
-        from organizations.models import Organization  # noqa: PLC0415
-
         user = getattr(request, "user", None)
         if user is None or not getattr(user, "is_authenticated", False):
             return None

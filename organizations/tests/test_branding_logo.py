@@ -22,6 +22,9 @@ import datetime
 import io
 from unittest.mock import patch
 
+from django.core.exceptions import ValidationError
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
 
@@ -34,6 +37,7 @@ from organizations.branding_logo import (
     compute_logo_etag,
 )
 from organizations.models import Organization, OrganizationBranding
+from organizations.slug_validation import validate_organization_slug
 from payments.billing_constants import BillingState, Entitlement
 from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
 
@@ -298,10 +302,6 @@ class TestDefaultSentinelSlug:
         assert response["ETag"] == compute_logo_etag(DEFAULT_LOGO_ETAG_IDENTITY)
 
     def test_default_is_a_reserved_slug(self):
-        from django.core.exceptions import ValidationError
-
-        from organizations.slug_validation import validate_organization_slug
-
         with pytest.raises(ValidationError, match="reserved"):
             validate_organization_slug("default")
 
@@ -466,9 +466,6 @@ class TestNoQueryCountOracleBetweenUnknownSlugAndExistingOrg:
     """
 
     def test_unknown_slug_and_existing_unbranded_org_cost_at_most_one_extra_query(self, client):
-        from django.db import connection
-        from django.test.utils import CaptureQueriesContext
-
         baker.make(Organization, parent=None, slug="normalized-no-branding-row")
 
         with CaptureQueriesContext(connection) as unknown_ctx:

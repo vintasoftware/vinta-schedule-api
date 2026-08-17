@@ -20,6 +20,7 @@ from calendar_integration.constants import CalendarType
 from calendar_integration.exceptions import (
     BookingPolicyViolationError,
     CalendarGroupSlotConfigNotFoundError,
+    CalendarGroupValidationError,
     CalendarIntegrationError,
     DuplicateBookingPolicyError,
     NoAvailableTimeWindowsError,
@@ -3358,8 +3359,6 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
 
         Returns the updated primary ``CalendarEvent``.
         """
-        from calendar_integration.exceptions import CalendarGroupValidationError
-
         # Sentinel emitted by CalendarEventService.update_event when a SystemUser's
         # scoped calendar can't be found (racing cross-owner path). Map it to the
         # uniform not-found message to prevent a discriminating oracle.
@@ -3474,8 +3473,6 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         - Org-wide token: ``assert_calendar_in_owner_scope`` is a no-op → acts org-wide.
         - The service independently re-verifies ownership as defense-in-depth.
         """
-        from calendar_integration.exceptions import CalendarGroupValidationError
-
         calendar_service, org = _get_org_and_init_calendar_service(info)
         request: PublicApiHttpRequest = info.context.request
 
@@ -3561,8 +3558,6 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         The token's ``OrganizationResourceAccess`` must include the
         ``BOOKING_POLICY`` resource.
         """
-        from audit.services import AuditService
-
         org = info.context.request.public_api_organization
         if not org:
             raise GraphQLError("Organization not found in request context")
@@ -3638,8 +3633,6 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         The token's ``OrganizationResourceAccess`` must include the
         ``BOOKING_POLICY`` resource.
         """
-        from audit.services import AuditService
-
         org = info.context.request.public_api_organization
         if not org:
             raise GraphQLError("Organization not found in request context")
@@ -3687,8 +3680,6 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         The token's ``OrganizationResourceAccess`` must include the
         ``BOOKING_POLICY`` resource.
         """
-        from audit.services import AuditService
-
         org = info.context.request.public_api_organization
         if not org:
             raise GraphQLError("Organization not found in request context")

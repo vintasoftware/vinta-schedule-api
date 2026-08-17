@@ -14,7 +14,9 @@ Three scenarios are covered:
 """
 
 import datetime
+from unittest.mock import patch
 
+from django.contrib.messages.storage.cookie import CookieStorage
 from django.test import override_settings
 
 import pytest
@@ -26,6 +28,7 @@ from organizations.authorization import membership_holds_permission
 from organizations.models import Organization, OrganizationInvitation, OrganizationMembership
 from organizations.permission_catalog import MANAGE_MEMBERS
 from users.factories import UserFactory
+from users.models import Profile as ProfileModel
 
 
 def _create_email_address(user, verified: bool = False) -> EmailAddress:
@@ -47,8 +50,6 @@ def _confirm_email(rf, email_address: EmailAddress) -> bool:
     this call via the adapter override, exercising the same hook as the headless
     verify-email endpoint.
     """
-    from django.contrib.messages.storage.cookie import CookieStorage
-
     request = rf.get("/")
     request._messages = CookieStorage(request)
     return get_adapter(request).confirm_email(request, email_address)
@@ -165,10 +166,6 @@ class TestProvisionOnEmailConfirmation:
 
     def test_no_profile_guard_does_not_raise(self, rf):
         """Adapter confirm_email is robust when the user somehow has no profile."""
-        from unittest.mock import patch
-
-        from django.contrib.messages.storage.cookie import CookieStorage
-
         user = UserFactory().create_user(email="noProfile@example.com")
         email_address = _create_email_address(user)
 
@@ -176,8 +173,6 @@ class TestProvisionOnEmailConfirmation:
         request._messages = CookieStorage(request)
 
         # Simulate missing profile by patching the profile descriptor to raise.
-        from users.models import Profile as ProfileModel
-
         def _raise_does_not_exist(self):
             raise ProfileModel.DoesNotExist()
 

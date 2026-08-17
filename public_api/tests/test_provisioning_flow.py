@@ -12,6 +12,7 @@ from model_bakery import baker
 from rest_framework.test import APIClient
 
 from accounts.account_adapters import SocialAccountAdapter
+from common.utils.authentication_utils import verify_long_lived_token
 from organizations.models import (
     Organization,
     OrganizationBranding,
@@ -22,7 +23,8 @@ from organizations.permission_catalog import (
     GROUP_ORGANIZATION_ADMIN,
     GROUP_ORGANIZATION_MEMBER,
 )
-from public_api.models import ResourceAccess
+from organizations.services import OrganizationService
+from public_api.models import ResourceAccess, SystemUser
 from public_api.services import PublicAPIAuthService
 from users.models import Profile, User
 
@@ -442,9 +444,7 @@ class TestCreateInvitationProvisioning:
         token to call accept_invitation, assert an active membership in the target org,
         and confirm no plaintext token is stored in the DB row.
         """
-        from common.utils.authentication_utils import verify_long_lived_token
         from di_core.containers import container
-        from organizations.services import OrganizationService
 
         # Setup reseller + child org
         reseller_org = baker.make(Organization, name="Reseller", can_invite_organizations=True)
@@ -686,8 +686,6 @@ class TestCreateSystemUserTokenProvisioning:
         This is the primary delegation story: the reseller mints a per-tenant token that
         itself carries the ORGANIZATION scope, so it can create child orgs autonomously.
         """
-        from public_api.models import SystemUser
-
         reseller_org = baker.make(Organization, name="Reseller", can_invite_organizations=True)
         auth_service = PublicAPIAuthService()
         reseller_su, reseller_token = auth_service.create_system_user(
@@ -752,8 +750,6 @@ class TestCreateSystemUserTokenProvisioning:
         - The mutation returns a GraphQL error referencing 'subtree'.
         - No SystemUser with the attempted integration_name is created.
         """
-        from public_api.models import SystemUser
-
         r1_org = baker.make(Organization, name="Reseller1", can_invite_organizations=True)
         r2_org = baker.make(Organization, name="Reseller2", can_invite_organizations=True)
         r2_child = baker.make(Organization, name="R2Child", parent=r2_org)

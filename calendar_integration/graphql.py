@@ -27,6 +27,7 @@ from calendar_integration.models import (
     RecurrenceRule,
     ResourceAllocation,
 )
+from public_api.scoping import scoped_calendar_ids
 from users.graphql import UserGraphQLType
 
 
@@ -73,9 +74,6 @@ def _owner_scoped_calendar_ids(info: strawberry.Info) -> set[int] | None:
     organization = getattr(request, "public_api_organization", None)
     if organization is None:
         return None
-
-    # Lazy import to break the public_api <-> calendar_integration import cycle.
-    from public_api.scoping import scoped_calendar_ids
 
     return scoped_calendar_ids(system_user, organization)
 

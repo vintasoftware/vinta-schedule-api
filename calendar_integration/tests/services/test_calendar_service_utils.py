@@ -17,6 +17,8 @@ import pytest
 
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.models import Calendar, CalendarEvent, EventAttendance
+from calendar_integration.services import calendar_service as calendar_service_module
+from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.calendar_service_utils import (
     convert_naive_utc_datetime_to_timezone,
     get_calendar_by_external_id,
@@ -373,9 +375,6 @@ class TestSerializeEventDelegation:
 
     def test_serialize_event_delegates_to_util(self, monkeypatch):
         """CalendarService._serialize_event forwards to the module-level util and returns it."""
-        from calendar_integration.services import calendar_service as calendar_service_module
-        from calendar_integration.services.calendar_service import CalendarService
-
         sentinel_event = object()
         sentinel_result = MagicMock(spec=CalendarEventData)
 

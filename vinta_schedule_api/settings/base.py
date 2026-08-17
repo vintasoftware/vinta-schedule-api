@@ -1,8 +1,13 @@
 import os
+import re
 from collections.abc import Callable
 from datetime import timedelta
 from urllib.parse import quote
 
+from django.core.exceptions import ValidationError
+from django.core.validators import URLValidator
+
+from cuid2 import cuid_wrapper
 from decouple import Csv, config  # type: ignore
 from dj_database_url import parse as db_url
 
@@ -542,11 +547,6 @@ SPECTACULAR_SETTINGS = {
 
 
 def is_valid_url(s):
-    from django.core.exceptions import ValidationError
-
-    # pylint: disable=import-outside-toplevel
-    from django.core.validators import URLValidator
-
     if not s:
         return False
 
@@ -560,10 +560,6 @@ def is_valid_url(s):
 
 
 def append_uuid_to_filename(filename):
-    import os
-
-    from cuid2 import cuid_wrapper
-
     cuid_generator: Callable[[], str] = cuid_wrapper()
 
     filename_without_ext, ext = os.path.splitext(filename)
@@ -571,8 +567,6 @@ def append_uuid_to_filename(filename):
 
 
 def generate_s3direct_file_name(original_file_name, dest):
-    import re
-
     no_special_chars_file_name = re.sub(r"[^a-zA-Z0-9\\.]", "_", original_file_name)
     unique_file_name = append_uuid_to_filename(no_special_chars_file_name)
 

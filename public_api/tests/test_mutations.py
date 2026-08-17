@@ -1,18 +1,42 @@
 import datetime
+import json
 import uuid
 from unittest.mock import Mock, patch
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.exceptions import PermissionDenied as _PermissionDenied
+from django.db import IntegrityError as DjangoIntegrityError
 from django.utils import timezone
 
 import pytest
 from graphql import GraphQLError
 from model_bakery import baker
 from rest_framework.test import APIClient
+from s3direct.utils import AWSCredentials
 
 from calendar_integration.constants import CalendarType, CalendarVisibility
-from calendar_integration.models import AvailableTime, Calendar, ChildrenCalendarRelationship
+from calendar_integration.exceptions import CalendarGroupValidationError
+from calendar_integration.models import (
+    AvailableTime,
+    BlockedTime,
+    Calendar,
+    CalendarEvent,
+    CalendarGroup,
+    CalendarOwnership,
+    ChildrenCalendarRelationship,
+    EventAttendance,
+    EventExternalAttendance,
+    EventRecurrenceException,
+    ExternalAttendee,
+    RecurrenceRule,
+    ResourceAllocation,
+)
+from calendar_integration.models import BlockedTime as _BlockedTime
+from calendar_integration.models import CalendarEvent as _CalendarEvent
 from calendar_integration.services.calendar_service import CalendarService
+from common.utils.authentication_utils import verify_long_lived_token
+from organizations.exceptions import NoServiceAccountConfiguredError
 from organizations.models import (
     Organization,
     OrganizationBranding,
@@ -23,16 +47,18 @@ from organizations.permission_catalog import (
     GROUP_ORGANIZATION_ADMIN,
     GROUP_ORGANIZATION_MEMBER,
 )
+from organizations.services import OrganizationService
 from payments.billing_constants import BillingState, Entitlement
 from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
 from public_api.constants import PublicAPIResources
-from public_api.models import ResourceAccess
+from public_api.models import ResourceAccess, SystemUser
 from public_api.mutations import (
     _apply_input_slug,
     _get_org_and_init_calendar_service,
     get_calendar_mutation_dependencies,
 )
 from public_api.services import PublicAPIAuthService
+from users.models import Profile
 
 
 @pytest.fixture
@@ -448,8 +474,6 @@ class TestCreateInvitationMutation:
                 email=user_email,
                 organization=child_org,
             )
-            import datetime
-
             mock_invitation.expires_at = datetime.datetime.now(
                 tz=datetime.UTC
             ) + datetime.timedelta(days=7)
@@ -494,8 +518,6 @@ class TestCreateInvitationMutation:
                 email=user_email,
                 organization=child_org,
             )
-            import datetime
-
             mock_invitation.expires_at = datetime.datetime.now(
                 tz=datetime.UTC
             ) + datetime.timedelta(days=7)
@@ -665,8 +687,6 @@ class TestCreateInvitationMutation:
                 email="invitee@example.com",
                 organization=child_org,
             )
-            import datetime
-
             mock_invitation.expires_at = datetime.datetime.now(
                 tz=datetime.UTC
             ) + datetime.timedelta(days=7)
@@ -704,8 +724,6 @@ class TestCreateInvitationMutation:
                 email="self_invitee@example.com",
                 organization=reseller_org,
             )
-            import datetime
-
             mock_invitation.expires_at = datetime.datetime.now(
                 tz=datetime.UTC
             ) + datetime.timedelta(days=7)
@@ -844,9 +862,7 @@ class TestCreateInvitationMutation:
         - Calling OrganizationService.accept_invitation(returned_token, user) succeeds.
         - An active OrganizationMembership is created for the user in the target org.
         """
-        from common.utils.authentication_utils import verify_long_lived_token
         from di_core.containers import container
-        from organizations.services import OrganizationService
 
         reseller_org, system_user, api_token, auth_service = self._setup_reseller()
         child_org = baker.make(Organization, name="Child Org", parent=reseller_org)
@@ -1029,8 +1045,6 @@ class TestCreateSystemUserTokenMutation:
 
     def test_create_system_user_token_success_returns_system_user_id_and_token(self):
         """Happy path: reseller mints a token; returns systemUserId + plaintext token once."""
-        from public_api.models import SystemUser
-
         reseller_org, system_user, token, auth_service = self._setup_reseller()
 
         response = self._post_mutation(
@@ -1061,8 +1075,6 @@ class TestCreateSystemUserTokenMutation:
 
     def test_created_system_user_organization_equals_target_org(self):
         """The created SystemUser's organization == the target org passed in organizationId."""
-        from public_api.models import SystemUser
-
         reseller_org, system_user, token, auth_service = self._setup_reseller()
         child_org = baker.make(Organization, name="Child Org", parent=reseller_org)
 
@@ -1297,8 +1309,6 @@ class TestCreateSystemUserTokenMutation:
         - Exactly ONE SystemUser with that integration_name exists in the DB (the first one).
         - The ResourceAccess count did not grow from the failed attempt.
         """
-        from public_api.models import SystemUser
-
         reseller_org, system_user, token, auth_service = self._setup_reseller()
 
         # First call — must succeed
@@ -2039,8 +2049,6 @@ class TestUpdateBranding:
         assert data2["data"]["updateBranding"]["branding"]["appName"] == "Second"
 
         # Should only have one branding row
-        from organizations.models import OrganizationBranding
-
         assert OrganizationBranding.objects.filter(organization=reseller_org).count() == 1
 
     def test_update_branding_isolation_reseller_a_and_b(self):
@@ -2054,7 +2062,6 @@ class TestUpdateBranding:
         - Reseller A's branding row is completely untouched (same values, still exactly one row).
         """
         from di_core.containers import container
-        from organizations.models import OrganizationBranding
 
         # Create two independent reseller organizations
         reseller_a = baker.make(
@@ -2681,8 +2688,6 @@ class TestCreateBrandingLogoUploadMutation:
     def test_eligible_caller_receives_a_signed_payload(self, settings):
         """Parentless + entitled (the suite's autouse fixture grants every
         baker-made Organization full entitlements) -- the eligible case."""
-        from s3direct.utils import AWSCredentials
-
         from di_core.containers import container
 
         settings.AWS_STORAGE_BUCKET_NAME = "test-bucket"
@@ -2854,8 +2859,6 @@ class TestCreateBrandingLogoUploadMutation:
         assert "image/svg" in str(data["errors"])
 
     def test_oversized_file_is_rejected(self):
-        from django.conf import settings
-
         from di_core.containers import container
 
         org = baker.make(Organization, name="Eligible Org", parent=None)
@@ -3013,8 +3016,6 @@ class TestCreateResourceCalendarMutation:
 
     def test_create_resource_calendar_happy_path(self):
         """A granted token creates a resource calendar; returns the calendar + DB row."""
-        from calendar_integration.models import Calendar, CalendarType
-
         org, system_user, token, auth_service = self._setup_org_and_token()
 
         response = self._post_mutation(
@@ -3055,8 +3056,6 @@ class TestCreateResourceCalendarMutation:
 
     def test_create_resource_calendar_minimal_input(self):
         """Name-only input succeeds; optional fields default correctly."""
-        from calendar_integration.models import CalendarType
-
         org, system_user, token, auth_service = self._setup_org_and_token()
 
         response = self._post_mutation(
@@ -3118,8 +3117,6 @@ class TestCreateResourceCalendarMutation:
         not from the input field. The organizationId input is present for client
         convenience but the server always uses the token's org.
         """
-        from calendar_integration.models import Calendar, CalendarType
-
         # Create the token's org
         org, system_user, token, auth_service = self._setup_org_and_token()
         # Create a different org that we pass as organizationId — should be ignored
@@ -3153,8 +3150,6 @@ class TestCreateResourceCalendarMutation:
 
     def test_create_resource_calendar_defaults_is_private_true(self):
         """Test that is_private defaults to True (private) when omitted."""
-        from calendar_integration.models import Calendar
-
         org, system_user, token, auth_service = self._setup_org_and_token()
 
         response = self._post_mutation(
@@ -3186,8 +3181,6 @@ class TestCreateResourceCalendarMutation:
 
     def test_create_resource_calendar_with_is_private_false(self):
         """Test that is_private=False sets accepts_public_scheduling=True."""
-        from calendar_integration.models import Calendar
-
         org, system_user, token, auth_service = self._setup_org_and_token()
 
         response = self._post_mutation(
@@ -3229,8 +3222,6 @@ class TestCreateResourceCalendarMutation:
         org, system_user, token, auth_service = self._setup_org_and_token()
 
         # Create a mock calendar service that raises ValueError
-        from calendar_integration.services.calendar_service import CalendarService
-
         mock_calendar_service = Mock(spec=CalendarService)
         error_message = "boom"
         mock_calendar_service.create_resource_calendar.side_effect = ValueError(error_message)
@@ -3307,13 +3298,9 @@ class TestDisableResourceCalendarMutation:
 
     def test_disable_resource_calendar_happy_path(self):
         """A granted token disables a resource calendar; visibility is set to INACTIVE in DB."""
-        from calendar_integration.constants import CalendarType, CalendarVisibility
-        from calendar_integration.models import Calendar
-
         org, system_user, token, auth_service = self._setup_org_and_token()
 
         # Create a resource calendar via the service (mirrors production path)
-        from calendar_integration.services.calendar_service import CalendarService
         from di_core.containers import container
 
         calendar_service: CalendarService = container.calendar_service()
@@ -3349,8 +3336,6 @@ class TestDisableResourceCalendarMutation:
 
     def test_disable_resource_calendar_rejects_non_resource_calendar(self):
         """Attempting to disable a non-resource calendar (e.g. personal) returns success=False."""
-        from calendar_integration.constants import CalendarType
-
         org, system_user, token, auth_service = self._setup_org_and_token()
 
         # Create a personal (non-resource) calendar
@@ -3377,8 +3362,6 @@ class TestDisableResourceCalendarMutation:
 
     def test_disable_resource_calendar_cross_org_rejected(self):
         """A calendar belonging to a different org returns success=False (Calendar.DoesNotExist)."""
-        from calendar_integration.constants import CalendarType
-
         org, system_user, token, auth_service = self._setup_org_and_token()
 
         # Create a resource calendar in a DIFFERENT org
@@ -3406,14 +3389,10 @@ class TestDisableResourceCalendarMutation:
 
         # Verify the other org's calendar was NOT modified
         other_cal.refresh_from_db()
-        from calendar_integration.constants import CalendarVisibility
-
         assert other_cal.visibility != CalendarVisibility.INACTIVE
 
     def test_disable_resource_calendar_permission_denied_without_grant(self):
         """A token without DISABLE_RESOURCE_CALENDAR grant is denied."""
-        from calendar_integration.constants import CalendarType
-
         # Grant CALENDAR scope instead, NOT DISABLE_RESOURCE_CALENDAR
         org, system_user, token, auth_service = self._setup_org_and_token(
             resources=[PublicAPIResources.CALENDAR]
@@ -3515,8 +3494,6 @@ class TestImportResourceCalendarsMutation:
 
     def test_import_resource_calendars_with_time_window(self):
         """Supplying start_time and end_time passes them through to request_rooms_sync."""
-        import datetime
-
         org, system_user, token, auth_service = self._setup_org_and_token()
 
         start = datetime.datetime(2026, 1, 1, 0, 0, 0, tzinfo=datetime.UTC)
@@ -3569,8 +3546,6 @@ class TestImportResourceCalendarsMutation:
         as the mock side_effect while the service path is mocked; we do not hit
         the real request_rooms_sync or Google APIs.
         """
-        from organizations.exceptions import NoServiceAccountConfiguredError
-
         org, system_user, token, auth_service = self._setup_org_and_token()
 
         # request_rooms_sync is mocked to raise NoServiceAccountConfiguredError,
@@ -5110,7 +5085,6 @@ class TestCreateBlockedTimeMutation:
 
     def test_create_blocked_time_happy_path(self):
         """A granted token creates a blocked time on a calendar; DB row + blockedTime returned."""
-        from calendar_integration.models import BlockedTime
         from di_core.containers import container
 
         org, system_user, token, auth_service = self._setup_org_and_token()
@@ -5164,7 +5138,6 @@ class TestCreateBlockedTimeMutation:
 
     def test_create_blocked_time_recurring_rrule_creates_recurrence_rule(self):
         """Supplying rruleString creates a BlockedTime with a non-null recurrence_rule."""
-        from calendar_integration.models import BlockedTime
         from di_core.containers import container
 
         org, system_user, token, auth_service = self._setup_org_and_token()
@@ -5329,8 +5302,6 @@ class TestCreateBlockedTimeMutation:
         silently skips or raises only within the same savepoint). Patching is therefore
         the reliable approach.
         """
-        from django.db import IntegrityError as DjangoIntegrityError
-
         from di_core.containers import container
 
         org, system_user, token, auth_service = self._setup_org_and_token()
@@ -5432,7 +5403,6 @@ class TestUpdateBlockedTimeMutation:
 
     def test_update_blocked_time_happy_path(self):
         """A granted token updates a blocked time; DB reflects new values + payload returned."""
-        from calendar_integration.models import BlockedTime
         from di_core.containers import container
 
         org, system_user, token, auth_service = self._setup_org_and_token()
@@ -5706,7 +5676,6 @@ class TestDeleteBlockedTimeMutation:
 
     def test_delete_blocked_time_happy_path(self):
         """A granted token deletes a blocked time; DB row is gone after deletion."""
-        from calendar_integration.models import BlockedTime
         from di_core.containers import container
 
         org, system_user, token, auth_service = self._setup_org_and_token()
@@ -5854,7 +5823,6 @@ class TestDeleteBlockedTimeMutation:
 
     def test_delete_blocked_time_recurring_removes_row(self):
         """A recurring blocked time (with rrule_string) is fully removed from the DB."""
-        from calendar_integration.models import BlockedTime
         from di_core.containers import container
 
         org, system_user, token, auth_service = self._setup_org_and_token()
@@ -6284,8 +6252,6 @@ class TestCreateCalendarBundleMutation:
         2. Query calendarBundles with the same token.
         3. Assert the new bundle id is present in the query result.
         """
-        import json
-
         from di_core.containers import container
 
         org = baker.make(Organization, name="Round-Trip Org")
@@ -7608,9 +7574,6 @@ class TestCreateScopedSystemUserMutation:
         - The persisted ResourceAccess rows exactly match the requested grants.
         - The plaintext token is NOT stored in the DB (only the hash).
         """
-        from common.utils.authentication_utils import verify_long_lived_token
-        from public_api.models import SystemUser
-
         org, caller_su, caller_token, auth_service = self._setup_caller()
         owner = self._make_org_member(org)
 
@@ -7685,14 +7648,10 @@ class TestCreateScopedSystemUserMutation:
         assert "don't have access" in str(data["errors"]).lower()
 
         # No SystemUser should have been created
-        from public_api.models import SystemUser
-
         assert not SystemUser.original_manager.filter(integration_name="no_scope_provider").exists()
 
     def test_owner_not_member_of_org_rejected(self):
         """Owner id that belongs to a different org is rejected; no token created."""
-        from public_api.models import SystemUser
-
         _org, caller_su, caller_token, auth_service = self._setup_caller()
 
         # Create a user in a different org — not a member of the caller's org
@@ -7727,8 +7686,6 @@ class TestCreateScopedSystemUserMutation:
 
     def test_nonexistent_owner_id_rejected(self):
         """A totally nonexistent user id is rejected; no token created."""
-        from public_api.models import SystemUser
-
         _org, caller_su, caller_token, auth_service = self._setup_caller()
 
         nonexistent_user_id = 99999999
@@ -7761,8 +7718,6 @@ class TestCreateScopedSystemUserMutation:
 
         E.g. USER or SYSTEM_USER are not in the provider allow-list.
         """
-        from public_api.models import SystemUser
-
         org, caller_su, caller_token, auth_service = self._setup_caller()
         owner = self._make_org_member(org)
 
@@ -7791,8 +7746,6 @@ class TestCreateScopedSystemUserMutation:
 
     def test_system_user_resource_in_available_resources_rejected(self):
         """SYSTEM_USER in availableResources is not in the provider allow-list → rejected."""
-        from public_api.models import SystemUser
-
         org, caller_su, caller_token, auth_service = self._setup_caller()
         owner = self._make_org_member(org)
 
@@ -7827,8 +7780,6 @@ class TestCreateScopedSystemUserMutation:
         - Exactly ONE SystemUser with that integration_name exists.
         - ResourceAccess count did not grow from the failed attempt.
         """
-        from public_api.models import SystemUser
-
         org, caller_su, caller_token, auth_service = self._setup_caller()
         owner = self._make_org_member(org)
 
@@ -7888,8 +7839,6 @@ class TestCreateScopedSystemUserMutation:
 
     def test_empty_available_resources_rejected(self):
         """Empty availableResources list is rejected; no token created."""
-        from public_api.models import SystemUser
-
         org, caller_su, caller_token, auth_service = self._setup_caller()
         owner = self._make_org_member(org)
 
@@ -7923,8 +7872,6 @@ class TestCreateScopedSystemUserMutation:
         The scoped SystemUser's ResourceAccess grants are only provider resources
         (CALENDAR, AVAILABLE_TIME), NOT SYSTEM_USER.
         """
-        from public_api.models import SystemUser
-
         # Build the org + a master caller token that has SYSTEM_USER scope
         org, _master_su, _master_token, auth_service = self._setup_caller(resources=["system_user"])
         owner = self._make_org_member(org)
@@ -7976,8 +7923,6 @@ class TestCreateScopedSystemUserMutation:
         An OrganizationMembership with is_active=False must not satisfy the owner
         validation, and no SystemUser/token row must be created.
         """
-        from public_api.models import SystemUser
-
         org, caller_su, caller_token, auth_service = self._setup_caller()
 
         # Create a user with an INACTIVE membership in the caller's org
@@ -8088,10 +8033,6 @@ class TestScopedTokenBlockedTimeWrites:
 
         Returns (user, membership, calendar).
         """
-        import uuid
-
-        from calendar_integration.models import CalendarOwnership
-
         user_model = get_user_model()
         unique = uuid.uuid4().hex[:8]
         owner = baker.make(user_model, email=f"owner_{unique}@example.com")
@@ -8117,8 +8058,6 @@ class TestScopedTokenBlockedTimeWrites:
 
         Returns (system_user, plaintext_token, auth_service).
         """
-        import uuid
-
         auth_service = PublicAPIAuthService()
         system_user, token = auth_service.create_system_user(
             integration_name=f"scoped_token_{uuid.uuid4().hex[:8]}",
@@ -8134,8 +8073,6 @@ class TestScopedTokenBlockedTimeWrites:
 
         Returns (system_user, plaintext_token, auth_service).
         """
-        import uuid
-
         auth_service = PublicAPIAuthService()
         system_user, token = auth_service.create_system_user(
             integration_name=f"org_wide_token_{uuid.uuid4().hex[:8]}",
@@ -8179,8 +8116,6 @@ class TestScopedTokenBlockedTimeWrites:
 
     def test_create_blocked_time_scoped_token_on_owned_calendar_succeeds(self):
         """A scoped token creates a blocked time on its owner's calendar."""
-        from calendar_integration.models import BlockedTime
-
         org = self._setup_org()
         _owner, membership, calendar = self._make_owner_with_calendar(org)
         system_user, token, auth_service = self._make_scoped_system_user(
@@ -8231,8 +8166,6 @@ class TestScopedTokenBlockedTimeWrites:
         success=False / errorMessage as a genuinely nonexistent calendar — revealing
         nothing about the target's existence.
         """
-        from calendar_integration.models import BlockedTime
-
         org = self._setup_org()
         # Two independent providers in the same org
         _owner_a, membership_a, _calendar_a = self._make_owner_with_calendar(org)
@@ -8424,8 +8357,6 @@ class TestScopedTokenBlockedTimeWrites:
 
     def test_delete_blocked_time_scoped_token_on_owned_calendar_succeeds(self):
         """A scoped token deletes a blocked time on its owner's calendar."""
-        from calendar_integration.models import BlockedTime
-
         org = self._setup_org()
         _owner, membership, calendar = self._make_owner_with_calendar(org)
         org_wide_su, _, _org_wide_auth = self._make_org_wide_system_user(
@@ -8470,8 +8401,6 @@ class TestScopedTokenBlockedTimeWrites:
 
         The blocked-time row must NOT be deleted when the token targets a cross-owner calendar.
         """
-        from calendar_integration.models import BlockedTime
-
         org = self._setup_org()
         _owner_a, membership_a, _calendar_a = self._make_owner_with_calendar(org)
         org_wide_su_b, _, _org_wide_auth_b = self._make_org_wide_system_user(
@@ -8545,8 +8474,6 @@ class TestScopedTokenBlockedTimeWrites:
         supplied calendar, so a foreign ``blocked_time_id`` on calendar B yields
         ``success=False`` and leaves B's row untouched.
         """
-        from calendar_integration.models import BlockedTime
-
         org = self._setup_org()
         # Provider A: scoped token, owns calendar A (in-scope for the token)
         _owner_a, membership_a, calendar_a = self._make_owner_with_calendar(org)
@@ -8625,8 +8552,6 @@ class TestScopedTokenBlockedTimeWrites:
         This is the no-regression assertion: the guard must be a structural no-op for
         org-wide tokens, leaving their behavior byte-for-byte unchanged.
         """
-        from calendar_integration.models import BlockedTime
-
         org = self._setup_org()
         # Calendar owned by a different provider — org-wide should not be blocked
         _other_owner, _other_membership, calendar = self._make_owner_with_calendar(org)
@@ -8699,8 +8624,6 @@ class TestScopedTokenBlockedTimeWrites:
 
     def test_delete_blocked_time_org_wide_token_unaffected_by_guard(self):
         """An org-wide token can delete blocked times on any calendar (guard is no-op)."""
-        from calendar_integration.models import BlockedTime
-
         org = self._setup_org()
         _other_owner, _other_membership, calendar = self._make_owner_with_calendar(org)
         system_user, token, auth_service = self._make_org_wide_system_user(
@@ -8920,8 +8843,6 @@ class TestScopedTokenAvailabilityWrites:
 
         Returns (user, membership, calendar).
         """
-        from calendar_integration.models import CalendarOwnership
-
         unique = uuid.uuid4().hex[:8]
         user_model = get_user_model()
         owner = baker.make(user_model, email=f"avail_owner_{unique}@example.com")
@@ -9940,8 +9861,6 @@ class TestScopedTokenScheduleEvent:
         happy path seeds a covering window, the no-availability test omits it.
         Returns (user, membership, calendar).
         """
-        from calendar_integration.models import CalendarOwnership
-
         unique = uuid.uuid4().hex[:8]
         user_model = get_user_model()
         owner = baker.make(user_model, email=f"sched_owner_{unique}@example.com")
@@ -9965,8 +9884,6 @@ class TestScopedTokenScheduleEvent:
 
     def _make_owner_with_bundle_calendar(self, org):
         """Create a provider who owns a BUNDLE calendar. Returns (user, membership, bundle)."""
-        from calendar_integration.models import CalendarOwnership
-
         unique = uuid.uuid4().hex[:8]
         user_model = get_user_model()
         owner = baker.make(user_model, email=f"sched_bundle_owner_{unique}@example.com")
@@ -10051,8 +9968,6 @@ class TestScopedTokenScheduleEvent:
 
     def test_schedule_event_scoped_token_on_owned_calendar_succeeds(self):
         """A scoped token schedules an event on its owner's calendar with a covering window."""
-        from calendar_integration.models import CalendarEvent
-
         org = self._setup_org()
         _owner, membership, calendar = self._make_owner_with_managing_calendar(org)
         system_user, token, auth_service = self._make_scoped_system_user(
@@ -10079,8 +9994,6 @@ class TestScopedTokenScheduleEvent:
 
     def test_schedule_event_recurring_persists_recurrence_rule(self):
         """A scoped token schedules a recurring event (rrule -> RecurrenceRule persisted)."""
-        from calendar_integration.models import CalendarEvent
-
         org = self._setup_org()
         _owner, membership, calendar = self._make_owner_with_managing_calendar(org)
         system_user, token, auth_service = self._make_scoped_system_user(
@@ -10106,8 +10019,6 @@ class TestScopedTokenScheduleEvent:
 
     def test_schedule_event_persists_internal_and_external_attendees(self):
         """Internal (active member) + external (email/name) attendees are persisted."""
-        from calendar_integration.models import EventAttendance, EventExternalAttendance
-
         org = self._setup_org()
         _owner, membership, calendar = self._make_owner_with_managing_calendar(org)
         system_user, token, auth_service = self._make_scoped_system_user(
@@ -10155,8 +10066,6 @@ class TestScopedTokenScheduleEvent:
 
     def test_schedule_event_out_of_org_attendee_clean_error_no_row(self):
         """An attendee who is not an active member of the org -> clean error, no event row."""
-        from calendar_integration.models import CalendarEvent
-
         org = self._setup_org()
         _owner, membership, calendar = self._make_owner_with_managing_calendar(org)
         system_user, token, auth_service = self._make_scoped_system_user(
@@ -10189,8 +10098,6 @@ class TestScopedTokenScheduleEvent:
 
     def test_schedule_event_cross_owner_not_found_same_as_missing_calendar(self):
         """Cross-owner calendar -> identical not-found as a genuinely missing calendar, no row."""
-        from calendar_integration.models import CalendarEvent
-
         org = self._setup_org()
         _owner_a, membership_a, _calendar_a = self._make_owner_with_managing_calendar(org)
         _owner_b, _membership_b, calendar_b = self._make_owner_with_managing_calendar(org)
@@ -10237,8 +10144,6 @@ class TestScopedTokenScheduleEvent:
 
     def test_schedule_event_org_wide_token_denied_no_row(self):
         """An org-wide token is denied (event creation stays blocked) with no row."""
-        from calendar_integration.models import CalendarEvent
-
         org = self._setup_org()
         _owner, _membership, calendar = self._make_owner_with_managing_calendar(org)
         system_user, token, auth_service = self._make_org_wide_system_user(
@@ -10274,8 +10179,6 @@ class TestScopedTokenScheduleEvent:
         is permitted for an owner-scoped token that owns the bundle calendar, parity with
         bundle reschedule/cancel.)
         """
-        from calendar_integration.models import CalendarEvent
-
         org = self._setup_org()
         _owner, membership, bundle = self._make_owner_with_bundle_calendar(org)
         system_user, token, auth_service = self._make_scoped_system_user(
@@ -10304,8 +10207,6 @@ class TestScopedTokenScheduleEvent:
 
     def test_schedule_event_no_availability_window_clean_error(self):
         """No covering availability window on a managed calendar -> clean error, no row."""
-        from calendar_integration.models import CalendarEvent
-
         org = self._setup_org()
         _owner, membership, calendar = self._make_owner_with_managing_calendar(org)
         system_user, token, auth_service = self._make_scoped_system_user(
@@ -10333,8 +10234,6 @@ class TestScopedTokenScheduleEvent:
 
     def test_schedule_event_title_too_long_clean_error(self):
         """A title exceeding the model max_length -> clean error before any write."""
-        from calendar_integration.models import CalendarEvent
-
         org = self._setup_org()
         _owner, membership, calendar = self._make_owner_with_managing_calendar(org)
         system_user, token, auth_service = self._make_scoped_system_user(
@@ -10362,8 +10261,6 @@ class TestScopedTokenScheduleEvent:
 
     def test_schedule_event_missing_calendar_event_grant_denied(self):
         """A scoped token without the CALENDAR_EVENT grant is denied by the permission class."""
-        from calendar_integration.models import CalendarEvent
-
         org = self._setup_org()
         _owner, membership, calendar = self._make_owner_with_managing_calendar(org)
         system_user, token, auth_service = self._make_scoped_system_user(
@@ -10428,8 +10325,6 @@ def _make_calendar_with_ownership(org) -> tuple:
 
     Returns (owner_user, membership, calendar).
     """
-    from calendar_integration.models import CalendarOwnership
-
     unique = uuid.uuid4().hex[:8]
     user_model = get_user_model()
     owner = baker.make(user_model, email=f"resched_owner_{unique}@example.com")
@@ -10452,8 +10347,6 @@ def _make_calendar_with_ownership(org) -> tuple:
 
 def _make_event_on_calendar(org, calendar, *, title="Meeting", **extra):
     """Create a minimal CalendarEvent on the given calendar via baker."""
-    from calendar_integration.models import CalendarEvent as _CalendarEvent
-
     return baker.make(
         _CalendarEvent,
         organization=org,
@@ -10472,9 +10365,6 @@ def _make_recurring_event_on_calendar(org, calendar) -> tuple:
 
     Returns (master_event, recurrence_rule).
     """
-    from calendar_integration.models import CalendarEvent as _CalendarEvent
-    from calendar_integration.models import RecurrenceRule
-
     rule = RecurrenceRule.from_rrule_string("FREQ=WEEKLY;COUNT=4;BYDAY=TH", organization=org)
     rule.save()
     master = _CalendarEvent.objects.create(
@@ -10563,8 +10453,6 @@ class TestScopedTokenRescheduleCalendarEvent:
 
     def test_reschedule_whole_event_times_change_title_preserved(self):
         """Scoped token reschedules its own event: times update, non-time fields preserved."""
-        from calendar_integration.models import CalendarEvent as _CalendarEvent
-
         org = baker.make(Organization, name="Resched Org")
         _owner, membership, calendar = _make_calendar_with_ownership(org)
         event = _make_event_on_calendar(org, calendar, title="Original Title")
@@ -10697,8 +10585,6 @@ class TestScopedTokenRescheduleCalendarEvent:
 
         The master event and its series rule must remain unchanged.
         """
-        from calendar_integration.models import EventRecurrenceException
-
         org = baker.make(Organization, name="Resched Occurrence Org")
         _owner, membership, calendar = _make_calendar_with_ownership(org)
         master, rule = _make_recurring_event_on_calendar(org, calendar)
@@ -10825,8 +10711,6 @@ class TestScopedTokenRescheduleCalendarEvent:
 
     def test_reschedule_org_wide_token_acts_org_wide(self):
         """An org-wide token can reschedule any event in the org."""
-        from calendar_integration.models import CalendarEvent as _CalendarEvent
-
         org = baker.make(Organization, name="Resched OrgWide Org")
         _owner, _membership, calendar = _make_calendar_with_ownership(org)
         event = _make_event_on_calendar(org, calendar)
@@ -10928,14 +10812,6 @@ class TestScopedTokenRescheduleCalendarEvent:
     def test_reschedule_whole_event_preserves_attendances_resources_description(self):
         """Whole-event reschedule keeps internal attendances, external attendances,
         resource allocations, and description — only times change."""
-        from calendar_integration.models import (
-            EventAttendance,
-            EventExternalAttendance,
-            ExternalAttendee,
-            ResourceAllocation,
-        )
-        from users.models import Profile
-
         org = baker.make(Organization, name="Resched Preserve Org")
         _owner, membership, calendar = _make_calendar_with_ownership(org)
 
@@ -11024,8 +10900,6 @@ class TestScopedTokenRescheduleCalendarEvent:
         event_id = int(result["id"])
 
         # Times changed.
-        from calendar_integration.models import CalendarEvent as _CalendarEvent
-
         updated = _CalendarEvent.objects.filter_by_organization(org.id).get(id=event_id)
         assert updated.start_time_tz_unaware.replace(tzinfo=None) == new_start.replace(tzinfo=None)
         assert updated.end_time_tz_unaware.replace(tzinfo=None) == new_end.replace(tzinfo=None)
@@ -11133,9 +11007,6 @@ def _make_grouped_event(org, group, primary_calendar, secondary_calendar):
 
     Returns (primary_event, blocked_time).
     """
-    from calendar_integration.models import BlockedTime as _BlockedTime
-    from calendar_integration.models import CalendarEvent as _CalendarEvent
-
     event = baker.make(
         _CalendarEvent,
         organization=org,
@@ -11226,8 +11097,6 @@ class TestScopedTokenRescheduleCalendarGroupEvent:
 
         Returns (owner_user, membership, primary_calendar, secondary_calendar, group).
         """
-        from calendar_integration.models import CalendarGroup, CalendarOwnership
-
         unique = uuid.uuid4().hex[:8]
         user_model = get_user_model()
         owner = baker.make(user_model, email=f"grp_owner_{unique}@example.com")
@@ -11265,9 +11134,6 @@ class TestScopedTokenRescheduleCalendarGroupEvent:
         """Scoped token reschedules its own grouped event: primary event times change AND
         the linked non-primary BlockedTime rows are updated to the new times.
         """
-        from calendar_integration.models import BlockedTime as _BlockedTime
-        from calendar_integration.models import CalendarEvent as _CalendarEvent
-
         org = baker.make(Organization, name="GroupResched Org")
         _owner, membership, primary_cal, secondary_cal, group = self._make_group_setup(org)
         grouped_event, blocked_time = _make_grouped_event(org, group, primary_cal, secondary_cal)
@@ -11323,8 +11189,6 @@ class TestScopedTokenRescheduleCalendarGroupEvent:
         The response error must be identical to a genuinely missing event, and
         neither the primary event nor the linked BlockedTime may change.
         """
-        from calendar_integration.models import BlockedTime as _BlockedTime
-
         org = baker.make(Organization, name="GroupResched CrossOwner Org")
         # Owner A: just used for token scoping.
         _owner_a, membership_a, _primary_cal_a, _secondary_cal_a, _group_a = self._make_group_setup(
@@ -11411,8 +11275,6 @@ class TestScopedTokenRescheduleCalendarGroupEvent:
 
     def test_reschedule_grouped_event_org_wide_token_acts_org_wide(self):
         """An org-wide token can reschedule any grouped event in the org."""
-        from calendar_integration.models import CalendarEvent as _CalendarEvent
-
         org = baker.make(Organization, name="GroupResched OrgWide Org")
         _owner, _membership, primary_cal, secondary_cal, group = self._make_group_setup(org)
         grouped_event, _blocked_time = _make_grouped_event(org, group, primary_cal, secondary_cal)
@@ -11510,10 +11372,6 @@ class TestScopedTokenRescheduleCalendarGroupEvent:
         Approach: monkeypatch ``reschedule_grouped_event`` to raise the sentinel
         PermissionDenied and assert the resolver returns the uniform not-found message.
         """
-        from unittest.mock import patch
-
-        from django.core.exceptions import PermissionDenied as _PermissionDenied
-
         org = baker.make(Organization, name="GroupResched Sentinel Org")
         _owner, membership, primary_cal, secondary_cal, group = self._make_group_setup(org)
         grouped_event, _blocked_time = _make_grouped_event(org, group, primary_cal, secondary_cal)
@@ -11554,10 +11412,6 @@ class TestScopedTokenRescheduleCalendarGroupEvent:
 
         Monkeypatches ``reschedule_grouped_event`` to raise the validation error.
         """
-        from unittest.mock import patch
-
-        from calendar_integration.exceptions import CalendarGroupValidationError
-
         org = baker.make(Organization, name="GroupResched ValidationErr Org")
         _owner, membership, primary_cal, secondary_cal, group = self._make_group_setup(org)
         grouped_event, _blocked_time = _make_grouped_event(org, group, primary_cal, secondary_cal)
@@ -11673,8 +11527,6 @@ class TestScopedTokenCancelEvent:
 
         Returns (owner_user, membership, primary_calendar, secondary_calendar, group).
         """
-        from calendar_integration.models import CalendarGroup, CalendarOwnership
-
         unique = uuid.uuid4().hex[:8]
         user_model = get_user_model()
         owner = baker.make(user_model, email=f"cancel_grp_owner_{unique}@example.com")
@@ -11710,8 +11562,6 @@ class TestScopedTokenCancelEvent:
 
     def test_cancel_single_event_success_row_gone(self):
         """Scoped token cancels its own non-recurring event → success=True and row is deleted."""
-        from calendar_integration.models import CalendarEvent as _CalendarEvent
-
         org = baker.make(Organization, name="Cancel Single Org")
         _owner, membership, calendar = _make_calendar_with_ownership(org)
         event = _make_event_on_calendar(org, calendar, title="Meeting to Cancel")
@@ -11748,9 +11598,6 @@ class TestScopedTokenCancelEvent:
         Materialises a child instance and an exception row before the mutation so that
         delete_event's instance/exception teardown is actually exercised.
         """
-        from calendar_integration.models import CalendarEvent as _CalendarEvent
-        from calendar_integration.models import EventRecurrenceException, RecurrenceRule
-
         org = baker.make(Organization, name="Cancel Series Org")
         _owner, membership, calendar = _make_calendar_with_ownership(org)
         master, rule = _make_recurring_event_on_calendar(org, calendar)
@@ -11830,9 +11677,6 @@ class TestScopedTokenCancelEvent:
         Also asserts that the cancelled occurrence is ABSENT from get_occurrences_in_range
         and that other occurrences remain present.
         """
-        from calendar_integration.models import CalendarEvent as _CalendarEvent
-        from calendar_integration.models import EventRecurrenceException, RecurrenceRule
-
         org = baker.make(Organization, name="Cancel Occurrence Org")
         _owner, membership, calendar = _make_calendar_with_ownership(org)
         master, rule = _make_recurring_event_on_calendar(org, calendar)
@@ -11905,9 +11749,6 @@ class TestScopedTokenCancelEvent:
 
     def test_cancel_grouped_event_deletes_primary_and_blocked_times(self):
         """Cancelling a grouped event deletes the primary CalendarEvent AND the linked BlockedTimes."""
-        from calendar_integration.models import BlockedTime as _BlockedTime
-        from calendar_integration.models import CalendarEvent as _CalendarEvent
-
         org = baker.make(Organization, name="Cancel Grouped Org")
         _owner, membership, primary_cal, secondary_cal, group = self._make_group_setup(org)
         grouped_event, blocked_time = _make_grouped_event(org, group, primary_cal, secondary_cal)
@@ -11954,8 +11795,6 @@ class TestScopedTokenCancelEvent:
         a cross-owner calendar_id and a genuinely non-existent calendar_id.  This does
         NOT leak the existence of B's calendar to A.
         """
-        from calendar_integration.models import CalendarEvent as _CalendarEvent
-
         org = baker.make(Organization, name="Cancel CrossOwner Org")
         # Owner A: used for scoped token.
         _owner_a, membership_a, _calendar_a = _make_calendar_with_ownership(org)
@@ -12013,8 +11852,6 @@ class TestScopedTokenCancelEvent:
 
     def test_cancel_org_wide_token_acts_org_wide(self):
         """An org-wide token can cancel any event in the org."""
-        from calendar_integration.models import CalendarEvent as _CalendarEvent
-
         org = baker.make(Organization, name="Cancel OrgWide Org")
         # Create an event on a calendar with a different owner.
         _owner, _membership, calendar = _make_calendar_with_ownership(org)
@@ -12063,8 +11900,6 @@ class TestScopedTokenCancelEvent:
         Callers who want to cancel ONE occurrence must supply recurrenceId.
         Callers who want the entire series deleted must supply deleteSeries=True.
         """
-        from calendar_integration.models import CalendarEvent as _CalendarEvent
-
         org = baker.make(Organization, name="Cancel MasterFootgun Org")
         _owner, membership, calendar = _make_calendar_with_ownership(org)
         master, _rule = _make_recurring_event_on_calendar(org, calendar)
@@ -12135,9 +11970,6 @@ class TestScopedTokenCancelEvent:
         token legitimately owns calendar X, the event lives on Y, so the lookup must
         return "Event not found." and the event must NOT be deleted.
         """
-        from calendar_integration.models import CalendarEvent as _CalendarEvent
-        from calendar_integration.models import CalendarOwnership
-
         org = baker.make(Organization, name="Cancel DiffCal Org")
         # Create two calendars for the same owner / membership.
         owner, membership, calendar_x = _make_calendar_with_ownership(org)
@@ -12196,8 +12028,6 @@ class TestScopedTokenCancelEvent:
 
     def test_cancel_event_missing_calendar_event_grant_denied(self):
         """A scoped token without the CALENDAR_EVENT grant is denied by the permission class."""
-        from calendar_integration.models import CalendarEvent as _CalendarEvent
-
         org = baker.make(Organization, name="Cancel NoGrant Org")
         _owner, membership, calendar = _make_calendar_with_ownership(org)
         event = _make_event_on_calendar(org, calendar, title="Should Not Be Cancelled")

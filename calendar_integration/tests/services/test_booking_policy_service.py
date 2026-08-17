@@ -38,6 +38,7 @@ from calendar_integration.models import (
 from calendar_integration.services.booking_policy_service import BookingPolicyService
 from calendar_integration.services.dataclasses import EffectivePolicy
 from organizations.models import Organization, OrganizationMembership
+from users.models import User
 
 
 # ---------------------------------------------------------------------------
@@ -61,8 +62,6 @@ def _calendar(org: Organization, **extra) -> Calendar:
 
 def _membership(org: Organization) -> int:
     """Create an OrganizationMembership and return its user_id (denormalized PK)."""
-    from users.models import User
-
     user: User = baker.make(User)
     OrganizationMembership.objects.create(user=user, organization=org)
     return user.id

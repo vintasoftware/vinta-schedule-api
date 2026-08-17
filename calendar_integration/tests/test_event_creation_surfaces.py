@@ -41,8 +41,13 @@ from calendar_integration.constants import (
 from calendar_integration.models import (
     Calendar,
     CalendarEvent,
+    CalendarGroup,
+    CalendarGroupSlot,
+    CalendarGroupSlotMembership,
     CalendarManagementToken,
     CalendarManagementTokenPermission,
+    CalendarOwnership,
+    CalendarSync,
 )
 from calendar_integration.services.calendar_permission_service import (
     DEFAULT_CALENDAR_OWNER_PERMISSIONS,
@@ -51,6 +56,7 @@ from calendar_integration.services.calendar_permission_service import (
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.calendar_sync_service import CalendarSyncService
 from calendar_integration.services.dataclasses import (
+    AvailableTimeWindow,
     CalendarEventAdapterOutputData,
     CalendarEventInputData,
 )
@@ -218,8 +224,6 @@ def _google_backed_owner(
     calendar-level token to resolve permissions from (mirrors
     ``test_calendar_event_service.py``'s ``calendar_owner_token`` fixture).
     """
-    from calendar_integration.models import CalendarManagementToken, CalendarOwnership
-
     user = User.objects.create_user(email=f"rest-{organization.pk}@example.com", password="x")
     Profile.objects.create(user=user)
     OrganizationMembership.objects.create(user=user, organization=organization, is_active=True)
@@ -472,8 +476,6 @@ def _scoped_system_user(
 def _owner_with_calendar(
     organization: Organization,
 ) -> tuple[User, OrganizationMembership, Calendar]:
-    from calendar_integration.models import CalendarOwnership
-
     owner = User.objects.create_user(
         email=f"sched-owner-{organization.pk}@example.com", password="x"
     )
@@ -703,12 +705,6 @@ mutation CreateCalendarGroupEventWithCode($input: CreateGroupEventWithCodeInput!
 
 
 def _group_with_one_slot(organization: Organization) -> tuple[object, object, Calendar]:
-    from calendar_integration.models import (
-        CalendarGroup,
-        CalendarGroupSlot,
-        CalendarGroupSlotMembership,
-    )
-
     calendar = baker.make(
         Calendar,
         organization=organization,
@@ -870,8 +866,6 @@ class TestBulkSyncWriterSurface:
         organization, _subscription = _at_the_allowance_no_payment_method()
         sync_service, calendar = _sync_setup(organization)
 
-        from calendar_integration.models import CalendarSync
-
         calendar_sync = CalendarSync.objects.create(
             organization=organization,
             calendar=calendar,
@@ -895,8 +889,6 @@ class TestBulkSyncWriterSurface:
         organization, subscription = _organization_with_postpaid_limit(None, BillingState.FREE)
         _seed_metered_occurrences(organization, subscription, 1)
         sync_service, calendar = _sync_setup(organization)
-
-        from calendar_integration.models import CalendarSync
 
         calendar_sync = CalendarSync.objects.create(
             organization=organization,
@@ -969,8 +961,6 @@ def _create_bundle_event_with_open_availability(
     the bundle service's own test suite does, leaving the postpaid guard, the
     permission checks, and every DB write completely real.
     """
-    from calendar_integration.services.dataclasses import AvailableTimeWindow
-
     availability_window = [
         AvailableTimeWindow(start_time=event_data.start_time, end_time=event_data.end_time)
     ]
@@ -1600,8 +1590,6 @@ class TestSyncRecoversOnceHeadroomIsRestored:
         organization, subscription = _organization_with_postpaid_limit(1, BillingState.FREE)
         _seed_metered_occurrences(organization, subscription, 1)
         sync_service, calendar = _sync_setup(organization)
-
-        from calendar_integration.models import CalendarSync
 
         calendar_sync = CalendarSync.objects.create(
             organization=organization,

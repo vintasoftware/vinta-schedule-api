@@ -12,6 +12,7 @@ from model_bakery import baker
 
 from calendar_integration.factories import create_booking_policy
 from calendar_integration.models import BookingPolicy, Calendar, CalendarGroup
+from organizations.models import OrganizationMembership
 
 
 def _make_calendar(org, **extra) -> Calendar:
@@ -20,8 +21,6 @@ def _make_calendar(org, **extra) -> Calendar:
 
 def _make_membership(org):
     """Create an active membership and return its denormalized user id."""
-    from organizations.models import OrganizationMembership
-
     user = baker.make("users.User")
     OrganizationMembership.objects.create(user=user, organization=org)
     return user.id
@@ -261,8 +260,6 @@ def test_membership_composite_fk_rejects_nonexistent_membership():
 @pytest.mark.django_db(transaction=True)
 def test_membership_delete_blocked_while_policy_live():
     """Deleting a membership referenced by a live policy is blocked at commit (deferred NO ACTION)."""
-    from organizations.models import OrganizationMembership
-
     org = baker.make("organizations.Organization")
     user = baker.make("users.User")
     membership = OrganizationMembership.objects.create(user=user, organization=org)

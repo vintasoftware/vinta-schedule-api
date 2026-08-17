@@ -2,7 +2,7 @@
 
 import django.db.transaction
 from django.contrib.auth import get_user_model
-from django.db import IntegrityError
+from django.db import IntegrityError, connection
 from django.urls import reverse
 
 import pytest
@@ -10,6 +10,7 @@ from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
 
+from calendar_integration.models import Calendar, CalendarOwnership
 from common.organization_services import memberships
 from organizations.models import (
     ExternalEventUpdatePolicy,
@@ -19,6 +20,7 @@ from organizations.models import (
 )
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import grant_membership_groups
+from users.factories import UserFactory
 
 
 User = get_user_model()
@@ -72,8 +74,6 @@ class TestInactiveMembershipGating:
 
     def _make_inactive_member_client(self):
         """Create a user with an inactive membership, return (user, APIClient)."""
-        from users.factories import UserFactory
-
         user = UserFactory().create_user()
         org = baker.make(Organization)
         baker.make(
@@ -88,8 +88,6 @@ class TestInactiveMembershipGating:
 
     def _make_active_member_client(self):
         """Create a user with an active membership, return (user, org, APIClient)."""
-        from users.factories import UserFactory
-
         user = UserFactory().create_user()
         org = baker.make(Organization)
         baker.make(
@@ -104,8 +102,6 @@ class TestInactiveMembershipGating:
 
     def test_inactive_membership_gets_empty_list_on_calendar_endpoint(self):
         """An inactive member gets an empty calendar list — not 500 or real data."""
-        from calendar_integration.models import Calendar
-
         _user, org, client = self._make_inactive_member_client()
         baker.make(Calendar, organization=org)
 
@@ -119,8 +115,6 @@ class TestInactiveMembershipGating:
 
     def test_active_membership_sees_calendars(self):
         """An active member can see their organization's calendars."""
-        from calendar_integration.models import Calendar, CalendarOwnership
-
         user, org, client = self._make_active_member_client()
         calendar = baker.make(Calendar, organization=org)
         # Non-admin members only list calendars they own (owner-scoping).
@@ -152,8 +146,6 @@ class TestInactiveMembershipGating:
         user object does not carry a stale cached membership (Django caches the
         reverse OneToOne result on the user instance).
         """
-        from calendar_integration.models import Calendar, CalendarOwnership
-
         user, org, client = self._make_inactive_member_client()
         calendar = baker.make(Calendar, organization=org)
         # Non-admin members only list calendars they own (owner-scoping).
@@ -249,8 +241,6 @@ class TestOrganizationParentAndCapabilities:
 
     def test_parent_protect_prevents_deletion_of_reseller_with_children(self):
         """on_delete=PROTECT prevents deleting a reseller that has children."""
-        from django.db import IntegrityError
-
         reseller = baker.make(Organization, can_invite_organizations=True)
         _child = baker.make(Organization, parent=reseller)
 
@@ -451,8 +441,6 @@ class TestWeekStart:
         ensuring that rows created before the migration (via raw SQL or the
         old schema) read the correct Monday default after migration 0018.
         """
-        from django.db import connection
-
         # Insert an Organization row without specifying week_start, so the
         # Postgres db_default applies. This simulates a row created before
         # the migration. Include all required columns to satisfy NOT NULL constraints.

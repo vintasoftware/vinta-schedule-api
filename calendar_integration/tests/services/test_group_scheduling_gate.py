@@ -27,6 +27,7 @@ from calendar_integration.constants import (
     CalendarType,
     EventManagementPermissions,
 )
+from calendar_integration.exceptions import CalendarGroupValidationError
 from calendar_integration.models import (
     AvailableTime,
     Calendar,
@@ -599,8 +600,6 @@ def test_bundle_can_perform_scheduling_still_keys_on_accepts_public_scheduling(o
     This is a backward-compat unit test: CalendarPermissionService.can_perform_scheduling
     is unchanged for bundle calendars.
     """
-    from calendar_integration.constants import CalendarType
-
     bundle_cal = Calendar.objects.create(
         organization=organization,
         name="Bundle",
@@ -657,9 +656,6 @@ def test_bundle_calendar_in_group_slot_is_rejected_by_create_grouped_event(
     CalendarGroupValidationError (not silently create a BlockedTime).
     This test locks in the existing _create_non_primary_blocked_times guard.
     """
-    from calendar_integration.constants import CalendarType
-    from calendar_integration.exceptions import CalendarGroupValidationError
-
     bundle_cal = Calendar.objects.create(
         organization=organization,
         name="Bundle",

@@ -3,6 +3,7 @@ Tests for MSOutlookCalendarAPIClient using pytest with mocked HTTP requests.
 """
 
 import datetime
+import json
 from unittest.mock import Mock, patch
 
 import pytest
@@ -29,8 +30,6 @@ def create_mock_response(status_code=200, json_data=None, content=None):
     if content is not None:
         mock_response.content = content
     elif json_data is not None:
-        import json
-
         mock_response.content = json.dumps(json_data).encode("utf-8")
     else:
         mock_response.content = b""

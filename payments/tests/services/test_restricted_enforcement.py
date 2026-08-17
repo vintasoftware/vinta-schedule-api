@@ -63,6 +63,7 @@ from payments.models import BillingPlan, PlanLimit, Subscription, SubscriptionPl
 from payments.services.entitlement_service import EntitlementService
 from payments.services.subscription_service import SubscriptionService
 from public_api.models import SystemUser
+from users.factories import UserFactory
 from users.models import User
 from webhooks.constants import WebhookEventType
 from webhooks.models import WebhookConfiguration
@@ -145,8 +146,6 @@ def _invite_member(organization: Organization) -> None:
 
 
 def _reactivate_member(organization: Organization) -> None:
-    from users.factories import UserFactory
-
     membership = baker.make(
         OrganizationMembership,
         organization=organization,
@@ -235,8 +234,6 @@ def _group_scoped_membership(
     ``CalendarOwnership`` row -- ``can_manage_group_scoped_calendar_config``
     grants org admins unconditionally.
     """
-    from users.factories import UserFactory
-
     admin_user = UserFactory().create_user()
     make_membership(
         user=admin_user,
@@ -912,8 +909,6 @@ class TestRestrictedOrganizationBillingSurfaceStaysOpen:
     driving the real HTTP endpoints for a RESTRICTED organization."""
 
     def _client_for_restricted_org(self):
-        from users.factories import UserFactory
-
         user = UserFactory().create_user()
         organization = baker.make(Organization, parent=None, can_invite_organizations=False)
         pro_plan = _plan({LimitedResource.ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50"))

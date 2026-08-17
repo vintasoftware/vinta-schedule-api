@@ -225,6 +225,13 @@ class CalendarSyncService:
         start_time: datetime.datetime,
         end_time: datetime.datetime,
     ) -> None:
+        # Late, and it has to be: ``calendar_integration.tasks`` imports
+        # ``calendar_integration.tasks.calendar_sync_tasks``, which imports
+        # ``calendar_integration.services.calendar_service``, which imports this
+        # module -- a module-scope import here fails with ``ImportError: cannot
+        # import name 'CalendarService' from partially initialized module``.
+        # Every ``calendar_integration.tasks`` import in this file is late for
+        # that one reason; imports of anything else belong at the top.
         from calendar_integration.tasks import import_organization_calendar_resources_task
 
         context = cast("BaseCalendarService", self._context)
@@ -504,6 +511,7 @@ class CalendarSyncService:
             calendar is also synced. Pass False to only discover/refresh calendar
             rows without pulling events.
         """
+        # Late for the cycle stated in ``request_organization_calendar_resources_import``.
         from calendar_integration.tasks import import_account_calendars_task
 
         context = cast("BaseCalendarService", self._context)
@@ -721,6 +729,7 @@ class CalendarSyncService:
         :param trigger_source: What kicked off this sync (import/manual/webhook/admin).
         :return: Created CalendarSync instance, or None if the calendar has sync disabled.
         """
+        # Late for the cycle stated in ``request_organization_calendar_resources_import``.
         from calendar_integration.tasks import sync_calendar_task
 
         context = cast("BaseCalendarService", self._context)

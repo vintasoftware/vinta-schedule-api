@@ -36,10 +36,12 @@ from django.urls import reverse
 import pytest
 from allauth.account.models import EmailAddress
 from allauth.socialaccount.models import SocialLogin
+from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
 
 from accounts.account_adapters import SocialAccountAdapter
+from common.organization_services import memberships
 from organizations.authorization import membership_holds_permission
 from organizations.models import (
     Organization,
@@ -146,8 +148,6 @@ class TestSocialGatedOnboarding:
         descriptor), the gating invariant is confirmed by checking the queryset
         is empty rather than expecting RelatedObjectDoesNotExist.
         """
-        from common.organization_services import memberships
-
         user = _social_save_user("gated@social.example.com")
 
         assert user.memberships.count() == 0
@@ -311,12 +311,8 @@ class TestSocialSignupCrossOrgInviteAccept:
            and joins the user to org B as MEMBER.
         5. After save_user returns, the user has TWO active memberships (org A + org B).
         """
-        from model_bakery import baker
-
         # Create user already a member of org A.
         user = baker.make(User, email="crossorg_social@example.com")
-        from users.models import Profile
-
         Profile.objects.get_or_create(
             user=user, defaults={"first_name": "Cross", "last_name": "Org"}
         )

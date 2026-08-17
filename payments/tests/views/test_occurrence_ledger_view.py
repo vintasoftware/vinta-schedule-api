@@ -38,6 +38,7 @@ from organizations.tests.helpers import make_membership
 from payments.models import MeteredOccurrence
 from payments.pagination import LargeLimitOffsetPagination
 from payments.services.subscription_service import current_billing_period_start
+from users.factories import UserFactory
 
 
 def occurrences_url() -> str:
@@ -327,8 +328,6 @@ class TestEventEnrichment:
     def test_row_with_a_live_event_reports_title_calendar_and_owners(
         self, auth_client, admin_membership, root, subscription
     ):
-        from users.factories import UserFactory
-
         owner = UserFactory().create_user(first_name="Dana", last_name="Reyes")
         calendar = baker.make(Calendar, organization=root, name="Team")
         create_calendar_ownership(calendar=calendar, user=owner)

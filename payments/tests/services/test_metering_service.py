@@ -19,6 +19,8 @@ import datetime
 from decimal import Decimal
 from unittest.mock import patch
 
+from django.db import IntegrityError
+
 import pytest
 from dateutil.relativedelta import relativedelta
 from freezegun import freeze_time
@@ -292,7 +294,6 @@ class TestIdempotence:
         application-level "have I seen this?" check instead of by the database.
         This is the test that distinguishes the two.
         """
-        from django.db import IntegrityError
 
         def _row() -> MeteredOccurrence:
             return MeteredOccurrence(

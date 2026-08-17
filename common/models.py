@@ -7,6 +7,8 @@ from django.utils.translation import gettext_lazy as _
 
 from model_utils.fields import AutoCreatedField, AutoLastModifiedField
 
+from common.managers import unscoped_default_manager
+
 
 #: The field every organization-scoped model in this project relates to
 #: ``Organization`` through -- ``SingleOrganizationModelMixin.organization``.
@@ -166,8 +168,6 @@ class UnscopedUniqueChecksMixin(models.Model):
         abstract = True
 
     def validate_unique(self, exclude: Any = None) -> None:
-        from common.managers import unscoped_default_manager
-
         with unscoped_default_manager():
             super().validate_unique(exclude=exclude)
 

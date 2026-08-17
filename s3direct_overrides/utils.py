@@ -12,9 +12,13 @@ def generate_unique_id():
 
 
 def get_signed_url(value):
-    from common.media_storage_backend import (
-        MediaStorage,
-    )
+    # Late, and it has to be: ``MediaStorage`` is the seam
+    # ``s3direct_overrides/tests/test_model_fields.py::test_get_signed_url``
+    # swaps out, at its definition module (``monkeypatch.setattr(
+    # "common.media_storage_backend.MediaStorage", DummyStorage)``). Bound at
+    # module scope here, this function would hold the real S3 storage class and
+    # ignore the substitution.
+    from common.media_storage_backend import MediaStorage
 
     if not isinstance(value, str):
         # FieldFile from ORM — extract stored key so endpoint replacement applies

@@ -43,6 +43,10 @@ import contextlib
 from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING, Any
 
+from django.db.models.sql.compiler import SQLCompiler
+
+from vinta_orgs.mixins import SingleOrganizationModelMixin
+
 from common.organization_context import get_current_organization
 
 
@@ -69,8 +73,6 @@ def _is_organization_scoped(model: type[Model] | None) -> bool:
     """
     if model is None:
         return False
-
-    from vinta_orgs.mixins import SingleOrganizationModelMixin
 
     return issubclass(model, SingleOrganizationModelMixin)
 
@@ -174,12 +176,6 @@ def assert_all_scoped_queries_are_bound() -> Iterator[list[str]]:
     caller can collect violations without failing (e.g. to assert on the exact
     list contents).
     """
-    # Deferred: this module can be imported before ``django.setup()`` completes
-    # (``conftest.py`` imports it from inside a fixture body, but pytest collects
-    # ``conftest.py`` itself earlier than that), and importing anything that
-    # touches Django's ORM at that point risks ``AppRegistryNotReady``.
-    from django.db.models.sql.compiler import SQLCompiler
-
     unbound_calls: list[str] = []
 
     def _guard(original: Callable) -> Callable:

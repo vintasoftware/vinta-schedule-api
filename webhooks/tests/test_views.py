@@ -1,7 +1,9 @@
+import datetime
 import json
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.db import connection
 from django.urls import reverse
 
 import pytest
@@ -163,8 +165,6 @@ class TestWebhookConfigurationViewSet:
         active_config = WebhookTestFactory.create_webhook_configuration(organization=organization)
 
         # Create deleted configuration
-        import datetime
-
         WebhookTestFactory.create_webhook_configuration(
             organization=organization, deleted_at=datetime.datetime.now(tz=datetime.UTC)
         )
@@ -291,8 +291,6 @@ class TestWebhookConfigurationViewSet:
         config_id = webhook_configuration.pk
 
         # Query the database directly to check if deleted_at was set
-        from django.db import connection
-
         with connection.cursor() as cursor:
             cursor.execute(
                 "SELECT deleted_at FROM webhooks_webhookconfiguration WHERE id = %s", [config_id]

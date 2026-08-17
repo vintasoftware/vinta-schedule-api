@@ -30,10 +30,12 @@ import datetime
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser
+from django.utils import timezone
 
 import pytest
 from model_bakery import baker
 
+from common.organization_context import get_current_organization
 from organizations.exceptions import (
     BrandingEntitlementRequiredError,
     OrganizationHasParentBrandingError,
@@ -61,8 +63,6 @@ pytestmark = pytest.mark.no_auto_subscription
 
 
 def _organization(*, entitled: bool, **kwargs) -> Organization:
-    from django.utils import timezone
-
     organization = baker.make(Organization, **kwargs)
     now = timezone.now()
     subscription = baker.make(
@@ -296,8 +296,6 @@ class TestUserAdministersBrandingEligibleOrganization:
         """
         user = baker.make(User)
         make_membership(user=user, organization=entitled, groups=[GROUP_ORGANIZATION_ADMIN])
-
-        from common.organization_context import get_current_organization
 
         assert get_current_organization() is None
         assert user_administers_branding_eligible_organization(user) is True

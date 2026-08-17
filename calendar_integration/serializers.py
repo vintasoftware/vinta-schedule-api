@@ -4,6 +4,7 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING, Annotated, TypedDict, cast
 
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db.models import Q
 
 import django_virtual_models as v
 from allauth.socialaccount.models import SocialAccount
@@ -379,8 +380,6 @@ class CalendarBundleUpdateSerializer(serializers.Serializer):
         org_id = active_membership.organization_id if active_membership else None
 
         if org_id:
-            from django.db.models import Q
-
             # The bundle being updated is passed as `instance`.
             bundle = self.instance
 
@@ -1210,8 +1209,6 @@ class CalendarEventSerializer(VirtualModelSerializer):
 
     def update(self, instance: CalendarEvent, validated_data: dict) -> CalendarEvent:
         if not self.calendar_service:
-            from calendar_integration.exceptions import CalendarServiceNotInjectedError
-
             raise CalendarServiceNotInjectedError(
                 "calendar_service is not defined, please configure your DI container correctly"
             )
@@ -1922,8 +1919,6 @@ class BulkBlockedTimeSerializer(serializers.Serializer):
     def save(self, **kwargs):
         """Create multiple blocked times using calendar service."""
         if not self.calendar_service:
-            from calendar_integration.exceptions import CalendarServiceNotInjectedError
-
             raise CalendarServiceNotInjectedError(
                 "calendar_service is not defined, please configure your DI container correctly"
             )

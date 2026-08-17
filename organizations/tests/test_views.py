@@ -1,7 +1,10 @@
+import datetime
 import json
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Permission
+from django.contrib.contenttypes.models import ContentType
 from django.urls import reverse
 from django.utils import timezone
 
@@ -9,6 +12,7 @@ import pytest
 from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
+from rest_framework_simplejwt.tokens import AccessToken
 
 from calendar_integration.models import GoogleCalendarServiceAccount
 from common.organization_context import get_current_organization
@@ -27,6 +31,7 @@ from organizations.tests.helpers import grant_membership_groups, make_membership
 from organizations.views import OrganizationViewSet
 from payments.billing_constants import BillingState
 from payments.models import Subscription
+from users.factories import UserFactory
 
 
 User = get_user_model()
@@ -190,8 +195,6 @@ class TestOrganizationViewSet:
         was never exercised. This drives the actual reported flow end-to-end (no
         mocks) over a Bearer access token.
         """
-        from rest_framework_simplejwt.tokens import AccessToken
-
         client = APIClient()
         client.credentials(HTTP_AUTHORIZATION=f"Bearer {AccessToken.for_user(user)}")
 
@@ -384,9 +387,6 @@ class TestOrganizationViewSet:
         self, user, permission_codename, permission_model, expected_status
     ):
         """PATCH reads its declared capability, not the broader admin capability."""
-        from django.contrib.auth.models import Permission
-        from django.contrib.contenttypes.models import ContentType
-
         organization = OrganizationTestFactory.create_organization(name="Direct Capability Org")
         membership = make_membership(
             user=user,
@@ -541,8 +541,6 @@ class TestOrganizationSlugUpdate:
     """
 
     def _make_admin_client(self, organization):
-        from users.factories import UserFactory
-
         user = UserFactory().create_user()
         make_membership(
             user=user,
@@ -1852,8 +1850,6 @@ class TestOrganizationMembershipViewSet:
 
     def test_retrieve_member_includes_profile_info(self, auth_client, user):
         """Test that member serialization includes user profile information"""
-        from users.factories import UserFactory
-
         organization = OrganizationTestFactory.create_organization(name="Test Org")
         make_membership(
             user=user,
@@ -2044,9 +2040,6 @@ class TestOrganizationMembershipViewSet:
         divergence between ``deactivate`` and ``assign_groups`` this guard was
         made to close.
         """
-        from django.contrib.auth.models import Permission
-        from django.contrib.contenttypes.models import ContentType
-
         organization = OrganizationTestFactory.create_organization(name="Test Org")
         caller_membership = make_membership(
             user=user,
@@ -2327,8 +2320,6 @@ class TestOrganizationMembershipViewSet:
         return organization
 
     def _make_member(self, organization, first_name, last_name, email):
-        from users.factories import UserFactory
-
         member_user = UserFactory().create_user(email=email)
         member_user.profile.first_name = first_name
         member_user.profile.last_name = last_name
@@ -2528,8 +2519,6 @@ class TestSyncRoomsAction:
         The view calls request_rooms_sync directly (no view-level
         on_commit); the service owns the on_commit deferral internally.
         """
-        import datetime
-
         organization = OrganizationTestFactory.create_organization(name="Explicit Sync Org")
         admin_client = self._make_admin_client(user, organization)
         # Pre-flight requires a service account; provide one.
@@ -2736,8 +2725,6 @@ class TestShouldSyncRoomsTransition:
     @patch("organizations.services.OrganizationService.request_rooms_sync")
     def test_patch_membership_less_user_returns_403(self, mock_sync):
         """Membership-less authenticated user PATCH → 403; sync NOT fired."""
-        from users.factories import UserFactory
-
         membership_less_user = UserFactory().create_user()
         organization = baker.make(Organization, name="No Member Org", should_sync_rooms=False)
 
@@ -3280,9 +3267,6 @@ class TestServiceAccountCRUD:
         self, user, permission_codename, permission_model, operation, expected_status
     ):
         """Credential reads and rotation retain the service-account admin contract."""
-        from django.contrib.auth.models import Permission
-        from django.contrib.contenttypes.models import ContentType
-
         organization = baker.make(Organization, name="Direct service account capability org")
         membership = make_membership(
             user=user,
