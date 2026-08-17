@@ -36,6 +36,8 @@ from calendar_integration.database_functions import (
     GetEventOccurrencesWithBulkModificationsJSON,
 )
 from common.querysets import OrganizationScopedQuerySet
+from organizations.authorization import membership_holds_permission
+from organizations.permission_catalog import MANAGE_MEMBERS
 
 
 if TYPE_CHECKING:
@@ -1199,14 +1201,17 @@ class ExternalEventChangeRequestQuerySet(OrganizationScopedQuerySet):
             A filtered ``ExternalEventChangeRequestQuerySet`` containing only the
             change requests the membership can resolve.
         """
+        # Late, and it has to be: ``models`` imports its managers, which import
+        # this module, so a module-scope import here is a cycle --
+        # ``ImportError: cannot import name ... from partially initialized
+        # module``. Every ``calendar_integration.models`` import in this file is
+        # late for that one reason. Imports of anything else belong at the top.
         from calendar_integration.models import EventAttendance  # noqa: PLC0415
-        from organizations.authorization import membership_holds_permission  # noqa: PLC0415
-        from organizations.permission_catalog import MANAGE_MEMBERS  # noqa: PLC0415
 
-        # ``membership.is_admin`` until Phase 6 of the vinta-django-orgs
-        # migration dropped the ``role`` column it read. Same set: the
-        # ``organization_admin`` group every admin membership was backfilled
-        # into is the only seeded group carrying ``manage_members``.
+        # Reads the capability rather than a role column: the
+        # ``organization_admin`` group is the only seeded group carrying
+        # ``manage_members``, so this names the same set the removed
+        # ``membership.is_admin`` did.
         if membership_holds_permission(membership, MANAGE_MEMBERS):
             return self
 
