@@ -99,9 +99,11 @@ class TestCreateSystemUserLimit:
         assert exc_info.value.resource_key == LimitedResource.PUBLIC_API_SYSTEM_USERS
         assert exc_info.value.current_usage == 1
         assert exc_info.value.limit == 1
-        assert not SystemUser.objects.filter(
-            organization=organization, integration_name="blocked-integration"
-        ).exists()
+        assert (
+            not SystemUser.objects.filter_by_organization(organization)
+            .filter(integration_name="blocked-integration")
+            .exists()
+        )
 
     def test_revoked_and_deleted_system_users_free_capacity(self, service):
         """Neither an ``is_active=False`` (revoked) nor a soft-deleted row may count

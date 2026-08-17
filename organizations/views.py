@@ -167,7 +167,9 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
 
         Instead, after ``perform_create`` we look up the just-created membership
         directly and stash it on the request so the re-fetch (via
-        ``get_queryset``) is scoped to the new organization.
+        ``get_queryset``) is scoped to the new organization -- and bind that
+        organization to the context, which is the half of the base mixin's
+        re-resolve that still applies here.
         """
         serializer = self.get_create_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -201,6 +203,15 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
         request.organization = (  # type: ignore[attr-defined]
             new_membership.organization if new_membership is not None else None
         )
+        # ...and bind what was just stashed. Skipping the base mixin's
+        # post-create ``_resolve_active_organization`` also skips its re-bind, so
+        # without this line the context stays on whatever ``initial()`` resolved
+        # -- ``None`` for a first-time creator, or organization A for an existing
+        # member who sent ``X-Organization-Id: A`` while creating organization B
+        # -- while every line below reads the *new* organization off the request.
+        # The re-fetch and the serializer would then run through default managers
+        # scoped to a different organization than the one being returned.
+        self._bind_active_organization(request.organization)  # type: ignore[attr-defined]
 
         # Re-fetch the instance so any annotations/virtual-model fields on
         # OrganizationVirtualModel are populated.  Mirror the base
@@ -270,8 +281,8 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
             if sa_data is not None:
                 # A RESTRICTED organization may not write, and the service-account
                 # upsert below is a real user-initiated write on an
-                # ``OrganizationModel`` (``GoogleCalendarServiceAccount``) -- block it
-                # here, the same check every other blocked write consults.
+                # organization-scoped model (``GoogleCalendarServiceAccount``) --
+                # block it here, the same check every other blocked write consults.
                 self.organization_service.entitlement_service.check_not_restricted(instance)
                 GoogleCalendarServiceAccount.objects.filter_by_organization(instance.id).filter(
                     calendar_fk__isnull=True

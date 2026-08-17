@@ -189,13 +189,14 @@ class AuditAdmin(admin.ModelAdmin):
     def get_queryset(self, request: HttpRequest):  # type: ignore[override]
         """Return the unscoped queryset for the Audit model.
 
-        The tenant-scoped default manager raises ``ImproperlyConfigured`` when
-        queried without an ``organization_id`` filter.  The Django admin's
-        change/delete view infrastructure calls ``get_queryset`` before checking
-        permissions, which would crash with a 500.  Using ``original_manager``
-        (the unscoped manager added by ``OrganizationModel``) avoids that crash
-        while still honouring the fact that all three permission methods return
-        ``False`` (so no actual change or delete will ever occur).
+        The tenant-scoped default manager raises ``OrganizationNotFoundError``
+        when no organization is bound to the context, and nothing binds one for a
+        staff request.  The Django admin's change/delete view infrastructure
+        calls ``get_queryset`` before checking permissions, which would crash
+        with a 500.  Using ``original_manager`` (the unscoped manager
+        ``SingleOrganizationModelMixin`` adds) avoids that crash while still
+        honouring the fact that all three permission methods return ``False``
+        (so no actual change or delete will ever occur).
 
         This queryset is only used by Django's internal view plumbing, NOT by the
         ``changelist_view`` override (which reads exclusively from the repository).

@@ -11,6 +11,7 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from calendar_integration.models import GoogleCalendarServiceAccount
+from common.organization_context import get_current_organization
 from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
 from organizations.exceptions import InvalidInvitationTokenError
 from organizations.models import (
@@ -21,6 +22,7 @@ from organizations.models import (
     OrganizationRole,
     WeekStart,
 )
+from organizations.views import OrganizationViewSet
 from payments.billing_constants import BillingState
 from payments.models import Subscription
 
@@ -260,6 +262,47 @@ class TestOrganizationViewSet:
         new_org_id = response_data["id"]
         new_membership = OrganizationMembership.objects.get(user=user, organization_id=new_org_id)
         assert new_membership.role == OrganizationRole.ADMIN
+
+    def test_create_organization_binds_the_new_organization(
+        self, auth_client, user, organization_with_membership
+    ):
+        """The context follows ``request.organization`` through the post-create half.
+
+        ``create`` is overridden here and skips the base mixin's post-write
+        ``_resolve_active_organization`` (and therefore its re-bind), stashing the
+        new organization on the request by hand instead. Everything after that --
+        the ``get_queryset`` re-fetch, the retrieve serializer, any virtual-model
+        annotation -- reads through organization-scoped default managers. With an
+        existing member creating a *second* organization while naming their first
+        in ``X-Organization-Id``, a missing re-bind leaves those lines scoped to
+        organization A while the request says B, which is the disagreement this
+        pins.
+        """
+        observed: list[int | None] = []
+        original_get_retrieve_serializer = OrganizationViewSet.get_retrieve_serializer
+
+        def _recording_get_retrieve_serializer(self, *args, **kwargs):
+            bound = get_current_organization()
+            observed.append(None if bound is None else bound.pk)
+            return original_get_retrieve_serializer(self, *args, **kwargs)
+
+        url = reverse("api:Organizations-list")
+        with patch.object(
+            OrganizationViewSet, "get_retrieve_serializer", _recording_get_retrieve_serializer
+        ):
+            response = auth_client.post(
+                url,
+                {"name": "Bound Organization"},
+                format="json",
+                HTTP_X_ORGANIZATION_ID=str(organization_with_membership.pk),
+            )
+
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        new_org_id = response.json()["id"]
+        assert new_org_id != organization_with_membership.pk
+        assert observed == [new_org_id]
+        # ...and the request left nothing bound behind it.
+        assert get_current_organization() is None
 
     def test_create_organization_unauthenticated(self, anonymous_client):
         """Test creating an organization without authentication"""

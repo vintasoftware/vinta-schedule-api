@@ -1295,6 +1295,70 @@ class TestGraphQLQueries:
         assert events[0]["id"] == str(event.id)
         assert events[0]["title"] == "Test Event"
 
+    def test_calendar_events_query_returns_external_attendees(
+        self, mock_rate_limiter, graphql_client, calendar
+    ):
+        """``externalAttendees`` carries real rows on the partner-facing API.
+
+        It used to be permanently ``[]``: the many-to-many went through an
+        auto-created table with no ``organization`` column, so the join could not
+        be made organization-safe and the field returned nothing. Phase 2b
+        repointed it at ``EventExternalAttendance`` with ``through_fields``
+        naming the safe relations, which is a visible change to this contract --
+        pinned here so the decision is auditable from the API surface rather than
+        only from the model layer.
+        """
+        mock_rate_limiter.return_value = iter([None])
+
+        event = baker.make(
+            CalendarEvent,
+            calendar_fk=calendar,
+            organization=calendar.organization,
+            title="Event With Guests",
+            start_time_tz_unaware=datetime.datetime(2025, 9, 2, 10, 0, tzinfo=datetime.UTC),
+            end_time_tz_unaware=datetime.datetime(2025, 9, 2, 11, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+            external_id="event-with-guests",
+        )
+        attendee = baker.make(
+            ExternalAttendee,
+            organization=calendar.organization,
+            email="guest@example.com",
+            name="Guest",
+        )
+        baker.make(
+            EventExternalAttendance,
+            organization=calendar.organization,
+            event_fk=event,
+            external_attendee_fk=attendee,
+        )
+
+        query = """
+            query GetCalendarEvents($eventId: Int) {
+                calendarEvents(eventId: $eventId) {
+                    id
+                    externalAttendees {
+                        id
+                        email
+                        name
+                    }
+                }
+            }
+        """
+
+        response = graphql_client.post(
+            "/graphql/",
+            data=json.dumps({"query": query, "variables": {"eventId": event.id}}),
+            content_type="application/json",
+        )
+
+        data = assert_graphql_success(response)
+        events = data["calendarEvents"]
+        assert len(events) == 1
+        assert events[0]["externalAttendees"] == [
+            {"id": str(attendee.id), "email": "guest@example.com", "name": "Guest"}
+        ]
+
     def test_calendar_events_query_missing_required_params(self, mock_rate_limiter, graphql_client):
         """Test calendar events query without required parameters."""
         # Mock rate limiter to allow requests

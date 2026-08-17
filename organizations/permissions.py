@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Annotated
 from dependency_injector.wiring import Provide, inject
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import BasePermission
+from vinta_orgs.mixins import SingleOrganizationModelMixin
 
 from organizations.exceptions import (
     BrandingEntitlementRequiredError,
@@ -15,7 +16,6 @@ from organizations.models import (
     Organization,
     OrganizationInvitation,
     OrganizationMembership,
-    OrganizationModel,
     OrganizationRole,
     get_active_organization_membership,
 )
@@ -298,7 +298,7 @@ class OrganizationManagementPermission(BasePermission):
         return view.action != "create" and (
             (isinstance(obj, Organization) and membership.organization_id == obj.id)
             or (
-                isinstance(obj, OrganizationModel)
+                isinstance(obj, SingleOrganizationModelMixin)
                 and membership.organization_id == obj.organization_id
             )
         )
@@ -339,7 +339,8 @@ class IsOrganizationAdmin(BasePermission):
     - `has_object_permission`: additionally enforces that the object's organization matches
       the membership organization and delegates the "is this user an admin of this object's org"
       decision to `User.is_organization_admin(organization_id)` so the rule has a single
-      implementation. Handles both Organization instances and OrganizationModel subclasses.
+      implementation. Handles both Organization instances and organization-scoped
+      (`SingleOrganizationModelMixin`) subclasses.
     """
 
     def has_permission(self, request, view) -> bool:
@@ -360,10 +361,10 @@ class IsOrganizationAdmin(BasePermission):
             obj_organization_id = obj.id
         elif isinstance(obj, OrganizationMembership):
             obj_organization_id = obj.organization_id
-        elif isinstance(obj, OrganizationModel):
+        elif isinstance(obj, SingleOrganizationModelMixin):
             obj_organization_id = obj.organization_id
         else:
-            # Handle SystemUser and other objects with an organization FK
+            # Handle objects that carry a plain ``organization`` FK
             if hasattr(obj, "organization_id"):
                 obj_organization_id = obj.organization_id
             else:

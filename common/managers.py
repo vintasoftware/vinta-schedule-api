@@ -1,4 +1,6 @@
-from collections.abc import Iterable
+import contextlib
+from collections.abc import Iterable, Iterator
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 from vinta_orgs.managers import SingleOrganizationModelManager
@@ -6,6 +8,50 @@ from vinta_orgs.managers import SingleOrganizationModelManager
 
 if TYPE_CHECKING:
     from organizations.models import Organization
+
+
+#: True while :func:`unscoped_default_manager` is active. Read by
+#: :meth:`OrganizationScopedManager.get_queryset`.
+_default_manager_is_unscoped: ContextVar[bool] = ContextVar(
+    "common.managers.default_manager_is_unscoped", default=False
+)
+
+
+@contextlib.contextmanager
+def unscoped_default_manager() -> Iterator[None]:
+    """Make ``objects`` behave as ``original_manager`` for the duration of a block.
+
+    An escape hatch for the handful of places where *Django itself* reaches for
+    ``Model._default_manager`` and there is no argument to redirect it. Both
+    known callers are code that has to work outside any tenant:
+
+    * **Django's uniqueness pre-check.** ``Model.validate_unique`` probes through
+      ``model_class._default_manager``. On a scoped model that is the wrong
+      manager twice over: it *raises* wherever no organization is bound (which
+      is everywhere a ``ModelForm`` runs in the admin), and it would be *wrong*
+      if it ran -- a ``UNIQUE`` index is global, so a probe confined to one
+      organization can report "free" for a value another organization already
+      holds, turning a friendly field error into an ``IntegrityError`` from the
+      ``INSERT``. ``SystemUser.integration_name`` is exactly that shape. Applied
+      by :class:`common.models.UnscopedUniqueChecksMixin`.
+    * **The Django admin's form fields.** ``ForeignKey.formfield`` evaluates
+      ``remote_field.model._default_manager.using(db)`` *eagerly*, inside the
+      dict literal it hands to ``super().formfield()`` -- so it runs before any
+      ``queryset=`` a ``ModelAdmin`` supplies, and no override can prevent it.
+      The admin is deliberately cross-organization (see
+      ``organizations/admin.py``), so unscoping is also what it wants.
+
+    **Not a general "turn tenancy off" switch.** It unscopes *every* query on
+    every scoped model inside the block, so keep the block down to the single
+    call that needs it. Reaching outside one organization anywhere else is
+    spelled ``unscoped()`` / ``original_manager`` / ``filter_by_organization()``
+    at the call site, where a reader can see it.
+    """
+    token = _default_manager_is_unscoped.set(True)
+    try:
+        yield
+    finally:
+        _default_manager_is_unscoped.reset(token)
 
 
 class OrganizationScopedManager(SingleOrganizationModelManager):
@@ -50,8 +96,12 @@ class OrganizationScopedManager(SingleOrganizationModelManager):
       joins on the key alone. Nothing puts the organization in the ``WHERE``
       clause there, and this manager does not add it back.
 
-    ``CalendarEvent.external_attendees`` is the second shape and is a known gap
-    -- see the comment at its declaration in ``calendar_integration.models``.
+    **Every many-to-many on a scoped model in this project is now the first
+    shape.** ``CalendarEvent.external_attendees`` was the last of the second and
+    was repointed at ``EventExternalAttendance`` in Phase 2b -- see the comment
+    at its declaration in ``calendar_integration.models``. A new one declared
+    without ``through=`` would silently be the second again, which is why the
+    distinction is written down here rather than assumed.
 
     **A write that names its organization is not scoped either.**
     ``create`` / ``get_or_create`` / ``update_or_create`` / ``bulk_create`` are
@@ -95,6 +145,10 @@ class OrganizationScopedManager(SingleOrganizationModelManager):
         # ``create_reverse_many_to_one_manager`` / ``create_forward_many_to_many_manager``
         # and is never present on a plain model manager.
         if getattr(self, "instance", None) is not None:
+            return self.get_original_queryset(*args, **kwargs)
+        if _default_manager_is_unscoped.get():
+            # Code that reached for ``_default_manager`` from outside any tenant --
+            # see :func:`unscoped_default_manager` for the two callers.
             return self.get_original_queryset(*args, **kwargs)
         return super().get_queryset(*args, **kwargs)
 

@@ -226,9 +226,11 @@ def _probe_webhook_subscriptions() -> None:
         )
 
     assert exc_info.value.resource_key == LimitedResource.WEBHOOK_SUBSCRIPTIONS
-    assert not WebhookConfiguration.objects.filter(
-        organization=organization, url="https://example.com/coverage-blocked"
-    ).exists()
+    assert not (
+        WebhookConfiguration.objects.filter_by_organization(organization)
+        .filter(url="https://example.com/coverage-blocked")
+        .exists()
+    )
 
 
 def _probe_public_api_system_users() -> None:
@@ -249,9 +251,11 @@ def _probe_public_api_system_users() -> None:
         )
 
     assert exc_info.value.resource_key == LimitedResource.PUBLIC_API_SYSTEM_USERS
-    assert not SystemUser.objects.filter(
-        organization=organization, integration_name="coverage-blocked-integration"
-    ).exists()
+    assert not (
+        SystemUser.objects.filter_by_organization(organization)
+        .filter(integration_name="coverage-blocked-integration")
+        .exists()
+    )
 
 
 # Every currently-known ``kind=prepaid`` ``LimitedResource`` member maps to a probe

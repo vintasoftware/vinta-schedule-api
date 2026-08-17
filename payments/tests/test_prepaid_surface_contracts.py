@@ -193,9 +193,11 @@ class TestWebhookSubscriptionSurfaces:
 
         assert response.status_code == status.HTTP_402_PAYMENT_REQUIRED
         _assert_shared_error_body(response.json(), LimitedResource.WEBHOOK_SUBSCRIPTIONS)
-        assert not WebhookConfiguration.objects.filter(
-            organization=organization, url="https://example.com/blocked"
-        ).exists()
+        assert not (
+            WebhookConfiguration.objects.filter_by_organization(organization)
+            .filter(url="https://example.com/blocked")
+            .exists()
+        )
 
     def test_graphql_create_carries_the_same_body_in_extensions(self):
         organization = _organization_at_ceiling(LimitedResource.WEBHOOK_SUBSCRIPTIONS, 1)
@@ -234,9 +236,11 @@ class TestWebhookSubscriptionSurfaces:
         assert response.status_code == status.HTTP_200_OK
         errors = response.json()["errors"]
         _assert_shared_error_body(errors[0]["extensions"], LimitedResource.WEBHOOK_SUBSCRIPTIONS)
-        assert not WebhookConfiguration.objects.filter(
-            organization=organization, url="https://example.com/blocked-gql"
-        ).exists()
+        assert not (
+            WebhookConfiguration.objects.filter_by_organization(organization)
+            .filter(url="https://example.com/blocked-gql")
+            .exists()
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -277,9 +281,11 @@ class TestPublicApiSystemUserSurfaces:
 
         assert response.status_code == status.HTTP_402_PAYMENT_REQUIRED
         _assert_shared_error_body(response.json(), LimitedResource.PUBLIC_API_SYSTEM_USERS)
-        assert not SystemUser.objects.filter(
-            organization=organization, integration_name="surface-blocked"
-        ).exists()
+        assert not (
+            SystemUser.objects.filter_by_organization(organization)
+            .filter(integration_name="surface-blocked")
+            .exists()
+        )
 
     def test_graphql_create_carries_the_same_body_in_extensions(self):
         """``createSystemUserToken`` is the reseller-facing minting path -- a *different*
@@ -322,9 +328,11 @@ class TestPublicApiSystemUserSurfaces:
         assert response.status_code == status.HTTP_200_OK
         errors = response.json()["errors"]
         _assert_shared_error_body(errors[0]["extensions"], LimitedResource.PUBLIC_API_SYSTEM_USERS)
-        assert not SystemUser.objects.filter(
-            organization=organization, integration_name="surface-blocked-gql"
-        ).exists()
+        assert not (
+            SystemUser.objects.filter_by_organization(organization)
+            .filter(integration_name="surface-blocked-gql")
+            .exists()
+        )
 
     def test_admin_create_reports_an_error_instead_of_a_500(self):
         """The real ``admin:public_api_systemuser_add`` endpoint, over-limit.
@@ -355,9 +363,11 @@ class TestPublicApiSystemUserSurfaces:
         )
 
         assert response.status_code == status.HTTP_200_OK
-        assert not SystemUser.objects.filter(
-            organization=organization, integration_name="admin-blocked"
-        ).exists()
+        assert not (
+            SystemUser.objects.filter_by_organization(organization)
+            .filter(integration_name="admin-blocked")
+            .exists()
+        )
         content = response.content.decode()
         assert "public api system user" in content.lower() or "limit" in content.lower()
 
@@ -379,9 +389,9 @@ class TestPublicApiSystemUserSurfaces:
         )
 
         assert response.status_code == 302
-        # `SystemUser.objects` refuses an unfiltered query on an OrganizationModel;
-        # an org-less row has no organization to filter by, so this is the one legitimate
-        # use of the unscoped manager here.
+        # `SystemUser.objects` scopes to the bound organization, and nothing is bound
+        # here; an org-less row has no organization to filter by either, so this is the
+        # one legitimate use of the unscoped manager here.
         created = SystemUser.original_manager.filter(integration_name="orgless-token").first()
         assert created is not None
         assert created.organization_id is None

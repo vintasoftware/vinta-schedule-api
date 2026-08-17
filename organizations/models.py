@@ -3,19 +3,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from django.conf import settings
-from django.core.exceptions import FieldDoesNotExist, ObjectDoesNotExist
 from django.db import models
 
 from vinta_orgs.models import AbstractOrganization, AbstractOrganizationMembership
 
-from common.fields import (
-    OrganizationMembershipForeignKey,
-    TenantSafeForeignKey,
-    TenantSafeOneToOneField,
-)
+from common.fields import OrganizationMembershipForeignKey
 from common.models import BaseModel
 from organizations.managers import (
-    BaseOrganizationModelManager,
     OrganizationInvitationManager,
     OrganizationMembershipManager,
 )
@@ -251,24 +245,6 @@ class Organization(AbstractOrganization):
         return None
 
 
-class OrganizationForeignKey(TenantSafeForeignKey):
-    """
-    A ForeignKey that enforces the tenant_id in JOIN ON clauses.
-    This is used to ensure that calendar organizations are properly scoped to the tenant.
-    """
-
-    tenant_field = "organization_id"
-
-
-class OrganizationOneToOneField(TenantSafeOneToOneField):
-    """
-    A OneToOneField that enforces the tenant_id in JOIN ON clauses.
-    This is used to ensure that calendar organizations are properly scoped to the tenant.
-    """
-
-    tenant_field = "organization_id"
-
-
 class OrganizationRole(models.TextChoices):
     """Role a user holds within an organization.
 
@@ -460,94 +436,6 @@ class OrganizationInvitation(BaseModel):
 
     def __str__(self):
         return f"Invitation for {self.email} to join {self.organization}"
-
-
-class OrganizationModel(BaseModel):
-    """
-    Represents a model that can be associated with a calendar organization.
-    This is used to link calendars to an organization.
-    """
-
-    organization = models.ForeignKey(
-        Organization,
-        on_delete=models.CASCADE,
-        related_name="+",
-        help_text="The organization this model is associated with. Queries should use the `organization` field.",
-    )
-
-    objects: BaseOrganizationModelManager = BaseOrganizationModelManager()
-    original_manager = models.Manager()
-
-    class Meta:
-        abstract = True
-
-    @classmethod
-    def is_field_organization_foreign_key(cls, field: models.Field) -> bool:
-        try:
-            fk_field = cls._meta.get_field(f"{field.name}_fk")
-        except FieldDoesNotExist:
-            fk_field = None
-
-        return (
-            isinstance(field, models.ForeignObject)
-            and bool(fk_field)
-            and isinstance(fk_field, models.ForeignKey)
-        )
-
-    def __init__(self, *args, **kwargs):
-        # find model fields that are OrganizationForeignKey
-        foreign_key_fields_in_kwargs = [
-            field.name
-            for field in self._meta.get_fields()
-            if (
-                self.is_field_organization_foreign_key(field)
-                and (field.name in kwargs.keys() or f"{field.name}_id" in kwargs.keys())
-            )
-        ]
-
-        for field_name in foreign_key_fields_in_kwargs:
-            if field_name in kwargs.keys() and not kwargs.get(f"{field_name}_fk", None):
-                kwargs[f"{field_name}_fk"] = kwargs.pop(field_name)
-                continue
-            if f"{field_name}_id" in kwargs.keys() and not kwargs.get(f"{field_name}_fk_id", None):
-                kwargs[f"{field_name}_fk_id"] = kwargs.pop(f"{field_name}_id")
-                continue
-
-        super().__init__(*args, **kwargs)
-
-    def save(self, *args, **kwargs):
-        # find model fields that are OrganizationForeignKey
-        foreign_key_fields = [
-            field.name
-            for field in self._meta.get_fields()
-            if (self.is_field_organization_foreign_key(field))
-        ]
-
-        is_create = self.id is None
-
-        if is_create:
-            for field_name in foreign_key_fields:
-                try:
-                    foreign_object_field_value = getattr(self, field_name, None)
-                except (FieldDoesNotExist, ObjectDoesNotExist):
-                    foreign_object_field_value = None
-                if foreign_object_field_value and not getattr(self, f"{field_name}_fk", None):
-                    setattr(self, f"{field_name}_fk", foreign_object_field_value)
-        else:
-            for field_name in foreign_key_fields:
-                old_instance = self.__class__.original_manager.filter(id=self.id).first()
-                try:
-                    foreign_object_field_value = getattr(self, field_name, None)
-                except (FieldDoesNotExist, ObjectDoesNotExist):
-                    foreign_object_field_value = None
-
-                if old_instance and foreign_object_field_value != getattr(
-                    old_instance, field_name, None
-                ):
-                    self.organization = old_instance.organization
-                    setattr(self, f"{field_name}_fk", foreign_object_field_value)
-
-        return super().save(*args, **kwargs)
 
 
 class OrganizationBranding(models.Model):

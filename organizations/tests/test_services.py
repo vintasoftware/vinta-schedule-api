@@ -1452,7 +1452,7 @@ class TestOrganizationService:
             with django_capture_on_commit_callbacks(execute=True):
                 service.accept_invitation(token=token, user=invitee)
 
-        assert WebhookEvent.objects.filter(organization=organization).count() == 0
+        assert WebhookEvent.objects.filter_by_organization(organization).count() == 0
 
     def test_accept_invitation_webhook_emission_with_subscribed_config(
         self,
@@ -1504,8 +1504,7 @@ class TestOrganizationService:
             with django_capture_on_commit_callbacks(execute=True):
                 service.accept_invitation(token=token, user=invitee)
 
-        events = WebhookEvent.objects.filter(
-            organization=organization,
+        events = WebhookEvent.objects.filter_by_organization(organization).filter(
             event_type=WebhookEventType.ORGANIZATION_MEMBER_CREATED,
         )
         assert events.count() == 1
@@ -1565,7 +1564,7 @@ class TestOrganizationService:
             with django_capture_on_commit_callbacks(execute=True):
                 org = service.create_organization(creator=creator, name="No Config Org")
 
-        assert WebhookEvent.objects.filter(organization=org).count() == 0
+        assert WebhookEvent.objects.filter_by_organization(org).count() == 0
 
     def test_create_organization_webhook_emission_payload_and_role(
         self,
@@ -1665,8 +1664,7 @@ class TestOrganizationService:
                 membership = service.provision_tenant_for_user(invitee)
 
         assert membership is not None
-        events = WebhookEvent.objects.filter(
-            organization=organization,
+        events = WebhookEvent.objects.filter_by_organization(organization).filter(
             event_type=WebhookEventType.ORGANIZATION_MEMBER_CREATED,
         )
         assert events.count() == 1
@@ -1756,15 +1754,13 @@ class TestOrganizationService:
         assert membership.organization == org_b
 
         # Exactly one event scoped to org B.
-        org_b_events = WebhookEvent.objects.filter(
-            organization=org_b,
+        org_b_events = WebhookEvent.objects.filter_by_organization(org_b).filter(
             event_type=WebhookEventType.ORGANIZATION_MEMBER_CREATED,
         )
         assert org_b_events.count() == 1
 
         # Zero events scoped to org A.
-        org_a_events = WebhookEvent.objects.filter(
-            organization=organization,
+        org_a_events = WebhookEvent.objects.filter_by_organization(organization).filter(
             event_type=WebhookEventType.ORGANIZATION_MEMBER_CREATED,
         )
         assert org_a_events.count() == 0

@@ -223,9 +223,11 @@ class TestWebhookConfigurationViewSet:
         assert response_data["headers"] == data["headers"]
 
         # Verify configuration was created in database
-        config = WebhookConfiguration.objects.filter(
-            id=response_data["id"], organization=organization
-        ).first()
+        config = (
+            WebhookConfiguration.objects.filter_by_organization(organization)
+            .filter(id=response_data["id"])
+            .first()
+        )
         assert config is not None
         assert config.organization == organization
         assert config.event_type == data["event_type"]
@@ -320,9 +322,11 @@ class TestWebhookConfigurationViewSet:
         assert response_data["headers"] == data["headers"]
 
         # Verify configuration was created in database
-        config = WebhookConfiguration.objects.filter(
-            id=response_data["id"], organization=organization
-        ).first()
+        config = (
+            WebhookConfiguration.objects.filter_by_organization(organization)
+            .filter(id=response_data["id"])
+            .first()
+        )
         assert config is not None
         assert config.event_type == WebhookEventType.ORGANIZATION_MEMBER_CREATED
 
@@ -370,7 +374,7 @@ class TestInactiveMemberWebhookAccess:
         # Serializer guard raises ValidationError → 400
         assert_response_status_code(response, status.HTTP_400_BAD_REQUEST)
         # Nothing created
-        assert not WebhookConfiguration.objects.filter(organization=org).exists()
+        assert not WebhookConfiguration.objects.filter_by_organization(org).exists()
 
     def test_create_webhook_configuration_active_member_succeeds(self, auth_client, user):
         """Sanity: an active member can still create webhook configurations."""
@@ -386,7 +390,7 @@ class TestInactiveMemberWebhookAccess:
         response = auth_client.post(url, data, format="json")
 
         assert_response_status_code(response, status.HTTP_201_CREATED)
-        assert WebhookConfiguration.objects.filter(organization=org).exists()
+        assert WebhookConfiguration.objects.filter_by_organization(org).exists()
 
 
 @pytest.mark.django_db

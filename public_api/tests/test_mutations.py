@@ -1315,9 +1315,11 @@ class TestCreateSystemUserTokenMutation:
         assert "errors" not in d1 or len(d1.get("errors", [])) == 0
 
         # Snapshot counts after the successful first call
-        su_count_after_first = SystemUser.objects.filter(
-            integration_name="dup", organization=reseller_org
-        ).count()
+        su_count_after_first = (
+            SystemUser.objects.filter_by_organization(reseller_org)
+            .filter(integration_name="dup")
+            .count()
+        )
         ra_count_after_first = ResourceAccess.objects.filter(
             system_user__integration_name="dup", system_user__organization=reseller_org
         ).count()
@@ -1344,7 +1346,9 @@ class TestCreateSystemUserTokenMutation:
 
         # No orphan SystemUser — still exactly one with that integration_name
         assert (
-            SystemUser.objects.filter(integration_name="dup", organization=reseller_org).count()
+            SystemUser.objects.filter_by_organization(reseller_org)
+            .filter(integration_name="dup")
+            .count()
             == su_count_after_first
         )
         # ResourceAccess count must not have grown
@@ -7681,7 +7685,7 @@ class TestCreateScopedSystemUserMutation:
         # No SystemUser should have been created
         from public_api.models import SystemUser
 
-        assert not SystemUser.objects.filter(integration_name="no_scope_provider").exists()
+        assert not SystemUser.original_manager.filter(integration_name="no_scope_provider").exists()
 
     def test_owner_not_member_of_org_rejected(self):
         """Owner id that belongs to a different org is rejected; no token created."""
@@ -7715,7 +7719,9 @@ class TestCreateScopedSystemUserMutation:
         assert "not an active member" in str(data["errors"]).lower()
 
         # No SystemUser should have been created
-        assert not SystemUser.objects.filter(integration_name="cross_org_provider").exists()
+        assert not SystemUser.original_manager.filter(
+            integration_name="cross_org_provider"
+        ).exists()
 
     def test_nonexistent_owner_id_rejected(self):
         """A totally nonexistent user id is rejected; no token created."""
@@ -7744,7 +7750,9 @@ class TestCreateScopedSystemUserMutation:
         assert len(data["errors"]) > 0
         assert "not an active member" in str(data["errors"]).lower()
 
-        assert not SystemUser.objects.filter(integration_name="nonexistent_owner_provider").exists()
+        assert not SystemUser.original_manager.filter(
+            integration_name="nonexistent_owner_provider"
+        ).exists()
 
     def test_over_grant_resource_outside_allow_list_rejected(self):
         """availableResources containing a resource NOT in PROVIDER_SCOPED_RESOURCES is rejected.
@@ -7775,7 +7783,9 @@ class TestCreateScopedSystemUserMutation:
         assert len(data["errors"]) > 0
         assert "not permitted for provider-scoped tokens" in str(data["errors"]).lower()
 
-        assert not SystemUser.objects.filter(integration_name="over_grant_provider").exists()
+        assert not SystemUser.original_manager.filter(
+            integration_name="over_grant_provider"
+        ).exists()
 
     def test_system_user_resource_in_available_resources_rejected(self):
         """SYSTEM_USER in availableResources is not in the provider allow-list → rejected."""
@@ -7803,7 +7813,9 @@ class TestCreateScopedSystemUserMutation:
         assert len(data["errors"]) > 0
         assert "not permitted for provider-scoped tokens" in str(data["errors"]).lower()
 
-        assert not SystemUser.objects.filter(integration_name="system_user_grant_provider").exists()
+        assert not SystemUser.original_manager.filter(
+            integration_name="system_user_grant_provider"
+        ).exists()
 
     def test_duplicate_integration_name_rejected_no_orphan(self):
         """Minting a second token with the same integration_name is rejected.
@@ -7897,7 +7909,9 @@ class TestCreateScopedSystemUserMutation:
         assert "errors" in data
         assert len(data["errors"]) > 0
 
-        assert not SystemUser.objects.filter(integration_name="empty_resources_provider").exists()
+        assert not SystemUser.original_manager.filter(
+            integration_name="empty_resources_provider"
+        ).exists()
 
     def test_scoped_provider_token_cannot_mint(self):
         """A provider-scoped token (CALENDAR/AVAILABLE_TIME only) cannot call
@@ -7952,7 +7966,7 @@ class TestCreateScopedSystemUserMutation:
         assert "don't have access" in str(data["errors"]).lower()
 
         # No new SystemUser should have been created from the escalation attempt
-        assert not SystemUser.objects.filter(integration_name="escalated_token").exists()
+        assert not SystemUser.original_manager.filter(integration_name="escalated_token").exists()
 
     def test_inactive_member_owner_rejected(self):
         """createScopedSystemUser with an inactive-membership owner is rejected.
@@ -7994,7 +8008,9 @@ class TestCreateScopedSystemUserMutation:
         assert "not an active member" in str(data["errors"]).lower()
 
         # No SystemUser or token row must have been created
-        assert not SystemUser.objects.filter(integration_name="inactive_owner_provider").exists()
+        assert not SystemUser.original_manager.filter(
+            integration_name="inactive_owner_provider"
+        ).exists()
 
 
 # ---------------------------------------------------------------------------

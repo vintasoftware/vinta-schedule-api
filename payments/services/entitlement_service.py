@@ -240,8 +240,14 @@ def _count_availability_windows(context: UsageContext) -> dict[int, int]:
 def _count_webhook_subscriptions(context: UsageContext) -> dict[int, int]:
     """Webhook configurations per organization, excluding soft-deleted ones
     (``deleted_at`` set)."""
+    # ``unscoped()`` first, like the ``calendar_integration`` counters above: a
+    # usage context spans a billing root's whole pooled reseller subtree, so this
+    # is a deliberate cross-organization read that no single bound organization
+    # covers. ``organization_id__in`` is the scope.
     return _group_counts_by_organization(
-        WebhookConfiguration.objects.live().filter(organization_id__in=context.organization_ids)
+        WebhookConfiguration.objects.unscoped()
+        .live()
+        .filter(organization_id__in=context.organization_ids)
     )
 
 
@@ -254,8 +260,10 @@ def _count_public_api_system_users(context: UsageContext) -> dict[int, int]:
     entirely unmetered; whoever makes ``organization`` non-nullable should revisit
     this.
     """
+    # ``unscoped()`` for the pooled-subtree reason given in
+    # ``_count_webhook_subscriptions``.
     return _group_counts_by_organization(
-        SystemUser.objects.live().filter(organization_id__in=context.organization_ids)
+        SystemUser.objects.unscoped().live().filter(organization_id__in=context.organization_ids)
     )
 
 

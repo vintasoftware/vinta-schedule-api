@@ -13,6 +13,11 @@ from rest_framework.response import Response
 from rest_framework.viewsets import ModelViewSet, ViewSetMixin
 
 from common.constants import ACTIVE_ORG_HEADER
+from common.organization_context import (
+    OrganizationToken,
+    reset_current_organization,
+    set_current_organization,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -36,6 +41,14 @@ class TenantScopedViewMixin:
       ``request.organization_membership``.  ``get_active_organization_membership``
       reads this stash so all ~60 existing call sites are header-aware without
       change.
+
+    It also **binds** the resolved organization to the ``contextvars`` context
+    ``vinta-django-orgs`` scopes every organization-scoped model against, and
+    unbinds it before ``dispatch()`` returns — on every exit path, including the
+    ones DRF does not funnel through ``finalize_response``.  See
+    :meth:`dispatch` and :meth:`_bind_active_organization` for the lifecycle and
+    for why a leak here would be a cross-tenant read on the *next* request that
+    the worker thread serves.
 
     Resolution table (multi-org with no header → 400; non-member → 403):
 
@@ -117,16 +130,99 @@ class TenantScopedViewMixin:
         optional_actions: tuple[str, ...] = getattr(self, "active_org_optional_actions", ())
         return action_name in optional_actions if action_name is not None else False
 
+    #: Set by :meth:`_bind_active_organization`, consumed by
+    #: :meth:`_unbind_active_organization`. ``None`` means "nothing bound by this
+    #: view". A DRF view instance is constructed per request (``APIView.as_view``
+    #: builds ``cls(**initkwargs)`` inside the ``view`` closure), so this is
+    #: request state despite living on ``self``.
+    _active_organization_token: OrganizationToken | None = None
+
+    def dispatch(self, request: Any, *args: Any, **kwargs: Any) -> Any:
+        """``super().dispatch``, guaranteeing the organization binding is released.
+
+        The unbind lives here rather than in ``finalize_response`` because
+        ``finalize_response`` is not on every path out of ``APIView.dispatch``:
+        that method catches into ``handle_exception``, which **re-raises**
+        anything it does not have a DRF response for (any non-``APIException``,
+        and ``PermissionDenied`` / ``NotAuthenticated`` re-raised by
+        ``raise_uncaught_exception``). On those paths ``dispatch`` propagates and
+        never reaches ``finalize_response`` or ``self.response``.
+
+        A binding that outlived the request would be read by the *next* request
+        the worker serves — a WSGI worker thread reuses its context — so the
+        default manager on every scoped model would silently answer with the
+        previous caller's organization. ``try/finally`` around the whole of
+        ``dispatch`` is the only placement with no exit path around it.
+
+        The reset restores whatever was bound *before* this view ran rather than
+        clearing outright, so a request dispatched from inside an
+        ``organization_context(...)`` block (tests, ``self.client`` calls under a
+        binding) leaves that block's binding intact.
+        """
+        try:
+            return super().dispatch(request, *args, **kwargs)  # type: ignore[misc]
+        finally:
+            self._unbind_active_organization()
+
     def initial(self, request: Request, *args: Any, **kwargs: Any) -> None:
-        """Run DRF initialisation, then resolve and stash the active org."""
+        """Run DRF initialisation, then resolve, stash and bind the active org.
+
+        The bind lives here, next to ``dispatch``'s ``finally``, rather than
+        inside ``_resolve_active_organization``: the resolver is a pure function
+        of the request that tests and subclasses call in isolation (see its
+        docstring), and a call from outside ``dispatch`` has nothing to release
+        the contextvar it would otherwise set -- leaking an organization into
+        the worker for the rest of the session.
+        """
         super().initial(request, *args, **kwargs)  # type: ignore[misc]
         self._resolve_active_organization(request)
+        self._bind_active_organization(request.organization)  # type: ignore[attr-defined]
+
+    def _bind_active_organization(self, organization: Any) -> None:
+        """Bind ``organization`` (possibly ``None``) for the rest of this request.
+
+        ``None`` is bound explicitly rather than skipped. A gated caller — zero
+        active memberships, or an opted-out action whose header named an
+        organization they do not belong to — must not inherit an ambient binding
+        from whatever ran before; under ``STRICT_ORGANIZATION_FILTER`` an
+        unbound scoped read then raises instead of returning someone else's rows.
+
+        Idempotent: the resolution is re-run and re-bound a second time by
+        ``CreateModelMixin.create`` (a service may have created the caller's
+        first membership during ``perform_create``), and re-binding without
+        releasing the first token would leak one contextvar frame per call --
+        and leave the *first* organization bound once ``dispatch``'s ``finally``
+        resets only the second. ``common/tests/test_tenant_scoped_binding.py``
+        dispatches that path so the release is asserted rather than described.
+        """
+        self._unbind_active_organization()
+        self._active_organization_token = set_current_organization(organization)
+
+    def _unbind_active_organization(self) -> None:
+        """Release this view's binding, restoring the one that preceded it.
+
+        A no-op when nothing was bound — the 400/403 rows of the resolution table
+        raise *before* the bind, and an unauthenticated request never reaches it.
+        """
+        token = self._active_organization_token
+        if token is None:
+            return
+        # Cleared before the reset so a raising ``reset`` (a token used in a
+        # different context than the one that created it) cannot leave a stale
+        # token behind for a second, wrong reset.
+        self._active_organization_token = None
+        reset_current_organization(token)
 
     def _resolve_active_organization(self, request: Request) -> None:  # noqa: C901
         """Resolve ``X-Organization-Id`` → membership and stash on ``request`` + user.
 
         This method is extracted from ``initial()`` so tests can call it in isolation
         and so subclasses can override or extend it without touching ``initial()``.
+
+        It touches nothing but the request and its user -- in particular it does
+        **not** bind the organization to the context. Binding is
+        ``initial()``'s (and ``CreateModelMixin.create``'s) job, because only a
+        caller inside ``dispatch`` has the ``finally`` that releases it again.
         """
         # Lazily import to avoid a circular import (organizations → common → organizations).
         from organizations.models import OrganizationMembership  # noqa: PLC0415
@@ -435,8 +531,14 @@ class CreateModelMixin(RefetchReturnInstanceAfterWriteMixin, mixins.CreateModelM
         # TenantScopedViewMixin.initial() stale. Re-resolve so the post-create re-fetch
         # honors the X-Organization-Id header (and any newly-created membership) instead
         # of silently dropping to the header-blind single-membership fallback.
+        # Re-bind too: the re-fetch below reads through organization-scoped default
+        # managers, and leaving the context on the organization ``initial()`` resolved
+        # would scope it to a different one than the stash the same lines consult.
+        # ``_bind_active_organization`` releases the first binding before taking the
+        # second, so ``dispatch``'s ``finally`` still restores the pre-request value.
         if hasattr(self, "_resolve_active_organization"):
             self._resolve_active_organization(request)
+            self._bind_active_organization(request.organization)
 
         # re-fetches the instance so we get annotations, prefetches, and selects
         if hasattr(self, "get_return_queryset"):

@@ -128,6 +128,15 @@ class TenantSafeForeignKey(models.Field):
     """
     Combines a normal ForeignKey for DB constraints/admin/etc and a ForeignObject
     to enforce tenant_id in JOIN ON clauses.
+
+    **Dead code as of Phase 2b**, along with :class:`TenantSafeOneToOneField`.
+    Deleting ``organizations.OrganizationForeignKey`` removed the last subclass,
+    and ``OrganizationMembershipForeignKey`` extends ``models.Field`` directly
+    rather than either of these -- so nothing in the project builds on them and
+    nothing has to be migrated off them. Kept only until Phase 6, which owns the
+    deletion (see the migration plan's Phase 6, change 2); the ``tenant_field =
+    "tenant_id"`` default is itself a leftover, since no model in this project
+    has ever had a ``tenant_id`` column.
     """
 
     tenant_field: str = "tenant_id"
@@ -181,6 +190,8 @@ class TenantSafeOneToOneField(models.Field):
     """
     Combines a normal OneToOneField for DB constraints/admin/etc and a ForeignObject
     to enforce tenant_id in JOIN ON clauses.
+
+    Dead code as of Phase 2b -- see :class:`TenantSafeForeignKey`.
     """
 
     tenant_field: str = "tenant_id"
@@ -284,7 +295,7 @@ class OrganizationMembershipForeignKey(models.Field):
 
     Usage::
 
-        class MyModel(OrganizationModel):
+        class MyModel(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel):
             membership = OrganizationMembershipForeignKey(
                 on_delete=models.PROTECT,
                 related_name="my_models",

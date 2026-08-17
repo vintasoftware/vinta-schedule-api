@@ -1,7 +1,7 @@
-from organizations.querysets import BaseOrganizationModelQuerySet
+from common.querysets import OrganizationScopedQuerySet
 
 
-class WebhookConfigurationQuerySet(BaseOrganizationModelQuerySet):
+class WebhookConfigurationQuerySet(OrganizationScopedQuerySet):
     """QuerySet for WebhookConfiguration with domain-specific filtering methods."""
 
     def live(self) -> "WebhookConfigurationQuerySet":
