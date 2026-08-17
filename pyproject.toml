@@ -64,9 +64,10 @@ dependencies = [
     # labels, 0.3.0 defaulted `STRICT_ORGANIZATION_FILTER` to `True`, and 0.4.0
     # deleted the whole function-based API (`vinta_orgs.helpers`, the module-level
     # organization-context functions) in favour of class-specialized generics --
-    # so a minor bump here has four times carried a breaking change. Re-read the
-    # upstream diff before widening this range.
-    "vinta-django-orgs>=0.4,<0.5",
+    # so four consecutive minors carried a breaking change. 0.5.0 is the first
+    # that does not: it only removes work from `save()`. Re-read the upstream
+    # diff before widening this range anyway.
+    "vinta-django-orgs>=0.5,<0.6",
 ]
 
 [dependency-groups]
