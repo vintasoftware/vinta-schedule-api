@@ -23,6 +23,7 @@ from freezegun import freeze_time
 from model_bakery import baker
 
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.services import sync_membership_groups_from_role
 from payments.billing_constants import BillingState, LimitedResource, LimitKind, LimitWarningLevel
 from payments.models import (
     BillingPlan,
@@ -108,13 +109,18 @@ def admin_membership(organization: Organization) -> OrganizationMembership:
     least one, every "was a notification sent?" assertion in this module
     would pass vacuously regardless of whether the threshold/debounce logic
     is actually correct."""
-    return baker.make(
+    membership = baker.make(
         OrganizationMembership,
         organization=organization,
         user=baker.make(User),
         role=OrganizationRole.ADMIN,
         is_active=True,
     )
+    # ``billing_recipients`` reads ``payments.manage_billing`` as of Phase 3, so
+    # the groups have to be in step with ``role``. Every live write path calls
+    # this; ``baker.make`` bypasses it. Phase 6 deletes the shim and this call.
+    sync_membership_groups_from_role(membership)
+    return membership
 
 
 @pytest.mark.django_db

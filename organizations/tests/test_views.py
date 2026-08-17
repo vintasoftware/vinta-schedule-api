@@ -2297,6 +2297,10 @@ class TestOrganizationMembershipViewSet:
 
         target_member.refresh_from_db()
         assert target_member.role == OrganizationRole.ADMIN
+        # The endpoint is the one dual-write call site outside `services.py`.
+        # Without it a promoted member would keep `organization_member`, and
+        # Phase 4 -- which reads groups rather than `role` -- would deny them.
+        assert set(target_member.groups.values_list("name", flat=True)) == {"organization_admin"}
 
     def test_update_role_demote_admin_with_other_admins(self, auth_client, user):
         """Test that admin can demote another admin when other admins remain"""
@@ -2324,6 +2328,10 @@ class TestOrganizationMembershipViewSet:
         assert_response_status_code(response, status.HTTP_200_OK)
         other_admin.refresh_from_db()
         assert other_admin.role == OrganizationRole.MEMBER
+        # The demotion half of the dual-write, and the failure mode the shim
+        # exists for: a demoted admin left holding `organization_admin` would
+        # keep admin capabilities under Phase 4 while reading as a member here.
+        assert set(other_admin.groups.values_list("name", flat=True)) == {"organization_member"}
 
     def test_update_role_demote_last_active_admin_forbidden(self, auth_client, user):
         """Test that demoting the last active admin is rejected (org lockout prevention)"""

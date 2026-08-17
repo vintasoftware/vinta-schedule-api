@@ -123,6 +123,21 @@ SHARED_SCHEMA_ORGANIZATIONS = {
     # ``filter_by_organization(...)`` / ``exclude_by_organization(...)`` (which
     # start from the unscoped queryset) and ``original_manager``.
     "STRICT_ORGANIZATION_FILTER": True,
+    # Points ``vinta_orgs.testing.reseed_organization_groups()`` (wired in via
+    # ``pytest_plugins = ["vinta_orgs.testing"]`` in the root ``conftest.py``) at
+    # *our* three seeded groups instead of the package's own
+    # ``organization_owner`` default. Reads the **live** catalog
+    # (``organizations.permission_catalog.GROUP_PERMISSIONS``), not
+    # ``organizations/migrations/0028_seed_permission_groups.py``'s frozen
+    # literals -- the migration is the production path and is deliberately
+    # allowed to drift from the code as it evolves; the seeder must not be.
+    # Without this a ``transaction=True`` test flushes ``auth_group`` /
+    # ``auth_group_permissions`` (data migrations are not replayed by ``flush``)
+    # and every membership built by a later test in that worker's session
+    # silently holds no permission at all.
+    "ORGANIZATION_GROUP_SEEDERS": [
+        "organizations.permission_catalog.seed_organization_groups",
+    ],
 }
 
 MIDDLEWARE = [
@@ -187,6 +202,46 @@ AUTH_PASSWORD_VALIDATORS = [
     {
         "NAME": "django.contrib.auth.password_validation.NumericPasswordValidator",
     },
+]
+
+# Spelled out for the first time here. It was previously left at Django's implicit
+# default, which is exactly the first entry -- so this list *adds* the second
+# backend and changes nothing else.
+#
+# ``ModelBackend`` is kept rather than replaced even though
+# ``OrganizationModelBackend`` subclasses it and would answer every
+# authentication call identically: a live session records the dotted path of the
+# backend that authenticated it (``_auth_user_backend``), and
+# ``django.contrib.auth.get_user`` logs the session out when that path is no
+# longer in this list. Dropping the default entry would therefore sign out every
+# existing session on deploy for no gain.
+#
+# What the second backend adds is *permissions*, not authentication:
+# ``OrganizationModelBackend.get_all_permissions`` unions the user's global
+# permissions with the ones their ``OrganizationMembership`` in the
+# **currently-bound** organization carries (``vinta_orgs.state``'s contextvar,
+# which ``TenantScopedViewMixin`` / ``PublicApiSystemUserMiddleware`` bind for the
+# duration of a request). With nothing bound the organization half is empty, so an
+# unbound path answers exactly what ``ModelBackend`` alone answered.
+#
+# The two backends share cache attribute names on the user object
+# (``_perm_cache``, ``_user_perm_cache``, ``_group_perm_cache``) -- deliberate and
+# safe, because both fill them with the same *global* permission set;
+# organization permissions live in separate, organization-keyed caches
+# (``_organization_*_perm_cache``) that the stock backend never touches.
+#
+# Registered **unsubclassed**, as the package ships it -- not a repo-owned
+# subclass. Under ``0.2.0`` a deactivated membership still resolved its group
+# permissions (``_get_membership`` did not filter ``is_active``), which would
+# have forced a repo-owned subclass to close before Phase 4 could safely read
+# ``has_perm``. ``0.3.0`` fixes that at the source: ``is_active`` now lives on
+# ``AbstractOrganizationMembership`` and is filtered *inside*
+# ``OrganizationModelBackend._get_membership``, so a deactivated administrator
+# resolves exactly what a non-member resolves -- nothing. See
+# ``organizations/tests/test_permission_backend.py`` for the pinned regression.
+AUTHENTICATION_BACKENDS = [
+    "django.contrib.auth.backends.ModelBackend",
+    "vinta_orgs.auth_backends.OrganizationModelBackend",
 ]
 
 REST_FRAMEWORK = {

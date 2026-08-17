@@ -98,12 +98,11 @@ class DjangoORMAuditRepository(AuditRepository):
     rather than return nothing. Reads are then explicitly filtered by
     organization_id when the caller supplies one.
 
-    Writes use Audit.objects.create with an explicit organization_id= kwarg.
-    OrganizationScopedManager.create routes a write that names its organization
-    around the implicit scope, so the row lands where the caller said even when
-    a different organization -- or none -- is bound. The through-table rows are
-    bulk-created the same way (bulk_create is always unscoped: every instance
-    carries its own organization).
+    vinta-django-orgs keeps inserts unscoped. Writes use
+    Audit.objects.create with an explicit organization_id, so each row lands in
+    the organization named by the caller even when a different organization --
+    or none -- is bound. The through-table rows are bulk-created the same way:
+    every instance carries its own organization.
     """
 
     # ------------------------------------------------------------------

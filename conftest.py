@@ -6,6 +6,20 @@ import pytest
 from rest_framework.test import APIClient
 
 
+# Repairs the one hazard the package's seeded-group pattern creates on its own:
+# a ``transaction=True`` test flushes ``auth_group`` / ``auth_group_permissions``
+# on teardown, and ``flush`` does not replay data migrations, so the three
+# groups ``organizations/migrations/0028_seed_permission_groups.py`` seeded
+# vanish for the rest of that worker's session. The autouse
+# ``seeded_organization_groups`` fixture this plugin provides reseeds them
+# (via ``ORGANIZATION_GROUP_SEEDERS``, see ``vinta_schedule_api/settings/base.py``)
+# before every test with database access. See ``vinta_orgs.testing`` for the
+# full contract -- it must be a setup hook, not a teardown one, because the
+# flush runs inside pytest-django's own finalizer, later than any conftest
+# fixture's teardown could reach.
+pytest_plugins = ["vinta_orgs.testing"]
+
+
 _ALLOWED_NETWORK_HOSTS = {
     "127.0.0.1",
     "::1",

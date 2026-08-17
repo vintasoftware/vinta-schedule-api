@@ -2,9 +2,12 @@
 
 Covers the three properties the Phase 0 body of the vinta-django-orgs
 migration plan calls out explicitly: binding, nesting, and restoration of the
-*previous* binding (not a bare clear). These are exactly the semantics the
-eventual one-line swap to ``organizations.state`` (the installed package) must
-preserve, so this suite doubles as a contract test for that future swap.
+*previous* binding (not a bare clear). These were the semantics the swap to the
+package's state had to preserve, and they still are: package ``0.4.0`` replaced
+the module-level functions with ``OrganizationState``, and Phase 3 kept the same
+seven names here as shims over one specialized instance of it. Every test below
+goes through those shims, which is what makes them the contract test for the
+shim layer as well as for the semantics.
 """
 
 from __future__ import annotations
@@ -14,9 +17,11 @@ import threading
 import pytest
 
 from common.organization_context import (
+    ProjectOrganizationState,
     clear_current_organization,
     get_current_organization,
     organization_context,
+    organization_state,
     reset_current_organization,
     set_current_organization,
 )
@@ -200,3 +205,38 @@ def test_organization_context_is_isolated_per_thread(org_a):
     assert observed["before"] is None
     assert observed["during"] == org_a
     assert observed["after"] is None
+
+
+class TestTheStateSpecialization:
+    """The shims and the state object must be one binding, on *our* model.
+
+    Package ``0.4.0`` types its state generically against
+    ``AbstractOrganization``; a project binds its swapped model by declaring
+    ``model_class`` once. Getting that declaration wrong is silent -- the
+    package would resolve ``ORGANIZATION_MODEL`` at runtime either way and only
+    the static type would be wrong -- so it is asserted rather than assumed.
+    """
+
+    def test_the_state_is_bound_to_this_projects_organization_model(self):
+        assert ProjectOrganizationState.model_class is Organization
+        assert organization_state.model is Organization
+
+    def test_the_shims_and_the_state_object_share_one_binding(self, org_a):
+        """No second contextvar hiding behind the function names.
+
+        The shims exist so ~30 modules did not have to change when ``0.4.0``
+        deleted the function API. That is only true while they delegate: a shim
+        that grew its own storage would bind something the package's managers,
+        ``SingleOrganizationModelMixin.save()`` and
+        ``scope_queryset_to_current_organization`` never read.
+        """
+        with organization_context(org_a):
+            assert organization_state.get() == org_a
+
+        token = organization_state.set(org_a)
+        try:
+            assert get_current_organization() == org_a
+        finally:
+            reset_current_organization(token)
+
+        assert get_current_organization() is None

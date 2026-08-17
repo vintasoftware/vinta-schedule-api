@@ -2189,16 +2189,16 @@ wheels = [
 
 [[package]]
 name = "vinta-django-orgs"
-version = "0.2.0"
+version = "0.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "django" },
     { name = "django-model-utils" },
     { name = "djangorestframework" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e8/da/81325f3b5f76202b6980ea14afb801b7a01219825b123328c7ae134d84e5/vinta_django_orgs-0.2.0.tar.gz", hash = "sha256:b0cc99d104f4110541f031fe3b8cd5a84558d1cb43647157edfeea92fe0d95a5", size = 79296, upload-time = "2026-08-12T14:09:18.961Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c1/57/da11932fea3a8355aa9578c77173aede7ec59a495497bde364b89ae983a8/vinta_django_orgs-0.4.0.tar.gz", hash = "sha256:8ac7fd1ae72bffd7b5a4d4c05149a5cffaa95b1e338505bdef94ef10fcf2a53e", size = 121621, upload-time = "2026-08-14T20:30:31.973Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/45/61/de3133b622149eb4de0601a1d323f6b3623b80dd411a2b2502eac808fe00/vinta_django_orgs-0.2.0-py3-none-any.whl", hash = "sha256:5d4e8f7e6f729a5d9c2418468bbad486f14e33393dd9c7f0610b0e7239554d54", size = 74112, upload-time = "2026-08-12T14:09:17.75Z" },
+    { url = "https://files.pythonhosted.org/packages/94/ee/8e5eae88f0eb88b4fa338954d375a26f75002d24915ad98e7e729251317a/vinta_django_orgs-0.4.0-py3-none-any.whl", hash = "sha256:6bd9c8fe444f15bc9d778cddffc62d5bcc24fef3c55cb0ffcb2796a95c7233c1", size = 102943, upload-time = "2026-08-14T20:30:30.811Z" },
 ]
 
 [[package]]
@@ -2329,7 +2329,7 @@ requires-dist = [
     { name = "strawberry-graphql-django", specifier = ">=0.86.0,<0.87.0" },
     { name = "stripe", specifier = ">=15.3.1,<16" },
     { name = "twilio", specifier = ">=9.6.5,<10" },
-    { name = "vinta-django-orgs", specifier = ">=0.2,<0.3" },
+    { name = "vinta-django-orgs", specifier = ">=0.4,<0.5" },
     { name = "vintasend", specifier = ">=1.2.0,<2" },
     { name = "vintasend-celery", specifier = ">=1.2.0,<2" },
     { name = "vintasend-django", specifier = ">=1.2.1,<2" },

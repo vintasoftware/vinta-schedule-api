@@ -90,7 +90,7 @@ from organizations.serializers import (
     ServiceAccountWriteSerializer,
     UpdateMembershipRoleSerializer,
 )
-from organizations.services import OrganizationService
+from organizations.services import OrganizationService, sync_membership_groups_from_role
 from payments.services.entitlement_service import EntitlementService
 
 
@@ -910,6 +910,14 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
         # Update (idempotent: no-op if role unchanged)
         target.role = new_role
         target.save(update_fields=["role"])
+        # Dual-write, deleted in Phase 6 -- see
+        # ``organizations.services.sync_membership_groups_from_role``. This is
+        # the only live path that *changes* a role rather than setting it at
+        # creation, so it is the one place where the two representations could
+        # drift apart in opposite directions (a demoted admin keeping
+        # ``organization_admin``). Phase 5 replaces this endpoint with a
+        # group-assignment one and the call goes with it.
+        sync_membership_groups_from_role(target)
 
         # Return the updated membership
         read_serializer = self.get_serializer(target)

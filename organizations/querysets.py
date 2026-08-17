@@ -1,26 +1,25 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
 
-from django.db.models import Q
 from django.db.models.query import QuerySet
 from django.utils import timezone
 
-from vinta_orgs.querysets import SingleOrganizationQuerySet
+from vinta_orgs.querysets import (
+    OrganizationMembershipQuerySet as _PackageOrganizationMembershipQuerySet,
+)
+
+from organizations.permission_catalog import MANAGE_BILLING
 
 
-if TYPE_CHECKING:
-    from users.models import User
-
-
-class OrganizationMembershipQuerySet(SingleOrganizationQuerySet):
+class OrganizationMembershipQuerySet(_PackageOrganizationMembershipQuerySet):
     """QuerySet for OrganizationMembership with domain-specific filtering methods.
 
-    Built on the package's ``SingleOrganizationQuerySet`` rather than a plain
-    ``QuerySet`` so that ``filter_by_organization(...)`` /
-    ``for_current_organization()`` chain off it the same way they do off every
-    other organization-scoped model. It does **not** scope implicitly -- that
+    Built on the package's own ``OrganizationMembershipQuerySet`` -- not shadowed
+    by a same-named class built on a plainer base -- so ``0.3.0``'s membership
+    lookups (``active()``, ``active_for_user()``, ``holding_permission()``) stay
+    available here rather than being silently replaced by a class of the same
+    name that does not implement them. It does **not** scope implicitly -- that
     is a property of the *manager* (see
     ``organizations.managers.OrganizationMembershipManager``), and a membership
     is the row you read to decide which organization to select, so scoping it
@@ -30,46 +29,52 @@ class OrganizationMembershipQuerySet(SingleOrganizationQuerySet):
     def occupying_a_seat(self, organization_ids: Sequence[int]) -> OrganizationMembershipQuerySet:
         """Memberships in ``organization_ids`` that consume a licensed seat.
 
-        Only ``is_active=True`` memberships count: deactivating a member is how a
-        seat is freed, so counting inactive rows would make removal fail to free
+        Only active memberships count: deactivating a member is how a seat is
+        freed, so counting inactive rows would make removal fail to free
         capacity. Lives here rather than in the billing service because
         "``is_active=False`` is this model's soft delete" is a fact about
         ``OrganizationMembership``, not about billing.
+
+        Narrows through the inherited ``active()`` rather than a hand-written
+        ``is_active=True``, for the same reason ``billing_recipients`` does:
+        one spelling of "this membership still grants something", and it is the
+        same one ``OrganizationModelBackend._get_membership`` applies.
         """
-        return self.filter(organization_id__in=organization_ids, is_active=True)
+        return self.filter(organization_id__in=organization_ids).active()
 
     def billing_recipients(self, organization_id: int) -> OrganizationMembershipQuerySet:
         """Active memberships eligible to receive billing/dunning notifications for
-        ``organization_id``: admins and billing owners (``is_billing_owner=True``)
-        -- the same two roles ``IsBillingOwnerOrAdmin`` allows billing writes from.
+        ``organization_id``: the ones holding ``payments.manage_billing``.
 
-        Used by ``DunningService`` (``payments/services/dunning_service.py``) to
-        resolve who receives the dunning ladder's email/in-app notifications --
-        billing is organization-owned, not user-owned, so there is no single "the"
-        recipient; every eligible member gets one.
+        Used by ``DunningService`` (``payments/services/dunning_service.py``) and
+        ``UsageWarningService`` to resolve who receives the dunning ladder's
+        email/in-app notifications -- billing is organization-owned, not
+        user-owned, so there is no single "the" recipient; every eligible member
+        gets one.
 
-        ``OrganizationRole`` is imported here rather than at module level to avoid
-        a cycle: ``organizations.models`` imports this module (via
-        ``organizations.managers``), so this module cannot import back from
-        ``organizations.models`` at import time.
-        """
-        from organizations.models import OrganizationRole
+        **Permission-shaped rather than role-shaped**, so "who may write billing"
+        and "who is told about billing" derive from one source instead of two
+        that can drift. It replaces ``Q(role=ADMIN) | Q(is_billing_owner=True)``,
+        and is equivalent to it as long as the two representations agree: the
+        Phase 3 backfill (``organizations/migrations/0029_...``) put every
+        pre-existing membership in the matching group and the dual-write in
+        ``organizations.services`` keeps every membership written since in step.
 
-        return self.filter(organization_id=organization_id, is_active=True).filter(
-            Q(role=OrganizationRole.ADMIN) | Q(is_billing_owner=True)
-        )
+        Built on ``holding_permission(...)`` -- the package's own union of a
+        membership's direct ``permissions`` grant with the permissions its
+        ``groups`` carry -- rather than a hand-written ``groups__permissions``
+        filter, so this cannot drift from what
+        ``vinta_orgs.authorization.has_organization_permission`` (Phase 4) and
+        the last-administrator count both read. ``holding_permission`` already
+        matches ``content_type__app_label`` alongside the codename and already
+        calls ``distinct()`` -- see its docstring for why both are necessary.
 
-    def active_for_user(self, user: User) -> OrganizationMembershipQuerySet:
-        """Return all active memberships for *user*, with organization pre-fetched.
-
-        Ordered by creation date (oldest first) so the result is deterministic
-        for the org-switcher list.  ``select_related("organization")`` avoids
-        an N+1 when iterating over the returned memberships.
+        ``active()`` narrows to ``is_active=True`` memberships first, for the
+        same reason ``occupying_a_seat`` does: a deactivated member receives no
+        dunning notifications.
         """
         return (
-            self.filter(user=user, is_active=True)
-            .select_related("organization")
-            .order_by("created")
+            self.filter(organization_id=organization_id).active().holding_permission(MANAGE_BILLING)
         )
 
 

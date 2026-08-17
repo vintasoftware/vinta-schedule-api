@@ -13,15 +13,19 @@ manager's base class decides their behaviour too -- which is why the assertions
 below cover the accessors and not only ``objects``.
 """
 
+from datetime import timedelta
+
 from django.db.models import QuerySet
+from django.utils import timezone
 
 import pytest
 from model_bakery import baker
-from vinta_orgs.state import organization_context
 
+from common.organization_context import organization_context
 from organizations.managers import OrganizationMembershipManager
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
 from organizations.querysets import OrganizationMembershipQuerySet
+from organizations.services import sync_membership_groups_from_role
 from users.models import User
 
 
@@ -93,16 +97,70 @@ class TestUnscopedReadsWithNoOrganizationBound:
 
         assert OrganizationMembership.objects.active_for_user(user).count() == 2
 
+    def test_active_for_user_returns_active_rows_oldest_first(self):
+        """The three properties ``OrganizationViewSet.mine`` depends on, none of
+        which a ``count()`` would notice.
+
+        Phase 3 deleted this repo's local ``active_for_user`` override in favour
+        of the package's, on the grounds that the two were byte-equivalent. That
+        is true today and says nothing about tomorrow: ``is_active``, the
+        ``created`` ordering and the ``select_related`` are now the package's to
+        change, and the org switcher renders whatever order it is handed. So the
+        contract is pinned on our side rather than assumed from the package's.
+
+        ``created`` is written explicitly because two rows inserted in the same
+        test can land on timestamps close enough that "oldest first" and
+        "insertion order" are indistinguishable -- and they are inserted in the
+        *reverse* of the expected order, so a query with no ``order_by`` at all
+        does not accidentally agree.
+        """
+        user = baker.make(User)
+        newer = self._membership(user, baker.make(Organization))
+        older = self._membership(user, baker.make(Organization))
+        deactivated = self._membership(user, baker.make(Organization))
+        OrganizationMembership.objects.filter(pk=newer.pk).update(
+            created=timezone.now() - timedelta(days=1)
+        )
+        OrganizationMembership.objects.filter(pk=older.pk).update(
+            created=timezone.now() - timedelta(days=7)
+        )
+        OrganizationMembership.objects.filter(pk=deactivated.pk).update(
+            created=timezone.now() - timedelta(days=30), is_active=False
+        )
+
+        memberships = list(OrganizationMembership.objects.active_for_user(user))
+
+        assert memberships == [older, newer]
+
+    def test_active_for_user_fetches_the_organization_in_the_same_query(
+        self, django_assert_num_queries
+    ):
+        """``select_related('organization')``, pinned as a query count.
+
+        Every caller goes straight on to read ``membership.organization`` --
+        ``MyMembershipSerializer`` renders it for each row -- so losing it turns
+        the switcher's one query into one per membership.
+        """
+        user = baker.make(User)
+        self._membership(user, baker.make(Organization))
+        self._membership(user, baker.make(Organization))
+
+        with django_assert_num_queries(1):
+            for membership in OrganizationMembership.objects.active_for_user(user):
+                assert membership.organization.name
+
 
 @pytest.mark.django_db
 class TestUnscopedReadsWithAnUnrelatedOrganizationBound:
     """The scoped-manager failure mode, if it were ever introduced, would show
     up here rather than above: binding organization A and reading B's
-    memberships. Binds through ``vinta_orgs.state`` -- the package's own
-    contextvar, which is what ``SingleOrganizationUnscopedManager`` would read
-    from if it read anything -- rather than ``common.organization_context``,
-    which is this repo's separate, not-yet-consulted binding (Phase 2a's
-    precondition, not this manager's)."""
+    memberships. Binds through ``common.organization_context``, which since
+    Phase 2a *is* the package's own contextvar -- the one
+    ``SingleOrganizationUnscopedManager`` would read from if it read anything.
+    (Before Phase 2a this file bound through ``vinta_orgs.state`` directly,
+    because the two were still separate contextvars and only the package's was
+    consulted; ``0.4.0`` deleted that module-level function, and the shim in
+    ``common.organization_context`` is now the only spelling.)"""
 
     def test_a_bound_organization_does_not_hide_another_organizations_memberships(self):
         user = baker.make(User)
@@ -132,6 +190,12 @@ class TestDomainMethodsSurvivedTheManagerChange:
         assert list(seats) == [active]
 
     def test_billing_recipients_returns_admins_and_billing_owners(self):
+        """``billing_recipients`` reads ``payments.manage_billing`` as of Phase 3,
+        not ``role`` / ``is_billing_owner`` -- so a membership written straight
+        through ``objects.create`` (which performs no dual-write) has to be put
+        in its groups the way ``OrganizationService`` does. The switch itself is
+        covered in ``payments/tests/test_dunning_recipients.py``; this stays a
+        test that the *manager* still exposes the method."""
         organization = baker.make(Organization)
         admin = OrganizationMembership.objects.create(
             user=baker.make(User), organization=organization, role=OrganizationRole.ADMIN
@@ -142,9 +206,11 @@ class TestDomainMethodsSurvivedTheManagerChange:
             role=OrganizationRole.MEMBER,
             is_billing_owner=True,
         )
-        OrganizationMembership.objects.create(
+        plain_member = OrganizationMembership.objects.create(
             user=baker.make(User), organization=organization, role=OrganizationRole.MEMBER
         )
+        for membership in (admin, billing_owner, plain_member):
+            sync_membership_groups_from_role(membership)
 
         recipients = OrganizationMembership.objects.billing_recipients(organization.id)
 

@@ -2,6 +2,7 @@ import datetime
 import logging
 from typing import Annotated, Any
 
+from django.contrib.auth.models import Group
 from django.db import IntegrityError, transaction
 
 from allauth.socialaccount.models import SocialAccount
@@ -43,6 +44,7 @@ from organizations.models import (
     OrganizationRole,
     resolve_branding_for_display,
 )
+from organizations.permission_catalog import GROUP_PERMISSIONS, groups_for_membership_state
 from organizations.slug_generation import derive_organization_slug
 from payments.billing_constants import LimitedResource
 from payments.exceptions import OverLimitError
@@ -53,6 +55,45 @@ from webhooks.services.webhook_membership_side_effects import WebhookMembershipS
 
 
 logger = logging.getLogger(__name__)
+
+
+# --------------------------------------------------------------------------
+# TEMPORARY DUAL-WRITE -- delete in Phase 6 with ``role`` / ``is_billing_owner``
+# --------------------------------------------------------------------------
+def sync_membership_groups_from_role(membership: OrganizationMembership) -> None:
+    """Bring ``membership.groups`` in step with its ``role`` / ``is_billing_owner``.
+
+    **This function and every call to it are scheduled for deletion in Phase 6**
+    of the vinta-django-orgs migration
+    (``ai-plans/2026-08-12-VINTA_DJANGO_ORGS_MIGRATION_IMPLEMENTATION_PLAN.md``),
+    which drops the two columns and leaves the groups as the single
+    representation. Until then both are live and must agree: the Phase 3
+    backfill migration put every *pre-existing* membership in the right groups,
+    and this is what keeps every membership written *since* in the right ones.
+
+    ``set()`` rather than ``add()`` -- unlike the backfill, this runs on a row
+    whose role may have just changed, so a demoted admin has to *lose*
+    ``organization_admin``. Only the three seeded group names are touched; any
+    other group a membership has been put in is left alone.
+
+    Silently does nothing if the seeded groups are absent, which can only happen
+    on a database that has not run
+    ``organizations.migrations.0028_seed_permission_groups`` -- there is no
+    caller for whom failing the whole write would be the better outcome, and
+    Phase 4's permission classes are what will make a missing group visible.
+    """
+    wanted = groups_for_membership_state(
+        is_admin=membership.role == OrganizationRole.ADMIN,
+        is_billing_owner=membership.is_billing_owner,
+    )
+    managed = tuple(GROUP_PERMISSIONS)
+    groups_by_name = {
+        group.name: group for group in Group.objects.filter(name__in=managed).only("id", "name")
+    }
+    keep = [group for group in membership.groups.all() if group.name not in managed]
+    membership.groups.set(
+        keep + [groups_by_name[name] for name in wanted if name in groups_by_name]
+    )
 
 
 class OrganizationService:
@@ -197,6 +238,8 @@ class OrganizationService:
             organization=self.organization,
             role=OrganizationRole.ADMIN,
         )
+        # Dual-write, deleted in Phase 6 -- see sync_membership_groups_from_role.
+        sync_membership_groups_from_role(admin_membership)
         self.webhook_membership_side_effects_service.on_member_created(admin_membership)
 
         # Audit: the creator (now the org's first admin) is the actor for both the
@@ -582,6 +625,12 @@ class OrganizationService:
                         )
                     except IntegrityError as e:
                         raise UserAlreadyHasMembershipError() from e
+                    # Dual-write, deleted in Phase 6 -- see
+                    # sync_membership_groups_from_role. Inside the same
+                    # transaction as the create: a membership that committed
+                    # without its groups would be authorized differently from
+                    # one that committed with them, once Phase 4 reads them.
+                    sync_membership_groups_from_role(membership)
                     # Marking the invitation accepted must land in the same
                     # transaction as the guard + membership create, not a
                     # separate autocommit write after the block exits. Outside
@@ -699,6 +748,9 @@ class OrganizationService:
                     )
                 except IntegrityError as e:
                     raise UserAlreadyHasMembershipError() from e
+                # Dual-write, deleted in Phase 6 -- see
+                # sync_membership_groups_from_role.
+                sync_membership_groups_from_role(membership)
                 # Marking the invitation accepted must land in the same
                 # transaction as the guard + membership create, not a separate
                 # autocommit write after the block exits. Outside a request
