@@ -29,10 +29,18 @@ from django.core.management.base import BaseCommand, CommandError
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 
-#: Pruned *during* the walk rather than filtered afterwards. Only a speed change: a
-#: path under any of these carries the directory in ``parts``, so filtering after the
-#: walk selected the identical set.
-PRUNED_DIRS = frozenset({".git", ".venv", "migrations", "node_modules"})
+#: Pruned *during* the walk rather than filtered afterwards. Only a speed change for
+#: most of these: a path under any of them carries the directory in ``parts``, so
+#: filtering after the walk selected the identical set.
+#:
+#: ``.claude`` is the exception, and pruning it is a *correctness* requirement rather
+#: than a speed one. ``implement-plan`` provisions git worktrees under
+#: ``.claude/worktrees/<plan>/``, each a full checkout of some other branch. Those are
+#: other revisions of this repository, not files this commit can fix -- scanning them
+#: reports the resolver as "back" for anyone who has ever run a plan locally, on every
+#: commit, no matter what they changed. Nothing under ``.claude`` is imported by the
+#: running application, so pruning it removes no real coverage.
+PRUNED_DIRS = frozenset({".claude", ".git", ".venv", "migrations", "node_modules"})
 
 # Spelled in halves so this module's own source carries neither name as a literal --
 # it is inside the scanned tree, and a reader grepping for the resolver should not be

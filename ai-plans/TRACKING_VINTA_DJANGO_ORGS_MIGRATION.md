@@ -947,6 +947,17 @@ Three items are left open and are **not** part of this plan:
 3. **`MigrationExecutor` tests restoring a partial graph.** Fixed at both current
    sites; nothing prevents a third.
 
+   **Update 2026-08-17**: one of those two sites is gone.
+   `payments/tests/test_billing_period_summary_model.py::TestBillingPeriodSummaryMigration`
+   was deleted — `0020_billing_period_summary` is a pure `CreateModel`, so the
+   test drove the shared graph (and carried the whole-worker blast radius above)
+   to assert DDL Django generates. Its forward half was also tautological: with
+   no `--reuse-db`, the suite cannot start unless `0020` applied. The remaining
+   site, `organizations/tests/test_slug_backfill.py::TestTheBackfillMigration`,
+   tests a *data* step and stays. The rule the deletion establishes: an executor
+   test is warranted only when a migration's data logic cannot be re-derived
+   from the resulting schema.
+
 ## Deferred phases
 
 _(none — no cross-repo phases, no flag-removal phase)_
