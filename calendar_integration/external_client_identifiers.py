@@ -30,8 +30,15 @@ def normalize_system(value: str) -> str:
     """
     scheme, netloc, path, query, fragment = urlsplit(value)
 
-    normalized_path = path[:-1] if path.endswith("/") else path
+    normalized_path = path.rstrip("/")
+
+    # Lowercase only the host part of netloc, preserving userinfo (credentials) and port
+    if "@" in netloc:
+        userinfo, host = netloc.rsplit("@", 1)
+        netloc = f"{userinfo}@{host.lower()}"
+    else:
+        netloc = netloc.lower()
 
     return urlunsplit(
-        (scheme.lower(), netloc.lower(), normalized_path, query, fragment),
+        (scheme.lower(), netloc, normalized_path, query, fragment),
     )

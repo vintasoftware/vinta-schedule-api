@@ -196,12 +196,36 @@ def test_two_organizations_may_share_system_and_identifier(
             "https://Crm.Example.com/api/v1/?foo=Bar#Frag",
             "https://crm.example.com/api/v1?foo=Bar#Frag",
         ),
+        ("https://crm.example.com//", "https://crm.example.com"),
+        ("https://crm.example.com/api//", "https://crm.example.com/api"),
+        ("https://User:Pass@CRM.Example.com/api", "https://User:Pass@crm.example.com/api"),
+        ("", ""),
+        ("crm.example.com/api/", "crm.example.com/api"),
     ],
 )
 def test_normalize_system(value: str, expected: str) -> None:
     """Scheme and host are lowercased; a trailing slash is stripped from the path;
     path/query/fragment are otherwise preserved verbatim (including case)."""
     assert normalize_system(value) == expected
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://CRM.Example.COM",
+        "https://crm.example.com/",
+        "https://crm.example.com//",
+        "https://crm.example.com/api//",
+        "https://User:Pass@CRM.Example.com/api",
+        "",
+        "crm.example.com/api/",
+    ],
+)
+def test_normalize_system_is_idempotent(value: str) -> None:
+    """Calling normalize_system twice produces the same result as calling it once."""
+    normalized_once = normalize_system(value)
+    normalized_twice = normalize_system(normalized_once)
+    assert normalized_twice == normalized_once
 
 
 # -- Integration tests: cascade behavior -------------------------------------
