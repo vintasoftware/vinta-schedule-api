@@ -13,6 +13,7 @@ from calendar_integration.models import (
     EventExternalAttendance,
     EventRecurrenceException,
     ExternalAttendee,
+    ExternalClientIdentifier,
     ExternalEventChangeRequest,
     RecurrenceRule,
     ResourceAllocation,
@@ -36,7 +37,14 @@ class CalendarVirtualModel(OrganizationScopedVirtualModel):
         model = Calendar
 
 
+class ExternalClientIdentifierVirtualModel(OrganizationScopedVirtualModel):
+    class Meta:
+        model = ExternalClientIdentifier
+
+
 class ExternalAttendeeVirtualModel(OrganizationScopedVirtualModel):
+    external_client_identifiers = ExternalClientIdentifierVirtualModel(many=True)
+
     class Meta:
         model = ExternalAttendee
 
@@ -111,6 +119,7 @@ class CalendarEventVirtualModel(OrganizationScopedVirtualModel):
     parent_recurring_object = NestedCalendarEventVirtualModel()
     group_selections = CalendarEventGroupSelectionVirtualModel(many=True)
     calendar_group = CalendarGroupVirtualModel()
+    external_client_identifiers = ExternalClientIdentifierVirtualModel(many=True)
 
     class Meta:
         model = CalendarEvent

@@ -5,6 +5,7 @@ from unittest.mock import Mock
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth import get_user_model as _get_user_model
+from django.contrib.contenttypes.models import ContentType
 from django.urls import reverse
 
 import icalendar
@@ -6176,12 +6177,33 @@ class TestCalendarEventDownloadICS:
             organization=organization,
         )
 
+        # Pre-warm ``ContentType.objects.get_for_model``'s process-local cache for both
+        # models the virtual-model prefetch below will look up. Without this, the query
+        # count pinned two lines down would be order-dependent: whether the two
+        # content-type lookups are already cached depends on which other tests
+        # happened to run first in this xdist worker, so the same test could need 26,
+        # 27 or 28 queries depending on test order alone. Warming both here up front
+        # makes the two content-type lookups always cache hits, so the pinned count
+        # below is stable regardless of what ran before it.
+        ContentType.objects.get_for_model(CalendarEvent)
+        ContentType.objects.get_for_model(ExternalAttendee)
+
         url = reverse("api:CalendarEvents-ics", kwargs={"pk": event.id})
         # The view applies a documented prefetch set to avoid N+1 queries during ICS
         # generation. Pin the query count so a regression to per-attendee queries (which
         # would scale with attendee count) trips this assertion. N reflects the
         # prefetched query set, not the number of attendees.
-        with django_assert_num_queries(22):
+        #
+        # 26, not 22: the External Client Identifiers REST phase added
+        # ``external_client_identifiers`` to ``CalendarEventVirtualModel`` and
+        # ``ExternalAttendeeVirtualModel``, so the virtual-model-optimized queryset
+        # ``download_ics`` builds (via ``get_object()`` and then its own explicit
+        # re-fetch) now also prefetches identifiers for the event and for its
+        # external attendee -- one identifier query per model per fetch, for each of
+        # the two fetches: 2 models x 2 fetches = 4 extra queries. (The content-type
+        # lookups those identifier queries depend on are warmed above, so they cost
+        # nothing here; without the warm-up they would add 0-2 more, non-deterministically.)
+        with django_assert_num_queries(26):
             response = auth_client.get(url)
 
         assert_response_status_code(response, status.HTTP_200_OK)

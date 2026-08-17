@@ -4964,6 +4964,18 @@ paths:
           type: string
           format: date-time
         description: End time range
+      - in: query
+        name: external_client_identifier_identifier
+        schema:
+          type: string
+        description: Filter by client identifier value. Must be supplied together
+          with external_client_identifier_system.
+      - in: query
+        name: external_client_identifier_system
+        schema:
+          type: string
+        description: Filter by client identifier system. Must be supplied together
+          with external_client_identifier_identifier.
       - name: limit
         required: false
         in: query
@@ -5087,6 +5099,18 @@ paths:
           type: string
           format: date-time
         description: End time range
+      - in: query
+        name: external_client_identifier_identifier
+        schema:
+          type: string
+        description: Filter by client identifier value. Must be supplied together
+          with external_client_identifier_system.
+      - in: query
+        name: external_client_identifier_system
+        schema:
+          type: string
+        description: Filter by client identifier system. Must be supplied together
+          with external_client_identifier_identifier.
       - in: path
         name: format
         schema:
@@ -5939,6 +5963,18 @@ paths:
           type: string
           format: date-time
         description: End time range
+      - in: query
+        name: external_client_identifier_identifier
+        schema:
+          type: string
+        description: Filter by client identifier value. Must be supplied together
+          with external_client_identifier_system.
+      - in: query
+        name: external_client_identifier_system
+        schema:
+          type: string
+        description: Filter by client identifier system. Must be supplied together
+          with external_client_identifier_identifier.
       - name: limit
         required: false
         in: query
@@ -6031,6 +6067,18 @@ paths:
           type: string
           format: date-time
         description: End time range
+      - in: query
+        name: external_client_identifier_identifier
+        schema:
+          type: string
+        description: Filter by client identifier value. Must be supplied together
+          with external_client_identifier_system.
+      - in: query
+        name: external_client_identifier_system
+        schema:
+          type: string
+        description: Filter by client identifier system. Must be supplied together
+          with external_client_identifier_identifier.
       - in: path
         name: format
         schema:
@@ -17407,6 +17455,13 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ResourceAllocation'
+        external_client_identifiers:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExternalClientIdentifier'
+          description: Client-owned (system, identifier) pairs for this event. Omitted
+            on a partial update leaves the stored set untouched; an explicit list
+            (including []) replaces it.
         recurrence_rule:
           allOf:
           - $ref: '#/components/schemas/RecurrenceRule'
@@ -18075,6 +18130,14 @@ components:
           type: string
           format: email
           maxLength: 254
+        external_client_identifiers:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExternalClientIdentifier'
+          description: Client-owned (system, identifier) pairs for this external attendee.
+            Omitted leaves the stored set untouched (a no-op on create, since there
+            is nothing to leave untouched yet); an explicit list (including []) replaces
+            it.
         created:
           type: string
           format: date-time
@@ -18087,6 +18150,26 @@ components:
       - created
       - email
       - modified
+    ExternalClientIdentifier:
+      type: object
+      description: |-
+        One ``(system, identifier)`` client-owned reference pair.
+
+        ``system`` is normalized (case + trailing slash) and validated as an absolute
+        URL by ``ExternalClientIdentifierService`` before storage/matching -- this
+        input layer does no format validation of its own, matching the public
+        GraphQL ``ExternalClientIdentifierInput``. See
+        ``calendar_integration.external_client_identifiers.normalize_system``.
+      properties:
+        system:
+          type: string
+          maxLength: 500
+        identifier:
+          type: string
+          maxLength: 255
+      required:
+      - identifier
+      - system
     ExternalEventChangeRequest:
       type: object
       description: |-
@@ -20059,6 +20142,13 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ResourceAllocation'
+        external_client_identifiers:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExternalClientIdentifier'
+          description: Client-owned (system, identifier) pairs for this event. Omitted
+            on a partial update leaves the stored set untouched; an explicit list
+            (including []) replaces it.
         recurrence_rule:
           allOf:
           - $ref: '#/components/schemas/RecurrenceRule'

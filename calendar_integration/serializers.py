@@ -57,6 +57,7 @@ from calendar_integration.services.dataclasses import (
     EventAttendanceInputData,
     EventExternalAttendanceInputData,
     ExternalAttendeeInputData,
+    ExternalClientIdentifierData,
     ResourceAllocationInputData,
     UnavailableTimeWindow,
 )
@@ -564,9 +565,54 @@ class EventRecurringExceptionSerializer(serializers.Serializer):
         )
 
 
+class ExternalClientIdentifierSerializer(serializers.Serializer):
+    """One ``(system, identifier)`` client-owned reference pair.
+
+    ``system`` is normalized (case + trailing slash) and validated as an absolute
+    URL by ``ExternalClientIdentifierService`` before storage/matching -- this
+    input layer does no format validation of its own, matching the public
+    GraphQL ``ExternalClientIdentifierInput``. See
+    ``calendar_integration.external_client_identifiers.normalize_system``.
+    """
+
+    system = serializers.CharField(max_length=500)
+    identifier = serializers.CharField(max_length=255)
+
+
+def _map_external_client_identifiers(
+    identifiers: list[dict[str, str]] | None,
+) -> list[ExternalClientIdentifierData] | None:
+    """Map the REST tri-state input to the tri-state Phase 2 dataclass list.
+
+    A key absent from ``validated_data`` -- the caller never sent it, or a
+    ``PATCH`` omitted it -- reaches this function as ``None`` (the ``.pop(...,
+    None)``/``.get(...)`` default used at every call site below), which maps to
+    ``None`` here too: "leave untouched". An explicit list -- including an
+    explicit ``[]`` -- maps to a (possibly empty) list, which replaces the
+    stored set and clears it when empty. See
+    ``ExternalClientIdentifierService.replace_for_target``.
+    """
+    if identifiers is None:
+        return None
+    return [
+        ExternalClientIdentifierData(system=item["system"], identifier=item["identifier"])
+        for item in identifiers
+    ]
+
+
 class ExternalAttendeeSerializer(VirtualModelSerializer):
     id = serializers.IntegerField(  # noqa: A003
         allow_null=True, required=False, help_text="ID of the external attendee."
+    )
+    external_client_identifiers = ExternalClientIdentifierSerializer(
+        many=True,
+        required=False,
+        help_text=(
+            "Client-owned (system, identifier) pairs for this external attendee. "
+            "Omitted leaves the stored set untouched (a no-op on create, since there "
+            "is nothing to leave untouched yet); an explicit list (including []) "
+            "replaces it."
+        ),
     )
 
     class Meta:
@@ -576,6 +622,7 @@ class ExternalAttendeeSerializer(VirtualModelSerializer):
             "id",
             "name",
             "email",
+            "external_client_identifiers",
             "created",
             "modified",
         )
@@ -837,6 +884,15 @@ class CalendarEventSerializer(VirtualModelSerializer):
     start_time = serializers.DateTimeField(required=True)
     end_time = serializers.DateTimeField(required=True)
     parent_recurring_object = ParentEventSerializer(read_only=True)
+    external_client_identifiers = ExternalClientIdentifierSerializer(
+        many=True,
+        required=False,
+        help_text=(
+            "Client-owned (system, identifier) pairs for this event. Omitted on a "
+            "partial update leaves the stored set untouched; an explicit list "
+            "(including []) replaces it."
+        ),
+    )
 
     class Meta:
         model = CalendarEvent
@@ -855,6 +911,7 @@ class CalendarEventSerializer(VirtualModelSerializer):
             "external_attendances",
             "attendances",
             "resource_allocations",
+            "external_client_identifiers",
             # Recurrence fields
             "recurrence_rule",
             "rrule_string",
@@ -1158,6 +1215,10 @@ class CalendarEventSerializer(VirtualModelSerializer):
         resource_allocations = validated_data.pop("resource_allocations", [])
         attendances = validated_data.pop("attendances", [])
         external_attendances = validated_data.pop("external_attendances", [])
+        # None = key absent (nothing to leave untouched on create yet); an explicit
+        # list -- including [] -- is meaningless on create but handled uniformly by
+        # _map_external_client_identifiers / the service either way.
+        external_client_identifiers = validated_data.pop("external_client_identifiers", None)
 
         # Handle recurrence fields
         recurrence_rule_data = validated_data.pop("recurrence_rule", None)
@@ -1194,6 +1255,9 @@ class CalendarEventSerializer(VirtualModelSerializer):
                             id=ext["external_attendee"].get("id"),
                             email=ext["external_attendee"]["email"],
                             name=ext["external_attendee"]["name"],
+                            external_client_identifiers=_map_external_client_identifiers(
+                                ext["external_attendee"].get("external_client_identifiers")
+                            ),
                         )
                     )
                     for ext in external_attendances
@@ -1202,6 +1266,9 @@ class CalendarEventSerializer(VirtualModelSerializer):
                 recurrence_rule=final_rrule_string,
                 parent_event_id=parent_recurring_object_id,
                 is_recurring_exception=validated_data.get("is_recurring_exception", False),
+                external_client_identifiers=_map_external_client_identifiers(
+                    external_client_identifiers
+                ),
             ),
         )
 
@@ -1271,6 +1338,13 @@ class CalendarEventSerializer(VirtualModelSerializer):
                 for ext in instance.external_attendances.all()
             ],
         )
+        # ``None`` = key absent from the request (a PATCH that never mentioned
+        # identifiers) -- passed straight through to the service as "leave
+        # untouched" rather than reconstructed from ``instance``, since the
+        # service (unlike ``resource_allocations``/``attendances``/
+        # ``external_attendances`` above) already treats ``None`` natively as a
+        # no-op. Reconstructing here would collapse that distinction.
+        external_client_identifiers = validated_data.pop("external_client_identifiers", None)
 
         # Handle recurrence fields for updates
         recurrence_rule_instance = validated_data.pop("recurrence_rule_id", None)
@@ -1313,6 +1387,9 @@ class CalendarEventSerializer(VirtualModelSerializer):
                             id=ext["external_attendee"].get("id"),
                             email=ext["external_attendee"]["email"],
                             name=ext["external_attendee"]["name"],
+                            external_client_identifiers=_map_external_client_identifiers(
+                                ext["external_attendee"].get("external_client_identifiers")
+                            ),
                         )
                     )
                     for ext in external_attendances
@@ -1327,6 +1404,9 @@ class CalendarEventSerializer(VirtualModelSerializer):
                 ),
                 is_recurring_exception=validated_data.get(
                     "is_recurring_exception", instance.is_recurring_exception
+                ),
+                external_client_identifiers=_map_external_client_identifiers(
+                    external_client_identifiers
                 ),
             ),
         )
