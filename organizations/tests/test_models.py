@@ -355,45 +355,12 @@ class TestMultiOrgMembership:
         assert resolved.organization == org_a
 
 
-@pytest.mark.django_db
-class TestOrganizationMembershipCompositePK:
-    """Unit tests for the composite primary key (user_id, organization_id)."""
-
-    def test_pk_tuple_lookup_returns_membership(self):
-        """OrganizationMembership.objects.get(pk=(user.id, org.id)) returns the membership."""
-        user = baker.make(User)
-        org = baker.make(Organization)
-        membership = OrganizationMembership.objects.create(user=user, organization=org)
-
-        fetched = OrganizationMembership.objects.get(pk=(user.id, org.id))
-        assert fetched == membership
-
-    def test_instance_pk_is_tuple_of_user_and_org_ids(self):
-        """membership.pk is the (user_id, organization_id) tuple after save."""
-        user = baker.make(User)
-        org = baker.make(Organization)
-        membership = OrganizationMembership.objects.create(user=user, organization=org)
-
-        assert membership.pk == (user.id, org.id)
-
-
-@pytest.mark.django_db(transaction=True)
-class TestOrganizationMembershipCompositePKUniqueness:
-    """Transaction-level test for the composite PK uniqueness constraint."""
-
-    def test_duplicate_membership_raises_integrity_error(self):
-        """Creating a second OrganizationMembership for the same (user, org) raises IntegrityError.
-
-        Uses transaction=True so the IntegrityError from the DB constraint is
-        flushed immediately (not deferred to test teardown).
-        """
-        user = baker.make(User)
-        org = baker.make(Organization)
-        OrganizationMembership.objects.create(user=user, organization=org)
-
-        with pytest.raises(IntegrityError):
-            with django.db.transaction.atomic():
-                OrganizationMembership.objects.create(user=user, organization=org)
+# The composite-primary-key tests that lived here are gone with the composite
+# primary key itself (Phase 1 of the vinta-django-orgs migration -- a
+# ``ManyToManyField`` cannot hang off a composite-PK model, and the package's
+# abstract membership base declares two). Their replacements, covering the
+# surrogate ``id`` and the ``uniq_membership_user_organization`` constraint that
+# outlived both primary keys, are in ``organizations/tests/test_membership_pk.py``.
 
 
 @pytest.mark.django_db
@@ -493,10 +460,10 @@ class TestWeekStart:
             cursor.execute(
                 """
                 INSERT INTO organizations_organization
-                (name, should_sync_rooms, external_event_update_policy, meta, created, modified, can_invite_organizations)
+                (name, slug, should_sync_rooms, external_event_update_policy, created, modified, can_invite_organizations)
                 VALUES (%s, %s, %s, %s, NOW(), NOW(), %s)
                 """,
-                ["Pre-migration Org", False, "change_request", "{}", False],
+                ["Pre-migration Org", "pre-migration-org", False, "change_request", False],
             )
 
         # Read the row back via the ORM and verify week_start is Monday.
@@ -509,25 +476,46 @@ class TestWeekStart:
 class TestOrganizationSlug:
     """Unit tests for Organization.slug (Phase 1 — self-serve organization slug)."""
 
-    def test_slug_is_optional_on_creation(self):
-        """A freshly created Organization has slug=None when not supplied."""
-        org = baker.make(Organization)
-        assert org.slug is None
+    def test_an_organization_saved_without_a_slug_gets_an_opaque_one(self):
+        """``slug`` is NOT NULL, so ``save()`` mints one -- and it is opaque.
+
+        Not ``slugify(name)``: the slug is public (it appears in branded login
+        URLs), so a name-derived default would publish the organization's name
+        for every row saved without an explicit slug. See the plan's "Runtime
+        slug default is opaque, not name-derived" Guiding Decision.
+        """
+        org = Organization.objects.create(name="Acme Incorporated")
+
+        assert org.slug.startswith("org-")
+        assert "acme" not in org.slug
+        org.refresh_from_db()
+        assert org.slug.startswith("org-")
 
     def test_slug_can_be_set_on_creation(self):
         """slug can be supplied at creation time."""
         org = baker.make(Organization, slug="my-org")
         assert org.slug == "my-org"
 
-    def test_multiple_null_slugs_coexist(self):
-        """Postgres's unique index admits any number of NULL slugs."""
-        org_a = baker.make(Organization)
-        org_b = baker.make(Organization)
-        assert org_a.slug is None
-        assert org_b.slug is None
-        # No IntegrityError raised by baker.make above is the assertion — both rows
-        # persisted with slug=NULL.
-        assert Organization.objects.filter(slug__isnull=True).count() >= 2
+    def test_two_organizations_saved_without_a_slug_do_not_collide(self):
+        """The minted slugs are distinct, so the unique index admits both."""
+        org_a = Organization.objects.create(name="Same Name")
+        org_b = Organization.objects.create(name="Same Name")
+
+        assert org_a.slug != org_b.slug
+
+    def test_a_blank_slug_is_refused_by_the_database(self):
+        """``organization_slug_not_blank`` refuses ``''`` even past ``save()``.
+
+        This is what makes the branding gate's retired ``NO_SLUG`` condition
+        permanently unreachable rather than merely hard to reach: ``save()``
+        would have replaced the blank value, so the interesting write is the one
+        that goes around it.
+        """
+        org = baker.make(Organization, slug="a-real-slug")
+
+        with pytest.raises(IntegrityError):
+            with django.db.transaction.atomic():
+                Organization.objects.filter(pk=org.pk).update(slug="")
 
     def test_duplicate_slug_raises_integrity_error(self):
         """Two organizations cannot share the same non-null slug."""

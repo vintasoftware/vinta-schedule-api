@@ -47,11 +47,11 @@ Verified after fixing: host surface and container surface both load Django and b
 
 | Phase | Title | Impl tier | Review override | Status | Branch | Base | PR |
 |---|---|---|---|---|---|---|---|
-| 0 | Bind the organization at every unscoped call site | 3 | reviewer 4 | ✅ done | `plan/vinta-django-orgs-migration/phase-0` | `plan-vinta-django-orgs-migration` | #254 |
+| 0 | Bind the organization at every unscoped call site | 3 | reviewer 4 | ✅ done (rebased + force-pushed 2026-08-12, code diff unchanged) | `plan/vinta-django-orgs-migration/phase-0` | `plan-vinta-django-orgs-migration` | #254 |
 | ~~1a~~ | ~~Rename our app to `tenancy`~~ | — | — | ❌ **withdrawn 2026-08-12** | `phase-1a` (abandoned, kept for audit) | phase-0 | #255 closed unmerged |
 | ~~1b~~ | ~~Content types, `audit.subject_type` backfill, retriever, seeded-DB path~~ | — | — | ❌ **withdrawn 2026-08-12** (retriever salvaged into Phase 1) | `phase-1b` (abandoned, kept for audit) | phase-1a | #256 closed unmerged |
 | ~~1c~~ | ~~Unwind the composite PK, subclass abstract bases, backfill slugs~~ | — | — | ♻️ **renumbered → Phase 1** | `phase-1c` (abandoned, kept for audit) | phase-1b | #257 closed unmerged |
-| 1 | Adopt the abstract bases, unwind the composite PK, backfill slugs | 4 | reviewer 4, fixer 3 | ⏳ pending | `plan/vinta-django-orgs-migration/phase-1` | phase-0 | — |
+| 1 | Adopt the abstract bases, unwind the composite PK, backfill slugs | 4 | reviewer 4, fixer 3 | ✅ done | `plan/vinta-django-orgs-migration/phase-1` | phase-0 | see below |
 | 2a | Flip `calendar_integration` onto the mixin and safe relations | 4 | reviewer 4 | ⏳ pending | — | phase-1 | — |
 | 2b | Flip the remaining scoped models | 3 | reviewer 4 | ⏳ pending | — | phase-2a | — |
 | 3 | Groups, permissions, and the organization auth backend | 3 | — | ⏳ pending | — | phase-2b | — |
@@ -198,9 +198,42 @@ Carry-forward facts:
 
 **Carry-forward for Phase 2a**: `common/organization_context.py` still owns its own `contextvars` implementation rather than re-exporting `organizations.state`. Verified harmless today — every membership write in this codebase passes `organization=` explicitly, so `SingleOrganizationModelMixin.save()`'s `get_current_organization() or get_default_organization()` fallback (which reads the package's own contextvar, not this repo's) is never reached. **Phase 2a's swap to the package's context module will activate that fallback for the first time**: from that point, a membership constructed without an organization inside an `organization_context(...)` block will start silently adopting the bound organization instead of raising. Phase 2a should treat this as a precondition to check explicitly, not discover it as a side effect.
 
+### Phase 1 — Adopt the abstract bases, unwind the composite PK, backfill slugs
+
+- **Branch**: `plan/vinta-django-orgs-migration/phase-1` off `phase-0` (which was rebased onto the amended base and force-pushed; its code diff was verified byte-identical, only the ai-plans commit `ce87253` was dropped since the base branch now carries it)
+- **Commits**: `64411e2` (implement, Tier 4) · `b957594` (review fixes, fixer Tier 3) · `060ef9f` (conductor: one stale docstring the fixer flagged as uncited)
+- **Review**: reviewer Tier 4, fixer Tier 3 (plan override). **No BLOCKERs.** Ten SHOULD-FIX and five NITs, all applied; one NIT deliberately skipped (`OrganizationBrief.slug`'s dropped `pattern` — the field is `readOnly` and the pattern was never enforced at the serializer or DB layer).
+
+The reviewer verified the load-bearing claims itself rather than taking the implementer's word: all five PROTECT FKs resolve to `uniq_membership_user_organization` via `pg_constraint.conindid`; `_queryset_class is OrganizationMembershipQuerySet` and `issubclass(OrganizationMembershipManager, SingleOrganizationUnscopedManager)`; `"db_table" not in _meta.original_attrs` for all four models; every `tenancy` string in the diff is prose or a negative assertion; `spectacular` regeneration byte-identical to the committed `schema.yml`.
+
+**What landed**: `vinta-django-orgs>=0.2,<0.3`; `vinta_orgs` installed outside `INTERNAL_INSTALLED_APPS`; `SHARED_SCHEMA_ORGANIZATIONS` without `STRICT_ORGANIZATION_FILTER` (Phase 2a's); migrations `0023`–`0026` (composite-PK unwind, reparent, slug backfill, NOT NULL + `organization_slug_not_blank` CHECK); `organizations/slug_generation.py`, `common/constants.py`, `common/org_retrievers.py` (new); `user.organization_memberships` → `user.memberships` everywhere; both package admin registrations unregistered; eight new test modules.
+
+**Notable review fixes** (each was a real defect, not polish):
+- REST advertised `nullable: true` on a slug `validate_slug` rejected — a client generated from that schema would 400 on a payload the schema called legal.
+- The slug-collision retry discriminator re-queried instead of reading `exc.__cause__.diag.constraint_name`, so a `uniq_org_name_per_parent` violation could exhaust the retry budget and be reported as "could not allocate a unique slug". Constraint name `organizations_organization_slug_key` verified against the live schema.
+- `OrganizationSlugCollisionError`, the retry path, and the sanctioned name-derivation had **zero** tests — flipping `disclose_name` would have broken nothing visibly.
+- All five PROTECT-FK tests used bare `pytest.raises(IntegrityError)`, so any unrelated deferred integrity failure at COMMIT satisfied all five. Each now matches its constraint name by literal.
+- `test_membership_manager.py`'s "unrelated organization bound" class bound *this repo's* contextvar, which the package never reads — it was silently re-testing the nothing-bound case. Now binds `vinta_orgs.state` directly.
+
+**Decisions taken beyond the phase body** (all reviewed, none reverted):
+- `Meta.unique_together = []` — inheriting `AbstractOrganizationMembership.Meta` verbatim would build a second unique index over `(user, organization)` beside `uniq_membership_user_organization`, the constraint five raw-SQL FKs depend on.
+- `DEFAULT_ORGANIZATION_SLUG: None` (the package defaults to `'default'`, which would run a `WHERE slug='default'` lookup per unbound scoped save and could silently adopt an organization holding that slug) and `ADD_ORGANIZATION_TO_SESSION: False`.
+- Blank-slug handling unified across REST, admin, and GraphQL `update_branding`: omitted → leave alone; explicit `null` or `""` → refused; on create → "pick one for me". GraphQL previously treated an explicit `slug: null` as a silent no-op while REST 400'd on the same intent.
+- No membership admin at all rather than substituting one — status quo ante (`phase-0` registered none either). Phase 3 owns building one with the seat-limit and last-admin rules.
+- The `OrganizationService.create_organization` slug race carry-forward was **closed here** rather than deferred, since this branch introduces the pre-check that creates it.
+
+**Gate**: ruff clean, `check --deploy` clean (no `models.E028`), `makemigrations --check` no changes, mypy **379** (exactly baseline — two new errors appeared during implementation and were fixed at source, not suppressed), full suite **5512 passed / 0 failed**, `migrate` clean from zero with **zero `tenancy` rows** in `django_migrations`. The `phase-0` baseline measured in the same container was 5431 passed / 3 failed, all three passing in isolation.
+
+Carry-forward facts:
+
+- **New entrant to the parallel-load flake class.** `organizations/tests/test_slug_backfill.py::TestTheBackfillMigration::test_backfill_derivation_collisions_idempotency_and_constraints` drives `MigrationExecutor` against the shared per-worker database. It was green in the fixer's full-suite run and failed once in a later scoped run, passing in 26s alone. Same shape as the pre-existing `payments/tests/test_billing_period_summary_model.py::TestBillingPeriodSummaryMigration`. Not fixed here — recorded so nobody chases it as a real regression, and so whoever next addresses suite flakiness has both names.
+- **The `common/organization_context.py` precondition still stands** — see the amendment section's surviving carry-forwards. Its *docstring* was corrected here (it was instructing the next implementer to perform the withdrawn rename); its body and contextvar were deliberately left alone, because swapping them activates a behavior change this phase does not test for.
+- **`model_bakery` now fills `slug`** with a 255-char random string, since the field is required and the column is `varchar(255)` while `slug_validation` caps *writes* at 63. Tests that posted the value back or asserted `slug is None` were given explicit readable slugs and converted to "unchanged from a pinned starting value". Worth knowing before writing new slug-touching tests.
+- **Pre-existing mypy errors spotted, not fixed** (in the 379 baseline): `public_api/mutations.py:1485` (`SystemUser` has no `scoped_to_membership_user_id`) and `:2071` (`requested_by=None` into a `User` parameter).
+
 ## Current phase
 
-Phase 1 — adopt the package's abstract bases, unwind the composite PK, backfill slugs. Branches off `phase-0`. See that phase's entry in the plan file, and the **Amendment — 2026-08-12** section above for what was withdrawn and must not be reintroduced.
+Phase 2a — flip `calendar_integration` onto the package's mixin and safe relations, based on `phase-1`. Read the **Amendment — 2026-08-12** carry-forwards first; the `common/organization_context.py` swap is this phase's precondition.
 
 ## Deferred phases
 

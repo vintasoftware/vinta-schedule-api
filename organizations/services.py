@@ -1,6 +1,6 @@
 import datetime
 import logging
-from typing import Annotated
+from typing import Annotated, Any
 
 from django.db import IntegrityError, transaction
 
@@ -32,6 +32,7 @@ from organizations.exceptions import (
     InvalidInvitationTokenError,
     InvitationNotFoundError,
     NoServiceAccountConfiguredError,
+    OrganizationSlugCollisionError,
     UserAlreadyHasMembershipError,
 )
 from organizations.invitation_urls import build_invitation_accept_url
@@ -42,6 +43,7 @@ from organizations.models import (
     OrganizationRole,
     resolve_branding_for_display,
 )
+from organizations.slug_generation import derive_organization_slug
 from payments.billing_constants import LimitedResource
 from payments.exceptions import OverLimitError
 from payments.services.entitlement_service import EntitlementService
@@ -74,6 +76,72 @@ class OrganizationService:
         self.subscription_service = subscription_service
         self.entitlement_service = entitlement_service
 
+    #: How many times :meth:`_create_organization_row` attempts the insert --
+    #: an initial derivation plus two re-derives after a lost slug race. Two
+    #: callers racing onto the same derived slug is already unlikely; three
+    #: losing in a row is not a case worth carrying more code for.
+    _SLUG_CREATE_ATTEMPTS = 3
+
+    #: Name of the unique constraint backing ``Organization.slug`` (inherited,
+    #: unnamed, from ``AbstractOrganization.slug``'s ``unique=True`` -- Django's
+    #: default naming for a single-column unique index). Verified against the
+    #: live schema (``\d organizations_organization``) rather than assumed: a
+    #: rename here would silently disable the retry-vs-reraise discriminator
+    #: below rather than raise, so if this ever drifts from the schema, fix the
+    #: constant, not the schema.
+    _SLUG_UNIQUE_CONSTRAINT_NAME = "organizations_organization_slug_key"
+
+    def _create_organization_row(self, create_kwargs: dict[str, Any]) -> Organization:
+        """``Organization.objects.create`` with a name-derived slug, race included.
+
+        ``derive_organization_slug``'s uniqueness check and the ``INSERT`` are two
+        statements, so a concurrent caller can claim the same derived slug in
+        between and the ``INSERT`` then raises ``IntegrityError``. That matters
+        more here than it looks: the whole method runs inside
+        ``@transaction.atomic()`` for the "no plan-less state" invariant, so an
+        uncaught ``IntegrityError`` would abort organization creation outright
+        rather than degrade.
+
+        Each attempt therefore gets its own savepoint (a nested ``atomic``
+        block), which is what lets the ``IntegrityError`` be caught without
+        poisoning the enclosing transaction -- the same pattern
+        ``public_api.mutations._apply_input_slug`` uses. The retry re-derives, so
+        the loser of the race takes the next free ``name-2`` rather than failing.
+
+        Operates on a local copy of ``create_kwargs`` -- the caller's dict is
+        read, never mutated.
+        """
+        create_kwargs = dict(create_kwargs)
+        for _attempt in range(self._SLUG_CREATE_ATTEMPTS):
+            create_kwargs["slug"] = derive_organization_slug(
+                create_kwargs["name"],
+                slug_exists=lambda candidate: Organization.objects.filter(slug=candidate).exists(),
+                disclose_name=True,
+            )
+            try:
+                with transaction.atomic():
+                    return Organization.objects.create(**create_kwargs)
+            except IntegrityError as exc:
+                # Only a lost slug race is retryable. Any other integrity
+                # failure (e.g. a `uniq_org_name_per_parent` violation) would
+                # fail identically on every attempt, so it is re-raised rather
+                # than retried into a misleading slug error. Read the failing
+                # constraint directly from the driver error rather than
+                # re-querying for the slug: a concurrent claim on the slug
+                # coinciding with a duplicate-name violation would otherwise
+                # be misread as the (retryable) slug race, exhaust the retry
+                # budget, and report "could not allocate a unique slug" for
+                # what is actually a duplicate-name error.
+                diag = getattr(exc.__cause__, "diag", None)
+                if diag is None or diag.constraint_name != self._SLUG_UNIQUE_CONSTRAINT_NAME:
+                    raise
+                logger.warning(
+                    "Organization slug %r was claimed concurrently; re-deriving.",
+                    create_kwargs["slug"],
+                )
+
+        raise OrganizationSlugCollisionError()
+
     @transaction.atomic()
     def create_organization(
         self,
@@ -99,6 +167,14 @@ class OrganizationService:
         management command, shell, or Celery task calling this directly would
         otherwise be able to commit the ``Organization`` row and then fail on
         subscription creation, leaving a plan-less organization behind.
+
+        **This is the one runtime path that derives a slug from the name.**
+        ``slug`` is public, so deriving it from the name publishes the name --
+        accepted here and nowhere else, because this is the self-serve "create
+        my own organization" flow: the human calling it chose ``name`` for their
+        own, about-to-be-public organization. Every other write path (including
+        ``Organization.save()``'s own fallback) mints the opaque ``org-<token>``
+        form instead. See the plan's two Guiding Decisions rows on slugs.
         """
         create_kwargs: dict = {
             "name": name,
@@ -108,7 +184,7 @@ class OrganizationService:
             create_kwargs["external_event_update_policy"] = external_event_update_policy
         if week_start is not None:
             create_kwargs["week_start"] = week_start
-        self.organization = Organization.objects.create(**create_kwargs)
+        self.organization = self._create_organization_row(create_kwargs)
         # Every organization always has exactly one active plan, from creation —
         # there is no plan-less state.
         # A no-op for a reseller child (parent set): it pools against its root's
@@ -481,9 +557,7 @@ class OrganizationService:
             if verify_long_lived_token(token, invitation.token_hash):
                 # Per-org check: refuse only a duplicate in the SAME org.
                 # A user already in a different org is allowed to join this one.
-                if user.organization_memberships.filter(
-                    organization=invitation.organization
-                ).exists():
+                if user.memberships.filter(organization=invitation.organization).exists():
                     raise UserAlreadyHasMembershipError()
                 with transaction.atomic():
                     # Guard first, before the membership write, inside the same
@@ -603,9 +677,7 @@ class OrganizationService:
         if pending_invitation is not None:
             # Per-org check: refuse only a duplicate in the SAME org.
             # A user already in a different org is allowed to join the inviting org.
-            if user.organization_memberships.filter(
-                organization=pending_invitation.organization
-            ).exists():
+            if user.memberships.filter(organization=pending_invitation.organization).exists():
                 raise UserAlreadyHasMembershipError()
             with transaction.atomic():
                 # Guard first, before the membership write, inside the same
@@ -664,7 +736,7 @@ class OrganizationService:
             # Auto-creating a second org for an existing member is handled by the create
             # endpoint (OrganizationManagementPermission on POST /organizations/).
             # This signup-path branch keeps the original single-membership check.
-            if user.organization_memberships.exists():
+            if user.memberships.exists():
                 raise UserAlreadyHasMembershipError()
             try:
                 with transaction.atomic():

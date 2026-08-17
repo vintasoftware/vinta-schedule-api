@@ -2345,12 +2345,13 @@ class TestUpdateBrandingSlugInOneCall:
         return org, auth_service, system_user, token
 
     def test_supplying_a_valid_slug_alongside_branding_sets_both(self):
-        """A no-slug org can satisfy the gate's slug precondition and save
-        branding in the same call."""
+        """An organization can rename its public identifier and save branding in
+        the same call."""
         from di_core.containers import container
 
-        org, auth_service, system_user, token = self._org_with_branding_scope()
-        assert org.slug is None
+        org, auth_service, system_user, token = self._org_with_branding_scope(
+            slug="before-one-call"
+        )
 
         with container.public_api_auth_service.override(auth_service):
             response = self.client.post(
@@ -2403,14 +2404,84 @@ class TestUpdateBrandingSlugInOneCall:
         org.refresh_from_db()
         assert org.slug == "already-slugged-org"
 
-    def test_invalid_slug_rejects_the_whole_call_and_leaves_the_org_without_one(self):
-        """An invalid slug (fails the shared format rule) rejects the entire
-        call before the gate or the branding upsert ever runs -- the
-        organization's slug stays unset and no branding row is created."""
+    def test_an_explicit_blank_slug_is_refused_rather_than_ignored(self):
+        """``""`` is not the same as omitting the field.
+
+        ``slug`` is NOT NULL and the ``organization_slug_not_blank`` check
+        constraint refuses a blank value, so there is nothing to write --
+        and silently treating it as "omitted" would tell a partner integration
+        it had cleared an identifier that is in fact unchanged.
+        """
         from di_core.containers import container
 
-        org, auth_service, system_user, token = self._org_with_branding_scope()
-        assert org.slug is None
+        org, auth_service, system_user, token = self._org_with_branding_scope(
+            slug="untouched-by-blank"
+        )
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": UPDATE_BRANDING_WITH_SLUG_MUTATION,
+                    "variables": {"input": {"appName": "ShouldNotPersist", "slug": ""}},
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert "cannot be cleared" in str(data["errors"]).lower()
+
+        org.refresh_from_db()
+        assert org.slug == "untouched-by-blank"
+        assert not OrganizationBranding.objects.filter(organization=org).exists()
+
+    def test_an_explicit_null_slug_is_refused_rather_than_ignored(self):
+        """An explicit ``null`` is refused, not treated as "omitted".
+
+        ``UpdateBrandingInput.slug`` defaults to ``strawberry.UNSET`` so an
+        omitted field and an explicit ``null`` are distinguishable; this rule
+        matches ``OrganizationSerializer.validate_slug`` on the REST surface --
+        see ``organizations.tests.test_views.TestOrganizationSlugUpdate
+        .test_null_slug_is_rejected_with_400`` for the same contract there.
+        """
+        from di_core.containers import container
+
+        org, auth_service, system_user, token = self._org_with_branding_scope(
+            slug="untouched-by-null"
+        )
+
+        with container.public_api_auth_service.override(auth_service):
+            response = self.client.post(
+                "/graphql/",
+                data={
+                    "query": UPDATE_BRANDING_WITH_SLUG_MUTATION,
+                    "variables": {"input": {"appName": "ShouldNotPersist", "slug": None}},
+                },
+                format="json",
+                headers={"authorization": f"Bearer {system_user.id}:{token}"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" in data
+        assert "cannot be cleared" in str(data["errors"]).lower()
+
+        org.refresh_from_db()
+        assert org.slug == "untouched-by-null"
+        assert not OrganizationBranding.objects.filter(organization=org).exists()
+
+    def test_invalid_slug_rejects_the_whole_call_and_leaves_the_slug_unchanged(self):
+        """An invalid slug (fails the shared format rule) rejects the entire
+        call before the gate or the branding upsert ever runs -- the
+        organization keeps the slug it had and no branding row is created."""
+        from di_core.containers import container
+
+        org, auth_service, system_user, token = self._org_with_branding_scope(
+            slug="untouched-by-invalid"
+        )
 
         with container.public_api_auth_service.override(auth_service):
             response = self.client.post(
@@ -2434,7 +2505,7 @@ class TestUpdateBrandingSlugInOneCall:
         assert data["errors"]
 
         org.refresh_from_db()
-        assert org.slug is None
+        assert org.slug == "untouched-by-invalid"
         assert not OrganizationBranding.objects.filter(organization=org).exists()
 
     def test_colliding_slug_rejects_without_partially_applying(self):
@@ -2444,8 +2515,9 @@ class TestUpdateBrandingSlugInOneCall:
         from di_core.containers import container
 
         baker.make(Organization, parent=None, slug="already-taken-slug")
-        org, auth_service, system_user, token = self._org_with_branding_scope()
-        assert org.slug is None
+        org, auth_service, system_user, token = self._org_with_branding_scope(
+            slug="untouched-by-collision"
+        )
 
         with container.public_api_auth_service.override(auth_service):
             response = self.client.post(
@@ -2469,7 +2541,7 @@ class TestUpdateBrandingSlugInOneCall:
         assert "already exists" in str(data["errors"]).lower()
 
         org.refresh_from_db()
-        assert org.slug is None
+        assert org.slug == "untouched-by-collision"
         assert not OrganizationBranding.objects.filter(organization=org).exists()
 
     def test_slug_collision_surfacing_as_integrity_error_is_a_friendly_graphql_error(self):
@@ -2482,7 +2554,7 @@ class TestUpdateBrandingSlugInOneCall:
         transaction (verified here by asserting the org's slug is unchanged
         afterwards, i.e. the save's own savepoint rolled back cleanly)."""
         baker.make(Organization, parent=None, slug="race-slug")
-        org = baker.make(Organization, parent=None)
+        org = baker.make(Organization, parent=None, slug="loser-of-the-race")
 
         with patch("public_api.mutations.Organization.objects.filter") as mock_filter:
             mock_filter.return_value.exclude.return_value.exists.return_value = False
@@ -2490,7 +2562,7 @@ class TestUpdateBrandingSlugInOneCall:
                 _apply_input_slug(org, "race-slug")
 
         org.refresh_from_db()
-        assert org.slug is None
+        assert org.slug == "loser-of-the-race"
 
     def test_valid_slug_rolls_back_when_a_later_validation_fails(self):
         """Transaction check: the slug write and the branding upsert are one
@@ -2500,8 +2572,9 @@ class TestUpdateBrandingSlugInOneCall:
         left behind, not even the slug that validated cleanly on its own."""
         from di_core.containers import container
 
-        org, auth_service, system_user, token = self._org_with_branding_scope()
-        assert org.slug is None
+        org, auth_service, system_user, token = self._org_with_branding_scope(
+            slug="untouched-by-rollback"
+        )
 
         with container.public_api_auth_service.override(auth_service):
             response = self.client.post(
@@ -2526,7 +2599,7 @@ class TestUpdateBrandingSlugInOneCall:
         assert "invalid primary_color" in str(data["errors"]).lower()
 
         org.refresh_from_db()
-        assert org.slug is None, (
+        assert org.slug == "untouched-by-rollback", (
             "The slug write must roll back with the rest of the transaction, "
             "even though the slug itself was valid and would-have-been unique."
         )

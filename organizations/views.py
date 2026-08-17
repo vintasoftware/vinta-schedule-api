@@ -989,30 +989,31 @@ class AcceptInvitationView(generics.CreateAPIView):
 
 @extend_schema(tags=["Branding"])
 class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
-    """Admin-only REST endpoint for managing a parentless, entitled, slugged
+    """Admin-only REST endpoint for managing a parentless, entitled
     organization's branding.
 
     Write gate (Organization Auth-Area Branding plan, Phase 3): PUT/PATCH
-    require the acting org to be parentless, hold the ``white_label_branding``
-    entitlement, AND have a slug set
-    (``organizations.permissions.evaluate_branding_write_gate``), AND the
-    caller must be an org admin (``IsOrganizationAdmin`` permission).
-    Replaces the earlier reseller-only gate (``is_reseller()``) -- any paying,
-    parentless, slugged organization can now manage its own branding, not just
-    resellers. Each of the three failure conditions raises its own
-    ``PermissionDenied`` subclass (``organizations.exceptions``) so the
-    response body -- not just the 403 status -- distinguishes the permanent
-    refusal (has a parent) from the billing state (not entitled) from the
-    one-step-away case (no slug).
+    require the acting org to be parentless and hold the
+    ``white_label_branding`` entitlement
+    (``organizations.permissions.evaluate_branding_write_gate`` -- its third,
+    slug-set condition is retired, see that function), AND the caller must be
+    an org admin (``IsOrganizationAdmin`` permission). Replaces the earlier
+    reseller-only gate (``is_reseller()``) -- any paying, parentless
+    organization can now manage its own branding, not just resellers. Each of
+    the two failure conditions raises its own ``PermissionDenied`` subclass
+    (``organizations.exceptions``) so the response body -- not just the 403
+    status -- distinguishes the permanent refusal (has a parent) from the
+    billing state (not entitled).
 
-    GET uses the narrower two-condition **eligibility** gate
+    GET uses the **eligibility** gate
     (``organizations.permissions.is_branding_eligible_organization`` --
-    parentless AND entitled, via ``_check_branding_read_gate``): a slug-less
-    but otherwise eligible org still gets to *see* the branding page (its
-    normal 404-no-row-yet / 200-with-a-row behavior), so the "pick a slug
-    first" refusal only ever surfaces on a write. This matches the plan's
-    Capability signal guiding decision and keeps this endpoint's read path
-    consistent with the ``can_manage_branding`` contract a slug-less eligible
+    parentless AND entitled, via ``_check_branding_read_gate``). It used to be
+    the narrower of the two, admitting a slug-less but otherwise eligible org
+    that the write gate refused; with the write gate's slug condition retired
+    (see ``evaluate_branding_write_gate``) the two now admit the same set. The
+    read path is still routed through the eligibility gate rather than the write
+    gate, keeping this endpoint consistent with the ``can_manage_branding``
+    contract an eligible
     org's SPA would otherwise render into a page that immediately 403s.
     GET still refuses with the same parent/entitlement 403 bodies as the
     write gate.
@@ -1054,9 +1055,11 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
     )
 
     def _check_branding_write_gate(self) -> None:
-        """Verify the acting org passes the full write gate (parentless,
-        entitled, slug-set). Raises the matching ``PermissionDenied`` subclass
-        on the first failed condition; a no-op when the gate admits the org."""
+        """Verify the acting org passes the write gate (parentless and
+        entitled -- its third, slug-set condition is retired; see
+        ``organizations.permissions.evaluate_branding_write_gate``). Raises the
+        matching ``PermissionDenied`` subclass on the first failed condition; a
+        no-op when the gate admits the org."""
         user = self.request.user
         # Narrows AbstractBaseUser | AnonymousUser -> AbstractBaseUser for mypy
         # (matches the pattern in ServiceAccountViewSet.get_queryset above);
@@ -1256,12 +1259,13 @@ class OrganizationBrandingLogoUploadParamsView(TenantScopedViewMixin, views.APIV
     reusing the same ``sign_branding_logo_upload`` signing helper so the S3
     key/credential logic has one implementation.
 
-    Gated on the two-condition branding **eligibility** check
+    Gated on the branding **eligibility** check
     (``organizations.permissions.check_branding_read_eligibility`` -- parentless
-    AND entitled), not the three-condition write gate: the frontend uploads a
-    logo on file-picker change, before the slug/branding PUT on form submit, so
-    requiring a slug here would refuse an upload the write gate itself never
-    sees. Matches ``OrganizationBrandingView.get``'s read gate.
+    AND entitled) rather than on the write gate. The two admit the same set now
+    that the write gate's slug condition is retired, but the split is kept: the
+    frontend uploads a logo on file-picker change, before the branding PUT on
+    form submit, so this surface deliberately depends on the read-side gate.
+    Matches ``OrganizationBrandingView.get``'s read gate.
     """
 
     permission_classes = (IsOrganizationAdmin,)

@@ -116,22 +116,27 @@ class OrganizationSerializer(VirtualModelSerializer):
     google_service_account = serializers.SerializerMethodField()
 
     # Explicitly declared as CharField (rather than left to ModelSerializer
-    # auto-build, and NOT as SlugField) so we control allow_null/allow_blank/
-    # required ourselves and, more importantly, so DRF does NOT auto-attach a
-    # model-derived UniqueValidator or the SlugField's ASCII-only
-    # RegexValidator: both would run before validate_slug() below.  The
-    # UniqueValidator would compare a blank submission's raw "" against other
-    # organizations' "" — colliding two orgs that both left the slug unset.
-    # The RegexValidator would preempt the confusables/reserved-word rules in
-    # validate_slug(), which is the sole source of format/confusable/reserved
-    # validation. validate_slug() normalizes blank/None to None (matching the
-    # model's NULL-when-unset contract) and performs the uniqueness check
-    # itself, after normalization.
+    # auto-build) so we control allow_null/allow_blank/required ourselves and,
+    # more importantly, so DRF does NOT auto-attach a model-derived
+    # UniqueValidator: it would run before validate_slug() below, which performs
+    # the uniqueness check itself with a message naming the conflicting value.
+    # ``max_length`` is pinned to SLUG_MAX_LENGTH rather than inherited from the
+    # model: the column is varchar(255) (inherited from the package's
+    # ``AbstractOrganization``) but the rules cap a *written* slug at 63.
+    # ``allow_blank`` is kept so a blank submission reaches validate_slug(),
+    # which refuses it on update ("cannot be cleared") and treats it as "pick
+    # one for me" on create. ``allow_null`` is False: ``slug`` is NOT NULL on
+    # the model, so no response can ever carry ``null`` and no write may
+    # either -- a client generated from the schema would otherwise see a
+    # nullable field that 400s on ``null``.
     slug = serializers.CharField(
         required=False,
-        allow_null=True,
+        allow_null=False,
         allow_blank=True,
         max_length=SLUG_MAX_LENGTH,
+        help_text=(
+            "Public, URL-safe identifier used by the organization's branded login page and by brandingForTenant. Always set: an organization saved without one is given an opaque ``org-<token>`` slug, and the database refuses a blank value. Mutable, but not clearable -- changing it orphans previously-issued branded login URLs, which then fall back to the default identity rather than erroring. Format, reserved-word, and confusable-character rules live in organizations.slug_validation and are enforced by each write surface (REST serializer, admin form, GraphQL input), not on the model."
+        ),
     )
 
     # ``get_google_service_account`` issues exactly one bounded, org-scoped query
@@ -178,18 +183,35 @@ class OrganizationSerializer(VirtualModelSerializer):
             return None
         return GoogleServiceAccountReadSerializer(account).data
 
-    def validate_slug(self, value: str | None) -> str | None:
+    def validate_slug(self, value: str) -> str:
         """Validate format/reserved-word/confusable rules, then uniqueness.
 
-        A blank or missing slug normalizes to ``None`` — the model's NULL-when-unset
-        contract (a Postgres unique index admits any number of NULLs, but two
-        organizations both stored as ``""`` would collide). Uniqueness is checked
-        here, against the shared queryset, excluding the instance being updated, so
-        a collision returns 400 naming the conflicting value rather than a 500 from
-        the DB's unique-index integrity error.
+        A blank slug on **update** is refused: ``slug`` is NOT NULL and the
+        ``organization_slug_not_blank`` check constraint rejects ``""``, so
+        there is nothing sensible to write. It is refused rather than ignored
+        because silently ignoring it would let a client believe it had cleared
+        the organization's public identifier — and, since ``Organization.save()``
+        mints a replacement for an empty slug, the row would end up with a
+        *different* slug rather than the one the client can see. Omitting the
+        field entirely still means "leave it alone". ``null`` is rejected by
+        the field itself (``allow_null=False``) before this method ever runs.
+
+        A blank slug on **create** is accepted and means "pick one for me":
+        ``OrganizationService.create_organization`` derives it from the name
+        -- ``create()`` below never passes ``slug`` through, so the value
+        returned here for that case is unused.
+
+        Uniqueness is checked here, against the shared queryset, excluding the
+        instance being updated, so a collision returns 400 naming the conflicting
+        value rather than a 500 from the DB's unique-index integrity error.
         """
         if not value:
-            return None
+            if self.instance is not None:
+                raise serializers.ValidationError(
+                    "Slug cannot be cleared once set. Send a new slug, or omit the "
+                    "field to leave it unchanged."
+                )
+            return value
 
         try:
             validate_organization_slug(value)
@@ -318,15 +340,16 @@ class CurrentMembershipSerializer(serializers.ModelSerializer):
     def get_can_manage_branding(self, obj: OrganizationMembership) -> bool:
         """Whether the membership's organization is branding-eligible.
 
-        Computed as parentless-and-entitled -- deliberately excludes the slug
-        condition (Organization Auth-Area Branding plan, Phase 4 Capability
-        signal guiding decision), so an organization missing only a slug still
-        sees the branding page instead of it being silently absent. Shares
+        Computed as parentless-and-entitled. It once deliberately excluded a
+        third, slug condition (Organization Auth-Area Branding plan, Phase 4
+        Capability signal guiding decision) so an organization missing only a
+        slug still saw the branding page; that condition is now retired, so the
+        exclusion is vacuous and the two checks coincide. Shares
         ``organizations.permissions.is_branding_eligible_organization`` rather
         than restating the two-condition check, so this tracks the same gate
         that governs ``GET /branding/`` (see
         ``OrganizationBrandingView._check_branding_read_gate``) rather than
-        the three-condition write gate.
+        the write gate.
         """
         return is_branding_eligible_organization(obj.organization)
 
@@ -345,6 +368,17 @@ class OrganizationBriefSerializer(serializers.ModelSerializer):
         model = Organization
         fields = ("id", "name", "slug")
         read_only_fields = ("id", "name", "slug")
+        # ``slug`` is inherited from the package's ``AbstractOrganization``,
+        # which declares no ``help_text`` -- so without this the OpenAPI schema
+        # would describe the organization's public identifier with nothing at
+        # all. Kept in step with ``OrganizationSerializer.slug`` above.
+        extra_kwargs = {  # noqa: RUF012
+            "slug": {
+                "help_text": (
+                    "Public, URL-safe identifier used by the organization's branded login page and by brandingForTenant. Always set: an organization saved without one is given an opaque ``org-<token>`` slug, and the database refuses a blank value. Mutable, but not clearable -- changing it orphans previously-issued branded login URLs, which then fall back to the default identity rather than erroring. Format, reserved-word, and confusable-character rules live in organizations.slug_validation and are enforced by each write surface (REST serializer, admin form, GraphQL input), not on the model."
+                )
+            }
+        }
 
 
 class _MyMembershipListSerializer(serializers.ListSerializer):
@@ -392,7 +426,7 @@ class MyMembershipSerializer(serializers.ModelSerializer):
 
     def get_can_manage_branding(self, obj: OrganizationMembership) -> bool:
         """Whether this membership's organization is branding-eligible
-        (parentless-and-entitled, excluding the slug condition) -- see
+        (parentless-and-entitled) -- see
         ``CurrentMembershipSerializer.get_can_manage_branding`` for the full
         rationale. Computed per-membership (not per-role): a non-admin
         member's entry reports the same organization-level capability as an

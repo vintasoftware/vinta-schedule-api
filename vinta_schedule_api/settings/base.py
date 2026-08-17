@@ -70,8 +70,52 @@ INSTALLED_APPS = [
     "django_filters",
     "vintasend_django",
     "s3direct",
+    # ``vinta-django-orgs``. Deliberately NOT in INTERNAL_INSTALLED_APPS: that list
+    # drives di_core's DI wiring and names only this project's own apps. Its Django
+    # app label is ``vinta_orgs`` (the package renamed itself in 0.2.0 precisely so
+    # it would not collide with a project app called ``organizations``), so our
+    # ``organizations`` app keeps its label and every one of its tables keeps its
+    # name -- see organizations/tests/test_app_identity.py, which is the regression
+    # gate for that. Listed *before* INTERNAL_INSTALLED_APPS so ``admin.autodiscover``
+    # reaches the package's admin module first; organizations/admin.py additionally
+    # imports it explicitly so the unregistration below does not depend on this order.
+    "vinta_orgs.apps.OrganizationsConfig",
     *INTERNAL_INSTALLED_APPS,
 ]
+
+# ``vinta-django-orgs`` reads these two as *top-level* settings (Django resolves
+# ``Meta.swappable`` with a plain ``getattr(settings, ...)``), which is why they sit
+# outside SHARED_SCHEMA_ORGANIZATIONS below. Pointing them at our models marks the
+# package's own concrete ``Organization`` / ``OrganizationMembership`` as swapped
+# out: no tables are created for them, and ``User.delete()`` does not carry a
+# phantom CASCADE to a second, unused membership table.
+ORGANIZATION_MODEL = "organizations.Organization"
+ORGANIZATION_MEMBERSHIP_MODEL = "organizations.OrganizationMembership"
+
+SHARED_SCHEMA_ORGANIZATIONS = {
+    # The one retriever we use. ``retrieve_by_domain`` (subdomain tenancy),
+    # ``retrieve_by_http_header`` (``Organization-Slug``) and ``retrieve_by_session``
+    # are all deliberately omitted -- see the plan's Non-goals.
+    "ORGANIZATION_RETRIEVERS": [
+        "common.org_retrievers.retrieve_by_x_organization_id",
+    ],
+    # We have no catch-all organization. Left at the package default (``'default'``)
+    # this would make ``SingleOrganizationModelMixin.save()`` run a
+    # ``WHERE slug = 'default'`` lookup for every scoped row saved without an
+    # explicit organization -- and, worse, silently adopt a real organization that
+    # happened to claim that slug. ``organizations.slug_validation`` reserves the
+    # word, so no organization can; ``None`` makes the intent explicit and skips the
+    # query entirely.
+    "DEFAULT_ORGANIZATION_SLUG": None,
+    # The package's middleware is not installed (``TenantScopedViewMixin`` owns
+    # organization resolution, because its rules are membership-aware and it runs
+    # after DRF authentication), so nothing would write this -- stated so a future
+    # reader does not have to check.
+    "ADD_ORGANIZATION_TO_SESSION": False,
+    # NOTE: ``STRICT_ORGANIZATION_FILTER`` stays at its default (``False``) until
+    # Phase 2a. No model scopes implicitly yet, so turning it on here would only
+    # change how ``Organization.objects.none()``-shaped calls behave.
+}
 
 MIDDLEWARE = [
     "django.middleware.gzip.GZipMiddleware",

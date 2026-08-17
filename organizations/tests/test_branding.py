@@ -474,8 +474,9 @@ class TestResolveBrandingForDisplayParentlessOrganization:
 @pytest.mark.django_db
 class TestEvaluateBrandingWriteGate:
     """``organizations.permissions.evaluate_branding_write_gate`` -- the full
-    three-condition write gate (Organization Auth-Area Branding plan, Phase 3):
-    parentless AND entitled AND slug-set. Composes on top of the two-condition
+    branding write gate (Organization Auth-Area Branding plan, Phase 3):
+    parentless AND entitled. Its third condition (slug-set) is retired -- see
+    ``evaluate_branding_write_gate``. Composes on top of the two-condition
     ``is_branding_eligible_organization`` (Phase 2b), which stays the
     logo-signing surface's gate -- see ``test_two_condition_helper_stays_free_
     of_the_slug_condition`` below for that split pinned as a regression test.
@@ -505,51 +506,76 @@ class TestEvaluateBrandingWriteGate:
 
         assert evaluate_branding_write_gate(org) is BrandingWriteGateReason.NOT_ENTITLED
 
-    def test_refuses_an_organization_with_no_slug(self):
+    def test_admits_a_freshly_created_parentless_entitled_organization(self):
+        """The slug condition is retired, and this is what proves it.
+
+        ``Organization.slug`` is NOT NULL with a ``save()``-time fallback and an
+        ``organization_slug_not_blank`` check constraint, so an organization that
+        is parentless and entitled now passes the gate outright -- no separate
+        "pick a slug first" step. See the plan's "Slug precondition for branding
+        writes is retired" Guiding Decision.
+        """
         org = _org_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None)
-        assert org.slug is None
 
-        assert evaluate_branding_write_gate(org) is BrandingWriteGateReason.NO_SLUG
+        assert org.slug
+        assert evaluate_branding_write_gate(org) is BrandingWriteGateReason.OK
 
-    def test_the_three_refusals_are_distinguishable(self):
+    def test_the_retired_no_slug_branch_still_evaluates_on_an_unsaved_instance(self):
+        """The dead-with-reason branch, exercised the only way it still can be.
+
+        ``NO_SLUG`` remains part of this module's published contract until
+        Phase 4 deletes it, so the branch is covered rather than left to rot --
+        but the state it describes is unreachable for any *persisted*
+        organization, so this drives an in-memory instance instead of
+        manufacturing the state in the database (which the check constraint
+        would refuse anyway).
+        """
+        entitled = _org_with_entitlement(
+            Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="entitled-org-gate"
+        )
+        unsaved = Organization(pk=entitled.pk, name=entitled.name, slug="")
+
+        assert evaluate_branding_write_gate(unsaved) is BrandingWriteGateReason.NO_SLUG
+
+    def test_the_two_refusals_are_distinguishable(self):
         """Each failure mode produces its own reason, not a bare False -- this is
-        the whole point of the enum-returning gate over a boolean helper."""
+        the whole point of the enum-returning gate over a boolean helper.
+
+        Two reasons, not three: ``NO_SLUG`` is retired (see
+        ``test_the_retired_no_slug_branch_still_evaluates_on_an_unsaved_instance``
+        for what remains of it).
+        """
         parent_org = _org_with_entitlement(
             Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="parent-org-2"
         )
-        child_org = baker.make(Organization, parent=parent_org)
+        child_org = baker.make(Organization, parent=parent_org, slug="child-org-2")
         unentitled_org = _org_with_entitlement(
             Entitlement.WHITE_LABEL_BRANDING, is_enabled=False, parent=None, slug="unentitled-org"
-        )
-        no_slug_org = _org_with_entitlement(
-            Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None
         )
 
         reasons = {
             evaluate_branding_write_gate(child_org),
             evaluate_branding_write_gate(unentitled_org),
-            evaluate_branding_write_gate(no_slug_org),
         }
 
         assert reasons == {
             BrandingWriteGateReason.HAS_PARENT,
             BrandingWriteGateReason.NOT_ENTITLED,
-            BrandingWriteGateReason.NO_SLUG,
         }
 
-    def test_two_condition_helper_stays_free_of_the_slug_condition(self):
-        """The logo-signing surface's gate (`is_branding_eligible_organization`)
-        must still admit a slug-less eligible organization -- requiring a slug
-        before an admin can upload a logo would order the branding form around
-        an implementation detail (Write gate guiding decision). Pins the split
-        between the two-condition and three-condition gates as a regression
-        test: a future change that folds the slug condition into
-        `is_branding_eligible_organization` would flip this assertion."""
-        org = _org_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None)
-        assert org.slug is None
+    def test_the_two_gates_now_agree_on_every_persisted_organization(self):
+        """``is_branding_eligible_organization`` (logo signing, capability signal)
+        and ``evaluate_branding_write_gate`` (branding writes) used to differ by
+        exactly the slug condition. With that condition retired they admit the
+        same set, which is the property later phases may rely on -- and which a
+        future change reintroducing a third condition to only one of them would
+        break here."""
+        org = _org_with_entitlement(
+            Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="agreeing-org"
+        )
 
         assert is_branding_eligible_organization(org) is True
-        assert evaluate_branding_write_gate(org) is BrandingWriteGateReason.NO_SLUG
+        assert evaluate_branding_write_gate(org) is BrandingWriteGateReason.OK
 
 
 @pytest.mark.django_db
@@ -558,13 +584,12 @@ class TestCanManageBrandingCapabilityField:
     ``MyMembershipSerializer`` (Organization Auth-Area Branding plan, Phase 4
     Capability signal guiding decision).
 
-    Must track ``is_branding_eligible_organization`` (the two-condition,
-    parentless-and-entitled gate) exactly -- NOT ``evaluate_branding_write_gate``
-    (the three-condition write gate). The key regression this pins: a
-    parentless, entitled organization with NO slug still reports
-    ``can_manage_branding is True`` -- folding the slug condition in would hide
-    the branding page from exactly the admins who are one step away from using
-    it (spec: "Eligible org with no public identifier yet").
+    Must track ``is_branding_eligible_organization`` (the parentless-and-entitled
+    gate) rather than ``evaluate_branding_write_gate``. The two admit the same
+    set today -- the write gate's slug condition is retired -- so the
+    distinction is pinned structurally instead of by finding an organization
+    they disagree about; see
+    ``test_reads_the_two_condition_helper_rather_than_the_write_gate``.
     """
 
     def _membership(self, organization: Organization, role: str = OrganizationRole.ADMIN):
@@ -586,18 +611,33 @@ class TestCanManageBrandingCapabilityField:
         assert CurrentMembershipSerializer(membership).data["can_manage_branding"] is True
         assert MyMembershipSerializer(membership).data["can_manage_branding"] is True
 
-    def test_true_for_a_parentless_entitled_organization_with_no_slug(self):
-        """The key case: NOT including the slug condition. Pins the split against
-        `evaluate_branding_write_gate`, which would return NO_SLUG (falsy) for
-        this exact organization."""
-        org = _org_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None)
-        assert org.slug is None
-        membership = self._membership(org)
+    def test_reads_the_two_condition_helper_rather_than_the_write_gate(self):
+        """``can_manage_branding`` is derived from
+        ``is_branding_eligible_organization``, not from the write gate.
 
-        assert CurrentMembershipSerializer(membership).data["can_manage_branding"] is True
-        assert MyMembershipSerializer(membership).data["can_manage_branding"] is True
-        # ... and pin the split explicitly: the three-condition gate refuses here.
-        assert evaluate_branding_write_gate(org) is BrandingWriteGateReason.NO_SLUG
+        The two agree today, now that the write gate's slug condition is retired,
+        so the distinction can no longer be observed by picking an organization
+        they disagree about. It is pinned structurally instead: an organization
+        the two-condition helper admits reports ``True``, and one it refuses
+        reports ``False``, with the write gate never consulted.
+        """
+        eligible = _org_with_entitlement(
+            Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="capability-org"
+        )
+        unentitled = _org_with_entitlement(
+            Entitlement.WHITE_LABEL_BRANDING,
+            is_enabled=False,
+            parent=None,
+            slug="capability-org-off",
+        )
+
+        assert is_branding_eligible_organization(eligible) is True
+        assert is_branding_eligible_organization(unentitled) is False
+
+        for organization, expected in ((eligible, True), (unentitled, False)):
+            membership = self._membership(organization)
+            assert CurrentMembershipSerializer(membership).data["can_manage_branding"] is expected
+            assert MyMembershipSerializer(membership).data["can_manage_branding"] is expected
 
     def test_false_for_a_parented_organization(self):
         parent_org = _org_with_entitlement(

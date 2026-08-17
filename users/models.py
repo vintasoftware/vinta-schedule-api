@@ -48,7 +48,7 @@ class User(AbstractBaseUser, PermissionsMixin, BaseModel):
         from organizations.models import OrganizationRole
 
         organization_id = getattr(organization, "id", organization)
-        return self.organization_memberships.filter(  # type: ignore[attr-defined]
+        return self.memberships.filter(  # type: ignore[attr-defined]
             organization_id=organization_id,
             is_active=True,
             role=OrganizationRole.ADMIN,

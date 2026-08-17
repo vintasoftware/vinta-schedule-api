@@ -35,9 +35,10 @@ def _organization_holds_white_label_branding(
     entitlement_service: Annotated[EntitlementService, Provide["entitlement_service"]] = None,  # type: ignore[assignment]
 ) -> bool:
     """The entitlement half of the branding gate, factored out so both
-    ``is_branding_eligible_organization`` (two-condition, below) and
-    ``evaluate_branding_write_gate`` (three-condition, further below) share one
-    entitlement check rather than each re-deriving it.
+    ``is_branding_eligible_organization`` (below) and
+    ``evaluate_branding_write_gate`` (further below) share one entitlement check
+    rather than each re-deriving it. Both are two-condition gates now that the
+    write gate's slug condition is retired.
 
     ``entitlement_service`` is DI-injected via ``@inject``/``Provide`` (the
     established pattern -- see ``audit/services.py``,
@@ -85,13 +86,14 @@ def is_branding_eligible_organization(organization: Organization | None) -> bool
     Two conditions -- this is the ``branding_logos`` S3Direct destination's
     ``auth`` callable (via ``user_administers_branding_eligible_organization``
     below) and the GraphQL logo-signing mutation's gate (Organization
-    Auth-Area Branding plan, Phase 2b). Phase 3 introduces a THIRD condition
-    (the organization ends the write with a ``slug`` set) but does **not** fold
-    it in here -- see ``evaluate_branding_write_gate`` below, which composes on
-    top of this function rather than replacing it. Requiring a slug before an
-    admin can upload a logo would order the branding form around an
-    implementation detail (the Write gate guiding decision), so the
-    logo-signing surface deliberately keeps using this two-condition helper.
+    Auth-Area Branding plan, Phase 2b).
+
+    ``evaluate_branding_write_gate`` below composes on top of this function
+    rather than replacing it. It once added a third condition -- "and has picked
+    a public slug" -- which is why the two were kept separate; that condition is
+    retired (see it), so the two now admit the same set. The split is kept
+    because the two answer different questions and a future condition may again
+    apply to only one of them.
     """
     if organization is None or organization.parent_id is not None:
         return False
@@ -139,10 +141,16 @@ class BrandingWriteGateReason(enum.Enum):
       as fixable by the organization itself.
     - ``NOT_ENTITLED`` -- a billing state. The organization's plan does not
       include white-label branding; fixable by upgrading.
-    - ``NO_SLUG`` -- one step away. The organization is otherwise eligible but
-      has not picked a public slug yet (spec: "Eligible org with no public
-      identifier yet" -- branding settings stay offered, refused with a
-      message that reads as "pick a slug first", not hidden outright).
+    - ``NO_SLUG`` -- **retired, and unreachable.** It used to mean "otherwise
+      eligible but has not picked a public slug yet". ``Organization.slug`` is
+      now NOT NULL, refused when blank by the ``organization_slug_not_blank``
+      check constraint, and filled in by ``Organization.save()`` when a caller
+      leaves it out -- so no organization that exists can be missing one, and
+      the rule it expressed is gone as a product rule, not merely as code. Kept
+      dead-with-reason rather than deleted here because it is still part of this
+      enum's published contract (``BRANDING_GATE_EXCEPTIONS`` still maps it, and
+      ``check_branding_read_eligibility`` still admits it); Phase 4 of the
+      vinta-django-orgs migration plan deletes all three together.
     """
 
     OK = "ok"
@@ -152,10 +160,10 @@ class BrandingWriteGateReason(enum.Enum):
 
 
 def evaluate_branding_write_gate(organization: Organization | None) -> BrandingWriteGateReason:
-    """Full three-condition branding **write** gate (Organization Auth-Area
-    Branding plan, Phase 3): the acting organization must be parentless, hold
-    the ``white_label_branding`` entitlement, AND end the write with a
-    ``slug`` set. Replaces ``is_reseller()`` on every write surface.
+    """Two-condition branding **write** gate (Organization Auth-Area Branding
+    plan, Phase 3): the acting organization must be parentless and hold the
+    ``white_label_branding`` entitlement. Replaces ``is_reseller()`` on every
+    write surface.
 
     Composes on top of, rather than duplicating, the two-condition
     ``is_branding_eligible_organization`` above by sharing
@@ -163,17 +171,30 @@ def evaluate_branding_write_gate(organization: Organization | None) -> BrandingW
     docstring for why the logo-signing surface stays on the two-condition
     helper instead of this one.
 
-    Checked in this order -- parent, then entitlement, then slug -- so the
-    permanent case is never masked by a fixable one, and the billing case is
-    never masked by the one-step-away case (an organization that lost the
-    entitlement and never picked a slug is told about the entitlement first;
-    picking a slug would not admit it either way).
+    Checked in this order -- parent, then entitlement -- so the permanent case
+    is never masked by a fixable one.
+
+    **The third condition, "and has picked a public slug", is retired** (Phase 1
+    of the vinta-django-orgs migration; see that plan's "Slug precondition for
+    branding writes is retired" Guiding Decision). ``Organization.slug`` became
+    NOT NULL with a ``save()``-time fallback and an
+    ``organization_slug_not_blank`` check constraint, so no persisted
+    organization can fail it and no write surface -- supported or not, including
+    a raw ``queryset.update(slug="")`` -- can manufacture one that does. The
+    branch below is kept, unreachable and stated as such, only because
+    ``BrandingWriteGateReason.NO_SLUG`` is still part of this module's published
+    contract; Phase 4 removes the branch, the enum member, its
+    ``BRANDING_GATE_EXCEPTIONS`` entry and
+    ``OrganizationSlugRequiredForBrandingError`` together.
     """
     if organization is None or organization.parent_id is not None:
         return BrandingWriteGateReason.HAS_PARENT
     if not _organization_holds_white_label_branding(organization):
         return BrandingWriteGateReason.NOT_ENTITLED
     if not organization.slug:
+        # Unreachable for any persisted organization -- see the docstring. An
+        # unsaved, in-memory ``Organization()`` is the only value that still
+        # reaches it, which is what the remaining unit coverage exercises.
         return BrandingWriteGateReason.NO_SLUG
     return BrandingWriteGateReason.OK
 
@@ -190,12 +211,12 @@ def check_branding_read_eligibility(organization: Organization | None) -> None:
     shared by every branding read-adjacent surface: ``OrganizationBrandingView.get``
     and ``OrganizationBrandingLogoUploadParamsView.post`` (``organizations/views.py``).
 
-    Derives its reason from ``evaluate_branding_write_gate`` but admits
-    ``NO_SLUG`` -- a slug-less eligible organization must still be able to see
-    the branding page and upload a logo (the frontend uploads a logo on
-    file-picker change, before the slug/branding write on form submit). Raises
-    the matching ``PermissionDenied`` subclass on the first failed condition;
-    a no-op when the gate admits the organization.
+    Derives its reason from ``evaluate_branding_write_gate`` and additionally
+    admits ``NO_SLUG``. That allowance is now **vacuous**: the write gate can no
+    longer return ``NO_SLUG`` for any persisted organization (see its
+    docstring), so the two gates admit exactly the same set. It is kept until
+    Phase 4 retires the enum member, at which point this reduces to "raise on
+    anything but ``OK``".
     """
     reason = evaluate_branding_write_gate(organization)
     if reason in (BrandingWriteGateReason.OK, BrandingWriteGateReason.NO_SLUG):

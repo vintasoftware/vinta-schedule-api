@@ -57,7 +57,9 @@ class TestOrganizationAdminPlacesNewOrgOnDefaultPlan:
     def test_editing_an_existing_organization_does_not_duplicate_the_subscription(
         self, admin_client
     ):
-        organization = baker.make(Organization, name="Existing Org", parent=None)
+        organization = baker.make(
+            Organization, name="Existing Org", parent=None, slug="existing-org"
+        )
         SubscriptionService().create_subscription_for_organization(organization)
         change_url = reverse("admin:organizations_organization_change", args=[organization.pk])
 
@@ -65,6 +67,7 @@ class TestOrganizationAdminPlacesNewOrgOnDefaultPlan:
             change_url,
             data={
                 "name": "Existing Org Renamed",
+                "slug": organization.slug,
                 "should_sync_rooms": "",
                 "external_event_update_policy": "change_request",
                 "week_start": "monday",
@@ -85,7 +88,13 @@ class TestOrganizationAdminPlacesNewOrgOnDefaultPlan:
         """
         root = baker.make(Organization, name="Root", parent=None, can_invite_organizations=True)
         SubscriptionService().create_subscription_for_organization(root)
-        child = baker.make(Organization, name="Child", parent=root, can_invite_organizations=False)
+        child = baker.make(
+            Organization,
+            name="Child",
+            parent=root,
+            can_invite_organizations=False,
+            slug="child-org",
+        )
         assert not Subscription.objects.filter(organization=child).exists()
 
         change_url = reverse("admin:organizations_organization_change", args=[child.pk])
@@ -93,6 +102,7 @@ class TestOrganizationAdminPlacesNewOrgOnDefaultPlan:
             change_url,
             data={
                 "name": child.name,
+                "slug": child.slug,
                 "parent": root.pk,
                 "should_sync_rooms": "",
                 "external_event_update_policy": "change_request",
@@ -154,13 +164,14 @@ class TestOrganizationAdminParentCycleGuard:
 
     def test_reparenting_to_a_non_descendant_is_allowed(self, admin_client):
         other_root = baker.make(Organization, name="Other Root", parent=None)
-        organization = baker.make(Organization, name="Movable Org", parent=None)
+        organization = baker.make(Organization, name="Movable Org", parent=None, slug="movable-org")
 
         change_url = reverse("admin:organizations_organization_change", args=[organization.pk])
         response = admin_client.post(
             change_url,
             data={
                 "name": organization.name,
+                "slug": organization.slug,
                 "parent": other_root.pk,
                 "should_sync_rooms": "",
                 "external_event_update_policy": "change_request",
@@ -202,7 +213,10 @@ class TestOrganizationAdminSlugValidation:
         assert organization.slug == "slug-admin-org"
 
     def test_reserved_word_slug_is_rejected(self, admin_client):
-        organization = baker.make(Organization, name="Reserved Org", parent=None)
+        organization = baker.make(
+            Organization, name="Reserved Org", parent=None, slug="reserved-org"
+        )
+        before = organization.slug
 
         change_url = reverse("admin:organizations_organization_change", args=[organization.pk])
         response = admin_client.post(
@@ -218,10 +232,13 @@ class TestOrganizationAdminSlugValidation:
 
         assert response.status_code == 200
         organization.refresh_from_db()
-        assert organization.slug is None
+        assert organization.slug == before
 
     def test_malformed_slug_is_rejected(self, admin_client):
-        organization = baker.make(Organization, name="Malformed Org", parent=None)
+        organization = baker.make(
+            Organization, name="Malformed Org", parent=None, slug="malformed-org"
+        )
+        before = organization.slug
 
         change_url = reverse("admin:organizations_organization_change", args=[organization.pk])
         response = admin_client.post(
@@ -237,11 +254,12 @@ class TestOrganizationAdminSlugValidation:
 
         assert response.status_code == 200
         organization.refresh_from_db()
-        assert organization.slug is None
+        assert organization.slug == before
 
     def test_duplicate_slug_is_rejected(self, admin_client):
         baker.make(Organization, name="Existing Org", parent=None, slug="taken-slug")
-        organization = baker.make(Organization, name="Second Org", parent=None)
+        organization = baker.make(Organization, name="Second Org", parent=None, slug="second-org")
+        before = organization.slug
 
         change_url = reverse("admin:organizations_organization_change", args=[organization.pk])
         response = admin_client.post(
@@ -257,7 +275,7 @@ class TestOrganizationAdminSlugValidation:
 
         assert response.status_code == 200
         organization.refresh_from_db()
-        assert organization.slug is None
+        assert organization.slug == before
 
     def test_confusable_slug_is_rejected_with_confusable_message(self, admin_client):
         """A mixed-script lookalike slug is rejected by the confusables rule, not
@@ -267,7 +285,10 @@ class TestOrganizationAdminSlugValidation:
         ``clean_slug`` and raise the generic message before the
         confusable-specific one is reached).
         """
-        organization = baker.make(Organization, name="Confusable Org", parent=None)
+        organization = baker.make(
+            Organization, name="Confusable Org", parent=None, slug="confusable-org"
+        )
+        before = organization.slug
 
         change_url = reverse("admin:organizations_organization_change", args=[organization.pk])
         # Built from chr() rather than typed as a literal character so the
@@ -293,13 +314,14 @@ class TestOrganizationAdminSlugValidation:
         assert "non-ASCII character" in message
         assert "lookalike" in message
         organization.refresh_from_db()
-        assert organization.slug is None
+        assert organization.slug == before
 
     def test_super_route_slug_is_rejected_as_reserved(self, admin_client):
         """The real admin path segment ``super`` (see ``vinta_schedule_api/urls.py``)
         is rejected as reserved through the admin form.
         """
-        organization = baker.make(Organization, name="Super Org", parent=None)
+        organization = baker.make(Organization, name="Super Org", parent=None, slug="super-org")
+        before = organization.slug
 
         change_url = reverse("admin:organizations_organization_change", args=[organization.pk])
         response = admin_client.post(
@@ -315,9 +337,16 @@ class TestOrganizationAdminSlugValidation:
 
         assert response.status_code == 200
         organization.refresh_from_db()
-        assert organization.slug is None
+        assert organization.slug == before
 
-    def test_blank_slug_is_accepted_and_stored_as_null(self, admin_client):
+    def test_blank_slug_is_refused_on_an_existing_organization(self, admin_client):
+        """Clearing the slug is not a supported operation.
+
+        ``slug`` is NOT NULL and ``Organization.save()`` mints a replacement for
+        a blank one, so accepting the blank submission would silently swap the
+        organization's public identifier for a different one -- orphaning every
+        branded login URL already issued -- rather than removing it.
+        """
         organization = baker.make(Organization, name="Blank Slug Org", parent=None, slug="was-set")
 
         change_url = reverse("admin:organizations_organization_change", args=[organization.pk])
@@ -332,9 +361,34 @@ class TestOrganizationAdminSlugValidation:
             },
         )
 
-        assert response.status_code == 302
+        assert response.status_code == 200
+        form = response.context["adminform"].form
+        assert "cannot be cleared" in form.errors["slug"][0]
         organization.refresh_from_db()
-        assert organization.slug is None
+        assert organization.slug == "was-set"
+
+    def test_adding_an_organization_with_a_blank_slug_mints_an_opaque_one(self, admin_client):
+        """Creation is the one place a blank slug is allowed -- and what it
+        produces is ``org-<token>``, not ``slugify(name)``: an operator creating
+        an organization on someone else's behalf has not consented to publishing
+        its name on a public URL."""
+        add_url = reverse("admin:organizations_organization_add")
+
+        response = admin_client.post(
+            add_url,
+            data={
+                "name": "Opaque Slug Org",
+                "slug": "",
+                "should_sync_rooms": "",
+                "external_event_update_policy": "change_request",
+                "week_start": "monday",
+            },
+        )
+
+        assert response.status_code == 302
+        organization = Organization.objects.get(name="Opaque Slug Org")
+        assert organization.slug.startswith("org-")
+        assert "opaque" not in organization.slug
 
 
 @pytest.mark.django_db
