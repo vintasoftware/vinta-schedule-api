@@ -4403,10 +4403,10 @@ paths:
       description: |-
         GET /branding/ — retrieve the acting org's branding.
 
-        Uses the two-condition eligibility gate, not the full write gate: a
-        slug-less-but-otherwise-eligible org is admitted here (and falls
-        through to the normal 404-no-row-yet / 200-with-a-row branch below)
-        -- see ``_check_branding_read_gate``.
+        Uses the two-condition eligibility gate (parentless, entitled) rather
+        than the write gate; the two admit the same set -- see
+        ``_check_branding_read_gate``. An eligible org with no branding row yet
+        falls through to the 404-no-row-yet / 200-with-a-row branch below.
       summary: Retrieve the acting organization's branding
       parameters:
       - in: header
@@ -4433,8 +4433,7 @@ paths:
           description: ''
         '403':
           description: Organization has a parent or lacks the entitlement; or not
-            an admin. A slug-less-but-otherwise-eligible org is NOT refused here --
-            see 404.
+            an admin.
         '404':
           description: Branding not yet configured
     put:
@@ -4493,8 +4492,8 @@ paths:
         '400':
           description: Invalid input (color format, URL validation)
         '403':
-          description: Organization has a parent, lacks the entitlement, or has no
-            slug; or not an admin
+          description: Organization has a parent or lacks the entitlement; or not
+            an admin
     patch:
       operationId: branding_partial_update
       description: |-
@@ -4544,8 +4543,8 @@ paths:
         '400':
           description: Invalid input (color format, URL validation)
         '403':
-          description: Organization has a parent, lacks the entitlement, or has no
-            slug; or not an admin
+          description: Organization has a parent or lacks the entitlement; or not
+            an admin
         '404':
           description: Branding not yet configured
   /branding/logo-upload-params/:

@@ -37,22 +37,42 @@ class User(AbstractBaseUser, PermissionsMixin, BaseModel):
         return self.profile.first_name
 
     def is_organization_admin(self, organization) -> bool:
-        """True iff this user has an active admin-role membership in `organization`.
+        """True iff this user may administer `organization`.
 
-        Accepts either an `Organization` instance or an id. Avoids importing
-        the organizations app to prevent a circular import.
+        Accepts either an `Organization` instance or an id, and keeps that
+        signature deliberately: this is the shared "is the caller an admin
+        here" question, called from `calendar_integration`'s permission
+        classes, its views, and `CalendarPermissionService`, and every one of
+        them names the organization explicitly rather than relying on whatever
+        is bound.
 
-        An inactive membership (is_active=False) is treated the same as no
-        membership — returns False to deny access.
+        Reads `organizations.manage_members` rather than `role == ADMIN` (Phase
+        4 of the vinta-django-orgs migration). The outcome is unchanged for
+        every membership the system writes: the `organization_admin` group
+        carries that permission and nothing else grants it.
+
+        Still membership-bounded, which is what the "iff" above is worth: the
+        permission is resolved from an active membership in `organization`
+        alone, so neither a global `user_permissions` grant, nor membership of
+        the global `organization_admin` group, nor `is_superuser` answers
+        `True` here for an organization this user does not belong to. A bare
+        `user.has_perm("organizations.manage_members")` would answer `True` for
+        all three, and this method is asked about organizations the caller may
+        have no relationship to at all -- so the difference is a cross-tenant
+        read, not a nuance. See
+        `organizations.authorization.has_organization_permission`, which owns
+        that rule (and holds `include_global` / `allow_superuser` off), and
+        `vinta_orgs.auth_backends.OrganizationModelBackend._get_membership`,
+        which enforces the membership's own `is_active` gate one layer further
+        down. Pinned by
+        `organizations/tests/test_permissions_parity.py::TestOnlyAMembershipGrants`.
+
+        Imported inside the method to avoid a circular import at module load.
         """
-        from organizations.models import OrganizationRole
+        from organizations.authorization import has_organization_permission
+        from organizations.permission_catalog import MANAGE_MEMBERS
 
-        organization_id = getattr(organization, "id", organization)
-        return self.memberships.filter(  # type: ignore[attr-defined]
-            organization_id=organization_id,
-            is_active=True,
-            role=OrganizationRole.ADMIN,
-        ).exists()
+        return has_organization_permission(self, MANAGE_MEMBERS, organization)
 
     def __str__(self):
         return f"{self.profile} <{self.email}>"

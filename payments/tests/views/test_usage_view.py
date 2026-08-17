@@ -32,6 +32,7 @@ from rest_framework import status
 from calendar_integration.constants import CalendarType
 from calendar_integration.models import AvailableTime, Calendar, CalendarGroup
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.tests.helpers import make_membership
 from payments.billing_constants import BillingState, LimitedResource, LimitKind
 from payments.models import BillingPlan, MeteredOccurrence, PlanLimit
 from payments.services.entitlement_service import EntitlementService
@@ -194,8 +195,7 @@ def _seed_every_resource(organization, subscription):
 
 @pytest.fixture
 def admin_membership(organization, user):
-    return baker.make(
-        OrganizationMembership,
+    return make_membership(
         organization=organization,
         user=user,
         role=OrganizationRole.ADMIN,
@@ -322,8 +322,7 @@ class TestPooledAttributionOmitsNonContributors:
         silent_child = baker.make(Organization, parent=root, can_invite_organizations=False)
         plan = make_complete_plan()
         SubscriptionService().create_subscription_for_organization(root, plan=plan)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             organization=contributing_child,
             user=user,
             role=OrganizationRole.ADMIN,
@@ -402,8 +401,7 @@ class TestEstimatedOverageTotal:
         sibling_subscription = SubscriptionService().create_subscription_for_organization(
             sibling_root, plan=sibling_plan
         )
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             organization=contributing_child,
             user=user,
             role=OrganizationRole.ADMIN,
@@ -446,8 +444,7 @@ class TestEstimatedOverageTotal:
 class TestNoSubscriptionOrganization:
     def test_free_organization_gets_200_with_null_plan_and_period(self, auth_client, user):
         free_organization = baker.make(Organization, parent=None, can_invite_organizations=False)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             organization=free_organization,
             user=user,
             role=OrganizationRole.ADMIN,
@@ -501,8 +498,7 @@ class TestRootResolutionAndSubtreeWalkHappenOnce:
         child = baker.make(Organization, parent=root, can_invite_organizations=False)
         plan = make_complete_plan()
         SubscriptionService().create_subscription_for_organization(root, plan=plan)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             organization=child,
             user=user,
             role=OrganizationRole.ADMIN,

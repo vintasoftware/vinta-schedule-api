@@ -135,7 +135,9 @@ EVENT_TITLE_MAX_LENGTH = 255
 # (GraphQLError), matching the plan's Shared gate helper guiding decision. Kept
 # distinct in wording from the REST 403 bodies (organizations.exceptions) and the
 # admin form error (organizations.admin) so each surface reads naturally, while
-# preserving the same three-way distinguishability.
+# preserving the same distinguishability. Two entries, not three: the gate's
+# ``NO_SLUG`` reason was retired in Phase 1 of the vinta-django-orgs migration
+# and deleted in Phase 4.
 _BRANDING_GATE_MESSAGES: dict[BrandingWriteGateReason, str] = {
     BrandingWriteGateReason.HAS_PARENT: (
         "This organization has a parent organization and cannot manage its own "
@@ -144,10 +146,6 @@ _BRANDING_GATE_MESSAGES: dict[BrandingWriteGateReason, str] = {
     ),
     BrandingWriteGateReason.NOT_ENTITLED: (
         "This organization's plan does not include white-label branding."
-    ),
-    BrandingWriteGateReason.NO_SLUG: (
-        "Pick a public slug for this organization before configuring branding. "
-        "Supply `slug` on this mutation, or set one via the organization endpoint first."
     ),
 }
 

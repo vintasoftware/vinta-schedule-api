@@ -71,15 +71,6 @@ class BrandingEntitlementRequiredError(PermissionDenied):
     default_code = "branding_entitlement_required"
 
 
-class OrganizationSlugRequiredForBrandingError(PermissionDenied):
-    """Raised by the branding write gate when the acting organization is
-    otherwise eligible but has not picked a public slug yet -- the "one step
-    away" refusal (spec: "Eligible org with no public identifier yet")."""
-
-    default_detail = "Pick a public slug for this organization before configuring branding."
-    default_code = "branding_slug_required"
-
-
 class BrandingLogoUploadRejectedError(Exception):
     """Raised when a requested branding-logo upload violates the ``branding_logos``
     S3Direct destination's content-type allowlist or size limit.

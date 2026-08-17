@@ -30,6 +30,7 @@ from rest_framework.test import APIRequestFactory
 from calendar_integration.factories import create_calendar_ownership
 from calendar_integration.models import Calendar, CalendarEvent
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.tests.helpers import make_membership
 from payments.models import MeteredOccurrence
 from payments.pagination import LargeLimitOffsetPagination
 from payments.services.subscription_service import current_billing_period_start
@@ -93,8 +94,7 @@ def subscription(root: Organization):
 
 @pytest.fixture
 def admin_membership(user, root: Organization):
-    return baker.make(
-        OrganizationMembership,
+    return make_membership(
         user=user,
         organization=root,
         role=OrganizationRole.ADMIN,
@@ -104,8 +104,7 @@ def admin_membership(user, root: Organization):
 
 @pytest.fixture
 def billing_owner_membership(user, root: Organization):
-    return baker.make(
-        OrganizationMembership,
+    return make_membership(
         user=user,
         organization=root,
         role=OrganizationRole.MEMBER,

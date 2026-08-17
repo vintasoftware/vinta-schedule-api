@@ -1022,16 +1022,14 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
 
     GET uses the **eligibility** gate
     (``organizations.permissions.is_branding_eligible_organization`` --
-    parentless AND entitled, via ``_check_branding_read_gate``). It used to be
-    the narrower of the two, admitting a slug-less but otherwise eligible org
-    that the write gate refused; with the write gate's slug condition retired
-    (see ``evaluate_branding_write_gate``) the two now admit the same set. The
-    read path is still routed through the eligibility gate rather than the write
-    gate, keeping this endpoint consistent with the ``can_manage_branding``
-    contract an eligible
+    parentless AND entitled, via ``_check_branding_read_gate``). It admits
+    exactly what the write gate admits; the two are kept separate because they
+    answer different questions and a future condition may again apply to only
+    one of them (see ``evaluate_branding_write_gate``). The read path is routed
+    through the eligibility gate rather than the write gate, keeping this
+    endpoint consistent with the ``can_manage_branding`` contract an eligible
     org's SPA would otherwise render into a page that immediately 403s.
-    GET still refuses with the same parent/entitlement 403 bodies as the
-    write gate.
+    GET refuses with the same parent/entitlement 403 bodies as the write gate.
 
     Operations: retrieve (GET) + upsert (PUT/PATCH) the **acting org's own**
     branding. The endpoint operates on the request's organization only — it
@@ -1094,8 +1092,10 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
         **eligibility** gate (parentless, entitled) used for GET.
 
         Delegates to ``organizations.permissions.check_branding_read_eligibility``,
-        shared with ``OrganizationBrandingLogoUploadParamsView`` -- see that
-        function's docstring for why ``NO_SLUG`` is admitted here."""
+        shared with ``OrganizationBrandingLogoUploadParamsView``. That gate used
+        to admit one reason more than the write gate (``NO_SLUG``, retired in
+        Phase 1 and deleted in Phase 4); the two now admit the same set, and the
+        split is kept only because they answer different questions."""
         user = self.request.user
         if not user.is_authenticated:
             raise PermissionDenied("No active organization membership.")
@@ -1120,8 +1120,7 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
         responses={
             200: OrganizationBrandingSerializer,
             403: OpenApiResponse(
-                description="Organization has a parent or lacks the entitlement; or not an admin. "
-                "A slug-less-but-otherwise-eligible org is NOT refused here -- see 404."
+                description="Organization has a parent or lacks the entitlement; or not an admin."
             ),
             404: OpenApiResponse(description="Branding not yet configured"),
         },
@@ -1129,10 +1128,10 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
     def get(self, request, *args, **kwargs):
         """GET /branding/ — retrieve the acting org's branding.
 
-        Uses the two-condition eligibility gate, not the full write gate: a
-        slug-less-but-otherwise-eligible org is admitted here (and falls
-        through to the normal 404-no-row-yet / 200-with-a-row branch below)
-        -- see ``_check_branding_read_gate``."""
+        Uses the two-condition eligibility gate (parentless, entitled) rather
+        than the write gate; the two admit the same set -- see
+        ``_check_branding_read_gate``. An eligible org with no branding row yet
+        falls through to the 404-no-row-yet / 200-with-a-row branch below."""
         self._check_branding_read_gate()
         instance = self._get_branding_or_404()
         serializer = OrganizationBrandingSerializer(instance, context={"request": request})
@@ -1146,7 +1145,7 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
             200: OrganizationBrandingSerializer,
             400: OpenApiResponse(description="Invalid input (color format, URL validation)"),
             403: OpenApiResponse(
-                description="Organization has a parent, lacks the entitlement, or has no slug; or not an admin"
+                description="Organization has a parent or lacks the entitlement; or not an admin"
             ),
         },
     )
@@ -1194,7 +1193,7 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
             200: OrganizationBrandingSerializer,
             400: OpenApiResponse(description="Invalid input (color format, URL validation)"),
             403: OpenApiResponse(
-                description="Organization has a parent, lacks the entitlement, or has no slug; or not an admin"
+                description="Organization has a parent or lacks the entitlement; or not an admin"
             ),
             404: OpenApiResponse(description="Branding not yet configured"),
         },

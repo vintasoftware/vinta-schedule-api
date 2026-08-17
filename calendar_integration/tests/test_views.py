@@ -35,6 +35,7 @@ from calendar_integration.services.dataclasses import (
     UnavailableTimeWindow,
 )
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.tests.helpers import grant_membership_groups, make_membership
 
 
 User = get_user_model()
@@ -652,8 +653,7 @@ class TestCalendarEventViewSet:
 
         # Admin user
         admin_user = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin_user,
             organization=organization,
             role=OrganizationRole.ADMIN,
@@ -728,8 +728,7 @@ class TestCalendarEventViewSet:
 
         # Admin user
         admin_user = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin_user,
             organization=organization,
             role=OrganizationRole.ADMIN,
@@ -780,8 +779,7 @@ class TestCalendarEventViewSet:
         from rest_framework.test import APIClient
 
         admin_user = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin_user,
             organization=organization,
             role=OrganizationRole.ADMIN,
@@ -805,8 +803,7 @@ class TestCalendarEventViewSet:
         from rest_framework.test import APIClient
 
         admin_user = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin_user,
             organization=organization,
             role=OrganizationRole.ADMIN,
@@ -835,8 +832,7 @@ class TestCalendarEventViewSet:
         from rest_framework.test import APIClient
 
         admin_user = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin_user,
             organization=organization,
             role=OrganizationRole.ADMIN,
@@ -866,8 +862,7 @@ class TestCalendarEventViewSet:
         from rest_framework.test import APIClient
 
         admin_user = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin_user,
             organization=organization,
             role=OrganizationRole.ADMIN,
@@ -900,8 +895,7 @@ class TestCalendarEventViewSet:
         from rest_framework.test import APIClient
 
         admin_user = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin_user,
             organization=organization,
             role=OrganizationRole.ADMIN,
@@ -940,8 +934,7 @@ class TestCalendarEventViewSet:
         from di_core.containers import container
 
         admin_user = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin_user,
             organization=organization,
             role=OrganizationRole.ADMIN,
@@ -2138,8 +2131,7 @@ class TestCalendarViewSet:
         from di_core.containers import container
 
         admin_user = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin_user,
             organization=organization,
             role=OrganizationRole.ADMIN,
@@ -2192,8 +2184,7 @@ class TestCalendarViewSet:
         from rest_framework.test import APIClient
 
         admin_user = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin_user,
             organization=organization,
             role=OrganizationRole.ADMIN,
@@ -2219,8 +2210,7 @@ class TestCalendarViewSet:
         from rest_framework.test import APIClient
 
         admin_user = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin_user,
             organization=organization,
             role=OrganizationRole.ADMIN,
@@ -2960,8 +2950,7 @@ class TestCalendarViewSet:
 
         # Create admin user in the organization
         admin_user = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin_user,
             organization=organization,
             role=OrganizationRole.ADMIN,
@@ -3089,8 +3078,7 @@ class TestCalendarViewSet:
         """Test admin cannot sync calendar from different organization"""
         # Create admin in first organization
         admin_user = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin_user,
             organization=organization,
             role=OrganizationRole.ADMIN,
@@ -3123,8 +3111,7 @@ class TestCalendarViewSet:
         """Test admin cannot sync if calendar owner has no linked account for provider"""
         # Create admin user
         admin_user = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin_user,
             organization=organization,
             role=OrganizationRole.ADMIN,
@@ -3169,8 +3156,7 @@ class TestCalendarViewSet:
         """Test admin cannot sync calendar with no owner"""
         # Create admin user
         admin_user = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin_user,
             organization=organization,
             role=OrganizationRole.ADMIN,
@@ -3205,8 +3191,7 @@ class TestCalendarViewSet:
         An ex-member (orphan ownership, no backing membership) must not drive sync.
         """
         admin_user = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin_user,
             organization=organization,
             role=OrganizationRole.ADMIN,
@@ -3245,8 +3230,7 @@ class TestCalendarViewSet:
         """Test admin-sync with invalid datetimes returns 400"""
         # Create admin user
         admin_user = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin_user,
             organization=organization,
             role=OrganizationRole.ADMIN,
@@ -3304,8 +3288,7 @@ class TestCalendarViewSet:
 
         # Create admin user
         admin_user = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin_user,
             organization=organization,
             role=OrganizationRole.ADMIN,
@@ -3407,9 +3390,15 @@ class TestCalendarViewSetOwnerScoping:
 
     @staticmethod
     def _make_admin(user, organization):
-        OrganizationMembership.objects.filter(user=user, organization=organization).update(
-            role=OrganizationRole.ADMIN
-        )
+        membership = OrganizationMembership.objects.get(user=user, organization=organization)
+        membership.role = OrganizationRole.ADMIN
+        membership.save(update_fields=["role"])
+        # A ``queryset.update()`` used to be enough. It is not any more: the
+        # admin decision reads ``organizations.manage_members`` through the
+        # membership's groups (Phase 4 of the vinta-django-orgs migration), and
+        # ``update()`` writes the column straight past the dual-write shim every
+        # live re-roling path calls.
+        grant_membership_groups(membership)
 
     @staticmethod
     def _own_calendar(user, organization):
@@ -5409,8 +5398,7 @@ class TestCalendarBundleUpdateAction:
         from rest_framework.test import APIClient
 
         admin = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin,
             organization=organization,
             role=OrganizationRole.ADMIN,
@@ -5785,8 +5773,7 @@ class TestCalendarDisableGating:
         from rest_framework.test import APIClient
 
         admin = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=admin,
             organization=organization,
             role=OrganizationRole.ADMIN,

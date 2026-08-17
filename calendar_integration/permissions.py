@@ -53,7 +53,14 @@ class BookingPolicyPermission(BasePermission):
         membership = request.organization_membership
         if membership is None:
             return False
-        if membership.is_admin:
+        # ``organizations.manage_members`` -- the same capability
+        # ``User.is_organization_admin`` reads -- replaced ``membership.is_admin``
+        # in Phase 4 of the vinta-django-orgs migration. The organization is named
+        # explicitly rather than left to the ambient binding, because that is what
+        # the attribute it replaces meant: a statement about
+        # ``membership.organization``.
+        is_privileged = request.user.is_organization_admin(membership.organization)
+        if is_privileged:
             return True
 
         # Detail writes (update/delete) are gated per-object in
@@ -61,11 +68,16 @@ class BookingPolicyPermission(BasePermission):
         if request.method not in ("POST",):
             return True
 
-        # Create: the target lives in the request body.
+        # Create: the target lives in the request body. ``is_privileged`` is
+        # handed to the service rather than re-derived there from
+        # ``membership.is_admin``: two derivations could disagree, and a caller
+        # admitted here by one and refused later by the other would be able to
+        # create a policy they then could not edit.
         return self.booking_policy_permission_service.can_member_manage_target(
             user=request.user,
             membership=membership,
             organization_id=membership.organization_id,
+            is_privileged=is_privileged,
             calendar_id=request.data.get("calendar"),
             membership_user_id=request.data.get("membership_user_id"),
             calendar_group_id=request.data.get("calendar_group"),
@@ -80,6 +92,10 @@ class BookingPolicyPermission(BasePermission):
         return self.booking_policy_permission_service.can_member_manage_policy(
             user=request.user,
             membership=membership,
+            # The same capability ``has_permission`` short-circuits on, computed
+            # the same way -- see the comment there.
+            is_privileged=membership is not None
+            and request.user.is_organization_admin(membership.organization),
             policy=obj,
         )
 

@@ -11,6 +11,7 @@ from organizations.models import (
     OrganizationRole,
 )
 from organizations.permissions import IsOrganizationAdmin
+from organizations.tests.helpers import make_membership
 
 
 User = get_user_model()
@@ -37,8 +38,7 @@ class TestIsOrganizationAdminPermission:
         """Create a user with admin role in an organization."""
         user = baker.make(User)
         organization = baker.make(Organization)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
             role=OrganizationRole.ADMIN,
@@ -68,8 +68,7 @@ class TestIsOrganizationAdminPermission:
         """Create an admin user in a different organization."""
         user = baker.make(User)
         organization = baker.make(Organization)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
             role=OrganizationRole.ADMIN,
@@ -174,8 +173,7 @@ class TestIsOrganizationAdminPermission:
         """Admin with an inactive membership is denied — is_active=False gates all access."""
         user = baker.make(User)
         org = baker.make(Organization)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=org,
             role=OrganizationRole.ADMIN,
@@ -188,8 +186,7 @@ class TestIsOrganizationAdminPermission:
         """Inactive admin is denied object permission even for their own org."""
         user = baker.make(User)
         org = baker.make(Organization)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=org,
             role=OrganizationRole.ADMIN,

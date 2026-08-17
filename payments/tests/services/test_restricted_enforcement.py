@@ -53,6 +53,7 @@ from organizations.models import (
     OrganizationMembership,
     OrganizationRole,
 )
+from organizations.tests.helpers import make_membership
 from payments.billing_constants import BillingInterval, BillingState, LimitedResource, LimitKind
 from payments.exceptions import OverLimitError
 from payments.models import BillingPlan, PlanLimit, Subscription, SubscriptionPlanLimit
@@ -234,8 +235,7 @@ def _group_scoped_membership(
     from users.factories import UserFactory
 
     admin_user = UserFactory().create_user()
-    baker.make(
-        OrganizationMembership,
+    make_membership(
         user=admin_user,
         organization=organization,
         role=OrganizationRole.ADMIN,
@@ -922,8 +922,7 @@ class TestRestrictedOrganizationBillingSurfaceStaysOpen:
         subscription.billing_state = BillingState.RESTRICTED
         subscription.external_id = ""
         subscription.save(update_fields=["billing_state", "external_id"])
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
             is_active=True,

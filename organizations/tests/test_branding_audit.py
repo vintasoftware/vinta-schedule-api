@@ -19,9 +19,9 @@ from rest_framework.test import APIClient
 from organizations.models import (
     Organization,
     OrganizationBranding,
-    OrganizationMembership,
     OrganizationRole,
 )
+from organizations.tests.helpers import make_membership
 from users.factories import UserFactory
 
 
@@ -48,8 +48,7 @@ def eligible_org():
 @pytest.fixture
 def admin_user(eligible_org):
     user = UserFactory().create_user(email="brand-admin@example.com")
-    baker.make(
-        OrganizationMembership,
+    make_membership(
         user=user,
         organization=eligible_org,
         role=OrganizationRole.ADMIN,
@@ -174,8 +173,7 @@ class TestOrganizationBrandingViewAudit:
         parent_org = baker.make(Organization, can_invite_organizations=False, slug="audit-parent")
         child_org = baker.make(Organization, parent=parent_org, slug="audit-child")
         user = UserFactory().create_user(email="child-admin@example.com")
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=child_org,
             role=OrganizationRole.ADMIN,

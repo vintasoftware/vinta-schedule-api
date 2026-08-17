@@ -4,6 +4,7 @@ import pytest
 from model_bakery import baker
 
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.tests.helpers import make_membership
 from users.models import User
 from webhooks.constants import WebhookEventType
 from webhooks.services.webhook_membership_side_effects import WebhookMembershipSideEffectsService
@@ -63,8 +64,7 @@ class TestWebhookMembershipSideEffectsService:
         self, service, mock_webhook_service, organization, user, django_capture_on_commit_callbacks
     ):
         """on_member_created emits with correct admin role for admin memberships."""
-        membership = baker.make(
-            OrganizationMembership,
+        membership = make_membership(
             user=user,
             organization=organization,
             role=OrganizationRole.ADMIN,

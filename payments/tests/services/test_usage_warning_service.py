@@ -24,6 +24,7 @@ from model_bakery import baker
 
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
 from organizations.services import sync_membership_groups_from_role
+from organizations.tests.helpers import make_membership
 from payments.billing_constants import BillingState, LimitedResource, LimitKind, LimitWarningLevel
 from payments.models import (
     BillingPlan,
@@ -109,8 +110,7 @@ def admin_membership(organization: Organization) -> OrganizationMembership:
     least one, every "was a notification sent?" assertion in this module
     would pass vacuously regardless of whether the threshold/debounce logic
     is actually correct."""
-    membership = baker.make(
-        OrganizationMembership,
+    membership = make_membership(
         organization=organization,
         user=baker.make(User),
         role=OrganizationRole.ADMIN,

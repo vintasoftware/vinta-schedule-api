@@ -14,6 +14,7 @@ import pytest
 from audit.constants import AuditAction, AuditActorType
 from audit.models import Audit, AuditAffectedMembership
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.tests.helpers import grant_membership_groups
 
 
 User = get_user_model()
@@ -419,10 +420,12 @@ class TestAuditAdminExportSerialization:
     def membership(self, org):
         """Test membership."""
         user = User.objects.create_user(email="member@test.com", password="test")
-        return OrganizationMembership.objects.create(
-            organization=org,
-            user=user,
-            role=OrganizationRole.ADMIN,
+        return grant_membership_groups(
+            OrganizationMembership.objects.create(
+                organization=org,
+                user=user,
+                role=OrganizationRole.ADMIN,
+            )
         )
 
     def test_diff_serializes_as_json_string(self, admin_client, org):

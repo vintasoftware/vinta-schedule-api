@@ -49,6 +49,7 @@ from organizations.permissions import (
 )
 from organizations.redirect_url_validation import validate_redirect_url
 from organizations.serializers import CurrentMembershipSerializer, MyMembershipSerializer
+from organizations.tests.helpers import make_membership
 from payments.billing_constants import BillingState, Entitlement
 from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
 from users.factories import UserFactory
@@ -520,30 +521,31 @@ class TestEvaluateBrandingWriteGate:
         assert org.slug
         assert evaluate_branding_write_gate(org) is BrandingWriteGateReason.OK
 
-    def test_the_retired_no_slug_branch_still_evaluates_on_an_unsaved_instance(self):
-        """The dead-with-reason branch, exercised the only way it still can be.
+    def test_a_blank_slug_no_longer_refuses_anything(self):
+        """The retired condition, pinned as *retired* rather than as absent.
 
-        ``NO_SLUG`` remains part of this module's published contract until
-        Phase 4 deletes it, so the branch is covered rather than left to rot --
-        but the state it describes is unreachable for any *persisted*
-        organization, so this drives an in-memory instance instead of
-        manufacturing the state in the database (which the check constraint
-        would refuse anyway).
+        ``NO_SLUG`` was deleted in Phase 4 of the vinta-django-orgs migration
+        along with its branch. The only value that ever still reached that
+        branch was an unsaved, in-memory ``Organization`` -- no persisted one
+        can have a blank slug -- so that is what this drives, and it is now
+        admitted rather than refused. Written this way so a future
+        reintroduction of the rule is a red test rather than a silent
+        re-narrowing.
         """
         entitled = _org_with_entitlement(
             Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="entitled-org-gate"
         )
         unsaved = Organization(pk=entitled.pk, name=entitled.name, slug="")
 
-        assert evaluate_branding_write_gate(unsaved) is BrandingWriteGateReason.NO_SLUG
+        assert evaluate_branding_write_gate(unsaved) is BrandingWriteGateReason.OK
+        assert not hasattr(BrandingWriteGateReason, "NO_SLUG")
 
     def test_the_two_refusals_are_distinguishable(self):
         """Each failure mode produces its own reason, not a bare False -- this is
         the whole point of the enum-returning gate over a boolean helper.
 
-        Two reasons, not three: ``NO_SLUG`` is retired (see
-        ``test_the_retired_no_slug_branch_still_evaluates_on_an_unsaved_instance``
-        for what remains of it).
+        Two reasons, not three: ``NO_SLUG`` was retired in Phase 1 and deleted
+        in Phase 4 (see ``test_a_blank_slug_no_longer_refuses_anything``).
         """
         parent_org = _org_with_entitlement(
             Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="parent-org-2"
@@ -594,8 +596,7 @@ class TestCanManageBrandingCapabilityField:
 
     def _membership(self, organization: Organization, role: str = OrganizationRole.ADMIN):
         user = baker.make(User)
-        return baker.make(
-            OrganizationMembership,
+        return make_membership(
             user=user,
             organization=organization,
             role=role,
@@ -713,8 +714,7 @@ class TestBrandingLogoDestinationAuth:
 
     def _make_admin(self, organization: Organization):
         user = baker.make(User)
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=organization,
             role=OrganizationRole.ADMIN,

@@ -34,6 +34,7 @@ from calendar_integration.services.dataclasses import (
 )
 from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.tests.helpers import grant_membership_groups
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess, SystemUser
 from public_api.services import PublicAPIAuthService
@@ -4705,11 +4706,12 @@ class TestCalendarOwnersField:
             email="owner_b@shape.test", first_name="Bob", last_name="Jones"
         )
 
-        OrganizationMembership.objects.get_or_create(
+        _membership, _ = OrganizationMembership.objects.get_or_create(
             user=user_a, organization=organization, defaults={"role": OrganizationRole.ADMIN}
         )
         OrganizationMembership.objects.get_or_create(user=user_b, organization=organization)
 
+        grant_membership_groups(_membership)
         ownership_a = baker.make(
             CalendarOwnership,
             calendar=calendar,

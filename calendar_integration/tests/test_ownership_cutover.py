@@ -27,6 +27,7 @@ from calendar_integration.serializers import (
 )
 from calendar_integration.services.calendar_service import CalendarService
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.tests.helpers import grant_membership_groups
 
 
 @pytest.fixture
@@ -173,8 +174,10 @@ def test_ownership_serializer_membership_field_shape(organization, calendar):
     nested on ``CalendarOwnershipSerializer`` in place of the old bare ``user``.
     """
     user = baker.make("users.User")
-    OrganizationMembership.objects.create(
-        user=user, organization=organization, role=OrganizationRole.ADMIN
+    grant_membership_groups(
+        OrganizationMembership.objects.create(
+            user=user, organization=organization, role=OrganizationRole.ADMIN
+        )
     )
     ownership = _resolved_ownership(
         organization, create_calendar_ownership(calendar=calendar, user=user)

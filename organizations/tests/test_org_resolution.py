@@ -37,6 +37,7 @@ from organizations.models import (
     OrganizationMembership,
     OrganizationRole,
 )
+from organizations.tests.helpers import grant_membership_groups
 
 
 User = get_user_model()
@@ -58,11 +59,13 @@ def _make_membership(
     is_active: bool = True,
 ) -> OrganizationMembership:
     """Create an OrganizationMembership directly (bypassing the invite flow)."""
-    return OrganizationMembership.objects.create(
-        user=user,
-        organization=org,
-        role=role,
-        is_active=is_active,
+    return grant_membership_groups(
+        OrganizationMembership.objects.create(
+            user=user,
+            organization=org,
+            role=role,
+            is_active=is_active,
+        )
     )
 
 

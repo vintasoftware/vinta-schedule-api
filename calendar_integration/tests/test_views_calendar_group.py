@@ -28,6 +28,7 @@ from calendar_integration.models import (
     CalendarManagementToken,
 )
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.tests.helpers import grant_membership_groups
 
 
 def _grant_calendar_owner_token(user, calendar):
@@ -76,6 +77,7 @@ def admin_user(user, organization):
     membership = OrganizationMembership.objects.get(user=user, organization=organization)
     membership.role = OrganizationRole.ADMIN
     membership.save(update_fields=["role"])
+    grant_membership_groups(membership)
     return user
 
 

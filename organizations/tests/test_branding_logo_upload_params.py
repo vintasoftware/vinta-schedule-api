@@ -12,6 +12,7 @@ from rest_framework.test import APIClient
 from s3direct.utils import AWSCredentials
 
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.tests.helpers import make_membership
 from organizations.tests.test_branding_rest import _make_unentitled_org
 
 
@@ -68,8 +69,7 @@ def parented_org(eligible_org):
 
 @pytest.fixture
 def eligible_org_admin(user, eligible_org):
-    return baker.make(
-        OrganizationMembership,
+    return make_membership(
         user=user,
         organization=eligible_org,
         role=OrganizationRole.ADMIN,
@@ -92,8 +92,7 @@ def eligible_org_member(eligible_org):
 
 @pytest.fixture
 def second_eligible_org_admin(user, second_eligible_org):
-    return baker.make(
-        OrganizationMembership,
+    return make_membership(
         user=user,
         organization=second_eligible_org,
         role=OrganizationRole.ADMIN,
@@ -103,8 +102,7 @@ def second_eligible_org_admin(user, second_eligible_org):
 
 @pytest.fixture
 def parented_org_admin(user, parented_org):
-    return baker.make(
-        OrganizationMembership,
+    return make_membership(
         user=user,
         organization=parented_org,
         role=OrganizationRole.ADMIN,
@@ -236,8 +234,7 @@ class TestOrganizationBrandingLogoUploadParamsView:
     @pytest.mark.no_auto_subscription
     def test_admin_of_an_unentitled_org_returns_403(self, client, user):
         org = _make_unentitled_org(can_invite_organizations=False, slug="unentitled-org")
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=org,
             role=OrganizationRole.ADMIN,
@@ -283,15 +280,13 @@ class TestOrganizationBrandingLogoUploadParamsView:
         user = baker.make(User)
         org_a = baker.make(Organization, can_invite_organizations=False, slug="multi-a")
         org_b = baker.make(Organization, can_invite_organizations=False, slug="multi-b")
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=org_a,
             role=OrganizationRole.ADMIN,
             is_active=True,
         )
-        baker.make(
-            OrganizationMembership,
+        make_membership(
             user=user,
             organization=org_b,
             role=OrganizationRole.ADMIN,

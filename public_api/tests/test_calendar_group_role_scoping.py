@@ -32,6 +32,7 @@ from calendar_integration.models import (
     CalendarOwnership,
 )
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.tests.helpers import make_membership
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess
 from public_api.services import PublicAPIAuthService
@@ -109,9 +110,7 @@ class TestCalendarGroupRoleScoping:
     ) -> tuple[User, OrganizationMembership]:
         unique = uuid.uuid4().hex[:8]
         user = baker.make(User, email=f"user_{unique}@example.com")
-        membership = baker.make(
-            OrganizationMembership, user=user, organization=org, role=role, is_active=True
-        )
+        membership = make_membership(user=user, organization=org, role=role, is_active=True)
         return user, membership
 
     def _own(self, org: Organization, user, calendar: Calendar) -> None:

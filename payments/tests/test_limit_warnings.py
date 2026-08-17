@@ -18,6 +18,7 @@ from model_bakery import baker
 
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
 from organizations.services import sync_membership_groups_from_role
+from organizations.tests.helpers import make_membership
 from payments.billing_constants import BillingState, LimitedResource, LimitKind
 from payments.models import BillingPlan, LimitWarningNotification, PlanLimit, Subscription
 from payments.tasks import check_approaching_limits, check_approaching_limits_for_subscription
@@ -69,8 +70,7 @@ def _add_admin_membership(organization: Organization) -> OrganizationMembership:
     ``sync_membership_groups_from_role``; ``baker.make`` bypasses it. Phase 6
     deletes the shim and this call with it.
     """
-    membership = baker.make(
-        OrganizationMembership,
+    membership = make_membership(
         organization=organization,
         user=baker.make(User),
         role=OrganizationRole.ADMIN,

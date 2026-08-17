@@ -31,6 +31,7 @@ from calendar_integration.serializers import (
 )
 from calendar_integration.services.calendar_service_utils import resolve_member_user_ids
 from organizations.models import Organization, OrganizationMembership, OrganizationRole
+from organizations.tests.helpers import grant_membership_groups
 
 
 @pytest.fixture
@@ -133,8 +134,10 @@ def test_orphan_attendance_excluded_from_attendee_memberships_m2m(organization, 
 def test_attendance_serializer_membership_field_shape(organization, event):
     """The REST attendance serializer exposes membership identity, not a bare user."""
     user = baker.make("users.User")
-    OrganizationMembership.objects.create(
-        user=user, organization=organization, role=OrganizationRole.ADMIN
+    grant_membership_groups(
+        OrganizationMembership.objects.create(
+            user=user, organization=organization, role=OrganizationRole.ADMIN
+        )
     )
     _make_attendance(event, organization, membership_user_id=user.id)
 
