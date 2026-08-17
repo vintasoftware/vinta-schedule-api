@@ -26,6 +26,7 @@ from calendar_integration.exceptions import (
     ExternalClientIdentifierBlankIdentifierError,
     ExternalClientIdentifierCrossOrganizationError,
     ExternalClientIdentifierDuplicateSystemError,
+    ExternalClientIdentifierInvalidSystemError,
     ExternalClientIdentifierInvalidTargetError,
     ExternalClientIdentifierTooLongError,
 )
@@ -376,6 +377,42 @@ def test_max_length_identifier_is_accepted(
     assert old == []
     assert len(new) == 1
     assert new[0].identifier == "x" * 255
+
+
+@pytest.mark.django_db
+def test_invalid_system_url_is_rejected(
+    service: ExternalClientIdentifierService, event: CalendarEvent
+) -> None:
+    """``system`` is stored in a ``URLField`` and is the leading match column of
+    ``extclientid_uniq_system_ident`` (after organization/content_type), so an
+    unparseable value cannot be a stable lookup key. ``bulk_create`` never calls
+    ``Model.full_clean()``, so the service must validate this explicitly."""
+    with pytest.raises(ExternalClientIdentifierInvalidSystemError):
+        service.replace_for_target(
+            event,
+            [ExternalClientIdentifierData(system="not-a-url", identifier="deal-1")],
+        )
+
+
+@pytest.mark.django_db
+def test_invalid_system_url_leaves_target_untouched(
+    service: ExternalClientIdentifierService, event: CalendarEvent
+) -> None:
+    create_external_client_identifier(
+        organization=event.organization,
+        identified_object=event,
+        system="https://crm.example.com",
+        identifier="deal-1",
+    )
+    with pytest.raises(ExternalClientIdentifierInvalidSystemError):
+        service.replace_for_target(
+            event,
+            [ExternalClientIdentifierData(system="not-a-url", identifier="deal-2")],
+        )
+    old, new = service.replace_for_target(event, None)
+    assert len(old) == 1
+    assert old[0].identifier == "deal-1"
+    assert new == old
 
 
 @pytest.mark.django_db

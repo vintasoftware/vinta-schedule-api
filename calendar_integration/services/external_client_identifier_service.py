@@ -19,12 +19,15 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from django.contrib.contenttypes.models import ContentType
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.validators import URLValidator
 
 from calendar_integration.exceptions import (
     CalendarServiceOrganizationNotSetError,
     ExternalClientIdentifierBlankIdentifierError,
     ExternalClientIdentifierCrossOrganizationError,
     ExternalClientIdentifierDuplicateSystemError,
+    ExternalClientIdentifierInvalidSystemError,
     ExternalClientIdentifierInvalidTargetError,
     ExternalClientIdentifierTooLongError,
 )
@@ -46,6 +49,10 @@ if TYPE_CHECKING:
 
 #: Matches ``ExternalClientIdentifier.identifier``'s column (``CharField(max_length=255)``).
 MAX_IDENTIFIER_LENGTH = 255
+
+#: Same validator ``ExternalClientIdentifier.system`` (a ``URLField``) uses -- run here
+#: explicitly because ``bulk_create`` never calls ``Model.full_clean()``.
+_SYSTEM_URL_VALIDATOR = URLValidator()
 
 
 class ExternalClientIdentifierService:
@@ -105,6 +112,9 @@ class ExternalClientIdentifierService:
         per system per target. So if two incoming pairs normalize to the same
         system, this raises ``ExternalClientIdentifierDuplicateSystemError`` instead
         of silently keeping the last one and dropping the first.
+
+        ``system`` is validated as an absolute URL (matching the model's own
+        ``URLField``) after normalization -- see ``_SYSTEM_URL_VALIDATOR``.
         """
         normalized: dict[str, str] = {}
         for item in identifiers:
@@ -114,6 +124,10 @@ class ExternalClientIdentifierService:
             if len(identifier_value) > MAX_IDENTIFIER_LENGTH:
                 raise ExternalClientIdentifierTooLongError()
             normalized_system = normalize_system(item.system)
+            try:
+                _SYSTEM_URL_VALIDATOR(normalized_system)
+            except DjangoValidationError as exc:
+                raise ExternalClientIdentifierInvalidSystemError() from exc
             if normalized_system in normalized:
                 raise ExternalClientIdentifierDuplicateSystemError()
             normalized[normalized_system] = identifier_value

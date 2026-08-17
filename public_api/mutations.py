@@ -54,6 +54,7 @@ from calendar_integration.services.dataclasses import (
     EventAttendanceInputData,
     EventExternalAttendanceInputData,
     ExternalAttendeeInputData,
+    ExternalClientIdentifierData,
     ResourceAllocationInputData,
 )
 from organizations.branding_logo import (
@@ -186,6 +187,28 @@ def _apply_input_slug(organization: Organization, slug: str) -> None:
             organization.save(update_fields=["slug"])
     except IntegrityError as e:
         raise GraphQLError(f"An organization with the slug '{slug}' already exists.") from e
+
+
+def _map_external_client_identifiers(
+    identifiers: "list[ExternalClientIdentifierInput] | None",
+) -> list[ExternalClientIdentifierData] | None:
+    """Map the tri-state GraphQL input to the tri-state Phase 2 dataclass list.
+
+    ``strawberry.UNSET`` (the field was omitted from the request) maps to ``None`` --
+    "leave untouched", per ``ExternalClientIdentifierService.replace_for_target``. Any
+    supplied value -- including an explicit ``null`` or ``[]`` -- maps to a (possibly
+    empty) list, which replaces the stored set and clears it when empty. Explicit
+    ``null`` is treated the same as ``[]`` (clear): the GraphQL field is nullable
+    (``[ExternalClientIdentifierInput!]``, no outer ``!``) but the plan only assigns
+    meaning to two states -- omitted vs. supplied -- so a caller-supplied ``null`` is
+    "supplied, nothing there", not "omitted".
+    """
+    if identifiers is strawberry.UNSET:
+        return None
+    return [
+        ExternalClientIdentifierData(system=item.system, identifier=item.identifier)
+        for item in (identifiers or [])
+    ]
 
 
 @dataclass
@@ -945,11 +968,29 @@ class DisableCalendarBundleResult:
 
 
 @strawberry.input
+class ExternalClientIdentifierInput:
+    """One ``(system, identifier)`` client-owned reference pair.
+
+    ``system`` is normalized (case + trailing slash) before storage and matching --
+    see ``calendar_integration.external_client_identifiers.normalize_system``.
+    """
+
+    system: str
+    identifier: str
+
+
+@strawberry.input
 class ScheduleEventExternalAttendeeInput:
     """An external (non-user) attendee on a scheduled event: an email and optional name."""
 
     email: str
     name: str = ""
+    # UNSET (omitted) = leave untouched (a no-op on create, since there is nothing to
+    # leave untouched yet). An explicit list -- including [] or null -- replaces the
+    # full set. Must default to UNSET, never a list, so existing callers that have
+    # never heard of this field are unaffected. See
+    # ``ExternalClientIdentifierService.replace_for_target``.
+    external_client_identifiers: list[ExternalClientIdentifierInput] | None = strawberry.UNSET  # type: ignore[assignment]
 
 
 @strawberry.input
@@ -975,6 +1016,12 @@ class ScheduleEventInput:
         default_factory=list
     )
     rrule_string: str | None = None
+    # UNSET (omitted) = leave untouched. An explicit list -- including [] or null --
+    # replaces the full set. Must default to UNSET, never a list: with a list default
+    # every existing scheduleEvent caller that has never heard of this field would
+    # start wiping identifiers on every call. See
+    # ``ExternalClientIdentifierService.replace_for_target``.
+    external_client_identifiers: list[ExternalClientIdentifierInput] | None = strawberry.UNSET  # type: ignore[assignment]
 
 
 @strawberry.input
@@ -3162,12 +3209,18 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
                     external_attendee=ExternalAttendeeInputData(
                         email=external.email,
                         name=external.name,
+                        external_client_identifiers=_map_external_client_identifiers(
+                            external.external_client_identifiers
+                        ),
                     )
                 )
                 for external in input.external_attendees
             ],
             resource_allocations=[],
             recurrence_rule=input.rrule_string,
+            external_client_identifiers=_map_external_client_identifiers(
+                input.external_client_identifiers
+            ),
         )
 
         try:
@@ -3192,7 +3245,14 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         # see its docstring).
         except OverLimitError as exc:
             raise_over_limit_graphql_error(exc)
-        except (ValueError, DjangoValidationError, CalendarIntegrationError) as exc:
+        # IntegrityError: a (system, identifier) pair already claimed by another record
+        # of the same type in this organization -- ExternalClientIdentifierService
+        # writes via bulk_create, so the DB's extclientid_uniq_system_ident constraint
+        # is the enforcement point, not a pre-check. create_event runs inside its own
+        # @transaction.atomic() savepoint, so catching this here does not poison the
+        # request-level transaction (ATOMIC_REQUESTS) -- see _apply_input_slug's
+        # docstring for the same pattern.
+        except (ValueError, DjangoValidationError, CalendarIntegrationError, IntegrityError) as exc:
             raise GraphQLError(str(exc)) from exc
 
         return event  # type: ignore[return-value]

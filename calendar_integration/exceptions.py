@@ -441,6 +441,21 @@ class ExternalClientIdentifierCrossOrganizationError(ExternalClientIdentifierErr
     default_message = "Target does not belong to the current organization."
 
 
+class ExternalClientIdentifierInvalidSystemError(ExternalClientIdentifierError):
+    """Raised when an incoming ``system`` does not parse as a valid absolute URL.
+
+    ``system`` is stored in a ``URLField`` and is the leading match column (after
+    ``organization``/``content_type``) of ``extclientid_uniq_system_ident``, so an
+    unparseable value cannot be a stable lookup key. The model's own ``URLField``
+    validators only run through ``Model.full_clean()``, which
+    ``ExternalClientIdentifierService.replace_for_target`` never calls (it writes via
+    ``bulk_create``), so this check has to run explicitly here -- the one place every
+    write path (GraphQL, REST) funnels through.
+    """
+
+    default_message = "system must be a valid URL."
+
+
 class ExternalClientIdentifierBlankIdentifierError(ExternalClientIdentifierError):
     """Raised when an incoming ``identifier`` is blank or whitespace-only."""
 
