@@ -1123,23 +1123,6 @@ class CalendarEventService:
         ExternalAttendee.objects.bulk_create(external_attendees_to_create)
         EventExternalAttendance.objects.bulk_create(external_attendances_to_create)
 
-        # Apply identifiers now that every attendee has a stable pk -- ``bulk_create``
-        # (Postgres) populates pks on the instances above, so ``external_attendee.pk``
-        # is available here for the newly created rows too.
-        if identifier_service is not None:
-            for external_attendee, identifiers in zip(
-                external_attendees_to_update,
-                external_attendees_to_update_identifiers,
-                strict=True,
-            ):
-                identifier_service.replace_for_target(external_attendee, identifiers)
-            for external_attendee, identifiers in zip(
-                external_attendees_to_create,
-                external_attendees_to_create_identifiers,
-                strict=True,
-            ):
-                identifier_service.replace_for_target(external_attendee, identifiers)
-
         external_attendees_to_delete = set(existing_external_attendances.keys()) - set(
             maintained_external_attendees_ids
         )
@@ -1154,10 +1137,48 @@ class CalendarEventService:
             for external_attendance in event_external_attendances_instance_to_delete
         ]
 
+        # The stale attendees (and, via their ``GenericRelation``, their identifier
+        # rows) must be gone before any new identifier row is written below --
+        # otherwise a re-sent attendee that keeps the same ``(system, identifier)``
+        # collides with its own about-to-be-deleted predecessor on
+        # ``extclientid_uniq_system_ident``.
         event_external_attendances_instance_to_delete.delete()
         ExternalAttendee.objects.filter_by_organization(context.organization.id).filter(
             id__in=external_attendees_to_delete
         ).delete()
+
+        # Apply identifiers now that every attendee has a stable pk -- ``bulk_create``
+        # (Postgres) populates pks on the instances above, so ``external_attendee.pk``
+        # is available here for the newly created rows too -- and now that the stale
+        # attendees above are actually deleted, so their identifier rows can no longer
+        # collide with the ones being written here.
+        if identifier_service is not None:
+            # Clear every updated attendee's stored identifiers BEFORE writing any of
+            # their new ones. ``replace_for_target`` only ever deletes rows for the one
+            # target it's called with, so two attendees swapping the same
+            # ``(system, identifier)`` in one payload (A: x -> y, B: y -> x) would
+            # otherwise collide with each other's still-present row -- clearing all of
+            # them first, in a separate pass, guarantees no such row survives into the
+            # write pass below regardless of processing order.
+            for external_attendee, identifiers in zip(
+                external_attendees_to_update,
+                external_attendees_to_update_identifiers,
+                strict=True,
+            ):
+                if identifiers is not None:
+                    identifier_service.replace_for_target(external_attendee, [])
+            for external_attendee, identifiers in zip(
+                external_attendees_to_update,
+                external_attendees_to_update_identifiers,
+                strict=True,
+            ):
+                identifier_service.replace_for_target(external_attendee, identifiers)
+            for external_attendee, identifiers in zip(
+                external_attendees_to_create,
+                external_attendees_to_create_identifiers,
+                strict=True,
+            ):
+                identifier_service.replace_for_target(external_attendee, identifiers)
 
         # Resolve which attendee user_ids back an OrganizationMembership; non-members
         # get a NULL membership_user_id (an orphan attendance) so the composite PROTECT

@@ -444,6 +444,182 @@ def test_attendee_deleted_and_recreated_keeps_new_identifiers(
     }
 
 
+@pytest.mark.django_db
+def test_attendee_recreated_with_unchanged_identifier_does_not_collide(
+    event_service,
+    mock_google_adapter,
+    calendar,
+    calendar_management_token,
+    social_account,
+    django_capture_on_commit_callbacks,
+):
+    """The far more common case than a changed identifier: the caller re-sends the
+    same logical attendee (id omitted, so reconciliation deletes-and-recreates it)
+    carrying the SAME ``(system, identifier)`` pair it already had. The old row's
+    identifier must be deleted before the new row's identifier is written, or this
+    collides on ``extclientid_uniq_system_ident`` -- both rows would otherwise briefly
+    coexist with the same ``(organization, content_type, system, identifier)``."""
+    mock_google_adapter.create_event.return_value = _adapter_output("evt-attendee-unchanged")
+    mock_google_adapter.update_event.return_value = _adapter_output("evt-attendee-unchanged")
+
+    with django_capture_on_commit_callbacks(execute=True):
+        created = event_service.create_event(
+            calendar.id,
+            _base_event_input(
+                external_attendances=[
+                    EventExternalAttendanceInputData(
+                        external_attendee=ExternalAttendeeInputData(
+                            email="ext@example.com",
+                            name="Ext Attendee",
+                            external_client_identifiers=[
+                                ExternalClientIdentifierData(
+                                    system="https://crm.example.com", identifier="same-contact"
+                                )
+                            ],
+                        )
+                    )
+                ]
+            ),
+        )
+    _grant_event_owner_token(created, social_account.user, calendar.organization)
+
+    original_attendance = created.external_attendances.get()
+    original_attendee_id = original_attendance.external_attendee_fk_id
+
+    # Re-send the same logical attendee WITHOUT its id -- the reconciliation loop
+    # cannot match it to the existing row, so it deletes the old one and creates a new
+    # one. The identifier supplied for it is unchanged from what the old row held.
+    updated_input = _base_event_input(
+        external_attendances=[
+            EventExternalAttendanceInputData(
+                external_attendee=ExternalAttendeeInputData(
+                    email="ext@example.com",
+                    name="Ext Attendee",
+                    id=None,
+                    external_client_identifiers=[
+                        ExternalClientIdentifierData(
+                            system="https://crm.example.com", identifier="same-contact"
+                        )
+                    ],
+                )
+            )
+        ]
+    )
+
+    with django_capture_on_commit_callbacks(execute=True):
+        event_service.update_event(calendar.id, created.id, updated_input)
+
+    from calendar_integration.models import ExternalAttendee
+
+    assert (
+        not ExternalAttendee.objects.filter_by_organization(calendar.organization_id)
+        .filter(pk=original_attendee_id)
+        .exists()
+    )
+
+    new_attendance = created.external_attendances.get()
+    assert new_attendance.external_attendee_fk_id != original_attendee_id
+    assert _stored_identifiers(new_attendance.external_attendee) == {
+        "https://crm.example.com": "same-contact"
+    }
+
+
+@pytest.mark.django_db
+def test_two_attendees_swapping_identifiers_does_not_collide(
+    event_service,
+    mock_google_adapter,
+    calendar,
+    calendar_management_token,
+    social_account,
+    django_capture_on_commit_callbacks,
+):
+    """Two existing attendees, both matched by id (neither is deleted-and-recreated),
+    swap their ``(system, identifier)`` pairs in a single payload. ``replace_for_target``
+    only ever deletes rows for the one target it's called with, so writing one
+    attendee's new identifier before the other attendee's old row is released would
+    collide on ``extclientid_uniq_system_ident``."""
+    mock_google_adapter.create_event.return_value = _adapter_output("evt-attendee-swap")
+    mock_google_adapter.update_event.return_value = _adapter_output("evt-attendee-swap")
+
+    with django_capture_on_commit_callbacks(execute=True):
+        created = event_service.create_event(
+            calendar.id,
+            _base_event_input(
+                external_attendances=[
+                    EventExternalAttendanceInputData(
+                        external_attendee=ExternalAttendeeInputData(
+                            email="a@example.com",
+                            name="Attendee A",
+                            external_client_identifiers=[
+                                ExternalClientIdentifierData(
+                                    system="https://crm.example.com", identifier="contact-x"
+                                )
+                            ],
+                        )
+                    ),
+                    EventExternalAttendanceInputData(
+                        external_attendee=ExternalAttendeeInputData(
+                            email="b@example.com",
+                            name="Attendee B",
+                            external_client_identifiers=[
+                                ExternalClientIdentifierData(
+                                    system="https://crm.example.com", identifier="contact-y"
+                                )
+                            ],
+                        )
+                    ),
+                ]
+            ),
+        )
+    _grant_event_owner_token(created, social_account.user, calendar.organization)
+
+    attendance_a = created.external_attendances.get(external_attendee_fk__email="a@example.com")
+    attendance_b = created.external_attendances.get(external_attendee_fk__email="b@example.com")
+
+    # Re-send both attendees matched by id (so neither is deleted-and-recreated),
+    # each now carrying the OTHER's previous identifier.
+    updated_input = _base_event_input(
+        external_attendances=[
+            EventExternalAttendanceInputData(
+                external_attendee=ExternalAttendeeInputData(
+                    id=attendance_a.external_attendee_fk_id,
+                    email="a@example.com",
+                    name="Attendee A",
+                    external_client_identifiers=[
+                        ExternalClientIdentifierData(
+                            system="https://crm.example.com", identifier="contact-y"
+                        )
+                    ],
+                )
+            ),
+            EventExternalAttendanceInputData(
+                external_attendee=ExternalAttendeeInputData(
+                    id=attendance_b.external_attendee_fk_id,
+                    email="b@example.com",
+                    name="Attendee B",
+                    external_client_identifiers=[
+                        ExternalClientIdentifierData(
+                            system="https://crm.example.com", identifier="contact-x"
+                        )
+                    ],
+                )
+            ),
+        ]
+    )
+
+    with django_capture_on_commit_callbacks(execute=True):
+        event_service.update_event(calendar.id, created.id, updated_input)
+
+    attendance_a.external_attendee.refresh_from_db()
+    attendance_b.external_attendee.refresh_from_db()
+    assert _stored_identifiers(attendance_a.external_attendee) == {
+        "https://crm.example.com": "contact-y"
+    }
+    assert _stored_identifiers(attendance_b.external_attendee) == {
+        "https://crm.example.com": "contact-x"
+    }
+
+
 # ---------------------------------------------------------------------------
 # Duplicate (system, identifier) rollback
 # ---------------------------------------------------------------------------
