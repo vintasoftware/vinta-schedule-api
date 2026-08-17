@@ -386,7 +386,16 @@ def test_update_event_omitting_attendee_identifiers_issues_no_extra_query(
     exact number of queries for an update that matches one existing attendee by id
     and omits identifiers for it; a broken implementation that calls
     ``replace_for_target`` unconditionally issues one extra query and fails this
-    assertion."""
+    assertion.
+
+    The pinned count is 29, not 28: the "External client identifiers" webhook-payload
+    phase made ``calendar_service_utils.serialize_event`` read the *event's own*
+    identifiers (via ``event.external_client_identifiers.all()``) to populate the
+    webhook payload's ``external_client_identifiers`` key, and ``on_update_event``'s
+    snapshot is built once per ``update_event`` call. That is one unavoidable new
+    query, separate from -- and not a regression of -- the attendee-omission
+    invariant this test guards.
+    """
     mock_google_adapter.create_event.return_value = _adapter_output("evt-noquery-omit")
     mock_google_adapter.update_event.return_value = _adapter_output("evt-noquery-omit")
 
@@ -423,7 +432,7 @@ def test_update_event_omitting_attendee_identifiers_issues_no_extra_query(
         ]
     )
 
-    with django_assert_num_queries(28):
+    with django_assert_num_queries(29):
         event_service.update_event(calendar.id, created.id, updated_input)
 
 

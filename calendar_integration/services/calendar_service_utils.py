@@ -33,6 +33,7 @@ from calendar_integration.services.dataclasses import (
     CalendarSettingsData,
     EventExternalAttendeeData,
     EventInternalAttendeeData,
+    ExternalClientIdentifierData,
     ResourceData,
 )
 from organizations.models import OrganizationMembership
@@ -259,6 +260,19 @@ def serialize_event(event: CalendarEvent) -> CalendarEventData:
             if event.parent_recurring_object_fk_id
             else None
         ),
+        external_client_identifiers=[
+            ExternalClientIdentifierData(system=identifier.system, identifier=identifier.identifier)
+            # Identifiers live on the master row, same as attendees/external
+            # attendees/resources above: a recurring instance reads its parent's.
+            # ``.all()`` reuses the prefetch cache when the caller prefetched
+            # ``external_client_identifiers`` on the queryset that produced ``event``
+            # (or ``parent_recurring_object``) -- no per-event query in that case.
+            for identifier in (
+                event.parent_recurring_object.external_client_identifiers.all()
+                if event.parent_recurring_object
+                else (event.external_client_identifiers.all() if event.id else [])
+            )
+        ],
     )
 
 
@@ -367,6 +381,12 @@ def serialize_event_data_input(
         status="confirmed",
         is_recurring=bool(event_data.recurrence_rule),
         recurring_event_id=None,
+        # ``None`` (omitted -- untouched) maps to `[]` here: this snapshot only
+        # feeds the permission-diff check (`can_perform_update`), which does not
+        # examine identifiers, so there is no observable difference between "empty"
+        # and "unspecified" for any current consumer. Input identifiers are already
+        # `ExternalClientIdentifierData`, so they are passed through as-is.
+        external_client_identifiers=event_data.external_client_identifiers or [],
     )
 
 
