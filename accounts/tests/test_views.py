@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 from django.conf import settings
 from django.http import HttpResponseRedirect, JsonResponse
+from django.test.client import RequestFactory
 from django.urls import reverse
 from django.utils import timezone
 
@@ -12,6 +13,7 @@ from allauth.headless.socialaccount.forms import RedirectToProviderForm
 from allauth.socialaccount.providers.base import ProviderException
 from model_bakery import baker
 
+from accounts.views import ProviderRedirectAPIView
 from organizations.models import Organization, OrganizationBranding, OrganizationMembership
 from payments.billing_constants import BillingState, Entitlement
 from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
@@ -481,14 +483,10 @@ class TestProviderRedirectAPIView:
                     return self.get("session_key", "sessiontoken")
 
             # Patch request.session
-            from django.test.client import RequestFactory
-
             rf = RequestFactory()
             request = rf.post(self.get_url(), data=json.dumps({}), content_type="application/json")
             request.session = DummySession()
             # Actually call the view
-            from accounts.views import ProviderRedirectAPIView
-
             view = ProviderRedirectAPIView.as_view()
             response = view(request)
             assert response.status_code == 200

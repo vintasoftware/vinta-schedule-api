@@ -3016,8 +3016,6 @@ class TestCreateResourceCalendarMutation:
 
     def test_create_resource_calendar_happy_path(self):
         """A granted token creates a resource calendar; returns the calendar + DB row."""
-        from calendar_integration.models import Calendar, CalendarType
-
         org, system_user, token, auth_service = self._setup_org_and_token()
 
         response = self._post_mutation(
@@ -3058,8 +3056,6 @@ class TestCreateResourceCalendarMutation:
 
     def test_create_resource_calendar_minimal_input(self):
         """Name-only input succeeds; optional fields default correctly."""
-        from calendar_integration.models import CalendarType
-
         org, system_user, token, auth_service = self._setup_org_and_token()
 
         response = self._post_mutation(
@@ -3121,8 +3117,6 @@ class TestCreateResourceCalendarMutation:
         not from the input field. The organizationId input is present for client
         convenience but the server always uses the token's org.
         """
-        from calendar_integration.models import Calendar, CalendarType
-
         # Create the token's org
         org, system_user, token, auth_service = self._setup_org_and_token()
         # Create a different org that we pass as organizationId — should be ignored

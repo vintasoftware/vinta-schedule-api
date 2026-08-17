@@ -596,6 +596,12 @@ def test_get_calendar_adapter_for_google_service_account(
     google_service_account, mock_google_adapter
 ):
     """Test getting Google adapter for service account."""
+    # Deferred deliberately: the ``mock_google_adapter`` fixture above patches
+    # ``calendar_integration.services.calendar_adapters.google_calendar_adapter.GoogleCalendarAdapter``,
+    # and the assertions below read ``from_service_account`` off that mock. A module-scope
+    # import would bind the real class into this module before the patch is installed, so
+    # the name here would no longer be the mock and the call assertions would go green
+    # against the wrong object (or fail outright).
     from calendar_integration.services.calendar_adapters.google_calendar_adapter import (
         GoogleCalendarAdapter,
     )
