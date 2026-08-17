@@ -32,7 +32,7 @@ class WebhookConfigurationSerializer(VirtualModelSerializer):
 
     def create(self, validated_data):
         request = self.context.get("request") if self.context else None
-        membership = request.__dict__.get("organization_membership") if request else None
+        membership = getattr(request, "organization_membership", None) if request else None
         if not membership:
             raise serializers.ValidationError(
                 {"non_field_errors": ["User has no organization membership."]}
