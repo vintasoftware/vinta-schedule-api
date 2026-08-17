@@ -56,7 +56,7 @@ For a typical var `MY_NEW_VAR` that's both local + production:
            value: "default"      # for non-secret defaults
    ```
 
-5. **`.github/workflows/main.yml`** — append the var to every step that runs `manage.py`, `pytest`, `ruff`, or `check --deploy` with a placeholder value safe for CI. Pattern: under each `env:` block for those steps, add:
+5. **`.github/workflows/main.yml`** — append the var with a placeholder value safe for CI to the **workflow-level `env:` block at the top of the file**. That is the single place: every job and step inherits from it, and the only per-job / per-step override is `DJANGO_SETTINGS_MODULE`. Pattern:
 
    ```yaml
    MY_NEW_VAR: 'FAKE_VAR_FOR_CI'
@@ -75,7 +75,7 @@ For a typical var `MY_NEW_VAR` that's both local + production:
 - **Forgetting `.env.docker.example`.** The container surface fails silently if the var is only in `.env.example`. Symptom: works on host (`uv run` outside docker), breaks inside `make bash`.
 - **Forgetting `render.yaml`.** Local dev works; first prod deploy crashes at startup. Render gives no warning at link time — the var just isn't there.
 - **Reading from `os.environ` in app code.** Settings module is the single read point. Direct env reads bypass the cast + default machinery and produce string values where ints / bools were expected.
-- **Skipping `.github/workflows/main.yml` env blocks.** CI runs `ruff` + `pytest` + `manage.py check --deploy` + `makemigrations --check` — each step has its own `env:` block. Forgetting one means CI fails on push for the env var, not the actual change.
+- **Re-declaring the var inside a job or step in `main.yml`.** The workflow-level `env:` block already reaches every job (`checks`, the sharded `test` matrix, `deploy-staging`). A job- or step-level copy silently shadows it and is one more place to update.
 - **Putting a secret value in `.env.example`.** The example file is committed. Use `test` / `apikey` / a placeholder, never the real value.
 - **Re-using `DJANGO_SETTINGS_MODULE` for app config.** Don't shadow framework env var names.
 - **Adding the var to `base.py` and forgetting that `test.py` needs a deterministic override.** Tests run with `vinta_schedule_api.settings.test` by `pytest.ini` flag; if the var triggers behavior that breaks deterministic tests (e.g. live HTTP), give it a safe test-time default in `test.py`.
@@ -100,6 +100,6 @@ Check each of these in the diff:
 - [ ] `.env.docker.example` updated (matching key, container-surface value).
 - [ ] `vinta_schedule_api/settings/base.py` (or specific file) reads via `decouple.config`.
 - [ ] `render.yaml` envVarGroups updated (or `sync: false` for secrets).
-- [ ] `.github/workflows/main.yml` env blocks for `ruff`, `pre-commit`, `makemigrations`, `check --deploy`, `pytest` all include the new var.
+- [ ] `.github/workflows/main.yml` workflow-level `env:` block includes the new var (once — no job- or step-level copies).
 - [ ] `ai-tools/AGENTS.md` Environment Variables section lists the var.
 - [ ] Consumer code reads `settings.MY_NEW_VAR`, not `os.environ`.
