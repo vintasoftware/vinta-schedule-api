@@ -22,6 +22,8 @@ import pytest
 from freezegun import freeze_time
 from model_bakery import baker
 
+from calendar_integration.constants import CalendarType
+from calendar_integration.models import BlockedTime, Calendar
 from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import make_membership
@@ -188,9 +190,6 @@ class TestApproachingThreshold:
     def test_zero_limit_with_any_usage_reaches_immediately(
         self, service, organization, subscription
     ):
-        from calendar_integration.constants import CalendarType
-        from calendar_integration.models import Calendar
-
         _make_limit(subscription, LimitedResource.RESOURCE_CALENDARS, 0)
         baker.make(
             Calendar,
@@ -214,9 +213,6 @@ class TestApproachingThreshold:
         authored blocked time -- never an availability window -- can already be at
         or past the threshold. Proves the push side picks up the rule change with
         no changes of its own: it reads the same counter enforcement does."""
-        from calendar_integration.constants import CalendarType
-        from calendar_integration.models import BlockedTime, Calendar
-
         _make_limit(subscription, LimitedResource.AVAILABILITY_WINDOWS, 10)
         calendar = baker.make(
             Calendar,
@@ -344,9 +340,6 @@ class TestBestEffort:
         _make_limit(subscription, LimitedResource.ORGANIZATION_MEMBERS, 10)
         _make_limit(subscription, LimitedResource.RESOURCE_CALENDARS, 10)
         _seed_members(organization, 8)
-
-        from calendar_integration.constants import CalendarType
-        from calendar_integration.models import Calendar
 
         for i in range(8):
             baker.make(

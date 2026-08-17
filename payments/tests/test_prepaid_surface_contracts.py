@@ -48,6 +48,7 @@ from payments.models import (
 )
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess, SystemUser
+from users.factories import UserFactory
 from webhooks.constants import WebhookEventType
 from webhooks.models import WebhookConfiguration
 
@@ -131,8 +132,6 @@ def _empty_resource_access_inline_formset_data() -> dict:
 
 
 def _admin_membership(organization: Organization) -> OrganizationMembership:
-    from users.factories import UserFactory
-
     user = UserFactory().create_user()
     return make_membership(
         user=user,

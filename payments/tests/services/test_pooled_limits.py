@@ -25,7 +25,7 @@ from model_bakery import baker
 from organizations.models import Organization, OrganizationMembership
 from payments.billing_constants import BillingState, LimitedResource, LimitKind
 from payments.exceptions import BillingRootCycleError
-from payments.models import BillingPlan, Subscription, SubscriptionPlanLimit
+from payments.models import BillingPlan, Subscription, SubscriptionAddOn, SubscriptionPlanLimit
 from payments.services.entitlement_service import EntitlementService
 
 
@@ -154,8 +154,6 @@ class TestPooledUsage:
         assert service.get_current_usage(child_b, LimitedResource.ORGANIZATION_MEMBERS) == 4
 
     def test_add_on_on_the_root_lifts_the_whole_subtree(self, service, plan):
-        from payments.models import SubscriptionAddOn
-
         root = baker.make(Organization, parent=None, can_invite_organizations=True)
         child = baker.make(Organization, parent=root, can_invite_organizations=False)
         subscription = make_subscription(root, plan, member_limit=5)

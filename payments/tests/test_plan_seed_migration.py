@@ -18,6 +18,8 @@ go red on a flushed database than go green on a synthetic one.
 
 import importlib
 
+from django.apps import apps
+
 import pytest
 
 from payments.billing_constants import Entitlement, LimitedResource, LimitKind
@@ -117,8 +119,6 @@ class TestPlanSeedMigration:
         partial deploy, manual fix, or earlier test run), the seed migration must
         converge — updating the existing plan's fields to their canonical values.
         The same applies to PlanLimit and PlanEntitlement rows."""
-        from django.apps import apps
-
         # Get the seeding function from the migration module
         migration_module = importlib.import_module("payments.migrations.0007_seed_billing_plans")
         seed_billing_plans = migration_module.seed_billing_plans

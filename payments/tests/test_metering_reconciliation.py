@@ -28,7 +28,9 @@ from calendar_integration.models import (
     Calendar,
     CalendarEvent,
     CalendarManagementToken,
+    RecurrenceRule,
 )
+from calendar_integration.recurrence_utils import RecurrenceRuleSplitter
 from calendar_integration.services.calendar_event_service import CalendarEventService
 from calendar_integration.services.calendar_permission_service import (
     DEFAULT_CALENDAR_OWNER_PERMISSIONS,
@@ -901,8 +903,6 @@ class TestBulkModificationWithOffsetTilesTheTimeline:
         *detached* from the original row, or saving either writes over the rule the
         parent is still using.
         """
-        from calendar_integration.recurrence_utils import RecurrenceRuleSplitter
-
         original = weekly_series.recurrence_rule
         assert original is not None, "the fixture series is recurring"
         truncated, continuation = RecurrenceRuleSplitter.split_at_date(
@@ -932,8 +932,6 @@ class TestBulkModificationWithOffsetTilesTheTimeline:
         continuation has a rule row of its own, built from an rrule string, so
         neither side can write over the other.
         """
-        from calendar_integration.models import RecurrenceRule
-
         original_rule_id = weekly_series.recurrence_rule_fk_id
         continuation = self._split_with_offset(event_service, social_account, weekly_series)
         assert continuation is not None
