@@ -5,15 +5,24 @@ persisting to them once that's implemented. What has to hold *now* is the schema
 the two unique constraints that make cycle-close idempotent (the same pattern
 `MeteredOccurrence` and `ProviderWebhookEvent` already use), the two-nulls distinction
 on `BillingPeriodResourceUsage` (`total=None` means "not recorded", `limit_value=None`
-means "unlimited" -- collapsing either into `0` is the bug a reviewer should catch), the
-`for_organizations` pool scope, and that the migration creating both tables reverses
-cleanly.
+means "unlimited" -- collapsing either into `0` is the bug a reviewer should catch), and
+the `for_organizations` pool scope.
+
+There is deliberately **no `MigrationExecutor` test** for `0020_billing_period_summary`.
+It is a pure `CreateModel` with no data step, so both directions are DDL Django
+generates rather than logic written here, and the forward direction is not
+independently observable: `pytest.ini` passes no `--reuse-db`, so the test database is
+built by running every migration on every run. Were `0020` to stop applying, no test in
+the suite would reach its first assertion — an executor test asserting the tables exist
+is asserting its own setup. A migration earns an executor test when it carries a data
+step whose logic cannot be re-derived from the resulting schema; see
+`payments/tests/test_provider_routing_migrations.py` (per-row reverse restoration) and
+`organizations/tests/test_slug_backfill.py` (derivation, collisions, idempotency).
 """
 
 import datetime
 
-from django.db import IntegrityError, connection
-from django.db.migrations.executor import MigrationExecutor
+from django.db import IntegrityError
 
 import pytest
 from model_bakery import baker
@@ -233,53 +242,3 @@ class TestBillingPeriodSummaryQuerySetForOrganizations:
 
     def test_for_organizations_empty_pool_returns_nothing(self, summary: BillingPeriodSummary):
         assert not BillingPeriodSummary.objects.for_organizations([]).exists()
-
-
-@pytest.mark.django_db(transaction=True)
-class TestBillingPeriodSummaryMigration:
-    def test_migration_applies_and_reverses_cleanly(self):
-        """`0020_billing_period_summary` creates both tables in one migration with
-        no data migration. Reversing it must cleanly drop both tables, and
-        re-applying it must recreate them -- proving `make migrate` (forward) and
-        its reverse are both safe.
-
-        The test DB is already migrated to head before this runs, so this drives
-        the executor back one migration and forward again, restoring head in a
-        `finally` so later tests in this worker's database still see the tables
-        regardless of assertion outcome.
-
-        **The restore has to be the whole graph, not this app's head.** Stepping
-        `payments` back to `0019` unapplies every migration in *any* app that
-        depends on a later `payments` one -- `organizations.0027` onwards reach
-        back to `payments.0022` -- and migrating forward to `payments.0020`
-        re-applies only `payments`. That was invisible while the collateral
-        migrations were data-only; `organizations.0030` drops two columns, so
-        leaving it unapplied restores a NOT NULL `role` column no live model
-        writes, and every membership insert in every later test in this
-        worker fails. Restoring to `leaf_nodes()` puts every app back at head.
-
-        `previous` must stay the migration immediately preceding this one in the
-        `payments` graph, not merely the one it was generated against: renumbering
-        this migration to land after an unrelated branch's migrations (which is
-        what happened when `payments` grew 0016-0019 on main) moves that neighbour,
-        and stepping back to a stale name would either fail to resolve or unapply
-        far more than this migration.
-        """
-        app_label = "payments"
-        previous = "0019_backfill_subscription_payment_provider_on_payments"
-
-        executor = MigrationExecutor(connection)
-        try:
-            executor.migrate([(app_label, previous)])
-            executor.loader.build_graph()
-
-            table_names = connection.introspection.table_names()
-            assert "payments_billingperiodsummary" not in table_names
-            assert "payments_billingperiodresourceusage" not in table_names
-        finally:
-            executor.migrate(executor.loader.graph.leaf_nodes())
-            executor.loader.build_graph()
-
-        table_names = connection.introspection.table_names()
-        assert "payments_billingperiodsummary" in table_names
-        assert "payments_billingperiodresourceusage" in table_names

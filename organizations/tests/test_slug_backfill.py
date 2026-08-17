@@ -138,8 +138,12 @@ class TestTheBackfillMigration:
     unconstrained) is the only way to execute the branch.
 
     Restores the schema in ``finally``. This manipulates the shared per-worker
-    test database directly, following the precedent in
-    ``payments/tests/test_billing_period_summary_model.py``.
+    test database directly, so the restore is not optional bookkeeping: a
+    ``finally`` that does not put every app back at head leaves that worker
+    mid-graph, and unrelated tests scheduled after it fail on a schema no live
+    model matches. Only a migration whose *data* step cannot be re-derived from
+    the resulting schema is worth that exposure -- a pure ``CreateModel`` is
+    not, which is why no executor test drives one.
     """
 
     def _insert_unslugged(self, rows: list[tuple[str, str | None]]) -> list[int]:
