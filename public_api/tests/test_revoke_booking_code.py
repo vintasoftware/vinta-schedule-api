@@ -3,6 +3,8 @@
 Covers revokeBookingCode.
 """
 
+from django.utils import timezone
+
 import pytest
 from model_bakery import baker
 from rest_framework.test import APIClient
@@ -177,8 +179,6 @@ class TestRevokeBookingCode:
         system_user, token, auth_service = system_user_with_booking_code_resource
 
         # Create a booking code token
-        from django.utils import timezone
-
         original_revoked_at = timezone.now()
         token_obj = baker.make(
             CalendarManagementToken,

@@ -3,6 +3,8 @@
 import pytest
 from graphql import GraphQLInputObjectType
 
+from public_api.schema import schema
+
 
 def collect_all_graphql_field_names() -> set[str]:
     """Introspect the fully-built Strawberry schema's graphql-core type map.
@@ -10,8 +12,6 @@ def collect_all_graphql_field_names() -> set[str]:
     Enumerates every input and output type and all their fields to ensure
     comprehensive field discovery across all GraphQL types.
     """
-    from public_api.schema import schema
-
     names: set[str] = set()
     for gql_type in schema._schema.type_map.values():
         fields = getattr(gql_type, "fields", None)
@@ -30,8 +30,6 @@ def collect_output_graphql_field_names() -> set[str]:
     about response data, so allowlist guards scan output types only — otherwise
     a legitimate write-only input field would trip the guard.
     """
-    from public_api.schema import schema
-
     names: set[str] = set()
     for gql_type in schema._schema.type_map.values():
         if isinstance(gql_type, GraphQLInputObjectType):
@@ -114,16 +112,12 @@ class TestCanInviteOrganizationsNotExposed:
             )
 
         # The result type it used to return must be gone too — not just unreferenced.
-        from public_api.schema import schema
-
         type_names = {t for t in schema._schema.type_map}
         assert "ValidateReturnUrlResult" not in type_names
 
     def test_redirect_url_replaces_return_url_allowlist(self):
         """redirect_url is reachable on UpdateBrandingInput (the write-only surface
         that replaced return_url_allowlist), naming the field-swap contract."""
-        from public_api.schema import schema
-
         update_branding_input = schema._schema.type_map.get("UpdateBrandingInput")
         assert update_branding_input is not None, (
             "UpdateBrandingInput must still be part of the schema"

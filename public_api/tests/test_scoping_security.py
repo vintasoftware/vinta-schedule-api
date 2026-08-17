@@ -29,6 +29,7 @@ import pytest
 from model_bakery import baker
 from rest_framework.test import APIClient
 
+from calendar_integration.graphql import CalendarGroupSlotGraphQLType, _owner_scoped_calendar_ids
 from calendar_integration.models import (
     AvailableTime,
     AvailableTimeRecurrenceException,
@@ -809,8 +810,6 @@ class TestNestedFieldOwnerScopeSecurity:
         unchanged. Proven by calling the helper-driven resolver directly with a mock
         info whose request lacks the public_api attributes."""
         _rl.return_value = iter([None])
-        from calendar_integration.graphql import _owner_scoped_calendar_ids
-
         org = self._org()
         _ua, _mem_a, cal_a = self._provider_with_calendar(org, "a")
         _make_event(org, cal_a)
@@ -826,8 +825,6 @@ class TestNestedFieldOwnerScopeSecurity:
     def test_org_wide_request_returns_none_from_helper(self, _rl):
         """An org-wide token yields None from the helper (no filtering)."""
         _rl.return_value = iter([None])
-        from calendar_integration.graphql import _owner_scoped_calendar_ids
-
         org = self._org()
         system_user, _token, _auth = self._org_wide_token(org, [PublicAPIResources.CALENDAR_EVENT])
 
@@ -843,8 +840,6 @@ class TestNestedFieldOwnerScopeSecurity:
     def test_scoped_request_returns_owner_set_from_helper(self, _rl):
         """A scoped token yields its owner's calendar-id set from the helper."""
         _rl.return_value = iter([None])
-        from calendar_integration.graphql import _owner_scoped_calendar_ids
-
         org = self._org()
         _ua, mem_a, cal_a = self._provider_with_calendar(org, "a")
         _ub, _mem_b, cal_b = self._provider_with_calendar(org, "b")
@@ -896,8 +891,6 @@ class TestNestedFieldOwnerScopeSecurity:
         calendar; the cross-provider calendar is filtered out. FAILS if the resolver
         is reverted to an unfiltered ``strawberry_django.field()``."""
         _rl.return_value = iter([None])
-        from calendar_integration.graphql import CalendarGroupSlotGraphQLType
-
         org = self._org()
         _ua, mem_a, cal_a = self._provider_with_calendar(org, "a")
         _ub, _mem_b, cal_b = self._provider_with_calendar(org, "b")
@@ -920,8 +913,6 @@ class TestNestedFieldOwnerScopeSecurity:
         """Org-wide token (allowed_ids is None): the resolver returns the FULL
         cross-provider pool unchanged — the no-op regression assertion."""
         _rl.return_value = iter([None])
-        from calendar_integration.graphql import CalendarGroupSlotGraphQLType
-
         org = self._org()
         _ua, _mem_a, cal_a = self._provider_with_calendar(org, "a")
         _ub, _mem_b, cal_b = self._provider_with_calendar(org, "b")

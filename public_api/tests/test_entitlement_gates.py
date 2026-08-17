@@ -37,13 +37,17 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from calendar_integration.constants import CalendarProvider
+from calendar_integration.models import Calendar, CalendarOwnership
+from calendar_integration.services.calendar_service import CalendarService
 from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import make_membership
 from payments.billing_constants import BillingState, Entitlement
 from payments.exceptions import OverLimitError
 from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
+from payments.services.subscription_service import SubscriptionService
 from public_api.models import ResourceAccess
+from users.factories import UserFactory
 
 
 # This module builds its own Subscription rows (OneToOne with Organization), so it
@@ -95,8 +99,6 @@ def _unlimited_organization() -> Organization:
     """An organization on the seeded ``unlimited`` plan -- every entitlement
     enabled. The rollout's own kill switch: this is what "no feature flag" means
     in practice, and every enforcement point carries a test against it."""
-    from payments.services.subscription_service import SubscriptionService
-
     organization = baker.make(Organization, parent=None, can_invite_organizations=False)
     plan = BillingPlan.objects.get(slug="unlimited")
     SubscriptionService().create_subscription_for_organization(organization, plan=plan)
@@ -239,8 +241,6 @@ class TestPartnerApiGate:
 
 
 def _admin_membership(organization: Organization) -> OrganizationMembership:
-    from users.factories import UserFactory
-
     user = UserFactory().create_user()
     return make_membership(
         user=user,
@@ -371,8 +371,6 @@ class TestExternalCalendarMicrosoftGate:
     """
 
     def test_microsoft_account_is_blocked_without_the_entitlement(self):
-        from calendar_integration.services.calendar_service import CalendarService
-
         organization = _organization_with_entitlements(
             **{Entitlement.EXTERNAL_CALENDAR_MICROSOFT: False}
         )
@@ -435,8 +433,6 @@ class TestWriteAdapterProviderGate:
     """
 
     def _setup(self, *, microsoft_enabled: bool):
-        from calendar_integration.models import Calendar, CalendarOwnership
-
         organization = _organization_with_entitlements(
             **{
                 Entitlement.EXTERNAL_CALENDAR_GOOGLE: True,

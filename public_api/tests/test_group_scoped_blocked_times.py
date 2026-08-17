@@ -14,12 +14,15 @@ apply pre-metering).
 import datetime
 import uuid
 
+from django.contrib.auth import get_user_model
+
 import pytest
 from model_bakery import baker
 from rest_framework.test import APIClient
 
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.models import (
+    AvailableTime,
     BlockedTime,
     Calendar,
     CalendarGroup,
@@ -109,8 +112,6 @@ class TestGroupScopedBlockedTimesPublicAPI:
 
         Returns (user, membership, calendar).
         """
-        from django.contrib.auth import get_user_model
-
         user_model = get_user_model()
         unique = uuid.uuid4().hex[:8]
         owner = baker.make(user_model, email=f"owner_{unique}@example.com")
@@ -995,8 +996,6 @@ class TestGroupScopedBlockedTimesPublicAPI:
     def test_existing_group_scoped_availability_windows_query_shape_unchanged(self):
         """Byte-for-byte shape check: the frozen groupScopedAvailabilityWindows
         query's response is unaffected by the group-scoped additions."""
-        from calendar_integration.models import AvailableTime
-
         org = self._setup_org()
         calendar = self._make_calendar(org)
         slot = self._make_group_slot(org, calendar)

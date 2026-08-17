@@ -17,8 +17,10 @@ from __future__ import annotations
 import datetime
 import uuid
 from unittest.mock import patch
+from unittest.mock import patch as _patch
 
 import pytest
+from rest_framework.test import APIClient
 
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.factories import create_booking_policy
@@ -293,10 +295,6 @@ def _group_booking_code(org: Organization, group: CalendarGroup) -> tuple[object
 
 
 def _post_group_code_gated(variables: dict) -> dict:
-    from unittest.mock import patch as _patch
-
-    from rest_framework.test import APIClient
-
     with _patch("public_api.extensions.OrganizationRateLimiter.on_execute") as mock_rl:
         mock_rl.return_value = iter([None])
         client = APIClient()

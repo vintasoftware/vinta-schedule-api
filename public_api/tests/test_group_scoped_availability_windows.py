@@ -13,6 +13,7 @@ existing (frozen) availability query/mutation are byte-for-byte unchanged.
 import datetime
 import uuid
 
+from django.contrib.auth import get_user_model
 from django.utils import timezone as django_timezone
 
 import pytest
@@ -127,8 +128,6 @@ class TestGroupScopedAvailabilityWindowsPublicAPI:
 
         Returns (user, membership, calendar).
         """
-        from django.contrib.auth import get_user_model
-
         user_model = get_user_model()
         unique = uuid.uuid4().hex[:8]
         owner = baker.make(user_model, email=f"owner_{unique}@example.com")

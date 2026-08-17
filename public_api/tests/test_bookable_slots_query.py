@@ -17,6 +17,7 @@ from rest_framework.test import APIClient
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.factories import create_booking_policy
 from calendar_integration.models import AvailableTime, Calendar
+from calendar_integration.services.booking_policy_service import BookingPolicyService
 from calendar_integration.services.calendar_group_service import CalendarGroupService
 from calendar_integration.services.dataclasses import (
     CalendarGroupInputData,
@@ -192,8 +193,6 @@ def _group_client_with_resources(org):
 
 def _make_group(org, *, cal):
     """Create a one-slot CalendarGroup with one unmanaged calendar."""
-    from calendar_integration.services.booking_policy_service import BookingPolicyService
-
     svc = CalendarGroupService(booking_policy_service=BookingPolicyService())
     svc.initialize(organization=org)
     return svc.create_group(
