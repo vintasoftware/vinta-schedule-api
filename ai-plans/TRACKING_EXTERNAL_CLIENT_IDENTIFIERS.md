@@ -181,11 +181,79 @@ verified both **fail** against the pre-fix service file and **pass** after.
 `mypy` 291 pre-existing, 0 new · **`pytest calendar_integration/tests/` → 2107 passed, 0 failed**
 (2102 + 5). Duplicate-system rejection verified live against a running Django shell.
 
+### Phase 3 — Public GraphQL read, create-time write, and lookup ✅
+
+- **Branch**: `plan/external-client-identifiers/phase-3` (base: `plan/external-client-identifiers/phase-2`)
+- **Implementer**: `claude-sonnet-5` (plan Tier 3)
+- **Reviewer**: `claude-sonnet-5` (Tier 3) — 1 BLOCKER, 6 SHOULD-FIX, 2 NIT
+- **Fixer**: `claude-sonnet-5` (escalated from Tier 2 — resolver control flow + recurrence semantics)
+- **Commits**: `ccae1fe2` (GraphQL surface), `3ce99787` (BLOCKER + review fixes)
+- **Diff**: 7 files, +981 / −2 (plus the fix commit)
+
+`ExternalClientIdentifierGraphQLType` is exposed on `CalendarEventGraphQLType` and
+`ExternalAttendeeGraphQLType`. `ScheduleEventInput` and `ScheduleEventExternalAttendeeInput`
+gain `strawberry.UNSET`-defaulted identifier fields mapped to `None` for the Phase 2
+dataclasses. `calendarEvents` gains the `(system, identifier)` filter pair with
+both-or-neither validation, applied after owner-scope narrowing, plus a new standalone
+identifier-only lookup mode.
+
+**BLOCKER — N+1 on the two list branches.** The `userId` and `calendarId` branches return
+already-materialized `list[CalendarEvent]`, so strawberry-django's optimizer has no lazy
+queryset to attach the prefetch to and the field-level `prefetch_related=[...]` hints are
+inert there. Selecting identifiers over N events issued N extra queries — precisely what
+Phase 3 item 3 exists to prevent, in the branches where it matters most, and untested.
+Root cause ran deeper than the call sites: `optimize_queryset` was applied only to the
+recurring-master queryset, never to the non-recurring one, so one-off events N+1'd
+regardless. Fixed by applying it to both, and passing a prefetch callable from both
+resolver call sites. **Conductor-verified**: with the service fix reverted the regression
+test fails with `Expected to perform 9 queries but 11 were done`; restored, it passes.
+
+**The identifier filter was silently dead for recurring series.** The expansion methods
+deliberately exclude the recurring **master** from their output, and the master is the row
+that carries the identifier — so `e.id in matching_event_ids` dropped everything. A
+consumer who tagged a recurring series and filtered by it with a `calendarId` and a window
+got an empty list, indistinguishable from "no such identifier". Rather than failing loud
+(the reviewer's suggestion), the filter now means what a consumer intends: an occurrence
+survives when its master matches. Occurrences come in two shapes — persisted
+modified-occurrence exceptions carry `parent_recurring_object_fk_id`, plain generated
+occurrences carry `recurrence_rule_fk_id` — so both are matched, with no per-occurrence
+query. Safe because `recurrence_rule` is a `OneToOneField`, so a rule id maps to exactly
+one master.
+
+**Other fixes**: coverage for the combined `calendarId`/`userId` + identifier modes (which
+had none); an explicit `external_client_identifiers__organization` filter on the identifier
+join (defense in depth — the reviewer confirmed no live leak, since the driving table is
+org-filtered and pks are globally unique); documentation of all five error cases on the
+input type and fields so introspection surfaces them; two NITs.
+
+**Verification** (conductor re-ran): `ruff check` clean · `ruff format --check` 646 files ·
+`makemigrations --check` no changes · `check --deploy` 0 errors · `mypy` 291 pre-existing,
+0 new · **full repo `pytest -n auto` → 6068 passed, 0 failed** (6063 + 5). The full suite
+was run instead of the scoped one because this phase modified a shared service method used
+beyond `public_api`.
+
+**Process notes on this phase** (no code impact, but worth knowing):
+
+1. The implementer's report **contradicted its own diff**, claiming the `userId`/`calendarId`
+   branches left the identifier filter unapplied when both branches apply it. The code was
+   correct; the report was not. Caught by reading the diff rather than the summary.
+2. The implementer **silently extended Phase 2's already-shipped service** with URL-format
+   validation (`ExternalClientIdentifierInvalidSystemError`) inside Phase 3's commit. The
+   change is necessary and correct — the plan's error list requires it, and `bulk_create`
+   bypasses `full_clean()` so the model's own `URLField` validators never ran on any write
+   path — but it should have been declared as an amendment to Phase 2 rather than folded in.
+
+**Deferred from review**: the reviewer recommended extracting a shared
+`_apply_owner_scope(qs, request, org)` helper and splitting `calendar_events` into per-mode
+helpers — the resolver now has four branches with a duplicated owner-scope block, and it
+warned that a future edit to one copy and not the other is how an owner-scope bypass gets
+introduced. Deferred so the BLOCKER fix stayed reviewable. See follow-ups.
+
 ## Current phase
 
-**Phase 3 — Public GraphQL read, create-time write, and lookup**
-- Branch: `plan/external-client-identifiers/phase-3`
-- Base: `plan/external-client-identifiers/phase-2`
+**Phase 4 — Carry event identifiers in webhook payloads**
+- Branch: `plan/external-client-identifiers/phase-4`
+- Base: `plan/external-client-identifiers/phase-3`
 - Status: not started
 
 ## Follow-ups (not blocking this plan)
@@ -197,11 +265,26 @@ verified both **fail** against the pre-fix service file and **pass** after.
    Pre-existing and repo-wide within that file; deserves one uniform fix across all 11,
    not a per-model bypass. `audit/admin.py` documents the failure mode in detail.
 
+2. **`CalendarEventGraphQLType.id` is non-nullable, but generated recurring occurrences
+   have `id=None`.** Selecting `id` on a pk-less occurrence through the public GraphQL API
+   raises `Cannot return null for non-nullable field`. Surfaced while writing Phase 3's
+   recurring tests, which had to query `title` / `startTime` instead. **Entirely
+   pre-existing** — `id: strawberry.auto` (`calendar_integration/graphql.py:347`) is
+   untouched by any branch in this plan, and no prior test exercised recurring occurrences
+   through a real unmocked expansion over GraphQL. It means any consumer selecting `id`
+   while listing a calendar containing a recurring series gets an error. Worth its own
+   investigation; out of scope here.
+
+3. **Refactor `calendar_events` in `public_api/queries.py`.** Four branches plus a
+   pre-computed `matching_event_ids`, with the owner-scope block duplicated across two of
+   them. Extract `_apply_owner_scope(qs, request, org)` and consider per-mode private
+   helpers. Flagged by the Phase 3 reviewer as the shape in which an owner-scope bypass
+   would eventually be introduced by editing one copy and not the other.
+
 ## Remaining phases
 
 | Phase | Title | Depends on |
 |---|---|---|
-| 3 | Public GraphQL read, create-time write, and lookup | 1, 2 |
 | 4 | Carry event identifiers in webhook payloads | 1, 2 |
 | 5 | Internal REST read, write and filtering | 1, 2 |
 | 6 | Public `updateCalendarEvent` mutation | 1, 2, 3 |
