@@ -1,11 +1,11 @@
 import datetime
-import enum
 
 from django.http import HttpRequest
 
 import strawberry
 
-from organizations.models import Organization, OrganizationRole
+from organizations.models import Organization
+from organizations.permission_catalog import GROUP_ORGANIZATION_MEMBER
 from public_api.models import SystemUser
 
 
@@ -36,33 +36,36 @@ class CreateOrganizationResult:
     organization: OrganizationResult
 
 
-@strawberry.enum
-class OrgRole(enum.Enum):
-    """Role a user can hold within an organization.
-
-    Mirrors organizations.models.OrganizationRole. Keep in sync when new roles are added.
-    """
-
-    MEMBER = OrganizationRole.MEMBER
-    ADMIN = OrganizationRole.ADMIN
-
-    def to_model_role(self) -> str:
-        """Return the matching OrganizationRole value string."""
-        return self.value
-
-
 @strawberry.input
 class CreateInvitationInput:
     """Input for creating a pending organization invitation (reseller bundle).
 
     organizationId must be the acting org or a descendant of it.
     sendEmail defaults to True.
-    role defaults to MEMBER — admin invitations must be explicit.
+    groups defaults to ["organization_member"] — an invitation that confers any
+    capability must name the group that carries it explicitly.
+
+    Replaces the former ``role: OrgRole`` field, and the ``OrgRole`` enum went
+    with it: authorization is answered from permissions, which are carried by
+    groups, so a group name is the only thing left worth naming on a write.
+    Accepted values are validated in
+    ``organizations.permission_catalog.role_for_invitation_groups`` rather than
+    by a GraphQL enum, so adding a group is not a schema-breaking change for
+    clients that do not use it.
     """
 
     user_email: str
     organization_id: strawberry.ID
-    role: OrgRole = OrgRole.MEMBER
+    groups: list[str] = strawberry.field(
+        default_factory=lambda: [GROUP_ORGANIZATION_MEMBER],
+        description=(
+            "Groups the invited user's membership receives on acceptance. "
+            "'organization_member' (the default) confers no capability; "
+            "'organization_admin' confers every capability. "
+            "'organization_billing_owner' cannot be assigned at invitation "
+            "time -- assign it after acceptance."
+        ),
+    )
     send_email: bool = True
 
 

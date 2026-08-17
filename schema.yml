@@ -4432,8 +4432,8 @@ paths:
                 $ref: '#/components/schemas/OrganizationBranding'
           description: ''
         '403':
-          description: Organization has a parent or lacks the entitlement; or not
-            an admin.
+          description: Organization has a parent, lacks the entitlement, or lacks
+            branding permission.
         '404':
           description: Branding not yet configured
     put:
@@ -4492,8 +4492,8 @@ paths:
         '400':
           description: Invalid input (color format, URL validation)
         '403':
-          description: Organization has a parent or lacks the entitlement; or not
-            an admin
+          description: Organization has a parent, lacks the entitlement, or lacks
+            branding permission
     patch:
       operationId: branding_partial_update
       description: |-
@@ -4543,15 +4543,15 @@ paths:
         '400':
           description: Invalid input (color format, URL validation)
         '403':
-          description: Organization has a parent or lacks the entitlement; or not
-            an admin
+          description: Organization has a parent, lacks the entitlement, or lacks
+            branding permission
         '404':
           description: Branding not yet configured
   /branding/logo-upload-params/:
     post:
       operationId: branding_logo_upload_params_create
       description: |-
-        Signs a ``branding_logos`` S3 upload for the acting organization's admin.
+        Signs a ``branding_logos`` S3 upload for a caller with branding capability.
 
         The shipped ``django-s3direct`` signing view (``POST
         /s3direct/get_upload_params/``) is a plain Django view authenticated only
@@ -4562,7 +4562,7 @@ paths:
         reusing the same ``sign_branding_logo_upload`` signing helper so the S3
         key/credential logic has one implementation.
 
-        Gated on the branding **eligibility** check
+        Gated on ``organizations.manage_branding`` and the branding **eligibility** check
         (``organizations.permissions.check_branding_read_eligibility`` -- parentless
         AND entitled) rather than on the write gate. The two admit the same set now
         that the write gate's slug condition is retired, but the split is kept: the
@@ -4608,8 +4608,8 @@ paths:
         '400':
           description: Disallowed content type or file size
         '403':
-          description: Organization has a parent or lacks the entitlement; or not
-            an admin
+          description: Organization has a parent, lacks the entitlement, or lacks
+            branding permission
   /branding/logo/{org_slug}/:
     get:
       operationId: branding_logo_retrieve
@@ -11538,7 +11538,8 @@ paths:
         - `deactivate`: POST to disable a member (prevent self-deactivation and
           protect the last active admin).
         - `reactivate`: POST to re-enable a member.
-        - `update-role`: POST to change a member's role (protect the last active admin).
+        - `groups`: POST to set a member's groups, and with them their capabilities
+          (protects the last member who can manage members).
       parameters:
       - in: header
         name: X-Organization-Id
@@ -11607,7 +11608,8 @@ paths:
         - `deactivate`: POST to disable a member (prevent self-deactivation and
           protect the last active admin).
         - `reactivate`: POST to re-enable a member.
-        - `update-role`: POST to change a member's role (protect the last active admin).
+        - `groups`: POST to set a member's groups, and with them their capabilities
+          (protects the last member who can manage members).
       parameters:
       - in: header
         name: X-Organization-Id
@@ -11683,7 +11685,8 @@ paths:
         - `deactivate`: POST to disable a member (prevent self-deactivation and
           protect the last active admin).
         - `reactivate`: POST to re-enable a member.
-        - `update-role`: POST to change a member's role (protect the last active admin).
+        - `groups`: POST to set a member's groups, and with them their capabilities
+          (protects the last member who can manage members).
       parameters:
       - in: header
         name: X-Organization-Id
@@ -11725,7 +11728,8 @@ paths:
         - `deactivate`: POST to disable a member (prevent self-deactivation and
           protect the last active admin).
         - `reactivate`: POST to re-enable a member.
-        - `update-role`: POST to change a member's role (protect the last active admin).
+        - `groups`: POST to set a member's groups, and with them their capabilities
+          (protects the last member who can manage members).
       parameters:
       - in: header
         name: X-Organization-Id
@@ -11882,6 +11886,165 @@ paths:
           description: Not an admin
         '404':
           description: Member not found or cross-org
+  /organization-members/{user_id}/groups/:
+    post:
+      operationId: organization_members_groups_create
+      description: |-
+        Replace a member's groups, and with them the capabilities they hold.
+
+        Replaces the former ``update-role`` action. The request names *groups*
+        -- the one write where a group name is the natural input, since
+        assigning a group is the act of choosing one -- and the response
+        reports the resulting *permissions*, which is what every authorization
+        check actually reads.
+
+        Guards:
+
+        - **The organization keeps at least one member who can manage
+          members.** Restated from "cannot demote the last active admin": the
+          rule counts by capability (``organizations.manage_members``) rather
+          than by the ``role`` column, so it holds for any future group that
+          carries the capability and does not depend on a representation the
+          API no longer exposes.
+        - A restricted organization may not write at all. See ``deactivate``
+          above for why the check is here rather than in
+          ``OrganizationService``.
+
+        Idempotency: assigning the groups a member already holds is a no-op
+        success, including for the sole administrator re-assigning
+        ``organization_admin`` to themselves -- the guard fires on *losing* the
+        capability, not on writing it again.
+      summary: Set an organization member's groups
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: user_id
+        schema:
+          type: string
+        required: true
+      tags:
+      - organization-members
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssignMembershipGroups'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/AssignMembershipGroups'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/AssignMembershipGroups'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationMembership'
+          description: ''
+        '400':
+          description: Unknown group name, empty group list, or the assignment would
+            leave the organization with nobody who can manage members
+        '403':
+          description: Not an admin
+        '404':
+          description: Member not found or cross-org
+  /organization-members/{user_id}/groups{format}:
+    post:
+      operationId: organization_members_groups_formatted_create
+      description: |-
+        Replace a member's groups, and with them the capabilities they hold.
+
+        Replaces the former ``update-role`` action. The request names *groups*
+        -- the one write where a group name is the natural input, since
+        assigning a group is the act of choosing one -- and the response
+        reports the resulting *permissions*, which is what every authorization
+        check actually reads.
+
+        Guards:
+
+        - **The organization keeps at least one member who can manage
+          members.** Restated from "cannot demote the last active admin": the
+          rule counts by capability (``organizations.manage_members``) rather
+          than by the ``role`` column, so it holds for any future group that
+          carries the capability and does not depend on a representation the
+          API no longer exposes.
+        - A restricted organization may not write at all. See ``deactivate``
+          above for why the check is here rather than in
+          ``OrganizationService``.
+
+        Idempotency: assigning the groups a member already holds is a no-op
+        success, including for the sole administrator re-assigning
+        ``organization_admin`` to themselves -- the guard fires on *losing* the
+        capability, not on writing it again.
+      summary: Set an organization member's groups
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: user_id
+        schema:
+          type: string
+        required: true
+      tags:
+      - organization-members
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssignMembershipGroups'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/AssignMembershipGroups'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/AssignMembershipGroups'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrganizationMembership'
+          description: ''
+        '400':
+          description: Unknown group name, empty group list, or the assignment would
+            leave the organization with nobody who can manage members
+        '403':
+          description: Not an admin
+        '404':
+          description: Member not found or cross-org
   /organization-members/{user_id}/reactivate/:
     post:
       operationId: organization_members_reactivate_create
@@ -11997,127 +12160,6 @@ paths:
           description: ''
         '402':
           description: Organization is at its seat limit
-        '403':
-          description: Not an admin
-        '404':
-          description: Member not found or cross-org
-  /organization-members/{user_id}/update-role/:
-    post:
-      operationId: organization_members_update_role_create
-      description: |-
-        Update a member's role (member <-> admin).
-
-        Guards:
-        - Cannot demote the last active admin (org lockout prevention).
-
-        Idempotency: setting the role to its current value is a no-op success.
-      summary: Update an organization member's role
-      parameters:
-      - in: header
-        name: X-Organization-Id
-        schema:
-          type: string
-        description: Selects the active organization for this request. Optional for
-          callers that belong to exactly one active organization — the single membership
-          is resolved implicitly. **Required** when the caller has two or more active
-          memberships; omitting it in that case returns **400**. If the header names
-          an organization the caller is not an active member of, the server returns
-          **403**.
-      - in: path
-        name: user_id
-        schema:
-          type: string
-        required: true
-      tags:
-      - organization-members
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/UpdateMembershipRole'
-          application/x-www-form-urlencoded:
-            schema:
-              $ref: '#/components/schemas/UpdateMembershipRole'
-          multipart/form-data:
-            schema:
-              $ref: '#/components/schemas/UpdateMembershipRole'
-        required: true
-      security:
-      - jwtAuth: []
-      - cookieAuth: []
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/OrganizationMembership'
-          description: ''
-        '400':
-          description: Invalid role or would demote the last active admin
-        '403':
-          description: Not an admin
-        '404':
-          description: Member not found or cross-org
-  /organization-members/{user_id}/update-role{format}:
-    post:
-      operationId: organization_members_update_role_formatted_create
-      description: |-
-        Update a member's role (member <-> admin).
-
-        Guards:
-        - Cannot demote the last active admin (org lockout prevention).
-
-        Idempotency: setting the role to its current value is a no-op success.
-      summary: Update an organization member's role
-      parameters:
-      - in: header
-        name: X-Organization-Id
-        schema:
-          type: string
-        description: Selects the active organization for this request. Optional for
-          callers that belong to exactly one active organization — the single membership
-          is resolved implicitly. **Required** when the caller has two or more active
-          memberships; omitting it in that case returns **400**. If the header names
-          an organization the caller is not an active member of, the server returns
-          **403**.
-      - in: path
-        name: format
-        schema:
-          type: string
-          enum:
-          - .json
-        required: true
-      - in: path
-        name: user_id
-        schema:
-          type: string
-        required: true
-      tags:
-      - organization-members
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/UpdateMembershipRole'
-          application/x-www-form-urlencoded:
-            schema:
-              $ref: '#/components/schemas/UpdateMembershipRole'
-          multipart/form-data:
-            schema:
-              $ref: '#/components/schemas/UpdateMembershipRole'
-        required: true
-      security:
-      - jwtAuth: []
-      - cookieAuth: []
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/OrganizationMembership'
-          description: ''
-        '400':
-          description: Invalid role or would demote the last active admin
         '403':
           description: Not an admin
         '404':
@@ -12814,11 +12856,11 @@ paths:
     get:
       operationId: organizations_current_retrieve
       description: |-
-        Return the caller's organization and role.
+        Return the caller's organization and the capabilities they hold in it.
 
         HTTP 200 — the user is onboarded (has a membership).
         HTTP 404 — the user is gated (no membership yet).
-      summary: Current organization + role for the authenticated user
+      summary: Current organization + permissions for the authenticated user
       parameters:
       - in: header
         name: X-Organization-Id
@@ -12848,11 +12890,11 @@ paths:
     get:
       operationId: organizations_current_formatted_retrieve
       description: |-
-        Return the caller's organization and role.
+        Return the caller's organization and the capabilities they hold in it.
 
         HTTP 200 — the user is onboarded (has a membership).
         HTTP 404 — the user is gated (no membership yet).
-      summary: Current organization + role for the authenticated user
+      summary: Current organization + permissions for the authenticated user
       parameters:
       - in: header
         name: X-Organization-Id
@@ -16274,6 +16316,34 @@ components:
       - idempotency_key
       - quantity
       - resource_key
+    AssignMembershipGroups:
+      type: object
+      description: |-
+        Request serializer for ``POST /organization-members/{user_id}/groups/``.
+
+        The one place in the API where a *group* name is accepted rather than a
+        permission: assigning a group is the act of choosing one, so there is
+        nothing to abstract. Reads report capabilities instead (``permissions``
+        above), which is why a later per-organization group layer would not be a
+        second client break.
+
+        ``ChoiceField`` over the seeded names rather than a free ``CharField``: an
+        unknown group must be a 400 that names the acceptable values, not a silent
+        no-op. The list may not be empty -- "no groups at all" is not a state any
+        write path produces; a member with no capabilities is
+        ``["organization_member"]``.
+      properties:
+        groups:
+          type: array
+          items:
+            $ref: '#/components/schemas/GroupsEnum'
+          description: Groups to assign to this membership, replacing the ones it
+            holds. ``organization_admin`` carries every capability; ``organization_billing_owner``
+            carries ``payments.manage_billing``; ``organization_member`` carries none
+            and is what a member with no capabilities holds. Naming a capability group
+            alongside ``organization_member`` stores the capability group alone.
+      required:
+      - groups
     AvailableResourcesEnum:
       enum:
       - calendar_event
@@ -17746,18 +17816,26 @@ components:
       description: |-
         Read-only serializer for the caller's current organization membership.
 
-        Returns the membership role and the nested organization so the frontend
-        can distinguish between an onboarded user and a gated (membership-less) user.
+        Returns the caller's resolved permissions and the nested organization so the
+        frontend can distinguish between an onboarded user and a gated
+        (membership-less) user, and can gate its own UI on the same capability
+        strings the server enforces.
       properties:
-        role:
-          allOf:
-          - $ref: '#/components/schemas/RoleEnum'
+        permissions:
+          type: array
+          items:
+            type: string
+          description: 'Capabilities this membership confers in this organization,
+            as ``app_label.codename`` strings (for example ``organizations.manage_members``).
+            Resolved from the membership''s groups and direct grants -- the same source
+            every server-side authorization check reads -- so a client can gate UI
+            on the exact string the API will enforce. Only organization-scoped capabilities
+            appear: a global Django permission or superuser status grants nothing
+            here, because it grants nothing in this organization either. An inactive
+            membership resolves an empty list. The set of possible values grows over
+            time; treat an unrecognised entry as an unknown capability rather than
+            an error.'
           readOnly: true
-          description: |-
-            Role the user holds in this organization. Admins can manage organization-scoped resources (e.g. CalendarGroups) regardless of direct ownership.
-
-            * `member` - Member
-            * `admin` - Admin
         organization:
           type: object
           additionalProperties: {}
@@ -17766,23 +17844,17 @@ components:
         can_manage_branding:
           type: boolean
           description: |-
-            Whether the membership's organization is branding-eligible.
+            Whether this membership can manage branding.
 
-            Computed as parentless-and-entitled. It once deliberately excluded a
-            third, slug condition (Organization Auth-Area Branding plan, Phase 4
-            Capability signal guiding decision) so an organization missing only a
-            slug still saw the branding page; that condition is now retired, so the
-            exclusion is vacuous and the two checks coincide. Shares
-            ``organizations.permissions.is_branding_eligible_organization`` rather
-            than restating the two-condition check, so this tracks the same gate
-            that governs ``GET /branding/`` (see
-            ``OrganizationBrandingView._check_branding_read_gate``) rather than
-            the write gate.
+            Computed from ``organizations.manage_branding`` plus parentless-and-
+            entitled eligibility. Uses
+            ``organizations.permissions.is_branding_eligible_organization`` for
+            that eligibility, matching ``GET /branding/`` and logo-upload signing.
           readOnly: true
       required:
       - can_manage_branding
       - organization
-      - role
+      - permissions
     DocumentTypeEnum:
       enum:
       - privacy_policy
@@ -18515,6 +18587,16 @@ components:
       - calendar
       - cap
       - period
+    GroupsEnum:
+      enum:
+      - organization_admin
+      - organization_billing_owner
+      - organization_member
+      type: string
+      description: |-
+        * `organization_admin` - organization_admin
+        * `organization_billing_owner` - organization_billing_owner
+        * `organization_member` - organization_member
     LedgerCalendar:
       type: object
       description: |-
@@ -18666,7 +18748,8 @@ components:
         Read-only serializer for the caller's active organization memberships.
 
         Used by ``GET /organizations/mine/`` to power the frontend org switcher.
-        Returns a list of ``{organization: {id, name}, role, can_manage_branding}``
+        Returns a list of
+        ``{organization: {id, name}, permissions, can_manage_branding}``
         entries — one per active membership — without requiring the
         ``X-Organization-Id`` header.
       properties:
@@ -18674,26 +18757,31 @@ components:
           allOf:
           - $ref: '#/components/schemas/OrganizationBrief'
           readOnly: true
-        role:
-          allOf:
-          - $ref: '#/components/schemas/RoleEnum'
+        permissions:
+          type: array
+          items:
+            type: string
+          description: 'Capabilities this membership confers in this organization,
+            as ``app_label.codename`` strings (for example ``organizations.manage_members``).
+            Resolved from the membership''s groups and direct grants -- the same source
+            every server-side authorization check reads -- so a client can gate UI
+            on the exact string the API will enforce. Only organization-scoped capabilities
+            appear: a global Django permission or superuser status grants nothing
+            here, because it grants nothing in this organization either. An inactive
+            membership resolves an empty list. The set of possible values grows over
+            time; treat an unrecognised entry as an unknown capability rather than
+            an error.'
           readOnly: true
-          description: |-
-            Role the user holds in this organization. Admins can manage organization-scoped resources (e.g. CalendarGroups) regardless of direct ownership.
-
-            * `member` - Member
-            * `admin` - Admin
         can_manage_branding:
           type: boolean
           description: |-
-            Whether this membership's organization is branding-eligible
-            (parentless-and-entitled) -- see
+            Whether this membership can manage branding: its
+            ``organizations.manage_branding`` capability plus the parentless,
+            entitled organization gate -- see
             ``CurrentMembershipSerializer.get_can_manage_branding`` for the full
-            rationale. Computed per-membership (not per-role): a non-admin
-            member's entry reports the same organization-level capability as an
-            admin's, matching the read gate's own admin-agnostic eligibility
-            check -- role-based write authorization is enforced separately by
-            ``IsOrganizationAdmin`` on the branding endpoints themselves.
+            rationale. Computed per membership, so a permitted member and an
+            unpermitted member in the same eligible organization receive different
+            values.
 
             Reads from the batch ``_MyMembershipListSerializer`` precomputes on the
             shared context when serializing a list (the ``many=True`` path this
@@ -18706,7 +18794,7 @@ components:
       required:
       - can_manage_branding
       - organization
-      - role
+      - permissions
     Notification:
       type: object
       description: |-
@@ -19026,8 +19114,8 @@ components:
       description: |-
         Read-only serializer for listing and retrieving organization members.
 
-        Exposes membership role, active status, and flattened user information
-        (email, first_name, last_name) for the admin datatable.
+        Exposes each member's resolved capabilities, active status, and flattened
+        user information (email, first_name, last_name) for the admin datatable.
       properties:
         user_id:
           type: integer
@@ -19035,15 +19123,21 @@ components:
         organization_id:
           type: integer
           readOnly: true
-        role:
-          allOf:
-          - $ref: '#/components/schemas/RoleEnum'
+        permissions:
+          type: array
+          items:
+            type: string
+          description: 'Capabilities this membership confers in this organization,
+            as ``app_label.codename`` strings (for example ``organizations.manage_members``).
+            Resolved from the membership''s groups and direct grants -- the same source
+            every server-side authorization check reads -- so a client can gate UI
+            on the exact string the API will enforce. Only organization-scoped capabilities
+            appear: a global Django permission or superuser status grants nothing
+            here, because it grants nothing in this organization either. An inactive
+            membership resolves an empty list. The set of possible values grows over
+            time; treat an unrecognised entry as an unknown capability rather than
+            an error.'
           readOnly: true
-          description: |-
-            Role the user holds in this organization. Admins can manage organization-scoped resources (e.g. CalendarGroups) regardless of direct ownership.
-
-            * `member` - Member
-            * `admin` - Admin
         is_active:
           type: boolean
           readOnly: true
@@ -19065,7 +19159,7 @@ components:
       required:
       - is_active
       - organization_id
-      - role
+      - permissions
       - user_email
       - user_first_name
       - user_id
@@ -19084,8 +19178,13 @@ components:
         Membership identity for a calendar owner.
 
         A membership has no scalar id (it is identified by the ``(user_id,
-        organization_id)`` pair), so the representation exposes that pair plus the
-        membership ``role``.
+        organization_id)`` pair), so the representation exposes that pair.
+
+        It used to carry the membership's ``role`` as well. That left with the rest
+        of ``role``'s API surface: authorization is answered from permissions, and
+        this identity representation is not the place to publish a member's
+        capabilities -- ``GET /organization-members/`` is. Consumers that read
+        ``role`` here to decide what to render should read ``permissions`` there.
       properties:
         user_id:
           type: integer
@@ -19093,12 +19192,8 @@ components:
         organization_id:
           type: integer
           readOnly: true
-        role:
-          type: string
-          readOnly: true
       required:
       - organization_id
-      - role
       - user_id
     PaginatedAvailableTimeList:
       type: object
@@ -20702,14 +20797,6 @@ components:
       required:
       - idempotency_key
       - payment_token
-    RoleEnum:
-      enum:
-      - member
-      - admin
-      type: string
-      description: |-
-        * `member` - Member
-        * `admin` - Admin
     ServiceAccountRead:
       type: object
       description: |-
@@ -21076,14 +21163,6 @@ components:
       - reason
       - reason_description
       - start_time
-    UpdateMembershipRole:
-      type: object
-      description: Request serializer for updating an organization member's role.
-      properties:
-        role:
-          $ref: '#/components/schemas/RoleEnum'
-      required:
-      - role
     UsageByOrganization:
       type: object
       description: |-

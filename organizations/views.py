@@ -20,6 +20,7 @@ from rest_framework.mixins import ListModelMixin, RetrieveModelMixin
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.viewsets import GenericViewSet
+from vinta_orgs.querysets import split_permission_label
 
 from audit.constants import AuditAction
 from audit.diff import compute_diff
@@ -33,6 +34,7 @@ from common.utils.view_utils import (
     ReadOnlyVintaScheduleModelViewSet,
     TenantScopedViewMixin,
 )
+from organizations.authorization import has_organization_permission
 from organizations.branding_logo import (
     BRANDING_LOGO_KEY_PREFIX,
     DEFAULT_LOGO_ASSET_PATH,
@@ -65,9 +67,16 @@ from organizations.models import (
     OrganizationRole,
     resolve_branding_for_display,
 )
+from organizations.permission_catalog import (
+    MANAGE_MEMBERS,
+    membership_state_for_groups,
+    permissions_for_groups,
+)
 from organizations.permissions import (
     BRANDING_GATE_EXCEPTIONS,
     BrandingWriteGateReason,
+    CanManageBranding,
+    CanManageOrganization,
     IsOrganizationAdmin,
     OrganizationInvitationPermission,
     OrganizationManagementPermission,
@@ -76,6 +85,7 @@ from organizations.permissions import (
 )
 from organizations.serializers import (
     AcceptInvitationSerializer,
+    AssignMembershipGroupsSerializer,
     CurrentMembershipSerializer,
     GoogleServiceAccountWriteSerializer,
     MyMembershipSerializer,
@@ -87,7 +97,6 @@ from organizations.serializers import (
     OrganizationSerializer,
     ServiceAccountReadSerializer,
     ServiceAccountWriteSerializer,
-    UpdateMembershipRoleSerializer,
 )
 from organizations.services import OrganizationService, sync_membership_groups_from_role
 from payments.services.entitlement_service import EntitlementService
@@ -121,7 +130,8 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
     def get_permissions(self):
         """
         Override permissions per action:
-        - update / partial_update: admin-only (IsOrganizationAdmin).  An admin
+        - update / partial_update: require ``organizations.manage_organization``.
+          A permitted member
           can only reach their own org because get_queryset is scoped by
           membership, so cross-org attempts return 404.
         - All other actions keep the class-level defaults (IsAuthenticated +
@@ -131,7 +141,7 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
           membership check.
         """
         if self.action in ("update", "partial_update"):
-            return [IsAuthenticated(), IsOrganizationAdmin()]
+            return [IsAuthenticated(), CanManageOrganization()]
         return super().get_permissions()
 
     @inject
@@ -314,7 +324,7 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
         return Response(return_serializer.data)
 
     @extend_schema(
-        summary="Current organization + role for the authenticated user",
+        summary="Current organization + permissions for the authenticated user",
         responses={
             200: CurrentMembershipSerializer,
             404: OpenApiResponse(description="No organization membership (gated user)"),
@@ -322,7 +332,7 @@ class OrganizationViewSet(NoListVintaScheduleModelViewSet):
     )
     @action(detail=False, methods=["get"], url_path="current", permission_classes=[IsAuthenticated])
     def current(self, request):
-        """Return the caller's organization and role.
+        """Return the caller's organization and the capabilities they hold in it.
 
         HTTP 200 — the user is onboarded (has a membership).
         HTTP 404 — the user is gated (no membership yet).
@@ -537,7 +547,7 @@ class ServiceAccountViewSet(
         """
         membership = request.organization_membership
         if membership is None:
-            # IsOrganizationAdmin already guards this; defensive fallback.
+            # The admin permission already guards this; defensive fallback.
             return Response(
                 {"detail": "No active organization membership."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -722,7 +732,8 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
     - `deactivate`: POST to disable a member (prevent self-deactivation and
       protect the last active admin).
     - `reactivate`: POST to re-enable a member.
-    - `update-role`: POST to change a member's role (protect the last active admin).
+    - `groups`: POST to set a member's groups, and with them their capabilities
+      (protects the last member who can manage members).
     """
 
     queryset = OrganizationMembership.objects.select_related("user", "user__profile")
@@ -799,20 +810,20 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
         # guard above blocks the only path that could drop the org to zero admins
         # (requester attempting to deactivate themselves). Retained to protect any future
         # non-self deactivation paths (e.g., bulk action or service-layer call).
-        if target.is_admin:
-            org_id = target.organization_id
-            other_active_admin_count = (
-                OrganizationMembership.objects.filter(
-                    organization_id=org_id,
-                    role=target.role,  # Same role filter (ADMIN)
-                    is_active=True,
-                )
-                # Composite PK (user, organization): exclude the target by its user_id
-                # within the already org-scoped filter.
-                .exclude(user_id=target.user_id)
-                .count()
-            )
-            if other_active_admin_count == 0:
+        #
+        # Counts by capability (``organizations.manage_members``), the same way
+        # ``assign_groups`` below does, rather than by the ``role`` column: a
+        # direct per-membership grant of the permission makes its holder a
+        # remaining administrator just as much as the ``organization_admin``
+        # group does, and the two guards must agree on what "the last admin"
+        # means.
+        if has_organization_permission(target.user, MANAGE_MEMBERS, target.organization):
+            other_holders_of_manage_members = OrganizationMembership.objects.other_members_holding(
+                organization_id=target.organization_id,
+                excluding_user_id=target.user_id,
+                permission=MANAGE_MEMBERS,
+            ).count()
+            if other_holders_of_manage_members == 0:
                 raise ValidationError(
                     detail="Cannot deactivate the last active admin of the organization."
                 )
@@ -853,66 +864,107 @@ class OrganizationMembershipViewSet(ReadOnlyVintaScheduleModelViewSet):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     @extend_schema(
-        summary="Update an organization member's role",
-        request=UpdateMembershipRoleSerializer,
+        summary="Set an organization member's groups",
+        request=AssignMembershipGroupsSerializer,
         responses={
             200: OrganizationMembershipSerializer,
-            400: OpenApiResponse(description="Invalid role or would demote the last active admin"),
+            400: OpenApiResponse(
+                description=(
+                    "Unknown group name, empty group list, or the assignment would "
+                    "leave the organization with nobody who can manage members"
+                )
+            ),
             403: OpenApiResponse(description="Not an admin"),
             404: OpenApiResponse(description="Member not found or cross-org"),
         },
     )
-    @action(detail=True, methods=["post"], url_path="update-role")
-    def update_role(self, request, user_id=None):
-        """Update a member's role (member <-> admin).
+    @action(detail=True, methods=["post"], url_path="groups")
+    def assign_groups(self, request, user_id=None):
+        """Replace a member's groups, and with them the capabilities they hold.
+
+        Replaces the former ``update-role`` action. The request names *groups*
+        -- the one write where a group name is the natural input, since
+        assigning a group is the act of choosing one -- and the response
+        reports the resulting *permissions*, which is what every authorization
+        check actually reads.
 
         Guards:
-        - Cannot demote the last active admin (org lockout prevention).
 
-        Idempotency: setting the role to its current value is a no-op success.
+        - **The organization keeps at least one member who can manage
+          members.** Restated from "cannot demote the last active admin": the
+          rule counts by capability (``organizations.manage_members``) rather
+          than by the ``role`` column, so it holds for any future group that
+          carries the capability and does not depend on a representation the
+          API no longer exposes.
+        - A restricted organization may not write at all. See ``deactivate``
+          above for why the check is here rather than in
+          ``OrganizationService``.
+
+        Idempotency: assigning the groups a member already holds is a no-op
+        success, including for the sole administrator re-assigning
+        ``organization_admin`` to themselves -- the guard fires on *losing* the
+        capability, not on writing it again.
         """
         target = (
             self.get_object()
         )  # Permission checks via IsOrganizationAdmin.has_object_permission
 
-        # A restricted organization may not write, including changing a member's
-        # role. See ``deactivate`` above for why this is checked directly here
-        # rather than in ``OrganizationService``.
         self.organization_service.entitlement_service.check_not_restricted(target.organization)
 
-        serializer = UpdateMembershipRoleSerializer(data=request.data)
+        serializer = AssignMembershipGroupsSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        new_role = serializer.validated_data["role"]
+        requested_groups = serializer.validated_data["groups"]
 
-        # Guard: prevent demoting the last active admin (org lockout prevention).
-        if target.is_admin and new_role != OrganizationRole.ADMIN:
-            org_id = target.organization_id
-            other_active_admin_count = (
-                OrganizationMembership.objects.filter(
-                    organization_id=org_id,
-                    role=OrganizationRole.ADMIN,
-                    is_active=True,
-                )
-                # Composite PK (user, organization): exclude the target by its user_id
-                # within the already org-scoped filter.
-                .exclude(user_id=target.user_id)
-                .count()
-            )
-            if other_active_admin_count == 0:
+        # Guard: the organization must keep somebody who can manage members.
+        #
+        # Asked in three parts, in the cheap-first order: does the assignment
+        # *remove* the capability (no query at all), did the target actually
+        # hold it (resolved the same way every permission class resolves it),
+        # and is anybody else left holding it.
+        #
+        # The direct-grant half is spelled from ``MANAGE_MEMBERS`` rather than from a
+        # hand-written ``codename`` / ``app_label`` pair: a rename of the permission
+        # would leave a literal pair matching nothing, and a clause that matches nothing
+        # here reads as "the target holds no direct grant" -- silently widening the
+        # refusal to admins who do hold one.
+        manage_members_app_label, manage_members_codename = split_permission_label(MANAGE_MEMBERS)
+        keeps_manage_members = (
+            MANAGE_MEMBERS in permissions_for_groups(requested_groups)
+            or target.permissions.filter(
+                codename=manage_members_codename,
+                content_type__app_label=manage_members_app_label,
+            ).exists()
+        )
+        if not keeps_manage_members and has_organization_permission(
+            target.user, MANAGE_MEMBERS, target.organization
+        ):
+            others_who_can_manage_members = OrganizationMembership.objects.other_members_holding(
+                organization_id=target.organization_id,
+                excluding_user_id=target.user_id,
+                permission=MANAGE_MEMBERS,
+            ).count()
+            if others_who_can_manage_members == 0:
                 raise ValidationError(
-                    detail="Cannot demote the last active admin of the organization."
+                    detail=(
+                        "Cannot remove the last active member who can manage members "
+                        "from the organization."
+                    )
                 )
 
-        # Update (idempotent: no-op if role unchanged)
-        target.role = new_role
-        target.save(update_fields=["role"])
-        # Dual-write, deleted in Phase 6 -- see
-        # ``organizations.services.sync_membership_groups_from_role``. This is
-        # the only live path that *changes* a role rather than setting it at
-        # creation, so it is the one place where the two representations could
-        # drift apart in opposite directions (a demoted admin keeping
-        # ``organization_admin``). Phase 5 replaces this endpoint with a
-        # group-assignment one and the call goes with it.
+        # TEMPORARY DUAL-WRITE, deleted in Phase 6 with the two columns. The
+        # write goes through ``role`` / ``is_billing_owner`` and then back out
+        # through ``sync_membership_groups_from_role`` rather than straight to
+        # ``target.groups``, for two reasons: the columns are still read
+        # outside the permission classes (``public_api.scoping``,
+        # ``calendar_integration``), so leaving them stale would authorize the
+        # member differently depending on which reader asked; and routing
+        # through the same shim every other membership write uses is what
+        # *canonicalises* the stored group set, so no request body can persist
+        # a combination the shim would later overwrite.
+        is_admin, is_billing_owner = membership_state_for_groups(requested_groups)
+        target.role = OrganizationRole.ADMIN if is_admin else OrganizationRole.MEMBER
+        target.is_billing_owner = is_billing_owner
+        target.save(update_fields=["role", "is_billing_owner"])
         sync_membership_groups_from_role(target)
 
         # Return the updated membership
@@ -1004,15 +1056,15 @@ class AcceptInvitationView(generics.CreateAPIView):
 
 @extend_schema(tags=["Branding"])
 class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
-    """Admin-only REST endpoint for managing a parentless, entitled
+    """Capability-gated REST endpoint for managing a parentless, entitled
     organization's branding.
 
     Write gate (Organization Auth-Area Branding plan, Phase 3): PUT/PATCH
     require the acting org to be parentless and hold the
     ``white_label_branding`` entitlement
     (``organizations.permissions.evaluate_branding_write_gate`` -- its third,
-    slug-set condition is retired, see that function), AND the caller must be
-    an org admin (``IsOrganizationAdmin`` permission). Replaces the earlier
+    slug-set condition is retired, see that function), AND the caller must hold
+    ``organizations.manage_branding``. Replaces the earlier
     reseller-only gate (``is_reseller()``) -- any paying, parentless
     organization can now manage its own branding, not just resellers. Each of
     the two failure conditions raises its own ``PermissionDenied`` subclass
@@ -1040,7 +1092,7 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
     or makes organization writable.
 
     Tenant-scoping: ``TenantScopedViewMixin`` resolves ``X-Organization-Id``
-    before any handler runs, so multi-org admins always operate on the
+    before any handler runs, so multi-org callers always operate on the
     header-named org. Without the header a multi-org caller receives 400;
     a header naming a non-member org receives 403 — identical to every other
     org-scoped endpoint. ``OrganizationScopedAPIViewMixin
@@ -1050,7 +1102,7 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
     tuple, so full 400/403 enforcement runs on every HTTP method.
     """
 
-    permission_classes = (IsOrganizationAdmin,)
+    permission_classes = (CanManageBranding,)
     serializer_class = OrganizationBrandingSerializer
 
     @inject
@@ -1076,7 +1128,7 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
         user = self.request.user
         # Narrows AbstractBaseUser | AnonymousUser -> AbstractBaseUser for mypy
         # (matches the pattern in ServiceAccountViewSet.get_queryset above);
-        # IsOrganizationAdmin already blocks anonymous callers before this runs.
+        # CanManageBranding already blocks anonymous callers before this runs.
         if not user.is_authenticated:
             raise PermissionDenied("No active organization membership.")
         membership = cast("Any", self.request).organization_membership
@@ -1120,7 +1172,7 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
         responses={
             200: OrganizationBrandingSerializer,
             403: OpenApiResponse(
-                description="Organization has a parent or lacks the entitlement; or not an admin."
+                description="Organization has a parent, lacks the entitlement, or lacks branding permission."
             ),
             404: OpenApiResponse(description="Branding not yet configured"),
         },
@@ -1145,7 +1197,7 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
             200: OrganizationBrandingSerializer,
             400: OpenApiResponse(description="Invalid input (color format, URL validation)"),
             403: OpenApiResponse(
-                description="Organization has a parent or lacks the entitlement; or not an admin"
+                description="Organization has a parent, lacks the entitlement, or lacks branding permission"
             ),
         },
     )
@@ -1193,7 +1245,7 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
             200: OrganizationBrandingSerializer,
             400: OpenApiResponse(description="Invalid input (color format, URL validation)"),
             403: OpenApiResponse(
-                description="Organization has a parent or lacks the entitlement; or not an admin"
+                description="Organization has a parent, lacks the entitlement, or lacks branding permission"
             ),
             404: OpenApiResponse(description="Branding not yet configured"),
         },
@@ -1262,7 +1314,7 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
 
 @extend_schema(tags=["Branding"])
 class OrganizationBrandingLogoUploadParamsView(TenantScopedViewMixin, views.APIView):
-    """Signs a ``branding_logos`` S3 upload for the acting organization's admin.
+    """Signs a ``branding_logos`` S3 upload for a caller with branding capability.
 
     The shipped ``django-s3direct`` signing view (``POST
     /s3direct/get_upload_params/``) is a plain Django view authenticated only
@@ -1273,7 +1325,7 @@ class OrganizationBrandingLogoUploadParamsView(TenantScopedViewMixin, views.APIV
     reusing the same ``sign_branding_logo_upload`` signing helper so the S3
     key/credential logic has one implementation.
 
-    Gated on the branding **eligibility** check
+    Gated on ``organizations.manage_branding`` and the branding **eligibility** check
     (``organizations.permissions.check_branding_read_eligibility`` -- parentless
     AND entitled) rather than on the write gate. The two admit the same set now
     that the write gate's slug condition is retired, but the split is kept: the
@@ -1282,7 +1334,7 @@ class OrganizationBrandingLogoUploadParamsView(TenantScopedViewMixin, views.APIV
     Matches ``OrganizationBrandingView.get``'s read gate.
     """
 
-    permission_classes = (IsOrganizationAdmin,)
+    permission_classes = (CanManageBranding,)
 
     @extend_schema(
         summary="Sign a branding logo upload",
@@ -1291,7 +1343,7 @@ class OrganizationBrandingLogoUploadParamsView(TenantScopedViewMixin, views.APIV
             200: OrganizationBrandingLogoUploadParamsSerializer,
             400: OpenApiResponse(description="Disallowed content type or file size"),
             403: OpenApiResponse(
-                description="Organization has a parent or lacks the entitlement; or not an admin"
+                description="Organization has a parent, lacks the entitlement, or lacks branding permission"
             ),
         },
     )

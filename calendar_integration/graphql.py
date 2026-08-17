@@ -141,13 +141,15 @@ class OwnershipMembershipGraphQLType:
     """Membership identity for a calendar owner.
 
     A membership has no scalar id (it is identified by the ``(user_id,
-    organization_id)`` pair), so the external representation exposes that pair
-    plus the membership ``role``.
+    organization_id)`` pair), so the external representation exposes that pair.
+
+    ``role`` was removed with the rest of ``role``'s API surface -- see
+    ``calendar_integration.serializers.OwnershipMembershipSerializer`` for the
+    reasoning and for where a client reads capabilities instead.
     """
 
     user_id: int
     organization_id: int
-    role: str
 
 
 @strawberry_django.type(CalendarOwnership)
@@ -157,7 +159,7 @@ class CalendarOwnershipGraphQLType:
     ``id`` is the ownership row primary key, not the user id.
     ``is_default`` indicates whether this is the default calendar for the owning user.
     ``membership`` exposes the owning membership identity ``{ user_id,
-    organization_id, role }``. It is ``None`` for orphan ownership rows whose
+    organization_id }``. It is ``None`` for orphan ownership rows whose
     ``(user, organization)`` pair has no active membership.
     """
 
@@ -173,7 +175,6 @@ class CalendarOwnershipGraphQLType:
         return OwnershipMembershipGraphQLType(
             user_id=membership.user_id,
             organization_id=membership.organization_id,
-            role=membership.role,
         )
 
 
@@ -240,13 +241,14 @@ class AttendanceMembershipGraphQLType:
     """Membership identity for an internal event attendee.
 
     A membership has no scalar id (it is identified by the ``(user_id,
-    organization_id)`` pair), so the external representation exposes that pair
-    plus the membership ``role``.
+    organization_id)`` pair), so the external representation exposes that pair.
+
+    ``role`` was removed with the rest of ``role``'s API surface -- see
+    ``calendar_integration.serializers.OwnershipMembershipSerializer``.
     """
 
     user_id: int
     organization_id: int
-    role: str
 
 
 @strawberry_django.type(EventAttendance)
@@ -254,7 +256,7 @@ class EventAttendanceGraphQLType:
     """GraphQL type for an EventAttendance through-model row.
 
     ``membership`` exposes the attendee membership identity ``{ user_id,
-    organization_id, role }``. It is ``None`` for orphan attendances whose
+    organization_id }``. It is ``None`` for orphan attendances whose
     ``(user, organization)`` pair has no matching ``OrganizationMembership``.
     """
 
@@ -272,7 +274,6 @@ class EventAttendanceGraphQLType:
         return AttendanceMembershipGraphQLType(
             user_id=membership.user_id,
             organization_id=membership.organization_id,
-            role=membership.role,
         )
 
 
@@ -360,7 +361,6 @@ class CalendarEventGraphQLType:
             AttendanceMembershipGraphQLType(
                 user_id=attendance.membership.user_id,
                 organization_id=attendance.membership.organization_id,
-                role=attendance.membership.role,
             )
             for attendance in self.attendances.all()  # type: ignore[attr-defined]
             if attendance.membership is not None
@@ -1067,11 +1067,13 @@ class ResolvedByMembershipGraphQLType:
 
     A membership has no scalar id (it is identified by the ``(user_id,
     organization_id)`` pair), so the external representation exposes that pair.
+
+    ``role`` was removed with the rest of ``role``'s API surface -- see
+    ``calendar_integration.serializers.OwnershipMembershipSerializer``.
     """
 
     user_id: int
     organization_id: int
-    role: str
 
 
 @strawberry_django.type(ExternalEventChangeRequest)
@@ -1113,7 +1115,6 @@ class ExternalEventChangeRequestGraphQLType:
         return ResolvedByMembershipGraphQLType(
             user_id=membership.user_id,
             organization_id=membership.organization_id,
-            role=membership.role,
         )
 
 

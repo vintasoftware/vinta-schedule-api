@@ -467,7 +467,8 @@ class TestCreateInvitationMutation:
         assert data["data"]["createInvitation"]["token"] is None
         assert data["data"]["createInvitation"]["inviteUrl"] is None
 
-        # Verify invite_user_to_organization was called with MEMBER role (default)
+        # Verify invite_user_to_organization was called with MEMBER role -- the
+        # translation of the ``groups`` default, ``["organization_member"]``.
         mock_invite.assert_called_once()
         call_kwargs = mock_invite.call_args.kwargs
         assert call_kwargs["email"] == user_email
@@ -475,8 +476,8 @@ class TestCreateInvitationMutation:
         assert call_kwargs["role"] == OrganizationRole.MEMBER
         assert call_kwargs["invited_by"] is None
 
-    def test_create_invitation_with_explicit_admin_role(self):
-        """A reseller creates an invitation with an explicit ADMIN role."""
+    def test_create_invitation_with_explicit_admin_group(self):
+        """A reseller creates an invitation naming the ``organization_admin`` group."""
         reseller_org, system_user, token, auth_service = self._setup_reseller()
         child_org = baker.make(Organization, name="Child Org", parent=reseller_org)
 
@@ -505,7 +506,7 @@ class TestCreateInvitationMutation:
                     "input": {
                         "userEmail": user_email,
                         "organizationId": str(child_org.id),
-                        "role": "ADMIN",
+                        "groups": ["organization_admin"],
                     }
                 },
             )

@@ -1,25 +1,26 @@
-# Phase 3 of billing plans and limits: seed the plan catalog. There is no feature
-# flag in this rollout — the `unlimited` plan *is* the kill switch. Every organization
-# is placed on it (a later phase) so enforcement code can run everywhere from day one
-# without being able to block anyone until an org is deliberately migrated onto a real
-# plan. `free`'s limit values and entitlement grants are placeholders; product
-# supplies the real numbers before any organization is actually moved onto it
-# (deferred, tracked as its own phase).
-#
-# Why the numbers below are literals rather than an import from
-# `payments/billing_plans_catalog.py`. A data migration has to keep meaning what it
-# meant when it was written (`AGENTS.md` on data migrations re-deriving their logic),
-# and `free`'s ceilings are explicitly placeholders awaiting product: the first time
-# somebody supplies the real numbers, an import here would retroactively change what
-# this migration seeded on every fresh `migrate`. The live catalog is a *separate*
-# module with a separate owner (`seed_billing_plans` there) -- it is free to move, this
-# is not, and a divergence between the two is the intended outcome rather than a bug to
-# be pinned shut. What the *current* catalog must satisfy is asserted against the live
-# code in `payments/tests/test_plan_catalog.py`; what this migration wrote is asserted
-# in `payments/tests/test_plan_seed_migration.py`, which drives this module.
-from decimal import Decimal
+"""The **live** billing plan catalog, and the seeder that writes it.
 
-from django.db import migrations
+Head state, deliberately separate from
+``payments/migrations/0007_seed_billing_plans.py``. That migration carries its own
+frozen copy of these numbers and does not import this module: a data migration has to
+keep meaning what it meant when it was written (``AGENTS.md`` on data migrations
+re-deriving their logic), and ``free``'s ceilings below are explicitly *placeholders*
+awaiting product. The day somebody supplies the real numbers, an import in ``0007``
+would retroactively change what every fresh ``migrate`` seeds. Two functions, two
+owners: this one is free to move, ``0007`` is not, and the two drifting apart is the
+intended outcome rather than a bug.
+
+Who reads this module:
+
+* ``payments/tests/billing_fixtures.reseed_billing_plans`` and the root
+  ``conftest.py``, to put the catalog back after a ``transaction=True`` test's flush
+  destroyed the rows ``0007`` wrote (see that fixture for the ordering rules).
+* Nothing in production. Production gets its catalog from ``0007`` and, from then on,
+  from the admin.
+"""
+
+from decimal import Decimal
+from typing import TypedDict
 
 from payments.billing_constants import Entitlement, LimitedResource, LimitKind
 
@@ -33,9 +34,16 @@ FREE_PLAN_SLUG = "free"
 # an unlimited plan.
 POSTPAID_RESOURCES = {LimitedResource.EVENT_OCCURRENCES}
 
+
+class PlanSetting(TypedDict):
+    limit_value: int
+    overage_unit_price: Decimal | None
+
+
 # Placeholder ceilings for the `free` plan. Real numbers come from product before any
-# organization is actually rolled onto `free` (see the plan's Open Questions).
-FREE_PLAN_LIMITS: dict[str, dict] = {
+# organization is actually rolled onto `free` (see the plan's Open Questions). Editing
+# them here is safe and expected; `0007`'s copy stays where it is.
+FREE_PLAN_LIMITS: dict[str, PlanSetting] = {
     LimitedResource.ORGANIZATION_MEMBERS: {"limit_value": 5, "overage_unit_price": None},
     LimitedResource.RESOURCE_CALENDARS: {"limit_value": 3, "overage_unit_price": None},
     LimitedResource.CALENDAR_GROUPS: {"limit_value": 2, "overage_unit_price": None},
@@ -57,10 +65,20 @@ FREE_PLAN_ENTITLEMENTS: dict[str, bool] = {
 }
 
 
-def seed_billing_plans(apps, schema_editor):
-    BillingPlan = apps.get_model("payments", "BillingPlan")
-    PlanLimit = apps.get_model("payments", "PlanLimit")
-    PlanEntitlement = apps.get_model("payments", "PlanEntitlement")
+def seed_billing_plans() -> None:
+    """Create (or converge) the seeded plans from **this module's live catalog**.
+
+    ``update_or_create`` throughout, so it is idempotent and repairs a partially
+    destroyed catalog rather than raising on the half that survived.
+
+    Every ``LimitedResource`` member gets a ``PlanLimit`` row on every plan --
+    ``SubscriptionService.assert_plan_is_complete`` refuses a plan that omits one,
+    because an absent row reads as *unlimited* rather than as "not included".
+
+    Runs against the live models on purpose: no historical-model injection seam, since
+    no migration calls this. ``0007`` has its own copy.
+    """
+    from payments.models import BillingPlan, PlanEntitlement, PlanLimit
 
     unlimited_plan, _created = BillingPlan.objects.update_or_create(
         slug=UNLIMITED_PLAN_SLUG,
@@ -123,30 +141,3 @@ def seed_billing_plans(apps, schema_editor):
             entitlement_key=entitlement_key,
             defaults={"is_enabled": is_enabled},
         )
-
-
-def unseed_billing_plans(apps, schema_editor):
-    """Reverse: delete the two seeded plans (and, via CASCADE, their limits and
-    entitlements).
-
-    Safe only if no `Subscription` still references these plans — true at this
-    phase (3) on its own, since organizations are not placed on a plan until
-    Phase 4. From Phase 4 (`payments.0009`) onward, `Subscription.plan` is
-    `on_delete=PROTECT`, so reversing the full chain to before this migration
-    requires reversing `0009` first — its own reverse deletes exactly the
-    `Subscription` rows *it* created (tagged `meta.backfilled_by`), which is what
-    keeps this delete free of a `ProtectedError`. Reversing `0007` directly while
-    any organically-created (non-backfilled) `Subscription` still references
-    `unlimited` or `free` still raises `ProtectedError`, by design."""
-    BillingPlan = apps.get_model("payments", "BillingPlan")
-    BillingPlan.objects.filter(slug__in=[UNLIMITED_PLAN_SLUG, FREE_PLAN_SLUG]).delete()
-
-
-class Migration(migrations.Migration):
-    dependencies = [
-        ("payments", "0006_planentitlement_planlimit"),
-    ]
-
-    operations = [
-        migrations.RunPython(seed_billing_plans, reverse_code=unseed_billing_plans),
-    ]

@@ -151,11 +151,14 @@ def test_attendance_serializer_membership_field_shape(organization, event):
     assert "user" not in EventAttendanceSerializer.Meta.fields
     assert "membership" in EventAttendanceSerializer.Meta.fields
 
+    # ``role`` left this representation in Phase 5 of the vinta-django-orgs
+    # migration, with the rest of ``role``'s API surface. What a member may do
+    # is reported by ``GET /organization-members/`` as ``permissions``; this
+    # field is an identity, not an authorization statement.
     data = OwnershipMembershipSerializer(attendance.membership).data
     assert data == {
         "user_id": user.id,
         "organization_id": organization.id,
-        "role": OrganizationRole.ADMIN,
     }
 
 
@@ -174,7 +177,7 @@ def test_attendance_serializer_orphan_membership_is_null(organization, event):
 
 
 # ---------------------------------------------------------------------------
-# GraphQL type — membership identity { user_id, organization_id, role }
+# GraphQL type — membership identity { user_id, organization_id }
 # ---------------------------------------------------------------------------
 
 
@@ -210,7 +213,7 @@ def test_attendance_graphql_membership_resolver(organization, event):
     assert resolved is not None
     assert resolved.user_id == user.id
     assert resolved.organization_id == organization.id
-    assert resolved.role == OrganizationRole.MEMBER
+    assert not hasattr(resolved, "role")
 
     orphan_attendance = _make_attendance(event, organization, membership_user_id=None)
     orphan_attendance = (

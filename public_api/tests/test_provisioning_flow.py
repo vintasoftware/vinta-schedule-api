@@ -303,7 +303,7 @@ class TestCreateInvitationProvisioning:
         After the chain:
         - A pending OrganizationInvitation exists in the child org addressed to the user email.
           (The invitation itself creates the user.)
-        - The invitation has the requested role.
+        - The invitation records the state the requested group implies.
         - No stray org was created.
         """
         from di_core.containers import container
@@ -354,7 +354,7 @@ class TestCreateInvitationProvisioning:
                             "input": {
                                 "userEmail": invited_email,
                                 "organizationId": str(child_org_id),
-                                "role": "MEMBER",
+                                "groups": ["organization_member"],
                             }
                         },
                     },

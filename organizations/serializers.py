@@ -5,6 +5,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 
 from dependency_injector.wiring import Provide, inject
 from rest_framework import serializers
+from vinta_orgs.authorization import resolve_membership_permissions
 
 from calendar_integration.models import GoogleCalendarServiceAccount
 from common.utils.serializer_utils import VirtualModelSerializer
@@ -15,8 +16,8 @@ from organizations.models import (
     OrganizationBranding,
     OrganizationInvitation,
     OrganizationMembership,
-    OrganizationRole,
 )
+from organizations.permission_catalog import GROUP_PERMISSIONS, MANAGE_BRANDING
 from organizations.permissions import (
     is_branding_eligible_organization,
     is_branding_eligible_organizations,
@@ -318,40 +319,100 @@ class OrganizationInvitationSerializer(VirtualModelSerializer):
         return invitation
 
 
+#: Context key under which a list serializer stashes the whole page's resolved
+#: permissions, so each child reads its own entry instead of resolving alone.
+_PERMISSIONS_CONTEXT_KEY = "_permissions_by_membership_pk"
+
+#: The description every ``permissions`` field publishes. One string so the
+#: three membership representations cannot document the same field differently.
+_PERMISSIONS_HELP_TEXT = (
+    "Capabilities this membership confers in this organization, as "
+    "``app_label.codename`` strings (for example "
+    "``organizations.manage_members``). Resolved from the membership's groups "
+    "and direct grants -- the same source every server-side authorization "
+    "check reads -- so a client can gate UI on the exact string the API will "
+    "enforce. Only organization-scoped capabilities appear: a global Django "
+    "permission or superuser status grants nothing here, because it grants "
+    "nothing in this organization either. An inactive membership resolves an "
+    "empty list. The set of possible values grows over time; treat an "
+    "unrecognised entry as an unknown capability rather than an error."
+)
+
+
+def _resolved_permissions(
+    serializer: serializers.Serializer, membership: OrganizationMembership
+) -> list[str]:
+    """This membership's resolved permission labels, from the page batch if there is one.
+
+    ``resolve_membership_permissions`` costs a constant number of queries for
+    the whole list it is handed, so the list serializers below resolve the page
+    up front and leave the result in the shared context. The fallback is the
+    same call for a single row, which is what a serializer instantiated
+    directly against one membership needs.
+    """
+    batch = serializer.context.get(_PERMISSIONS_CONTEXT_KEY)
+    if batch is not None and membership.pk in batch:
+        return batch[membership.pk]
+    return resolve_membership_permissions([membership]).get(membership.pk, [])
+
+
+class _MembershipPermissionsListSerializer(serializers.ListSerializer):
+    """Resolves ``permissions`` for a whole page of memberships in one batch.
+
+    Without this each row would resolve its own permissions, which is one
+    membership lookup plus two permission queries *per row*. See
+    ``vinta_orgs.authorization.resolve_membership_permissions``.
+    """
+
+    def to_representation(self, data):
+        iterable = data.all() if hasattr(data, "all") else data
+        memberships = list(iterable)
+        self.context[_PERMISSIONS_CONTEXT_KEY] = resolve_membership_permissions(memberships)
+        return super().to_representation(memberships)
+
+
 class CurrentMembershipSerializer(serializers.ModelSerializer):
     """Read-only serializer for the caller's current organization membership.
 
-    Returns the membership role and the nested organization so the frontend
-    can distinguish between an onboarded user and a gated (membership-less) user.
+    Returns the caller's resolved permissions and the nested organization so the
+    frontend can distinguish between an onboarded user and a gated
+    (membership-less) user, and can gate its own UI on the same capability
+    strings the server enforces.
     """
 
     organization = serializers.SerializerMethodField()
     can_manage_branding = serializers.SerializerMethodField()
+    # Declared explicitly, which also *shadows* the model's own ``permissions``
+    # many-to-many (the package's per-membership direct grant). Deliberate: the
+    # direct grant is one of the two inputs to the value published here, and
+    # publishing the raw relation instead would under-report every membership
+    # whose capabilities come from a group -- which is all of them.
+    permissions = serializers.SerializerMethodField(help_text=_PERMISSIONS_HELP_TEXT)
 
     class Meta:
         model = OrganizationMembership
-        fields = ("role", "organization", "can_manage_branding")
-        read_only_fields = ("role", "organization", "can_manage_branding")
+        fields = ("permissions", "organization", "can_manage_branding")
+        read_only_fields = ("permissions", "organization", "can_manage_branding")
 
     def get_organization(self, obj: OrganizationMembership) -> dict:
         """Serialize the related organization using OrganizationSerializer."""
         return OrganizationSerializer(obj.organization, context=self.context).data  # type: ignore[call-arg]
 
-    def get_can_manage_branding(self, obj: OrganizationMembership) -> bool:
-        """Whether the membership's organization is branding-eligible.
+    def get_permissions(self, obj: OrganizationMembership) -> list[str]:
+        """The capabilities this membership confers -- see ``_PERMISSIONS_HELP_TEXT``."""
+        return _resolved_permissions(self, obj)
 
-        Computed as parentless-and-entitled. It once deliberately excluded a
-        third, slug condition (Organization Auth-Area Branding plan, Phase 4
-        Capability signal guiding decision) so an organization missing only a
-        slug still saw the branding page; that condition is now retired, so the
-        exclusion is vacuous and the two checks coincide. Shares
-        ``organizations.permissions.is_branding_eligible_organization`` rather
-        than restating the two-condition check, so this tracks the same gate
-        that governs ``GET /branding/`` (see
-        ``OrganizationBrandingView._check_branding_read_gate``) rather than
-        the write gate.
+    def get_can_manage_branding(self, obj: OrganizationMembership) -> bool:
+        """Whether this membership can manage branding.
+
+        Computed from ``organizations.manage_branding`` plus parentless-and-
+        entitled eligibility. Uses
+        ``organizations.permissions.is_branding_eligible_organization`` for
+        that eligibility, matching ``GET /branding/`` and logo-upload signing.
         """
-        return is_branding_eligible_organization(obj.organization)
+        return MANAGE_BRANDING in _resolved_permissions(
+            self, obj
+        ) and is_branding_eligible_organization(obj.organization)
 
 
 class OrganizationBriefSerializer(serializers.ModelSerializer):
@@ -381,7 +442,7 @@ class OrganizationBriefSerializer(serializers.ModelSerializer):
         }
 
 
-class _MyMembershipListSerializer(serializers.ListSerializer):
+class _MyMembershipListSerializer(_MembershipPermissionsListSerializer):
     """Batches ``can_manage_branding`` for the whole membership list up front.
 
     ``GET /organizations/mine/`` lists every active membership for the caller,
@@ -393,6 +454,9 @@ class _MyMembershipListSerializer(serializers.ListSerializer):
     ``is_branding_eligible_organizations`` once, in two queries total, and
     stashes the result on the shared serializer context so each child's
     ``get_can_manage_branding`` reads from it instead of asking individually.
+
+    The ``permissions`` half of the same problem is solved one level up, in
+    ``_MembershipPermissionsListSerializer``.
     """
 
     def to_representation(self, data):
@@ -410,29 +474,40 @@ class MyMembershipSerializer(serializers.ModelSerializer):
     """Read-only serializer for the caller's active organization memberships.
 
     Used by ``GET /organizations/mine/`` to power the frontend org switcher.
-    Returns a list of ``{organization: {id, name}, role, can_manage_branding}``
+    Returns a list of
+    ``{organization: {id, name}, permissions, can_manage_branding}``
     entries — one per active membership — without requiring the
     ``X-Organization-Id`` header.
     """
 
     organization = OrganizationBriefSerializer(read_only=True)
     can_manage_branding = serializers.SerializerMethodField()
+    # See ``CurrentMembershipSerializer.permissions`` for why this shadows the
+    # model's own ``permissions`` relation.
+    permissions = serializers.SerializerMethodField(help_text=_PERMISSIONS_HELP_TEXT)
 
     class Meta:
         model = OrganizationMembership
-        fields = ("organization", "role", "can_manage_branding")
-        read_only_fields = ("organization", "role", "can_manage_branding")
+        fields = ("organization", "permissions", "can_manage_branding")
+        read_only_fields = ("organization", "permissions", "can_manage_branding")
         list_serializer_class = _MyMembershipListSerializer
 
+    def get_permissions(self, obj: OrganizationMembership) -> list[str]:
+        """The capabilities this membership confers -- see ``_PERMISSIONS_HELP_TEXT``.
+
+        Per membership, so a caller who administers one organization and is a
+        plain member of another sees two different lists in the same response.
+        """
+        return _resolved_permissions(self, obj)
+
     def get_can_manage_branding(self, obj: OrganizationMembership) -> bool:
-        """Whether this membership's organization is branding-eligible
-        (parentless-and-entitled) -- see
+        """Whether this membership can manage branding: its
+        ``organizations.manage_branding`` capability plus the parentless,
+        entitled organization gate -- see
         ``CurrentMembershipSerializer.get_can_manage_branding`` for the full
-        rationale. Computed per-membership (not per-role): a non-admin
-        member's entry reports the same organization-level capability as an
-        admin's, matching the read gate's own admin-agnostic eligibility
-        check -- role-based write authorization is enforced separately by
-        ``IsOrganizationAdmin`` on the branding endpoints themselves.
+        rationale. Computed per membership, so a permitted member and an
+        unpermitted member in the same eligible organization receive different
+        values.
 
         Reads from the batch ``_MyMembershipListSerializer`` precomputes on the
         shared context when serializing a list (the ``many=True`` path this
@@ -443,22 +518,29 @@ class MyMembershipSerializer(serializers.ModelSerializer):
         for that one organization anyway.
         """
         batch = self.context.get("_can_manage_branding_by_organization_pk")
-        if batch is not None:
-            return batch.get(obj.organization_id, False)
-        return is_branding_eligible_organization(obj.organization)
+        eligible = (
+            batch.get(obj.organization_id, False)
+            if batch is not None
+            else is_branding_eligible_organization(obj.organization)
+        )
+        return MANAGE_BRANDING in _resolved_permissions(self, obj) and eligible
 
 
 class OrganizationMembershipSerializer(serializers.ModelSerializer):
     """
     Read-only serializer for listing and retrieving organization members.
 
-    Exposes membership role, active status, and flattened user information
-    (email, first_name, last_name) for the admin datatable.
+    Exposes each member's resolved capabilities, active status, and flattened
+    user information (email, first_name, last_name) for the admin datatable.
     """
 
     user_email = serializers.EmailField(source="user.email", read_only=True)
     user_first_name = serializers.CharField(source="user.profile.first_name", read_only=True)
     user_last_name = serializers.CharField(source="user.profile.last_name", read_only=True)
+    # See ``CurrentMembershipSerializer.permissions`` for why this shadows the
+    # model's own ``permissions`` relation. Here it is also what tells an admin
+    # datatable which rows are administrators, now that ``role`` is gone.
+    permissions = serializers.SerializerMethodField(help_text=_PERMISSIONS_HELP_TEXT)
 
     class Meta:
         model = OrganizationMembership
@@ -469,19 +551,48 @@ class OrganizationMembershipSerializer(serializers.ModelSerializer):
         fields = (
             "user_id",
             "organization_id",
-            "role",
+            "permissions",
             "is_active",
             "user_email",
             "user_first_name",
             "user_last_name",
         )
         read_only_fields = fields
+        list_serializer_class = _MembershipPermissionsListSerializer
+
+    def get_permissions(self, obj: OrganizationMembership) -> list[str]:
+        """The capabilities this membership confers -- see ``_PERMISSIONS_HELP_TEXT``."""
+        return _resolved_permissions(self, obj)
 
 
-class UpdateMembershipRoleSerializer(serializers.Serializer):
-    """Request serializer for updating an organization member's role."""
+class AssignMembershipGroupsSerializer(serializers.Serializer):
+    """Request serializer for ``POST /organization-members/{user_id}/groups/``.
 
-    role = serializers.ChoiceField(choices=OrganizationRole.choices)
+    The one place in the API where a *group* name is accepted rather than a
+    permission: assigning a group is the act of choosing one, so there is
+    nothing to abstract. Reads report capabilities instead (``permissions``
+    above), which is why a later per-organization group layer would not be a
+    second client break.
+
+    ``ChoiceField`` over the seeded names rather than a free ``CharField``: an
+    unknown group must be a 400 that names the acceptable values, not a silent
+    no-op. The list may not be empty -- "no groups at all" is not a state any
+    write path produces; a member with no capabilities is
+    ``["organization_member"]``.
+    """
+
+    groups = serializers.ListField(
+        child=serializers.ChoiceField(choices=sorted(GROUP_PERMISSIONS)),
+        allow_empty=False,
+        help_text=(
+            "Groups to assign to this membership, replacing the ones it holds. "
+            "``organization_admin`` carries every capability; "
+            "``organization_billing_owner`` carries ``payments.manage_billing``; "
+            "``organization_member`` carries none and is what a member with no "
+            "capabilities holds. Naming a capability group alongside "
+            "``organization_member`` stores the capability group alone."
+        ),
+    )
 
 
 class AcceptInvitationSerializer(serializers.Serializer):

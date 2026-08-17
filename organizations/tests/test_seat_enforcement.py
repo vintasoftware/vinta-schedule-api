@@ -41,6 +41,7 @@ from payments.models import (
     SubscriptionPlanLimit,
 )
 from payments.services.entitlement_service import EntitlementService
+from payments.tests.billing_fixtures import reseed_billing_plans
 from public_api.models import ResourceAccess
 from public_api.services import PublicAPIAuthService
 
@@ -122,6 +123,11 @@ def _organization_with_seat_limit(
             _quantity=existing_active_members,
         )
     return organization
+
+
+@pytest.fixture(autouse=True)
+def _ensure_billing_plans(db):
+    reseed_billing_plans()
 
 
 @pytest.mark.django_db

@@ -1,7 +1,10 @@
 import datetime
 import json
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Permission
+from django.contrib.contenttypes.models import ContentType
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
@@ -11,6 +14,7 @@ import pytest
 from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
+from s3direct.utils import AWSCredentials
 
 from organizations.models import (
     Organization,
@@ -179,6 +183,92 @@ def reseller_org_member(reseller_org):
 @pytest.mark.django_db
 class TestOrganizationBrandingViewSet:
     """Test suite for OrganizationBrandingViewSet REST endpoints."""
+
+    @pytest.fixture(autouse=True)
+    def _s3_upload_settings(self, settings):
+        """Only the accepted-upload cases below reach the presigned-URL step --
+        the rejection cases raise before ever needing a bucket/region/endpoint or
+        credentials, so they're unaffected by this fixture."""
+
+        settings.AWS_STORAGE_BUCKET_NAME = "test-bucket"
+        settings.AWS_S3_REGION_NAME = "us-east-1"
+        settings.AWS_S3_ENDPOINT_URL = "https://s3.us-east-1.amazonaws.com"
+        with patch(
+            "organizations.branding_logo.get_aws_credentials",
+            return_value=AWSCredentials(token=None, secret_key="secret", access_key="AKIATEST"),
+        ):
+            yield
+
+    @pytest.mark.parametrize(
+        ("method", "expected_status"),
+        [
+            ("get", status.HTTP_404_NOT_FOUND),
+            ("put", status.HTTP_201_CREATED),
+            ("patch", status.HTTP_200_OK),
+            ("post", status.HTTP_200_OK),
+        ],
+    )
+    def test_direct_branding_permission_admits_and_manage_members_does_not(
+        self, client, user, reseller_org, reseller_org_admin, method, expected_status
+    ):
+        """Every branding surface reads its declared capability, not admin-ness."""
+
+        reseller_org_admin.groups.clear()
+        branding_permission = Permission.objects.get(
+            codename="manage_branding",
+            content_type=ContentType.objects.get_for_model(Organization),
+        )
+        members_permission = Permission.objects.get(
+            codename="manage_members",
+            content_type=ContentType.objects.get_for_model(OrganizationMembership),
+        )
+        client.force_authenticate(user)
+        client.credentials(HTTP_X_ORGANIZATION_ID=str(reseller_org.id))
+
+        if method == "patch":
+            baker.make(OrganizationBranding, organization=reseller_org, app_name="Existing")
+
+        reseller_org_admin.permissions.add(branding_permission)
+        if method == "get":
+            response = client.get(BRANDING_URL)
+        elif method == "put":
+            response = client.put(
+                BRANDING_URL,
+                {
+                    "app_name": "Direct Branding",
+                    "primary_color": "#000000",
+                    "secondary_color": "#ffffff",
+                    "support_email": "support@example.com",
+                    "redirect_url": "https://example.com",
+                },
+                format="json",
+            )
+        elif method == "patch":
+            response = client.patch(BRANDING_URL, {"app_name": "Direct Branding"}, format="json")
+        else:
+            response = client.post(
+                reverse("branding-logo-upload-params"),
+                {"file_name": "logo.png", "file_type": "image/png", "file_size": 1},
+                format="json",
+            )
+        assert_response_status_code(response, expected_status)
+
+        reseller_org_admin.permissions.clear()
+        reseller_org_admin.permissions.add(members_permission)
+        client.force_authenticate(User.objects.get(pk=user.pk))
+        if method == "get":
+            response = client.get(BRANDING_URL)
+        elif method == "put":
+            response = client.put(BRANDING_URL, {}, format="json")
+        elif method == "patch":
+            response = client.patch(BRANDING_URL, {"app_name": "Denied"}, format="json")
+        else:
+            response = client.post(
+                reverse("branding-logo-upload-params"),
+                {"file_name": "logo.png", "file_type": "image/png", "file_size": 1},
+                format="json",
+            )
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
 
     def test_retrieve_branding_not_configured_returns_404(
         self, client, user, reseller_org, reseller_org_admin
@@ -1116,20 +1206,21 @@ class TestCanManageBrandingOnMembershipPayload:
         [entry] = mine_response.json()
         assert entry["can_manage_branding"] is False
 
-    def test_non_admin_member_of_an_eligible_org_still_reports_true(
+    def test_unpermitted_member_of_an_eligible_org_reports_false(
         self, client, eligible_org, eligible_org_member
     ):
-        """A non-admin member's payload reports the same organization-level
-        capability as an admin's -- `can_manage_branding` is not gated by the
-        caller's own role, only by the organization's eligibility. Write
-        authorization stays role-gated separately, on the branding endpoints
-        themselves (`IsOrganizationAdmin`)."""
+        """The published field is the branding capability plus eligibility.
+
+        The eligible organization alone does not authorize this membership to
+        manage branding; the positive admin case above supplies the capability
+        half of the same contract.
+        """
         client.force_authenticate(eligible_org_member)
         client.credentials(HTTP_X_ORGANIZATION_ID=str(eligible_org.id))
 
         current_response = client.get(self._current_url())
         assert_response_status_code(current_response, status.HTTP_200_OK)
-        assert current_response.json()["can_manage_branding"] is True
+        assert current_response.json()["can_manage_branding"] is False
 
     def test_mine_endpoint_entitlement_queries_do_not_scale_with_membership_count(self):
         """Reviewer finding: the N+1-shaped entitlement lookup on

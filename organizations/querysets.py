@@ -77,6 +77,35 @@ class OrganizationMembershipQuerySet(_PackageOrganizationMembershipQuerySet):
             self.filter(organization_id=organization_id).active().holding_permission(MANAGE_BILLING)
         )
 
+    def other_members_holding(
+        self, *, organization_id: int, excluding_user_id: int, permission: str
+    ) -> OrganizationMembershipQuerySet:
+        """Active memberships in ``organization_id``, other than
+        ``excluding_user_id``'s, that hold ``permission``.
+
+        The "would this write leave nobody able to X" question, asked once. Both
+        last-administrator guards in ``organizations/views.py`` (``deactivate`` and
+        ``assign_groups``) need exactly this count, and each used to spell the three
+        clauses inline -- which is both the inline-queryset rule in ``AGENTS.md`` and,
+        more to the point, two chances for the guards to stop meaning the same thing.
+        The pair *must* agree: a widening in one and not the other is a lockout in one
+        endpoint and a refusal in the other, for the same organization.
+
+        A membership is keyed by ``(user, organization)``, so excluding the target by
+        ``user_id`` inside the already organization-scoped filter names exactly one row.
+
+        ``holding_permission`` is the package's union of a membership's direct
+        ``permissions`` grant with the permissions its ``groups`` carry, so a direct
+        per-membership grant counts as a remaining holder just as much as
+        ``organization_admin`` does.
+        """
+        return (
+            self.filter(organization_id=organization_id)
+            .active()
+            .exclude(user_id=excluding_user_id)
+            .holding_permission(permission)
+        )
+
 
 class OrganizationInvitationQuerySet(QuerySet):
     """QuerySet for OrganizationInvitation with domain-specific filtering methods."""

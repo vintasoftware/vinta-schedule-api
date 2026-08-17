@@ -163,7 +163,7 @@ def test_demoted_admin_cannot_manage_group(organization, group):
     assert svc.can_manage_calendar_group(user=user, group=group) is True
     # Downgrade to member and re-check — permission is revoked. Both steps
     # mirror what a live demotion does: ``OrganizationMembershipViewSet
-    # .update_role`` saves the new role and then calls
+    # .assign_groups`` saves the new state and then calls
     # ``sync_membership_groups_from_role``, because the authorization decision
     # reads the groups (Phase 4 of the vinta-django-orgs migration).
     membership.role = OrganizationRole.MEMBER

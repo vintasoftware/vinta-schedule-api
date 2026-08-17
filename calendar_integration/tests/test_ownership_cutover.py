@@ -168,7 +168,7 @@ def _resolved_ownership(organization, ownership):
 
 @pytest.mark.django_db
 def test_ownership_serializer_membership_field_shape(organization, calendar):
-    """The REST ownership serializer exposes membership identity { user_id, organization_id, role }.
+    """The REST ownership serializer exposes membership identity { user_id, organization_id }.
 
     The membership representation is supplied by ``OwnershipMembershipSerializer``,
     nested on ``CalendarOwnershipSerializer`` in place of the old bare ``user``.
@@ -187,11 +187,14 @@ def test_ownership_serializer_membership_field_shape(organization, calendar):
     assert "user" not in CalendarOwnershipSerializer.Meta.fields
     assert "membership" in CalendarOwnershipSerializer.Meta.fields
 
+    # ``role`` left this representation in Phase 5 of the vinta-django-orgs
+    # migration, with the rest of ``role``'s API surface. What a member may do
+    # is reported by ``GET /organization-members/`` as ``permissions``; this
+    # field is an identity, not an authorization statement.
     data = OwnershipMembershipSerializer(ownership.membership).data
     assert data == {
         "user_id": user.id,
         "organization_id": organization.id,
-        "role": OrganizationRole.ADMIN,
     }
 
 

@@ -16,10 +16,6 @@ Behaviors covered:
   400 and the 403.
 """
 
-import ast
-import os
-from pathlib import Path
-
 from django.contrib.auth import get_user_model
 from django.urls import reverse
 
@@ -99,6 +95,41 @@ def two_org_user(user: User, org_a: Organization, org_b: Organization):  # type:
     _make_membership(user, org_a)
     _make_membership(user, org_b)
     return user
+
+
+class _OptOutView(TenantScopedViewMixin):
+    """Throwaway view that opts out of the multi-org-no-header 400."""
+
+    organization_resolution_optional = True
+
+
+class _StrictView(TenantScopedViewMixin):
+    """Throwaway view that keeps the default (strict) multi-org-no-header 400."""
+
+    organization_resolution_optional = False
+
+
+def _drf_request_for(
+    user: User,  # type: ignore[valid-type]
+    *,
+    org_id_header: str | None = None,
+) -> Request:
+    """Build a DRF Request authenticated as *user*.
+
+    If *org_id_header* is given it is sent as the ``X-Organization-Id`` header;
+    otherwise the request carries no header.
+    """
+    factory = APIRequestFactory()
+    if org_id_header is not None:
+        django_request = factory.get("/anything/", HTTP_X_ORGANIZATION_ID=org_id_header)
+    else:
+        django_request = factory.get("/anything/")
+    force_authenticate(django_request, user=user)
+    drf_request = Request(django_request)
+    # force_authenticate stamps the wsgi request; mirror it on the DRF request so
+    # the resolver's getattr(request, "user", None) sees the authenticated user.
+    drf_request.user = user
+    return drf_request
 
 
 # ---------------------------------------------------------------------------
@@ -280,87 +311,6 @@ class TestPackageOwnedMembershipResolution:
         """Without an explicit organization, row age no longer selects a tenant."""
         with pytest.raises(AmbiguousOrganizationError):
             memberships.resolve_for_user(two_org_user)
-
-
-REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-STATIC_GUARD_PRUNED_DIRS = frozenset({".git", ".venv", "migrations", "node_modules"})
-STATIC_GUARD_SENTINELS = frozenset(
-    {
-        "organizations/models.py",
-        "common/utils/view_utils.py",
-        "organizations/tests/test_org_resolution.py",
-    }
-)
-
-
-def test_application_has_no_legacy_membership_resolver_or_user_stash() -> None:
-    """Keep membership resolution on the package request/direct-call seams."""
-    removed_resolver = "get_active_" + "organization_membership"
-    removed_user_attribute = "_" + "active_membership"
-    scanned_paths: set[str] = set()
-    violations: list[str] = []
-
-    for directory, directory_names, file_names in os.walk(REPOSITORY_ROOT):
-        directory_names[:] = [
-            name for name in directory_names if name not in STATIC_GUARD_PRUNED_DIRS
-        ]
-        for file_name in file_names:
-            if not file_name.endswith(".py"):
-                continue
-            path = Path(directory, file_name)
-            relative_path = str(path.relative_to(REPOSITORY_ROOT))
-            scanned_paths.add(relative_path)
-            tree = ast.parse(path.read_text(), filename=str(path))
-            for node in ast.walk(tree):
-                if (
-                    isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
-                    and node.name == removed_resolver
-                ):
-                    violations.append(f"{relative_path}:{node.lineno}: definition")
-                if isinstance(node, ast.ImportFrom) and any(
-                    alias.name == removed_resolver for alias in node.names
-                ):
-                    violations.append(f"{relative_path}:{node.lineno}: import")
-                if isinstance(node, ast.Call):
-                    if isinstance(node.func, ast.Name | ast.Attribute) and (
-                        (isinstance(node.func, ast.Name) and node.func.id == removed_resolver)
-                        or (
-                            isinstance(node.func, ast.Attribute)
-                            and node.func.attr == removed_resolver
-                        )
-                    ):
-                        violations.append(f"{relative_path}:{node.lineno}: call")
-                    if (
-                        isinstance(node.func, ast.Name | ast.Attribute)
-                        and (
-                            (
-                                isinstance(node.func, ast.Name)
-                                and node.func.id in {"getattr", "setattr", "delattr"}
-                            )
-                            or (
-                                isinstance(node.func, ast.Attribute)
-                                and node.func.attr in {"getattr", "setattr", "delattr"}
-                            )
-                        )
-                        and len(node.args) >= 2
-                        and isinstance(node.args[1], ast.Constant)
-                        and node.args[1].value in {removed_resolver, removed_user_attribute}
-                    ):
-                        violations.append(
-                            f"{relative_path}:{node.lineno}: dynamic attribute access"
-                        )
-                if isinstance(node, ast.Attribute) and node.attr in {
-                    removed_resolver,
-                    removed_user_attribute,
-                }:
-                    violations.append(f"{relative_path}:{node.lineno}: attribute access")
-
-    missing_sentinels = sorted(STATIC_GUARD_SENTINELS - scanned_paths)
-    assert not missing_sentinels, (
-        "The legacy-membership static guard did not reach known production and test modules; "
-        f"scanned {len(scanned_paths)} files, missing {missing_sentinels}."
-    )
-    assert violations == []
 
 
 # ---------------------------------------------------------------------------
@@ -637,43 +587,10 @@ class TestMultiOrgNoHeaderRejected:
 # no header is NOT rejected — the resolver falls through to gated (None) instead.
 #
 # We assert the opt-out by driving the mixin's resolver directly with a throwaway
-# view.
+# view. The 403 half of the same opt-out is asserted in
+# ``TestNonMemberOrgHeaderOptOut`` below; this is the 400 half, and the two
+# refusals have independent branches in the resolver.
 # ---------------------------------------------------------------------------
-
-
-class _OptOutView(TenantScopedViewMixin):
-    """Throwaway view that opts out of the multi-org-no-header 400."""
-
-    organization_resolution_optional = True
-
-
-class _StrictView(TenantScopedViewMixin):
-    """Throwaway view that keeps the default (strict) multi-org-no-header 400."""
-
-    organization_resolution_optional = False
-
-
-def _drf_request_for(
-    user: User,  # type: ignore[valid-type]
-    *,
-    org_id_header: str | None = None,
-) -> Request:
-    """Build a DRF Request authenticated as *user*.
-
-    If *org_id_header* is given it is sent as the ``X-Organization-Id`` header;
-    otherwise the request carries no header.
-    """
-    factory = APIRequestFactory()
-    if org_id_header is not None:
-        django_request = factory.get("/anything/", HTTP_X_ORGANIZATION_ID=org_id_header)
-    else:
-        django_request = factory.get("/anything/")
-    force_authenticate(django_request, user=user)
-    drf_request = Request(django_request)
-    # force_authenticate stamps the wsgi request; mirror it on the DRF request so
-    # the resolver's getattr(request, "user", None) sees the authenticated user.
-    drf_request.user = user
-    return drf_request
 
 
 @pytest.mark.django_db

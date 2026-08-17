@@ -123,13 +123,17 @@ class OwnershipMembershipSerializer(serializers.Serializer):
     """Membership identity for a calendar owner.
 
     A membership has no scalar id (it is identified by the ``(user_id,
-    organization_id)`` pair), so the representation exposes that pair plus the
-    membership ``role``.
+    organization_id)`` pair), so the representation exposes that pair.
+
+    It used to carry the membership's ``role`` as well. That left with the rest
+    of ``role``'s API surface: authorization is answered from permissions, and
+    this identity representation is not the place to publish a member's
+    capabilities -- ``GET /organization-members/`` is. Consumers that read
+    ``role`` here to decide what to render should read ``permissions`` there.
     """
 
     user_id = serializers.IntegerField(read_only=True)
     organization_id = serializers.IntegerField(read_only=True)
-    role = serializers.CharField(read_only=True)
 
 
 class CalendarOwnershipSerializer(VirtualModelSerializer):

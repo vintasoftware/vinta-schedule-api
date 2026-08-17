@@ -4648,7 +4648,6 @@ _CALENDARS_WITH_OWNERS_QUERY = """
                 membership {
                     userId
                     organizationId
-                    role
                 }
             }
         }
@@ -4745,7 +4744,7 @@ class TestCalendarOwnersField:
 
         owners_by_user_id = {o["membership"]["userId"]: o for o in owners}
 
-        # Verify ownership A — membership identity shape { userId, organizationId, role }
+        # Verify ownership A — membership identity shape { userId, organizationId }
         owner_a = owners_by_user_id[user_a.id]
         assert int(owner_a["id"]) == ownership_a.id, (
             "Ownership id must be CalendarOwnership pk, not user id"
@@ -4753,7 +4752,7 @@ class TestCalendarOwnersField:
         assert owner_a["isDefault"] is True
         assert owner_a["membership"]["userId"] == user_a.id
         assert owner_a["membership"]["organizationId"] == organization.id
-        assert owner_a["membership"]["role"] == OrganizationRole.ADMIN
+        assert "role" not in owner_a["membership"]
 
         # Verify ownership B
         owner_b = owners_by_user_id[user_b.id]
@@ -4763,7 +4762,7 @@ class TestCalendarOwnersField:
         assert owner_b["isDefault"] is False
         assert owner_b["membership"]["userId"] == user_b.id
         assert owner_b["membership"]["organizationId"] == organization.id
-        assert owner_b["membership"]["role"] == OrganizationRole.MEMBER
+        assert "role" not in owner_b["membership"]
 
     # ------------------------------------------------------------------ #
     # (b) Org-scoping / cross-org leak                                    #
@@ -4956,7 +4955,6 @@ _CALENDAR_GROUPS_WITH_OWNERS_QUERY = """
                         membership {
                             userId
                             organizationId
-                            role
                         }
                     }
                 }
@@ -4979,7 +4977,6 @@ _CALENDAR_BUNDLES_WITH_OWNERS_QUERY = """
                     membership {
                         userId
                         organizationId
-                        role
                     }
                 }
             }
@@ -5522,7 +5519,6 @@ _CALENDAR_BUNDLES_PARENT_OWNERS_QUERY = """
                 membership {
                     userId
                     organizationId
-                    role
                 }
             }
         }

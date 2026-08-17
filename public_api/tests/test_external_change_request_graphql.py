@@ -88,7 +88,6 @@ query ListExternalEventChangeRequestsWithResolvedBy(
         resolvedBy {
             userId
             organizationId
-            role
         }
     }
 }

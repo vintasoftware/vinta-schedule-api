@@ -40,6 +40,8 @@ Also sweep for non-endpoint contract changes clients still feel: auth flows (tok
 
 Path: `.vinta-ai-workflows/client-handoffs/{YYYY-MM-DD}-{branch-or-feature-slug}.md`. Create the directory if missing.
 
+**In this repo that directory is gitignored** (`.gitignore`), so a handoff written only there never reaches the branch, the PR, or the client teams. Write the committed copy to `ai-plans/{YYYY-MM-DD}-{FEATURE}_CLIENT_HANDOFF.md` instead — the established practice here, e.g. `ai-plans/2026-07-04-SMS_MFA_CONSENT_FRONTEND_HANDOFF.md`. Write **one** copy, not both; two copies of a 400-line document drift silently, and the untracked one is the copy people read last.
+
 ```markdown
 # API changes: {feature / branch title}
 

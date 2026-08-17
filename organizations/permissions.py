@@ -17,7 +17,12 @@ from organizations.models import (
     OrganizationInvitation,
     OrganizationMembership,
 )
-from organizations.permission_catalog import MANAGE_BILLING, MANAGE_BRANDING, MANAGE_MEMBERS
+from organizations.permission_catalog import (
+    MANAGE_BILLING,
+    MANAGE_BRANDING,
+    MANAGE_MEMBERS,
+    MANAGE_ORGANIZATION,
+)
 from payments.billing_constants import Entitlement
 from payments.entitlement_cache import has_entitlement_cached
 from payments.services.entitlement_service import EntitlementService
@@ -365,13 +370,15 @@ class IsOrganizationAdmin(BasePermission):
     `organizations/authorization.py`.
     """
 
+    permission = MANAGE_MEMBERS
+
     def has_permission(self, request, view) -> bool:
         user: User = request.user
         if not user or not user.is_authenticated:
             return False
         membership = request.organization_membership
         return membership is not None and has_organization_permission(
-            user, MANAGE_MEMBERS, membership.organization
+            user, self.permission, membership.organization
         )
 
     def has_object_permission(self, request, view, obj) -> bool:
@@ -397,7 +404,19 @@ class IsOrganizationAdmin(BasePermission):
         if membership.organization_id != obj_organization_id:
             return False
 
-        return has_organization_permission(request.user, MANAGE_MEMBERS, membership.organization)
+        return has_organization_permission(request.user, self.permission, membership.organization)
+
+
+class CanManageOrganization(IsOrganizationAdmin):
+    """Require the organization-settings capability for the acting organization."""
+
+    permission = MANAGE_ORGANIZATION
+
+
+class CanManageBranding(IsOrganizationAdmin):
+    """Require the branding capability; entitlement checks remain at the view."""
+
+    permission = MANAGE_BRANDING
 
 
 class IsBillingOwnerOrAdmin(BasePermission):
