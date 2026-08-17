@@ -146,34 +146,25 @@ class TestTheFiveConstraintsSurvivedThePrimaryKeySwap:
         for constraint_name in PROTECT_FK_CONSTRAINTS:
             assert found[constraint_name][1] == MEMBERSHIP_UNIQUE_CONSTRAINT
 
-    def test_the_membership_table_has_a_single_column_primary_key(self):
-        """Pins the other half: the swap really did happen."""
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT array_length(conkey, 1)
-                FROM pg_constraint
-                WHERE contype = 'p' AND conrelid = %s::regclass
-                """,
-                [MEMBERSHIP_TABLE],
-            )
-            [(column_count,)] = cursor.fetchall()
 
-        assert column_count == 1
-
-
-@pytest.mark.django_db(transaction=True)
+@pytest.mark.django_db
 class TestEachConstraintStillBlocksAMembershipDelete:
     """One referencing row per constraint, then a membership delete that must raise.
 
-    ``transaction=True``, and each delete wrapped in its own ``atomic`` block:
-    the constraints are ``DEFERRABLE INITIALLY DEFERRED``, so they fire at COMMIT
-    -- the exception surfaces when the block closes, not at the ``DELETE``.
+    The constraints are ``DEFERRABLE INITIALLY DEFERRED``, so they normally fire
+    at COMMIT rather than at the failing statement. Rather than pay for
+    ``transaction=True`` (which disables the rolled-back test transaction and
+    truncates every table afterwards), each test forces immediate checking with
+    ``SET CONSTRAINTS ALL IMMEDIATE`` before the delete, so the violation still
+    raises synchronously, inside the fast, rolled-back transaction.
     """
 
     def test_calendar_ownership_blocks_the_delete(self, organization, member_user, calendar):
         create_calendar_ownership(calendar=calendar, user=member_user)
         membership = OrganizationMembership.objects.get(user=member_user, organization=organization)
+
+        with connection.cursor() as cursor:
+            cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
 
         with (
             pytest.raises(IntegrityError, match="calownership_membership_protect_fk"),
@@ -184,6 +175,9 @@ class TestEachConstraintStillBlocksAMembershipDelete:
     def test_event_attendance_blocks_the_delete(self, organization, member_user, event):
         create_event_attendance(event=event, user=member_user)
         membership = OrganizationMembership.objects.get(user=member_user, organization=organization)
+
+        with connection.cursor() as cursor:
+            cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
 
         with (
             pytest.raises(IntegrityError, match="evattendance_membership_protect_fk"),
@@ -199,6 +193,9 @@ class TestEachConstraintStillBlocksAMembershipDelete:
             token_hash=hash_long_lived_token(generate_long_lived_token()),
         )
         membership = OrganizationMembership.objects.get(user=member_user, organization=organization)
+
+        with connection.cursor() as cursor:
+            cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
 
         with (
             pytest.raises(IntegrityError, match="calmgmttoken_membership_protect_fk"),
@@ -219,6 +216,9 @@ class TestEachConstraintStillBlocksAMembershipDelete:
         )
         membership = OrganizationMembership.objects.get(user=member_user, organization=organization)
 
+        with connection.cursor() as cursor:
+            cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
+
         with (
             pytest.raises(IntegrityError, match="externaleventcr_resolved_by_protect_fk"),
             transaction.atomic(),
@@ -232,6 +232,9 @@ class TestEachConstraintStillBlocksAMembershipDelete:
         )
         membership = OrganizationMembership.objects.get(user=member_user, organization=organization)
 
+        with connection.cursor() as cursor:
+            cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
+
         with (
             pytest.raises(IntegrityError, match="bookingpolicy_membership_protect_fk"),
             transaction.atomic(),
@@ -239,7 +242,7 @@ class TestEachConstraintStillBlocksAMembershipDelete:
             membership.delete()
 
 
-@pytest.mark.django_db(transaction=True)
+@pytest.mark.django_db
 class TestTheManyToManyThroughTablesBindToThePrimaryKey:
     """The two relations the primary-key swap was performed *for*.
 
@@ -294,3 +297,45 @@ class TestTheManyToManyThroughTablesBindToThePrimaryKey:
         assert not permissions_through_table.objects.filter(
             organizationmembership_id=membership.pk
         ).exists()
+
+
+@pytest.mark.django_db
+class TestUniqMembershipUserOrganizationSurvives:
+    """The constraint the five raw-SQL FKs above bind to, still enforced.
+
+    This class used to live beside the model in
+    ``organizations/tests/test_membership_pk.py``. It moved here because
+    ``uniq_membership_user_organization`` is not just "the" membership
+    uniqueness rule -- the whole reason it survived the primary-key swap
+    (rather than being replaced by the base class's own
+    ``unique_together``) is that the five composite ``PROTECT`` foreign keys
+    in this module are bound to it by name. Its invariant belongs with its
+    reason to exist.
+
+    Unlike the delete-blocking tests above, this constraint is an ordinary
+    (non-deferrable) ``UniqueConstraint``: it fires at the failing
+    ``INSERT``, not at ``COMMIT``, so no ``SET CONSTRAINTS ALL IMMEDIATE``
+    is needed to observe it inside the fast, rolled-back test transaction.
+    """
+
+    def test_a_duplicate_user_organization_pair_is_still_rejected(self):
+        user = baker.make(User)
+        organization = baker.make(Organization)
+        OrganizationMembership.objects.create(user=user, organization=organization)
+
+        with pytest.raises(IntegrityError), transaction.atomic():
+            OrganizationMembership.objects.create(user=user, organization=organization)
+
+    def test_the_constraint_is_still_declared_under_its_original_name(self):
+        """The name is load-bearing: five raw-SQL foreign keys were created
+        against this constraint and PostgreSQL binds each to one specific
+        index. Renaming it would drop them."""
+        names = {constraint.name for constraint in OrganizationMembership._meta.constraints}
+        assert MEMBERSHIP_UNIQUE_CONSTRAINT in names
+
+    def test_the_same_user_may_still_join_a_second_organization(self):
+        user = baker.make(User)
+        OrganizationMembership.objects.create(user=user, organization=baker.make(Organization))
+        OrganizationMembership.objects.create(user=user, organization=baker.make(Organization))
+
+        assert OrganizationMembership.objects.filter(user=user).count() == 2
