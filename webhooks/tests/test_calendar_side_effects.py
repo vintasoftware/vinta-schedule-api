@@ -2,15 +2,22 @@ import datetime
 from unittest.mock import MagicMock
 
 import pytest
+from dependency_injector import providers
 from model_bakery import baker
 
 from calendar_integration.services.calendar_side_effects_service import (
     CalendarSideEffectsService,
+    OnAddAttendeeToEventHandler,
+    OnCreateEventHandler,
+    OnDeleteEventHandler,
+    OnRemoveAttendeeFromEventHandler,
     OnUpdateAttendeeOnEventHandler,
+    OnUpdateEventHandler,
 )
 from calendar_integration.services.dataclasses import CalendarEventData, EventExternalAttendeeData
 from organizations.models import Organization
 from webhooks.constants import WebhookEventType
+from webhooks.services import WebhookService
 from webhooks.services.webhook_calendar_side_effects import WebhookCalendarEventSideEffectsService
 
 
@@ -87,3 +94,64 @@ class TestWebhookCalendarEventSideEffectsServiceDispatch:
         call_kwargs = mock_webhook_service.send_event.call_args[1]
         assert call_kwargs["event_type"] == WebhookEventType.CALENDAR_EVENT_ATTENDEE_UPDATED
         assert call_kwargs["organization"] == organization
+
+
+class TestContainerWiresCalendarSideEffectsPipeline:
+    """The pipeline the DI container builds must hold handler *instances*.
+
+    ``TestWebhookCalendarEventSideEffectsServiceSatisfiesProtocol`` above proves the
+    handler class satisfies the Protocols, but that check passes even when the
+    container never instantiates the class. That is what happened here: the
+    provider was wired as ``side_effects_pipeline=(webhook_calendar_side_effects_service,)``
+    -- a plain tuple holding a Provider. ``dependency_injector`` only resolves a
+    provider passed as a direct kwarg value, so the pipeline received the
+    ``Factory`` object itself. Every ``isinstance(handler, On*Handler)`` guard in
+    ``CalendarSideEffectsService`` then returned ``False`` and no calendar event
+    webhook of any kind dispatched.
+
+    These tests resolve the real container, so they fail if the wiring regresses to
+    any form that leaves providers unresolved. The container is only assigned in
+    ``DICoreConfig.ready()``, so they take it via the ``di_container`` fixture
+    rather than a module-level import, which would bind ``None`` forever.
+    """
+
+    def test_pipeline_contains_instantiated_handlers_not_providers(self, di_container):
+        service = di_container.calendar_side_effects_service()
+
+        pipeline = list(service.side_effects_pipeline)
+
+        assert pipeline, "side_effects_pipeline resolved empty"
+        for handler in pipeline:
+            assert not isinstance(handler, providers.Provider), (
+                f"pipeline holds an unresolved provider ({handler!r}); "
+                "dependency_injector does not resolve providers nested in a tuple or list "
+                "literal -- use providers.List(...)"
+            )
+
+    def test_pipeline_handler_satisfies_every_dispatch_protocol(self, di_container):
+        service = di_container.calendar_side_effects_service()
+
+        handler = next(iter(service.side_effects_pipeline))
+
+        # CalendarSideEffectsService guards each dispatch method on one of these.
+        # A handler failing any check is silently skipped rather than erroring.
+        for protocol in (
+            OnCreateEventHandler,
+            OnUpdateEventHandler,
+            OnDeleteEventHandler,
+            OnAddAttendeeToEventHandler,
+            OnRemoveAttendeeFromEventHandler,
+            OnUpdateAttendeeOnEventHandler,
+        ):
+            assert isinstance(handler, protocol), (
+                f"{type(handler).__name__} does not satisfy {protocol.__name__}; "
+                "its dispatch would be silently skipped"
+            )
+
+    def test_pipeline_handler_has_a_real_webhook_service(self, di_container):
+        service = di_container.calendar_side_effects_service()
+
+        handler = next(iter(service.side_effects_pipeline))
+
+        assert isinstance(handler, WebhookCalendarEventSideEffectsService)
+        assert isinstance(handler.webhook_service, WebhookService)

@@ -219,7 +219,13 @@ class AppContainer(containers.DeclarativeContainer):
 
     calendar_side_effects_service = providers.Factory(
         CalendarSideEffectsService,
-        side_effects_pipeline=(webhook_calendar_side_effects_service,),
+        # providers.List, not a plain tuple. dependency_injector only resolves a
+        # provider passed as a direct kwarg value; one nested inside a tuple is
+        # handed to the constructor as the Provider object itself. The pipeline
+        # then held a Factory instead of a handler, every
+        # ``isinstance(handler, On*Handler)`` check in CalendarSideEffectsService
+        # returned False, and no calendar event webhook ever dispatched.
+        side_effects_pipeline=providers.List(webhook_calendar_side_effects_service),
     )
 
     calendar_permission_service = providers.Factory(
