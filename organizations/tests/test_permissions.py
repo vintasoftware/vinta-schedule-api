@@ -4,6 +4,7 @@ import pytest
 from model_bakery import baker
 from rest_framework.test import APIRequestFactory
 
+from calendar_integration.models import Calendar
 from common.organization_services import memberships
 from organizations.models import (
     Organization,
@@ -139,8 +140,6 @@ class TestIsOrganizationAdminPermission:
         self, factory, admin_user, permission, view_mock
     ):
         """Admin user should have object permission for organization-scoped models."""
-        from calendar_integration.models import Calendar
-
         org = admin_user.memberships.get().organization
         calendar = baker.make(Calendar, organization=org)
         request = _request_for_user(factory, admin_user)
@@ -150,8 +149,6 @@ class TestIsOrganizationAdminPermission:
         self, factory, member_user, permission, view_mock
     ):
         """Member user should not have object permission for organization-scoped models."""
-        from calendar_integration.models import Calendar
-
         org = member_user.memberships.get().organization
         calendar = baker.make(Calendar, organization=org)
         request = _request_for_user(factory, member_user)
@@ -161,8 +158,6 @@ class TestIsOrganizationAdminPermission:
         self, factory, admin_user, permission, view_mock
     ):
         """Admin user should not have object permission for an organization-scoped model in a different org."""
-        from calendar_integration.models import Calendar
-
         different_org = baker.make(Organization)
         calendar = baker.make(Calendar, organization=different_org)
         request = _request_for_user(factory, admin_user)

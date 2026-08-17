@@ -43,6 +43,7 @@ from organizations.tests.helpers import (
     make_billing_owner_membership,
     make_membership,
 )
+from public_api.schema import schema
 from users.models import User
 
 
@@ -254,9 +255,6 @@ class TestTheCurrentMembershipEndpoint:
     def test_direct_capability_controls_current_branding_signal(
         self, auth_client, user, permission_codename, permission_model, expected
     ):
-        from django.contrib.auth.models import Permission
-        from django.contrib.contenttypes.models import ContentType
-
         organization = baker.make(Organization, name="Eligible direct capability org")
         membership = make_membership(user=user, organization=organization)
         membership.permissions.add(
@@ -300,9 +298,6 @@ class TestTheMineEndpoint:
     def test_direct_capability_controls_mine_branding_signal(
         self, auth_client, user, permission_codename, permission_model, expected
     ):
-        from django.contrib.auth.models import Permission
-        from django.contrib.contenttypes.models import ContentType
-
         organization = baker.make(Organization, name="Eligible mine capability org")
         membership = make_membership(user=user, organization=organization)
         membership.permissions.add(
@@ -432,8 +427,6 @@ class TestNoPublishedResponseCarriesRole:
         assert "RoleEnum" not in document["components"]["schemas"]
 
     def test_no_public_graphql_type_exposes_a_role_field(self):
-        from public_api.schema import schema
-
         offenders = [
             f"{type_name}.{field_name}"
             for type_name, graphql_type in schema._schema.type_map.items()

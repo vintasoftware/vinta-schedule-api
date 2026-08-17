@@ -8,12 +8,14 @@ enqueue happens, then inspect the serialized payloads.
 
 from __future__ import annotations
 
+import datetime
 from unittest.mock import Mock, patch
 
 import pytest
 from model_bakery import baker
 
 from audit.constants import AuditAction
+from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
 from organizations.authorization import MEMBERSHIP_ROLE_LABEL_ADMIN
 from organizations.models import (
     Organization,
@@ -93,16 +95,9 @@ class TestOrganizationServiceAudit:
     def test_accept_invitation_records_membership_and_invitation(
         self, django_capture_on_commit_callbacks
     ) -> None:
-        from common.utils.authentication_utils import (
-            generate_long_lived_token,
-            hash_long_lived_token,
-        )
-
         org = baker.make(Organization)
         user = baker.make("users.User", email="joiner@example.com")
         raw = generate_long_lived_token()
-        import datetime
-
         invitation = OrganizationInvitation.objects.create(
             email="joiner@example.com",
             organization=org,
@@ -128,8 +123,6 @@ class TestOrganizationServiceAudit:
     def test_revoke_invitation_records_update_with_system_actor(
         self, django_capture_on_commit_callbacks
     ) -> None:
-        import datetime
-
         org = baker.make(Organization)
         invitation = OrganizationInvitation.objects.create(
             email="x@example.com",

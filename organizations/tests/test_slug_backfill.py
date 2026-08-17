@@ -32,6 +32,7 @@ from organizations.slug_generation import (
     name_derived_slug_base,
     opaque_organization_slug,
 )
+from organizations.slug_validation import SLUG_MAX_LENGTH
 
 
 APP_LABEL = "organizations"
@@ -78,8 +79,6 @@ class TestDisambiguateSlug:
         assert disambiguate_slug("acme-inc", slug_exists=taken.__contains__) == "acme-inc-4"
 
     def test_the_numbered_variant_stays_within_the_length_limit(self):
-        from organizations.slug_validation import SLUG_MAX_LENGTH
-
         base = "a" * SLUG_MAX_LENGTH
         taken = {base}
 

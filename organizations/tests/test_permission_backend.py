@@ -73,12 +73,14 @@ from __future__ import annotations
 import importlib
 
 from django.apps import apps as global_apps
+from django.conf import settings
 from django.contrib.auth.models import Group, Permission
 from django.db import connection
 
 import pytest
 from model_bakery import baker
 from vinta_orgs.auth_backends import OrganizationModelBackend
+from vinta_orgs.conf import get_organization_membership_model
 
 from common.organization_context import organization_context
 from organizations.models import Organization, OrganizationMembership
@@ -159,16 +161,12 @@ class TestAuthenticationBackendsWiring:
     """
 
     def test_lists_the_stock_backend_first_and_the_package_backend_second(self):
-        from django.conf import settings
-
         assert settings.AUTHENTICATION_BACKENDS == [
             "django.contrib.auth.backends.ModelBackend",
             f"{OrganizationModelBackend.__module__}.{OrganizationModelBackend.__qualname__}",
         ]
 
     def test_the_package_backend_is_not_subclassed(self):
-        from django.conf import settings
-
         # The class named in settings *is* the package's own -- not a
         # same-named repo module shadowing it, and not a subclass of it.
         assert (
@@ -178,8 +176,6 @@ class TestAuthenticationBackendsWiring:
         assert OrganizationModelBackend.__module__ == "vinta_orgs.auth_backends"
 
     def test_the_membership_model_it_resolves_against_is_ours(self):
-        from vinta_orgs.conf import get_organization_membership_model
-
         assert get_organization_membership_model() is OrganizationMembership
 
 

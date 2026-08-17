@@ -17,7 +17,10 @@ though other members exist, and it must admit as soon as a second one does.
 
 from __future__ import annotations
 
+from django.contrib.auth.models import Permission
+from django.contrib.contenttypes.models import ContentType
 from django.urls import reverse
+from django.urls.exceptions import NoReverseMatch
 
 import pytest
 from model_bakery import baker
@@ -71,9 +74,6 @@ class TestAssigningGroups:
         self, auth_client, organization
     ):
         """A sole direct holder may replace groups without losing that grant."""
-        from django.contrib.auth.models import Permission
-        from django.contrib.contenttypes.models import ContentType
-
         target = make_membership(user=baker.make(User), organization=organization)
         target.permissions.add(
             Permission.objects.get(
@@ -313,9 +313,6 @@ class TestTheLastManageMembersGuard:
         ``IsOrganizationAdmin``. A guard that ignored it would refuse a
         demotion that leaves a real administrator behind.
         """
-        from django.contrib.auth.models import Permission
-        from django.contrib.contenttypes.models import ContentType
-
         sole_admin = OrganizationMembership.objects.get(user=user, organization=organization)
         directly_granted = make_membership(user=baker.make(User), organization=organization)
         directly_granted.permissions.add(
@@ -349,9 +346,6 @@ class TestTheLastManageMembersGuard:
         through the view so the count itself, not just the view's derived
         decision, is what is pinned.
         """
-        from django.contrib.auth.models import Permission
-        from django.contrib.contenttypes.models import ContentType
-
         doubly_granted = make_admin_membership(user=baker.make(User), organization=organization)
         doubly_granted.permissions.add(
             Permission.objects.get(
@@ -434,7 +428,5 @@ class TestRejections:
         assert group_names(elsewhere) == {GROUP_ORGANIZATION_MEMBER}
 
     def test_the_old_update_role_route_is_gone(self):
-        from django.urls.exceptions import NoReverseMatch
-
         with pytest.raises(NoReverseMatch):
             reverse("api:OrganizationMembers-update-role", kwargs={"user_id": 1})

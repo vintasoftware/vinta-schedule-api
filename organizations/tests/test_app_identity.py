@@ -21,8 +21,10 @@ is.
 
 from django.apps import apps
 from django.core.management import call_command
+from django.db.migrations.recorder import MigrationRecorder
 
 import pytest
+from vinta_orgs.conf import get_organization_membership_model, get_organization_model
 
 from organizations.models import (
     Organization,
@@ -82,8 +84,6 @@ class TestThePackageIsInstalledUnderItsOwnLabel:
         and their own CASCADE from ``User``, and every relation the package
         declares would point at rows nothing in this project writes.
         """
-        from vinta_orgs.conf import get_organization_membership_model, get_organization_model
-
         assert get_organization_model() is Organization
         assert get_organization_membership_model() is OrganizationMembership
 
@@ -107,8 +107,6 @@ class TestNoRenameArtifactsSurvive:
 
     @pytest.mark.django_db
     def test_no_migration_history_row_names_a_tenancy_app(self):
-        from django.db.migrations.recorder import MigrationRecorder
-
         assert not MigrationRecorder.Migration.objects.filter(app="tenancy").exists()
 
 

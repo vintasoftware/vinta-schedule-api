@@ -20,6 +20,7 @@ from django.utils import timezone
 
 import pytest
 from model_bakery import baker
+from vinta_orgs.managers import SingleOrganizationModelManager, SingleOrganizationUnscopedManager
 
 from common.organization_context import organization_context
 from organizations.managers import OrganizationMembershipManager
@@ -36,16 +37,12 @@ from users.models import User
 
 class TestManagerPlumbing:
     def test_the_manager_inherits_the_packages_unscoped_manager(self):
-        from vinta_orgs.managers import SingleOrganizationUnscopedManager
-
         assert issubclass(OrganizationMembershipManager, SingleOrganizationUnscopedManager)
 
     def test_the_manager_is_not_the_packages_scoped_manager(self):
         """The failure this module exists for. ``SingleOrganizationModelManager``
         filters ``get_queryset()`` by the bound organization; inheriting it would
         make every pre-selection membership lookup return nothing."""
-        from vinta_orgs.managers import SingleOrganizationModelManager
-
         assert not issubclass(OrganizationMembershipManager, SingleOrganizationModelManager)
 
     def test_the_queryset_class_matches_the_methods_the_manager_exposes(self):
@@ -61,8 +58,6 @@ class TestManagerPlumbing:
     def test_the_base_manager_does_not_filter(self):
         """``_base_manager`` backs ``save()``, ``refresh_from_db()``, the delete
         collector and forward-relation fetches; it must see every row."""
-        from vinta_orgs.managers import SingleOrganizationModelManager
-
         assert not isinstance(OrganizationMembership._base_manager, SingleOrganizationModelManager)
 
 

@@ -16,10 +16,15 @@ of the audit or webhook side effects the service layer emits would fire.
 """
 
 from django.contrib import admin
+from django.contrib.auth import get_user_model
+from django.urls import reverse
 
 import pytest
+from vinta_orgs.admin import OrganizationAdmin as PackageOrganizationAdmin
+from vinta_orgs.admin import OrganizationMembershipAdmin
+from vinta_orgs.models import OrganizationSite
 
-from organizations.admin import OrganizationAdmin
+from organizations.admin import OrganizationAdmin, OrganizationAdminForm
 from organizations.models import Organization, OrganizationBranding, OrganizationMembership
 
 
@@ -35,8 +40,6 @@ class TestMembershipHasNoAdminSurface:
         assert not admin.site.is_registered(OrganizationMembership)
 
     def test_the_packages_membership_admin_is_not_registered_against_any_model(self):
-        from vinta_orgs.admin import OrganizationMembershipAdmin
-
         registered = {type(model_admin) for model_admin in admin.site._registry.values()}
         assert OrganizationMembershipAdmin not in registered
 
@@ -66,8 +69,6 @@ class TestOrganizationAdminIsOurs:
         assert isinstance(admin.site._registry[Organization], OrganizationAdmin)
 
     def test_the_packages_organization_admin_is_not_registered(self):
-        from vinta_orgs.admin import OrganizationAdmin as PackageOrganizationAdmin
-
         registered = {type(model_admin) for model_admin in admin.site._registry.values()}
         assert PackageOrganizationAdmin not in registered
 
@@ -75,14 +76,10 @@ class TestOrganizationAdminIsOurs:
         """This project does not do domain-based tenancy. The package's admin inlines
         ``OrganizationSite`` with ``min_num=1``, which would make saving an
         organization through the admin require a ``Site`` row."""
-        from vinta_orgs.models import OrganizationSite
-
         inline_models = {inline.model for inline in admin.site._registry[Organization].inlines}
         assert OrganizationSite not in inline_models
 
     def test_ours_keeps_its_slug_validating_form(self):
-        from organizations.admin import OrganizationAdminForm
-
         assert admin.site._registry[Organization].form is OrganizationAdminForm
 
     def test_branding_admin_is_still_registered(self):
@@ -97,9 +94,6 @@ class TestTheAdminIndexStillLoads:
         """A double registration raises ``AlreadyRegistered`` at import time and
         a stale unregistration leaves ``admin.site`` inconsistent; both surface
         here rather than only in production."""
-        from django.contrib.auth import get_user_model
-        from django.urls import reverse
-
         user = get_user_model().objects.create_superuser(
             email="admin-registrations@example.com",
             password="adminpassword",  # noqa: S106
