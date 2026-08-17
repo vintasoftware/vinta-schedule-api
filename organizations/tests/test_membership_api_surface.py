@@ -51,6 +51,17 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 ADMIN_PERMISSIONS = sorted([MANAGE_MEMBERS, MANAGE_ORGANIZATION, MANAGE_BRANDING, MANAGE_BILLING])
 
+# ``yaml.safe_load`` uses PyYAML's pure-Python ``SafeLoader``, which takes ~0.5s+ on
+# the checked-in ``schema.yml`` (700+KB) -- comfortably inside the 10s per-test budget
+# in isolation, but under ``pytest -n auto`` with the full suite's other workers
+# competing for CPU, that can stretch past 10s and trip ``pytest-timeout`` mid-parse
+# (observed: a ``yaml.scanner``/``composer`` frame interrupted by
+# ``Failed: Timeout (>10.0s) from pytest-timeout``). ``CSafeLoader`` (libyaml's C
+# bindings, same safety semantics as ``SafeLoader``) parses the same file in ~0.08s --
+# about 7x faster -- which is why the two tests below use it instead of
+# ``yaml.safe_load``. Falls back to ``SafeLoader`` if libyaml was not compiled in.
+_YAML_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+
 
 @pytest.fixture
 def organization(db) -> Organization:
@@ -397,7 +408,7 @@ class TestNoPublishedResponseCarriesRole:
 
     @pytest.mark.parametrize("schema_name", ["schema.yml", "schema-auth.yml"])
     def test_no_openapi_schema_declares_a_role_property(self, schema_name):
-        document = yaml.safe_load((REPO_ROOT / schema_name).read_text())
+        document = yaml.load((REPO_ROOT / schema_name).read_text(), Loader=_YAML_LOADER)
 
         offenders: list[str] = []
 
@@ -422,7 +433,7 @@ class TestNoPublishedResponseCarriesRole:
         )
 
     def test_the_role_enum_component_is_gone(self):
-        document = yaml.safe_load((REPO_ROOT / "schema.yml").read_text())
+        document = yaml.load((REPO_ROOT / "schema.yml").read_text(), Loader=_YAML_LOADER)
 
         assert "RoleEnum" not in document["components"]["schemas"]
 
