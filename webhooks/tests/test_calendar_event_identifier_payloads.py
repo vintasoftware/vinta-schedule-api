@@ -30,9 +30,14 @@ import pytest
 from allauth.socialaccount.models import SocialAccount, SocialToken
 from model_bakery import baker
 
-from calendar_integration.constants import CalendarProvider
+from calendar_integration.constants import CalendarProvider, RecurrenceFrequency
 from calendar_integration.factories import create_external_client_identifier
-from calendar_integration.models import Calendar, CalendarEvent, CalendarManagementToken
+from calendar_integration.models import (
+    Calendar,
+    CalendarEvent,
+    CalendarManagementToken,
+    RecurrenceRule,
+)
 from calendar_integration.services.calendar_event_service import CalendarEventService
 from calendar_integration.services.calendar_permission_service import (
     DEFAULT_CALENDAR_OWNER_PERMISSIONS,
@@ -125,6 +130,55 @@ class TestSerializeEventPopulatesIdentifiers:
         result = serialize_event(event)
 
         assert result.external_client_identifiers == []
+
+    def test_serialize_event_for_modified_occurrence_falls_back_to_master_identifiers(
+        self, calendar, organization
+    ):
+        """A persisted modified-occurrence exception has no identifier rows of its
+        own -- identifiers live on the recurring master. ``serialize_event`` must
+        fall back to ``event.parent_recurring_object.external_client_identifiers``
+        for such a row, the same way it already falls back for attendees/external
+        attendees/resources."""
+        rule = baker.make(
+            RecurrenceRule,
+            organization=organization,
+            frequency=RecurrenceFrequency.DAILY,
+            interval=1,
+        )
+        master = self._make_event(
+            calendar,
+            organization,
+            title="Recurring master",
+            external_id="serialize-event-master",
+            recurrence_rule=rule,
+        )
+        create_external_client_identifier(
+            organization=organization,
+            identified_object=master,
+            system="https://crm.example.com",
+            identifier="deal-master",
+        )
+        modified_occurrence = self._make_event(
+            calendar,
+            organization,
+            title="Recurring master (modified)",
+            external_id="serialize-event-occurrence",
+            start_time_tz_unaware=datetime.datetime(2025, 6, 2, 9, 0, 0),
+            end_time_tz_unaware=datetime.datetime(2025, 6, 2, 10, 0, 0),
+            parent_recurring_object=master,
+            is_recurring_exception=True,
+        )
+        master.create_exception(
+            exception_date=datetime.datetime(2025, 6, 2, 9, 0, tzinfo=datetime.UTC),
+            is_cancelled=False,
+            modified_object=modified_occurrence,
+        )
+
+        result = serialize_event(modified_occurrence)
+
+        assert [(i.system, i.identifier) for i in result.external_client_identifiers] == [
+            ("https://crm.example.com", "deal-master")
+        ]
 
     def test_serialize_event_data_input_includes_identifiers_when_provided(
         self, calendar, organization

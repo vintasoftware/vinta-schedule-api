@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Q, prefetch_related_objects
 from django.utils import timezone
 
 from audit.constants import AuditAction, AuditActorType
@@ -1307,6 +1307,18 @@ class CalendarEventService:
         def call_side_effects():
             if not context.calendar_side_effects_service:
                 return
+
+            # This closure calls ``self._serialize_event(event)`` once for
+            # ``on_update_event`` and again for every created/deleted/updated
+            # attendee dispatch below; each call reads
+            # ``event.external_client_identifiers.all()``. Prefetching once here --
+            # AFTER ``identifier_service.replace_for_target`` above has already
+            # written the new identifiers, and only when this deferred
+            # ``on_commit`` closure actually runs -- means every one of those
+            # calls reuses the same cache instead of re-querying, and none of them
+            # can observe the stale pre-write identifiers a prefetch taken earlier
+            # in the method would have cached.
+            prefetch_related_objects([event], "external_client_identifiers")
 
             permission_token = getattr(context.calendar_permission_service, "token", None)
             if permission_token is not None:

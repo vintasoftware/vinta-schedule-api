@@ -390,11 +390,21 @@ def test_update_event_omitting_attendee_identifiers_issues_no_extra_query(
 
     The pinned count is 29, not 28: the "External client identifiers" webhook-payload
     phase made ``calendar_service_utils.serialize_event`` read the *event's own*
-    identifiers (via ``event.external_client_identifiers.all()``) to populate the
-    webhook payload's ``external_client_identifiers`` key, and ``on_update_event``'s
-    snapshot is built once per ``update_event`` call. That is one unavoidable new
-    query, separate from -- and not a regression of -- the attendee-omission
+    identifiers (via ``event.external_client_identifiers.all()``), and
+    ``update_event`` calls ``self._serialize_event(event)`` once synchronously,
+    BEFORE any write to the event's identifiers, to build ``serialized_old_event``
+    for the permission check. That call's ``.all()`` is never prefetched -- it
+    deliberately reads the PRE-write identifiers, so it cannot share a cache with
+    the deferred ``on_commit`` closure's calls, which run only after this update's
+    identifier write has already happened -- so it costs its own single, unavoidable
+    query. This test only measures that synchronous portion (no
+    ``django_capture_on_commit_callbacks(execute=True)`` wraps the assertion), so
+    the deferred closure's own dispatch queries never enter this count. That one
+    query is separate from -- and not a regression of -- the attendee-omission
     invariant this test guards.
+    See ``test_update_event_on_commit_dispatch_reuses_prefetched_identifiers`` for
+    the query cost of the deferred ``on_commit`` dispatches this test does not
+    exercise, and how THAT closure avoids paying once per dispatch.
     """
     mock_google_adapter.create_event.return_value = _adapter_output("evt-noquery-omit")
     mock_google_adapter.update_event.return_value = _adapter_output("evt-noquery-omit")
@@ -434,6 +444,77 @@ def test_update_event_omitting_attendee_identifiers_issues_no_extra_query(
 
     with django_assert_num_queries(29):
         event_service.update_event(calendar.id, created.id, updated_input)
+
+
+@pytest.mark.django_db
+def test_update_event_on_commit_dispatch_reuses_prefetched_identifiers(
+    event_service,
+    mock_google_adapter,
+    calendar,
+    calendar_management_token,
+    social_account,
+    django_capture_on_commit_callbacks,
+    django_assert_num_queries,
+):
+    """Pins the real production cost of ``update_event``: the deferred
+    ``transaction.on_commit`` closure (``call_side_effects``), not just the
+    synchronous portion the test above measures.
+
+    An update that both adds and removes an external attendee makes
+    ``call_side_effects`` call ``self._serialize_event(event)`` THREE times: once
+    for ``on_update_event``, once for the added attendee's
+    ``on_add_attendee_to_event``, and once for the removed attendee's
+    ``on_remove_attendee_from_event``. Each call reads
+    ``event.external_client_identifiers.all()``. ``call_side_effects`` prefetches
+    that relation once, at the top of the closure, so all three of ITS calls reuse
+    the same cache and cost exactly one identifier query between them, not three --
+    proving the fix scales flat with the number of side-effect dispatches instead
+    of linearly with them.
+
+    The one synchronous call for the permission check, made before
+    ``call_side_effects`` is even scheduled, is untouched by this fix and still
+    costs its own separate query (as it always has): it must read the identifiers
+    as they were BEFORE this update's write, and the closure's prefetch only runs
+    later -- after the write -- so sharing one cache between the two would leak the
+    new identifiers into the old-state permission check, or the reverse. See the
+    prefetch call site's comment in ``call_side_effects`` for why it cannot be
+    hoisted any earlier.
+    """
+    mock_google_adapter.create_event.return_value = _adapter_output("evt-oncommit-scale")
+    mock_google_adapter.update_event.return_value = _adapter_output("evt-oncommit-scale")
+
+    with django_capture_on_commit_callbacks(execute=True):
+        created = event_service.create_event(
+            calendar.id,
+            _base_event_input(
+                external_attendances=[
+                    EventExternalAttendanceInputData(
+                        external_attendee=ExternalAttendeeInputData(
+                            email="stays-then-removed@example.com",
+                            name="Removed Attendee",
+                        )
+                    )
+                ]
+            ),
+        )
+    _grant_event_owner_token(created, social_account.user, calendar.organization)
+
+    # Drop the existing attendee (triggers `on_remove_attendee_from_event`) and add a
+    # brand new one (triggers `on_add_attendee_to_event`) in the same call.
+    updated_input = _base_event_input(
+        external_attendances=[
+            EventExternalAttendanceInputData(
+                external_attendee=ExternalAttendeeInputData(
+                    email="newly-added@example.com",
+                    name="Added Attendee",
+                )
+            )
+        ]
+    )
+
+    with django_assert_num_queries(75):
+        with django_capture_on_commit_callbacks(execute=True):
+            event_service.update_event(calendar.id, created.id, updated_input)
 
 
 # ---------------------------------------------------------------------------

@@ -47,20 +47,25 @@ WEBHOOK_EVENT_DESCRIPTIONS: dict[WebhookEventType, str] = {
         "Fires once per newly-added attendee (internal member or external invitee) when "
         "CalendarEventService.update_event adds them to an existing event's attendee list. The "
         "payload carries the attendee's email, name, status, user_id (null for external "
-        "attendees), and the event they were added to."
+        "attendees), and the event they were added to. The embedded event object carries the "
+        "event's external_client_identifiers, in the same shape as calendar_event_created."
     ),
     WebhookEventType.CALENDAR_EVENT_ATTENDEE_REMOVED: (
         "Fires once per attendee (internal member or external invitee) when "
         "CalendarEventService.update_event drops them from an existing event's attendee list "
         "during reconciliation. The payload carries the removed attendee's email, name, status, "
-        "user_id (null for external attendees), and the event they were removed from."
+        "user_id (null for external attendees), and the event they were removed from. The "
+        "embedded event object carries the event's external_client_identifiers, in the same "
+        "shape as calendar_event_created."
     ),
     WebhookEventType.CALENDAR_EVENT_ATTENDEE_UPDATED: (
         "Fires once per external attendee already on the event that CalendarEventService."
         "update_event matches while reconciling the attendee list, overwriting their email and "
         "name with the incoming values — even if those values are unchanged from before. The "
         "payload carries the updated attendee's email, name, status, user_id (null, as this "
-        "only applies to external attendees), and the event they belong to."
+        "only applies to external attendees), and the event they belong to. The embedded event "
+        "object carries the event's external_client_identifiers, in the same shape as "
+        "calendar_event_created."
     ),
     WebhookEventType.ORGANIZATION_MEMBER_CREATED: (
         "Fires after a new, active organization membership is created — covering an "
