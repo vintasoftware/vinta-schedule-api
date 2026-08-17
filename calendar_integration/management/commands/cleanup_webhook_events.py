@@ -1,9 +1,11 @@
 """Django management command for cleaning up old webhook events."""
 
+import datetime
 from typing import Any
 
 from django.core.management.base import BaseCommand, CommandParser
 
+from calendar_integration.models import CalendarWebhookEvent
 from calendar_integration.services.webhook_analytics_service import WebhookAnalyticsService
 from common.organization_context import organization_context
 from organizations.models import Organization
@@ -60,10 +62,6 @@ class Command(BaseCommand):
 
                 if dry_run:
                     # Count what would be deleted
-                    import datetime
-
-                    from calendar_integration.models import CalendarWebhookEvent
-
                     cutoff_date = datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(
                         days=days_to_keep
                     )

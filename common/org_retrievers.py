@@ -23,15 +23,10 @@ which is what would surface that exception, is deliberately not installed.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from django.http import HttpRequest
 
 from common.constants import ACTIVE_ORG_HEADER
-
-
-if TYPE_CHECKING:
-    from organizations.models import Organization
+from organizations.models import Organization
 
 
 def retrieve_by_x_organization_id(request: HttpRequest) -> Organization | None:
@@ -44,10 +39,6 @@ def retrieve_by_x_organization_id(request: HttpRequest) -> Organization | None:
     ``SingleOrganizationModelMixin``, so ``objects`` here is Django's stock
     manager and this lookup neither needs nor bypasses an organization filter.
     """
-    # Deferred: settings are imported long before the app registry is ready, and
-    # this module is named from a settings value.
-    from organizations.models import Organization
-
     raw_value = request.headers.get(ACTIVE_ORG_HEADER)
     if not raw_value:
         return None

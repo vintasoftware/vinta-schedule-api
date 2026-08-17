@@ -560,6 +560,10 @@ def resolve_branding_for_display(org: Organization | None) -> OrganizationBrandi
     if branding_root is None:
         return None
 
+    # Late, and it has to be -- see the docstring above: `di_core.containers
+    # .container` is only assigned in `DICoreConfig.ready()`, so a module-level
+    # `from ... import container` binds the `None` the module starts with and
+    # never sees the wired container.
     from di_core.containers import container
 
     if container is None:

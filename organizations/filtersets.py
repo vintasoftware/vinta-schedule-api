@@ -1,3 +1,6 @@
+from django.db.models import Q
+from django.utils import timezone
+
 from django_filters import rest_framework as filters
 
 from organizations.models import OrganizationInvitation, OrganizationMembership
@@ -39,8 +42,6 @@ class OrganizationInvitationFilterSet(filters.FilterSet):
 
     def filter_is_expired(self, queryset, name, value):
         """Filter by whether the invitation has expired."""
-        from django.utils import timezone
-
         now = timezone.now()
         if value:
             # Show only expired invitations
@@ -79,8 +80,6 @@ class OrganizationMembershipFilterSet(filters.FilterSet):
         fields = ("first_name", "last_name", "email", "search")
 
     def filter_search(self, queryset, name, value):
-        from django.db.models import Q
-
         return queryset.filter(
             Q(user__profile__first_name__icontains=value)
             | Q(user__profile__last_name__icontains=value)

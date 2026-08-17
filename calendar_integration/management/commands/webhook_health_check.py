@@ -1,5 +1,6 @@
 """Django management command for webhook health check and diagnostics."""
 
+import json
 from typing import Any
 
 from django.core.management.base import BaseCommand, CommandParser
@@ -82,8 +83,6 @@ class Command(BaseCommand):
             total_report["total_failed_events"] += org_report["events"]["failed"]
 
         if output_format == "json":
-            import json
-
             self.stdout.write(json.dumps(total_report, indent=2, default=str))
         else:
             self.print_text_report(total_report, verbose)

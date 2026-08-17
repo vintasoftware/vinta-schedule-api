@@ -3,6 +3,8 @@ from django.db import models
 from django.utils.translation import gettext_lazy as _
 
 from common.models import BaseModel
+from organizations.authorization import has_organization_permission
+from organizations.permission_catalog import MANAGE_MEMBERS
 from s3direct_overrides.model_fields import S3DirectImageField
 
 from .managers import UserManager
@@ -66,12 +68,7 @@ class User(AbstractBaseUser, PermissionsMixin, BaseModel):
         which enforces the membership's own `is_active` gate one layer further
         down. Pinned by
         `organizations/tests/test_permissions_parity.py::TestOnlyAMembershipGrants`.
-
-        Imported inside the method to avoid a circular import at module load.
         """
-        from organizations.authorization import has_organization_permission
-        from organizations.permission_catalog import MANAGE_MEMBERS
-
         return has_organization_permission(self, MANAGE_MEMBERS, organization)
 
     def __str__(self):

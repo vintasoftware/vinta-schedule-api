@@ -130,7 +130,10 @@ class DjangoORMAuditRepository(AuditRepository):
         """
         # Deferred import to avoid loading Django models before the app registry
         # is ready (audit/__init__.py is imported at app-load time and triggers
-        # this module; model imports must not execute at that point).
+        # this module; model imports must not execute at that point). Verified:
+        # hoisting it raises `AppRegistryNotReady: Apps aren't loaded yet.` during
+        # `django.setup()`. Every `audit.models` import in this file is late for
+        # that one reason; imports of anything else belong at the top.
         from audit.models import Audit, AuditAffectedMembership
 
         with transaction.atomic():
