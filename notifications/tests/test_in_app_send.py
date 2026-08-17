@@ -22,6 +22,7 @@ from notifications.notification_adapters.django_in_app import DjangoInAppNotific
 from notifications.notification_template_renderers.django_in_app_renderer import (
     DjangoTemplatedInAppRenderer,
 )
+from users.factories import UserFactory
 
 
 def _build_notification_service() -> NotificationService:
@@ -90,8 +91,6 @@ class TestInAppNotificationSend:
 
     def test_get_in_app_unread_excludes_other_users(self, user) -> None:
         """get_in_app_unread must not return another user's notifications."""
-        from users.factories import UserFactory
-
         other_user = UserFactory().create_user()
         service = _build_notification_service()
 

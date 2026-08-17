@@ -8,6 +8,7 @@ from django.http import HttpRequest
 
 import jwt
 import pytest
+from allauth.socialaccount import app_settings
 
 from accounts.models import RefreshToken
 from accounts.token_strategies import AccessAndRefreshTokenStrategy
@@ -186,7 +187,5 @@ def test_socialaccount_store_tokens_enabled():
     which silently drops access/refresh tokens after login. Without stored
     tokens the Google/Microsoft calendar import has nothing to authenticate with.
     """
-    from allauth.socialaccount import app_settings
-
     assert settings.SOCIALACCOUNT_STORE_TOKENS is True
     assert app_settings.STORE_TOKENS is True

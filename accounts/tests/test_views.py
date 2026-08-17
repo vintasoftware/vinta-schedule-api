@@ -8,6 +8,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 import pytest
+from allauth.headless.socialaccount.forms import RedirectToProviderForm
 from allauth.socialaccount.providers.base import ProviderException
 from model_bakery import baker
 
@@ -313,8 +314,6 @@ class TestGenericLoginPathUnaffectedByBrowserContext:
         and ``process`` -- there is no organization/tenant/slug field for a client to
         supply in the first place, so there is nothing for the view to read even if a
         caller tried to smuggle one in."""
-        from allauth.headless.socialaccount.forms import RedirectToProviderForm
-
         assert set(RedirectToProviderForm.base_fields) == {"provider", "callback_url", "process"}
 
     def _complete_login(
@@ -430,8 +429,6 @@ class TestGenericLoginPathUnaffectedByBrowserContext:
 class TestProviderRedirectAPIView:
     @staticmethod
     def get_url():
-        from django.urls import reverse
-
         return reverse("provider_redirect_json")
 
     @pytest.mark.django_db

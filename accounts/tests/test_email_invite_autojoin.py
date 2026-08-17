@@ -24,11 +24,14 @@ runtime (same pattern as test_email_confirmation_provisioning.py).
 
 import datetime
 
+from django.contrib.messages.storage.cookie import CookieStorage
+
 import pytest
 from allauth.account.adapter import get_adapter
 from allauth.account.models import EmailAddress
 from model_bakery import baker
 
+from accounts.base_forms import BaseVintaScheduleSignupForm
 from organizations.authorization import membership_holds_permission
 from organizations.models import Organization, OrganizationInvitation, OrganizationMembership
 from organizations.permission_catalog import MANAGE_MEMBERS
@@ -59,8 +62,6 @@ def _confirm_email(rf, email_address: EmailAddress) -> bool:
     this call via the adapter override, exercising the same hook as the headless
     verify-email endpoint.
     """
-    from django.contrib.messages.storage.cookie import CookieStorage
-
     request = rf.get("/")
     request._messages = CookieStorage(request)
     return get_adapter(request).confirm_email(request, email_address)
@@ -103,8 +104,6 @@ class TestInvitedEmailAutoJoin:
         AccountAdapter.confirm_email is driven so the adapter override fires and
         hands off to provision_tenant_for_user, whose invite-first branch auto-joins.
         """
-        from accounts.base_forms import BaseVintaScheduleSignupForm
-
         inviter = UserFactory().create_user(email="admin@invitetest.com")
         org = baker.make(Organization, name="Invited Org")
         invited_email = "newuser@invitetest.com"

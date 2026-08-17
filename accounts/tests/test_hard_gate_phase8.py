@@ -19,6 +19,7 @@ from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
 
+from calendar_integration.models import AvailableTime, BlockedTime, Calendar, CalendarGroup
 from organizations.models import Organization
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import make_membership
@@ -294,8 +295,6 @@ class TestWriteBulkGatedRefusal:
         ValidationError: "User has no organization membership.").
         No Calendar row is created.
         """
-        from calendar_integration.models import Calendar
-
         _, client = _gated_client("gated-cal-create@test.example")
         url = reverse("api:Calendars-list")
         before_count = Calendar.original_manager.count()
@@ -320,8 +319,6 @@ class TestWriteBulkGatedRefusal:
         membership-less users, so any calendar FK fails validation before save().
         No BlockedTime row is created.
         """
-        from calendar_integration.models import BlockedTime
-
         _, client = _gated_client("gated-bulk-bt@test.example")
         url = reverse("api:BlockedTimes-bulk-create")
         before_count = BlockedTime.original_manager.count()
@@ -355,8 +352,6 @@ class TestWriteBulkGatedRefusal:
         The batch serializer refuses membership-less users before any write.
         No AvailableTime row is created.
         """
-        from calendar_integration.models import AvailableTime
-
         _, client = _gated_client("gated-bulk-at@test.example")
         url = reverse("api:AvailableTimes-batch")
         before_count = AvailableTime.original_manager.count()
@@ -391,8 +386,6 @@ class TestWriteBulkGatedRefusal:
         returns False) before has_object_permission is even invoked.
         Covers the guarded has_object_permission path.
         """
-        from calendar_integration.models import CalendarGroup
-
         _, org, _ = _make_member("owner-cg@test.example")
         group = baker.make(CalendarGroup, organization=org)
 

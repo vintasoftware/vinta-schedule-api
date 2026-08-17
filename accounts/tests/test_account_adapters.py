@@ -5,6 +5,7 @@ from django.conf import settings as django_settings
 from django.utils import timezone
 
 import pytest
+from allauth.account import app_settings as account_app_settings
 from allauth.socialaccount.models import SocialLogin
 from model_bakery import baker
 
@@ -287,8 +288,6 @@ class TestAccountAdapter:
         # The User model has no username column; allauth must not try to
         # generate one (regression: "Unable to find a unique username" during
         # social signup). USER_MODEL_USERNAME_FIELD = None makes it a no-op.
-        from allauth.account import app_settings as account_app_settings
-
         assert account_app_settings.USER_MODEL_USERNAME_FIELD is None
         # Must not raise NotImplementedError.
         adapter.populate_username(None, User(email="fresh@example.com"))

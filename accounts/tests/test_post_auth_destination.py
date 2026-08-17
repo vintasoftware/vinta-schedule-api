@@ -23,6 +23,7 @@ from django.conf import settings as django_settings
 from django.urls import reverse
 
 import pytest
+from allauth.account.models import EmailAddress
 from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
@@ -178,8 +179,6 @@ class TestLoginReachesTheOrganizationDestination:
     """Every completed authentication answers the same way, not just signup."""
 
     def _verified_user(self, email: str) -> User:
-        from allauth.account.models import EmailAddress
-
         user = UserFactory().create_user(email=email)
         user.set_password(SIGNUP_PASSWORD)
         user.save()

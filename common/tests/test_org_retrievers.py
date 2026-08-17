@@ -22,6 +22,7 @@ from model_bakery import baker
 
 from common.constants import ACTIVE_ORG_HEADER, ACTIVE_ORG_HEADER_META_KEY
 from common.org_retrievers import retrieve_by_x_organization_id
+from common.utils import view_utils
 from organizations.models import Organization
 
 
@@ -46,8 +47,6 @@ class TestTheHeaderConstant:
         """One definition, shared by request resolution, the OpenAPI parameter
         and this retriever, so the documented header cannot drift from the one
         the code looks for."""
-        from common.utils import view_utils
-
         assert view_utils.ACTIVE_ORG_HEADER is ACTIVE_ORG_HEADER
 
 

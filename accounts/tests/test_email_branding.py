@@ -19,6 +19,7 @@ import pytest
 from model_bakery import baker
 
 from organizations.models import Organization, OrganizationBranding, OrganizationInvitation
+from organizations.notification_contexts import organization_invitation_context
 from users.factories import UserFactory
 
 
@@ -89,8 +90,6 @@ class TestEmailBranding:
             membership_user_id=None,
         )
 
-        from organizations.notification_contexts import organization_invitation_context
-
         ctx = organization_invitation_context(
             organization_invitation_id=invitation.id,
             invitation_url="https://example.com/accept?token=fake",
@@ -134,8 +133,6 @@ class TestEmailBranding:
             membership_user_id=None,
         )
 
-        from organizations.notification_contexts import organization_invitation_context
-
         ctx = organization_invitation_context(
             organization_invitation_id=invitation.id,
             invitation_url="https://example.com/accept?token=fake",
@@ -173,8 +170,6 @@ class TestEmailBranding:
             accepted_at=None,
             membership_user_id=None,
         )
-
-        from organizations.notification_contexts import organization_invitation_context
 
         ctx = organization_invitation_context(
             organization_invitation_id=invitation.id,
@@ -318,8 +313,6 @@ class TestInvitationTemplateRendering:
             membership_user_id=None,
         )
 
-        from organizations.notification_contexts import organization_invitation_context
-
         ctx = organization_invitation_context(
             organization_invitation_id=invitation.id,
             invitation_url="https://example.com/accept?token=fake",
@@ -372,8 +365,6 @@ class TestPublicApiInviteInvitedByNone:
             membership_user_id=None,
         )
 
-        from organizations.notification_contexts import organization_invitation_context
-
         # Must not raise NotificationContextGenerationError
         ctx = organization_invitation_context(
             organization_invitation_id=invitation.id,
@@ -406,8 +397,6 @@ class TestPublicApiInviteInvitedByNone:
             accepted_at=None,
             membership_user_id=None,
         )
-
-        from organizations.notification_contexts import organization_invitation_context
 
         ctx = organization_invitation_context(
             organization_invitation_id=invitation.id,
