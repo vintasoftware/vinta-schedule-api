@@ -3620,6 +3620,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
                     )
                 )
                 for ea in existing_event.external_attendances.all()
+                if ea.external_attendee_fk_id is not None
             ]
         else:
             # Supplied (including [] / null): replaces the full set. ScheduleEvent-
@@ -3640,6 +3641,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             existing_external_attendee_id_by_email = {
                 ea.external_attendee.email.strip().lower(): ea.external_attendee_fk_id
                 for ea in existing_event.external_attendances.all()
+                if ea.external_attendee_fk_id is not None
             }
             external_attendances = [
                 EventExternalAttendanceInputData(
