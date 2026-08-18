@@ -512,7 +512,15 @@ def test_update_event_on_commit_dispatch_reuses_prefetched_identifiers(
         ]
     )
 
-    with django_assert_num_queries(75):
+    # 78, up from the 75 this test was first pinned at. The +3 is not a regression
+    # and is not caused by anything in this file: PR #278 fixed the DI wiring of
+    # ``side_effects_pipeline`` (``providers.List``, not a plain tuple), so calendar
+    # side effects now really dispatch, and each of this update's THREE dispatches
+    # (event update, attendee add, attendee remove) costs one
+    # ``WebhookConfiguration`` lookup. The identifier prefetch this test exists to
+    # guard is unchanged: all three dispatches still share ONE identifier query
+    # between them, which is what the +3 (one per dispatch, not two) demonstrates.
+    with django_assert_num_queries(78):
         with django_capture_on_commit_callbacks(execute=True):
             event_service.update_event(calendar.id, created.id, updated_input)
 
