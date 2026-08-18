@@ -809,6 +809,56 @@ class TestUpdateCalendarEventMutation:
         assert event_b.title == "Owner B's Event"
 
     # ------------------------------------------------------------------
+    # SHOULD-FIX #7: bundle primary events are rejected outright rather than
+    # silently ignoring externalClientIdentifiers.
+    # ------------------------------------------------------------------
+
+    def test_bundle_primary_event_is_rejected_with_explicit_error(self, mock_rate_limiter):
+        """CalendarEventService.update_event returns EARLY for is_bundle_primary
+        events (via _update_bundle_event) before the identifier replace step, so
+        externalClientIdentifiers would be silently ignored there. Reject explicitly
+        instead of reaching that path at all -- this also proves the resolver never
+        reaches CalendarBundleService.update_bundle_event's callback into
+        update_event on an is_bundle_primary event.
+        """
+        mock_rate_limiter.return_value = iter([None])
+        org = self._make_org()
+        _owner, membership, calendar = self._make_owner_with_calendar(org)
+        event = self._make_event(org, calendar, is_bundle_primary=True)
+
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        response = self._post(
+            _UPDATE_CALENDAR_EVENT,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": self._update_input(
+                    org,
+                    event,
+                    title="Should Not Apply",
+                    externalClientIdentifiers=[
+                        {"system": "https://crm.example.com", "identifier": "deal-bundle"}
+                    ],
+                )
+            },
+        )
+
+        errors = assert_graphql_error(response)
+        assert "bundle primary" in errors[0]["message"].lower()
+
+        event.refresh_from_db()
+        assert event.title == "Original Title"
+        assert not (
+            ExternalClientIdentifier.objects.filter_by_organization(org.id)
+            .filter(identified_key=event.pk)
+            .exists()
+        )
+
+    # ------------------------------------------------------------------
     # Permission: missing calendar_event resource grant
     # ------------------------------------------------------------------
 

@@ -3566,6 +3566,17 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         except Calendar.DoesNotExist as exc:
             raise GraphQLError("Event not found.") from exc
 
+        # Bundle primary events: CalendarEventService.update_event returns EARLY (via
+        # _update_bundle_event) before the identifier replace step -- so
+        # externalClientIdentifiers would be silently ignored for these events,
+        # breaking this mutation's "clearing identifiers with [] removes exactly
+        # those rows" contract. Reject explicitly rather than silently ignoring the
+        # field. This also prevents this resolver from ever reaching
+        # CalendarBundleService.update_bundle_event's callback into update_event on
+        # an is_bundle_primary event.
+        if existing_event.is_bundle_primary:
+            raise GraphQLError("updateCalendarEvent does not support bundle primary events.")
+
         # --- title -----------------------------------------------------------
         if input.title is strawberry.UNSET:
             title = existing_event.title
