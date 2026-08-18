@@ -3546,6 +3546,14 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         except CalendarEvent.DoesNotExist as exc:
             raise GraphQLError("Event not found.") from exc
 
+        # Sentinel emitted by CalendarEventService.update_event's
+        # _public_token_may_write when a scoped-admin token's membership doesn't
+        # independently own the target calendar. assert_calendar_in_owner_scope below
+        # is a no-op for scoped_admin (scoped_calendar_ids returns None -- unrestricted
+        # -- for that scope), so this is the only place that check can still surface;
+        # remapped to the uniform not-found message to prevent a discriminating oracle.
+        calendar_not_found_sentinel = "Calendar matching query does not exist."
+
         try:
             # Owner-scope guard (defense in depth): a scoped token may only target
             # events on its owner's calendars. Raises Calendar.DoesNotExist when the
@@ -3729,6 +3737,13 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         except CalendarEvent.DoesNotExist as exc:
             raise GraphQLError("Event not found.") from exc
         except PermissionDenied as exc:
+            # Defense-in-depth: update_event raises PermissionDenied with the sentinel
+            # message when a scoped-admin (or racing cross-owner) SystemUser's
+            # calendar-ownership check fails. Surface it as the uniform not-found
+            # rather than the distinct sentinel -- see the comment on
+            # calendar_not_found_sentinel above.
+            if str(exc) == calendar_not_found_sentinel:
+                raise GraphQLError("Event not found.") from exc
             raise GraphQLError(
                 str(exc) or "You do not have permission to update this event."
             ) from exc

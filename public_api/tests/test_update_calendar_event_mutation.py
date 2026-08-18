@@ -36,6 +36,7 @@ from calendar_integration.models import (
 )
 from calendar_integration.services.calendar_side_effects_service import CalendarSideEffectsService
 from organizations.models import Organization, OrganizationMembership
+from organizations.tests.helpers import make_admin_membership
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess
 from public_api.services import PublicAPIAuthService
@@ -751,6 +752,61 @@ class TestUpdateCalendarEventMutation:
         )
         org_wide_data = assert_graphql_success(org_wide_response)
         assert org_wide_data["updateCalendarEvent"]["title"] == "Updated By Org Wide Token"
+
+    def test_scoped_admin_targeting_a_non_owned_event_gets_not_found_shaped_error(
+        self, mock_rate_limiter
+    ):
+        """A scoped-admin token (scoped to a membership holding
+        ``organizations.manage_members``) is unrestricted at the resolver-level
+        ``assert_calendar_in_owner_scope`` guard (``scoped_calendar_ids`` returns
+        ``None`` for scoped_admin) -- so the ONLY thing that can still reject a
+        non-owned-calendar event is the service's independent
+        ``CalendarEventService._public_token_may_write`` check, which raises
+        ``PermissionDenied`` with the distinct ``"Calendar matching query does not
+        exist."`` sentinel. That message must be remapped to the SAME
+        ``"Event not found."`` a genuinely missing event produces -- otherwise a
+        scoped-admin caller could distinguish "event exists on a calendar I don't
+        own" from "event does not exist", contradicting the documented no-existence-
+        leak invariant.
+        """
+        mock_rate_limiter.return_value = iter([None])
+        org = self._make_org()
+        admin_user = baker.make(get_user_model(), email=f"admin_{uuid.uuid4().hex[:8]}@example.com")
+        admin_membership = make_admin_membership(user=admin_user, organization=org, is_active=True)
+
+        _owner_b, _membership_b, calendar_b = self._make_owner_with_calendar(org)
+        event_b = self._make_event(org, calendar_b, title="Owner B's Event")
+
+        scoped_admin_system_user, scoped_admin_token, scoped_admin_auth_service = (
+            self._make_scoped_system_user(
+                org, admin_membership, [PublicAPIResources.CALENDAR_EVENT]
+            )
+        )
+
+        non_owned_response = self._post(
+            _UPDATE_CALENDAR_EVENT,
+            scoped_admin_system_user,
+            scoped_admin_token,
+            scoped_admin_auth_service,
+            {"input": self._update_input(org, event_b, title="Should Not Apply From Scoped Admin")},
+        )
+        non_owned_errors = assert_graphql_error(non_owned_response)
+        non_owned_message = non_owned_errors[0]["message"]
+
+        missing_event_response = self._post(
+            _UPDATE_CALENDAR_EVENT,
+            scoped_admin_system_user,
+            scoped_admin_token,
+            scoped_admin_auth_service,
+            {"input": {"organizationId": org.id, "eventId": 999999994}},
+        )
+        missing_event_errors = assert_graphql_error(missing_event_response)
+        missing_event_message = missing_event_errors[0]["message"]
+
+        assert non_owned_message == missing_event_message == "Event not found."
+
+        event_b.refresh_from_db()
+        assert event_b.title == "Owner B's Event"
 
     # ------------------------------------------------------------------
     # Permission: missing calendar_event resource grant
