@@ -593,6 +593,49 @@ class TestUpdateCalendarEventMutation:
         )
 
     # ------------------------------------------------------------------
+    # SHOULD-FIX #3: duplicate normalized emails in one payload are rejected, not
+    # silently collapsed.
+    # ------------------------------------------------------------------
+
+    def test_duplicate_normalized_emails_in_external_attendees_is_rejected(self, mock_rate_limiter):
+        """Two entries in the same `externalAttendees` payload resolving to the same
+        normalized email must be rejected outright, not silently collapsed onto one
+        row (which would drop the second entry's name/identifiers).
+        """
+        mock_rate_limiter.return_value = iter([None])
+        org = self._make_org()
+        _owner, membership, calendar = self._make_owner_with_calendar(org)
+        event = self._make_event(org, calendar)
+
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        response = self._post(
+            _UPDATE_CALENDAR_EVENT,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": self._update_input(
+                    org,
+                    event,
+                    externalAttendees=[
+                        {"email": "a@x.com", "name": "A"},
+                        {"email": " A@X.com ", "name": "B"},
+                    ],
+                )
+            },
+        )
+
+        assert_graphql_error(response)
+        assert (
+            not EventExternalAttendance.objects.filter_by_organization(org.id)
+            .filter(event_fk_id=event.id)
+            .exists()
+        )
+
+    # ------------------------------------------------------------------
     # Owner scope: org-wide vs scoped, and the not-found-shaped cross-owner error
     # ------------------------------------------------------------------
 

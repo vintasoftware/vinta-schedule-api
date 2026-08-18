@@ -3643,6 +3643,26 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
                 for ea in existing_event.external_attendances.all()
                 if ea.external_attendee_fk_id is not None
             }
+
+            # Reject duplicate normalized emails up front: two entries resolving to
+            # the same external_attendee_fk_id would both take the "update in place"
+            # branch on the same row, so the second bulk_update/replace_for_target
+            # silently overwrites the first and the caller gets one attendee back
+            # after asking for two.
+            supplied_normalized_emails = [
+                external.email.strip().lower() for external in (input.external_attendees or [])
+            ]
+            duplicate_emails = {
+                email
+                for email in supplied_normalized_emails
+                if supplied_normalized_emails.count(email) > 1
+            }
+            if duplicate_emails:
+                raise GraphQLError(
+                    "externalAttendees contains duplicate email addresses (case/"
+                    "whitespace-insensitive): " + ", ".join(sorted(duplicate_emails))
+                )
+
             external_attendances = []
             for external in input.external_attendees or []:
                 matched_attendee = existing_external_attendee_by_email.get(
