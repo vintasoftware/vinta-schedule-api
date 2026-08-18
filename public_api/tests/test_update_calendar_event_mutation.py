@@ -33,6 +33,7 @@ from calendar_integration.models import (
     EventExternalAttendance,
     ExternalAttendee,
     ExternalClientIdentifier,
+    RecurrenceRule,
 )
 from calendar_integration.services.calendar_side_effects_service import CalendarSideEffectsService
 from organizations.models import Organization, OrganizationMembership
@@ -289,6 +290,47 @@ class TestUpdateCalendarEventMutation:
             .exists()
         )
 
+    def test_title_only_update_on_recurring_event_leaves_recurrence_rule_byte_identical(
+        self, mock_rate_limiter
+    ):
+        """This mutation's non-goal: recurrence stays owned by
+        ``rescheduleCalendarEvent``. A title-only update on a recurring event must
+        leave the ``RecurrenceRule`` row -- same pk, same rrule string -- completely
+        untouched.
+        """
+        mock_rate_limiter.return_value = iter([None])
+        org = self._make_org()
+        _owner, membership, calendar = self._make_owner_with_calendar(org)
+
+        recurrence_rule = RecurrenceRule.from_rrule_string(
+            rrule_string="RRULE:FREQ=WEEKLY;COUNT=4;BYDAY=TH", organization=org
+        )
+        recurrence_rule.save()
+        event = self._make_event(org, calendar, recurrence_rule=recurrence_rule)
+
+        original_recurrence_rule_id = recurrence_rule.id
+        original_rrule_string = recurrence_rule.to_rrule_string()
+
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        response = self._post(
+            _UPDATE_CALENDAR_EVENT,
+            system_user,
+            token,
+            auth_service,
+            {"input": self._update_input(org, event, title="Recurring Title Update")},
+        )
+
+        data = assert_graphql_success(response)
+        assert data["updateCalendarEvent"]["title"] == "Recurring Title Update"
+
+        event.refresh_from_db()
+        assert event.recurrence_rule_fk_id == original_recurrence_rule_id
+        event.recurrence_rule.refresh_from_db()
+        assert event.recurrence_rule.to_rrule_string() == original_rrule_string
+
     # ------------------------------------------------------------------
     # Identifier replace / clear
     # ------------------------------------------------------------------
@@ -366,6 +408,54 @@ class TestUpdateCalendarEventMutation:
             .filter(identified_key=event.pk)
             .exists()
         )
+
+    # ------------------------------------------------------------------
+    # Internal attendees (attendeeUserIds) replace -- successful write, persisted
+    # ------------------------------------------------------------------
+
+    def test_attendee_user_ids_supplied_persists_internal_attendances(self, mock_rate_limiter):
+        """`attendeeUserIds` on a SUCCESSFUL (non-rolled-back) write replaces the
+        event's internal attendances: a previously-attending member not re-supplied
+        is dropped, and a newly-supplied member is added -- and both are persisted,
+        not just echoed in the response.
+        """
+        mock_rate_limiter.return_value = iter([None])
+        org = self._make_org()
+        _owner, membership, calendar = self._make_owner_with_calendar(org)
+        event = self._make_event(org, calendar)
+
+        dropped_attendee = self._add_internal_attendee(org, event)
+
+        user_model = get_user_model()
+        new_user = baker.make(user_model, email=f"new_{uuid.uuid4().hex[:8]}@example.com")
+        baker.make(Profile, user=new_user, first_name="New", last_name="Attendee")
+        baker.make(OrganizationMembership, user=new_user, organization=org, is_active=True)
+
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        response = self._post(
+            _UPDATE_CALENDAR_EVENT,
+            system_user,
+            token,
+            auth_service,
+            {"input": self._update_input(org, event, attendeeUserIds=[new_user.id])},
+        )
+
+        data = assert_graphql_success(response)
+        result_user_ids = {
+            a["membership"]["userId"] for a in data["updateCalendarEvent"]["attendances"]
+        }
+        assert result_user_ids == {new_user.id}
+
+        persisted_user_ids = set(
+            EventAttendance.objects.filter_by_organization(org.id)
+            .filter(event_fk_id=event.id)
+            .values_list("membership_user_id", flat=True)
+        )
+        assert persisted_user_ids == {new_user.id}
+        assert dropped_attendee.id not in persisted_user_ids
 
     # ------------------------------------------------------------------
     # External attendee replace: webhooks + surviving-attendee identifier preservation
@@ -478,6 +568,108 @@ class TestUpdateCalendarEventMutation:
             event_type=WebhookEventType.CALENDAR_EVENT_ATTENDEE_REMOVED
         )
         assert removed_webhook.payload["email"] == "removed@example.com"
+
+    def test_per_attendee_identifiers_supplied_on_update_path_are_persisted(
+        self, mock_rate_limiter
+    ):
+        """Per-attendee `externalClientIdentifiers` supplied on an attendee that
+        already exists on the event (the UPDATE path, not create -- only the create
+        path is covered by Phase 3) replaces that attendee's own identifiers.
+        """
+        mock_rate_limiter.return_value = iter([None])
+        org = self._make_org()
+        _owner, membership, calendar = self._make_owner_with_calendar(org)
+        event = self._make_event(org, calendar)
+
+        attendee = self._add_external_attendee(org, event, "guest@example.com", name="Guest")
+        create_external_client_identifier(
+            organization=org,
+            identified_object=attendee,
+            system="https://crm.example.com",
+            identifier="contact-old",
+        )
+
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        response = self._post(
+            _UPDATE_CALENDAR_EVENT,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": self._update_input(
+                    org,
+                    event,
+                    externalAttendees=[
+                        {
+                            "email": "guest@example.com",
+                            "name": "Guest",
+                            "externalClientIdentifiers": [
+                                {"system": "https://crm.example.com", "identifier": "contact-new"}
+                            ],
+                        }
+                    ],
+                )
+            },
+        )
+
+        data = assert_graphql_success(response)
+        result = data["updateCalendarEvent"]
+        assert len(result["externalAttendees"]) == 1
+        assert result["externalAttendees"][0]["externalClientIdentifiers"] == [
+            {"system": "https://crm.example.com", "identifier": "contact-new"}
+        ]
+
+        # Same pk (update in place), old identifier gone, new one persisted.
+        assert (
+            ExternalAttendee.objects.filter_by_organization(org.id).filter(id=attendee.id).exists()
+        )
+        assert not (
+            ExternalClientIdentifier.objects.filter_by_organization(org.id)
+            .filter(identified_key=attendee.pk, identifier="contact-old")
+            .exists()
+        )
+        assert (
+            ExternalClientIdentifier.objects.filter_by_organization(org.id)
+            .filter(identified_key=attendee.pk, identifier="contact-new")
+            .exists()
+        )
+
+    def test_external_attendees_empty_list_clears_all_attendees(self, mock_rate_limiter):
+        """`externalAttendees: []` is a full clear -- every existing external
+        attendee on the event is removed."""
+        mock_rate_limiter.return_value = iter([None])
+        org = self._make_org()
+        _owner, membership, calendar = self._make_owner_with_calendar(org)
+        event = self._make_event(org, calendar)
+
+        attendee = self._add_external_attendee(org, event, "guest@example.com", name="Guest")
+
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        response = self._post(
+            _UPDATE_CALENDAR_EVENT,
+            system_user,
+            token,
+            auth_service,
+            {"input": self._update_input(org, event, externalAttendees=[])},
+        )
+
+        data = assert_graphql_success(response)
+        assert data["updateCalendarEvent"]["externalAttendees"] == []
+
+        assert (
+            not EventExternalAttendance.objects.filter_by_organization(org.id)
+            .filter(event_fk_id=event.id)
+            .exists()
+        )
+        assert not (
+            ExternalAttendee.objects.filter_by_organization(org.id).filter(id=attendee.id).exists()
+        )
 
     # ------------------------------------------------------------------
     # BLOCKER regression: case/whitespace-insensitive email matching must NOT
