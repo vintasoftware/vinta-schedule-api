@@ -3631,14 +3631,22 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             # entry's own external_client_identifiers is explicitly supplied. An
             # unmatched email is a genuinely new attendee; an existing email absent
             # from the new list is removed (fires the attendee-removed webhook).
+            # Keys are normalized (stripped + lowercased) so a case or whitespace
+            # difference in the caller's payload doesn't miss an existing row --
+            # mirroring calendar_permission_service.py's identical normalization. A
+            # miss here routes the entry down update_event's create branch while the
+            # existing row is hard-deleted, cascading away its ExternalClientIdentifier
+            # rows.
             existing_external_attendee_id_by_email = {
-                ea.external_attendee.email: ea.external_attendee_fk_id
+                ea.external_attendee.email.strip().lower(): ea.external_attendee_fk_id
                 for ea in existing_event.external_attendances.all()
             }
             external_attendances = [
                 EventExternalAttendanceInputData(
                     external_attendee=ExternalAttendeeInputData(
-                        id=existing_external_attendee_id_by_email.get(external.email),
+                        id=existing_external_attendee_id_by_email.get(
+                            external.email.strip().lower()
+                        ),
                         email=external.email,
                         name=external.name,
                         external_client_identifiers=_map_external_client_identifiers(

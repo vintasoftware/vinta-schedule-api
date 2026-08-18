@@ -479,6 +479,76 @@ class TestUpdateCalendarEventMutation:
         assert removed_webhook.payload["email"] == "removed@example.com"
 
     # ------------------------------------------------------------------
+    # BLOCKER regression: case/whitespace-insensitive email matching must NOT
+    # wipe an existing external attendee (and its identifiers) just because the
+    # caller re-sent the same email with different casing/whitespace.
+    # ------------------------------------------------------------------
+
+    def test_resending_attendee_email_with_different_case_preserves_pk_and_identifiers(
+        self, mock_rate_limiter
+    ):
+        """Re-sending an existing external attendee's email with different case (and
+        surrounding whitespace) must be treated as the SAME attendee, not a delete +
+        recreate.
+
+        Falsifiable: against the unfixed resolver (raw, case-sensitive, untrimmed
+        dict key/lookup), "Guest@Example.com" stored vs " guest@example.com "
+        supplied is a lookup miss -- the existing attendee row is deleted (cascading
+        away its ExternalClientIdentifier) and a new attendee is created with zero
+        identifiers. This test pins the opposite: the pk is unchanged and the
+        identifier survives.
+        """
+        mock_rate_limiter.return_value = iter([None])
+        org = self._make_org()
+        _owner, membership, calendar = self._make_owner_with_calendar(org)
+        event = self._make_event(org, calendar)
+
+        attendee = self._add_external_attendee(org, event, "Guest@Example.com", name="Guest")
+        create_external_client_identifier(
+            organization=org,
+            identified_object=attendee,
+            system="https://crm.example.com",
+            identifier="contact-1",
+        )
+
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        response = self._post(
+            _UPDATE_CALENDAR_EVENT,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": self._update_input(
+                    org,
+                    event,
+                    externalAttendees=[{"email": " guest@example.com ", "name": "Guest"}],
+                )
+            },
+        )
+
+        data = assert_graphql_success(response)
+        result = data["updateCalendarEvent"]
+
+        assert len(result["externalAttendees"]) == 1
+        assert result["externalAttendees"][0]["externalClientIdentifiers"] == [
+            {"system": "https://crm.example.com", "identifier": "contact-1"}
+        ]
+
+        # The pk is unchanged -- the row was updated in place, not deleted+recreated.
+        assert (
+            ExternalAttendee.objects.filter_by_organization(org.id).filter(id=attendee.id).exists()
+        )
+        assert (
+            ExternalClientIdentifier.objects.filter_by_organization(org.id)
+            .filter(system="https://crm.example.com", identifier="contact-1")
+            .filter(identified_key=attendee.pk)
+            .exists()
+        )
+
+    # ------------------------------------------------------------------
     # Owner scope: org-wide vs scoped, and the not-found-shaped cross-owner error
     # ------------------------------------------------------------------
 
