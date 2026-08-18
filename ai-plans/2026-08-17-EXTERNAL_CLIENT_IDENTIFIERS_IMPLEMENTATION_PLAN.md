@@ -291,6 +291,10 @@ justification, and note that each phase touching an existing write path carries 
 no-op-when-omitted regression test in its place. Phases 4, 5 and 6 each depend only on Phases 1–2
 (Phase 6 also on Phase 3), so they can land in any order once the foundation is merged.
 
+**Phase 7 was added on 2026-08-18, after Phases 1–6 shipped.** It is not part of the original
+design; it exists because the Tier 4 review of Phase 6 traced six findings to one root cause in
+an internal dataclass. It depends on all of Phases 1–6 and must land last.
+
 ### Phase 1 — Add the ExternalClientIdentifier table
 
 **Goal**: the table, its constraints and its cascade behavior exist. Ship value: none on its own —
@@ -569,6 +573,110 @@ Acceptance: an owner-scoped public-API token can change an event's title without
 attendees or identifiers, cannot touch an event outside its owner's calendars, and clearing
 identifiers with `[]` removes exactly those rows.
 
+### Phase 7 — Make the event input tri-state, and two fixes it depends on
+
+**Added 2026-08-18, after Phases 1–6 shipped.** This phase was not in the original plan. It exists
+because the Tier 4 review of Phase 6 traced six separate findings to a single root cause, and
+fixing that cause is a smaller change than defending against its symptoms one at a time.
+
+**Goal**: `CalendarEventInputData` becomes tri-state on every field a caller can omit, so
+`update_event` skips what was not supplied instead of being handed a reconstruction of it. Ship
+value: removes a live lost-update race and a partner-visible webhook storm, and deletes the code
+path that produced Phase 6's BLOCKER.
+
+**Feature flag**: none — a semantic change to an internal dataclass with every caller updated in
+the same commit.
+
+**Why this is needed.** `CalendarEventInputData.title`, `description`, `attendances` and
+`external_attendances` are *always-replace*. Only `external_client_identifiers` is natively
+tri-state (`None` = untouched), added in Phase 2. Because of that asymmetry, Phase 6's
+`update_calendar_event` resolver reads the event's current state from the database and re-sends it
+for any field the caller left `UNSET`. The Tier 4 reviewer traced six findings to that
+reconstruction:
+
+1. A case-sensitive email match that hard-deleted an attendee and cascaded away its
+   `ExternalClientIdentifier` rows, returning `200`. Fixed defensively in Phase 6 by normalizing
+   with `.strip().lower()`; the root cause remains.
+2. `name` silently blanked when an attendee was re-sent without one — `ScheduleEventExternalAttendeeInput.name`
+   defaults to `""`, not `UNSET`. Fixed defensively in Phase 6.
+3. Duplicate emails in one payload collapsing two attendees into one. Rejected explicitly in Phase 6.
+4. **A lost-update race, still live.** The resolver's read happens outside `update_event`'s
+   transaction with no lock, so two concurrent `updateCalendarEvent` calls touching *different*
+   fields can silently revert each other. Request A sends `{title}` and reads attendees `[u1]`;
+   request B sends `{attendeeUserIds: [u1, u2]}` and commits; A then commits `title` **and**
+   `attendances=[u1]`, deleting u2 while B's caller was told it succeeded.
+5. **Spurious `CALENDAR_EVENT_ATTENDEE_UPDATED` webhooks, still live.** Reconstructing every
+   existing attendee *with its id* puts them all on `update_event`'s update-in-place branch, which
+   unconditionally appends to `serialized_external_attendances_to_update`. A title-only update on
+   an event with 50 external attendees emits 50 attendee-updated webhooks plus a `bulk_update`.
+   The plan's **Guiding Decisions** treat webhook payloads as a partner contract.
+6. The email-matching layer existing at all.
+
+Items 4 and 5 are not fixed anywhere. Items 1–3 are patched at the symptom.
+
+Changes:
+1. @calendar_integration/services/dataclasses.py: `title`, `description`, `attendances` and
+   `external_attendances` on `CalendarEventInputData` accept `None` meaning "leave untouched",
+   matching what `external_client_identifiers` already does.
+2. @calendar_integration/services/calendar_event_service.py: `update_event` skips the
+   title/description assignment, the internal-attendance reconciliation and the
+   external-attendance reconciliation when the corresponding field is `None`. `create_event`
+   semantics are unchanged — on create, `None` behaves as today (empty), it does not raise.
+3. Every construction site of `CalendarEventInputData` is made explicit so no existing caller
+   changes behavior: the Phase 5 REST serializers, `schedule_event`, `reschedule_calendar_event`,
+   `CalendarBundleService`, and the tests. **Enumerate them before touching `update_event`** —
+   this dataclass is shared across REST, GraphQL and the bundle path, which is why the refactor
+   was deferred out of Phase 6 rather than folded into it.
+4. @public_api/mutations.py: delete `update_calendar_event`'s read-then-resend reconstruction and
+   pass `strawberry.UNSET` → `None` straight through, exactly as it already does for
+   `externalClientIdentifiers`.
+5. @calendar_integration/services/calendar_service_utils.py: `serialize_event_external_attendee`
+   (~line 174) unconditionally dereferences `external_attendance.external_attendee_fk`.
+   `EventExternalAttendance.external_attendee` is `null=True`, so **any** `update_event` call —
+   any caller, not just the public API — raises `AttributeError` on an event carrying such a row.
+   Pre-existing, surfaced while testing Phase 6's null guard. A NULL attendee has no email or name
+   to report, so decide deliberately whether to skip the row or emit a null-safe payload.
+6. Re-pin the query-count assertions, **last**, after 1–5 have settled.
+
+**An open decision this phase must make.** When a caller *does* supply `externalAttendees`,
+`ScheduleEventExternalAttendeeInput` still carries no `id`, so `update_event` cannot match by id.
+Tri-state removes the need to match anything in the *omitted* case, but not the supplied one.
+Either keep email matching for supplied lists — retaining the `.strip().lower()` normalization,
+since removing it reintroduces finding 1 — or accept plain replace-the-set (delete and recreate)
+semantics and document loudly that a supplied list replaces wholesale, including identifiers.
+
+**On the query counts.** The webhook DI fix ([#278](https://github.com/vintasoftware/vinta-schedule-api/pull/278))
+makes calendar side effects actually dispatch, and each dispatch costs one `WebhookConfiguration`
+lookup. Measured against this stack with that fix cherry-picked: **exactly one assertion moves**,
+`test_update_event_on_commit_dispatch_reuses_prefetched_identifiers`, from **75 to 78** — three
+dispatches (event update, attendee add, attendee remove). Phase 5's ICS count of 26 and the N+1
+assertions are unaffected. The structural change in items 1–4 will move counts again by removing
+the spurious attendee-update dispatches, so re-pin once at the end and state what each delta is
+rather than bumping the number.
+
+Spec use-case: none directly — this is a correctness and contract-hygiene phase.
+
+Tests:
+- **Integration**: a title-only `updateCalendarEvent` on an event with external attendees emits
+  **zero** `CALENDAR_EVENT_ATTENDEE_UPDATED` webhooks. The existing Phase 6 webhook test cannot
+  see this: it registers no `WebhookConfiguration` for that event type and asserts only
+  `_ADDED` / `_REMOVED`.
+- **Integration**: an `update_event` over an event carrying an `EventExternalAttendance` with a
+  NULL `external_attendee` does not raise.
+- **Regression**: every Phase 6 test passes unchanged. Any that must change needs an explicit
+  argument that it is not a weakened assertion.
+- Note that calendar webhooks do not dispatch at all until #278 lands, so any test asserting real
+  dispatch must hand-wire the pipeline the way `webhooks/tests/test_calendar_event_identifier_payloads.py`
+  does.
+
+**Suggested AI model**: Tier 4 (IDs in [resources/ai-models.yaml](../.claude/skills/plan-feature/resources/ai-models.yaml)).
+Changing the semantics of a dataclass shared by REST, GraphQL and the bundle fan-out, where the
+failure mode is silent data loss in an existing caller rather than a test going red.
+
+Acceptance: an `updateCalendarEvent` that supplies only `title` issues no attendee writes and no
+attendee webhooks, leaves attendees and identifiers untouched, and cannot revert a concurrent
+update to a field it did not mention. The full suite is green with no assertion weakened.
+
 ## 6. Risk & Rollout Notes
 
 **No feature flag, and what stands in for one.** The repo has no flag primitive and this feature
@@ -691,3 +799,12 @@ operation and dump the table first.
 - @public_api/permissions.py (edit)
 - @public_api/docs_content.py (edit)
 - @public_api/tests/test_update_calendar_event_mutation.py (new)
+
+**Phase 7 — tri-state event input (added 2026-08-18)**
+- @calendar_integration/services/dataclasses.py (edit: `CalendarEventInputData` — `title`, `description`, `attendances`, `external_attendances` accept `None` = untouched)
+- @calendar_integration/services/calendar_event_service.py (edit: `update_event` skips each block when its field is `None`; `create_event` unchanged)
+- @public_api/mutations.py (edit: delete `update_calendar_event`'s read-then-resend reconstruction)
+- @calendar_integration/services/calendar_service_utils.py (edit: null-safe `serialize_event_external_attendee`)
+- @calendar_integration/serializers.py, @public_api/queries.py, @calendar_integration/services/calendar_bundle_service.py (edit: make every `CalendarEventInputData` construction site explicit — enumerate before changing `update_event`)
+- @calendar_integration/tests/services/test_calendar_event_service_identifiers.py (edit: re-pin the on-commit query count)
+- @public_api/tests/test_update_calendar_event_mutation.py (edit: no-attendee-webhook-on-title-only test)
