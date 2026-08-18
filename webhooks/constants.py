@@ -25,41 +25,47 @@ WEBHOOK_EVENT_DESCRIPTIONS: dict[WebhookEventType, str] = {
         "Fires after a new calendar event is created via CalendarEventService.create_event, "
         "once the creating transaction commits. The payload carries the created event's id, "
         "calendar_id, recurrence flags (is_recurring, recurring_event_id), "
-        "start_time/end_time/timezone, title, and description."
+        "start_time/end_time/timezone, title, description, and external_client_identifiers "
+        "(a list of {system, identifier} objects -- [] when the event has none)."
     ),
     WebhookEventType.CALENDAR_EVENT_UPDATED: (
         "Fires after an existing calendar event's fields (title, description, start/end time, "
         "timezone, or recurrence rule) are changed via CalendarEventService.update_event, once "
         "the transaction commits. The payload carries the updated event's id, calendar_id, "
-        "recurrence flags, start_time/end_time/timezone, title, and description — the same "
-        "shape as calendar_event_created."
+        "recurrence flags, start_time/end_time/timezone, title, description, and "
+        "external_client_identifiers — the same shape as calendar_event_created."
     ),
     WebhookEventType.CALENDAR_EVENT_DELETED: (
         "Fires after a calendar event is removed via CalendarEventService.delete_event, once "
         "the transaction commits. Deleting a single occurrence of a recurring series also "
         "records a cancellation exception on the series so future occurrence generation skips "
         "it, in addition to the occurrence's own row being deleted. The payload is a snapshot "
-        "of the event captured immediately before deletion, in the same shape as "
-        "calendar_event_created."
+        "of the event -- including its external_client_identifiers -- captured immediately "
+        "before deletion, in the same shape as calendar_event_created."
     ),
     WebhookEventType.CALENDAR_EVENT_ATTENDEE_ADDED: (
         "Fires once per newly-added attendee (internal member or external invitee) when "
         "CalendarEventService.update_event adds them to an existing event's attendee list. The "
         "payload carries the attendee's email, name, status, user_id (null for external "
-        "attendees), and the event they were added to."
+        "attendees), and the event they were added to. The embedded event object carries the "
+        "event's external_client_identifiers, in the same shape as calendar_event_created."
     ),
     WebhookEventType.CALENDAR_EVENT_ATTENDEE_REMOVED: (
         "Fires once per attendee (internal member or external invitee) when "
         "CalendarEventService.update_event drops them from an existing event's attendee list "
         "during reconciliation. The payload carries the removed attendee's email, name, status, "
-        "user_id (null for external attendees), and the event they were removed from."
+        "user_id (null for external attendees), and the event they were removed from. The "
+        "embedded event object carries the event's external_client_identifiers, in the same "
+        "shape as calendar_event_created."
     ),
     WebhookEventType.CALENDAR_EVENT_ATTENDEE_UPDATED: (
         "Fires once per external attendee already on the event that CalendarEventService."
         "update_event matches while reconciling the attendee list, overwriting their email and "
         "name with the incoming values — even if those values are unchanged from before. The "
         "payload carries the updated attendee's email, name, status, user_id (null, as this "
-        "only applies to external attendees), and the event they belong to."
+        "only applies to external attendees), and the event they belong to. The embedded event "
+        "object carries the event's external_client_identifiers, in the same shape as "
+        "calendar_event_created."
     ),
     WebhookEventType.ORGANIZATION_MEMBER_CREATED: (
         "Fires after a new, active organization membership is created — covering an "

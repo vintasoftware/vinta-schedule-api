@@ -165,6 +165,10 @@ class ExternalEventChangeRequestService:
         # External attendees.
         for external_attendance in event.external_attendances.all():
             ext_serialized = serialize_event_external_attendee(external_attendance)
+            if ext_serialized is None:
+                # Row with a NULL external_attendee — no identity to report, skip,
+                # matching the orphan-internal-attendance handling above.
+                continue
             attendees.append(
                 EventAttendeeData(
                     email=ext_serialized.email,

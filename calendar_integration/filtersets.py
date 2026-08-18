@@ -1,10 +1,12 @@
 from django_filters import rest_framework as filters
+from rest_framework.exceptions import ValidationError
 
 from calendar_integration.constants import (
     CalendarProvider,
     CalendarType,
     ExternalEventChangeRequestStatus,
 )
+from calendar_integration.external_client_identifiers import normalize_system
 from calendar_integration.models import (
     AvailableTime,
     BlockedTime,
@@ -78,6 +80,20 @@ class CalendarEventFilterSet(filters.FilterSet):
         field_name="calendar_fk_id",
         label="Filter by calendar ID",
     )
+    external_client_identifier_system = filters.CharFilter(
+        method="filter_external_client_identifier",
+        label=(
+            "Filter by client identifier system. Must be supplied together with "
+            "external_client_identifier_identifier."
+        ),
+    )
+    external_client_identifier_identifier = filters.CharFilter(
+        method="filter_external_client_identifier",
+        label=(
+            "Filter by client identifier value. Must be supplied together with "
+            "external_client_identifier_system."
+        ),
+    )
 
     class Meta:
         model = CalendarEvent
@@ -101,6 +117,45 @@ class CalendarEventFilterSet(filters.FilterSet):
                 if membership
                 else Calendar.original_manager.none()
             ),
+        )
+
+    def filter_external_client_identifier(self, queryset, name, value):
+        """Both-or-neither: supplying one of the pair alone is a 400.
+
+        django-filter's method-filter wrapper only calls this when the
+        triggering field's own value is non-empty, so it fires once (if only
+        one of the pair is supplied -- the error case) or twice (if both are
+        supplied). The actual join is applied only once, on the ``system``
+        field's call, to avoid filtering twice.
+
+        Keeps the query on the ``extclientid_uniq_system_ident`` index prefix
+        (leading column ``organization``) -- an identifier-only filter would not
+        use it. ``system`` is normalized before matching.
+        """
+        system = self.data.get("external_client_identifier_system")
+        identifier = self.data.get("external_client_identifier_identifier")
+        if not system or not identifier:
+            raise ValidationError(
+                {
+                    "external_client_identifier_system": (
+                        "external_client_identifier_system and "
+                        "external_client_identifier_identifier must be supplied together."
+                    )
+                }
+            )
+
+        if name != "external_client_identifier_system":
+            return queryset
+
+        membership = self.request.organization_membership if self.request else None
+        if membership is None:
+            return queryset.none()
+
+        normalized_system = normalize_system(system)
+        return queryset.filter(
+            external_client_identifiers__system=normalized_system,
+            external_client_identifiers__identifier=identifier,
+            external_client_identifiers__organization=membership.organization_id,
         )
 
 

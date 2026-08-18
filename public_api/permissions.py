@@ -85,6 +85,7 @@ class OrganizationResourceAccess(BasePermission):
         "updateBlockedTime": PublicAPIResources.UPDATE_BLOCKED_TIME,
         "deleteBlockedTime": PublicAPIResources.DELETE_BLOCKED_TIME,
         "scheduleEvent": PublicAPIResources.CALENDAR_EVENT,
+        "updateCalendarEvent": PublicAPIResources.CALENDAR_EVENT,
         "rescheduleCalendarEvent": PublicAPIResources.CALENDAR_EVENT,
         "rescheduleCalendarGroupEvent": PublicAPIResources.CALENDAR_EVENT,
         "cancelEvent": PublicAPIResources.CALENDAR_EVENT,

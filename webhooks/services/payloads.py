@@ -11,6 +11,7 @@ class CalendarEventWebhookPayload(TypedDict):
     timezone: str
     title: str
     description: str | None
+    external_client_identifiers: list[dict[str, str]]
 
 
 class EventAttendeeWebhookPayload(TypedDict):

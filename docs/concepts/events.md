@@ -99,6 +99,46 @@ rather than `create_event` directly — those services handle picking the
 primary calendar, propagating to children, and writing the per-slot or
 per-bundle metadata in one transaction.
 
+### Public API — `updateCalendarEvent`
+
+The public GraphQL API's `updateCalendarEvent` mutation updates a single-calendar
+event's **title, description, internal attendees, external attendees and client
+identifiers**. Every field besides `eventId` is `UNSET`-defaulted: **omitting a field
+leaves it exactly as stored**. A caller that supplies only `title` does not touch
+attendees or identifiers.
+
+That "omitted vs. supplied" distinction goes all the way down: `CalendarEventInputData`
+is itself tri-state on `title`, `description`, `attendances` and `external_attendances`
+(`None` = leave untouched), so the resolver passes `UNSET` straight through as `None`
+and `CalendarEventService.update_event` skips the corresponding write entirely — no
+assignment, no attendee reconciliation, no attendee webhook. It deliberately does **not**
+read the event's current values and re-send them: that older shape could revert a
+concurrent update to a field this caller never named, and re-sending every existing
+external attendee (id included) put them all on `update_event`'s update-in-place branch,
+emitting one `CALENDAR_EVENT_ATTENDEE_UPDATED` webhook per attendee on a title-only
+update.
+
+On `create_event` there is nothing to leave untouched, so `None` behaves as the empty
+value (`""` / `[]`) — identical to the pre-tri-state behavior for every caller.
+
+**`updateCalendarEvent` does not own `startTime`, `endTime`, `timezone` or
+`rruleString`.** Those stay on `rescheduleCalendarEvent` — the two mutations are
+deliberately non-overlapping, and `updateCalendarEvent` always re-passes the event's
+current time/timezone/recurrence-rule fields unchanged.
+
+Owner-scoped tokens may only update events on calendars their owner owns; a
+cross-owner `eventId` returns the same `"Event not found."` error a genuinely missing
+event would, so existence is never leaked to a caller outside that scope.
+
+Identifier writes on this mutation share `scheduleEvent`'s validation and reject (with
+the whole update rolled back) on: an invalid `system` URL; a blank/whitespace-only or
+over-255-character `identifier`; a `(system, identifier)` pair already claimed by
+another record of the same type in the organization; or two pairs in one payload that
+normalize to the same `system`. (Two of the six identifier domain errors — an
+out-of-allowlist target and a cross-organization target — can never be reached from a
+caller-supplied body on either mutation, since the target and organization are always
+resolved server-side.)
+
 ## RSVP statuses
 
 `RSVPStatus` (`accepted`, `declined`, `pending`) is shared between

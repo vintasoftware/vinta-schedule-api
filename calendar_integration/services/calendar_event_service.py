@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Q, prefetch_related_objects
 from django.utils import timezone
 
 from audit.constants import AuditAction, AuditActorType
@@ -92,6 +92,7 @@ from calendar_integration.services.dataclasses import (
     EventExternalAttendeeData,
     EventInternalAttendeeData,
     ExternalAttendeeInputData,
+    ExternalClientIdentifierData,
     ResourceAllocationInputData,
     ResourceData,
 )
@@ -390,13 +391,18 @@ class CalendarEventService:
 
     def _serialize_event_external_attendee(
         self, external_attendance: EventExternalAttendance
-    ) -> EventExternalAttendeeData:
+    ) -> EventExternalAttendeeData | None:
         return _serialize_event_external_attendee_util(external_attendance)
 
     def _serialize_event_data_input(
-        self, event: CalendarEvent, event_data: CalendarEventInputData
+        self,
+        event: CalendarEvent,
+        event_data: CalendarEventInputData,
+        current_event: CalendarEventData | None = None,
     ) -> CalendarEventData:
-        return _serialize_event_data_input_util(event, event_data, self._context.organization)
+        return _serialize_event_data_input_util(
+            event, event_data, self._context.organization, current_event=current_event
+        )
 
     def convert_naive_utc_datetime_to_timezone(
         self, datetime_obj: datetime.datetime, iana_tz: str
@@ -646,14 +652,20 @@ class CalendarEventService:
         if not available_windows:
             raise NoAvailableTimeWindowsError()
 
+        # ``create_event`` has no stored state to leave untouched, so the tri-state
+        # fields collapse to their empty value here -- exactly the behavior every
+        # caller got before ``CalendarEventInputData`` became tri-state, when these
+        # defaulted to ``[]`` / were required strings.
+        input_attendances = event_data.attendances or []
+        input_external_attendances = event_data.external_attendances or []
+
         external_id = ""
         original_payload: dict = {}
         if calendar.calendar_type in [CalendarType.PERSONAL, CalendarType.RESOURCE] and (
             write_adapter := self._host._get_write_adapter_for_calendar(calendar)
         ):
             users_by_id = {
-                u.id: u
-                for u in User.objects.filter(id__in=[a.user_id for a in event_data.attendances])
+                u.id: u for u in User.objects.filter(id__in=[a.user_id for a in input_attendances])
             }
             resources_by_id = {
                 r.id: r
@@ -665,8 +677,8 @@ class CalendarEventService:
             created_event = write_adapter.create_event(
                 CalendarEventAdapterInputData(
                     calendar_external_id=calendar.external_id,
-                    title=event_data.title,
-                    description=event_data.description,
+                    title=event_data.title or "",
+                    description=event_data.description or "",
                     start_time=event_data.start_time,
                     end_time=event_data.end_time,
                     timezone=event_data.timezone,
@@ -682,7 +694,7 @@ class CalendarEventService:
                             or users_by_id[a.user_id].email,
                             status="pending",
                         )
-                        for a in event_data.attendances
+                        for a in input_attendances
                     ],
                     resources=[
                         ResourceData(
@@ -721,7 +733,7 @@ class CalendarEventService:
         event = CalendarEvent(
             calendar_fk=calendar,
             organization=context.organization,
-            title=event_data.title,
+            title=event_data.title or "",
             description=event_data.description or "",
             start_time_tz_unaware=self.convert_naive_utc_datetime_to_timezone(
                 event_data.start_time, event_data.timezone
@@ -748,26 +760,36 @@ class CalendarEventService:
         if guard_applies and entitlement_service is not None:
             self._check_new_master_postpaid_allowance(entitlement_service, event)
 
-        EventExternalAttendance.objects.bulk_create(
-            [
+        identifier_service = self._context.external_client_identifier_service
+        if identifier_service is not None:
+            identifier_service.replace_for_target(event, event_data.external_client_identifiers)
+
+        external_attendances_to_create = []
+        for attendance_data in input_external_attendances:
+            external_attendee = ExternalAttendee.objects.create(
+                organization=context.organization,
+                email=attendance_data.external_attendee.email,
+                name=attendance_data.external_attendee.name,
+            )
+            if identifier_service is not None:
+                identifier_service.replace_for_target(
+                    external_attendee,
+                    attendance_data.external_attendee.external_client_identifiers,
+                )
+            external_attendances_to_create.append(
                 EventExternalAttendance(
                     organization=context.organization,
                     event=event,
-                    external_attendee=ExternalAttendee.objects.create(
-                        organization=context.organization,
-                        email=attendance_data.external_attendee.email,
-                        name=attendance_data.external_attendee.name,
-                    ),
+                    external_attendee=external_attendee,
                 )
-                for attendance_data in event_data.external_attendances
-            ]
-        )
+            )
+        EventExternalAttendance.objects.bulk_create(external_attendances_to_create)
 
         # Resolve which attendee user_ids back an OrganizationMembership; non-members
         # get a NULL membership_user_id (an orphan attendance) so the composite PROTECT
         # FK is never violated.
         member_user_ids = _resolve_member_user_ids(
-            (a.user_id for a in event_data.attendances), context.organization.id
+            (a.user_id for a in input_attendances), context.organization.id
         )
         EventAttendance.objects.bulk_create(
             [
@@ -780,7 +802,7 @@ class CalendarEventService:
                         else None
                     ),
                 )
-                for attendance_data in event_data.attendances
+                for attendance_data in input_attendances
             ]
         )
 
@@ -877,7 +899,14 @@ class CalendarEventService:
         serialized_old_event = self._serialize_event(event)
         if not is_public_token_write and not context.calendar_permission_service.can_perform_update(
             old_event=serialized_old_event,
-            new_event=self._serialize_event_data_input(event, event_data),
+            # ``serialized_old_event`` doubles as the fall-back for the tri-state
+            # fields this payload omits: an omitted field is, by definition,
+            # unchanged, so the "new" side of the permission diff must carry the
+            # event's CURRENT value for it -- and reusing the snapshot we already
+            # built costs no extra query.
+            new_event=self._serialize_event_data_input(
+                event, event_data, current_event=serialized_old_event
+            ),
         ):
             raise PermissionDenied("You do not have permission to update this event.")
 
@@ -894,9 +923,24 @@ class CalendarEventService:
             CalendarType.PERSONAL,
             CalendarType.RESOURCE,
         ] and (write_adapter := self._host._get_write_adapter_for_calendar(event.calendar)):
+            # The provider adapters take a FULL event payload -- they have no notion
+            # of a partial update -- so the tri-state fields are resolved against the
+            # event's stored state before the remote write. Sending an omitted field
+            # through as empty would wipe the title or the attendee list AT THE
+            # PROVIDER even though nothing is touched locally. Resolved inside this
+            # branch so a calendar with no write adapter pays no query for it.
+            adapter_attendances = (
+                event_data.attendances
+                if event_data.attendances is not None
+                else [
+                    EventAttendanceInputData(user_id=attendance.membership_user_id)
+                    for attendance in event.attendances.all()
+                    if attendance.membership_user_id is not None
+                ]
+            )
             users_by_id = {
                 u.id: u
-                for u in User.objects.filter(id__in=[a.user_id for a in event_data.attendances])
+                for u in User.objects.filter(id__in=[a.user_id for a in adapter_attendances])
             }
             attendance_by_user_id = {
                 a.membership_user_id: a
@@ -916,8 +960,12 @@ class CalendarEventService:
                 event.id,
                 CalendarEventAdapterInputData(
                     calendar_external_id=event.calendar.external_id,
-                    title=event_data.title,
-                    description=event_data.description,
+                    title=event_data.title if event_data.title is not None else event.title,
+                    description=(
+                        event_data.description
+                        if event_data.description is not None
+                        else event.description
+                    ),
                     start_time=event_data.start_time,
                     end_time=event_data.end_time,
                     timezone=event_data.timezone,
@@ -937,7 +985,7 @@ class CalendarEventService:
                                 else "pending"
                             ),
                         )
-                        for a in event_data.attendances
+                        for a in adapter_attendances
                     ],
                     external_id=event.external_id,
                     resources=[
@@ -959,8 +1007,14 @@ class CalendarEventService:
         # audit Celery payload.
         audit_before = self._event_audit_scalar_snapshot(event)
 
-        event.title = event_data.title
-        event.description = event_data.description
+        # Tri-state: an omitted (``None``) title/description is left exactly as
+        # stored rather than being overwritten with a reconstruction of itself, so a
+        # concurrent write to the field this caller never mentioned cannot be
+        # reverted here.
+        if event_data.title is not None:
+            event.title = event_data.title
+        if event_data.description is not None:
+            event.description = event_data.description
         # ``start_time`` / ``end_time`` are DB-generated fields (``GeneratedField``
         # with ``db_persist=True``) that derive from ``start_time_tz_unaware`` and
         # the IANA ``timezone``.  Assigning to the generated fields is silently
@@ -993,198 +1047,329 @@ class CalendarEventService:
 
         event.save()
 
+        identifier_service = self._context.external_client_identifier_service
+        old_identifiers: list[ExternalClientIdentifierData] = []
+        new_identifiers: list[ExternalClientIdentifierData] = []
+        if identifier_service is not None:
+            old_identifiers, new_identifiers = identifier_service.replace_for_target(
+                event, event_data.external_client_identifiers
+            )
+
+        scalar_diff = compute_diff(audit_before, self._event_audit_scalar_snapshot(event)) or {}
+        if old_identifiers != new_identifiers:
+            scalar_diff = {
+                **scalar_diff,
+                "external_client_identifiers": {
+                    "old": [
+                        {"system": i.system, "identifier": i.identifier} for i in old_identifiers
+                    ],
+                    "new": [
+                        {"system": i.system, "identifier": i.identifier} for i in new_identifiers
+                    ],
+                },
+            }
+
         self._audit_event_write(
             AuditAction.UPDATE,
             event,
-            diff=compute_diff(audit_before, self._event_audit_scalar_snapshot(event)),
+            diff=scalar_diff or None,
         )
 
-        existing_attendances = {a.membership_user_id: a for a in event.attendances.all()}
-        existing_external_attendances = {
-            a.external_attendee_fk_id: a for a in event.external_attendances.all()
-        }
         existing_resource_allocation = {
             r.calendar_fk_id: r for r in event.resource_allocations.all()
         }
 
-        maintained_external_attendees_ids = []
-        external_attendees_to_update = []
-        external_attendees_to_create = []
-        external_attendances_to_create = []
-        serialized_external_attendances_to_create = []
-        serialized_external_attendances_to_update = []
-        for external_attendance_data in event_data.external_attendances:
-            if (
-                external_attendance_data.external_attendee.id
-                and external_attendance_data.external_attendee.id
-                in existing_external_attendances.keys()
-            ):
-                attendance_to_update = existing_external_attendances[
-                    external_attendance_data.external_attendee.id
-                ]
-                attendance_to_update.external_attendee.email = (
-                    external_attendance_data.external_attendee.email
-                )
-                attendance_to_update.external_attendee.name = (
-                    external_attendance_data.external_attendee.name
-                )
-                serialized_external_attendances_to_update.append(
-                    self._serialize_event_external_attendee(attendance_to_update)
-                )
-                external_attendees_to_update.append(attendance_to_update.external_attendee)
-            else:
-                external_attendee = ExternalAttendee(
-                    organization=context.organization,
-                    email=external_attendance_data.external_attendee.email,
-                    name=external_attendance_data.external_attendee.name,
-                )
-                external_attendees_to_create.append(external_attendee)
-                external_attendance_instance = EventExternalAttendance(
-                    organization=context.organization,
-                    event=event,
-                    # ``external_attendee_fk``, not ``external_attendee``: the
-                    # attendee is not saved yet, and assigning it through the
-                    # organization-safe relation copies its *primary key* (still
-                    # ``None``) onto this row, leaving ``external_attendee_fk``
-                    # empty. Assigning the concrete field caches the instance
-                    # instead, so the key is resolved at ``bulk_create`` time --
-                    # and the row's organization, passed explicitly above, is left
-                    # alone.
-                    external_attendee_fk=external_attendee,
-                )
-                external_attendances_to_create.append(external_attendance_instance)
-                serialized_external_attendances_to_create.append(
-                    self._serialize_event_external_attendee(external_attendance_instance)
-                )
-            if external_attendance_data.external_attendee:
-                maintained_external_attendees_ids.append(
-                    external_attendance_data.external_attendee.id
-                )
-        ExternalAttendee.objects.bulk_update(external_attendees_to_update, ["email", "name"])
-        ExternalAttendee.objects.bulk_create(external_attendees_to_create)
-        EventExternalAttendance.objects.bulk_create(external_attendances_to_create)
-
-        external_attendees_to_delete = set(existing_external_attendances.keys()) - set(
-            maintained_external_attendees_ids
-        )
-
-        event_external_attendances_instance_to_delete = (
-            EventExternalAttendance.objects.filter_by_organization(context.organization.id).filter(
-                external_attendee_fk_id__in=external_attendees_to_delete
-            )
-        )
-        serialized_external_attendances_to_delete = [
-            self._serialize_event_external_attendee(external_attendance)
-            for external_attendance in event_external_attendances_instance_to_delete
-        ]
-
-        event_external_attendances_instance_to_delete.delete()
-        ExternalAttendee.objects.filter_by_organization(context.organization.id).filter(
-            id__in=external_attendees_to_delete
-        ).delete()
-
-        # Resolve which attendee user_ids back an OrganizationMembership; non-members
-        # get a NULL membership_user_id (an orphan attendance) so the composite PROTECT
-        # FK is never violated.
-        member_user_ids = _resolve_member_user_ids(
-            (a.user_id for a in event_data.attendances), context.organization.id
-        )
-        maintained_attendees_ids = []
-        event_attendances_to_create = []
-        serialized_attendances_to_create = []
-        for attendance_data in event_data.attendances:
-            if not existing_attendances.get(attendance_data.user_id):
-                event_attendance_instance = EventAttendance(
-                    organization=context.organization,
-                    event=event,
-                    membership_user_id=(
-                        attendance_data.user_id
-                        if attendance_data.user_id in member_user_ids
-                        else None
-                    ),
-                )
-                event_attendances_to_create.append(event_attendance_instance)
-                serialized = self._serialize_event_internal_attendee(event_attendance_instance)
-                if serialized is not None:
-                    serialized_attendances_to_create.append(serialized)
-            maintained_attendees_ids.append(attendance_data.user_id)
-
-        EventAttendance.objects.bulk_create(event_attendances_to_create)
-
-        # Grant permissions to newly added internal attendees (resolved via the
-        # denormalized membership_user_id; orphan attendances without a
-        # membership-backed identity are intentionally skipped).
-        if event_attendances_to_create and context.calendar_permission_service:
-            grant_user_by_id = {
-                u.id: u
-                for u in User.objects.filter(
-                    id__in={
-                        a.membership_user_id
-                        for a in event_attendances_to_create
-                        if a.membership_user_id is not None
-                    }
-                )
+        # ------------------------------------------------------------------
+        # External attendees -- tri-state
+        # ------------------------------------------------------------------
+        # ``external_attendances is None`` means the caller never mentioned external
+        # attendees, so the whole reconciliation is skipped: no read of the stored
+        # rows, no bulk_update, no delete, and -- the partner-visible part -- no
+        # ``CALENDAR_EVENT_ATTENDEE_UPDATED`` webhook per already-present attendee.
+        # The serialized lists stay empty, so ``call_side_effects`` dispatches
+        # nothing for them.
+        external_attendances_to_create: list[EventExternalAttendance] = []
+        serialized_external_attendances_to_create: list[EventExternalAttendeeData] = []
+        serialized_external_attendances_to_update: list[EventExternalAttendeeData] = []
+        serialized_external_attendances_to_delete: list[EventExternalAttendeeData] = []
+        if event_data.external_attendances is not None:
+            existing_external_attendances = {
+                a.external_attendee_fk_id: a for a in event.external_attendances.all()
             }
-            for attendance in event_attendances_to_create:
-                if attendance.membership_user_id is None:
-                    continue
-                user = grant_user_by_id.get(attendance.membership_user_id)
-                if user is None:
-                    continue
-                # Check if user already has a token for this event
-                existing_token = (
-                    CalendarManagementToken.objects.filter_by_organization(context.organization.id)
-                    .filter(
-                        membership_user_id=user.id,
-                        event_fk_id=event.id,
-                        revoked_at__isnull=True,
+
+            maintained_external_attendees_ids = []
+            external_attendees_to_update = []
+            # Identifiers to apply to ``external_attendees_to_update``, index-aligned.
+            external_attendees_to_update_identifiers: list[
+                list[ExternalClientIdentifierData] | None
+            ] = []
+            external_attendees_to_create = []
+            # Identifiers to apply to ``external_attendees_to_create``, index-aligned.
+            # Must be applied AFTER ``bulk_create`` below assigns each attendee its
+            # pk -- these rows include attendees the incoming payload omitted an id
+            # for, which the branch below treats as brand new (see the ``else``
+            # branch's comment) even when they represent an update the caller
+            # couldn't address by id; any identifiers they carry must land on the NEW
+            # row, not be silently dropped.
+            external_attendees_to_create_identifiers: list[
+                list[ExternalClientIdentifierData] | None
+            ] = []
+            for external_attendance_data in event_data.external_attendances:
+                if (
+                    external_attendance_data.external_attendee.id
+                    and external_attendance_data.external_attendee.id
+                    in existing_external_attendances.keys()
+                ):
+                    attendance_to_update = existing_external_attendances[
+                        external_attendance_data.external_attendee.id
+                    ]
+                    attendance_to_update.external_attendee.email = (
+                        external_attendance_data.external_attendee.email
                     )
-                    .first()
+                    attendance_to_update.external_attendee.name = (
+                        external_attendance_data.external_attendee.name
+                    )
+                    serialized_update = self._serialize_event_external_attendee(
+                        attendance_to_update
+                    )
+                    if serialized_update is not None:
+                        serialized_external_attendances_to_update.append(serialized_update)
+                    external_attendees_to_update.append(attendance_to_update.external_attendee)
+                    external_attendees_to_update_identifiers.append(
+                        external_attendance_data.external_attendee.external_client_identifiers
+                    )
+                else:
+                    # No id, or an id absent from ``existing_external_attendances`` --
+                    # either a genuinely new attendee, or one whose id the caller
+                    # omitted. The latter is NOT reused: this always creates a fresh
+                    # row, and the old row (if any) is removed below via
+                    # ``external_attendees_to_delete`` (its id is absent from
+                    # ``maintained_external_attendees_ids``). Any identifiers on the
+                    # old row cascade-delete with it -- so identifiers supplied here
+                    # must be applied to THIS new row, not skipped.
+                    external_attendee = ExternalAttendee(
+                        organization=context.organization,
+                        email=external_attendance_data.external_attendee.email,
+                        name=external_attendance_data.external_attendee.name,
+                    )
+                    external_attendees_to_create.append(external_attendee)
+                    external_attendees_to_create_identifiers.append(
+                        external_attendance_data.external_attendee.external_client_identifiers
+                    )
+                    external_attendance_instance = EventExternalAttendance(
+                        organization=context.organization,
+                        event=event,
+                        # ``external_attendee_fk``, not ``external_attendee``: the
+                        # attendee is not saved yet, and assigning it through the
+                        # organization-safe relation copies its *primary key* (still
+                        # ``None``) onto this row, leaving ``external_attendee_fk``
+                        # empty. Assigning the concrete field caches the instance
+                        # instead, so the key is resolved at ``bulk_create`` time --
+                        # and the row's organization, passed explicitly above, is left
+                        # alone.
+                        external_attendee_fk=external_attendee,
+                    )
+                    external_attendances_to_create.append(external_attendance_instance)
+                    serialized_create = self._serialize_event_external_attendee(
+                        external_attendance_instance
+                    )
+                    if serialized_create is not None:
+                        serialized_external_attendances_to_create.append(serialized_create)
+                if external_attendance_data.external_attendee:
+                    maintained_external_attendees_ids.append(
+                        external_attendance_data.external_attendee.id
+                    )
+            ExternalAttendee.objects.bulk_update(external_attendees_to_update, ["email", "name"])
+            ExternalAttendee.objects.bulk_create(external_attendees_to_create)
+            EventExternalAttendance.objects.bulk_create(external_attendances_to_create)
+
+            external_attendees_to_delete = set(existing_external_attendances.keys()) - set(
+                maintained_external_attendees_ids
+            )
+
+            event_external_attendances_instance_to_delete = (
+                EventExternalAttendance.objects.filter_by_organization(
+                    context.organization.id
+                ).filter(external_attendee_fk_id__in=external_attendees_to_delete)
+            )
+            serialized_external_attendances_to_delete = [
+                serialized_delete
+                for external_attendance in event_external_attendances_instance_to_delete
+                # A row whose ``external_attendee`` is NULL has no email or name to
+                # report, so it serializes to ``None`` and is dropped -- mirroring
+                # how an orphan internal attendance is handled.
+                if (
+                    serialized_delete := self._serialize_event_external_attendee(
+                        external_attendance
+                    )
                 )
+                is not None
+            ]
 
-                if not existing_token:
-                    context.calendar_permission_service.create_attendee_token(
-                        organization_id=event.organization_id,
-                        user=user,
-                        permissions=None,  # Will use default attendee permissions
-                        event_id=event.id,
+            # The stale attendees (and, via their ``GenericRelation``, their identifier
+            # rows) must be gone before any new identifier row is written below --
+            # otherwise a re-sent attendee that keeps the same ``(system, identifier)``
+            # collides with its own about-to-be-deleted predecessor on
+            # ``extclientid_uniq_system_ident``.
+            event_external_attendances_instance_to_delete.delete()
+            ExternalAttendee.objects.filter_by_organization(context.organization.id).filter(
+                id__in=external_attendees_to_delete
+            ).delete()
+
+            # Apply identifiers now that every attendee has a stable pk --
+            # ``bulk_create`` (Postgres) populates pks on the instances above, so
+            # ``external_attendee.pk`` is available here for the newly created rows
+            # too -- and now that the stale attendees above are actually deleted, so
+            # their identifier rows can no longer collide with the ones being written
+            # here.
+            if identifier_service is not None:
+                # Clear every updated attendee's stored identifiers BEFORE writing any
+                # of their new ones. ``replace_for_target`` only ever deletes rows for
+                # the one target it's called with, so two attendees swapping the same
+                # ``(system, identifier)`` in one payload (A: x -> y, B: y -> x) would
+                # otherwise collide with each other's still-present row -- clearing all
+                # of them first, in a separate pass, guarantees no such row survives
+                # into the write pass below regardless of processing order.
+                for external_attendee, identifiers in zip(
+                    external_attendees_to_update,
+                    external_attendees_to_update_identifiers,
+                    strict=True,
+                ):
+                    if identifiers is not None:
+                        identifier_service.replace_for_target(external_attendee, [])
+                for external_attendee, identifiers in zip(
+                    external_attendees_to_update,
+                    external_attendees_to_update_identifiers,
+                    strict=True,
+                ):
+                    if identifiers is not None:
+                        identifier_service.replace_for_target(external_attendee, identifiers)
+                for external_attendee, identifiers in zip(
+                    external_attendees_to_create,
+                    external_attendees_to_create_identifiers,
+                    strict=True,
+                ):
+                    if identifiers is not None:
+                        identifier_service.replace_for_target(external_attendee, identifiers)
+
+            # Grant permissions to newly added external attendees
+            if external_attendances_to_create and context.calendar_permission_service:
+                for external_attendance in external_attendances_to_create:
+                    # Check if external attendee already has a token for this event
+                    existing_token = (
+                        CalendarManagementToken.objects.filter_by_organization(
+                            event.organization_id
+                        )
+                        .filter(
+                            external_attendee_fk_id=external_attendance.external_attendee.id,
+                            event_fk_id=event.id,
+                            revoked_at__isnull=True,
+                        )
+                        .first()
                     )
 
-        # Grant permissions to newly added external attendees
-        if external_attendances_to_create and context.calendar_permission_service:
-            for external_attendance in external_attendances_to_create:
-                # Check if external attendee already has a token for this event
-                existing_token = (
-                    CalendarManagementToken.objects.filter_by_organization(event.organization_id)
-                    .filter(
-                        external_attendee_fk_id=external_attendance.external_attendee.id,
-                        event_fk_id=event.id,
-                        revoked_at__isnull=True,
-                    )
-                    .first()
-                )
+                    if not existing_token:
+                        context.calendar_permission_service.create_external_attendee_update_token(
+                            organization_id=event.organization_id,
+                            event_id=event.id,
+                            external_attendee_id=external_attendance.external_attendee.id,
+                            permissions=None,  # Will use default external attendee permissions
+                        )
 
-                if not existing_token:
-                    context.calendar_permission_service.create_external_attendee_update_token(
-                        organization_id=event.organization_id,
-                        event_id=event.id,
-                        external_attendee_id=external_attendance.external_attendee.id,
-                        permissions=None,  # Will use default external attendee permissions
+        # ------------------------------------------------------------------
+        # Internal attendees -- tri-state
+        # ------------------------------------------------------------------
+        # ``attendances is None`` means the caller never mentioned internal
+        # attendees: the stored set is left exactly as it is, so a concurrent write
+        # that added an attendee cannot be reverted by an update that only meant to
+        # change, say, the title.
+        serialized_attendances_to_create: list[EventInternalAttendeeData] = []
+        serialized_attendances_to_delete: list[EventInternalAttendeeData] = []
+        if event_data.attendances is not None:
+            existing_attendances = {a.membership_user_id: a for a in event.attendances.all()}
+
+            # Resolve which attendee user_ids back an OrganizationMembership;
+            # non-members get a NULL membership_user_id (an orphan attendance) so the
+            # composite PROTECT FK is never violated.
+            member_user_ids = _resolve_member_user_ids(
+                (a.user_id for a in event_data.attendances), context.organization.id
+            )
+            maintained_attendees_ids = []
+            event_attendances_to_create = []
+            for attendance_data in event_data.attendances:
+                if not existing_attendances.get(attendance_data.user_id):
+                    event_attendance_instance = EventAttendance(
+                        organization=context.organization,
+                        event=event,
+                        membership_user_id=(
+                            attendance_data.user_id
+                            if attendance_data.user_id in member_user_ids
+                            else None
+                        ),
+                    )
+                    event_attendances_to_create.append(event_attendance_instance)
+                    serialized = self._serialize_event_internal_attendee(event_attendance_instance)
+                    if serialized is not None:
+                        serialized_attendances_to_create.append(serialized)
+                maintained_attendees_ids.append(attendance_data.user_id)
+
+            EventAttendance.objects.bulk_create(event_attendances_to_create)
+
+            # Grant permissions to newly added internal attendees (resolved via the
+            # denormalized membership_user_id; orphan attendances without a
+            # membership-backed identity are intentionally skipped).
+            if event_attendances_to_create and context.calendar_permission_service:
+                grant_user_by_id = {
+                    u.id: u
+                    for u in User.objects.filter(
+                        id__in={
+                            a.membership_user_id
+                            for a in event_attendances_to_create
+                            if a.membership_user_id is not None
+                        }
+                    )
+                }
+                for attendance in event_attendances_to_create:
+                    if attendance.membership_user_id is None:
+                        continue
+                    user = grant_user_by_id.get(attendance.membership_user_id)
+                    if user is None:
+                        continue
+                    # Check if user already has a token for this event
+                    existing_token = (
+                        CalendarManagementToken.objects.filter_by_organization(
+                            context.organization.id
+                        )
+                        .filter(
+                            membership_user_id=user.id,
+                            event_fk_id=event.id,
+                            revoked_at__isnull=True,
+                        )
+                        .first()
                     )
 
-        attendances_to_delete = set(existing_attendances.keys()) - set(maintained_attendees_ids)
-        # Keyed on ``membership_user_id``; orphan rows (membership_user_id IS NULL) are
-        # never targeted here — Postgres ``IN`` does not match NULL — so they survive an
-        # update, matching their identity-less, membership-scoped semantics.
-        attendances_instances_to_delete = EventAttendance.objects.filter_by_organization(
-            context.organization.id
-        ).filter(membership_user_id__in=attendances_to_delete)
-        serialized_attendances_to_delete = [
-            serialized
-            for attendance in attendances_instances_to_delete
-            if (serialized := self._serialize_event_internal_attendee(attendance)) is not None
-        ]
-        attendances_instances_to_delete.delete()
+                    if not existing_token:
+                        context.calendar_permission_service.create_attendee_token(
+                            organization_id=event.organization_id,
+                            user=user,
+                            permissions=None,  # Will use default attendee permissions
+                            event_id=event.id,
+                        )
+
+            attendances_to_delete = set(existing_attendances.keys()) - set(maintained_attendees_ids)
+            # Keyed on ``membership_user_id``; orphan rows (membership_user_id IS
+            # NULL) are never targeted here — Postgres ``IN`` does not match NULL — so
+            # they survive an update, matching their identity-less,
+            # membership-scoped semantics.
+            attendances_instances_to_delete = EventAttendance.objects.filter_by_organization(
+                context.organization.id
+            ).filter(membership_user_id__in=attendances_to_delete)
+            serialized_attendances_to_delete = [
+                serialized
+                for attendance in attendances_instances_to_delete
+                if (serialized := self._serialize_event_internal_attendee(attendance)) is not None
+            ]
+            attendances_instances_to_delete.delete()
 
         maintained_resources_ids = []
         resource_allocations_to_create = []
@@ -1208,6 +1393,18 @@ class CalendarEventService:
         def call_side_effects():
             if not context.calendar_side_effects_service:
                 return
+
+            # This closure calls ``self._serialize_event(event)`` once for
+            # ``on_update_event`` and again for every created/deleted/updated
+            # attendee dispatch below; each call reads
+            # ``event.external_client_identifiers.all()``. Prefetching once here --
+            # AFTER ``identifier_service.replace_for_target`` above has already
+            # written the new identifiers, and only when this deferred
+            # ``on_commit`` closure actually runs -- means every one of those
+            # calls reuses the same cache instead of re-querying, and none of them
+            # can observe the stale pre-write identifiers a prefetch taken earlier
+            # in the method would have cached.
+            prefetch_related_objects([event], "external_client_identifiers")
 
             permission_token = getattr(context.calendar_permission_service, "token", None)
             if permission_token is not None:
@@ -1715,9 +1912,10 @@ class CalendarEventService:
         :param start_date: Start of the date range
         :param end_date: End of the date range
         :param optimize_queryset: Optional callable (typically a serializer's
-            ``get_optimized_queryset``) applied to the master-event base queryset so its
-            nested relations are prefetched. Generated occurrences reuse their master's
-            prefetch cache, so the whole result serializes without per-event N+1s.
+            ``get_optimized_queryset``) applied to both the non-recurring-event queryset
+            and the recurring-master queryset so their nested relations are prefetched.
+            Generated occurrences reuse their master's prefetch cache, so the whole
+            result serializes without per-event N+1s.
         :return: List of all event instances in the range
         """
         if not is_initialized_or_authenticated_calendar_service(
@@ -1746,12 +1944,17 @@ class CalendarEventService:
                 calendar=calendar,
             )
 
-        # Get non-recurring events within the date range
+        # Get non-recurring events within the date range. Apply the optimize_queryset
+        # callable here too -- these are real, already-persisted rows returned as-is
+        # (not generated occurrences), so they need their own prefetch/select applied;
+        # they can't inherit it from a master the way recurring instances do below.
         non_recurring_events = base_qs.filter(
             Q(start_time__range=(start_date, end_date)) | Q(end_time__range=(start_date, end_date)),
             recurrence_rule__isnull=True,  # Non-recurring only
             is_recurring_exception=False,  # Exclude exception objects
         )
+        if optimize_queryset is not None:
+            non_recurring_events = optimize_queryset(non_recurring_events)
 
         # Get recurring master events and generate their instances. Apply the
         # serializer optimization here so generated occurrences inherit prefetched
@@ -1838,8 +2041,9 @@ class CalendarEventService:
             without issuing any DB query.
         :param start_date: Start of the date range (inclusive).
         :param end_date: End of the date range (inclusive).
-        :param optimize_queryset: Optional callable applied to the recurring-master
-            queryset so prefetched relations are inherited by generated occurrences.
+        :param optimize_queryset: Optional callable applied to both the non-recurring-event
+            queryset and the recurring-master queryset, so real rows get their own
+            prefetch and generated occurrences inherit it from their master.
         :return: Deduplicated, sorted list of event instances in the range.
         """
         if not is_initialized_or_authenticated_calendar_service(
@@ -1866,12 +2070,17 @@ class CalendarEventService:
             )
         )
 
-        # Get non-recurring events within the date range
+        # Get non-recurring events within the date range. Apply the optimize_queryset
+        # callable here too -- these are real, already-persisted rows returned as-is
+        # (not generated occurrences), so they need their own prefetch/select applied;
+        # they can't inherit it from a master the way recurring instances do below.
         non_recurring_events = base_qs.filter(
             Q(start_time__range=(start_date, end_date)) | Q(end_time__range=(start_date, end_date)),
             recurrence_rule__isnull=True,  # Non-recurring only
             is_recurring_exception=False,  # Exclude exception objects
         )
+        if optimize_queryset is not None:
+            non_recurring_events = optimize_queryset(non_recurring_events)
 
         # Get recurring master events and generate their instances.
         recurring_events = base_qs.filter(

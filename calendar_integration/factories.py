@@ -1,14 +1,19 @@
 import datetime
+from typing import Any
+
+from django.db.models import Model
 
 from organizations.models import OrganizationMembership
 
 from .constants import CalendarProvider, ExternalEventChangeKind, QuotaPeriod, RecurrenceFrequency
+from .external_client_identifiers import normalize_system
 from .models import (
     BookingPolicy,
     CalendarEvent,
     CalendarGroupSlotQuotaRule,
     CalendarOwnership,
     EventAttendance,
+    ExternalClientIdentifier,
     ExternalEventChangeRequest,
     RecurrenceRule,
 )
@@ -426,5 +431,29 @@ def create_booking_policy(
         max_horizon_seconds=max_horizon_seconds,
         buffer_before_seconds=buffer_before_seconds,
         buffer_after_seconds=buffer_after_seconds,
+        **kwargs,
+    )
+
+
+def create_external_client_identifier(
+    *,
+    organization,
+    identified_object: Model,
+    system: str,
+    identifier: str,
+    **kwargs: Any,
+) -> ExternalClientIdentifier:
+    """Create an ``ExternalClientIdentifier`` pointing at *identified_object*.
+
+    ``organization`` is required explicitly (no default) so tests that forget to pass
+    it fail loudly rather than silently cross-tenant. ``system`` is normalized the same
+    way every write path normalizes it, so tests exercising the unique constraints see
+    the same value the service/serializer/admin form would persist.
+    """
+    return ExternalClientIdentifier.objects.create(
+        organization=organization,
+        identified_object=identified_object,
+        system=normalize_system(system),
+        identifier=identifier,
         **kwargs,
     )

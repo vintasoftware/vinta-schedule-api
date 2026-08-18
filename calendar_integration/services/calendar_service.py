@@ -131,6 +131,9 @@ from calendar_integration.services.dataclasses import (
     ResourceAllocationInputData,
     UnavailableTimeWindow,
 )
+from calendar_integration.services.external_client_identifier_service import (
+    ExternalClientIdentifierService,
+)
 from calendar_integration.services.protocols.base_calendar_service import BaseCalendarService
 from calendar_integration.services.protocols.calendar_adapter import CalendarAdapter
 from calendar_integration.services.recurrence_manager import RecurrenceManager
@@ -227,6 +230,10 @@ class CalendarService(BaseCalendarService):
         entitlement_service: Annotated[
             "EntitlementService | None", Provide["entitlement_service"]
         ] = None,
+        external_client_identifier_service: Annotated[
+            "ExternalClientIdentifierService | None",
+            Provide["external_client_identifier_service"],
+        ] = None,
     ) -> None:
         """Initialize a CalendarService instance. Call authenticate() before using calendar operations."""
         self.organization = None
@@ -239,6 +246,7 @@ class CalendarService(BaseCalendarService):
         self.external_event_change_request_service = external_event_change_request_service
         self.booking_policy_service = booking_policy_service
         self.entitlement_service = entitlement_service
+        self.external_client_identifier_service = external_client_identifier_service
         # Set by authenticate(bypass_limits=True); disables every provider entitlement
         # guard on this instance, not just the authenticate-time one.
         self._bypass_entitlement_limits = False
@@ -306,7 +314,7 @@ class CalendarService(BaseCalendarService):
 
     def _serialize_event_external_attendee(
         self, external_attendance: EventExternalAttendance
-    ) -> EventExternalAttendeeData:
+    ) -> EventExternalAttendeeData | None:
         return _serialize_event_external_attendee_util(external_attendance)
 
     def _serialize_event(self, event: CalendarEvent) -> CalendarEventData:
@@ -503,6 +511,8 @@ class CalendarService(BaseCalendarService):
             self.user_or_token = None
         self.organization = organization
         self._bypass_entitlement_limits = bypass_limits
+        if self.external_client_identifier_service:
+            self.external_client_identifier_service.initialize(organization)
 
         # Gate *before* `get_calendar_adapter_for_account` where the provider can be read
         # off `account` without resolving an adapter. That call refreshes an expired
@@ -535,6 +545,7 @@ class CalendarService(BaseCalendarService):
             audit_service=self.audit_service,
             entitlement_service=self.entitlement_service,
             bypass_entitlement_limits=self._bypass_entitlement_limits,
+            external_client_identifier_service=self.external_client_identifier_service,
         )
 
     def initialize_without_provider(
@@ -560,6 +571,9 @@ class CalendarService(BaseCalendarService):
                 self.user_or_token, organization_id=self.organization.id
             )
 
+        if self.external_client_identifier_service and self.organization:
+            self.external_client_identifier_service.initialize(self.organization)
+
         # Reset the per-instance calendar lookup cache whenever the auth context changes.
         self._calendar_cache = {}
 
@@ -574,6 +588,7 @@ class CalendarService(BaseCalendarService):
             audit_service=self.audit_service,
             entitlement_service=self.entitlement_service,
             bypass_entitlement_limits=self._bypass_entitlement_limits,
+            external_client_identifier_service=self.external_client_identifier_service,
         )
 
     def _build_context_snapshot(self) -> CalendarServiceContext:
@@ -595,6 +610,7 @@ class CalendarService(BaseCalendarService):
             audit_service=self.audit_service,
             entitlement_service=self.entitlement_service,
             bypass_entitlement_limits=self._bypass_entitlement_limits,
+            external_client_identifier_service=self.external_client_identifier_service,
         )
 
     def _get_event_service(self) -> CalendarEventService:

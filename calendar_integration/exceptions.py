@@ -408,3 +408,75 @@ class BookingPolicyViolationError(CalendarIntegrationError):
     """
 
     default_message = "The requested time slot is not available under the current booking policy."
+
+
+# External Client Identifier Errors
+class ExternalClientIdentifierError(CalendarIntegrationError):
+    """Base class for ``ExternalClientIdentifierService`` write rejections."""
+
+    pass
+
+
+class ExternalClientIdentifierInvalidTargetError(ExternalClientIdentifierError):
+    """Raised when the write target's model is outside ``IDENTIFIABLE_MODELS``.
+
+    The table is generic (any ``ContentType``), but the write surface is
+    allowlisted -- see ``calendar_integration.external_client_identifiers``.
+    """
+
+    def __init__(self, model_label: str):
+        self.model_label = model_label
+        super().__init__(f"External client identifiers cannot be attached to '{model_label}'.")
+
+
+class ExternalClientIdentifierCrossOrganizationError(ExternalClientIdentifierError):
+    """Raised when the write target's organization differs from the service's bound
+    organization.
+
+    A ``GenericForeignKey`` cannot be an ``OrganizationSafeForeignKey``, so nothing
+    at the schema level stops an identifier row from pointing at a record in
+    another organization. This is the code-enforced half of that guarantee.
+    """
+
+    default_message = "Target does not belong to the current organization."
+
+
+class ExternalClientIdentifierInvalidSystemError(ExternalClientIdentifierError):
+    """Raised when an incoming ``system`` does not parse as a valid absolute URL.
+
+    ``system`` is stored in a ``URLField`` and is the leading match column (after
+    ``organization``/``content_type``) of ``extclientid_uniq_system_ident``, so an
+    unparseable value cannot be a stable lookup key. The model's own ``URLField``
+    validators only run through ``Model.full_clean()``, which
+    ``ExternalClientIdentifierService.replace_for_target`` never calls (it writes via
+    ``bulk_create``), so this check has to run explicitly here -- the one place every
+    write path (GraphQL, REST) funnels through.
+    """
+
+    default_message = "system must be a valid URL."
+
+
+class ExternalClientIdentifierBlankIdentifierError(ExternalClientIdentifierError):
+    """Raised when an incoming ``identifier`` is blank or whitespace-only."""
+
+    default_message = "identifier must not be blank."
+
+
+class ExternalClientIdentifierTooLongError(ExternalClientIdentifierError):
+    """Raised when an incoming ``identifier`` exceeds the 255-character column limit."""
+
+    default_message = "identifier must be at most 255 characters."
+
+
+class ExternalClientIdentifierDuplicateSystemError(ExternalClientIdentifierError):
+    """Raised when one incoming list has two pairs that normalize to the same ``system``.
+
+    We reject this instead of picking the last one. Picking the last one would be a
+    silent trap: a caller who sends ``[{crm, "A"}, {crm, "B"}]`` would get ``B``
+    stored, while believing ``A`` was set. A later lookup for ``A`` would find
+    nothing, with no error to explain why. Phase 3 passes this list straight through
+    from an external API caller, so the ambiguity must surface as an error here
+    instead of being resolved by list order.
+    """
+
+    default_message = "Duplicate system in identifiers list; each system must appear at most once."

@@ -3,12 +3,14 @@
 import datetime
 from typing import ClassVar
 
+from django import forms
 from django.contrib import admin
 from django.db.models import Count
 from django.http import HttpRequest
 from django.utils.html import format_html
 
 from calendar_integration.constants import IncomingWebhookProcessingStatus
+from calendar_integration.external_client_identifiers import normalize_system
 from calendar_integration.models import (
     AvailableTime,
     BlockedTime,
@@ -20,6 +22,7 @@ from calendar_integration.models import (
     CalendarGroupSlotQuotaRule,
     CalendarWebhookEvent,
     CalendarWebhookSubscription,
+    ExternalClientIdentifier,
     ExternalEventChangeRequest,
 )
 
@@ -671,3 +674,56 @@ class BookingPolicyAdmin(admin.ModelAdmin):
             .get_queryset(request)
             .select_related("organization", "calendar_fk", "calendar_group_fk")
         )
+
+
+class ExternalClientIdentifierAdminForm(forms.ModelForm):
+    """Normalizes ``system`` the same way every other write path does.
+
+    Admin writes bypass ``ExternalClientIdentifierService`` (Phase 2), which is where
+    normal write paths normalize ``system`` before saving. Without this, a hand-edited
+    row could hold an un-normalized ``system`` value that quietly desyncs from the
+    normalized values every other write path produces, defeating the point of the
+    uniqueness constraints.
+    """
+
+    class Meta:
+        model = ExternalClientIdentifier
+        fields = (
+            "organization",
+            "content_type",
+            "identified_key",
+            "system",
+            "identifier",
+        )
+
+    def clean_system(self) -> str:
+        return normalize_system(self.cleaned_data["system"])
+
+
+@admin.register(ExternalClientIdentifier)
+class ExternalClientIdentifierAdmin(admin.ModelAdmin):
+    """Admin interface for ExternalClientIdentifier.
+
+    Editable, unlike a strict read-only audit view: this is a support tool for fixing
+    up a bad client-supplied identifier. Admin edits bypass
+    ``ExternalClientIdentifierService`` -- no audit record, no allowlist check -- which
+    is an accepted, deliberate gap; see the plan's Risk & Rollout Notes.
+    """
+
+    form = ExternalClientIdentifierAdminForm
+    list_display = ("system", "identifier", "content_type", "identified_key", "organization")
+    list_filter = ("organization", "content_type")
+    search_fields = ("system", "identifier")
+    readonly_fields = ("created", "modified")
+    fields = (
+        "organization",
+        "content_type",
+        "identified_key",
+        "system",
+        "identifier",
+        "created",
+        "modified",
+    )
+
+    def get_queryset(self, request: HttpRequest):
+        return super().get_queryset(request).select_related("organization", "content_type")

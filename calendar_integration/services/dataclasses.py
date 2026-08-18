@@ -36,6 +36,19 @@ class _EffectivePolicyRow(Protocol):
 
 
 @dataclass
+class ExternalClientIdentifierData:
+    """One ``(system, identifier)`` pair -- the client-owned reference carried by
+    ``ExternalClientIdentifier``. ``system`` is normalized (see
+    ``calendar_integration.external_client_identifiers.normalize_system``) by the
+    service before it is ever compared or persisted; callers may pass an
+    un-normalized value.
+    """
+
+    system: str
+    identifier: str
+
+
+@dataclass
 class EventAttendeeData:
     email: str
     name: str
@@ -60,6 +73,9 @@ class ExternalAttendeeInputData:
     email: str
     name: str = ""
     id: int | None = None  # noqa: A003
+    # None = omitted, leave untouched. [] = clear all. See
+    # ``ExternalClientIdentifierService.replace_for_target``.
+    external_client_identifiers: list[ExternalClientIdentifierData] | None = None
 
 
 @dataclass
@@ -74,15 +90,28 @@ class ResourceAllocationInputData:
 
 @dataclass
 class CalendarEventInputData:
-    title: str
-    description: str
+    """Input payload for ``CalendarEventService.create_event`` / ``update_event``.
+
+    ``title``, ``description``, ``attendances`` and ``external_attendances`` are
+    **tri-state**, matching ``external_client_identifiers``: a value replaces what is
+    stored, and ``None`` means "omitted -- leave untouched". On ``update_event`` an
+    omitted field skips its write entirely: no assignment, no reconciliation, no
+    attendee webhook. On ``create_event`` there is nothing to leave untouched, so
+    ``None`` behaves exactly as the empty value did before (``""`` for the two strings,
+    ``[]`` for the two lists) rather than raising.
+
+    ``resource_allocations`` is deliberately NOT tri-state: it stays always-replace,
+    defaulting to ``[]``.
+    """
+
+    title: str | None
+    description: str | None
     start_time: datetime.datetime
     end_time: datetime.datetime
     timezone: str  # IANA timezone string (required)
-    attendances: list[EventAttendanceInputData] = dataclass_field(default_factory=list)
-    external_attendances: list[EventExternalAttendanceInputData] = dataclass_field(
-        default_factory=list
-    )
+    # None = omitted, leave untouched (update) / empty (create).
+    attendances: list[EventAttendanceInputData] | None = None
+    external_attendances: list[EventExternalAttendanceInputData] | None = None
     resource_allocations: list[ResourceAllocationInputData] = dataclass_field(default_factory=list)
     # Recurrence fields
     recurrence_rule: str | None = None  # RRULE string
@@ -94,6 +123,9 @@ class CalendarEventInputData:
     # before delegating to ``CalendarEventService``. Must NOT be set by external
     # callers outside of the group-booking flow.
     group_authorized: bool = False
+    # None = omitted, leave untouched. [] = clear all. See
+    # ``ExternalClientIdentifierService.replace_for_target``.
+    external_client_identifiers: list[ExternalClientIdentifierData] | None = None
 
 
 @dataclass
@@ -221,6 +253,9 @@ class EventExternalAttendeeData:
     email: str
     name: str | None
     status: Literal["accepted", "declined", "pending"]
+    external_client_identifiers: list[ExternalClientIdentifierData] = dataclass_field(
+        default_factory=list
+    )
 
 
 @dataclass
@@ -248,6 +283,9 @@ class CalendarEventData:
     is_recurring: bool
     recurring_event_id: str | None  # ID of the master recurring event
     original_payload: dict | None = None
+    external_client_identifiers: list[ExternalClientIdentifierData] = dataclass_field(
+        default_factory=list
+    )
 
 
 @dataclass

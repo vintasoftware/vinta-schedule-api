@@ -195,10 +195,13 @@ class InitializedOrAuthenticatedCalendarService(Protocol):
 
     def _serialize_event_external_attendee(
         self, external_attendance: EventExternalAttendance
-    ) -> EventExternalAttendeeData: ...
+    ) -> EventExternalAttendeeData | None: ...
 
     def _serialize_event_data_input(
-        self, event: CalendarEvent, event_data: CalendarEventInputData
+        self,
+        event: CalendarEvent,
+        event_data: CalendarEventInputData,
+        current_event: CalendarEventData | None = None,
     ) -> CalendarEventData: ...
 
     def _grant_calendar_owner_permissions(self, calendar: Calendar) -> None: ...

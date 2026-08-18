@@ -24,7 +24,10 @@ from calendar_integration.models import (
     CalendarEvent,
     CalendarManagementToken,
     CalendarOwnership,
+    EventAttendance,
+    EventExternalAttendance,
     EventRecurrenceException,
+    ExternalAttendee,
     RecurrenceRule,
 )
 from calendar_integration.services.calendar_event_service import CalendarEventService
@@ -35,6 +38,9 @@ from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.dataclasses import (
     CalendarEventAdapterOutputData,
     CalendarEventInputData,
+    EventAttendanceInputData,
+    EventExternalAttendanceInputData,
+    ExternalAttendeeInputData,
 )
 from organizations.models import Organization, OrganizationMembership
 from public_api.services import PublicAPIAuthService
@@ -253,6 +259,214 @@ def test_update_event(
     assert result.id == created.id
     assert result.title == "Updated Title"
     mock_google_adapter.update_event.assert_called_once()
+
+
+@pytest.mark.django_db
+def test_update_event_omitting_tri_state_fields_leaves_them_untouched(
+    event_service,
+    mock_google_adapter,
+    calendar,
+    calendar_management_token,
+    social_account,
+):
+    """``CalendarEventInputData`` is tri-state: ``None`` on ``title`` /
+    ``description`` / ``attendances`` / ``external_attendances`` means "the caller
+    never mentioned this field", and ``update_event`` must leave the stored value
+    exactly as it is.
+
+    Seeds a NON-EMPTY set on every one of the four fields and then updates only the
+    times, so an implementation that maps an omitted field to its empty value (the
+    pre-Phase-7 behavior of these four) blanks the title, wipes the description and
+    deletes both attendees -- every assertion below fails. Directly at the service
+    layer, because this dataclass is shared by REST, GraphQL and the bundle
+    fan-out, not just the public mutation.
+    """
+    mock_google_adapter.create_event.return_value = _adapter_output("evt-tristate-omit")
+    mock_google_adapter.update_event.return_value = _adapter_output("evt-tristate-omit")
+
+    organization = calendar.organization
+    member = User.objects.create_user(email="tristate-member@example.com", password="pw")  # noqa: S106
+    Profile.objects.create(user=member, first_name="Tri", last_name="State")
+    OrganizationMembership.objects.create(user=member, organization=organization, is_active=True)
+
+    created = event_service.create_event(
+        calendar.id,
+        CalendarEventInputData(
+            title="Stored Title",
+            description="Stored description",
+            start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+            end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+            attendances=[EventAttendanceInputData(user_id=member.id)],
+            external_attendances=[
+                EventExternalAttendanceInputData(
+                    external_attendee=ExternalAttendeeInputData(
+                        email="stored-guest@example.com", name="Stored Guest"
+                    )
+                )
+            ],
+            resource_allocations=[],
+        ),
+    )
+    _grant_event_owner_token(created, social_account.user, organization)
+    stored_attendee_id = created.external_attendances.get().external_attendee_fk_id
+
+    result = event_service.update_event(
+        calendar.id,
+        created.id,
+        CalendarEventInputData(
+            title=None,
+            description=None,
+            start_time=datetime.datetime(2025, 6, 22, 12, 0, tzinfo=datetime.UTC),
+            end_time=datetime.datetime(2025, 6, 22, 13, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+            attendances=None,
+            external_attendances=None,
+            resource_allocations=[],
+        ),
+    )
+
+    result.refresh_from_db()
+    assert result.title == "Stored Title"
+    assert result.description == "Stored description"
+    assert result.start_time == datetime.datetime(2025, 6, 22, 12, 0, tzinfo=datetime.UTC)
+
+    assert (
+        EventAttendance.objects.filter_by_organization(organization.id)
+        .filter(event_fk_id=created.id, membership_user_id=member.id)
+        .exists()
+    )
+    # Same external attendee ROW, not a delete-and-recreate.
+    assert created.external_attendances.get().external_attendee_fk_id == stored_attendee_id
+    assert (
+        ExternalAttendee.objects.filter_by_organization(organization.id)
+        .get(id=stored_attendee_id)
+        .name
+        == "Stored Guest"
+    )
+
+
+@pytest.mark.django_db
+def test_update_event_supplying_empty_lists_still_clears_attendees(
+    event_service,
+    mock_google_adapter,
+    calendar,
+    calendar_management_token,
+    social_account,
+):
+    """The other half of the tri-state contract, and the no-behavior-change gate
+    for every existing caller: an explicitly supplied ``[]`` still replaces the
+    stored set with nothing.
+
+    Every pre-Phase-7 caller of ``update_event`` passes both lists explicitly, so
+    this is the path they all take; if ``[]`` were ever conflated with "omitted",
+    a REST ``PUT`` clearing an attendee list would silently no-op.
+    """
+    mock_google_adapter.create_event.return_value = _adapter_output("evt-tristate-empty")
+    mock_google_adapter.update_event.return_value = _adapter_output("evt-tristate-empty")
+
+    organization = calendar.organization
+    created = event_service.create_event(
+        calendar.id,
+        CalendarEventInputData(
+            title="Stored Title",
+            description="Stored description",
+            start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+            end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+            attendances=[],
+            external_attendances=[
+                EventExternalAttendanceInputData(
+                    external_attendee=ExternalAttendeeInputData(
+                        email="cleared-guest@example.com", name="Cleared Guest"
+                    )
+                )
+            ],
+            resource_allocations=[],
+        ),
+    )
+    _grant_event_owner_token(created, social_account.user, organization)
+
+    event_service.update_event(
+        calendar.id,
+        created.id,
+        CalendarEventInputData(
+            title="Stored Title",
+            description="Stored description",
+            start_time=datetime.datetime(2025, 6, 22, 10, 0, tzinfo=datetime.UTC),
+            end_time=datetime.datetime(2025, 6, 22, 11, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+            attendances=[],
+            external_attendances=[],
+            resource_allocations=[],
+        ),
+    )
+
+    assert not created.external_attendances.exists()
+    assert (
+        not ExternalAttendee.objects.filter_by_organization(organization.id)
+        .filter(email="cleared-guest@example.com")
+        .exists()
+    )
+
+
+@pytest.mark.django_db
+def test_update_event_with_null_external_attendee_row_does_not_raise(
+    event_service,
+    mock_google_adapter,
+    calendar,
+    calendar_management_token,
+    sample_event_input_data,
+    social_account,
+):
+    """``EventExternalAttendance.external_attendee`` is ``null=True``, so a row can
+    exist with nothing behind it. ``serialize_event_external_attendee``
+    unconditionally dereferenced it, so ANY ``update_event`` on such an event --
+    any caller, not just the public API -- raised
+    ``AttributeError: 'NoneType' object has no attribute 'email'`` from the
+    ``_serialize_event`` call that builds the permission-check snapshot.
+
+    Pre-existing; surfaced while testing Phase 6's null guard. The row now
+    serializes to ``None`` and is dropped, so the update completes and the
+    valid attendee alongside it is still reported.
+    """
+    mock_google_adapter.create_event.return_value = _adapter_output("evt-null-attendee")
+    mock_google_adapter.update_event.return_value = _adapter_output("evt-null-attendee")
+
+    organization = calendar.organization
+    created = event_service.create_event(calendar.id, sample_event_input_data)
+    _grant_event_owner_token(created, social_account.user, organization)
+
+    valid_attendee = ExternalAttendee.objects.create(
+        organization=organization, email="valid@example.com", name="Valid"
+    )
+    EventExternalAttendance.objects.create(
+        organization=organization, event=created, external_attendee=valid_attendee
+    )
+    # The pathological row: an attendance with no attendee behind it.
+    EventExternalAttendance.objects.create(
+        organization=organization, event=created, external_attendee=None
+    )
+
+    result = event_service.update_event(
+        calendar.id,
+        created.id,
+        CalendarEventInputData(
+            title="Survived The Null Row",
+            description="Updated description",
+            start_time=datetime.datetime(2025, 6, 22, 12, 0, tzinfo=datetime.UTC),
+            end_time=datetime.datetime(2025, 6, 22, 13, 0, tzinfo=datetime.UTC),
+            timezone="UTC",
+            attendances=None,
+            external_attendances=None,
+            resource_allocations=[],
+        ),
+    )
+
+    result.refresh_from_db()
+    assert result.title == "Survived The Null Row"
+    # Untouched (external_attendances omitted): both rows, null one included, survive.
+    assert created.external_attendances.count() == 2
 
 
 @pytest.mark.django_db

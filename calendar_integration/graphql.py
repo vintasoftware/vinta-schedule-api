@@ -23,6 +23,7 @@ from calendar_integration.models import (
     EventExternalAttendance,
     EventRecurrenceException,
     ExternalAttendee,
+    ExternalClientIdentifier,
     ExternalEventChangeRequest,
     RecurrenceRule,
     ResourceAllocation,
@@ -225,6 +226,20 @@ class RecurrenceRuleGraphQLType:
         return self.to_rrule_string()  # type: ignore
 
 
+@strawberry_django.type(ExternalClientIdentifier)
+class ExternalClientIdentifierGraphQLType:
+    """GraphQL type for one ``(system, identifier)`` client-owned reference pair.
+
+    Read-only here -- writes go through the ``externalClientIdentifiers`` input on
+    ``scheduleEvent`` (and later ``updateCalendarEvent``), never a dedicated mutation.
+    Distinct from ``externalId`` (a calendar-provider sync key, unrelated and untouched
+    by this feature) on both ``CalendarEventGraphQLType`` and ``CalendarGraphQLType``.
+    """
+
+    system: strawberry.auto
+    identifier: strawberry.auto
+
+
 @strawberry_django.type(ExternalAttendee)
 class ExternalAttendeeGraphQLType:
     id: strawberry.auto  # noqa: A003
@@ -232,6 +247,11 @@ class ExternalAttendeeGraphQLType:
     email: strawberry.auto
     created: datetime.datetime
     modified: datetime.datetime
+
+    @strawberry_django.field(prefetch_related=["external_client_identifiers"])
+    def external_client_identifiers(self) -> list["ExternalClientIdentifierGraphQLType"]:
+        """This attendee's client-owned identifiers. ``[]`` when it has none."""
+        return list(self.external_client_identifiers.all())  # type: ignore[attr-defined]
 
 
 @strawberry.type
@@ -347,6 +367,14 @@ class CalendarEventGraphQLType:
     # attendee_memberships/external_attendees return PEOPLE (not calendars) — no
     # cross-owner calendar leak, so they stay plain field exposures.
     external_attendees: list[ExternalAttendeeGraphQLType] = strawberry_django.field()
+
+    @strawberry_django.field(prefetch_related=["external_client_identifiers"])
+    def external_client_identifiers(self) -> list["ExternalClientIdentifierGraphQLType"]:
+        """This event's client-owned identifiers. ``[]`` when it has none.
+
+        Distinct from ``externalId`` (the calendar-provider sync key) -- unrelated,
+        read-only, and untouched by this field."""
+        return list(self.external_client_identifiers.all())  # type: ignore[attr-defined]
 
     @strawberry_django.field(prefetch_related=["attendances__membership"])
     def attendee_memberships(self) -> list["AttendanceMembershipGraphQLType"]:

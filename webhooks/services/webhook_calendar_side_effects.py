@@ -35,6 +35,15 @@ class WebhookCalendarEventSideEffectsService:
             "timezone": event.timezone,
             "title": event.title,
             "description": event.description,
+            # Always a list -- [] when the event has none, never missing and never
+            # null. `event.external_client_identifiers` is already a materialized
+            # list of `ExternalClientIdentifierData` by the time it reaches this
+            # dataclass (see `calendar_service_utils.serialize_event`), so no query
+            # runs here.
+            "external_client_identifiers": [
+                {"system": identifier.system, "identifier": identifier.identifier}
+                for identifier in event.external_client_identifiers
+            ],
         }
 
     def _serialize_attendee(

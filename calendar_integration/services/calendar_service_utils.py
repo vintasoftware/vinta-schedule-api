@@ -31,8 +31,12 @@ from calendar_integration.services.dataclasses import (
     CalendarEventData,
     CalendarEventInputData,
     CalendarSettingsData,
+    EventAttendanceInputData,
+    EventExternalAttendanceInputData,
     EventExternalAttendeeData,
     EventInternalAttendeeData,
+    ExternalAttendeeInputData,
+    ExternalClientIdentifierData,
     ResourceData,
 )
 from organizations.models import OrganizationMembership
@@ -167,11 +171,24 @@ def serialize_event_internal_attendee(
 
 def serialize_event_external_attendee(
     external_attendance: EventExternalAttendance,
-) -> EventExternalAttendeeData:
-    """Serialize an external event attendance to ``EventExternalAttendeeData``."""
+) -> EventExternalAttendeeData | None:
+    """Serialize an external event attendance to ``EventExternalAttendeeData``.
+
+    ``EventExternalAttendance.external_attendee`` is ``null=True``, so a row can exist
+    with no attendee behind it. Such a row has no email and no name to report, and a
+    payload carrying ``email=""`` would be worse than no payload at all for a webhook
+    consumer routing on it -- so it serializes to ``None`` and every caller drops it,
+    exactly as ``serialize_event_internal_attendee`` already does for an orphan
+    internal attendance. Before this guard the dereference below raised
+    ``AttributeError`` on any ``update_event`` (or event serialization) touching such
+    a row, for every caller, not just the public API.
+    """
+    attendee = external_attendance.external_attendee_fk  # type: ignore[attr-defined]
+    if attendee is None:
+        return None
     return EventExternalAttendeeData(
-        email=external_attendance.external_attendee_fk.email,  # type: ignore[attr-defined]
-        name=external_attendance.external_attendee_fk.name,  # type: ignore[attr-defined]
+        email=attendee.email,
+        name=attendee.name,
         status=cast(
             Literal["accepted", "declined", "pending"],
             external_attendance.status,
@@ -223,13 +240,17 @@ def serialize_event(event: CalendarEvent) -> CalendarEventData:
             is not None
         ],
         external_attendees=[
-            serialize_event_external_attendee(external_attendance)
+            serialized_external
             # For recurring instances, get external attendances from the parent event; for regular events, use their own
             for external_attendance in (
                 event.parent_recurring_object.external_attendances.all()
                 if event.parent_recurring_object
                 else (event.external_attendances.all() if event.id else [])
             )
+            # A row with a NULL ``external_attendee`` serializes to None and is
+            # dropped, matching the orphan-internal-attendance handling above.
+            if (serialized_external := serialize_event_external_attendee(external_attendance))
+            is not None
         ],
         resources=[
             ResourceData(
@@ -259,6 +280,19 @@ def serialize_event(event: CalendarEvent) -> CalendarEventData:
             if event.parent_recurring_object_fk_id
             else None
         ),
+        external_client_identifiers=[
+            ExternalClientIdentifierData(system=identifier.system, identifier=identifier.identifier)
+            # Identifiers live on the master row, same as attendees/external
+            # attendees/resources above: a recurring instance reads its parent's.
+            # ``.all()`` reuses the prefetch cache when the caller prefetched
+            # ``external_client_identifiers`` on the queryset that produced ``event``
+            # (or ``parent_recurring_object``) -- no per-event query in that case.
+            for identifier in (
+                event.parent_recurring_object.external_client_identifiers.all()
+                if event.parent_recurring_object
+                else (event.external_client_identifiers.all() if event.id else [])
+            )
+        ],
     )
 
 
@@ -266,6 +300,7 @@ def serialize_event_data_input(
     event: CalendarEvent,
     event_data: CalendarEventInputData,
     organization: Organization,
+    current_event: CalendarEventData | None = None,
 ) -> CalendarEventData:
     """Build a ``CalendarEventData`` payload from input data and an existing event.
 
@@ -275,10 +310,53 @@ def serialize_event_data_input(
 
     ``organization`` is required for the resource-calendar lookup (multi-tenant
     guard: only calendars belonging to ``organization`` are considered).
+
+    ``event_data``'s tri-state fields (``title``, ``description``, ``attendances``,
+    ``external_attendances``) may be ``None``, meaning the caller left them
+    untouched. This payload describes the event's state AFTER the write, so an
+    omitted field resolves to what is currently stored -- never to empty. Pass
+    ``current_event`` (the already-serialized pre-write state) to resolve the two
+    attendee lists without re-reading them; without it they are read from ``event``.
     """
-    new_attendance_user_ids = [a.user_id for a in event_data.attendances]
+    input_attendances = event_data.attendances
+    input_external_attendances = event_data.external_attendances
+    attendees_override: list[EventInternalAttendeeData] | None = None
+    external_attendees_override: list[EventExternalAttendeeData] | None = None
+
+    if input_attendances is None:
+        if current_event is not None:
+            attendees_override = current_event.attendees
+            input_attendances = []
+        else:
+            input_attendances = [
+                EventAttendanceInputData(user_id=attendance.membership_user_id)
+                for attendance in (event.attendances.all() if event.id else [])
+                if attendance.membership_user_id is not None
+            ]
+    if input_external_attendances is None:
+        if current_event is not None:
+            external_attendees_override = current_event.external_attendees
+            input_external_attendances = []
+        else:
+            input_external_attendances = [
+                EventExternalAttendanceInputData(
+                    external_attendee=ExternalAttendeeInputData(
+                        id=external_attendance.external_attendee_fk_id,  # type: ignore[arg-type]
+                        email=external_attendance.external_attendee.email,  # type: ignore[union-attr]
+                        name=external_attendance.external_attendee.name or "",  # type: ignore[union-attr]
+                    )
+                )
+                for external_attendance in (
+                    event.external_attendances.select_related("external_attendee")
+                    if event.id
+                    else []
+                )
+                if external_attendance.external_attendee_fk_id is not None
+            ]
+
+    new_attendance_user_ids = [a.user_id for a in input_attendances]
     new_external_attendances_attendee_ids = [
-        a.external_attendee.id for a in event_data.external_attendances
+        a.external_attendee.id for a in input_external_attendances
     ]
     # Resolve which input attendee user_ids back an OrganizationMembership. Only
     # members produce a membership-scoped internal attendee; non-member (orphan)
@@ -309,14 +387,20 @@ def serialize_event_data_input(
         start_time=event_data.start_time,
         end_time=event_data.end_time,
         timezone=event_data.timezone,
-        title=event_data.title,
-        description=event_data.description,
+        # Tri-state: an omitted title/description is unchanged, so this
+        # post-write snapshot carries the event's stored value for it.
+        title=event_data.title if event_data.title is not None else event.title,
+        description=(
+            event_data.description if event_data.description is not None else event.description
+        ),
         calendar_settings=CalendarSettingsData(
             manage_available_windows=event.calendar_fk.manage_available_windows,  # type: ignore[attr-defined]
             accepts_public_scheduling=event.calendar_fk.accepts_public_scheduling,  # type: ignore[attr-defined]
         ),
         original_payload={},  # doesn't matter
-        attendees=[
+        attendees=attendees_override
+        if attendees_override is not None
+        else [
             EventInternalAttendeeData(
                 user_id=attendance.user_id,
                 email=attendances_users_by_id[attendance.user_id].email,
@@ -327,12 +411,14 @@ def serialize_event_data_input(
                 ),
             )
             # For recurring instances, get attendances from the parent event; for regular events, use their own
-            for attendance in event_data.attendances
+            for attendance in input_attendances
             # Non-member (orphan) attendees have no membership-backed identity and are
             # excluded — matching ``serialize_event`` so both sides of the diff agree.
             if attendance.user_id in member_user_ids
         ],
-        external_attendees=[
+        external_attendees=external_attendees_override
+        if external_attendees_override is not None
+        else [
             EventExternalAttendeeData(
                 email=external_attendance.external_attendee.email,
                 name=external_attendance.external_attendee.name,
@@ -344,7 +430,7 @@ def serialize_event_data_input(
                 ),
             )
             # For recurring instances, get external attendances from the parent event; for regular events, use their own
-            for external_attendance in event_data.external_attendances
+            for external_attendance in input_external_attendances
         ],
         resources=[
             ResourceData(
@@ -367,6 +453,12 @@ def serialize_event_data_input(
         status="confirmed",
         is_recurring=bool(event_data.recurrence_rule),
         recurring_event_id=None,
+        # ``None`` (omitted -- untouched) maps to `[]` here: this snapshot only
+        # feeds the permission-diff check (`can_perform_update`), which does not
+        # examine identifiers, so there is no observable difference between "empty"
+        # and "unspecified" for any current consumer. Input identifiers are already
+        # `ExternalClientIdentifierData`, so they are passed through as-is.
+        external_client_identifiers=event_data.external_client_identifiers or [],
     )
 
 
