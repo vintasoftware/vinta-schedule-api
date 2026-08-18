@@ -99,6 +99,37 @@ rather than `create_event` directly — those services handle picking the
 primary calendar, propagating to children, and writing the per-slot or
 per-bundle metadata in one transaction.
 
+### Public API — `updateCalendarEvent`
+
+The public GraphQL API's `updateCalendarEvent` mutation updates a single-calendar
+event's **title, description, internal attendees, external attendees and client
+identifiers**. Every field besides `eventId` is `UNSET`-defaulted: **omitting a field
+leaves it exactly as stored**. A caller that supplies only `title` does not touch
+attendees or identifiers — that "omitted vs. supplied" distinction is deliberately
+enforced at the resolver, not left to the underlying dataclass, because
+`CalendarEventInputData`'s own `title`/`description`/`attendances`/
+`external_attendances` fields are always-replace, not tri-state: the resolver reads
+the event's current values first and only overrides the fields the caller actually
+named.
+
+**`updateCalendarEvent` does not own `startTime`, `endTime`, `timezone` or
+`rruleString`.** Those stay on `rescheduleCalendarEvent` — the two mutations are
+deliberately non-overlapping, and `updateCalendarEvent` always re-passes the event's
+current time/timezone/recurrence-rule fields unchanged.
+
+Owner-scoped tokens may only update events on calendars their owner owns; a
+cross-owner `eventId` returns the same `"Event not found."` error a genuinely missing
+event would, so existence is never leaked to a caller outside that scope.
+
+Identifier writes on this mutation share `scheduleEvent`'s validation and reject (with
+the whole update rolled back) on: an invalid `system` URL; a blank/whitespace-only or
+over-255-character `identifier`; a `(system, identifier)` pair already claimed by
+another record of the same type in the organization; or two pairs in one payload that
+normalize to the same `system`. (Two of the six identifier domain errors — an
+out-of-allowlist target and a cross-organization target — can never be reached from a
+caller-supplied body on either mutation, since the target and organization are always
+resolved server-side.)
+
 ## RSVP statuses
 
 `RSVPStatus` (`accepted`, `declined`, `pending`) is shared between

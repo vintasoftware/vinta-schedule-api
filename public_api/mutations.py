@@ -1107,6 +1107,74 @@ class RescheduleCalendarGroupEventInput:
     timezone: str
 
 
+@strawberry.input
+class UpdateCalendarEventInput:
+    """Input for updating a single-calendar event's metadata, attendees and identifiers.
+
+    Every field below ``event_id`` is ``strawberry.UNSET``-defaulted: **omitted means
+    untouched**. This mutation never widens what a caller can affect just by naming a
+    field it did not intend to change -- an update that supplies only ``title`` leaves
+    description, attendees and identifiers exactly as they were.
+
+    Deliberately absent: ``startTime``, ``endTime``, ``timezone`` and ``rruleString``.
+    Those stay owned by ``rescheduleCalendarEvent`` -- this mutation does not overlap
+    it, and a caller who needs to move an event or change its recurrence must use that
+    mutation instead.
+
+    An owner-scoped token may only update events on calendars its owner owns; an
+    org-wide token acts org-wide. A cross-owner ``event_id`` returns the identical
+    ``"Event not found."`` error a genuinely missing event would -- existence is never
+    leaked.
+
+    Field semantics:
+    - ``title``: omit to keep the current title. An explicit ``null`` is rejected (an
+      event must always have a title).
+    - ``description``: omit to keep the current description. An explicit ``null`` is
+      treated as clearing it to ``""``, matching ``scheduleEvent``'s own convention.
+    - ``attendee_user_ids``: omit to keep the current internal attendees. A supplied
+      list (including ``[]`` or ``null``) replaces the full set; every id must be an
+      ACTIVE member of the caller's organization.
+    - ``external_attendees``: omit to keep the current external attendees untouched,
+      including each one's own stored identifiers. A supplied list (including ``[]``
+      or ``null``) replaces the full set: an attendee whose email matches an existing
+      one is updated in place (its identifiers stay untouched unless that entry's own
+      ``external_client_identifiers`` is supplied); an attendee with a new email is
+      created; an existing attendee whose email is absent from the new list is removed,
+      firing the attendee-removed webhook.
+    - ``external_client_identifiers``: omit to keep the event's own identifiers
+      untouched. A supplied list (including ``[]`` or ``null``) replaces the full set;
+      ``[]``/``null`` clears it.
+
+    Rejected with a GraphQL error, and no partial write, when: an invalid ``system``
+    URL is given; an ``identifier`` is blank/whitespace or over 255 characters; a
+    ``(system, identifier)`` pair is already claimed by another record of the same type
+    in the organization; or two pairs in one identifier list normalize to the same
+    system. (Two of the six domain errors from Phase 2 -- an out-of-allowlist target and
+    a cross-organization target -- can never be reached from this caller-supplied body:
+    the target is always this resolved event or one of its own attendees, and the
+    organization is always the resolved org, never a caller-supplied value.)
+    """
+
+    organization_id: int
+    event_id: int
+    title: str | None = strawberry.UNSET  # type: ignore[assignment]
+    description: str | None = strawberry.UNSET  # type: ignore[assignment]
+    attendee_user_ids: list[int] | None = strawberry.UNSET  # type: ignore[assignment]
+    external_attendees: list[ScheduleEventExternalAttendeeInput] | None = strawberry.UNSET  # type: ignore[assignment]
+    external_client_identifiers: list[ExternalClientIdentifierInput] | None = strawberry.field(  # type: ignore[assignment]
+        default=strawberry.UNSET,
+        description=(
+            "Client-owned (system, identifier) pairs for this event. Omitted = leave "
+            "untouched; an explicit list (including [] or null) replaces the full set. "
+            "Rejected with a GraphQL error, and no partial write, when: an invalid "
+            "system URL is given; an identifier is blank/whitespace or over 255 "
+            "characters; a (system, identifier) pair is already claimed by another "
+            "record of the same type in the organization; or two pairs in this payload "
+            "normalize to the same system. See ExternalClientIdentifierInput."
+        ),
+    )
+
+
 @strawberry.type
 class CancelEventResult:
     """Result of a ``cancelEvent`` mutation.
@@ -3422,6 +3490,214 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
                 str(exc) or "You do not have permission to reschedule this event."
             ) from exc
         except (ValueError, DjangoValidationError, CalendarIntegrationError) as exc:
+            raise GraphQLError(str(exc)) from exc
+
+        return event  # type: ignore[return-value]
+
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def update_calendar_event(
+        self,
+        info: strawberry.Info,
+        input: UpdateCalendarEventInput,  # noqa: A002
+    ) -> CalendarEventGraphQLType:
+        """Update a single-calendar event's title, description, attendees and identifiers.
+
+        Every field on ``UpdateCalendarEventInput`` besides ``event_id`` is
+        ``strawberry.UNSET``-defaulted: an omitted field is left exactly as stored, so a
+        caller that supplies only ``title`` cannot accidentally wipe attendees or
+        identifiers by having them collapse to an empty list. See that input's
+        docstring for the full per-field contract.
+
+        Times, timezone and recurrence are NOT part of this mutation -- they stay owned
+        by ``rescheduleCalendarEvent``. This resolver always re-passes the event's
+        current start/end/timezone/recurrence rule to ``CalendarEventService.update_event``
+        unchanged.
+
+        Authorization:
+        - Owner-scoped token: ``assert_calendar_in_owner_scope`` restricts to events on
+          calendars owned by the token's owner; a cross-owner ``event_id`` raises the
+          identical ``"Event not found."`` error a genuinely missing event would, so
+          existence is never leaked. The service independently re-verifies ownership as
+          defense-in-depth.
+        - Org-wide token: the scope guard is a no-op -> acts org-wide.
+
+        The token's ``OrganizationResourceAccess`` must include the ``CALENDAR_EVENT``
+        resource.
+        """
+        calendar_service, org = _get_org_and_init_calendar_service(info)
+        request: PublicApiHttpRequest = info.context.request
+
+        # Load the event first (organization-scoped only -- this mutation has no
+        # calendar_id in its input) so the owner-scope guard below can be checked
+        # against the event's OWN calendar. A missing event and a cross-owner event
+        # both end up producing the exact same "Event not found." message.
+        try:
+            existing_event = (
+                CalendarEvent.objects.filter_by_organization(org.id)
+                .select_related("calendar", "recurrence_rule")
+                .prefetch_related(
+                    "attendances",
+                    "external_attendances__external_attendee",
+                    "resource_allocations",
+                    "external_client_identifiers",
+                )
+                .get(id=input.event_id)
+            )
+        except CalendarEvent.DoesNotExist as exc:
+            raise GraphQLError("Event not found.") from exc
+
+        try:
+            # Owner-scope guard (defense in depth): a scoped token may only target
+            # events on its owner's calendars. Raises Calendar.DoesNotExist when the
+            # event's calendar is outside that scope -- caught and remapped to the
+            # SAME "Event not found." message used above, so a cross-owner attempt is
+            # indistinguishable from a genuinely missing event.
+            assert_calendar_in_owner_scope(
+                request.public_api_system_user, org, existing_event.calendar_fk_id
+            )
+        except Calendar.DoesNotExist as exc:
+            raise GraphQLError("Event not found.") from exc
+
+        # --- title -----------------------------------------------------------
+        if input.title is strawberry.UNSET:
+            title = existing_event.title
+        elif input.title is None:
+            raise GraphQLError("Title cannot be null.")
+        else:
+            if len(input.title) > EVENT_TITLE_MAX_LENGTH:
+                raise GraphQLError(f"Title must be at most {EVENT_TITLE_MAX_LENGTH} characters.")
+            title = input.title
+
+        # --- description -------------------------------------------------------
+        if input.description is strawberry.UNSET:
+            description = existing_event.description
+        else:
+            # Explicit null is "supplied, nothing there" -> clears to "", matching
+            # scheduleEvent's own `input.description or ""` convention.
+            description = input.description or ""
+
+        # --- internal attendees --------------------------------------------------
+        if input.attendee_user_ids is strawberry.UNSET:
+            # Untouched: preserve the event's current internal attendances exactly,
+            # mirroring reschedule_calendar_event's preserved_attendances.
+            attendee_user_ids = [
+                attendance.membership_user_id
+                for attendance in existing_event.attendances.all()
+                if attendance.membership_user_id is not None
+            ]
+        else:
+            # Supplied (including [] / null): replaces the full set. De-duplicate
+            # first so a repeated id doesn't skew the membership count check.
+            attendee_user_ids = list(dict.fromkeys(input.attendee_user_ids or []))
+            if attendee_user_ids:
+                active_member_ids = set(
+                    OrganizationMembership.objects.filter(
+                        organization_id=org.id,
+                        is_active=True,
+                        user_id__in=attendee_user_ids,
+                    ).values_list("user_id", flat=True)
+                )
+                missing = [uid for uid in attendee_user_ids if uid not in active_member_ids]
+                if missing:
+                    raise GraphQLError(
+                        "One or more attendees are not active members of this organization."
+                    )
+
+        # --- external attendees ---------------------------------------------------
+        if input.external_attendees is strawberry.UNSET:
+            # Untouched: preserve every existing external attendee AND its stored
+            # identifiers. Passing the existing external_attendee id keeps
+            # update_event's reconciliation loop on the "update in place" path rather
+            # than the "delete + recreate" path -- the latter would drop identifiers
+            # that aren't re-supplied. external_client_identifiers is left at its
+            # dataclass default (None == untouched).
+            external_attendances = [
+                EventExternalAttendanceInputData(
+                    external_attendee=ExternalAttendeeInputData(
+                        id=ea.external_attendee_fk_id,
+                        email=ea.external_attendee.email,
+                        name=ea.external_attendee.name or "",
+                    )
+                )
+                for ea in existing_event.external_attendances.all()
+            ]
+        else:
+            # Supplied (including [] / null): replaces the full set. ScheduleEvent-
+            # ExternalAttendeeInput carries no id (schedule_event only ever creates),
+            # so an attendee surviving this replace is identified by EMAIL against the
+            # event's current external attendees. A matched email carries its existing
+            # external_attendee id through -- keeping it on update_event's "update in
+            # place" path so its stored identifiers survive untouched unless this
+            # entry's own external_client_identifiers is explicitly supplied. An
+            # unmatched email is a genuinely new attendee; an existing email absent
+            # from the new list is removed (fires the attendee-removed webhook).
+            existing_external_attendee_id_by_email = {
+                ea.external_attendee.email: ea.external_attendee_fk_id
+                for ea in existing_event.external_attendances.all()
+            }
+            external_attendances = [
+                EventExternalAttendanceInputData(
+                    external_attendee=ExternalAttendeeInputData(
+                        id=existing_external_attendee_id_by_email.get(external.email),
+                        email=external.email,
+                        name=external.name,
+                        external_client_identifiers=_map_external_client_identifiers(
+                            external.external_client_identifiers
+                        ),
+                    )
+                )
+                for external in (input.external_attendees or [])
+            ]
+
+        # --- recurrence rule: always preserved, never part of this mutation --------
+        recurrence_rule = (
+            existing_event.recurrence_rule.to_rrule_string()
+            if existing_event.is_recurring
+            else None
+        )
+
+        # --- resource allocations: always preserved, not part of this mutation -----
+        resource_allocations = [
+            ResourceAllocationInputData(resource_id=ra.calendar_fk_id)  # type: ignore[arg-type]
+            for ra in existing_event.resource_allocations.all()
+            if ra.calendar_fk_id
+        ]
+
+        event_data = CalendarEventInputData(
+            title=title,
+            description=description,
+            # Times/timezone are NOT part of this mutation -- always re-pass the
+            # event's own current values unchanged.
+            start_time=existing_event.start_time,
+            end_time=existing_event.end_time,
+            timezone=existing_event.timezone,
+            attendances=[
+                EventAttendanceInputData(user_id=user_id) for user_id in attendee_user_ids
+            ],
+            external_attendances=external_attendances,
+            resource_allocations=resource_allocations,
+            recurrence_rule=recurrence_rule,
+            external_client_identifiers=_map_external_client_identifiers(
+                input.external_client_identifiers
+            ),
+        )
+
+        try:
+            event = calendar_service.update_event(
+                existing_event.calendar_fk_id, input.event_id, event_data
+            )
+        except Calendar.DoesNotExist as exc:
+            raise GraphQLError("Event not found.") from exc
+        except CalendarEvent.DoesNotExist as exc:
+            raise GraphQLError("Event not found.") from exc
+        except PermissionDenied as exc:
+            raise GraphQLError(
+                str(exc) or "You do not have permission to update this event."
+            ) from exc
+        # IntegrityError: a (system, identifier) pair already claimed by another record
+        # of the same type in this organization -- see schedule_event's identical
+        # comment on this same exception class.
+        except (ValueError, DjangoValidationError, CalendarIntegrationError, IntegrityError) as exc:
             raise GraphQLError(str(exc)) from exc
 
         return event  # type: ignore[return-value]
