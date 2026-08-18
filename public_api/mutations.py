@@ -1135,12 +1135,17 @@ class UpdateCalendarEventInput:
       list (including ``[]`` or ``null``) replaces the full set; every id must be an
       ACTIVE member of the caller's organization.
     - ``external_attendees``: omit to keep the current external attendees untouched,
-      including each one's own stored identifiers. A supplied list (including ``[]``
+      including each one's own stored identifiers. Omitted is a true skip -- the
+      stored attendees are not read, not rewritten, and emit no
+      ``CALENDAR_EVENT_ATTENDEE_UPDATED`` webhooks. A supplied list (including ``[]``
       or ``null``) replaces the full set: an attendee whose email matches an existing
       one is updated in place (its identifiers stay untouched unless that entry's own
       ``external_client_identifiers`` is supplied); an attendee with a new email is
       created; an existing attendee whose email is absent from the new list is removed,
-      firing the attendee-removed webhook.
+      firing the attendee-removed webhook. Matching is by EMAIL, normalized (stripped
+      + lowercased), because ``ScheduleEventExternalAttendeeInput`` carries no id --
+      dropping the match and replacing wholesale instead would cascade-delete the
+      identifiers of every re-sent attendee.
     - ``external_client_identifiers``: omit to keep the event's own identifiers
       untouched. A supplied list (including ``[]`` or ``null``) replaces the full set;
       ``[]``/``null`` clears it.
@@ -3535,11 +3540,14 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             existing_event = (
                 CalendarEvent.objects.filter_by_organization(org.id)
                 .select_related("calendar", "recurrence_rule")
+                # ``attendances`` is deliberately NOT prefetched: since this
+                # resolver stopped reconstructing the internal attendee list (an
+                # omitted field now goes to update_event as ``None``), nothing here
+                # reads it, and prefetching it would cost a query per request for
+                # a relation no branch touches.
                 .prefetch_related(
-                    "attendances",
                     "external_attendances__external_attendee",
                     "resource_allocations",
-                    "external_client_identifiers",
                 )
                 .get(id=input.event_id)
             )
@@ -3578,8 +3586,13 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             raise GraphQLError("updateCalendarEvent does not support bundle primary events.")
 
         # --- title -----------------------------------------------------------
+        # Omitted -> ``None``, passed straight through: CalendarEventInputData is
+        # tri-state, so update_event skips the assignment entirely. This resolver
+        # deliberately does NOT read the stored title and re-send it -- doing so
+        # (as it did before Phase 7) would overwrite a value a concurrent update
+        # may have changed between this request's read and its commit.
         if input.title is strawberry.UNSET:
-            title = existing_event.title
+            title = None
         elif input.title is None:
             raise GraphQLError("Title cannot be null.")
         else:
@@ -3589,21 +3602,19 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
 
         # --- description -------------------------------------------------------
         if input.description is strawberry.UNSET:
-            description = existing_event.description
+            description = None
         else:
             # Explicit null is "supplied, nothing there" -> clears to "", matching
             # scheduleEvent's own `input.description or ""` convention.
             description = input.description or ""
 
         # --- internal attendees --------------------------------------------------
+        attendee_user_ids: list[int] | None
         if input.attendee_user_ids is strawberry.UNSET:
-            # Untouched: preserve the event's current internal attendances exactly,
-            # mirroring reschedule_calendar_event's preserved_attendances.
-            attendee_user_ids = [
-                attendance.membership_user_id
-                for attendance in existing_event.attendances.all()
-                if attendance.membership_user_id is not None
-            ]
+            # Untouched: ``None`` reaches update_event, which skips the internal
+            # attendance reconciliation outright -- no read, no create, no delete,
+            # and nothing for a concurrent attendee write to lose.
+            attendee_user_ids = None
         else:
             # Supplied (including [] / null): replaces the full set. De-duplicate
             # first so a repeated id doesn't skew the membership count check.
@@ -3623,24 +3634,15 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
                     )
 
         # --- external attendees ---------------------------------------------------
+        external_attendances: list[EventExternalAttendanceInputData] | None
         if input.external_attendees is strawberry.UNSET:
-            # Untouched: preserve every existing external attendee AND its stored
-            # identifiers. Passing the existing external_attendee id keeps
-            # update_event's reconciliation loop on the "update in place" path rather
-            # than the "delete + recreate" path -- the latter would drop identifiers
-            # that aren't re-supplied. external_client_identifiers is left at its
-            # dataclass default (None == untouched).
-            external_attendances = [
-                EventExternalAttendanceInputData(
-                    external_attendee=ExternalAttendeeInputData(
-                        id=ea.external_attendee_fk_id,
-                        email=ea.external_attendee.email,
-                        name=ea.external_attendee.name or "",
-                    )
-                )
-                for ea in existing_event.external_attendances.all()
-                if ea.external_attendee_fk_id is not None
-            ]
+            # Untouched: ``None`` reaches update_event, which skips the external
+            # attendance reconciliation outright. Every stored attendee, and every
+            # identifier hanging off it, is left exactly as it is -- and no
+            # CALENDAR_EVENT_ATTENDEE_UPDATED webhook fires for any of them, which
+            # the pre-Phase-7 re-send of each existing attendee (id included, so
+            # every one landed on update_event's update-in-place branch) did emit.
+            external_attendances = None
         else:
             # Supplied (including [] / null): replaces the full set. ScheduleEvent-
             # ExternalAttendeeInput carries no id (schedule_event only ever creates),
@@ -3728,9 +3730,11 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             start_time=existing_event.start_time,
             end_time=existing_event.end_time,
             timezone=existing_event.timezone,
-            attendances=[
-                EventAttendanceInputData(user_id=user_id) for user_id in attendee_user_ids
-            ],
+            attendances=(
+                None
+                if attendee_user_ids is None
+                else [EventAttendanceInputData(user_id=user_id) for user_id in attendee_user_ids]
+            ),
             external_attendances=external_attendances,
             resource_allocations=resource_allocations,
             recurrence_rule=recurrence_rule,

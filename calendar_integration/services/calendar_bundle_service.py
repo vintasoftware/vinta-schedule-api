@@ -480,15 +480,21 @@ class CalendarBundleService:
         # Collect all attendees from child calendar ownerships
         all_attendees = self._collect_bundle_attendees(child_calendars, event_data)
 
-        # Create the primary event
+        # Create the primary event. This is a CREATE, so the tri-state fields are
+        # spelled out as their empty value rather than forwarded as ``None``:
+        # ``create_event`` treats the two as identical, and being explicit keeps the
+        # fan-out readable -- and keeps the child rows' ``[Bundle] ...`` strings below
+        # from interpolating a literal ``None``.
+        event_title = event_data.title or ""
+        event_description = event_data.description or ""
         primary_event_data = CalendarEventInputData(
-            title=event_data.title,
-            description=event_data.description,
+            title=event_title,
+            description=event_description,
             start_time=event_data.start_time,
             end_time=event_data.end_time,
             timezone=event_data.timezone,
             attendances=all_attendees,
-            external_attendances=event_data.external_attendances,
+            external_attendances=event_data.external_attendances or [],
             resource_allocations=event_data.resource_allocations,
             recurrence_rule=event_data.recurrence_rule,
         )
@@ -518,8 +524,8 @@ class CalendarBundleService:
             if self._child_gets_full_event(child_calendar):
                 # Create full CalendarEvent for internal calendars
                 child_event_data = CalendarEventInputData(
-                    title=f"[Bundle] {event_data.title}",
-                    description=f"Bundle event from {bundle_calendar.name}\n\n{event_data.description}",
+                    title=f"[Bundle] {event_title}",
+                    description=f"Bundle event from {bundle_calendar.name}\n\n{event_description}",
                     start_time=event_data.start_time,
                     end_time=event_data.end_time,
                     timezone=event_data.timezone,
@@ -550,7 +556,7 @@ class CalendarBundleService:
                     end_time_tz_unaware=_convert_naive_utc_datetime_to_timezone(
                         event_data.end_time, event_data.timezone
                     ),
-                    reason=f"Bundle event: {event_data.title}",
+                    reason=f"Bundle event: {event_title}",
                     organization=child_calendar.organization,
                     bundle_calendar=bundle_calendar,
                     bundle_primary_event=primary_event,
@@ -593,9 +599,19 @@ class CalendarBundleService:
             "description": bundle_event.description,
             "timezone": bundle_event.timezone,
         }
+        # Tri-state: an omitted title/description leaves the stored value in place,
+        # so the "after" side of the diff -- and the ``[Bundle] ...`` strings the
+        # representation rows below are rebuilt from -- must resolve to the stored
+        # value rather than to ``None``.
+        effective_title = event_data.title if event_data.title is not None else bundle_event.title
+        effective_description = (
+            event_data.description
+            if event_data.description is not None
+            else bundle_event.description
+        )
         after_scalars = {
-            "title": event_data.title,
-            "description": event_data.description,
+            "title": effective_title,
+            "description": effective_description,
             "timezone": event_data.timezone,
         }
 
@@ -613,8 +629,8 @@ class CalendarBundleService:
 
         for representation_event in representation_events:
             representation_data = CalendarEventInputData(
-                title=f"[Bundle] {event_data.title}",
-                description=f"Bundle event from {bundle_calendar.name}\n\n{event_data.description}",
+                title=f"[Bundle] {effective_title}",
+                description=f"Bundle event from {bundle_calendar.name}\n\n{effective_description}",
                 start_time=event_data.start_time,
                 end_time=event_data.end_time,
                 timezone=event_data.timezone,
@@ -643,7 +659,7 @@ class CalendarBundleService:
             blocked_time.end_time_tz_unaware = _convert_naive_utc_datetime_to_timezone(
                 event_data.end_time, event_data.timezone
             )
-            blocked_time.reason = f"Bundle event: {event_data.title}"
+            blocked_time.reason = f"Bundle event: {effective_title}"
             blocked_time.save(
                 update_fields=["start_time_tz_unaware", "end_time_tz_unaware", "reason"]
             )
@@ -768,7 +784,7 @@ class CalendarBundleService:
         if not is_initialized_or_authenticated_calendar_service(context):
             raise
 
-        attendee_user_ids = {attendance.user_id for attendance in event_data.attendances}
+        attendee_user_ids = {attendance.user_id for attendance in (event_data.attendances or [])}
 
         # Add memberships that own child calendars (membership-backed owners only;
         # orphan ownerships with a null membership are intentionally excluded).

@@ -520,6 +520,11 @@ def test_update_event_on_commit_dispatch_reuses_prefetched_identifiers(
     # ``WebhookConfiguration`` lookup. The identifier prefetch this test exists to
     # guard is unchanged: all three dispatches still share ONE identifier query
     # between them, which is what the +3 (one per dispatch, not two) demonstrates.
+    #
+    # Phase 7's tri-state change does NOT move this number: this update supplies
+    # ``external_attendances`` explicitly, so it takes the same reconciliation path
+    # it always did. The counts that Phase 7 changes are those of callers that OMIT
+    # a field -- which now skip their reconciliation entirely.
     with django_assert_num_queries(78):
         with django_capture_on_commit_callbacks(execute=True):
             event_service.update_event(calendar.id, created.id, updated_input)

@@ -478,7 +478,7 @@ def test_create_bundle_event_uses_designated_primary(
         )
         evt = CalendarEvent(
             id=len(created_calls) + 1,
-            title=event_data.title,
+            title=event_data.title or "",
             calendar=cal,
             organization=organization,
             start_time_tz_unaware=event_data.start_time,
@@ -547,7 +547,7 @@ def test_create_bundle_event_creates_blocked_time_for_provider_children(
             id=calendar_id,
         )
         evt = CalendarEvent(
-            title=event_data.title,
+            title=event_data.title or "",
             calendar=cal,
             organization=organization,
             start_time_tz_unaware=event_data.start_time,

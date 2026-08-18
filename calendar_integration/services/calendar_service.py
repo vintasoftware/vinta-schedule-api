@@ -314,7 +314,7 @@ class CalendarService(BaseCalendarService):
 
     def _serialize_event_external_attendee(
         self, external_attendance: EventExternalAttendance
-    ) -> EventExternalAttendeeData:
+    ) -> EventExternalAttendeeData | None:
         return _serialize_event_external_attendee_util(external_attendance)
 
     def _serialize_event(self, event: CalendarEvent) -> CalendarEventData:

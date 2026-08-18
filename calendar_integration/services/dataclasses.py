@@ -90,15 +90,28 @@ class ResourceAllocationInputData:
 
 @dataclass
 class CalendarEventInputData:
-    title: str
-    description: str
+    """Input payload for ``CalendarEventService.create_event`` / ``update_event``.
+
+    ``title``, ``description``, ``attendances`` and ``external_attendances`` are
+    **tri-state**, matching ``external_client_identifiers``: a value replaces what is
+    stored, and ``None`` means "omitted -- leave untouched". On ``update_event`` an
+    omitted field skips its write entirely: no assignment, no reconciliation, no
+    attendee webhook. On ``create_event`` there is nothing to leave untouched, so
+    ``None`` behaves exactly as the empty value did before (``""`` for the two strings,
+    ``[]`` for the two lists) rather than raising.
+
+    ``resource_allocations`` is deliberately NOT tri-state: it stays always-replace,
+    defaulting to ``[]``.
+    """
+
+    title: str | None
+    description: str | None
     start_time: datetime.datetime
     end_time: datetime.datetime
     timezone: str  # IANA timezone string (required)
-    attendances: list[EventAttendanceInputData] = dataclass_field(default_factory=list)
-    external_attendances: list[EventExternalAttendanceInputData] = dataclass_field(
-        default_factory=list
-    )
+    # None = omitted, leave untouched (update) / empty (create).
+    attendances: list[EventAttendanceInputData] | None = None
+    external_attendances: list[EventExternalAttendanceInputData] | None = None
     resource_allocations: list[ResourceAllocationInputData] = dataclass_field(default_factory=list)
     # Recurrence fields
     recurrence_rule: str | None = None  # RRULE string

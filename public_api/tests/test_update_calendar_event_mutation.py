@@ -35,7 +35,6 @@ from calendar_integration.models import (
     ExternalClientIdentifier,
     RecurrenceRule,
 )
-from calendar_integration.services.calendar_side_effects_service import CalendarSideEffectsService
 from organizations.models import Organization, OrganizationMembership
 from organizations.tests.helpers import make_admin_membership
 from public_api.constants import PublicAPIResources
@@ -44,8 +43,6 @@ from public_api.services import PublicAPIAuthService
 from users.models import Profile
 from webhooks.constants import WebhookEventType
 from webhooks.models import WebhookConfiguration, WebhookEvent
-from webhooks.services.webhook_calendar_side_effects import WebhookCalendarEventSideEffectsService
-from webhooks.services.webhook_service import WebhookService
 
 
 def assert_graphql_success(response):
@@ -469,11 +466,13 @@ class TestUpdateCalendarEventMutation:
         dropped attendee fires the attendee-removed webhook; a new attendee fires
         the attendee-added webhook.
 
-        Calendar side-effect webhooks do not dispatch through the DI container on
-        this branch (di_core/containers.py wires `side_effects_pipeline` as a plain
-        tuple holding an unresolved provider -- see PR #278, not in this stack), so
-        the pipeline is hand-wired here, mirroring
-        webhooks/tests/test_calendar_event_identifier_payloads.py.
+        Dispatch goes through the DI container's own ``side_effects_pipeline``. When
+        this test was written that pipeline was inert (di_core/containers.py wired
+        it as a plain tuple holding an unresolved provider) and the service had to
+        be hand-wired here; PR #278 is now in the stack, so the hand-wiring was
+        dropped and what the assertions below observe is production dispatch. No
+        assertion changed -- only the wiring in front of them, from a hand-built
+        pipeline to the real one.
         """
         mock_rate_limiter.return_value = iter([None])
         org = self._make_org()
@@ -508,33 +507,24 @@ class TestUpdateCalendarEventMutation:
             org, [PublicAPIResources.CALENDAR_EVENT]
         )
 
-        from di_core.containers import container
-
-        side_effects_service = CalendarSideEffectsService(
-            side_effects_pipeline=(
-                WebhookCalendarEventSideEffectsService(webhook_service=WebhookService()),
-            )
-        )
-
-        with container.calendar_side_effects_service.override(side_effects_service):
-            with patch("webhooks.services.webhook_service.process_webhook_event.delay"):
-                with django_capture_on_commit_callbacks(execute=True):
-                    response = self._post(
-                        _UPDATE_CALENDAR_EVENT,
-                        system_user,
-                        token,
-                        auth_service,
-                        {
-                            "input": self._update_input(
-                                org,
-                                event,
-                                externalAttendees=[
-                                    {"email": "surviving@example.com", "name": "Surviving"},
-                                    {"email": "new@example.com", "name": "New"},
-                                ],
-                            )
-                        },
-                    )
+        with patch("webhooks.services.webhook_service.process_webhook_event.delay"):
+            with django_capture_on_commit_callbacks(execute=True):
+                response = self._post(
+                    _UPDATE_CALENDAR_EVENT,
+                    system_user,
+                    token,
+                    auth_service,
+                    {
+                        "input": self._update_input(
+                            org,
+                            event,
+                            externalAttendees=[
+                                {"email": "surviving@example.com", "name": "Surviving"},
+                                {"email": "new@example.com", "name": "New"},
+                            ],
+                        )
+                    },
+                )
 
         data = assert_graphql_success(response)
         result = data["updateCalendarEvent"]
@@ -1132,4 +1122,110 @@ class TestUpdateCalendarEventMutation:
             EventAttendance.objects.filter_by_organization(org.id)
             .filter(event_fk_id=event.id, membership_user_id=internal_attendee.id)
             .exists()
+        )
+
+    # ------------------------------------------------------------------
+    # Phase 7: a title-only update touches no attendee and fires no
+    # attendee webhook
+    # ------------------------------------------------------------------
+
+    def test_title_only_update_fires_no_attendee_updated_webhook(
+        self, mock_rate_limiter, django_capture_on_commit_callbacks
+    ):
+        """A title-only ``updateCalendarEvent`` on an event carrying external
+        attendees must emit ZERO ``CALENDAR_EVENT_ATTENDEE_UPDATED`` webhooks.
+
+        This is the partner-visible half of the Phase 7 root-cause fix. Before it,
+        the resolver read every stored external attendee and re-sent it *with its
+        id*, which put all of them on ``update_event``'s update-in-place branch --
+        a branch that unconditionally appends to
+        ``serialized_external_attendances_to_update``. A title-only update on an
+        event with N external attendees therefore emitted N attendee-updated
+        webhooks (plus a pointless ``bulk_update``). Two attendees are seeded here
+        so a per-attendee dispatch is unambiguous in the count.
+
+        Unlike
+        ``test_replacing_external_attendees_fires_webhooks_and_preserves_surviving_identifiers``,
+        this test registers a ``WebhookConfiguration`` for
+        ``CALENDAR_EVENT_ATTENDEE_UPDATED`` -- without one, no ``WebhookEvent`` row
+        is written for that type and the assertion would hold vacuously against a
+        broken implementation. It relies on the DI container's own
+        ``side_effects_pipeline`` (PR #278), not a hand-wired one, so what is
+        measured is production dispatch. Falsifiability: the
+        ``CALENDAR_EVENT_UPDATED`` assertion below proves the pipeline really is
+        live and really did write a row for this same request -- so an empty
+        attendee-updated queryset is a real absence, not a dead pipeline.
+        """
+        mock_rate_limiter.return_value = iter([None])
+        org = self._make_org()
+        _owner, _membership, calendar = self._make_owner_with_calendar(org)
+        event = self._make_event(org, calendar)
+
+        first = self._add_external_attendee(org, event, "first@example.com", name="First")
+        second = self._add_external_attendee(org, event, "second@example.com", name="Second")
+
+        for event_type in (
+            WebhookEventType.CALENDAR_EVENT_UPDATED,
+            WebhookEventType.CALENDAR_EVENT_ATTENDEE_UPDATED,
+            WebhookEventType.CALENDAR_EVENT_ATTENDEE_ADDED,
+            WebhookEventType.CALENDAR_EVENT_ATTENDEE_REMOVED,
+        ):
+            baker.make(
+                WebhookConfiguration,
+                organization=org,
+                event_type=event_type,
+                url=f"https://example.com/hooks/{event_type}",
+            )
+
+        system_user, token, auth_service = self._make_org_wide_system_user(
+            org, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        with patch("webhooks.services.webhook_service.process_webhook_event.delay"):
+            with django_capture_on_commit_callbacks(execute=True):
+                response = self._post(
+                    _UPDATE_CALENDAR_EVENT,
+                    system_user,
+                    token,
+                    auth_service,
+                    {"input": self._update_input(org, event, title="Title Only")},
+                )
+
+        data = assert_graphql_success(response)
+        result = data["updateCalendarEvent"]
+        assert result["title"] == "Title Only"
+        assert {a["email"] for a in result["externalAttendees"]} == {
+            "first@example.com",
+            "second@example.com",
+        }
+
+        # The pipeline IS live for this request: the event-updated webhook landed.
+        assert (
+            WebhookEvent.objects.filter_by_organization(org.id)
+            .filter(event_type=WebhookEventType.CALENDAR_EVENT_UPDATED)
+            .count()
+            == 1
+        )
+        # ... and not one attendee webhook of any kind fired.
+        for event_type in (
+            WebhookEventType.CALENDAR_EVENT_ATTENDEE_UPDATED,
+            WebhookEventType.CALENDAR_EVENT_ATTENDEE_ADDED,
+            WebhookEventType.CALENDAR_EVENT_ATTENDEE_REMOVED,
+        ):
+            assert (
+                not WebhookEvent.objects.filter_by_organization(org.id)
+                .filter(event_type=event_type)
+                .exists()
+            ), f"{event_type} dispatched for a title-only update"
+
+        # Both attendee rows survived untouched -- same pks, same names.
+        first.refresh_from_db()
+        second.refresh_from_db()
+        assert first.name == "First"
+        assert second.name == "Second"
+        assert (
+            EventExternalAttendance.objects.filter_by_organization(org.id)
+            .filter(event_fk_id=event.id)
+            .count()
+            == 2
         )
