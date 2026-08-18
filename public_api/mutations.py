@@ -3638,26 +3638,34 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             # miss here routes the entry down update_event's create branch while the
             # existing row is hard-deleted, cascading away its ExternalClientIdentifier
             # rows.
-            existing_external_attendee_id_by_email = {
-                ea.external_attendee.email.strip().lower(): ea.external_attendee_fk_id
+            existing_external_attendee_by_email = {
+                ea.external_attendee.email.strip().lower(): ea.external_attendee
                 for ea in existing_event.external_attendances.all()
                 if ea.external_attendee_fk_id is not None
             }
-            external_attendances = [
-                EventExternalAttendanceInputData(
-                    external_attendee=ExternalAttendeeInputData(
-                        id=existing_external_attendee_id_by_email.get(
-                            external.email.strip().lower()
-                        ),
-                        email=external.email,
-                        name=external.name,
-                        external_client_identifiers=_map_external_client_identifiers(
-                            external.external_client_identifiers
-                        ),
+            external_attendances = []
+            for external in input.external_attendees or []:
+                matched_attendee = existing_external_attendee_by_email.get(
+                    external.email.strip().lower()
+                )
+                external_attendances.append(
+                    EventExternalAttendanceInputData(
+                        external_attendee=ExternalAttendeeInputData(
+                            id=matched_attendee.id if matched_attendee else None,
+                            email=external.email,
+                            # An empty supplied name on a matched attendee falls back to
+                            # the stored name rather than blanking it -- `name` defaults
+                            # to "" (not strawberry.UNSET), so a caller supplying only
+                            # `{email}` to mean "keep this attendee, touch nothing else"
+                            # would otherwise silently wipe the stored name.
+                            name=external.name
+                            or (matched_attendee.name if matched_attendee else ""),
+                            external_client_identifiers=_map_external_client_identifiers(
+                                external.external_client_identifiers
+                            ),
+                        )
                     )
                 )
-                for external in (input.external_attendees or [])
-            ]
 
         # --- recurrence rule: always preserved, never part of this mutation --------
         recurrence_rule = (

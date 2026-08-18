@@ -549,6 +549,50 @@ class TestUpdateCalendarEventMutation:
         )
 
     # ------------------------------------------------------------------
+    # SHOULD-FIX #2: omitted `name` on a matched attendee falls back to the stored
+    # name instead of blanking it.
+    # ------------------------------------------------------------------
+
+    def test_resending_attendee_with_empty_name_keeps_stored_name(self, mock_rate_limiter):
+        """`ScheduleEventExternalAttendeeInput.name` defaults to "" (not UNSET). A
+        caller supplying only `{email}` to mean "keep this attendee, touch nothing
+        else" must not blank the stored name.
+        """
+        mock_rate_limiter.return_value = iter([None])
+        org = self._make_org()
+        _owner, membership, calendar = self._make_owner_with_calendar(org)
+        event = self._make_event(org, calendar)
+
+        self._add_external_attendee(org, event, "guest@example.com", name="Alice Guest")
+
+        system_user, token, auth_service = self._make_scoped_system_user(
+            org, membership, [PublicAPIResources.CALENDAR_EVENT]
+        )
+
+        response = self._post(
+            _UPDATE_CALENDAR_EVENT,
+            system_user,
+            token,
+            auth_service,
+            {
+                "input": self._update_input(
+                    org, event, externalAttendees=[{"email": "guest@example.com"}]
+                )
+            },
+        )
+
+        data = assert_graphql_success(response)
+        result = data["updateCalendarEvent"]
+        assert len(result["externalAttendees"]) == 1
+        assert result["externalAttendees"][0]["name"] == "Alice Guest"
+
+        assert (
+            ExternalAttendee.objects.filter_by_organization(org.id)
+            .filter(email="guest@example.com", name="Alice Guest")
+            .exists()
+        )
+
+    # ------------------------------------------------------------------
     # Owner scope: org-wide vs scoped, and the not-found-shaped cross-owner error
     # ------------------------------------------------------------------
 
