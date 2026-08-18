@@ -819,7 +819,14 @@ class TestUpdateCalendarEventMutation:
             },
         )
 
-        assert_graphql_error(response)
+        errors = assert_graphql_error(response)
+        # The IntegrityError's raw message (constraint name, column tuple, internal
+        # organization_id/content_type_id) must NOT reach an external API token --
+        # only the fixed, friendly message.
+        assert (
+            errors[0]["message"]
+            == "That (system, identifier) pair is already in use by another record."
+        )
 
         event.refresh_from_db()
         assert event.title == "Original Title"

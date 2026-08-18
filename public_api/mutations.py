@@ -3732,11 +3732,16 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             raise GraphQLError(
                 str(exc) or "You do not have permission to update this event."
             ) from exc
-        # IntegrityError: a (system, identifier) pair already claimed by another record
-        # of the same type in this organization -- see schedule_event's identical
-        # comment on this same exception class.
-        except (ValueError, DjangoValidationError, CalendarIntegrationError, IntegrityError) as exc:
+        except (ValueError, DjangoValidationError, CalendarIntegrationError) as exc:
             raise GraphQLError(str(exc)) from exc
+        except IntegrityError as exc:
+            # A (system, identifier) pair already claimed by another record of the
+            # same type in this organization. Do NOT surface str(exc) here -- it
+            # leaks the DB constraint name, column tuple, and internal
+            # organization_id/content_type_id values to an external API token.
+            raise GraphQLError(
+                "That (system, identifier) pair is already in use by another record."
+            ) from exc
 
         return event  # type: ignore[return-value]
 
