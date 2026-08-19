@@ -377,6 +377,79 @@ worker until Phase 2 imports it from `payments/tasks.py`. Same false premise —
 already registered. Phase 2 still owns pointing the beat wrappers at
 `vinta_billing.jobs`, but not this.
 
+## Phase 2b — ACTIVATED (was deferred)
+
+The requester chose "fix the package first" at the Phase 1 failure gate on 2026-08-19,
+which authorises cross-repo work this skill would otherwise defer. Phase 2b is therefore
+running, not deferred.
+
+Repo cloned to `/Users/hugobessa/Workspaces/vinta-django-billing` (public,
+`vintasoftware/vinta-django-billing`, `main` @ `e6b2521`, version 0.3.0). Branch
+`fix/host-integration-gaps`. Implementer opus — the plan suggests Tier 3 for this lane,
+stepped up because all four items are public API design on a released library, and gap 4
+in particular has a backward-compatibility trap (every existing registration declares no
+`usage_extra` keys, so a strict check would break existing 0.3.0 projects on upgrade).
+
+Scope: the four gaps recorded in the Phase 1 entry. The agent may also conclude gap 2 is
+correct as shipped and that the host should adapt instead — that is an acceptable
+outcome for that gap alone, with reasoning.
+
+### Outcome — all four gaps fixed, PR open, release deliberately not taken
+
+Commit `ed463c8` on `fix/host-integration-gaps`, pushed. PR:
+https://github.com/vintasoftware/vinta-django-billing/pull/7
+Suite verified by the conductor: **774 passed / 10 skipped**, **784** under the swapped
+organization model, pre-commit clean, `__version__` still `0.3.0`.
+
+| Gap | Resolution |
+|---|---|
+| 1 — viewsets unmountable | Every service argument defaults to `None` and falls back to `services.container`, resolved inside `__init__`. A DI host passing services by keyword never reaches a factory. `get_payment_provider_resolver()` was missing from the container and is new. |
+| 2 — regex vs converter `url_path` | Solved by removing the coupling rather than picking a side: an `@action`'s `url_path` is baked in at import and can only be spelled one way, so *either* choice breaks half of all adopters. The two parameterised webhooks leave the router entirely and are bound with `re_path` in `get_extra_patterns()`. URLs and reverse names byte-identical. |
+| 3 — no lazy `usage_extra` | `check_limit(usage_extra_resolver=...)`, mirroring the existing `delta_resolver`: mutually exclusive with `usage_extra`, called at most once, never on the unlimited path. |
+| 4 — no place to reject a misrouted key | `ResourceDefinition.usage_extra_keys` plus a new `InapplicableUsageExtraError`, enforced across `check_limit` / `get_current_usage` / `get_usage_breakdown`. |
+
+**The conductor's suggested shape for gap 4 was wrong and the implementer corrected it.**
+`None` (undeclared, 0.3.0 behaviour) must stay distinct from `frozenset()` (declared
+empty). Collapsing them would make the host's guard inexpressible: the motivating case is
+a seat exclusion aimed at some *other* resource, and those resources read no keys at all,
+so they have to be declarable as strictly empty. Consequence for Phase 1's resumption —
+the host must pass `usage_extra_keys=frozenset()` on all seven resources other than
+`organization_members`, or the guard stays off.
+
+**One behaviour change for existing adopters**, called out in `HISTORY.md` and the PR:
+`get_routes()` no longer lists `PaymentsViewSet`, so a project mounting `get_routes()`
+without `get_extra_patterns()` loses its webhooks. **Phase 2 must mount both.**
+
+### Two extra findings — real, but non-issues for this host
+
+The implementer raised both as possible blockers. The conductor checked each against this
+host and neither blocks the migration:
+
+1. **Three throttle scopes are required** (`payment-webhook`, `payment-provider`,
+   `billing-write`); DRF raises `ImproperlyConfigured` for a scope with no rate, so
+   mounting the package routes without them means a 500 on every webhook and billing
+   write. `vinta_schedule_api/settings/base.py:287` already declares all three with rates.
+   Documented in the package README for other adopters; nothing to do here.
+2. **`url_path=""` does not mean "no segment".** DRF treats it as falsy and substitutes
+   the method name, so six actions really serve `/billing/subscription/retrieve_subscription/`,
+   `/billing-profile/create_billing_profile/` and so on, not the paths their docstrings and
+   OpenAPI summaries claim. The implementer inferred the host's frontend must be calling
+   paths that do not exist. **It is not**: the host's own viewsets carry the identical
+   `url_path=""`, and the shipped `schema.yml` already lists the suffixed paths. The two
+   sides match exactly, so the Phase 2 route swap does not move them. A genuine
+   docstring-versus-reality wart in both codebases; not a migration risk and not a client
+   change.
+
+**Release is gated on the requester.** `pyproject.toml`'s bumpversion config commits and
+tags, and the publish workflow fires on unprefixed tags, so tagging *is* publishing to
+PyPI — irreversible and outward-facing. The agent is instructed not to push, tag, bump or
+publish. The conductor reviews, then asks before any of it happens.
+
+Once 0.4.0 is out: bump the host pin to `>=0.4,<0.5`, refresh `uv.lock`, then resume
+Phase 1 — remove the host REST layer that gap 1 forced it to keep, rebuild the seat-accept
+path on the new `usage_extra_resolver`, and re-declare the invitation-exclusion guard
+through the registry so the lost behaviour comes back.
+
 ## Deferred phases
 
 - **Phase 2b** — cross-repo, and conditional besides ("skipped entirely if no gap
