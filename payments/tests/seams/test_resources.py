@@ -18,12 +18,13 @@ from model_bakery import baker
 from vinta_billing.counting import UsageContext
 from vinta_billing.registry import entitlements, resources
 
-# Importing this module is what runs `resources.register(...)` /
-# `entitlements.register(...)` -- see its own module docstring for why. It has
-# no other entry point, and `AppConfig.ready()` does not import it yet (that
-# is Phase 1, once `vinta_billing` joins INSTALLED_APPS). Re-registering an
-# identical definition is a no-op (`Registry._add`), so this import is safe
-# even if another test module already triggered it.
+# Registration already happens at process start: ``di_core``'s DI wiring
+# (``DICoreConfig.ready()``) imports every submodule under ``payments``,
+# including ``payments.seams.resources``, before any test runs. This explicit
+# import is a deliberate guarantee that does not rely on that wiring, so the
+# test does not silently depend on DI internals. Re-registering an identical
+# definition is a no-op (``Registry._add``), which makes this redundant import
+# safe.
 import payments.seams.resources  # noqa: F401,E402
 from calendar_integration.constants import CalendarType
 from calendar_integration.models import AvailableTime, BlockedTime, Calendar, CalendarGroup
