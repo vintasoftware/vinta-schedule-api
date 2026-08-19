@@ -18,49 +18,68 @@ being decided about what billing does — only about where the code lives.
 3. The billing rows move from `payments_*` to `vinta_billing_*` under a single
    host-owned migration that runs unattended in every environment, including a
    fresh test database.
-4. Billing behaviour is unchanged. **No URL moves.** *(Amended 2026-08-19 — see
-   "The `/payments` prefix does not move" below.)*
+4. Every route this project serves for billing sits under `/billing`. The two provider
+   webhooks move from `/payments/{id}/…` to `/billing/payments/{id}/…`. Nothing else
+   moves, and no client-facing path changes. *(Amended 2026-08-19 — see "The `/payments`
+   prefix, and what actually moves" below.)*
 
 **Non-goals:**
 
 - No new billing features, no pricing changes, no new provider.
 - No change to the GraphQL public API's entitlement gates beyond the import path.
-- **No URL changes at all**, and in particular no `/payments` → `/billing` move.
+- **No client-facing URL changes.** The only paths that move are the two inbound
+  provider webhooks, which no client calls.
 - No feature-flag infrastructure. See **Guiding Decisions**.
 - No change to Render env var names or to the Celery beat schedule.
 - Not migrating `organizations`, `webhooks` or `calendar_integration` onto anything.
   They change imports only.
 
-### Amendment 2026-08-19 — the `/payments` prefix does not move
+### Amendment 2026-08-19 — the `/payments` prefix, and what actually moves
 
-This plan originally carried one deliberate behaviour change: the payments viewset
-moving from `/payments` to `/billing`, described as something "the single client
-adopts in the same release". That premise is false, and the change is dropped.
+This plan originally described one deliberate behaviour change: the payments viewset
+moving from `/payments` to `/billing`, "which the single client adopts in the same
+release". The destination is right; the reason given for it is wrong, and the wrong
+reason hid a real risk.
 
 `PaymentsViewSet` is a bare `ViewSet` — no `queryset`, no `serializer_class` — whose
 entire surface is two `@action`s, `payment_update` and `subscription_payment_update`.
-Both are **inbound provider webhooks**. The published `schema.yml` confirms it: the
-only four paths under `/payments` are those two actions and their `{format}` variants.
-No client calls `/payments`; Stripe and MercadoPago do.
+Both are **inbound provider webhooks**. The published `schema.yml` confirms it: the only
+four paths under `/payments` are those two actions and their `{format}` variants. **No
+client calls `/payments`.** Stripe and MercadoPago do. So there is no client adoption to
+schedule and no `handoff-to-client` to run; what looked like a client change is a
+provider-integration change.
 
-Moving the prefix would therefore not be a client change at all. It would be a
-provider-integration change, and a breaking one: the MercadoPago adapter builds its
-callback at charge time via `reverse("api:Payments-payment-update", ...)` and sends it
-as `notification_url`, so every payment already created has that URL stored
-provider-side. Moving the route breaks retries against those stored callbacks until
-every provider-side record is re-registered.
+That distinction matters because provider-facing URLs are not ours to move freely.
+`MercadoPagoSubscriptionAdapter.create_subscription` builds `notification_url` via
+`reverse("Payments-subscription-payment-update", …)` and bakes it into the MercadoPago
+**preapproval**, which lives as long as the subscription and is notified on every
+recurring charge. Moving that path once a preapproval exists breaks recurring-payment
+notifications silently — the provider keeps charging, the host never hears, and
+subscriptions drift until dunning fires on customers who have paid. (Stripe is
+unaffected: neither Stripe adapter reverses a URL, its endpoint being dashboard-configured.)
+
+**It is safe here, now, and only now**, for two independent reasons: this project has no
+webhooks registered with any provider yet (confirmed by the requester), and
+`vinta-django-billing` 0.3.0's `PaymentsViewSet.__init__` required three services with no
+defaults, so those routes raised `TypeError` on the first request and have never served
+one in any deployment.
+
+**The move is therefore made in the package, in 0.4.0**, where the same
+`get_extra_patterns()` already hardcodes `billing/payment-provider…`; leaving the
+webhooks under `payments/` was an inconsistency in the package's own URL surface. Both
+webhooks now serve `^billing/payments/{pk}/…`. Reverse names are unchanged, so no host
+`reverse()` call site or test changes.
 
 Consequences for the rest of this plan:
 
-- **Section 4's path-move table is void.** Every billing route keeps the path it has.
-- **Phase 2 no longer changes behaviour.** It becomes a pure route-ownership swap, and
-  its `handoff-to-client` step is removed — there is nothing for a client to adopt.
-- **`Risk & Rollout Notes`' "The URL change" entry is void**, along with the
-  deploy-ordering note that Phase 2's revert is the only user-visible one. No phase in
-  this plan is user-visible now.
-- `vinta_billing` serves the viewset under `payments` and the two webhooks are bound in
-  `get_extra_patterns()` rather than the router, so the client-facing prefix and the
-  webhook prefix are independent should this ever be revisited.
+- **Section 4's path-move table is replaced.** The client-facing routes all keep their
+  paths; the two webhooks move under `billing/`.
+- **Phase 2 changes no client-visible behaviour**, so its `handoff-to-client` step is
+  removed. It gains one obligation instead: mount `get_extra_patterns()` alongside
+  `get_routes()`, since from 0.4.0 the webhooks no longer come out of the router.
+- **`Risk & Rollout Notes`' "The URL change" entry is replaced** by a standing constraint:
+  once a webhook is registered with a provider, its path must never move again.
+- No phase in this plan is user-visible.
 
 ## 2. Guiding Decisions
 
@@ -71,8 +90,8 @@ Consequences for the rest of this plan:
 | **Table move mechanism** | **Copy forward, then drop** — not `AlterModelTable`. The package's `0001_initial` creates `vinta_billing_*` with its own index and constraint names; a host migration depending on it copies the rows in FK order, advances the sequences, then drops `payments_*` inside `SeparateDatabaseAndState`. See **Risk & Rollout Notes** for why the rename lost. |
 | **Data at risk** | None in production — staging only. The migration is still written to preserve and to reverse, because it also has to run against staging and because a reversible migration is the rollback lever this plan has instead of a flag. |
 | **Transitional re-export shims** | Phase 1 leaves `payments/models.py`, `payments/exceptions.py`, `payments/billing_constants.py` and `payments/services/*.py` as one-line re-exports of the package equivalents, so the 58 consumer files keep importing and every phase stays independently mergeable. Phase 6 deletes them; the end state has no shim. A re-export does **not** register a `payments.Subscription` model — Django registers models by their defining module's app — so `makemigrations` correctly sees `payments` as model-free from Phase 1 onward. |
-| **Feature flag** | **None.** Every phase is a pure refactor, which the flag rule exempts. *(Amended 2026-08-19: Phase 2 used to be the exception, on the strength of its URL change; that change is withdrawn, so no phase changes behaviour at all.)* Rollback is `git revert` plus the reverse migration. No flag is declared, so this plan has no flag-removal phase. |
-| **Route ownership** | The package's. `vinta_billing.routing.get_routes()` / `get_extra_patterns()` replace `payments/routes.py`. Every `basename` is identical, so `reverse()` names and therefore host tests do not change. *(Amended 2026-08-19: no literal path changes either — the payments viewset keeps `/payments`. From 0.4.0 the two provider webhooks come out of `get_extra_patterns()` rather than the router, so both must be mounted.)* |
+| **Feature flag** | **None.** Every phase is a pure refactor, which the flag rule exempts. *(Amended 2026-08-19: Phase 2 used to be the exception, on the strength of a client-facing URL change that turned out not to exist. The two provider webhooks do move, but a flag cannot gate a URL conf and there is no client to stage the change for.)* Rollback is `git revert` plus the reverse migration. No flag is declared, so this plan has no flag-removal phase. |
+| **Route ownership** | The package's. `vinta_billing.routing.get_routes()` / `get_extra_patterns()` replace `payments/routes.py`. Every `basename` is identical, so `reverse()` names and therefore host tests do not change. *(Amended 2026-08-19: the only literal paths that move are the two provider webhooks, `/payments/{id}/…` → `/billing/payments/{id}/…`, done in the package for prefix consistency. From 0.4.0 those webhooks come out of `get_extra_patterns()` rather than the router, so both must be mounted.)* |
 | **DI ownership** | The host's. `di_core/containers.py` keeps constructing every billing service, importing the classes from `vinta_billing.*`. `vinta_billing.services.container` stays unused here. Every `@inject` / `Provide[...]` call site in `calendar_integration`, `public_api` and `webhooks` is untouched. |
 | **Provider credentials** | Env var names do not change. `settings/base.py` keeps reading `STRIPE_SECRET_KEY`, `MERCADOPAGO_ACCESS_TOKEN`, `DEFAULT_PAYMENT_PROVIDER` and assembles `VINTA_BILLING["PROVIDERS"]` / `["DEFAULT_PROVIDER"]` from them. Render env groups and CI are untouched, so no deploy-ordering hazard. |
 | **Who may manage billing** | The package's permission-backed seams, selected explicitly: `BILLING_MANAGER_PREDICATE = "vinta_billing.permissions.member_holding_manage_billing"` and `BILLING_RECIPIENTS = "vinta_billing.recipients.members_holding_manage_billing"`. Safe to select on day one *here specifically*, because `organizations.0028` already seeds `organization_admin` and `organization_billing_owner` with the grant — the package defaults to the permissive predicates precisely because a project without that seed would 403 every endpoint and leave the dunning ladder with no recipients. |
@@ -134,13 +153,18 @@ serializes by reference, so registering a resource never produces a migration.
 
 ## 4. API Design
 
-No new endpoints, no payload changes, and — as of the 2026-08-19 amendment above —
-**no path changes either.** The table that used to sit here moved `/api/payments/…` to
-`/api/billing/…`; it is void, because that prefix serves only the two inbound provider
-webhooks and moving it would break stored provider callbacks rather than requiring a
-client update.
+No new endpoints, no payload changes, and no client-facing path changes. Two paths move,
+both inbound provider webhooks that no client calls:
 
-Every billing route (`billing-profile`, `billing/plans`, `billing/usage`,
+| Before | After | Reverse name |
+|---|---|---|
+| `/api/payments/{id}/payment-update/{provider}/` | `/api/billing/payments/{id}/payment-update/{provider}/` | `Payments-payment-update` (unchanged) |
+| `/api/payments/{id}/subscription-payment-update/{provider}/` | `/api/billing/payments/{id}/subscription-payment-update/{provider}/` | `Payments-subscription-payment-update` (unchanged) |
+
+The move happens in `vinta-django-billing` 0.4.0, not host-side. Because the reverse names
+do not change, no host `reverse()` call site and no host test changes.
+
+Every other billing route (`billing-profile`, `billing/plans`, `billing/usage`,
 `billing/usage/periods`, `billing/usage/occurrences`, `billing/subscription`,
 `billing/add-ons`, and the two `billing/payment-provider/` patterns) already has an
 identical regex in both `payments/routes.py` and `vinta_billing/routes.py`.
@@ -336,8 +360,9 @@ the one path change this plan's **Goals** names.
 Tests:
 
 - **Integration**: `payments/tests/views/test_route_surface.py` — every billing
-  `reverse()` name still resolves at the path it resolves at today — including the two
-  provider webhooks under `/payments/{pk}/…`, which must survive the move out of the
+  `reverse()` name still resolves, and every client-facing path is byte-identical to
+  today's; the two provider webhooks resolve at their new `/billing/payments/{pk}/…`
+  paths under their unchanged reverse names, proving they survived the move out of the
   router into `get_extra_patterns()`; the two `billing/payment-provider/` patterns
   resolve unchanged.
 - **Integration**: `payments/tests/tasks/` retargeted — each beat task calls its
@@ -584,16 +609,19 @@ endpoint for admins, which the reverse-path test covers.
 **Backfill.** None beyond the copy. The copy is idempotent only in the sense that it
 runs once — it is guarded by the migration record, not by an upsert.
 
-**The URL change — withdrawn 2026-08-19.** There is none. `/payments` serves only the
-two inbound provider webhooks, so moving it would break stored provider callbacks rather
-than requiring a client update; see the amendment under **Goals**. No phase in this plan
-is user-visible, and no `handoff-to-client` runs.
+**The URL change — rescoped 2026-08-19.** No client-facing path moves, so no
+`handoff-to-client` runs and no phase in this plan is user-visible. The two provider
+webhooks do move, `/payments/{id}/…` → `/billing/payments/{id}/…`, in the package's 0.4.0
+rather than host-side; see the amendment under **Goals**.
 
-**Provider callback URLs.** The webhook paths must not move, in this plan or a later one.
-The MercadoPago adapter builds `notification_url` at charge time via
-`reverse("api:Payments-payment-update", ...)` and sends it to the provider, so the URL is
-stored provider-side per payment. Any future change to that path strands every retry
-against an already-registered callback.
+**Provider callback URLs — a standing constraint that outlives this plan.** This move is
+safe only because nothing is registered yet. `MercadoPagoSubscriptionAdapter` bakes
+`notification_url` into the MercadoPago **preapproval**, which is notified on every
+recurring charge for the life of the subscription; `MercadoPagoPaymentAdapter` does the
+same per payment. Once a preapproval exists, changing that path breaks recurring
+notifications **silently** — the provider keeps charging, the host never hears, and
+subscriptions drift until dunning fires on customers who have paid. After the first
+provider registration, treat these two paths as frozen: add an alias, never move them.
 
 **Deploy ordering.** Phase 1 must be deployed before Phase 2 (the app must be
 installed before the URL conf imports its routes) and before Phases 3–4 (the shims
