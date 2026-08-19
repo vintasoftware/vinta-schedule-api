@@ -16,12 +16,17 @@ them. Until then these tests hold two properties:
    ``makemigrations`` would start generating a migration for a table that does
    not exist.
 
-Two shims are deliberately *not* pure re-exports, and are tested for what they
+Two modules are deliberately *not* pure re-exports and are tested for what they
 keep rather than only for what they forward:
-``payments.billing_constants.LimitedResource`` / ``Entitlement`` (which became
-registry keys, so the package has no equivalent) and
-``payments.exceptions.InapplicableInvitationExclusionError`` (which guards a
-concept this product has and a billing library cannot).
+
+- ``payments.billing_constants.LimitedResource`` / ``Entitlement``, which became
+  registry keys, so the package has no equivalent to forward to.
+- ``payments.admin``, which re-exports the package's admin (the import is what
+  registers every billing ``ModelAdmin`` with the default site) but overrides
+  ``BillingProfileAdmin`` to supply the DI-built ``SubscriptionService`` its
+  ``save_model`` needs. It is therefore absent from ``SHIMS`` -- a blanket
+  "every name is the package's own" check would forbid exactly the override it
+  exists for -- and has its own test below.
 """
 
 import importlib
@@ -41,7 +46,6 @@ SHIMS = [
     ("payments.exceptions", "vinta_billing.exceptions", "OverLimitError"),
     ("payments.provider_slugs", "vinta_billing.provider_slugs", "PAYMENT_PROVIDER_SLUGS"),
     ("payments.entitlement_cache", "vinta_billing.entitlement_cache", "has_entitlement_cached"),
-    ("payments.admin", "vinta_billing.admin", "SubscriptionAdmin"),
     (
         "payments.services.entitlement_service",
         "vinta_billing.services.entitlement_service",
@@ -195,6 +199,56 @@ def test_every_public_name_the_shim_exposes_is_the_packages_own(shim_path, packa
     assert divergent == []
 
 
+def test_the_admin_shim_overrides_only_the_billing_profile_admin():
+    """``payments.admin`` forwards everything except the one class it must not.
+
+    ``vinta_billing.admin.BillingProfileAdmin.save_model`` routes a
+    ``payment_provider`` edit through ``SubscriptionService.set_payment_provider``
+    so the repoint is audited, and takes that service as an argument nothing in
+    the package ever supplies -- so on the package's own wiring every such edit
+    raises ``RuntimeError``. This project supplies it from ``di_core``, which is
+    the plan's "DI ownership: the host's" decision, and that requires a subclass.
+
+    Pinned rather than left implicit: the override is a deliberate exception to
+    the rule the rest of this module enforces, and the narrower it stays the
+    sooner it can be deleted (see ``payments/admin.py``). So this asserts both
+    halves -- exactly one name diverges, and the divergent one is still a
+    subclass of the package's, not a reimplementation.
+    """
+    import vinta_billing.admin
+
+    import payments.admin
+
+    divergent = [
+        attribute
+        for attribute in dir(vinta_billing.admin)
+        if not attribute.startswith("_")
+        and hasattr(payments.admin, attribute)
+        and getattr(payments.admin, attribute) is not getattr(vinta_billing.admin, attribute)
+    ]
+
+    assert divergent == ["BillingProfileAdmin"]
+    assert issubclass(payments.admin.BillingProfileAdmin, vinta_billing.admin.BillingProfileAdmin)
+
+
+def test_the_registered_billing_profile_admin_is_the_hosts():
+    """And it is the subclass the admin site actually serves.
+
+    Registering the package's class and defining a subclass nobody registered
+    would leave the audited repoint path dead while every identity assertion
+    above still passed.
+    """
+    from django.contrib import admin as django_admin
+
+    from vinta_billing.models import BillingProfile
+
+    import payments.admin
+
+    registered = django_admin.site._registry[BillingProfile]
+
+    assert type(registered) is payments.admin.BillingProfileAdmin
+
+
 def test_payments_registers_no_models():
     """The property the whole shim strategy rests on.
 
@@ -250,13 +304,30 @@ def test_the_two_host_enums_still_agree_with_the_registry_they_were_replaced_by(
     assert sorted(entitlements.keys()) == sorted(Entitlement.values)
 
 
-def test_exceptions_keeps_the_one_the_package_has_no_home_for():
+def test_the_invitation_exclusion_guard_moved_rather_than_disappeared():
+    """The host's ``InapplicableInvitationExclusionError`` is gone, and that is
+    the intended end state rather than a loss.
+
+    It fired when ``exclude_invitation_id`` was aimed at a resource whose counter
+    does not read it. ``vinta-django-billing`` 0.4.0 generalised exactly that into
+    ``InapplicableUsageExtraError``, raised off what a resource *declared*
+    (``ResourceDefinition.usage_extra_keys``). This asserts the two halves that
+    make the guard live rather than merely available: the host name is no longer
+    importable -- an exception nothing raises would outlive its behaviour -- and
+    every registered resource carries a declaration, since the package's default
+    (``None``, undeclared) turns the check off.
+    """
     import vinta_billing.exceptions
+    from vinta_billing.registry import resources
 
-    from payments.exceptions import BillingError, InapplicableInvitationExclusionError
+    import payments.exceptions
 
-    assert not hasattr(vinta_billing.exceptions, "InapplicableInvitationExclusionError")
-    assert issubclass(InapplicableInvitationExclusionError, BillingError)
-    # `BillingError` itself is the package's, so a host exception hanging off it
-    # is still caught by every `except BillingError` in the package's own views.
-    assert BillingError is vinta_billing.exceptions.BillingError
+    assert not hasattr(payments.exceptions, "InapplicableInvitationExclusionError")
+    assert issubclass(
+        vinta_billing.exceptions.InapplicableUsageExtraError,
+        payments.exceptions.BillingError,
+    )
+    undeclared = [d.key for d in resources if d.usage_extra_keys is None]
+    assert undeclared == [], (
+        f"{undeclared} declare no usage_extra keys, so the guard is off for them"
+    )

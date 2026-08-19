@@ -1,72 +1,11 @@
-import django_virtual_models as v
+"""Transitional re-export of ``vinta_billing.virtual_models``.
 
-from payments.models import (
-    BillingAddress,
-    BillingPlan,
-    BillingProfile,
-    PlanEntitlement,
-    PlanLimit,
-    Subscription,
-    SubscriptionAddOn,
-)
+**Removed in Phase 6** of
+``ai-plans/2026-08-19-MIGRATE_BILLING_ENGINE_TO_VINTA_DJANGO_BILLING_IMPLEMENTATION_PLAN.md``.
 
+The star import is deliberate: the module this replaces also re-exported
+whatever it imported, and callers relied on that. Naming a subset here would
+silently narrow the shim's surface.
+"""
 
-class PlanLimitVirtualModel(v.VirtualModel):
-    class Meta:
-        model = PlanLimit
-
-
-class PlanEntitlementVirtualModel(v.VirtualModel):
-    class Meta:
-        model = PlanEntitlement
-
-
-class BillingPlanVirtualModel(v.VirtualModel):
-    """
-    Virtual model for BillingPlan, prefetching its ``PlanLimit``/``PlanEntitlement``
-    rows -- ``BillingPlanSerializer`` renders both nested on every plan.
-    """
-
-    limits = PlanLimitVirtualModel(many=True)
-    entitlements = PlanEntitlementVirtualModel(many=True)
-
-    class Meta:
-        model = BillingPlan
-
-
-class SubscriptionAddOnVirtualModel(v.VirtualModel):
-    class Meta:
-        model = SubscriptionAddOn
-
-
-class SubscriptionVirtualModel(v.VirtualModel):
-    """
-    Virtual model for Subscription.
-    """
-
-    plan = BillingPlanVirtualModel()
-    pending_plan = BillingPlanVirtualModel()
-    add_ons = SubscriptionAddOnVirtualModel(many=True)
-
-    class Meta:
-        model = Subscription
-
-
-class BillingAddressVirtualModel(v.VirtualModel):
-    """
-    Virtual model for BillingAddress.
-    """
-
-    class Meta:
-        model = BillingAddress
-
-
-class BillingProfileVirtualModel(v.VirtualModel):
-    """
-    Virtual model for BillingProfile.
-    """
-
-    billing_address = BillingAddressVirtualModel()
-
-    class Meta:
-        model = BillingProfile
+from vinta_billing.virtual_models import *  # noqa: F403

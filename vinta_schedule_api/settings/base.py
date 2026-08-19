@@ -805,15 +805,25 @@ VINTA_BILLING = {
     # grant" reasoning.
     "BILLING_RECIPIENTS": "vinta_billing.recipients.members_holding_manage_billing",
     # `vinta_billing`'s MercadoPago adapters `reverse()` their own webhook
-    # callback URLs through this namespace (`vinta_billing/urls_helpers.py`).
-    # This project mounts the shared DRF router as `include((router.urls,
-    # "api"))` (`vinta_schedule_api/urls.py`), and the host's own MercadoPago
-    # adapter already hardcodes reversing under `"api:..."` today -- so this
-    # MUST be "api", not the package's own default ("billing"). Left at the
-    # default, MercadoPago webhook-callback URL construction raises
-    # `NoReverseMatch`, and only once MercadoPago is actually exercised, so a
-    # green test suite would not catch a missing/wrong value here.
-    "URL_NAMESPACE": "api",
+    # callback URLs through this namespace (`vinta_billing/urls_helpers.py`),
+    # and those two names -- `Payments-payment-update` and
+    # `Payments-subscription-payment-update` -- are the *only* thing this key
+    # governs.
+    #
+    # Empty, not "api". Up to `vinta-django-billing` 0.3.0 both webhooks came
+    # out of the shared DRF router, which this project mounts as
+    # `include((router.urls, "api"))` (`vinta_schedule_api/urls.py`), so "api"
+    # was right. 0.4.0 moved them into `routing.get_extra_patterns()` -- each
+    # carries the provider slug as a URL segment, which a router can only spell
+    # in its own mode -- and this project mounts those patterns *unnamespaced*
+    # (`path("", include(payments_extra_patterns))`), exactly as it already did
+    # for the two `billing/payment-provider/` endpoints. Left at "api", or at
+    # the package's own default ("billing"), MercadoPago callback-URL
+    # construction raises `NoReverseMatch` -- and only once MercadoPago is
+    # actually exercised, so a green suite would not catch a wrong value here
+    # on its own. `payments/tests/seams/test_settings.py` reverses both names
+    # through `namespaced()` rather than pinning this literal.
+    "URL_NAMESPACE": "",
     "SITE_DOMAIN": SITE_DOMAIN,
     "DEFAULT_CURRENCY": "USD",
     "GRACE_PERIOD_DAYS": BILLING_DEFAULT_GRACE_PERIOD_DAYS,

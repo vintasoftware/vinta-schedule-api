@@ -1,19 +1,19 @@
 """``VINTA_BILLING`` -- every dotted-path seam resolves, and the scalars carry
 the values the plan promises.
 
-``vinta_billing`` is not in ``INSTALLED_APPS`` yet (Phase 1), so this test
-resolves each setting directly through ``vinta_billing.conf`` rather than by
-exercising a live package code path -- there is no package code path to
-exercise yet. It exists so a typo in ``settings/base.py`` fails here, at unit
-speed, rather than being discovered the first time a later phase touches the
-setting it broke.
+Most of these are read straight through ``vinta_billing.conf``, at unit speed,
+so a typo in ``settings/base.py`` fails here rather than being discovered by
+whichever code path first depended on it. ``URL_NAMESPACE`` is the exception
+and is exercised end to end below -- see that class.
 """
 
 from django.conf import settings
 from django.test import override_settings
+from django.urls import reverse
 
 import pytest
 from vinta_billing.conf import get_object_from_setting, get_setting
+from vinta_billing.urls_helpers import namespaced
 
 from payments.provider_slugs import PAYMENT_PROVIDER_SLUGS
 
@@ -59,22 +59,40 @@ class TestVintaBillingSettingsResolve:
 
 
 class TestUrlNamespace:
-    def test_url_namespace_is_api_not_the_package_default(self):
-        """MUST be ``"api"``, not the package's own default (``"billing"``).
+    """``URL_NAMESPACE`` governs exactly two reverses, so this asserts the
+    reverses rather than the literal.
 
-        ``vinta_billing``'s MercadoPago adapters reverse their own webhook
-        callback URLs through ``URL_NAMESPACE`` (``vinta_billing/urls_helpers.py``),
-        and this project mounts the shared DRF router as
-        ``include((router.urls, "api"))`` (``vinta_schedule_api/urls.py``) --
-        exactly what the host's own (pre-migration) MercadoPago adapter already
-        hardcodes reversing under today
-        (``payments/services/payment_adapters/mercadopago_payment_adapter.py``).
-        Left at the package default, MercadoPago webhook-callback URL
-        construction raises ``NoReverseMatch`` -- and only once MercadoPago is
-        actually exercised, so a green suite would not catch a wrong value
-        here on its own.
-        """
-        assert get_setting("URL_NAMESPACE") == "api"
+    ``vinta_billing``'s two MercadoPago adapters are its only callers: each
+    builds the ``notification_url`` it hands the provider by reversing
+    ``namespaced("Payments-payment-update")`` /
+    ``namespaced("Payments-subscription-payment-update")``. A wrong namespace
+    raises ``NoReverseMatch``, but only once MercadoPago is actually
+    exercised -- so pinning the literal would prove nothing a typo could not
+    also satisfy. Reversing through the same helper the adapters use is the
+    check that goes red for the reason that matters.
+
+    The right value moved with the package: through 0.3.0 both webhooks came
+    out of the shared router, which this project mounts under ``api:``; 0.4.0
+    binds them in ``routing.get_extra_patterns()``, which
+    ``vinta_schedule_api/urls.py`` includes unnamespaced.
+    """
+
+    @pytest.mark.parametrize(
+        ("url_name", "expected_path"),
+        [
+            ("Payments-payment-update", "/billing/payments/7/payment-update/stripe/"),
+            (
+                "Payments-subscription-payment-update",
+                "/billing/payments/7/subscription-payment-update/stripe/",
+            ),
+        ],
+    )
+    def test_the_two_webhook_names_reverse_through_the_configured_namespace(
+        self, url_name, expected_path
+    ):
+        assert reverse(namespaced(url_name), kwargs={"pk": 7, "provider": "stripe"}) == (
+            expected_path
+        )
 
 
 class TestProviders:

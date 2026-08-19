@@ -1,17 +1,11 @@
-from rest_framework.pagination import LimitOffsetPagination
+"""Transitional re-export of ``vinta_billing.pagination``.
 
+**Removed in Phase 6** of
+``ai-plans/2026-08-19-MIGRATE_BILLING_ENGINE_TO_VINTA_DJANGO_BILLING_IMPLEMENTATION_PLAN.md``.
 
-class LargeLimitOffsetPagination(LimitOffsetPagination):
-    """``LimitOffsetPagination`` with a raised ceiling for audit-style pulls.
+The star import is deliberate: the module this replaces also re-exported
+whatever it imported, and callers relied on that. Naming a subset here would
+silently narrow the shim's surface.
+"""
 
-    Used by ``GET /billing/usage/occurrences/`` (the metered-occurrence
-    ledger): a customer disputing an invoice may need to page through an
-    entire cycle's worth of line items, and a whole cycle for an active
-    organization can run into the thousands. The project default page size
-    (``PAGE_SIZE = 10``) still applies when ``limit`` is omitted -- this only
-    raises how large a single explicit ``limit`` may request, so one audit
-    pull does not need a thousand round trips while any single response stays
-    bounded.
-    """
-
-    max_limit = 1000
+from vinta_billing.pagination import *  # noqa: F403
