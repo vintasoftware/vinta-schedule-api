@@ -499,6 +499,74 @@ behaviour change, and its `handoff-to-client` step is gone.** No phase in this p
 user-visible any more. Phase 2 must mount both `get_routes()` and `get_extra_patterns()`,
 since from 0.4.0 the webhooks no longer come out of the router.
 
+## Phase 2b (second lane) — `vinta-django-billing` 0.5.0, PR open
+
+Requester chose "full 0.5.0, then Phase 2" at the gate after Phase 1. Branch
+`fix/host-integration-seams` @ `95fa4d0`, PR:
+https://github.com/vintasoftware/vinta-django-billing/pull/8
+Version deliberately left at 0.4.0 — no bump, no tag, no publish.
+
+| # | Item | Outcome |
+|---|---|---|
+| 1 | `IsBillingManager.has_object_permission` bypass | Fixed — checks the predicate against the object when the object is an organization, via `AbstractOrganization` so it survives a swapped `ORGANIZATION_MODEL` |
+| 2 | Stripe `Invoice.billing` → `payments` | Fixed at all three call sites; the suite now pins the chain against `stripe.Invoice.__annotations__` rather than a remembered name |
+| 3 | `py.typed` | Added; conductor verified it is inside both the built wheel and the sdist |
+| 4 | `VIEW_MIXIN` + `SERVICE_CONTAINER` | Added, defaulting to current behaviour **by identity** |
+| 5 | `BillingProfileAdmin.save_model` | Fixed through the same container seam |
+
+Verified by the conductor: 809 passed / 10 skipped, 819 swapped, `py.typed` in wheel and
+sdist, no `0.5.0` tag.
+
+**The security fix was reproduced failing.** Swapping in 0.4.0's `permissions.py` turns
+`tests/test_viewset_permissions.py` red at 6 failed / 6 passed; restoring gives 12 passed.
+`cancel` answered **200 and genuinely cancelled the root's subscription** — worse than the
+"change plan and buy add-ons" framing the conductor gave the implementer. Five endpoints
+are affected, not three: `get_subscription(check_object_perms=True)` gates `change-plan`,
+`cancel` **and** `retry-payment`.
+
+**Two corrections the implementer made to the conductor's brief, both right:**
+
+1. The mypy figures were internally inconsistent — "565 extra errors, 655 of them
+   `[attr-defined]`" has the subset exceeding the total. Re-measured properly: base has
+   **93** `[attr-defined]` of 293 total, Phase 1 HEAD has **655** of 858. So **562 of the
+   565 new errors** are that one mechanism — a cleaner claim than the original. Corrected
+   in `HISTORY.md` (`95fa4d0`) before the PR was opened.
+2. `SERVICE_CONTAINER` needed a wider contract than `get_object_from_setting` alone: a
+   `dependency_injector` container names its providers `entitlement_service`, not
+   `get_entitlement_service`. `resolve_service` accepts both spellings, which is what
+   removes the last host-side adapter.
+
+**One adjacent defect fixed unasked, and worth having:** under `OrganizationMiddleware` an
+unresolved organization arrives as `SimpleLazyObject(None)`, which is not `None` by
+identity — so it passed every `is None` check in the package, **including the deliberately
+fail-closed branch in `filter_queryset_by_organization`**. A request that should have been
+refused built a query and 500'd instead.
+
+### ⚠️ Release blocker for whoever cuts 0.5.0
+
+`pyproject.toml`'s `[tool.bumpversion] current_version` is **`0.3.0`** while
+`vinta_billing/__init__.py` is **`0.4.0`** — pre-existing drift, not introduced here.
+`bump-my-version bump minor` would compute 0.3.0 → 0.4.0, fail to find its search string,
+and try to tag a version that already exists. **Correct `current_version` to `0.4.0`
+before cutting the release.** Flagged in the PR body.
+
+### What Phase 2 becomes once 0.5.0 is out
+
+The implementer confirmed against the host's actual files that the host can then delete
+`payments/views.py`, `payments/billing_views.py`, `payments/routes.py` and
+`payments/seams/view_scoping.py` outright, plus `payments/admin.py`'s subclass — which the
+brief had not counted. `payments/seams/permissions.py` goes too **if** the host accepts
+`BILLING_MANAGER_PREDICATE` (already configured as `member_holding_manage_billing`) as the
+object-level answer; that covers branch 1 of `IsBillingOwnerOrAdmin` exactly, and branch 2
+— the acting-reseller-root subtree walk — is unreachable from any endpoint today by that
+class's own docstring. To keep it, the host writes it as a `(user, organization) -> bool`
+predicate rather than a permission class plus a `get_permissions` rewriter.
+
+Host settings Phase 2 must add:
+`"VIEW_MIXIN": "common.utils.view_utils.TenantScopedViewMixin"` and
+`"SERVICE_CONTAINER": "di_core.containers.container"` (resolved lazily per view
+construction, so `container.<provider>.override(...)` in tests is honoured).
+
 ## Carry-forward into later phases
 
 Discovered during Phase 0's review. Each one is a correction to a later phase's body,
