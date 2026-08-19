@@ -183,7 +183,7 @@ def subscription(organization, free_plan, billing_profile):
 @pytest.fixture
 def mercadopago_payment_adapter():
     with patch(
-        "payments.services.payment_adapters.mercadopago_payment_adapter.mercadopago.SDK"
+        "vinta_billing.services.payment_adapters.mercadopago_payment_adapter.mercadopago.SDK"
     ) as mock_sdk:
         adapter = MercadoPagoPaymentAdapter("test-access-token", webhook_secret=WEBHOOK_SECRET)
         adapter.sdk = mock_sdk.return_value
@@ -194,7 +194,7 @@ def mercadopago_payment_adapter():
 @pytest.fixture
 def mercadopago_subscription_adapter():
     with patch(
-        "payments.services.subscription_adapters.mercadopago_subscription_adapter.mercadopago.SDK"
+        "vinta_billing.services.subscription_adapters.mercadopago_subscription_adapter.mercadopago.SDK"
     ) as mock_sdk:
         adapter = MercadoPagoSubscriptionAdapter("test-access-token", webhook_secret=WEBHOOK_SECRET)
         adapter.sdk = mock_sdk.return_value
@@ -307,9 +307,7 @@ def add_on_detail_url(pk) -> str:
 
 
 def subscription_payment_update_url(provider: str = PaymentProviders.MERCADOPAGO) -> str:
-    return reverse(
-        "api:Payments-subscription-payment-update", kwargs={"provider": provider, "pk": 1}
-    )
+    return reverse("Payments-subscription-payment-update", kwargs={"provider": provider, "pk": 1})
 
 
 @pytest.mark.django_db
@@ -684,7 +682,7 @@ class TestAcceptanceScenario:
             }
         ).encode()
         with patch(
-            "payments.services.subscription_adapters.mercadopago_subscription_adapter"
+            "vinta_billing.services.subscription_adapters.mercadopago_subscription_adapter"
             ".mercadopago.SDK"
         ) as mock_sdk:
             adapter = MercadoPagoSubscriptionAdapter(
@@ -1112,19 +1110,19 @@ class TestRetryPaymentEndpoint:
         stripe_adapter = StripeSubscriptionAdapter(api_key="sk_test_123", webhook_secret="whsec")
         with (
             patch(
-                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe"
+                "vinta_billing.services.subscription_adapters.stripe_subscription_adapter.stripe"
                 ".Subscription"
             ) as mock_subscription_resource,
             patch(
-                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe"
+                "vinta_billing.services.subscription_adapters.stripe_subscription_adapter.stripe"
                 ".PaymentMethod"
             ) as mock_payment_method,
             patch(
-                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe"
+                "vinta_billing.services.subscription_adapters.stripe_subscription_adapter.stripe"
                 ".Customer"
             ) as mock_customer,
             patch(
-                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice"
+                "vinta_billing.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice"
             ) as mock_invoice,
             di_container.stripe_subscription_gateway.override(stripe_adapter),
         ):
@@ -1206,19 +1204,19 @@ class TestRetryPaymentEndpoint:
         stripe_adapter = StripeSubscriptionAdapter(api_key="sk_test_123", webhook_secret="whsec")
         with (
             patch(
-                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe"
+                "vinta_billing.services.subscription_adapters.stripe_subscription_adapter.stripe"
                 ".Subscription"
             ) as mock_subscription_resource,
             patch(
-                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe"
+                "vinta_billing.services.subscription_adapters.stripe_subscription_adapter.stripe"
                 ".PaymentMethod"
             ),
             patch(
-                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe"
+                "vinta_billing.services.subscription_adapters.stripe_subscription_adapter.stripe"
                 ".Customer"
             ),
             patch(
-                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice"
+                "vinta_billing.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice"
             ) as mock_invoice,
             di_container.stripe_subscription_gateway.override(stripe_adapter),
         ):
@@ -1263,19 +1261,19 @@ class TestRetryPaymentEndpoint:
         stripe_adapter = StripeSubscriptionAdapter(api_key="sk_test_123", webhook_secret="whsec")
         with (
             patch(
-                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe"
+                "vinta_billing.services.subscription_adapters.stripe_subscription_adapter.stripe"
                 ".Subscription"
             ) as mock_subscription_resource,
             patch(
-                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe"
+                "vinta_billing.services.subscription_adapters.stripe_subscription_adapter.stripe"
                 ".PaymentMethod"
             ),
             patch(
-                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe"
+                "vinta_billing.services.subscription_adapters.stripe_subscription_adapter.stripe"
                 ".Customer"
             ),
             patch(
-                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice"
+                "vinta_billing.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice"
             ) as mock_invoice,
             di_container.stripe_subscription_gateway.override(stripe_adapter),
         ):

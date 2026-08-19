@@ -18,12 +18,11 @@ go red on a flushed database than go green on a synthetic one.
 
 import importlib
 
-from django.apps import apps
-
 import pytest
 
 from payments.billing_constants import Entitlement, LimitedResource, LimitKind
 from payments.models import BillingPlan
+from payments.tests.historical_apps import historical_apps
 
 
 @pytest.mark.no_billing_catalog_reseed
@@ -137,7 +136,7 @@ class TestPlanSeedMigration:
         limit.save()
 
         # Re-run the seeding function; it should converge to the canonical state.
-        seed_billing_plans(apps, None)
+        seed_billing_plans(historical_apps, None)
 
         # Assert the plan was corrected.
         plan.refresh_from_db()

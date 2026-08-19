@@ -14,6 +14,7 @@ from payments.services.provider_credentials import (
     PublicProviderCredentials,
     resolve_public_credentials,
 )
+from payments.tests.provider_settings import use_providers
 
 
 pytestmark = pytest.mark.django_db
@@ -21,8 +22,11 @@ pytestmark = pytest.mark.django_db
 
 class TestResolvePublicCredentials:
     def test_stripe_returns_only_the_stripe_block(self, settings):
-        settings.STRIPE_PUBLISHABLE_KEY = "pk_test_stripe"
-        settings.MERCADOPAGO_PUBLIC_KEY = "pub_test_mercadopago"
+        use_providers(
+            settings,
+            STRIPE_PUBLISHABLE_KEY="pk_test_stripe",
+            MERCADOPAGO_PUBLIC_KEY="pub_test_mercadopago",
+        )
 
         credentials = resolve_public_credentials(PaymentProviders.STRIPE)
 
@@ -33,8 +37,11 @@ class TestResolvePublicCredentials:
         )
 
     def test_mercadopago_returns_only_the_mercadopago_block(self, settings):
-        settings.STRIPE_PUBLISHABLE_KEY = "pk_test_stripe"
-        settings.MERCADOPAGO_PUBLIC_KEY = "pub_test_mercadopago"
+        use_providers(
+            settings,
+            STRIPE_PUBLISHABLE_KEY="pk_test_stripe",
+            MERCADOPAGO_PUBLIC_KEY="pub_test_mercadopago",
+        )
 
         credentials = resolve_public_credentials(PaymentProviders.MERCADOPAGO)
 
@@ -45,14 +52,17 @@ class TestResolvePublicCredentials:
         )
 
     def test_raises_when_the_matching_key_is_empty(self, settings):
-        settings.STRIPE_PUBLISHABLE_KEY = ""
+        use_providers(settings, STRIPE_PUBLISHABLE_KEY="")
 
         with pytest.raises(PaymentProviderNotConfiguredError):
             resolve_public_credentials(PaymentProviders.STRIPE)
 
     def test_raises_for_an_unknown_provider_slug(self, settings):
-        settings.STRIPE_PUBLISHABLE_KEY = "pk_test_stripe"
-        settings.MERCADOPAGO_PUBLIC_KEY = "pub_test_mercadopago"
+        use_providers(
+            settings,
+            STRIPE_PUBLISHABLE_KEY="pk_test_stripe",
+            MERCADOPAGO_PUBLIC_KEY="pub_test_mercadopago",
+        )
 
         with pytest.raises(PaymentProviderNotConfiguredError):
             resolve_public_credentials("not-a-real-provider")
@@ -77,7 +87,7 @@ class TestPaymentProviderResolver:
         assert resolver.resolve_for_organization(organization) == PaymentProviders.MERCADOPAGO
 
     def test_resolve_for_organization_returns_the_default_when_unpinned(self, settings):
-        settings.DEFAULT_PAYMENT_PROVIDER = PaymentProviders.STRIPE
+        use_providers(settings, default_provider=PaymentProviders.STRIPE)
         organization = baker.make(Organization, parent=None, can_invite_organizations=False)
         billing_address = baker.make("vinta_billing.BillingAddress")
         baker.make(
@@ -95,7 +105,7 @@ class TestPaymentProviderResolver:
         assert resolver.resolve_for_organization(organization) == PaymentProviders.STRIPE
 
     def test_resolve_for_organization_returns_the_default_with_no_billing_profile(self, settings):
-        settings.DEFAULT_PAYMENT_PROVIDER = PaymentProviders.STRIPE
+        use_providers(settings, default_provider=PaymentProviders.STRIPE)
         organization = baker.make(Organization, parent=None, can_invite_organizations=False)
 
         resolver = PaymentProviderResolver()
@@ -103,7 +113,7 @@ class TestPaymentProviderResolver:
         assert resolver.resolve_for_organization(organization) == PaymentProviders.STRIPE
 
     def test_resolve_default_reads_settings(self, settings):
-        settings.DEFAULT_PAYMENT_PROVIDER = PaymentProviders.MERCADOPAGO
+        use_providers(settings, default_provider=PaymentProviders.MERCADOPAGO)
 
         resolver = PaymentProviderResolver()
 

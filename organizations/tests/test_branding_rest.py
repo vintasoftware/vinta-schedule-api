@@ -1227,7 +1227,7 @@ class TestCanManageBrandingOnMembershipPayload:
         with the caller's distinct-org membership count. Batched via
         ``is_branding_eligible_organizations`` /
         ``EntitlementService.has_entitlement_for_organizations``: the number of
-        ``payments_subscription`` queries the endpoint issues must stay the
+        ``vinta_billing_subscription`` queries the endpoint issues must stay the
         same regardless of how many organizations the caller belongs to."""
 
         def _subscription_query_count(organization_count: int) -> int:

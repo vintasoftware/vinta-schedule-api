@@ -65,7 +65,7 @@ def _add_admin_membership(organization: Organization) -> OrganizationMembership:
     """A billing-notification recipient.
 
     ``OrganizationMembershipQuerySet.billing_recipients`` reads
-    ``payments.manage_billing``, which a membership only holds through its
+    ``vinta_billing.manage_billing``, which a membership only holds through its
     groups -- and a bare ``baker.make`` assigns none.
     """
     membership = make_membership(

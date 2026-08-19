@@ -97,7 +97,7 @@ def test_to_stripe_amount_zero_decimal_currency():
     assert to_stripe_amount(Decimal("1500"), "JPY") == 1500
 
 
-@patch("payments.services.payment_adapters.stripe_payment_adapter.stripe.PaymentIntent")
+@patch("vinta_billing.services.payment_adapters.stripe_payment_adapter.stripe.PaymentIntent")
 def test_process_success(mock_payment_intent, adapter, mock_payment):
     mock_payment_intent.create.return_value = Mock(id="pi_created_123")
 
@@ -115,7 +115,7 @@ def test_process_success(mock_payment_intent, adapter, mock_payment):
     assert "idempotency_key" not in call_kwargs
 
 
-@patch("payments.services.payment_adapters.stripe_payment_adapter.stripe.PaymentIntent")
+@patch("vinta_billing.services.payment_adapters.stripe_payment_adapter.stripe.PaymentIntent")
 def test_process_forwards_idempotency_key_to_stripe(mock_payment_intent, adapter, mock_payment):
     """The client-supplied key must reach Stripe as its `Idempotency-Key` so a
     retried charge (e.g. after a rolled-back local transaction) resolves to the
@@ -129,7 +129,7 @@ def test_process_forwards_idempotency_key_to_stripe(mock_payment_intent, adapter
     assert call_kwargs["idempotency_key"] == "idem-key-1"
 
 
-@patch("payments.services.payment_adapters.stripe_payment_adapter.stripe.PaymentIntent")
+@patch("vinta_billing.services.payment_adapters.stripe_payment_adapter.stripe.PaymentIntent")
 def test_check_status_maps_known_status(mock_payment_intent, adapter):
     """`intent` is a bare `Mock()` (no `spec`) — setting `.get` does nothing to
     `getattr(intent, "last_payment_error", None)`, the attribute the adapter
@@ -151,8 +151,8 @@ def test_check_status_maps_known_status(mock_payment_intent, adapter):
     mock_payment_intent.retrieve.assert_called_once_with("pi_456", api_key="sk_test_123")
 
 
-@patch("payments.services.payment_adapters.stripe_payment_adapter.logger")
-@patch("payments.services.payment_adapters.stripe_payment_adapter.stripe.PaymentIntent")
+@patch("vinta_billing.services.payment_adapters.stripe_payment_adapter.logger")
+@patch("vinta_billing.services.payment_adapters.stripe_payment_adapter.stripe.PaymentIntent")
 def test_check_status_maps_unknown_status_and_logs(mock_payment_intent, mock_logger, adapter):
     intent = Mock()
     intent.status = "some_new_stripe_status"
@@ -170,7 +170,7 @@ def test_check_status_maps_unknown_status_and_logs(mock_payment_intent, mock_log
     )
 
 
-@patch("payments.services.payment_adapters.stripe_payment_adapter.stripe.PaymentIntent")
+@patch("vinta_billing.services.payment_adapters.stripe_payment_adapter.stripe.PaymentIntent")
 def test_check_status_uses_last_payment_error_message_as_description(mock_payment_intent, adapter):
     """When `last_payment_error` is present, its `message` — not the raw
     status — becomes `description`."""
@@ -186,7 +186,7 @@ def test_check_status_uses_last_payment_error_message_as_description(mock_paymen
     assert result.description == "card_declined"
 
 
-@patch("payments.services.payment_adapters.stripe_payment_adapter.stripe.Refund")
+@patch("vinta_billing.services.payment_adapters.stripe_payment_adapter.stripe.Refund")
 def test_refund_success(mock_refund_resource, adapter, mock_refund):
     """Stripe's create-refund response already carries the refund's status
     synchronously — no forced second round trip through `check_refund_status`."""
@@ -200,7 +200,7 @@ def test_refund_success(mock_refund_resource, adapter, mock_refund):
     )
 
 
-@patch("payments.services.payment_adapters.stripe_payment_adapter.stripe.Refund")
+@patch("vinta_billing.services.payment_adapters.stripe_payment_adapter.stripe.Refund")
 def test_check_refund_status_success(mock_refund_resource, adapter, mock_refund):
     mock_refund.external_id = "re_456"
     mock_refund_resource.retrieve.return_value = Mock(id="re_456", status="succeeded")

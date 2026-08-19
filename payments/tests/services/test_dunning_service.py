@@ -58,7 +58,7 @@ from users.models import User
 
 pytestmark = pytest.mark.no_auto_subscription
 
-_MODULE = "payments.services.dunning_service"
+_MODULE = "vinta_billing.services.dunning_service"
 
 ALL_BILLING_STATES = list(BillingState)
 
@@ -155,7 +155,7 @@ def _subscription_for(
 def _add_admin_membership(organization: Organization) -> OrganizationMembership:
     """A recipient for ``DunningService``'s notifications --
     ``OrganizationMembershipQuerySet.billing_recipients`` reads active
-    memberships holding ``payments.manage_billing``, and a bare
+    memberships holding ``vinta_billing.manage_billing``, and a bare
     ``baker.make(Organization, ...)`` (unlike
     ``OrganizationService.create_organization``) creates none on its own.
 

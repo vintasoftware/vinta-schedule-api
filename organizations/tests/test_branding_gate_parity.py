@@ -188,7 +188,7 @@ class TestUserAdministersBrandingEligibleOrganization:
         assert user_administers_branding_eligible_organization(user) is False
 
     def test_a_billing_owner_is_not_a_branding_administrator(self, entitled):
-        """``organization_billing_owner`` carries ``payments.manage_billing`` and
+        """``organization_billing_owner`` carries ``vinta_billing.manage_billing`` and
         nothing else, so the two capabilities cannot be confused for one another
         -- which they could be while both were spelled "not a plain member"."""
         user = baker.make(User)

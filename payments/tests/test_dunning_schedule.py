@@ -39,7 +39,7 @@ pytestmark = pytest.mark.no_auto_subscription
 
 WEBHOOK_SECRET = "test-webhook-secret"
 
-_DUNNING_SERVICE_MODULE = "payments.services.dunning_service"
+_DUNNING_SERVICE_MODULE = "vinta_billing.services.dunning_service"
 
 
 @pytest.fixture(autouse=True)
@@ -107,7 +107,7 @@ def _add_admin_membership(organization: Organization) -> OrganizationMembership:
     """A billing-notification recipient.
 
     ``OrganizationMembershipQuerySet.billing_recipients`` reads
-    ``payments.manage_billing``, which a membership only holds through its
+    ``vinta_billing.manage_billing``, which a membership only holds through its
     groups -- and a bare ``baker.make`` assigns none.
     """
     membership = make_membership(
@@ -169,7 +169,7 @@ def billing_profile(organization):
 @pytest.fixture
 def mercadopago_subscription_adapter():
     with patch(
-        "payments.services.subscription_adapters.mercadopago_subscription_adapter.mercadopago.SDK"
+        "vinta_billing.services.subscription_adapters.mercadopago_subscription_adapter.mercadopago.SDK"
     ) as mock_sdk:
         adapter = MercadoPagoSubscriptionAdapter("test-access-token", webhook_secret=WEBHOOK_SECRET)
         adapter.sdk = mock_sdk.return_value
@@ -660,7 +660,7 @@ class TestDunningTickToleratesADeclinedStripeCharge:
         stripe_adapter = StripeSubscriptionAdapter(api_key="sk_test_123", webhook_secret="whsec")
         with (
             patch(
-                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice"
+                "vinta_billing.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice"
             ) as mock_invoice,
             di_container.stripe_subscription_gateway.override(stripe_adapter),
         ):
@@ -750,7 +750,7 @@ class TestDunningTickToleratesADeclinedStripeCharge:
         stripe_adapter = StripeSubscriptionAdapter(api_key="sk_test_123", webhook_secret="whsec")
         with (
             patch(
-                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice"
+                "vinta_billing.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice"
             ) as mock_invoice,
             di_container.stripe_subscription_gateway.override(stripe_adapter),
         ):

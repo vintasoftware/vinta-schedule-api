@@ -79,7 +79,7 @@ class TestCloseSubscriptionBillingPeriodTask:
         """Best-effort: a failing close is logged, not re-raised, so the sweep of
         other subscriptions is unaffected."""
         with patch(
-            "payments.services.cycle_close_service.CycleCloseService.close_subscription",
+            "vinta_billing.services.cycle_close_service.CycleCloseService.close_subscription",
             side_effect=RuntimeError("provider exploded"),
         ):
             # Must not raise despite the underlying failure.

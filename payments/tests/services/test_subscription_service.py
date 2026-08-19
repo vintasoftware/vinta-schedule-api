@@ -30,6 +30,7 @@ from payments.services.subscription_service import (
     is_billing_root,
     resolve_billing_root,
 )
+from payments.tests.provider_settings import use_providers
 
 
 # This module builds its own Subscription rows (OneToOne with Organization), so it
@@ -301,7 +302,7 @@ class TestCreateSubscriptionResolvesTheProvider:
         assert subscription.payment_provider == PaymentProviders.MERCADOPAGO
 
     def test_unpinned_org_falls_back_to_the_system_default(self, service, plan, settings):
-        settings.DEFAULT_PAYMENT_PROVIDER = PaymentProviders.STRIPE
+        use_providers(settings, default_provider=PaymentProviders.STRIPE)
         org = baker.make(Organization, parent=None)
         self._billing_profile_for(org, "")
 
@@ -315,7 +316,7 @@ class TestCreateSubscriptionResolvesTheProvider:
     ):
         """The common case at organization creation: the ``Subscription`` is
         created before any ``BillingProfile`` exists."""
-        settings.DEFAULT_PAYMENT_PROVIDER = PaymentProviders.STRIPE
+        use_providers(settings, default_provider=PaymentProviders.STRIPE)
         org = baker.make(Organization, parent=None)
 
         subscription = service.create_subscription_for_organization(org, plan=plan)

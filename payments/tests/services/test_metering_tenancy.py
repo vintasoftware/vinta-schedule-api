@@ -279,7 +279,7 @@ class TestSweepSkipsDemotedBillingRoots:
         demoted_subscription = make_subscription(demoted, plan)
         Organization.objects.filter(pk=demoted.pk).update(parent=root)
 
-        with caplog.at_level("WARNING", logger="payments.services.metering_service"):
+        with caplog.at_level("WARNING", logger="vinta_billing.services.metering_service"):
             MeteringService.subscriptions_to_sweep()
 
         assert str(demoted_subscription.pk) in caplog.text

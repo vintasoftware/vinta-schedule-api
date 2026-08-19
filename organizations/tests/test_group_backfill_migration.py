@@ -31,11 +31,22 @@ Three things are pinned here:
    inactive-membership handling -- is driven with ``MigrationExecutor`` in
    ``organizations/tests/test_membership_group_migration_executor.py``, which
    pays the cost this module declines to.
-3. **The migration's frozen literals still agree with the live catalog.** The
-   migrations deliberately do not import ``organizations.permission_catalog``
-   (a data migration must keep meaning what it meant when written), so the two
-   copies can drift silently. Both are checked against the same third set of
-   literals spelled out here.
+3. **The migration's frozen literals and the live catalog each say what they
+   are supposed to say.** The migrations deliberately do not import
+   ``organizations.permission_catalog`` (a data migration must keep meaning what
+   it meant when written), so the two copies can drift silently. Each is checked
+   against its own set of literals spelled out here.
+
+   Those two sets used to be one. They are not any more, and the difference is
+   the point: ``payments/migrations/0024_move_billing_to_vinta_billing.py`` moved
+   ``manage_billing`` from the ``payments.subscription`` content type to
+   ``vinta_billing.subscription``. ``0028`` still says ``payments`` and always
+   will -- it describes the world as it was, and ``0024`` depends on it -- while
+   the live catalog says ``vinta_billing``, which is what every runtime check
+   reads. Pinning both, plus the single expected difference between them
+   (``test_the_two_copies_differ_only_where_the_move_moved_them``), is what keeps
+   an *unintended* drift as loud as it was before while letting the intended one
+   stand.
 
 The reverse is driven by calling its function directly rather than by running
 ``MigrationExecutor`` over the shared per-worker database: it only deletes M2M
@@ -73,23 +84,43 @@ BACKFILL_MIGRATION = importlib.import_module(
 
 # The literals. Everything below compares against these -- never against the
 # module under test's own copy of them.
-EXPECTED_GROUP_PERMISSIONS = {
-    "organization_admin": {
-        "organizations.manage_members",
-        "organizations.manage_organization",
-        "organizations.manage_branding",
-        "payments.manage_billing",
-    },
-    "organization_billing_owner": {"payments.manage_billing"},
-    "organization_member": set(),
-}
-
-EXPECTED_PERMISSION_OWNERS = {
+#
+# Two sets, because there are now two right answers. `manage_billing` hangs off
+# `payments.subscription` in `0028`, which is frozen, and off
+# `vinta_billing.subscription` at head, because
+# `payments/0024_move_billing_to_vinta_billing` moved it. The other three never
+# moved and are spelled once, in `_ORGANIZATION_CAPABILITIES`.
+_ORGANIZATION_CAPABILITIES = {
     "organizations.manage_organization": ("organizations", "organization"),
     "organizations.manage_branding": ("organizations", "organization"),
     "organizations.manage_members": ("organizations", "organizationmembership"),
-    "payments.manage_billing": ("payments", "subscription"),
 }
+
+#: What `0028` seeds, and therefore what a database has until `0024` runs.
+FROZEN_MANAGE_BILLING = "payments.manage_billing"
+#: What every runtime check reads, and what a fully migrated database holds.
+LIVE_MANAGE_BILLING = "vinta_billing.manage_billing"
+
+
+def _group_permissions(manage_billing: str) -> dict[str, set[str]]:
+    return {
+        "organization_admin": set(_ORGANIZATION_CAPABILITIES) | {manage_billing},
+        "organization_billing_owner": {manage_billing},
+        "organization_member": set(),
+    }
+
+
+def _permission_owners(manage_billing: str) -> dict[str, tuple[str, str]]:
+    return {
+        **_ORGANIZATION_CAPABILITIES,
+        manage_billing: (manage_billing.split(".", 1)[0], "subscription"),
+    }
+
+
+FROZEN_GROUP_PERMISSIONS = _group_permissions(FROZEN_MANAGE_BILLING)
+FROZEN_PERMISSION_OWNERS = _permission_owners(FROZEN_MANAGE_BILLING)
+LIVE_GROUP_PERMISSIONS = _group_permissions(LIVE_MANAGE_BILLING)
+LIVE_PERMISSION_OWNERS = _permission_owners(LIVE_MANAGE_BILLING)
 
 
 def _labelled(permissions) -> set[str]:
@@ -124,18 +155,18 @@ class TestTheSeedSurvivesAMigrateFromZero:
 
     @pytest.fixture(autouse=True)
     def _seeded_by_the_migration(self):
-        Group.objects.filter(name__in=list(EXPECTED_GROUP_PERMISSIONS)).delete()
+        Group.objects.filter(name__in=list(FROZEN_GROUP_PERMISSIONS)).delete()
 
         _run_seed()
 
     def test_the_three_groups_exist_with_exactly_the_expected_permissions(self):
-        for group_name, expected in EXPECTED_GROUP_PERMISSIONS.items():
+        for group_name, expected in FROZEN_GROUP_PERMISSIONS.items():
             group = Group.objects.get(name=group_name)
 
             assert _labelled(group.permissions) == expected
 
     def test_each_permission_hangs_off_the_model_that_owns_the_capability(self):
-        for label, (app_label, model) in EXPECTED_PERMISSION_OWNERS.items():
+        for label, (app_label, model) in FROZEN_PERMISSION_OWNERS.items():
             group = Group.objects.get(name="organization_admin")
             permission = group.permissions.get(codename=label.split(".", 1)[1])
 
@@ -147,7 +178,7 @@ class TestTheSeedSurvivesAMigrateFromZero:
         would also create. It de-duplicates on ``(content_type, codename)``, so
         a second row would mean the migration wrote a *different* key than the
         one ``Meta.permissions`` declares."""
-        for label, (app_label, model) in EXPECTED_PERMISSION_OWNERS.items():
+        for label, (app_label, model) in FROZEN_PERMISSION_OWNERS.items():
             codename = label.split(".", 1)[1]
 
             assert (
@@ -168,7 +199,7 @@ class TestTheMigrationsFrozenLiteralsStillMatchTheLiveCatalog:
     def test_the_seed_migrations_mapping_matches(self):
         seeded = SEED_MIGRATION.GROUP_PERMISSIONS
 
-        assert {name: set(perms) for name, perms in seeded.items()} == EXPECTED_GROUP_PERMISSIONS
+        assert {name: set(perms) for name, perms in seeded.items()} == FROZEN_GROUP_PERMISSIONS
 
     def test_the_seed_migrations_permission_owners_match(self):
         """Reads ``0028``'s own frozen ``PERMISSIONS`` -- reading the live catalog here
@@ -178,7 +209,7 @@ class TestTheMigrationsFrozenLiteralsStillMatchTheLiveCatalog:
             for app_label, model, codename, _name in SEED_MIGRATION.PERMISSIONS
         }
 
-        assert owners == EXPECTED_PERMISSION_OWNERS
+        assert owners == FROZEN_PERMISSION_OWNERS
 
     def test_the_live_catalogs_permission_owners_match(self):
         """The other copy. ``organizations.permission_catalog.PERMISSIONS`` is what the
@@ -189,12 +220,34 @@ class TestTheMigrationsFrozenLiteralsStillMatchTheLiveCatalog:
             for app_label, model, codename, _name in CATALOG_PERMISSIONS
         }
 
-        assert owners == EXPECTED_PERMISSION_OWNERS
+        assert owners == LIVE_PERMISSION_OWNERS
 
     def test_the_live_catalog_matches(self):
         assert {
             name: set(perms) for name, perms in CATALOG_GROUP_PERMISSIONS.items()
-        } == EXPECTED_GROUP_PERMISSIONS
+        } == LIVE_GROUP_PERMISSIONS
+
+    def test_the_two_copies_differ_only_where_the_move_moved_them(self):
+        """The frozen and live literals above are allowed to disagree in exactly
+        one place, and this is it.
+
+        Without this, splitting them into two sets would have quietly turned off
+        the drift detection the rest of this class exists for: any future
+        divergence could be absorbed by editing whichever set complained. Pinning
+        the difference itself means a *second* divergence fails here.
+        """
+        assert set(FROZEN_PERMISSION_OWNERS) ^ set(LIVE_PERMISSION_OWNERS) == {
+            "payments.manage_billing",
+            "vinta_billing.manage_billing",
+        }
+        assert FROZEN_PERMISSION_OWNERS["payments.manage_billing"] == (
+            "payments",
+            "subscription",
+        )
+        assert LIVE_PERMISSION_OWNERS["vinta_billing.manage_billing"] == (
+            "vinta_billing",
+            "subscription",
+        )
 
     def test_the_models_meta_permissions_declare_the_same_codenames(self):
         declared = {
@@ -206,13 +259,13 @@ class TestTheMigrationsFrozenLiteralsStillMatchTheLiveCatalog:
             for codename, _name in OrganizationMembership._meta.permissions
         }
         declared |= {
-            ("payments", "subscription", codename)
+            ("vinta_billing", "subscription", codename)
             for codename, _name in Subscription._meta.permissions
         }
 
         assert declared == {
             (app_label, model, label.split(".", 1)[1])
-            for label, (app_label, model) in EXPECTED_PERMISSION_OWNERS.items()
+            for label, (app_label, model) in LIVE_PERMISSION_OWNERS.items()
         }
 
 
@@ -254,7 +307,7 @@ class TestTheMappingTheBackfillApplied:
         """A name the seed did not create would ``KeyError`` in the backfill."""
         for role in ("member", "admin"):
             for billing_owner in (False, True):
-                assert set(target(role, billing_owner)) <= set(EXPECTED_GROUP_PERMISSIONS)
+                assert set(target(role, billing_owner)) <= set(LIVE_GROUP_PERMISSIONS)
 
 
 @pytest.mark.django_db

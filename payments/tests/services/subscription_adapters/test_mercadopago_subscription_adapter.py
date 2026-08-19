@@ -26,6 +26,11 @@ from payments.services.subscription_adapters.mercadopago_subscription_adapter im
     SUBSCRIPTION_STATUS_MAPPING,
     MercadoPagoSubscriptionAdapter,
 )
+from payments.tests.provider_settings import (
+    MISSING_SITE_DOMAIN_MESSAGE,
+    no_site_domain,
+    with_site_domain,
+)
 
 
 WEBHOOK_SECRET = "test-webhook-secret"
@@ -131,7 +136,7 @@ def mock_subscription(mock_plan, mock_billing_profile):
 def adapter():
     """Create MercadoPagoSubscriptionAdapter instance with mocked SDK."""
     with patch(
-        "payments.services.subscription_adapters.mercadopago_subscription_adapter.mercadopago.SDK"
+        "vinta_billing.services.subscription_adapters.mercadopago_subscription_adapter.mercadopago.SDK"
     ) as mock_sdk:
         adapter = MercadoPagoSubscriptionAdapter("test-access-token", webhook_secret=WEBHOOK_SECRET)
         adapter.sdk = mock_sdk.return_value
@@ -141,7 +146,7 @@ def adapter():
 def test_init():
     """Test adapter initialization."""
     with patch(
-        "payments.services.subscription_adapters.mercadopago_subscription_adapter.mercadopago.SDK"
+        "vinta_billing.services.subscription_adapters.mercadopago_subscription_adapter.mercadopago.SDK"
     ) as mock_sdk:
         adapter = MercadoPagoSubscriptionAdapter("test-token")
         mock_sdk.assert_called_once_with("test-token")
@@ -213,8 +218,8 @@ def test_update_subscription_plan(adapter, mock_plan):
     adapter.sdk.plan().update.assert_called_once_with("mp-plan-456", expected_plan_data)
 
 
-@override_settings(SITE_DOMAIN="example.com")
-@patch("payments.services.subscription_adapters.mercadopago_subscription_adapter.reverse")
+@override_settings(VINTA_BILLING=with_site_domain("example.com"))
+@patch("vinta_billing.services.subscription_adapters.mercadopago_subscription_adapter.reverse")
 def test_create_subscription_success(mock_reverse, adapter, mock_subscription):
     """Test successful subscription creation."""
     mock_reverse.return_value = (
@@ -237,8 +242,8 @@ def test_create_subscription_success(mock_reverse, adapter, mock_subscription):
     adapter.sdk.preapproval().create.assert_called_once_with(expected_subscription_data)
 
 
-@override_settings(SITE_DOMAIN="example.com")
-@patch("payments.services.subscription_adapters.mercadopago_subscription_adapter.reverse")
+@override_settings(VINTA_BILLING=with_site_domain("example.com"))
+@patch("vinta_billing.services.subscription_adapters.mercadopago_subscription_adapter.reverse")
 def test_create_subscription_forwards_idempotency_key_header(
     mock_reverse, adapter, mock_subscription
 ):
@@ -257,14 +262,14 @@ def test_create_subscription_forwards_idempotency_key_header(
     assert request_options.custom_headers == {"x-idempotency-key": "idem-sub-1"}
 
 
-@override_settings(SITE_DOMAIN=None)
+@override_settings(**no_site_domain())
 def test_create_subscription_missing_site_domain(adapter, mock_subscription):
     """Test create subscription raises error when SITE_DOMAIN is not configured."""
-    with pytest.raises(ImproperlyConfigured, match="MercadoPagoAdapter requires SITE_DOMAIN"):
+    with pytest.raises(ImproperlyConfigured, match=MISSING_SITE_DOMAIN_MESSAGE):
         adapter.create_subscription(mock_subscription, "test-token")
 
 
-@override_settings(SITE_DOMAIN="example.com")
+@override_settings(VINTA_BILLING=with_site_domain("example.com"))
 def test_cancel_subscription_success(adapter, mock_subscription):
     """Test successful subscription cancellation."""
     adapter.cancel_subscription(mock_subscription)
@@ -279,14 +284,14 @@ def test_cancel_subscription_success(adapter, mock_subscription):
     )
 
 
-@override_settings(SITE_DOMAIN=None)
+@override_settings(**no_site_domain())
 def test_cancel_subscription_missing_site_domain(adapter, mock_subscription):
     """Test cancel subscription raises error when SITE_DOMAIN is not configured."""
-    with pytest.raises(ImproperlyConfigured, match="MercadoPagoAdapter requires SITE_DOMAIN"):
+    with pytest.raises(ImproperlyConfigured, match=MISSING_SITE_DOMAIN_MESSAGE):
         adapter.cancel_subscription(mock_subscription)
 
 
-@override_settings(SITE_DOMAIN="example.com")
+@override_settings(VINTA_BILLING=with_site_domain("example.com"))
 def test_change_subscription_plan_success(adapter, mock_subscription, mock_created_plan):
     """Re-pointing `preapproval_plan_id` is MercadoPago's plan-change primitive
     -- the target plan's own `billing_day_proportional=True` is what makes the
@@ -304,7 +309,7 @@ def test_change_subscription_plan_success(adapter, mock_subscription, mock_creat
     )
 
 
-@override_settings(SITE_DOMAIN="example.com")
+@override_settings(VINTA_BILLING=with_site_domain("example.com"))
 def test_change_subscription_plan_forwards_idempotency_key_header(
     adapter, mock_subscription, mock_created_plan
 ):
@@ -317,15 +322,15 @@ def test_change_subscription_plan_forwards_idempotency_key_header(
     assert request_options.custom_headers == {"x-idempotency-key": "idem-change-1"}
 
 
-@override_settings(SITE_DOMAIN=None)
+@override_settings(**no_site_domain())
 def test_change_subscription_plan_missing_site_domain(
     adapter, mock_subscription, mock_created_plan
 ):
-    with pytest.raises(ImproperlyConfigured, match="MercadoPagoAdapter requires SITE_DOMAIN"):
+    with pytest.raises(ImproperlyConfigured, match=MISSING_SITE_DOMAIN_MESSAGE):
         adapter.change_subscription_plan(mock_subscription, mock_created_plan)
 
 
-@override_settings(SITE_DOMAIN="example.com")
+@override_settings(VINTA_BILLING=with_site_domain("example.com"))
 def test_update_subscription_payment_token_success(adapter, mock_subscription):
     """Test successful subscription payment token update."""
     adapter.update_subscription_payment_token(mock_subscription, "new-token")
@@ -341,10 +346,10 @@ def test_update_subscription_payment_token_success(adapter, mock_subscription):
     )
 
 
-@override_settings(SITE_DOMAIN=None)
+@override_settings(**no_site_domain())
 def test_update_subscription_payment_token_missing_site_domain(adapter, mock_subscription):
     """Test update payment token raises error when SITE_DOMAIN is not configured."""
-    with pytest.raises(ImproperlyConfigured, match="MercadoPagoAdapter requires SITE_DOMAIN"):
+    with pytest.raises(ImproperlyConfigured, match=MISSING_SITE_DOMAIN_MESSAGE):
         adapter.update_subscription_payment_token(mock_subscription, "new-token")
 
 
@@ -667,7 +672,7 @@ def test_create_status_update_from_payment_payload_maps_unknown_status(adapter):
     assert result.status == PaymentStatuses.UNKNOWN
 
 
-@patch("payments.services.subscription_adapters.mercadopago_subscription_adapter.logger")
+@patch("vinta_billing.services.subscription_adapters.mercadopago_subscription_adapter.logger")
 def test_create_status_update_from_payment_payload_unknown_status_logs_no_pii(mock_logger, adapter):
     """Logs the id + status only — never `json.dumps(payment_payload)`, which would
     leak payer PII (email, name, document number, billing address)."""

@@ -58,7 +58,6 @@ from payments.services.dataclasses import (
 )
 from payments.services.payment_adapters.base import BasePaymentAdapter
 from payments.services.payment_adapters.stripe_payment_adapter import StripePaymentAdapter
-from payments.services.payment_service import PaymentService
 from payments.services.subscription_adapters.base import (
     BaseSubscriptionAdapter,
 )
@@ -67,6 +66,7 @@ from payments.services.subscription_adapters.stripe_subscription_adapter import 
 )
 from payments.services.subscription_plan_factory.base import BaseSubscriptionPlanFactory
 from payments.services.subscription_service import SubscriptionService
+from payments.tests.provider_settings import use_providers
 
 
 # This module builds its own Subscription rows (OneToOne with Organization), so it
@@ -187,14 +187,27 @@ def payment_service(
     """Both provider slots are mocked -- MercadoPago (what ``billing_profile``
     is pinned to by default) and Stripe (used by the Rule A/Rule B routing
     tests) -- so no test constructing this fixture can accidentally reach a
-    real, unconfigured adapter over the network."""
+    real, unconfigured adapter over the network.
+
+    Built through ``di_container.payment_service``, not by calling
+    ``PaymentService(...)`` directly. That used to be equivalent: the host's own
+    ``PaymentService.__init__`` carried ``@inject``, so the two registries and
+    the resolver arrived from the container -- and therefore from the overrides
+    above -- without being named. ``vinta_billing``'s constructor takes the same
+    four collaborators but falls back to building its own from ``VINTA_BILLING``
+    when they are not passed, which no ``di_container.<provider>.override(...)``
+    can reach. The container is where this project wires all four
+    (``di_core/containers.py``), so asking it for the service is what keeps the
+    mocks in the loop -- and what makes these tests exercise the object
+    production actually builds.
+    """
     with (
         di_container.payment_gateway.override(payment_adapter),
         di_container.subscription_gateway.override(subscription_adapter),
         di_container.stripe_payment_gateway.override(stripe_payment_adapter),
         di_container.stripe_subscription_gateway.override(stripe_subscription_adapter),
     ):
-        return PaymentService(subscription_plan_factory=subscription_plan_factory)
+        return di_container.payment_service(subscription_plan_factory=subscription_plan_factory)
 
 
 @pytest.fixture
@@ -926,7 +939,7 @@ def test_create_payment_for_unpinned_org_drives_default_payment_provider(
     """Rule B, unpinned case: an org with no pin at all resolves to
     `settings.DEFAULT_PAYMENT_PROVIDER`, not to whatever adapter happens to be
     mocked in this test suite."""
-    settings.DEFAULT_PAYMENT_PROVIDER = PaymentProviders.STRIPE
+    use_providers(settings, default_provider=PaymentProviders.STRIPE)
     billing_profile.payment_provider = ""
     billing_profile.save(update_fields=["payment_provider"])
     stripe_payment_adapter.process.return_value = "stripe_payment_default"
@@ -972,7 +985,9 @@ def test_create_payment_for_org_pinned_to_unconfigured_provider_raises_and_creat
         di_container.subscription_gateway.override(subscription_adapter),
         di_container.stripe_payment_gateway.override(unconfigured_stripe),
     ):
-        payment_service = PaymentService(subscription_plan_factory=subscription_plan_factory)
+        payment_service = di_container.payment_service(
+            subscription_plan_factory=subscription_plan_factory
+        )
 
         with pytest.raises(PaymentProviderNotConfiguredError):
             payment_service.create_payment(
@@ -995,7 +1010,7 @@ def test_configured_check_reads_the_outbound_credential_not_the_publishable_key(
     *publishable* key must not stop a charge through a provider whose secret key
     is present. `STRIPE_PUBLISHABLE_KEY` is what a browser needs to build a form;
     it is never sent on an outbound call from this process."""
-    settings.STRIPE_PUBLISHABLE_KEY = ""
+    use_providers(settings, STRIPE_PUBLISHABLE_KEY="")
     billing_profile.payment_provider = PaymentProviders.STRIPE
     billing_profile.save(update_fields=["payment_provider"])
     stripe_payment_adapter.process.return_value = "stripe_payment_no_pubkey"
@@ -1264,7 +1279,7 @@ def test_record_payment_method_second_call_different_provider_leaves_pin_unchang
     billing_profile.refresh_from_db()
     assert billing_profile.payment_provider == PaymentProviders.MERCADOPAGO
 
-    with caplog.at_level("WARNING", logger="payments.services.subscription_service"):
+    with caplog.at_level("WARNING", logger="vinta_billing.services.subscription_service"):
         subscription_service.record_payment_method(
             billing_profile.organization, PaymentProviders.STRIPE, "instrument_2"
         )
@@ -1309,7 +1324,7 @@ def test_record_payment_method_pin_write_is_a_conditional_update_not_read_then_w
         return result
 
     with patch.object(QuerySet, "update", spying_update):
-        with caplog.at_level("WARNING", logger="payments.services.subscription_service"):
+        with caplog.at_level("WARNING", logger="vinta_billing.services.subscription_service"):
             subscription_service.record_payment_method(
                 billing_profile.organization, PaymentProviders.STRIPE, "instrument_2"
             )
@@ -1613,7 +1628,9 @@ def test_get_payment_adapter_ignores_the_outbound_credential(
         di_container.subscription_gateway.override(subscription_adapter),
         di_container.stripe_payment_gateway.override(unconfigured_stripe),
     ):
-        payment_service = PaymentService(subscription_plan_factory=subscription_plan_factory)
+        payment_service = di_container.payment_service(
+            subscription_plan_factory=subscription_plan_factory
+        )
 
         assert payment_service.get_payment_adapter(PaymentProviders.STRIPE) is unconfigured_stripe
         with pytest.raises(PaymentProviderNotConfiguredError):
@@ -1631,7 +1648,9 @@ def test_get_subscription_adapter_ignores_the_outbound_credential(
         di_container.subscription_gateway.override(subscription_adapter),
         di_container.stripe_subscription_gateway.override(unconfigured_stripe),
     ):
-        payment_service = PaymentService(subscription_plan_factory=subscription_plan_factory)
+        payment_service = di_container.payment_service(
+            subscription_plan_factory=subscription_plan_factory
+        )
 
         assert (
             payment_service.get_subscription_adapter(PaymentProviders.STRIPE) is unconfigured_stripe
