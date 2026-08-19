@@ -5,7 +5,7 @@ results back in your final message; the conductor writes them here.
 
 Plan: `ai-plans/2026-08-19-MIGRATE_BILLING_ENGINE_TO_VINTA_DJANGO_BILLING_IMPLEMENTATION_PLAN.md`
 
-Started: 2026-08-18 · Last updated: 2026-08-18
+Started: 2026-08-18 · Last updated: 2026-08-19
 
 ## run_options
 
@@ -164,7 +164,7 @@ Checked before Phase 0, so no phase discovers these the hard way:
 
 | # | Title | Impl tier/model | Status | Branch |
 |---|---|---|---|---|
-| 0 | Install the package and write the seams | 3 / sonnet | ⏳ pending | — |
+| 0 | Install the package and write the seams | 3 / sonnet | ✅ done | `plan/migrate-billing-engine-to-vinta-django-billing/phase-0` |
 | 1 | Install the app, move the rows, shim the host modules | 4 / opus | ⏳ pending | — |
 | 2 | Point the host's own entry points at the package | 3 / sonnet | ⏳ pending | — |
 | 2b | vinta-django-billing gap release | — | 🚫 deferred — cross-repo (`vintasoftware/vinta-django-billing`) | — |
@@ -177,7 +177,91 @@ No feature flag is declared by this plan, so there is no flag-removal phase.
 
 ## Completed phases
 
-_none yet_
+### Phase 0 — Install the package and write the seams ✅
+
+Branch `plan/migrate-billing-engine-to-vinta-django-billing/phase-0`, based on
+`claude/billing-engine-vinta-django-933687`. Implementer sonnet (plan's Tier 3),
+reviewer sonnet (Tier 3), fixers sonnet + haiku. 14 files, +1401 / -2.
+
+**What shipped.** `vinta-django-billing` 0.3.0 (MIT) pinned `>=0.3,<0.4` in
+`pyproject.toml`; `uv.lock` refreshed; `vinta_billing.*` added to the mypy
+`ignore_missing_imports` list because the package ships no `py.typed` marker. Five
+seams under `payments/seams/`: `resources.py` (8 resources + 5 entitlements, each
+counter a port of its `_count_*` predecessor onto `vinta_billing.counting`),
+`hierarchy.py` (`ResellerHierarchy(ParentFieldHierarchy)`), `notifier.py`
+(`NotificationServiceNotifier` over the DI-built vintasend service), `occurrences.py`
+(`CalendarEventOccurrenceSource`), `dispatch.py` (Celery bridge that serializes a job's
+dotted path through one generic task). `VINTA_BILLING` added to `settings/base.py` with
+all 14 valid keys. 39 new tests. `vinta_billing` is deliberately NOT in `INSTALLED_APPS`
+— that is Phase 1.
+
+**Acceptance, verified by the conductor on the docker surface, not taken on report:**
+`pytest payments/tests/ -n auto` → 1129 passed; `makemigrations --check` → `No changes
+detected`; registry → 8 resources, 5 entitlements.
+
+**Review — one BLOCKER, found by the conductor, missed by the reviewer.**
+`seams/resources.py` originally imported `LimitedResource` / `Entitlement` from
+`payments.billing_constants` and built every registration by iterating them. Byte-identity
+was guaranteed, but it inverted section 3.3 (the enums are supposed to *stop* being the
+source of truth), it depended on a module Phase 1 shims and Phase 6 deletes — with no
+package equivalent to shim against and no phase owning the retarget — and it made the
+registration tests self-comparing, so they could not go red. Fixed by making the seam the
+definition site: literal keys and labels, one explicit `register(...)` per resource. The
+tests now bridge two independent sides. **Proven, not asserted:** a deliberately typo'd
+key turned three tests red (`No resource registered under 'organization_members'`), and
+reverting turned them green.
+
+The reviewer judged all 39 tests "not self-comparing". That holds for `TestCounterParity`
+— which runs new and legacy counters over the same rows *and* pins literal breakdowns,
+and is genuinely well built — but not for the registration tests it was lumped in with.
+
+**Review — two SHOULD-FIX, both from the reviewer, both applied.** The two `.unscoped()`
+calls in `occurrences.describe()` now carry their justification at the call site rather
+than only in the module docstring (the protocol has no organization parameter and the ids
+arrive pre-scoped, but AGENTS.md wants the bound visible where the read happens). And four
+docstrings claiming the seams are not imported until Phase 1 were corrected — see the
+carry-forward section, since the same false premise sits in the plan's Phase 1 body.
+
+One NIT (a plain `RuntimeError` in `notifier.py` where a typed exception might fit) was
+left alone; the repo has no single convention for that call-site shape.
+
+## Carry-forward into later phases
+
+Discovered during Phase 0's review. Each one is a correction to a later phase's body,
+recorded here because the phase that has to act on it has not run yet.
+
+**→ Phase 1: `payments/seams/` imports need retargeting, and no phase currently owns it.**
+`payments/seams/resources.py` imports `payments.models` (`MeteredOccurrence`,
+`Subscription`) and `payments.services.subscription_service.current_billing_period_start`.
+All three exist in the package (`vinta_billing.models`,
+`vinta_billing.services.subscription_service`), but Phase 0 could not import them —
+`vinta_billing` is not in `INSTALLED_APPS` until Phase 1, so a model import would raise
+`AppRegistryNotReady`. Phase 1 is the first phase that *can* retarget them, and Phase 6
+deletes the modules they currently point at. Phase 1 must do it; the plan's Phase 1 body
+does not mention `payments/seams/` at all.
+
+**→ Phase 1: the plan's stated reason for the `AppConfig.ready()` import is false.**
+Phase 1's body says `payments/apps.py`'s `ready()` should import
+`payments.seams.resources` "so registration happens before the first limit check or
+admin render". The reviewer verified live, by inspecting `sys.modules` immediately after
+`django.setup()`, that `di_core.apps.DICoreConfig.ready()` already calls
+`container.wire(packages=INTERNAL_INSTALLED_APPS)`, which recursively imports every
+submodule under `payments` — all five seam modules included — at every process start,
+*before* `PaymentsConfig.ready()` runs at all. The same mechanism means
+`payments/seams/dispatch.py`'s `@shared_task` is registered in Celery workers today,
+ahead of `autodiscover_tasks()`.
+
+The `ready()` import is still worth adding, because relying on DI wiring to import a
+registry is accidental coupling — `container.wire` exists to find `@inject` call sites,
+and nothing guarantees it keeps walking every submodule. But Phase 1 should add it as an
+explicit, order-independent guarantee, not as the fix for a gap that does not exist, and
+`Registry.register` tolerating the repeat is what makes the belt-and-braces safe.
+
+**→ Phase 2: `payments/seams/dispatch.py` needs no autodiscovery fix.** Phase 0's
+docstring claimed the generic `payments.dispatch_billing_job` task is unreachable from a
+worker until Phase 2 imports it from `payments/tasks.py`. Same false premise — it is
+already registered. Phase 2 still owns pointing the beat wrappers at
+`vinta_billing.jobs`, but not this.
 
 ## Deferred phases
 
