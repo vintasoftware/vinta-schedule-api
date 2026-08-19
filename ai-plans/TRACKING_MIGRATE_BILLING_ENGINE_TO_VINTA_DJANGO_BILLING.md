@@ -315,7 +315,45 @@ package release — a re-sequencing decision that belongs to the requester, not 
 phase. Escalation is not the answer either; this was already the plan's top tier, and the
 report is correct rather than confused.
 
-## Plan amendment 2026-08-19 — the `/payments` → `/billing` move is withdrawn
+## Plan amendment 2026-08-19 (final) — the webhooks move under `/billing`
+
+Supersedes the "withdrawn" note below, which was written before the requester confirmed
+no webhooks are registered with any provider yet.
+
+Requester's goal: every route this project serves for billing sits under `/billing`. The
+two provider webhooks were the only exception. With no live provider registrations, the
+move is safe, so it is made — **in the package, not host-side**, because
+`get_extra_patterns()` already hardcoded its other two endpoints under
+`billing/payment-provider`, making `payments/` the package's own inconsistency.
+
+Package commit `1938bf3` on PR #7:
+`^payments/{pk}/…` → `^billing/payments/{pk}/…` for both webhooks, `trailing_slash`
+handling and reverse names (`Payments-payment-update`,
+`Payments-subscription-payment-update`) untouched. Verified by the conductor: 774 passed
+/ 10 skipped, 784 swapped — both matching baseline. The PR description and `HISTORY.md`
+both previously claimed the URLs were unchanged character for character; both are
+rewritten.
+
+**A second, independent reason the move is safe, and the one that generalises:** 0.3.0's
+`PaymentsViewSet.__init__` required three services with no defaults — gap 1 — so every
+request reaching `payments/…` raised `TypeError` before a provider notification could be
+processed. No deployment anywhere has a webhook that ever worked at the old path, so no
+adopter is broken either.
+
+**Standing constraint recorded in the plan's Risk & Rollout Notes.** This window closes
+the moment the first provider registration happens.
+`MercadoPagoSubscriptionAdapter.create_subscription` bakes `notification_url` into the
+MercadoPago preapproval, which is notified on every recurring charge for the life of the
+subscription. After that, moving these paths breaks recurring notifications *silently* —
+the provider keeps charging, the host never hears, subscriptions drift until dunning
+fires on customers who have paid. From then on: add an alias, never move. Stripe is
+unaffected; neither Stripe adapter reverses a URL.
+
+**Host consequence for Phase 2**: mount `get_extra_patterns()` alongside `get_routes()`,
+expect the two webhook paths to move in the regenerated `schema.yml`, and expect no other
+path to change. Still no `handoff-to-client` — no client calls these.
+
+## Superseded — plan amendment 2026-08-19 (first pass), the `/payments` → `/billing` move is withdrawn
 
 Prompted by two review comments on package PR #7 asking whether the webhook patterns
 should say `payments` or `billing`. Chasing the answer showed the plan's one deliberate
