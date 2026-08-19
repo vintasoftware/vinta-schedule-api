@@ -315,6 +315,35 @@ package release — a re-sequencing decision that belongs to the requester, not 
 phase. Escalation is not the answer either; this was already the plan's top tier, and the
 report is correct rather than confused.
 
+## Plan amendment 2026-08-19 — the `/payments` → `/billing` move is withdrawn
+
+Prompted by two review comments on package PR #7 asking whether the webhook patterns
+should say `payments` or `billing`. Chasing the answer showed the plan's one deliberate
+behaviour change rested on a false premise.
+
+`PaymentsViewSet` is a bare `ViewSet` — no `queryset`, no `serializer_class` — carrying
+only `payment_update` and `subscription_payment_update`, both inbound provider webhooks.
+The shipped `schema.yml` lists exactly four `/payments` paths: those two actions and
+their `{format}` variants. **No client calls `/payments`.** The plan's Goal 4 describes
+the move as something "the single client adopts in the same release"; there is no such
+client.
+
+Moving it would instead break provider integrations. The MercadoPago adapter builds its
+callback at charge time via `reverse("api:Payments-payment-update", ...)` and sends it as
+`notification_url`, so the URL is stored provider-side per payment. Every retry against
+an already-registered callback would strand.
+
+Requester's decision: keep `payments`, drop Goal 4. The plan file is amended — Goals,
+Non-goals, section 4's path table, the Feature-flag and Route-ownership rows, Phase 2's
+goal / changes / tests / skills, and the Risk & Rollout "URL change" entry, which is
+replaced by a standing warning that the webhook paths must never move. Package PR #7
+needs no change; `payments` was already correct there.
+
+Net effect on the run: **Phase 2 shrinks to a pure route-ownership swap with no
+behaviour change, and its `handoff-to-client` step is gone.** No phase in this plan is
+user-visible any more. Phase 2 must mount both `get_routes()` and `get_extra_patterns()`,
+since from 0.4.0 the webhooks no longer come out of the router.
+
 ## Carry-forward into later phases
 
 Discovered during Phase 0's review. Each one is a correction to a later phase's body,
