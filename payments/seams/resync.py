@@ -45,11 +45,16 @@ def resume_calendar_sync(
     calendars -- over exactly the id set the engine resolved, which is the same
     set every usage counter and the sync-pause guard itself answer for.
 
-    ``transaction.on_commit`` because the signal fires *inside* the transaction
-    that moved ``billing_state`` off ``RESTRICTED``. Queuing before that commits
-    would let a worker pick the resync up and read a subscription that is, as
-    far as its own snapshot is concerned, still restricted -- and the sync-pause
-    guard would refuse the work the resync exists to do.
+    ``transaction.on_commit`` as belt-and-braces: in 0.4.0,
+    ``DunningService._trigger_resync_after_recovery`` already sends
+    ``billing_restriction_lifted`` from inside its own ``transaction.on_commit``,
+    so by the time this receiver runs the transaction that moved
+    ``billing_state`` off ``RESTRICTED`` has already committed, and this call has
+    no pending transaction to defer past -- Django runs the callback immediately.
+    Kept anyway, and correct either way: if a future package version ever sent
+    the signal from inside the still-open transaction, queuing before that
+    commits would let a worker pick the resync up and read a subscription that
+    is, as far as its own snapshot is concerned, still restricted.
     """
     # Late, and it has to be: importing `calendar_integration.tasks
     # .calendar_sync_tasks` pulls in `calendar_integration.services`, which

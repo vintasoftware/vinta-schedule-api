@@ -245,11 +245,16 @@ class TestTheReversePath:
 
     Seeding its own graph fixes that at the source rather than by ordering: the
     rows it compares before and after are rows it wrote, so no other test can
-    take them away, and the guards below can be ``==`` rather than ``>=``. The
-    graph is deliberately more than one row -- a plan with a limit and an
-    entitlement hanging off it -- because parent-before-child is exactly what
-    ``0024``'s copy order exists to get right, and a single unrelated row would
-    not exercise it.
+    take them away, and the round-trip comparison below (``after_reverse ==
+    before``) can be an exact ``==`` rather than merely ``>=``. The ``>= 1``
+    guards just below it only need to prove the graph exists at all --
+    ``no_billing_catalog_reseed`` opts this class out of conftest's *repair* of
+    a flushed catalog, not out of ``0007_seed_billing_plans``'s own rows, which
+    are still present on a freshly migrated database, so the raw counts are not
+    exactly 1. The graph is deliberately more than one row -- a plan with a
+    limit and an entitlement hanging off it -- because parent-before-child is
+    exactly what ``0024``'s copy order exists to get right, and a single
+    unrelated row would not exercise it.
     """
 
     #: Distinctive enough that a value landing in the wrong column is visible.
@@ -295,6 +300,33 @@ class TestTheReversePath:
             assert _table_names("payments_") == EXPECTED_TABLES
             after_reverse = {table: _count(f"payments_{table}") for table in EXPECTED_TABLES}
             assert after_reverse == before
+
+            with connection.cursor() as cursor:
+                # Mirrors `test_a_new_billing_plan_gets_a_key_above_every_copied_one`,
+                # but for the reverse direction: `copy_rows_back_into_payments`'s own
+                # `_advance_sequence` call is the only thing standing between a clean
+                # rollback and a duplicate-key error on the *next* insert -- a missed
+                # `setval` is invisible to the row-count and value assertions above.
+                cursor.execute("SELECT MAX(id) FROM payments_billingaddress")
+                highest_copied_id = cursor.fetchone()[0]
+                assert highest_copied_id is not None, (
+                    "no copied rows, so this assertion would prove nothing"
+                )
+                cursor.execute(
+                    "INSERT INTO payments_billingaddress "
+                    "(created, modified, meta, street_name, street_number, "
+                    "neighborhood, address_line_2, city, state, country, zip_code) "
+                    "VALUES (now(), now(), '{}', 'Sequence probe', '1', '', '', "
+                    "'Sao Paulo', 'SP', 'BR', '01000-000') "
+                    "RETURNING id"  # noqa: S608
+                )
+                new_id = cursor.fetchone()[0]
+                assert new_id > highest_copied_id
+                # Removed rather than left in place: the `finally` below migrates
+                # forward again, which would carry this probe row into
+                # `vinta_billing_billingaddress` and break the post-restore
+                # `before` comparison a few lines down.
+                cursor.execute("DELETE FROM payments_billingaddress WHERE id = %s", [new_id])
 
             with connection.cursor() as cursor:
                 cursor.execute(

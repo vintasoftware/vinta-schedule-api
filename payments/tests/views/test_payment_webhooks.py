@@ -808,13 +808,11 @@ class TestZeroAmountSubscriptionPaymentDoesNotResolveDunning:
 # never recovered and the customer keeps being dunned after paying. Kept as
 # `xfail(strict=True)` rather than rewritten to expect the broken behaviour, so
 # it turns red as XPASS the moment the pin moves to a release that fixes it.
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "vinta-django-billing 0.4.0 reads Invoice.billing where Stripe has "
-        "Invoice.payments, so invoice.paid resolves no payment; reported upstream."
-    ),
-)
+#
+# On the method, not the class: a class-level marker is inherited by every
+# method in the class, so a second test added here later would XPASS without
+# ever touching the defect. Matches
+# `test_stripe_subscription_adapter.py`'s per-function pattern.
 @pytest.mark.django_db
 class TestStripeInvoicePaidResolvesOffTheEventsOwnInvoice:
     """Reviewer finding BLOCKER 1.
@@ -879,6 +877,13 @@ class TestStripeInvoicePaidResolvesOffTheEventsOwnInvoice:
             secret=self.STRIPE_WEBHOOK_SECRET,
         )
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "vinta-django-billing 0.4.0 reads Invoice.billing where Stripe has "
+            "Invoice.payments, so invoice.paid resolves no payment; reported upstream."
+        ),
+    )
     @pytest.mark.no_auto_subscription
     def test_invoice_paid_for_a_non_latest_invoice_resolves_grace_to_active(
         self, di_container, billing_profile

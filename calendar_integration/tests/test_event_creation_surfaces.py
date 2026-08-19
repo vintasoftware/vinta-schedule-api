@@ -1254,8 +1254,8 @@ class TestRecurringMasterCostsItsOccurrences:
     below its ceiling create an open-ended daily series and accrue unbillable usage
     forever, never tripping the guard on that series again.
 
-    The delta comes from ``MeteringService.occurrence_starts_of`` -- the meter's own
-    expansion, called rather than re-implemented.
+    The delta comes from ``CalendarEventOccurrenceSource.occurrence_starts_of`` --
+    the meter's own expansion, called rather than re-implemented.
     """
 
     def test_a_daily_series_costs_its_occurrences_not_one(self):

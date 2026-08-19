@@ -31,6 +31,14 @@ Nothing else is restated: no serializer, no queryset, no action body.
 they cannot carry either of the two things above: Phase 2 has to keep mounting
 these subclasses, or the package needs settings seams for the view mixin and
 the service container. Recorded in the phase report.
+
+Every viewset below carries a bare ``__doc__ = <package class>.__doc__``
+assignment rather than its own docstring. drf-spectacular reads
+``view.__doc__`` for an endpoint's ``description``, and Python does not
+inherit ``__doc__`` -- a docstring on the subclass would replace several
+paragraphs of published API documentation with a sentence about tenancy or DI
+plumbing. What each class is *for* is this module docstring's job; what the
+endpoint *does* is the package's.
 """
 
 from typing import TYPE_CHECKING, Annotated
@@ -38,7 +46,8 @@ from typing import TYPE_CHECKING, Annotated
 from dependency_injector.wiring import Provide, inject
 from vinta_billing import views as billing_views
 
-# Re-exported unchanged: this endpoint carries no service and no organization.
+# Aliased, not re-exported unchanged: subclassed below with the tenant mixin,
+# and the alias avoids shadowing this module's own `BillingProfileViewSet`.
 from vinta_billing.views import BillingProfileViewSet as _PackageBillingProfileViewSet
 
 from payments.seams.view_scoping import BillingTenantScopedViewMixin
@@ -52,7 +61,6 @@ if TYPE_CHECKING:
 
 
 class PaymentsViewSet(billing_views.PaymentsViewSet):
-    # `__doc__` from the package's class -- see `BillingProfileViewSet` above.
     __doc__ = billing_views.PaymentsViewSet.__doc__
 
     @inject
@@ -74,22 +82,10 @@ class PaymentsViewSet(billing_views.PaymentsViewSet):
 
 
 class BillingProfileViewSet(BillingTenantScopedViewMixin, _PackageBillingProfileViewSet):
-    # `__doc__` is taken from the package's class, not written here.
-    # drf-spectacular reads `view.__doc__` for an endpoint's `description`,
-    # and Python does not inherit `__doc__` -- a docstring on this subclass
-    # would replace several paragraphs of published API documentation with a
-    # sentence about tenancy plumbing. What this class is *for* is the module
-    # docstring's job; what the endpoint *does* is the package's.
     __doc__ = _PackageBillingProfileViewSet.__doc__
 
 
 class PaymentProviderViewSet(BillingTenantScopedViewMixin, billing_views.PaymentProviderViewSet):
-    # `__doc__` is taken from the package's class, not written here.
-    # drf-spectacular reads `view.__doc__` for an endpoint's `description`,
-    # and Python does not inherit `__doc__` -- a docstring on this subclass
-    # would replace several paragraphs of published API documentation with a
-    # sentence about tenancy plumbing. What this class is *for* is the module
-    # docstring's job; what the endpoint *does* is the package's.
     __doc__ = billing_views.PaymentProviderViewSet.__doc__
 
     @inject
@@ -105,7 +101,6 @@ class PaymentProviderViewSet(BillingTenantScopedViewMixin, billing_views.Payment
 
 
 class DefaultPaymentProviderView(billing_views.DefaultPaymentProviderView):
-    # `__doc__` from the package's class -- see `BillingProfileViewSet` above.
     __doc__ = billing_views.DefaultPaymentProviderView.__doc__
 
     @inject

@@ -4,6 +4,14 @@ Same two host-owned concerns as ``payments/views.py`` -- read that module's
 docstring first. The endpoints, their serializers, their querysets and their
 ~900 lines of action bodies are the package's; what is here is the
 ``X-Organization-Id`` scoping and the ``di_core`` service wiring.
+
+Every viewset below carries a bare ``__doc__ = <package class>.__doc__``
+assignment rather than its own docstring. drf-spectacular reads
+``view.__doc__`` for an endpoint's ``description``, and Python does not
+inherit ``__doc__`` -- a docstring on the subclass would replace several
+paragraphs of published API documentation with a sentence about tenancy
+plumbing. What each class is *for* is this module docstring's job; what the
+endpoint *does* is the package's.
 """
 
 from typing import TYPE_CHECKING, Annotated
@@ -59,24 +67,12 @@ class _SubscriptionServiceInjected:
 class BillingUsageViewSet(
     BillingTenantScopedViewMixin, _EntitlementServiceInjected, billing_views.BillingUsageViewSet
 ):
-    # `__doc__` is taken from the package's class, not written here.
-    # drf-spectacular reads `view.__doc__` for an endpoint's `description`,
-    # and Python does not inherit `__doc__` -- a docstring on this subclass
-    # would replace several paragraphs of published API documentation with a
-    # sentence about tenancy plumbing. What this class is *for* is the module
-    # docstring's job; what the endpoint *does* is the package's.
     __doc__ = billing_views.BillingUsageViewSet.__doc__
 
 
 class BillingPeriodViewSet(
     BillingTenantScopedViewMixin, _EntitlementServiceInjected, billing_views.BillingPeriodViewSet
 ):
-    # `__doc__` is taken from the package's class, not written here.
-    # drf-spectacular reads `view.__doc__` for an endpoint's `description`,
-    # and Python does not inherit `__doc__` -- a docstring on this subclass
-    # would replace several paragraphs of published API documentation with a
-    # sentence about tenancy plumbing. What this class is *for* is the module
-    # docstring's job; what the endpoint *does* is the package's.
     __doc__ = billing_views.BillingPeriodViewSet.__doc__
 
 
@@ -85,34 +81,16 @@ class MeteredOccurrenceViewSet(
     _EntitlementServiceInjected,
     billing_views.MeteredOccurrenceViewSet,
 ):
-    # `__doc__` is taken from the package's class, not written here.
-    # drf-spectacular reads `view.__doc__` for an endpoint's `description`,
-    # and Python does not inherit `__doc__` -- a docstring on this subclass
-    # would replace several paragraphs of published API documentation with a
-    # sentence about tenancy plumbing. What this class is *for* is the module
-    # docstring's job; what the endpoint *does* is the package's.
     __doc__ = billing_views.MeteredOccurrenceViewSet.__doc__
 
 
 class SubscriptionViewSet(
     BillingTenantScopedViewMixin, _SubscriptionServiceInjected, billing_views.SubscriptionViewSet
 ):
-    # `__doc__` is taken from the package's class, not written here.
-    # drf-spectacular reads `view.__doc__` for an endpoint's `description`,
-    # and Python does not inherit `__doc__` -- a docstring on this subclass
-    # would replace several paragraphs of published API documentation with a
-    # sentence about tenancy plumbing. What this class is *for* is the module
-    # docstring's job; what the endpoint *does* is the package's.
     __doc__ = billing_views.SubscriptionViewSet.__doc__
 
 
 class AddOnViewSet(
     BillingTenantScopedViewMixin, _SubscriptionServiceInjected, billing_views.AddOnViewSet
 ):
-    # `__doc__` is taken from the package's class, not written here.
-    # drf-spectacular reads `view.__doc__` for an endpoint's `description`,
-    # and Python does not inherit `__doc__` -- a docstring on this subclass
-    # would replace several paragraphs of published API documentation with a
-    # sentence about tenancy plumbing. What this class is *for* is the module
-    # docstring's job; what the endpoint *does* is the package's.
     __doc__ = billing_views.AddOnViewSet.__doc__

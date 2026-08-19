@@ -106,5 +106,15 @@ def use_providers(
     Assignment, not mutation: it fires ``setting_changed``, which is what
     invalidates ``vinta_billing.conf``'s cache and what restores the previous
     value at teardown.
+
+    Also assigns the top-level ``settings.DEFAULT_PAYMENT_PROVIDER`` when
+    ``default_provider`` is given. ``payments.migrations.0018_repoint_subscription_
+    payment_provider.repoint_to_organization_provider`` is frozen at the point it
+    was written and still reads that top-level name directly, not
+    ``VINTA_BILLING['DEFAULT_PROVIDER']`` -- a data migration doesn't get to
+    "modernize" itself when the setting it reads is later renamed. Tests exercising
+    that migration need both names set to the same value.
     """
     settings.VINTA_BILLING = billing_settings(default_provider=default_provider, **credentials)
+    if default_provider is not None:
+        settings.DEFAULT_PAYMENT_PROVIDER = default_provider
