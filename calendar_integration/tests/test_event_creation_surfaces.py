@@ -1178,10 +1178,10 @@ class TestUnlimitedPlanTakesNoLock:
             query["sql"]
             for query in captured.captured_queries
             if "FOR UPDATE" in query["sql"].upper()
-            and "PAYMENTS_SUBSCRIPTION" in query["sql"].upper()
+            and "VINTA_BILLING_SUBSCRIPTION" in query["sql"].upper()
         ]
         assert not locking, (
-            "check_postpaid_allowance took SELECT ... FOR UPDATE on payments_subscription "
+            "check_postpaid_allowance took SELECT ... FOR UPDATE on vinta_billing_subscription "
             "for an organization with a NULL event_occurrences ceiling. Every organization "
             "is on `unlimited` for this rollout and create_event is @transaction.atomic "
             "around a provider round-trip, so this serializes every booking in the "
@@ -1223,7 +1223,8 @@ class TestUnlimitedPlanTakesNoLock:
             )
 
         assert any(
-            "FOR UPDATE" in query["sql"].upper() and "PAYMENTS_SUBSCRIPTION" in query["sql"].upper()
+            "FOR UPDATE" in query["sql"].upper()
+            and "VINTA_BILLING_SUBSCRIPTION" in query["sql"].upper()
             for query in captured.captured_queries
         )
 
@@ -1392,7 +1393,7 @@ class TestRecurringMasterCostsItsOccurrences:
             query["sql"]
             for query in captured.captured_queries
             if "FOR UPDATE" in query["sql"].upper()
-            and "PAYMENTS_SUBSCRIPTION" in query["sql"].upper()
+            and "VINTA_BILLING_SUBSCRIPTION" in query["sql"].upper()
         ]
 
 

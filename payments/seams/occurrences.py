@@ -91,7 +91,7 @@ class CalendarEventOccurrenceSource:
         seen: set[tuple[int, int, datetime.datetime]] = set()
         for master in masters:
             series_root_id = series_root_ids[master.pk]
-            for occurrence_start in self._occurrence_starts_of(master, window_start, window_end):
+            for occurrence_start in self.occurrence_starts_of(master, window_start, window_end):
                 if not window_start <= occurrence_start < window_end:
                     continue
                 identity = (master.organization_id, series_root_id, occurrence_start)
@@ -105,10 +105,32 @@ class CalendarEventOccurrenceSource:
                 )
 
     @staticmethod
-    def _occurrence_starts_of(
+    def occurrence_starts_of(
         master: CalendarEvent, window_start: datetime.datetime, window_end: datetime.datetime
     ) -> list[datetime.datetime]:
         """The occurrence start times one master contributes to the window.
+
+        **Public, and deliberately so: this is the single definition of "how
+        many billable units does this master cost".** Two callers share it --
+        :meth:`iter_occurrences` above, which turns each start into an
+        ``Occurrence`` the meter writes a ledger row for, and the postpaid
+        allowance check in ``CalendarEventService``, which counts them to decide
+        whether a *new* recurring master fits the organization's remaining
+        allowance. Before that check existed it charged 1 unit per master, so an
+        organization one unit below its ceiling could create an open-ended daily
+        series and accrue ~30 unbillable occurrences a month forever. A check and
+        a meter that count different things is a recurring failure shape here;
+        there is one function, and both call it.
+
+        A ``@staticmethod`` for the same reason: the guard calls it as
+        ``CalendarEventOccurrenceSource.occurrence_starts_of(...)`` without
+        building a source.
+
+        It lives here rather than on a metering service because the engine no
+        longer expands anything: ``vinta_billing.services.metering_service``
+        delegates the whole question to the project's configured
+        ``OccurrenceSource``, which is this class. It used to be
+        ``MeteringService.occurrence_starts_of``.
 
         Reads ``start_time`` off ``get_occurrences_in_range`` -- the ordinary
         calendar expansion, with no billing-specific variant. Deliberately

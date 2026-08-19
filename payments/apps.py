@@ -35,3 +35,11 @@ class PaymentsConfig(AppConfig):
         # than an ImportError. `Registry.register` treats an identical repeat
         # registration as a no-op, which is what makes saying it twice safe.
         import payments.seams.resources  # noqa: F401
+
+        # Same mechanism again, for the other half of what the host's own
+        # services did inline before the move: `payments/seams/resync.py`
+        # receives `vinta_billing.signals.billing_restriction_lifted` and
+        # resumes calendar sync for the pooled subtree. Without the import the
+        # resync silently never happens, and an organization that has paid is
+        # left with calendars that never catch up.
+        import payments.seams.resync  # noqa: F401

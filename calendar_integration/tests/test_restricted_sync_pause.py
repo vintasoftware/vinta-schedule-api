@@ -481,7 +481,7 @@ class TestRecoveryDispatchesAResync:
 
         with (
             patch(
-                "payments.services.dunning_service.transaction.on_commit",
+                "vinta_billing.services.dunning_service.transaction.on_commit",
                 side_effect=lambda fn: fn(),
             ),
             patch.object(resync_organization_calendars_task, "delay") as dispatched,
@@ -504,7 +504,7 @@ class TestRecoveryDispatchesAResync:
 
         with (
             patch(
-                "payments.services.dunning_service.transaction.on_commit",
+                "vinta_billing.services.dunning_service.transaction.on_commit",
                 side_effect=lambda fn: fn(),
             ),
             patch.object(resync_organization_calendars_task, "delay") as dispatched,

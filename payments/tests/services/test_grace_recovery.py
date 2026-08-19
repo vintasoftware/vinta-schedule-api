@@ -67,7 +67,7 @@ from payments.services.subscription_service import (
 # mirrors `test_plan_change.py`/`test_dunning_service.py`.
 pytestmark = pytest.mark.no_auto_subscription
 
-_DUNNING_MODULE = "payments.services.dunning_service"
+_DUNNING_MODULE = "vinta_billing.services.dunning_service"
 
 
 def _patch_on_commit():
