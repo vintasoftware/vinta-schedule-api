@@ -31,6 +31,7 @@ from django.utils import timezone
 
 import pytest
 from model_bakery import baker
+from vinta_billing.exceptions import InapplicableUsageExtraError
 
 from audit.services import AuditService
 from calendar_integration.constants import CalendarProvider, CalendarType
@@ -53,8 +54,8 @@ from organizations.models import (
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import grant_membership_groups
 from payments.billing_constants import LimitedResource
-from payments.exceptions import InapplicableInvitationExclusionError
 from payments.models import MeteredOccurrence, Subscription
+from payments.seams.resources import EXCLUDE_INVITATION_ID
 from payments.services.entitlement_service import EntitlementService
 from payments.services.subscription_service import current_billing_period_start
 from public_api.models import SystemUser
@@ -788,7 +789,7 @@ class TestUsageBreakdown:
         entitlement_service: EntitlementService,
         pooled_subtree: tuple[Organization, Organization, Organization],
     ):
-        """The accept-path net-zero rule (``UsageContext.exclude_invitation_id``)
+        """The accept-path net-zero rule (``UsageContext.extra["exclude_invitation_id"]``)
         must survive the widening exactly: excluding the invitation being accepted
         removes it from the breakdown, not just from the summed total."""
         root, child_a, _child_b = pooled_subtree
@@ -808,7 +809,7 @@ class TestUsageBreakdown:
         breakdown_excluding_invitation = entitlement_service.get_usage_breakdown(
             root,
             LimitedResource.ORGANIZATION_MEMBERS,
-            exclude_invitation_id=invitation.pk,
+            usage_extra={EXCLUDE_INVITATION_ID: invitation.pk},
         )
         assert breakdown_excluding_invitation == {child_a.pk: 1}
 
@@ -825,9 +826,9 @@ class TestUsageBreakdown:
             expires_at=timezone.now() + datetime.timedelta(days=7),
         )
 
-        with pytest.raises(InapplicableInvitationExclusionError):
+        with pytest.raises(InapplicableUsageExtraError):
             entitlement_service.get_usage_breakdown(
                 root,
                 LimitedResource.CALENDAR_GROUPS,
-                exclude_invitation_id=invitation.pk,
+                usage_extra={EXCLUDE_INVITATION_ID: invitation.pk},
             )

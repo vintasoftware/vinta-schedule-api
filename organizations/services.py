@@ -53,6 +53,10 @@ from organizations.permission_catalog import (
 from organizations.slug_generation import derive_organization_slug
 from payments.billing_constants import LimitedResource
 from payments.exceptions import OverLimitError
+from payments.seams.seats import (
+    check_seat_limit_for_invitation_accept,
+    check_seat_limit_for_invitation_send,
+)
 from payments.services.entitlement_service import EntitlementService
 from payments.services.subscription_service import SubscriptionService
 from users.models import User
@@ -430,7 +434,7 @@ class OrganizationService:
         A **resend** (re-inviting the same still-pending email/organization pair, which resets
         the token/expiry rather than creating a new row) resolves the still-pending invitation
         being reused *before* the guard and excludes it from the count
-        (``EntitlementService.check_limit(..., exclude_invitation_id=...)``) — a resend is
+        (``payments.seams.seats.check_seat_limit_for_invitation_send``) — a resend is
         net-zero on seats, exactly like an accept, since it creates nothing new. A genuinely
         new invitation (no matching pending row) is still checked and blocked at the ceiling
         as before.
@@ -456,11 +460,10 @@ class OrganizationService:
                 ).first()
                 return existing_invitation.pk if existing_invitation is not None else None
 
-            result = self.entitlement_service.check_limit(
+            result = check_seat_limit_for_invitation_send(
+                self.entitlement_service,
                 organization,
-                LimitedResource.ORGANIZATION_MEMBERS,
-                lock=True,
-                exclude_invitation_id_resolver=_resolve_existing_invitation_id,
+                _resolve_existing_invitation_id,
             )
             if not result.allowed:
                 raise OverLimitError.from_check_result(result)
@@ -612,10 +615,9 @@ class OrganizationService:
                     # Guard first, before the membership write, inside the same
                     # transaction as the create — see check_limit's lock docs.
                     if not bypass_limits:
-                        check_seat_limit = (
-                            self.entitlement_service.check_seat_limit_for_invitation_accept
+                        result = check_seat_limit_for_invitation_accept(
+                            self.entitlement_service, invitation
                         )
-                        result = check_seat_limit(invitation)
                         if not result.allowed:
                             raise OverLimitError.from_check_result(result)
                     # Narrowed to just the create: an IntegrityError from the
@@ -736,8 +738,8 @@ class OrganizationService:
                 # Guard first, before the membership write, inside the same
                 # transaction as the create — see check_limit's lock docs.
                 if not bypass_limits:
-                    result = self.entitlement_service.check_seat_limit_for_invitation_accept(
-                        pending_invitation
+                    result = check_seat_limit_for_invitation_accept(
+                        self.entitlement_service, pending_invitation
                     )
                     if not result.allowed:
                         raise OverLimitError.from_check_result(result)

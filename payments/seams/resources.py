@@ -51,6 +51,40 @@ from public_api.models import SystemUser
 from webhooks.models import WebhookConfiguration
 
 
+#: The registered resource keys, as symbols. The strings themselves are the
+#: definition -- they are what the ``PlanLimit`` / ``BillingPeriodResourceUsage``
+#: rows already hold and what the API already returns -- but a call site should
+#: still say what it means rather than repeat a literal that nothing would flag
+#: if it were mistyped. This module is where they live: it is the registration
+#: site, so a name here cannot drift from a key that exists.
+ORGANIZATION_MEMBERS = "organization_members"
+RESOURCE_CALENDARS = "resource_calendars"
+CALENDAR_GROUPS = "calendar_groups"
+BUNDLE_CALENDARS = "bundle_calendars"
+AVAILABILITY_WINDOWS = "availability_windows"
+WEBHOOK_SUBSCRIPTIONS = "webhook_subscriptions"
+PUBLIC_API_SYSTEM_USERS = "public_api_system_users"
+EVENT_OCCURRENCES = "event_occurrences"
+
+#: The one ``usage_extra`` key any counter here reads -- see
+#: :func:`_count_organization_members` and ``payments.seams.seats``.
+EXCLUDE_INVITATION_ID = "exclude_invitation_id"
+
+#: Declared on every resource whose counter reads *no* per-call data, which is
+#: seven of the eight. An empty declaration is not the same as no declaration:
+#: ``usage_extra_keys=None`` (the package default, and what a 0.3.0-era
+#: registration says) turns the check off entirely, while ``frozenset()`` says
+#: "this counter reads nothing", which is exactly what makes a key meant for
+#: ``organization_members`` visible when it is aimed here by mistake. Without
+#: it, ``check_limit(usage_extra={"exclude_invitation_id": ...})`` against, say,
+#: ``resource_calendars`` returns a count computed as though nothing had been
+#: excluded -- an answer with nothing in it to say the exclusion did not happen.
+#: That is the guard the host used to spell as
+#: ``InapplicableInvitationExclusionError``; it is
+#: ``vinta_billing.exceptions.InapplicableUsageExtraError`` now.
+READS_NO_USAGE_EXTRA: frozenset[str] = frozenset()
+
+
 def _count_organization_members(context: UsageContext) -> dict[int, int]:
     """Seats in use per organization: active memberships plus still-open invitations.
 
@@ -239,53 +273,60 @@ def _count_event_occurrences(context: UsageContext) -> dict[int, int]:
 #: is a per-call decision the engine's own ``check_limit`` makes, not
 #: something a static per-resource registration can express.
 resources.register(
-    "organization_members",
+    ORGANIZATION_MEMBERS,
     label=_("Organization members"),
     kind=LimitKind.PREPAID,
     counter=_count_organization_members,
     remedy=LimitRemedy.PURCHASE_ADD_ON,
+    usage_extra_keys=frozenset({EXCLUDE_INVITATION_ID}),
 )
 resources.register(
-    "resource_calendars",
+    RESOURCE_CALENDARS,
     label=_("Resource calendars"),
     kind=LimitKind.PREPAID,
     counter=_count_resource_calendars,
     remedy=LimitRemedy.PURCHASE_ADD_ON,
+    usage_extra_keys=READS_NO_USAGE_EXTRA,
 )
 resources.register(
-    "calendar_groups",
+    CALENDAR_GROUPS,
     label=_("Calendar groups"),
     kind=LimitKind.PREPAID,
     counter=_count_calendar_groups,
     remedy=LimitRemedy.PURCHASE_ADD_ON,
+    usage_extra_keys=READS_NO_USAGE_EXTRA,
 )
 resources.register(
-    "bundle_calendars",
+    BUNDLE_CALENDARS,
     label=_("Bundle calendars"),
     kind=LimitKind.PREPAID,
     counter=_count_bundle_calendars,
     remedy=LimitRemedy.PURCHASE_ADD_ON,
+    usage_extra_keys=READS_NO_USAGE_EXTRA,
 )
 resources.register(
-    "availability_windows",
+    AVAILABILITY_WINDOWS,
     label=_("Availability windows"),
     kind=LimitKind.PREPAID,
     counter=_count_availability_windows,
     remedy=LimitRemedy.PURCHASE_ADD_ON,
+    usage_extra_keys=READS_NO_USAGE_EXTRA,
 )
 resources.register(
-    "webhook_subscriptions",
+    WEBHOOK_SUBSCRIPTIONS,
     label=_("Webhook subscriptions"),
     kind=LimitKind.PREPAID,
     counter=_count_webhook_subscriptions,
     remedy=LimitRemedy.PURCHASE_ADD_ON,
+    usage_extra_keys=READS_NO_USAGE_EXTRA,
 )
 resources.register(
-    "public_api_system_users",
+    PUBLIC_API_SYSTEM_USERS,
     label=_("Public API system users"),
     kind=LimitKind.PREPAID,
     counter=_count_public_api_system_users,
     remedy=LimitRemedy.PURCHASE_ADD_ON,
+    usage_extra_keys=READS_NO_USAGE_EXTRA,
 )
 #: The one postpaid resource: metered and billed after the fact, so its
 #: remedy is a bigger plan rather than more capacity. Mirrors the seed
@@ -293,11 +334,12 @@ resources.register(
 #: (``payments/migrations/0007_seed_billing_plans.py``), which this
 #: registration must not silently drift from.
 resources.register(
-    "event_occurrences",
+    EVENT_OCCURRENCES,
     label=_("Event occurrences"),
     kind=LimitKind.POSTPAID,
     counter=_count_event_occurrences,
     remedy=LimitRemedy.UPGRADE_PLAN,
+    usage_extra_keys=READS_NO_USAGE_EXTRA,
 )
 
 entitlements.register("external_calendar_google", label=_("Google Calendar sync"))

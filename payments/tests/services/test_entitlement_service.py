@@ -16,6 +16,7 @@ from django.utils import timezone
 
 import pytest
 from model_bakery import baker
+from vinta_billing.exceptions import InapplicableUsageExtraError
 from vinta_billing.registry import resources
 
 from calendar_integration.constants import CalendarType, CalendarVisibility
@@ -28,7 +29,6 @@ from payments.billing_constants import (
     LimitKind,
     LimitRemedy,
 )
-from payments.exceptions import InapplicableInvitationExclusionError
 from payments.models import (
     BillingPlan,
     Subscription,
@@ -36,6 +36,8 @@ from payments.models import (
     SubscriptionEntitlement,
     SubscriptionPlanLimit,
 )
+from payments.seams.resources import EXCLUDE_INVITATION_ID
+from payments.seams.seats import check_seat_limit_for_invitation_accept
 from payments.services.entitlement_service import EntitlementService
 from webhooks.models import WebhookConfiguration
 
@@ -513,7 +515,7 @@ class TestSeatCountingOnTheAcceptPath:
             service.get_current_usage(
                 organization,
                 LimitedResource.ORGANIZATION_MEMBERS,
-                exclude_invitation_id=invitation.pk,
+                usage_extra={EXCLUDE_INVITATION_ID: invitation.pk},
             )
             == 4
         )
@@ -535,7 +537,7 @@ class TestSeatCountingOnTheAcceptPath:
         result = service.check_limit(
             organization,
             LimitedResource.ORGANIZATION_MEMBERS,
-            exclude_invitation_id=invitation.pk,
+            usage_extra={EXCLUDE_INVITATION_ID: invitation.pk},
         )
 
         assert result.allowed is True
@@ -553,7 +555,7 @@ class TestSeatCountingOnTheAcceptPath:
         baker.make(OrganizationMembership, organization=organization, is_active=True, _quantity=4)
         invitation = self._make_pending_invitation(organization)
 
-        result = service.check_seat_limit_for_invitation_accept(invitation)
+        result = check_seat_limit_for_invitation_accept(service, invitation, lock=False)
 
         assert result.allowed is True
         assert result.current_usage == 4
@@ -568,7 +570,7 @@ class TestSeatCountingOnTheAcceptPath:
         baker.make(OrganizationMembership, organization=organization, is_active=True, _quantity=5)
         invitation = self._make_pending_invitation(organization)
 
-        result = service.check_seat_limit_for_invitation_accept(invitation)
+        result = check_seat_limit_for_invitation_accept(service, invitation, lock=False)
 
         assert result.allowed is False
         assert result.current_usage == 5
@@ -577,22 +579,32 @@ class TestSeatCountingOnTheAcceptPath:
         self, service, organization, subscription
     ):
         """Only ``_count_organization_members`` reads ``exclude_invitation_id``, so
-        passing it for any other resource used to be a silent no-op that reads as an
-        exclusion that never happened."""
+        passing it for any other resource would otherwise be a silent no-op that
+        reads as an exclusion that never happened.
+
+        The guard used to be the host's own ``InapplicableInvitationExclusionError``,
+        raised from a host ``EntitlementService``. It is
+        ``vinta_billing.exceptions.InapplicableUsageExtraError`` now, raised by the
+        engine off what ``payments.seams.resources`` *declared*: the seven
+        non-seat resources register ``usage_extra_keys=frozenset()``, and an empty
+        declaration is what makes a key aimed at the wrong resource raise rather
+        than be forwarded and ignored. Undeclared (``None``, the package default)
+        would leave the guard off, which is what makes this test worth keeping.
+        """
         invitation = self._make_pending_invitation(organization)
 
-        with pytest.raises(InapplicableInvitationExclusionError):
+        with pytest.raises(InapplicableUsageExtraError):
             service.check_limit(
                 organization,
                 LimitedResource.RESOURCE_CALENDARS,
-                exclude_invitation_id=invitation.pk,
+                usage_extra={EXCLUDE_INVITATION_ID: invitation.pk},
             )
 
-        with pytest.raises(InapplicableInvitationExclusionError):
+        with pytest.raises(InapplicableUsageExtraError):
             service.get_current_usage(
                 organization,
                 LimitedResource.RESOURCE_CALENDARS,
-                exclude_invitation_id=invitation.pk,
+                usage_extra={EXCLUDE_INVITATION_ID: invitation.pk},
             )
 
     def test_the_exclusion_does_not_hide_other_pending_invitations(
@@ -607,7 +619,7 @@ class TestSeatCountingOnTheAcceptPath:
         result = service.check_limit(
             organization,
             LimitedResource.ORGANIZATION_MEMBERS,
-            exclude_invitation_id=accepted.pk,
+            usage_extra={EXCLUDE_INVITATION_ID: accepted.pk},
         )
 
         assert result.current_usage == 4
