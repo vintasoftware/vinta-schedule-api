@@ -209,6 +209,12 @@ class CalendarEventOccurrenceSource:
             return {}
 
         events = (
+            # `unscoped()`, no `organization_id__in`: the `OccurrenceSource` protocol
+            # this method implements carries no organization parameter to bind one
+            # from. `external_ids` arrives already scoped -- every caller resolves it
+            # from an organization-scoped `MeteredOccurrence` query first, so the ids
+            # themselves are the tenant boundary here. Do not copy this pattern into a
+            # context that does have organization ids available; bind them there.
             CalendarEvent.objects.unscoped()
             .filter(pk__in=external_ids)
             .select_related("calendar")
@@ -218,6 +224,11 @@ class CalendarEventOccurrenceSource:
                     # `membership__user__profile`: `User.get_full_name()` reads
                     # `self.profile`, so this joins it in too rather than
                     # triggering a per-owner query below.
+                    #
+                    # `unscoped()` here for the same reason as the `CalendarEvent`
+                    # query above: these ownerships are prefetched off events already
+                    # narrowed to `external_ids`, so they inherit that scoping rather
+                    # than needing their own `organization_id__in`.
                     queryset=CalendarOwnership.objects.unscoped().select_related(
                         "membership__user__profile"
                     ),

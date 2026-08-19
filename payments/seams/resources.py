@@ -6,6 +6,15 @@ calendar" or a "webhook subscription" is entirely this project's vocabulary.
 Registration is what tells the engine that vocabulary exists, and each
 resource's ``counter`` is how the engine learns to count it.
 
+This module is the definition site. The keys and labels registered below are
+literals, not read off ``payments.billing_constants.LimitedResource`` /
+``Entitlement`` -- those enums are what this registry replaces, and they have
+no equivalent in ``vinta_billing``. Copying their string values here once,
+rather than importing and iterating them, is what lets this module keep
+working once Phase 6 deletes ``billing_constants.py``.
+``payments/tests/seams/test_resources.py`` cross-checks the two sides against
+each other for as long as the enums still exist.
+
 Every counter here is the corresponding ``_count_*`` function that used to
 live on ``payments.services.entitlement_service``, rewritten against
 ``vinta_billing.counting.UsageContext`` / ``count_by_organization`` /
@@ -14,24 +23,28 @@ the same job. The counting logic itself -- which rows count, which are
 excluded, why two tables get merged instead of concatenated -- is unchanged;
 only the plumbing it is built on moved.
 
-Registered from ``PaymentsConfig.ready()`` once ``vinta_billing`` joins
-``INSTALLED_APPS`` (Phase 1). Importing this module is what runs the
-``resources.register(...)`` / ``entitlements.register(...)`` calls at the
-bottom -- there is no other entry point.
+Registration already happens today, from process start: ``di_core``'s DI
+wiring (``DICoreConfig.ready()``) imports every submodule under ``payments``,
+including this one, before ``PaymentsConfig.ready()`` runs. Phase 1 adds an
+explicit import of this module from ``PaymentsConfig.ready()`` once
+``vinta_billing`` joins ``INSTALLED_APPS`` -- that import documents the
+dependency on purpose, but it is not what makes registration happen; it
+already does.
 """
 
 from __future__ import annotations
 
 from typing import cast
 
+from django.utils.translation import gettext as _
+
 from vinta_billing.constants import LimitKind, LimitRemedy
 from vinta_billing.counting import UsageContext, count_by_organization, merge_breakdowns
-from vinta_billing.registry import UsageCounter, entitlements, resources
+from vinta_billing.registry import entitlements, resources
 
 from calendar_integration.constants import CalendarType
 from calendar_integration.models import AvailableTime, BlockedTime, Calendar, CalendarGroup
 from organizations.models import OrganizationInvitation, OrganizationMembership
-from payments.billing_constants import Entitlement, LimitedResource
 from payments.models import MeteredOccurrence, Subscription
 from payments.services.subscription_service import current_billing_period_start
 from public_api.models import SystemUser
@@ -220,45 +233,75 @@ def _count_event_occurrences(context: UsageContext) -> dict[int, int]:
     )
 
 
-#: One counter per ``LimitedResource`` member, keyed by its string value so the
-#: registration loop below can look each one up without repeating the key.
-_COUNTERS: dict[str, UsageCounter] = {
-    LimitedResource.ORGANIZATION_MEMBERS: _count_organization_members,
-    LimitedResource.RESOURCE_CALENDARS: _count_resource_calendars,
-    LimitedResource.CALENDAR_GROUPS: _count_calendar_groups,
-    LimitedResource.BUNDLE_CALENDARS: _count_bundle_calendars,
-    LimitedResource.AVAILABILITY_WINDOWS: _count_availability_windows,
-    LimitedResource.WEBHOOK_SUBSCRIPTIONS: _count_webhook_subscriptions,
-    LimitedResource.PUBLIC_API_SYSTEM_USERS: _count_public_api_system_users,
-    LimitedResource.EVENT_OCCURRENCES: _count_event_occurrences,
-}
+#: Every resource here is capped up front, and a purchase of more capacity is
+#: the only remedy. Mirrors ``EntitlementService._resolve_remedy_for``'s
+#: non-grace branch: the GRACE/RESTRICTED override that function also applies
+#: is a per-call decision the engine's own ``check_limit`` makes, not
+#: something a static per-resource registration can express.
+resources.register(
+    "organization_members",
+    label=_("Organization members"),
+    kind=LimitKind.PREPAID,
+    counter=_count_organization_members,
+    remedy=LimitRemedy.PURCHASE_ADD_ON,
+)
+resources.register(
+    "resource_calendars",
+    label=_("Resource calendars"),
+    kind=LimitKind.PREPAID,
+    counter=_count_resource_calendars,
+    remedy=LimitRemedy.PURCHASE_ADD_ON,
+)
+resources.register(
+    "calendar_groups",
+    label=_("Calendar groups"),
+    kind=LimitKind.PREPAID,
+    counter=_count_calendar_groups,
+    remedy=LimitRemedy.PURCHASE_ADD_ON,
+)
+resources.register(
+    "bundle_calendars",
+    label=_("Bundle calendars"),
+    kind=LimitKind.PREPAID,
+    counter=_count_bundle_calendars,
+    remedy=LimitRemedy.PURCHASE_ADD_ON,
+)
+resources.register(
+    "availability_windows",
+    label=_("Availability windows"),
+    kind=LimitKind.PREPAID,
+    counter=_count_availability_windows,
+    remedy=LimitRemedy.PURCHASE_ADD_ON,
+)
+resources.register(
+    "webhook_subscriptions",
+    label=_("Webhook subscriptions"),
+    kind=LimitKind.PREPAID,
+    counter=_count_webhook_subscriptions,
+    remedy=LimitRemedy.PURCHASE_ADD_ON,
+)
+resources.register(
+    "public_api_system_users",
+    label=_("Public API system users"),
+    kind=LimitKind.PREPAID,
+    counter=_count_public_api_system_users,
+    remedy=LimitRemedy.PURCHASE_ADD_ON,
+)
+#: The one postpaid resource: metered and billed after the fact, so its
+#: remedy is a bigger plan rather than more capacity. Mirrors the seed
+#: migration's own ``POSTPAID_RESOURCES``
+#: (``payments/migrations/0007_seed_billing_plans.py``), which this
+#: registration must not silently drift from.
+resources.register(
+    "event_occurrences",
+    label=_("Event occurrences"),
+    kind=LimitKind.POSTPAID,
+    counter=_count_event_occurrences,
+    remedy=LimitRemedy.UPGRADE_PLAN,
+)
 
-#: Only ``event_occurrences`` is metered and billed after the fact; every other
-#: resource is capped up front. Kept as a set, mirroring the seed migration's own
-#: ``POSTPAID_RESOURCES`` (``payments/migrations/0007_seed_billing_plans.py``),
-#: which this registration must not silently drift from.
-_POSTPAID_RESOURCES = {LimitedResource.EVENT_OCCURRENCES}
-
-for _member in LimitedResource:
-    resources.register(
-        _member.value,
-        # ``TextChoices.label`` is already the translated string the old
-        # ``TextChoices`` class rendered -- byte-identical by construction,
-        # since this reads the same class rather than a hand-copied literal.
-        label=_member.label,
-        kind=(LimitKind.POSTPAID if _member in _POSTPAID_RESOURCES else LimitKind.PREPAID),
-        counter=_COUNTERS[_member.value],
-        # Mirrors ``EntitlementService._resolve_remedy_for``'s non-grace branch:
-        # a post-paid ceiling is only liftable by a bigger plan, a pre-paid one
-        # by buying capacity. The GRACE/RESTRICTED override that function also
-        # applies is a per-call decision the engine's own ``check_limit`` makes,
-        # not something a static per-resource registration can express.
-        remedy=(
-            LimitRemedy.UPGRADE_PLAN
-            if _member in _POSTPAID_RESOURCES
-            else LimitRemedy.PURCHASE_ADD_ON
-        ),
-    )
-
-for _entitlement in Entitlement:
-    entitlements.register(_entitlement.value, label=_entitlement.label)
+entitlements.register("external_calendar_google", label=_("Google Calendar sync"))
+entitlements.register("external_calendar_microsoft", label=_("Microsoft Calendar sync"))
+entitlements.register("partner_api", label=_("Partner / public API access"))
+entitlements.register("white_label_branding", label=_("White-label branding"))
+entitlements.register("advanced_scheduling", label=_("Advanced scheduling"))

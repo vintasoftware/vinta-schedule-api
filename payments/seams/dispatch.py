@@ -17,13 +17,16 @@ worker process may not yet have imported ``vinta_billing.jobs`` at all). This
 seam serializes the job's dotted import path instead and re-imports it inside
 the one generic task every dispatch call funnels through.
 
-Not yet reachable from a running worker: ``app.autodiscover_tasks()``
-(``vinta_schedule_api/celery.py``) only imports each app's own ``tasks.py``,
-not this nested module, so a worker process never sees
-``payments.dispatch_billing_job`` registered until something imports
-``payments.seams.dispatch``. Phase 2 (``payments/tasks.py``, the beat
-wrappers) is where that import lands -- this module is inert scaffolding
-until then, matching the rest of this phase.
+Already registered and callable from a running worker, today: a Celery worker
+populates the Django app registry before it calls
+``app.autodiscover_tasks()`` (``vinta_schedule_api/celery.py``), so
+``di_core.apps.DICoreConfig.ready()`` -- which wires every package in
+``INTERNAL_INSTALLED_APPS``, ``payments`` included, and so imports this module
+-- has already run ``@shared_task`` on ``_dispatch_billing_job`` by the time
+``autodiscover_tasks()`` executes. ``payments.dispatch_billing_job`` is
+reachable via ``.delay()`` from Phase 0 onward; nothing calls it yet, but that
+is a matter of no caller existing, not of the task being unregistered. Phase 2
+(``payments/tasks.py``, the beat wrappers) is where the first caller lands.
 """
 
 from __future__ import annotations

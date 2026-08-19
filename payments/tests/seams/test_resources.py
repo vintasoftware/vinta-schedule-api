@@ -45,6 +45,13 @@ pytestmark = pytest.mark.no_auto_subscription
 
 
 class TestResourceAndEntitlementRegistration:
+    """``payments.seams.resources`` now writes its keys and labels as its own
+    literals, independent of ``LimitedResource`` / ``Entitlement`` -- see that
+    module's docstring for why. These tests are the bridge: they compare the
+    seam's literals against the enum they replace, so a typo'd key or a label
+    that drifts from the enum's translation fails here, for as long as the
+    enum still exists to compare against."""
+
     def test_all_eight_resources_register(self):
         assert {definition.key for definition in resources} == set(LimitedResource.values)
 
