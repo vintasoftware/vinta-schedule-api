@@ -165,7 +165,7 @@ Checked before Phase 0, so no phase discovers these the hard way:
 | # | Title | Impl tier/model | Status | Branch |
 |---|---|---|---|---|
 | 0 | Install the package and write the seams | 3 / sonnet | ✅ done | `plan/migrate-billing-engine-to-vinta-django-billing/phase-0` |
-| 1 | Install the app, move the rows, shim the host modules | 4 / opus | ❌ incomplete — blocked on package gaps | `plan/…/phase-1` (checkpoint `fc5fa1e6`, not pushed) |
+| 1 | Install the app, move the rows, shim the host modules | 4 / opus | ✅ done — reviewed, suite green | `plan/migrate-billing-engine-to-vinta-django-billing/phase-1` |
 | 2 | Point the host's own entry points at the package | 3 / sonnet | ⏳ pending | — |
 | 2b | vinta-django-billing gap release | — | 🚫 deferred — cross-repo (`vintasoftware/vinta-django-billing`) | — |
 | 3 | Consumer imports: `calendar_integration` and `webhooks` | 2 / sonnet (>3 files) | ⏳ pending | — |
@@ -225,7 +225,124 @@ carry-forward section, since the same false premise sits in the plan's Phase 1 b
 One NIT (a plain `RuntimeError` in `notifier.py` where a typed exception might fit) was
 left alone; the repo has no single convention for that call-site shape.
 
-### Phase 1 — Install the app, move the rows, shim the host modules ❌ INCOMPLETE
+### Phase 1 — completed on 0.4.0 ✅ (suite green, pending review)
+
+Resumed after `vinta-django-billing` 0.4.0 landed. The first attempt died mid-triage on a
+dropped connection with 54 files uncommitted; the same agent was resumed with its context
+intact rather than restarted, so the keep/drop reasoning stayed consistent.
+
+Six commits: `33889f79` pin · `d8927f2f` seat API · `78070f42` REST layer · `b9cf8e4a`
+reconnected seams · `c3c9fbe8` migration-replay safety · `3936729d` test triage.
+
+**Suite: 6243 passed, 7 xfailed, 0 failed** — re-run independently by the conductor
+(4m26s, exit 0), matching the implementer's report exactly. Baseline was 203 failed /
+6045 passed. `ruff`, `makemigrations --check`, `check --deploy` and the full pre-commit
+chain all clean. Main checkout clean, no AI trailers.
+
+`uv lock --refresh-package vinta-django-billing` was needed — the resolver had 0.3.0
+cached as latest and called the new floor unsatisfiable.
+
+**No test module was deleted.** All 29 touched modules were retargeted, in five
+categories: `mock.patch` targets naming a shim (4), `override_settings` on provider
+credentials (7), historical migrations asking for `payments.BillingPlan` (4),
+`payments.manage_billing` labels (10), services built bare (1). Phase 5 keeps the
+engine-internals deletion decision, which is the right place for it — none of it was
+needed for green.
+
+**`URL_NAMESPACE` is `""`, superseding the pre-flight finding of `"api"`.** That finding
+was right only while the webhooks came out of the namespaced router; 0.4.0 binds them in
+unnamespaced `extra_patterns`. Verified: both reverse to `/billing/payments/…`.
+
+**Migration re-proved end to end** against the dev database — forward, seeded graph,
+reverse to `0022_capability_permissions`, forward again. Row counts, PKs and the
+permission grant all restored; the next-insert test allocated above every copied PK
+(3→4, 17→18, 11→12, 1→2). The reverse-path test now seeds the graph it measures, and was
+shown to bite: skipping `planlimit` in the reverse copy fails it with
+`{'planlimit': 0} != {'planlimit': 17}`.
+
+**Review (opus, Tier 4 per the plan): no BLOCKERs.** The reviewer named the five places a
+defect would have been invisible and showed each held — the migration's column lists
+(re-derived from `information_schema` on both sides, so a wrong list hard-stops rather
+than shipping green), the reverse-plan ordering, the exclusion guard actually being on,
+seat net-zero, and the permissions seam. Eight SHOULD-FIX and seven NITs, all applied in
+`7868058c`. Final suite: **6244 passed, 7 xfailed, 0 failed**.
+
+Two of the fixes were required to be demonstrated rather than asserted:
+
+- **A genuine vacuous gate.** Six tests in `test_provider_routing_migrations.py` called
+  `use_providers(default_provider=...)`, which sets `VINTA_BILLING["DEFAULT_PROVIDER"]` —
+  but the code under test is frozen migration `0018`, which reads the **top-level**
+  `settings.DEFAULT_PAYMENT_PROVIDER`. They were asserting against the ambient `.env`.
+  Proof before the fix: `assert 'stripe' == PaymentProviders.MERCADOPAGO`. A data
+  migration keeps reading the setting it read when it was written; a helper that renames
+  the setting has to keep both spellings in step.
+- **The reverse path never allocated a PK.** The forward direction had that test
+  precisely because a missed `setval` is invisible to row counts; the reverse did not.
+  Proof: neutering the reverse `_advance_sequence` gives
+  `duplicate key value violates unique constraint "payments_billingaddress_pkey"`.
+
+Two dead shims (`filtersets.py`, `virtual_models.py` — no importers anywhere) were
+deleted rather than carried to Phase 6.
+
+### mypy regression — 565 new errors, invisible to every per-phase check
+
+Measured by the conductor across the whole plan, which no individual phase could see:
+
+| Tree | mypy |
+|---|---|
+| base branch `claude/billing-engine-vinta-django-933687` | 293 errors / 57 files |
+| Phase 1 HEAD | **858 errors / 163 files** |
+
+Every agent honestly reported "no new errors against my starting point" — but the
+starting point moved each phase, so a steady drift went unreported. This is a real
+regression introduced by Phases 0–1, and the project's stated type gate is
+`docker compose run --rm api uv run mypy .`.
+
+**One root cause.** 655 of the errors are `[attr-defined]` of the form
+`Module "payments.models" has no attribute "Subscription"`. Phase 0 added `vinta_billing.*`
+to mypy's `ignore_missing_imports` because the package ships no `py.typed` marker; mypy
+therefore treats it as `Any`, and **a star import from an untyped module re-exports
+nothing**. Phase 1's shims are star re-exports, so every consumer importing through a
+shim lost its types.
+
+The package is *fully annotated* and runs mypy in its own pre-commit gate — it simply
+never declared itself typed. **Adding `py.typed` upstream is a one-line fix** that lets
+the host drop the override and restores type checking across the whole billing surface.
+Recorded as a 0.5.0 item. Phase 6 deletes the shims anyway, but the errors stand until
+then and would mask any genuine new type error in the meantime.
+
+### Two confirmed defects in published `vinta-django-billing`
+
+Both reported by the implementer and **verified independently by the conductor**. Both
+are live in 0.4.0 and neither is host-fixable in principle.
+
+1. **Authorization bypass — `IsBillingManager.has_object_permission` is a no-op.** It
+   reads `getattr(obj, "organization", None)`, but all three object-level checks in the
+   package's own viewsets (`billing_views.py:509`, `:623`, `:864`) pass a **billing root**
+   — an `Organization`, which has no `organization` field (confirmed:
+   `Organization._meta` has no such field and `hasattr` is False). So it returns `None`
+   and falls back to `has_permission`, which resolves the organization from the *request*.
+   The package's own comments call this "the real gate". **Effect: a child-org admin can
+   change a reseller root's plan and buy add-ons against it.**
+   Upstream fix: when `obj` is itself an organization, check against `obj`.
+2. **Stripe subscription billing never resolves a payment.** The package reads
+   `Invoice.billing`; `stripe==15.3.1`'s `Invoice` has `payments` and **no** `billing`
+   (confirmed by introspecting `stripe.Invoice.__annotations__` in the container). The
+   same file still *expands* `latest_invoice.payments` while reading `billing`, and the
+   docstrings say `payments` throughout — the signature of a bad find-and-replace during
+   the extraction. **Effect: `get_payment_external_id_*` returns `None` for every Stripe
+   subscription charge, so `invoice.paid` resolves no payment, dunning is never cleared,
+   and customers who have paid keep being chased.**
+   Held as seven `xfail(strict=True)` asserting the *correct* field, so they flip to a
+   loud XPASS the moment the pin moves to a fixed release.
+
+Two further gaps were reported but are lower severity: `BillingProfileAdmin.save_model`'s
+`subscription_service` is never supplied by the package (worked around via host DI), and
+there is no seam for the tenant-scoped view mixin or the service container, **so Phase 2
+cannot mount `get_routes()` verbatim** — it must mount the host subclasses or the package
+needs those settings.
+
+### Superseded — the first Phase 1 attempt ❌ INCOMPLETE
 
 Branch `plan/migrate-billing-engine-to-vinta-django-billing/phase-1`, based on phase-0.
 Implementer opus via the `migration-author` agent (plan's Tier 4). Committed as a
