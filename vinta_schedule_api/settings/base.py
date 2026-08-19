@@ -11,7 +11,7 @@ from cuid2 import cuid_wrapper
 from decouple import Csv, config  # type: ignore
 from dj_database_url import parse as db_url
 
-from payments.provider_slugs import PAYMENT_PROVIDER_SLUGS
+from payments.provider_slugs import MERCADOPAGO, PAYMENT_PROVIDER_SLUGS, STRIPE
 
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -756,6 +756,80 @@ WEBHOOK_SIGNATURE_TOLERANCE_SECONDS = 300
 # still tune it without a deploy; this setting is only the catalog-wide default.
 # Tunable per environment with no code change.
 BILLING_DEFAULT_GRACE_PERIOD_DAYS = config("BILLING_DEFAULT_GRACE_PERIOD_DAYS", default=7, cast=int)
+
+# The host's configuration of `vinta_billing` -- the engine's five seams and
+# the handful of scalars it cannot infer on its own. `vinta_billing.conf`
+# rejects any key outside its own defaults at first access, so a typo here
+# fails loudly rather than silently keeping the library's default.
+#
+# `vinta_billing` is not in INSTALLED_APPS yet (that is Phase 1), so nothing
+# reads this dict today -- it exists now because every later phase reads one
+# of these five objects out of settings, and Phase 0's whole job is to make
+# them resolvable.
+VINTA_BILLING = {
+    # `organizations.Organization` is self-referential (`parent`) with a
+    # `can_invite_organizations` reseller flag -- exactly the shape
+    # `ParentFieldHierarchy` expects. See `payments.seams.hierarchy
+    # .ResellerHierarchy`, which only names the two field names.
+    "HIERARCHY": "payments.seams.hierarchy.ResellerHierarchy",
+    # `organizations.0028_seed_permission_groups` already seeds
+    # `organization_admin` and `organization_billing_owner` with
+    # `manage_billing`, so the stricter predicate is safe to select on day
+    # one here -- see AGENTS.md's billing section / the migration plan's
+    # "Who may manage billing" guiding decision for why the package does not
+    # default to this itself.
+    "BILLING_MANAGER_PREDICATE": "vinta_billing.permissions.member_holding_manage_billing",
+    # Forwards dunning/usage-warning notifications to the vintasend
+    # `NotificationService` the DI container already builds for every other
+    # notification-sending service in this project.
+    "NOTIFIER": "payments.seams.notifier.NotificationServiceNotifier",
+    # What "a billable occurrence happened" means here: one `CalendarEvent`
+    # start, in or out of a recurring series.
+    "OCCURRENCE_SOURCE": "payments.seams.occurrences.CalendarEventOccurrenceSource",
+    # The only postpaid resource this project registers (see
+    # `payments.seams.resources`) -- set explicitly rather than left for the
+    # "single registered postpaid resource" fallback, so a second postpaid
+    # resource registered later fails loudly instead of silently changing
+    # which one the meter bills.
+    "METERED_RESOURCE_KEY": "event_occurrences",
+    # The counterpart to `BILLING_MANAGER_PREDICATE`: who the dunning ladder
+    # and usage warnings tell. Same "safe because 0028 already seeds the
+    # grant" reasoning.
+    "BILLING_RECIPIENTS": "vinta_billing.recipients.members_holding_manage_billing",
+    # `vinta_billing`'s MercadoPago adapters `reverse()` their own webhook
+    # callback URLs through this namespace (`vinta_billing/urls_helpers.py`).
+    # This project mounts the shared DRF router as `include((router.urls,
+    # "api"))` (`vinta_schedule_api/urls.py`), and the host's own MercadoPago
+    # adapter already hardcodes reversing under `"api:..."` today -- so this
+    # MUST be "api", not the package's own default ("billing"). Left at the
+    # default, MercadoPago webhook-callback URL construction raises
+    # `NoReverseMatch`, and only once MercadoPago is actually exercised, so a
+    # green test suite would not catch a missing/wrong value here.
+    "URL_NAMESPACE": "api",
+    "SITE_DOMAIN": SITE_DOMAIN,
+    "DEFAULT_CURRENCY": "USD",
+    "GRACE_PERIOD_DAYS": BILLING_DEFAULT_GRACE_PERIOD_DAYS,
+    # Matches `usage_warning_service.APPROACHING_LIMIT_THRESHOLD`, the value
+    # this project already enforces today.
+    "USAGE_WARNING_THRESHOLD": 0.8,
+    "JOB_DISPATCHER": "payments.seams.dispatch.dispatch_via_celery",
+    # Same env vars as ever -- `STRIPE_SECRET_KEY` / `MERCADOPAGO_ACCESS_TOKEN`
+    # / friends, defined above. Render env groups and CI are untouched; only
+    # the shape they are assembled into changed.
+    "PROVIDERS": {
+        STRIPE: {
+            "API_KEY": STRIPE_SECRET_KEY,
+            "WEBHOOK_SECRET": STRIPE_WEBHOOK_SECRET,
+            "PUBLISHABLE_KEY": STRIPE_PUBLISHABLE_KEY,
+        },
+        MERCADOPAGO: {
+            "ACCESS_TOKEN": MERCADOPAGO_ACCESS_TOKEN,
+            "WEBHOOK_SECRET": MERCADOPAGO_WEBHOOK_SECRET,
+            "PUBLIC_KEY": MERCADOPAGO_PUBLIC_KEY,
+        },
+    },
+    "DEFAULT_PROVIDER": DEFAULT_PAYMENT_PROVIDER,
+}
 
 SALT_KEY = config("SALT_KEY")
 

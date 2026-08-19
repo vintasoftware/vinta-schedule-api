@@ -2200,6 +2200,24 @@ wheels = [
 ]
 
 [[package]]
+name = "vinta-django-billing"
+version = "0.3.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "django" },
+    { name = "django-filter" },
+    { name = "django-model-utils" },
+    { name = "django-virtual-models" },
+    { name = "djangorestframework" },
+    { name = "python-dateutil" },
+    { name = "vinta-django-orgs" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f5/8e/9ada961894d16fb98ae0983dfc43d4f25193cfb7528ac541fa4804a340ec/vinta_django_billing-0.3.0.tar.gz", hash = "sha256:c06ea971515238e31c0cea398bf058ca2dc7745fff42a1501231e9dc23b6be9a", size = 213195, upload-time = "2026-08-19T01:07:03.636Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/10/9f/01f83e98930a2f0375eb13ce3e29d0a7224558832c33f544c3abfbae460f/vinta_django_billing-0.3.0-py3-none-any.whl", hash = "sha256:eb31352fe5e0203e6223a32036b23b77df8283d03f7d6ff602c2b4cd5f053f86", size = 248229, upload-time = "2026-08-19T01:07:02.532Z" },
+]
+
+[[package]]
 name = "vinta-django-orgs"
 version = "0.5.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2266,6 +2284,7 @@ dependencies = [
     { name = "strawberry-graphql-django" },
     { name = "stripe" },
     { name = "twilio" },
+    { name = "vinta-django-billing" },
     { name = "vinta-django-orgs" },
     { name = "vintasend" },
     { name = "vintasend-celery" },
@@ -2342,6 +2361,7 @@ requires-dist = [
     { name = "strawberry-graphql-django", specifier = ">=0.86.0,<0.87.0" },
     { name = "stripe", specifier = ">=15.3.1,<16" },
     { name = "twilio", specifier = ">=9.6.5,<10" },
+    { name = "vinta-django-billing", specifier = ">=0.3,<0.4" },
     { name = "vinta-django-orgs", specifier = ">=0.5,<0.6" },
     { name = "vintasend", specifier = ">=1.2.0,<2" },
     { name = "vintasend-celery", specifier = ">=1.2.0,<2" },
