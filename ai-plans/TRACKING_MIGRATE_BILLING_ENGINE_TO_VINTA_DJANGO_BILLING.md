@@ -542,7 +542,30 @@ identity — so it passed every `is None` check in the package, **including the 
 fail-closed branch in `filter_queryset_by_organization`**. A request that should have been
 refused built a query and 500'd instead.
 
-### ⚠️ Release blocker for whoever cuts 0.5.0
+### 0.5.0 RELEASED — 2026-08-19
+
+PR #8 merged by the requester, who then asked the conductor to cut the release. Published
+to PyPI; publish workflow `32313897986` succeeded.
+
+The release blocker below was **still present at merge time** and was fixed before
+tagging: `pyproject.toml` said `current_version = "0.3.0"` while `__init__.py` said
+`0.4.0`. Left alone, `bump-my-version bump minor` would have computed `0.4.0`, failed its
+search-and-replace, and tried to re-tag an existing version. Sequence actually run:
+
+1. `b45be8b` — correct `current_version` to `0.4.0`.
+2. `bump-my-version bump minor --dry-run` — confirmed `0.4.0 → 0.5.0`, both files, tag
+   `0.5.0` unprefixed.
+3. `6c0371f` — the real bump, which commits and tags.
+4. Push `main`, then push tag `0.5.0` (the tag push is what triggers publication).
+
+So `main` carries two commits beyond the merge: the drift fix and the bump.
+
+**Verified against the published wheel downloaded from PyPI**, not from CI's green tick:
+`vinta_billing/py.typed` ships; the authorization fix is present; the Stripe adapter has
+**zero** remaining `"billing"` reads and four `"payments"`; `VIEW_MIXIN` and
+`SERVICE_CONTAINER` are both in `conf.py`.
+
+### ⚠️ Release blocker (resolved above) for whoever cuts 0.5.0
 
 `pyproject.toml`'s `[tool.bumpversion] current_version` is **`0.3.0`** while
 `vinta_billing/__init__.py` is **`0.4.0`** — pre-existing drift, not introduced here.
