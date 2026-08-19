@@ -416,7 +416,7 @@ class TestDetailPrefetchesResources:
         resource_usage_queries = [
             query
             for query in captured.captured_queries
-            if "payments_billingperiodresourceusage" in query["sql"]
+            if "vinta_billing_billingperiodresourceusage" in query["sql"]
         ]
         # Exactly one query fetches every resource row -- the prefetch -- not
         # one per row (which would scale with `len(resource_keys)`).

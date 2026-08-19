@@ -406,7 +406,7 @@ class TestBillingProfileAdminSaveModel:
     @pytest.fixture
     def billing_profile(self):
         organization = baker.make(Organization, parent=None)
-        billing_address = baker.make("payments.BillingAddress")
+        billing_address = baker.make("vinta_billing.BillingAddress")
         return baker.make(
             BillingProfile,
             organization=organization,
@@ -461,7 +461,7 @@ class TestBillingProfileAdminSaveModel:
         self, rf, superuser
     ):
         organization = baker.make(Organization, parent=None)
-        billing_address = baker.make("payments.BillingAddress")
+        billing_address = baker.make("vinta_billing.BillingAddress")
         new_profile = BillingProfile(
             organization=organization,
             contact_first_name="Ada",

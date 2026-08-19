@@ -16,6 +16,7 @@ from django.utils import timezone
 
 import pytest
 from model_bakery import baker
+from vinta_billing.registry import resources
 
 from calendar_integration.constants import CalendarType, CalendarVisibility
 from calendar_integration.models import Calendar, CalendarGroup
@@ -35,7 +36,7 @@ from payments.models import (
     SubscriptionEntitlement,
     SubscriptionPlanLimit,
 )
-from payments.services.entitlement_service import USAGE_COUNTERS, EntitlementService
+from payments.services.entitlement_service import EntitlementService
 from webhooks.models import WebhookConfiguration
 
 
@@ -161,7 +162,7 @@ class TestGetEffectiveLimit:
         assert not [
             query
             for query in captured.captured_queries
-            if "payments_subscriptionaddon" in query["sql"]
+            if "vinta_billing_subscriptionaddon" in query["sql"]
         ], (
             "The unlimited branch ran the add-on aggregate query. Queries seen: "
             f"{[query['sql'] for query in captured.captured_queries]}"
@@ -211,8 +212,13 @@ class TestGetEffectiveLimit:
 class TestUsageCounters:
     def test_every_limited_resource_has_a_counter(self):
         """A new ``LimitedResource`` member without a counter would silently report
-        zero usage forever — i.e. an unenforceable limit that looks enforced."""
-        assert set(USAGE_COUNTERS) == {member.value for member in LimitedResource}
+        zero usage forever — i.e. an unenforceable limit that looks enforced.
+
+        The closed ``resource_key -> counter`` dict this used to read became the
+        open ``vinta_billing.registry.resources``, which
+        ``payments/seams/resources.py`` populates. Same invariant, new home.
+        """
+        assert set(resources.keys()) == {member.value for member in LimitedResource}
 
     def test_counts_active_memberships_and_pending_invitations(
         self, service, organization, subscription
@@ -402,11 +408,11 @@ class TestCheckLimit:
         locking_queries = [
             query["sql"]
             for query in captured.captured_queries
-            if "FOR UPDATE" in query["sql"] and "payments_subscription" in query["sql"]
+            if "FOR UPDATE" in query["sql"] and "vinta_billing_subscription" in query["sql"]
         ]
         assert locking_queries, (
             "check_limit(lock=True) issued no SELECT ... FOR UPDATE against "
-            "payments_subscription. Queries seen: "
+            "vinta_billing_subscription. Queries seen: "
             f"{[query['sql'] for query in captured.captured_queries]}"
         )
 
@@ -468,7 +474,7 @@ class TestCheckLimit:
         subscription_reads = [
             query
             for query in captured.captured_queries
-            if 'FROM "payments_subscription"' in query["sql"]
+            if 'FROM "vinta_billing_subscription"' in query["sql"]
         ]
         assert len(subscription_reads) == 1, (
             f"Expected the subscription to be fetched once, got {len(subscription_reads)}: "

@@ -1,16 +1,11 @@
-from typing import Protocol
+"""Transitional re-export of ``vinta_billing.services.subscription_plan_factory.base``.
 
-from payments.models import Subscription
-from payments.services.dataclasses import CreatedPlan
+**Removed in Phase 6** of
+``ai-plans/2026-08-19-MIGRATE_BILLING_ENGINE_TO_VINTA_DJANGO_BILLING_IMPLEMENTATION_PLAN.md``.
 
+The star import is deliberate: the module this replaces also re-exported
+whatever it imported, and callers relied on that. Naming a subset here would
+silently narrow the shim's surface.
+"""
 
-class BaseSubscriptionPlanFactory(Protocol):
-    """
-    Base class for creating subscription plans.
-    """
-
-    def make_plan_from_subscription(self, subscription: Subscription) -> CreatedPlan:
-        """
-        Create a subscription plan.
-        """
-        raise NotImplementedError("This method should be overridden by subclasses.")
+from vinta_billing.services.subscription_plan_factory.base import *  # noqa: F403

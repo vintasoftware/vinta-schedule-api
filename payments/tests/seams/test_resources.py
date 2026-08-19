@@ -1,11 +1,13 @@
-"""``payments.seams.resources`` -- registration, and counter parity against
-the pre-migration ``_count_*`` functions still living on
-``payments.services.entitlement_service``.
+"""``payments.seams.resources`` -- registration, and what each counter counts.
 
-Phase 0 does not delete those predecessors -- this is the regression proof
-that rewriting each counter against ``vinta_billing.counting`` changed
-nothing observable. Both the new and the old counter run against the same
-rows in every test below.
+Written in Phase 0 as a parity suite: every test ran the new counter *and* its
+``_count_*`` predecessor on ``payments.services.entitlement_service`` over the
+same rows and asserted the two agreed. Phase 1 deleted those predecessors along
+with the rest of the host engine, so the legacy half is gone -- but the tests
+below never leaned on it alone. Each one already pinned the expected
+``{organization_id: count}`` breakdown as a literal, built from rows the test
+itself created, and that literal is what actually holds the counter to its
+contract. Removing the comparison removed a second opinion, not the gate.
 """
 
 import datetime
@@ -16,7 +18,9 @@ from django.utils import timezone
 import pytest
 from model_bakery import baker
 from vinta_billing.counting import UsageContext
+from vinta_billing.models import BillingPlan, MeteredOccurrence, Subscription
 from vinta_billing.registry import entitlements, resources
+from vinta_billing.services.subscription_service import current_billing_period_start
 
 # Registration already happens at process start: ``di_core``'s DI wiring
 # (``DICoreConfig.ready()``) imports every submodule under ``payments``,
@@ -30,10 +34,6 @@ from calendar_integration.constants import CalendarType
 from calendar_integration.models import AvailableTime, BlockedTime, Calendar, CalendarGroup
 from organizations.models import Organization, OrganizationInvitation, OrganizationMembership
 from payments.billing_constants import Entitlement, LimitedResource
-from payments.models import BillingPlan, MeteredOccurrence, Subscription
-from payments.services.entitlement_service import USAGE_COUNTERS
-from payments.services.entitlement_service import UsageContext as LegacyUsageContext
-from payments.services.subscription_service import current_billing_period_start
 from public_api.models import SystemUser
 from webhooks.models import WebhookConfiguration
 
@@ -99,24 +99,13 @@ def _make_subscription(organization: Organization) -> Subscription:
 
 
 @pytest.mark.django_db
-class TestCounterParity:
-    """One test per resource: build the same rows for two organizations, and
-    assert the new counter (``vinta_billing.counting.UsageContext``) and the
-    old one (``payments.services.entitlement_service.UsageContext``) return
-    the identical ``{organization_id: count}`` breakdown."""
+class TestCounterBreakdowns:
+    """One test per resource: build rows for two organizations and pin the
+    ``{organization_id: count}`` breakdown the registered counter returns."""
 
     @staticmethod
-    def _assert_parity(
-        resource_key: str, organization_ids: list[int], **legacy_extra: object
-    ) -> dict[int, int]:
-        new_breakdown = resources.counter_for(resource_key)(
-            UsageContext(organization_ids=organization_ids)
-        )
-        legacy_breakdown = USAGE_COUNTERS[resource_key](
-            LegacyUsageContext(organization_ids=organization_ids, **legacy_extra)  # type: ignore[arg-type]
-        )
-        assert new_breakdown == legacy_breakdown
-        return new_breakdown
+    def _breakdown(resource_key: str, organization_ids: list[int]) -> dict[int, int]:
+        return resources.counter_for(resource_key)(UsageContext(organization_ids=organization_ids))
 
     def test_organization_members(self, organization_one, organization_two):
         baker.make(
@@ -130,7 +119,7 @@ class TestCounterParity:
             expires_at=timezone.now() + datetime.timedelta(days=7),
         )
 
-        breakdown = self._assert_parity(
+        breakdown = self._breakdown(
             LimitedResource.ORGANIZATION_MEMBERS, [organization_one.pk, organization_two.pk]
         )
         assert breakdown == {organization_one.pk: 3, organization_two.pk: 1}
@@ -138,9 +127,9 @@ class TestCounterParity:
     def test_organization_members_excludes_the_named_invitation(
         self, organization_one, organization_two
     ):
-        """``exclude_invitation_id`` travels through ``UsageContext.extra`` on the
-        new side and through the dedicated keyword on the old side -- both must
-        agree it makes the accept path net zero."""
+        """``exclude_invitation_id`` travels through ``UsageContext.extra``, which
+        the engine forwards without reading. Excluding the only pending
+        invitation must make the accept path net zero."""
         invitation = baker.make(
             OrganizationInvitation,
             organization=organization_one,
@@ -148,19 +137,13 @@ class TestCounterParity:
             expires_at=timezone.now() + datetime.timedelta(days=7),
         )
 
-        new_breakdown = resources.counter_for(LimitedResource.ORGANIZATION_MEMBERS)(
+        breakdown = resources.counter_for(LimitedResource.ORGANIZATION_MEMBERS)(
             UsageContext(
                 organization_ids=[organization_one.pk, organization_two.pk],
                 extra={"exclude_invitation_id": invitation.pk},
             )
         )
-        legacy_breakdown = USAGE_COUNTERS[LimitedResource.ORGANIZATION_MEMBERS](
-            LegacyUsageContext(
-                organization_ids=[organization_one.pk, organization_two.pk],
-                exclude_invitation_id=invitation.pk,
-            )
-        )
-        assert new_breakdown == legacy_breakdown == {}
+        assert breakdown == {}
 
     def test_resource_and_bundle_calendars(self, organization_one, organization_two):
         baker.make(
@@ -176,10 +159,10 @@ class TestCounterParity:
             external_id="two-bundle",
         )
 
-        resource_breakdown = self._assert_parity(
+        resource_breakdown = self._breakdown(
             LimitedResource.RESOURCE_CALENDARS, [organization_one.pk, organization_two.pk]
         )
-        bundle_breakdown = self._assert_parity(
+        bundle_breakdown = self._breakdown(
             LimitedResource.BUNDLE_CALENDARS, [organization_one.pk, organization_two.pk]
         )
         assert resource_breakdown == {organization_one.pk: 1}
@@ -189,7 +172,7 @@ class TestCounterParity:
         baker.make(CalendarGroup, organization=organization_one, _quantity=2)
         baker.make(CalendarGroup, organization=organization_two)
 
-        breakdown = self._assert_parity(
+        breakdown = self._breakdown(
             LimitedResource.CALENDAR_GROUPS, [organization_one.pk, organization_two.pk]
         )
         assert breakdown == {organization_one.pk: 2, organization_two.pk: 1}
@@ -201,7 +184,7 @@ class TestCounterParity:
         baker.make(BlockedTime, organization=organization_one, timezone="UTC")
         baker.make(AvailableTime, organization=organization_two, timezone="UTC")
 
-        breakdown = self._assert_parity(
+        breakdown = self._breakdown(
             LimitedResource.AVAILABILITY_WINDOWS, [organization_one.pk, organization_two.pk]
         )
         assert breakdown == {organization_one.pk: 3, organization_two.pk: 1}
@@ -213,7 +196,7 @@ class TestCounterParity:
             WebhookConfiguration, organization=organization_two, deleted_at=None, _quantity=2
         )
 
-        breakdown = self._assert_parity(
+        breakdown = self._breakdown(
             LimitedResource.WEBHOOK_SUBSCRIPTIONS, [organization_one.pk, organization_two.pk]
         )
         assert breakdown == {organization_one.pk: 1, organization_two.pk: 2}
@@ -222,7 +205,7 @@ class TestCounterParity:
         baker.make(SystemUser, organization=organization_one, is_active=True)
         baker.make(SystemUser, organization=organization_two, is_active=True, _quantity=2)
 
-        breakdown = self._assert_parity(
+        breakdown = self._breakdown(
             LimitedResource.PUBLIC_API_SYSTEM_USERS, [organization_one.pk, organization_two.pk]
         )
         assert breakdown == {organization_one.pk: 1, organization_two.pk: 2}
@@ -264,24 +247,16 @@ class TestCounterParity:
             unit_price=Decimal("0"),
         )
 
-        new_breakdown = resources.counter_for(LimitedResource.EVENT_OCCURRENCES)(
+        breakdown = resources.counter_for(LimitedResource.EVENT_OCCURRENCES)(
             UsageContext(organization_ids=[organization_one.pk], subscription=subscription_one)
         )
-        legacy_breakdown = USAGE_COUNTERS[LimitedResource.EVENT_OCCURRENCES](
-            LegacyUsageContext(
-                organization_ids=[organization_one.pk], subscription=subscription_one
-            )
-        )
-        assert new_breakdown == legacy_breakdown == {organization_one.pk: 2}
+        assert breakdown == {organization_one.pk: 2}
 
     def test_event_occurrences_with_no_subscription_is_empty(self):
         """Fail-open: a subscription-less pool is a broken invariant, and
         ``event_occurrences`` is post-paid, so under-reporting cannot block
         anybody."""
-        new_breakdown = resources.counter_for(LimitedResource.EVENT_OCCURRENCES)(
+        breakdown = resources.counter_for(LimitedResource.EVENT_OCCURRENCES)(
             UsageContext(organization_ids=[1], subscription=None)
         )
-        legacy_breakdown = USAGE_COUNTERS[LimitedResource.EVENT_OCCURRENCES](
-            LegacyUsageContext(organization_ids=[1], subscription=None)
-        )
-        assert new_breakdown == legacy_breakdown == {}
+        assert breakdown == {}

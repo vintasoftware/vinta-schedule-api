@@ -85,6 +85,14 @@ INSTALLED_APPS = [
     # reaches the package's admin module first; organizations/admin.py additionally
     # imports it explicitly so the unregistration below does not depend on this order.
     "vinta_orgs.apps.OrganizationsConfig",
+    # ``vinta-django-billing`` -- the billing engine of record. Like ``vinta_orgs``,
+    # deliberately NOT in INTERNAL_INSTALLED_APPS: that list drives di_core's DI
+    # wiring and names only this project's own apps. The ``payments`` app keeps its
+    # label and stays installed, but owns configuration (the resource registry and
+    # the four other seams, the plan catalog, the Celery entry points) rather than
+    # models -- every billing table lives under the ``vinta_billing`` label from
+    # ``payments/migrations/0024_move_billing_to_vinta_billing.py`` onward.
+    "vinta_billing",
     *INTERNAL_INSTALLED_APPS,
 ]
 

@@ -14,3 +14,24 @@ class PaymentsConfig(AppConfig):
         # registry, which fails outright the moment a context reaches a model --
         # see `users/apps.py`, whose contexts module does.
         import payments.notification_contexts  # noqa: F401
+
+        # This one *is* the mechanism, like `notification_contexts` above: the
+        # import is what connects `payments/seams/audit.py`'s receiver to
+        # `vinta_billing.signals.payment_provider_repointed`. Without it the
+        # provider-repoint audit entry -- which `SubscriptionService` wrote
+        # inline before the engine moved to the package -- is silently not
+        # written.
+        import payments.seams.audit  # noqa: F401
+
+        # Same shape, different reason: this one is belt-and-braces, not the
+        # mechanism. `payments.seams.resources` is *already* imported at every
+        # process start -- `di_core.apps.DICoreConfig.ready()` calls
+        # `container.wire(packages=INTERNAL_INSTALLED_APPS)`, which walks every
+        # submodule under `payments` -- so the resource registry is populated
+        # before this line runs. It is stated here anyway because `container.wire`
+        # exists to find `@inject` call sites, not to import registries: nothing
+        # in its contract promises it keeps walking every submodule, and if it
+        # stops, an unpopulated registry fails as an empty limit table rather
+        # than an ImportError. `Registry.register` treats an identical repeat
+        # registration as a no-op, which is what makes saying it twice safe.
+        import payments.seams.resources  # noqa: F401

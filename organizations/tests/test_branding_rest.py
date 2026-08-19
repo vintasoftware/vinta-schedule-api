@@ -1251,7 +1251,9 @@ class TestCanManageBrandingOnMembershipPayload:
             assert_response_status_code(response, status.HTTP_200_OK)
             assert len(response.json()) == organization_count
             return sum(
-                1 for query in captured.captured_queries if "payments_subscription" in query["sql"]
+                1
+                for query in captured.captured_queries
+                if "vinta_billing_subscription" in query["sql"]
             )
 
         small_batch_query_count = _subscription_query_count(2)

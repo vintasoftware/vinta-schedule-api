@@ -1,45 +1,17 @@
-from django.db.models import TextChoices
-from django.utils.translation import gettext as _
+"""Transitional re-export of the payment-provider / status enums from
+``vinta_billing.constants``.
 
-from payments.provider_slugs import MERCADOPAGO, STRIPE
+All four classes moved to the package byte-for-byte -- same members, same stored
+values, same labels -- so this module defines nothing and only keeps the
+``from payments.constants import ...`` spelling alive for consumers the later
+phases have not retargeted yet.
 
+**Removed in Phase 6** of
+``ai-plans/2026-08-19-MIGRATE_BILLING_ENGINE_TO_VINTA_DJANGO_BILLING_IMPLEMENTATION_PLAN.md``.
 
-class PaymentProviders(TextChoices):
-    MERCADOPAGO = (MERCADOPAGO, "MercadoPago")
-    STRIPE = (STRIPE, "Stripe")
+The star import is deliberate: the module this replaces also re-exported
+whatever it imported, and callers relied on that. Naming a subset here would
+silently narrow the shim's surface.
+"""
 
-
-class PaymentStatuses(TextChoices):
-    PENDING_SEND = ("pending_send", _("Pending send"))
-    PENDING = ("pending", _("Pending"))
-    APPROVED = ("approved", _("Approved"))
-    REJECTED = ("rejected", _("Rejected"))
-    CANCELLED = ("cancelled", _("Cancelled"))
-    PARTIALLY_REFUNDED = ("partially_refunded", _("Partially refunded"))
-    REFUNDED = ("refunded", _("Refunded"))
-    CHARGED_BACK = ("charged_back", _("Charged back"))
-    IN_PROCESS = ("in_process", _("In process"))
-    IN_MEDIATION = ("in_mediation", _("In mediation"))
-    REJECTED_BY_BANK = ("rejected_by_bank", _("Rejected by bank"))
-    EXPIRED = ("expired", _("Expired"))
-    UNKNOWN = ("unknown", _("Unknown"))
-    ERROR = ("error", _("Error"))
-
-
-class RefundStatuses(TextChoices):
-    PENDING_SEND = ("pending_send", _("Pending Send"))
-    PENDING = ("pending", _("Pending"))
-    APPROVED = ("approved", _("Approved"))
-    REJECTED = ("rejected", _("Rejected"))
-    FAILED = ("failed", _("Failed"))
-    UNKNOWN = ("unknown", _("Unknown"))
-
-
-class SubscriptionStatuses(TextChoices):
-    ACTIVE = ("active", _("Active"))
-    PAUSED = ("paused", _("Paused"))
-    CANCELLED = ("cancelled", _("Cancelled"))
-    PENDING = ("pending", _("Pending"))
-    PENDING_SEND = ("pending_send", _("Pending send"))
-    ERROR = ("error", _("Error"))
-    UNKNOWN = ("unknown", _("Unknown"))
+from vinta_billing.constants import *  # noqa: F403

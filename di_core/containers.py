@@ -144,10 +144,16 @@ class AppContainer(containers.DeclarativeContainer):
     #: organization's resolved provider onto the one `Subscription` it will ever
     #: have, which is the row every later subscription operation resolves its
     #: adapter from.
+    #: No `audit_service` here, unlike every other audited service below:
+    #: `SubscriptionService` is `vinta_billing`'s now, and a library cannot take
+    #: this project's audit service as a constructor argument. It publishes
+    #: `vinta_billing.signals.payment_provider_repointed` at the same point the
+    #: inline `audit_service.record(...)` used to sit, and
+    #: `payments/seams/audit.py` receives it. Passing the kwarg would be a
+    #: `TypeError` at first resolution.
     subscription_service = providers.Factory(
         SubscriptionService,
         payment_service=payment_service,
-        audit_service=audit_service,
         payment_provider_resolver=payment_provider_resolver,
     )
 

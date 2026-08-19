@@ -61,7 +61,7 @@ class TestResolvePublicCredentials:
 class TestPaymentProviderResolver:
     def test_resolve_for_organization_returns_the_pin_when_set(self):
         organization = baker.make(Organization, parent=None, can_invite_organizations=False)
-        billing_address = baker.make("payments.BillingAddress")
+        billing_address = baker.make("vinta_billing.BillingAddress")
         baker.make(
             BillingProfile,
             organization=organization,
@@ -79,7 +79,7 @@ class TestPaymentProviderResolver:
     def test_resolve_for_organization_returns_the_default_when_unpinned(self, settings):
         settings.DEFAULT_PAYMENT_PROVIDER = PaymentProviders.STRIPE
         organization = baker.make(Organization, parent=None, can_invite_organizations=False)
-        billing_address = baker.make("payments.BillingAddress")
+        billing_address = baker.make("vinta_billing.BillingAddress")
         baker.make(
             BillingProfile,
             organization=organization,

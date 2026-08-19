@@ -95,7 +95,7 @@ def organization():
 @pytest.fixture
 def billing_address():
     return baker.make(
-        "payments.BillingAddress",
+        "vinta_billing.BillingAddress",
         street_name="Test Street",
         street_number="123",
         city="Test City",
@@ -115,7 +115,7 @@ def billing_profile(organization, billing_address):
     ``settings.DEFAULT_PAYMENT_PROVIDER`` and driving the real, unmocked
     Stripe adapter."""
     return baker.make(
-        "payments.BillingProfile",
+        "vinta_billing.BillingProfile",
         organization=organization,
         document_type="CPF",
         document_number="12345678900",
@@ -263,7 +263,7 @@ def test_create_payment_raises_when_billing_profile_missing_contact_email(
 def test_success_process_payment(payment_service, payment_adapter, billing_profile):
     # Create a payment
     payment = baker.make(
-        "payments.Payment",
+        "vinta_billing.Payment",
         billing_profile=billing_profile,
         value=Decimal("100"),
         currency="USD",
@@ -295,7 +295,7 @@ def test_success_process_payment(payment_service, payment_adapter, billing_profi
 def test_success_check_payment_status(payment_service, payment_adapter, billing_profile):
     # Create a payment
     payment = baker.make(
-        "payments.Payment",
+        "vinta_billing.Payment",
         billing_profile=billing_profile,
         value=Decimal("100"),
         currency="USD",
@@ -331,7 +331,7 @@ def test_success_check_payment_status(payment_service, payment_adapter, billing_
 def test_success_create_refund(payment_service, payment_adapter, billing_profile):
     # Create payment and refund
     payment = baker.make(
-        "payments.Payment",
+        "vinta_billing.Payment",
         billing_profile=billing_profile,
         value=Decimal("100"),
         currency="USD",
@@ -376,7 +376,7 @@ def test_create_refund_persists_unknown_status_from_provider(
     (not silently coerced into something else), and the corresponding
     `RefundStatusUpdate` row must record it too."""
     payment = baker.make(
-        "payments.Payment",
+        "vinta_billing.Payment",
         billing_profile=billing_profile,
         value=Decimal("100"),
         currency="USD",
@@ -411,7 +411,7 @@ def test_create_refund_persists_failed_status_from_provider(
     """A provider-reported `failed` refund status must persist as-is, not be
     silently downgraded to `UNKNOWN` or left at `PENDING_SEND`."""
     payment = baker.make(
-        "payments.Payment",
+        "vinta_billing.Payment",
         billing_profile=billing_profile,
         value=Decimal("100"),
         currency="USD",
@@ -443,7 +443,7 @@ def test_create_refund_persists_failed_status_from_provider(
 def test_success_check_refund_status(payment_service, payment_adapter, billing_profile):
     # Create payment and refund
     payment = baker.make(
-        "payments.Payment",
+        "vinta_billing.Payment",
         billing_profile=billing_profile,
         value=Decimal("100"),
         currency="USD",
@@ -455,7 +455,7 @@ def test_success_check_refund_status(payment_service, payment_adapter, billing_p
     )
 
     refund = baker.make(
-        "payments.Refund",
+        "vinta_billing.Refund",
         payment=payment,
         value=Decimal("100"),
         currency="USD",
@@ -487,7 +487,7 @@ def test_success_check_refund_status(payment_service, payment_adapter, billing_p
 def test_success_receive_payment_update(payment_service, payment_adapter, billing_profile):
     # Create a payment
     payment = baker.make(
-        "payments.Payment",
+        "vinta_billing.Payment",
         billing_profile=billing_profile,
         value=Decimal("100"),
         currency="USD",
@@ -653,7 +653,7 @@ def test_success_cancel_subscription(
     # Create a subscription
     now = datetime.datetime.now(tz=datetime.UTC)
     subscription = baker.make(
-        "payments.Subscription",
+        "vinta_billing.Subscription",
         organization=billing_profile.organization,
         plan=billing_plan,
         current_period_start=now,
@@ -683,7 +683,7 @@ def test_success_receive_subscription_payment_update(
     # Create a subscription
     now = datetime.datetime.now(tz=datetime.UTC)
     subscription = baker.make(
-        "payments.Subscription",
+        "vinta_billing.Subscription",
         organization=billing_profile.organization,
         plan=billing_plan,
         current_period_start=now,
@@ -764,7 +764,7 @@ def test_receive_subscription_payment_update_without_billing_profile_returns_non
     should log a warning and return `None` instead of a 500."""
     now = datetime.datetime.now(tz=datetime.UTC)
     subscription = baker.make(
-        "payments.Subscription",
+        "vinta_billing.Subscription",
         organization=organization,
         plan=billing_plan,
         current_period_start=now,
@@ -857,7 +857,7 @@ def test_mercadopago_payment_is_refunded_and_status_checked_via_mercadopago_even
     billing_profile.save(update_fields=["payment_provider"])
 
     payment = baker.make(
-        "payments.Payment",
+        "vinta_billing.Payment",
         billing_profile=billing_profile,
         value=Decimal("100"),
         currency="USD",
@@ -1041,7 +1041,7 @@ def test_create_payment_for_org_pinned_to_slug_that_is_not_a_real_provider_raise
 def test_handle_payment_webhook_is_idempotent(payment_service, payment_adapter, billing_profile):
     """A redelivery of the same provider event runs the handler at most once."""
     payment = baker.make(
-        "payments.Payment",
+        "vinta_billing.Payment",
         billing_profile=billing_profile,
         value=Decimal("100"),
         currency="USD",
@@ -1085,7 +1085,7 @@ def test_handle_subscription_payment_webhook_is_idempotent(
     once the event has actually been processed (a non-`None` result)."""
     now = datetime.datetime.now(tz=datetime.UTC)
     subscription = baker.make(
-        "payments.Subscription",
+        "vinta_billing.Subscription",
         organization=billing_profile.organization,
         plan=billing_plan,
         current_period_start=now,
@@ -1163,7 +1163,7 @@ def test_handle_payment_webhook_none_result_does_not_burn_the_delivery(
     via `transaction.atomic()` — allowing exactly this kind of retry. The `None`
     return path must preserve that property instead of silently swallowing it."""
     payment = baker.make(
-        "payments.Payment",
+        "vinta_billing.Payment",
         billing_profile=billing_profile,
         value=Decimal("100"),
         currency="USD",
@@ -1355,7 +1355,7 @@ def test_set_payment_provider_writes_audit_entry_naming_previous_provider(
     payload = mock_task.delay.call_args_list[0].args[0]
     assert payload["organization_id"] == billing_profile.organization_id
     assert payload["action"] == AuditAction.UPDATE
-    assert payload["subject"]["subject_type"] == "payments.BillingProfile"
+    assert payload["subject"]["subject_type"] == "vinta_billing.BillingProfile"
     assert payload["subject"]["subject_id"] == str(billing_profile.pk)
     assert payload["diff"] == {
         "payment_provider": {
@@ -1488,7 +1488,7 @@ def test_process_payment_drives_the_payment_rows_provider_not_the_org_pin(
     payment_service, payment_adapter, stripe_payment_adapter, stripe_pinned_billing_profile
 ):
     payment = baker.make(
-        "payments.Payment",
+        "vinta_billing.Payment",
         billing_profile=stripe_pinned_billing_profile,
         value=Decimal("100"),
         currency="USD",
@@ -1672,7 +1672,7 @@ def test_create_refund_does_not_mislabel_a_local_data_error_as_a_provider_declin
         payment_provider=PaymentProviders.MERCADOPAGO,
     )
     payment = baker.make(
-        "payments.Payment",
+        "vinta_billing.Payment",
         billing_profile=billing_profile,
         value=Decimal("100"),
         currency="USD",

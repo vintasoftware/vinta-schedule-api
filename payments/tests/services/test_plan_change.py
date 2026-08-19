@@ -91,7 +91,7 @@ def organization():
 @pytest.fixture
 def billing_profile(organization):
     billing_address = baker.make(
-        "payments.BillingAddress",
+        "vinta_billing.BillingAddress",
         street_name="Test Street",
         street_number="123",
         city="Test City",
@@ -100,7 +100,7 @@ def billing_profile(organization):
         zip_code="12345",
     )
     return baker.make(
-        "payments.BillingProfile",
+        "vinta_billing.BillingProfile",
         organization=organization,
         contact_email="billing@example.com",
         document_type="CPF",
@@ -199,7 +199,7 @@ class FakePaymentService:
         self.calls.append("create_payment")
         self.idempotency_keys.append(idempotency_key)
         return baker.make(
-            "payments.Payment",
+            "vinta_billing.Payment",
             billing_profile=organization.billing_profile,
             currency=currency,
             value=amount,

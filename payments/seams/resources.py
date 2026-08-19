@@ -23,13 +23,13 @@ the same job. The counting logic itself -- which rows count, which are
 excluded, why two tables get merged instead of concatenated -- is unchanged;
 only the plumbing it is built on moved.
 
-Registration already happens today, from process start: ``di_core``'s DI
-wiring (``DICoreConfig.ready()``) imports every submodule under ``payments``,
-including this one, before ``PaymentsConfig.ready()`` runs. Phase 1 adds an
-explicit import of this module from ``PaymentsConfig.ready()`` once
-``vinta_billing`` joins ``INSTALLED_APPS`` -- that import documents the
-dependency on purpose, but it is not what makes registration happen; it
-already does.
+Registration already happens from process start without any help:
+``di_core``'s DI wiring (``DICoreConfig.ready()``) imports every submodule
+under ``payments``, including this one, before ``PaymentsConfig.ready()``
+runs. ``PaymentsConfig.ready()`` imports this module anyway, as a deliberate
+order-independent guarantee rather than as the fix for a gap -- see that
+method for why leaning on DI wiring to import a registry is coupling worth
+not having.
 """
 
 from __future__ import annotations
@@ -40,13 +40,13 @@ from django.utils.translation import gettext as _
 
 from vinta_billing.constants import LimitKind, LimitRemedy
 from vinta_billing.counting import UsageContext, count_by_organization, merge_breakdowns
+from vinta_billing.models import MeteredOccurrence, Subscription
 from vinta_billing.registry import entitlements, resources
+from vinta_billing.services.subscription_service import current_billing_period_start
 
 from calendar_integration.constants import CalendarType
 from calendar_integration.models import AvailableTime, BlockedTime, Calendar, CalendarGroup
 from organizations.models import OrganizationInvitation, OrganizationMembership
-from payments.models import MeteredOccurrence, Subscription
-from payments.services.subscription_service import current_billing_period_start
 from public_api.models import SystemUser
 from webhooks.models import WebhookConfiguration
 

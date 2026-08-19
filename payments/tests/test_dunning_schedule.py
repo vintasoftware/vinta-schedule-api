@@ -140,7 +140,7 @@ def organization():
 @pytest.fixture
 def billing_profile(organization):
     billing_address = baker.make(
-        "payments.BillingAddress",
+        "vinta_billing.BillingAddress",
         street_name="Test Street",
         street_number="123",
         city="Test City",
@@ -149,7 +149,7 @@ def billing_profile(organization):
         zip_code="12345",
     )
     return baker.make(
-        "payments.BillingProfile",
+        "vinta_billing.BillingProfile",
         organization=organization,
         contact_email="billing@example.com",
         document_type="CPF",
@@ -239,13 +239,13 @@ class TestProcessDunningFanOut:
 
         org2 = baker.make(Organization, parent=None, can_invite_organizations=False)
         baker.make(
-            "payments.BillingProfile",
+            "vinta_billing.BillingProfile",
             organization=org2,
             contact_email="billing2@example.com",
             document_type="CPF",
             document_number="98765432100",
             billing_address=baker.make(
-                "payments.BillingAddress",
+                "vinta_billing.BillingAddress",
                 street_name="St",
                 street_number="1",
                 city="C",
@@ -260,13 +260,13 @@ class TestProcessDunningFanOut:
 
         org3 = baker.make(Organization, parent=None, can_invite_organizations=False)
         baker.make(
-            "payments.BillingProfile",
+            "vinta_billing.BillingProfile",
             organization=org3,
             contact_email="billing3@example.com",
             document_type="CPF",
             document_number="11122233300",
             billing_address=baker.make(
-                "payments.BillingAddress",
+                "vinta_billing.BillingAddress",
                 street_name="St",
                 street_number="1",
                 city="C",

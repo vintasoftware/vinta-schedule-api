@@ -262,13 +262,13 @@ class TestCreateSubscriptionResolvesTheProvider:
 
     def _billing_profile_for(self, org: Organization, provider: str):
         return baker.make(
-            "payments.BillingProfile",
+            "vinta_billing.BillingProfile",
             organization=org,
             contact_email="billing@example.com",
             document_type="CPF",
             document_number="12345678900",
             billing_address=baker.make(
-                "payments.BillingAddress",
+                "vinta_billing.BillingAddress",
                 street_name="Test Street",
                 street_number="123",
                 city="Test City",

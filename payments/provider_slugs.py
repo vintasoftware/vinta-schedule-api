@@ -1,22 +1,16 @@
-"""Payment provider slug constants, free of Django imports.
+"""Transitional re-export of ``vinta_billing.provider_slugs``.
 
-This module exists separately from `payments/constants.py` because
-`vinta_schedule_api/settings/base.py` must validate `DEFAULT_PAYMENT_PROVIDER` at
-settings-import time, and `payments.constants` cannot be imported at that point:
-`PaymentStatuses` and friends are `TextChoices` whose members call `gettext()` at
-class-body evaluation time, which touches `django.conf.settings` while settings are
-still mid-import. Importing `payments.constants` from settings therefore triggers an
-import cycle.
+The slugs are plain strings that both the host settings module and the package's
+adapters need *before* the app registry is ready, which is why they live in a
+module of their own on both sides rather than on the ``PaymentProviders`` enum.
 
-Keep this module pure stdlib (no Django imports, no imports of anything that imports
-Django) so it is always safe to import from `settings/base.py`. Do not merge this back
-into `payments/constants.py` -- that reintroduces the cycle above.
+**Removed in Phase 6** of
+``ai-plans/2026-08-19-MIGRATE_BILLING_ENGINE_TO_VINTA_DJANGO_BILLING_IMPLEMENTATION_PLAN.md``;
+``vinta_schedule_api/settings/base.py`` is retargeted in Phase 2.
+
+The star import is deliberate: the module this replaces also re-exported
+whatever it imported, and callers relied on that. Naming a subset here would
+silently narrow the shim's surface.
 """
 
-STRIPE = "stripe"
-MERCADOPAGO = "mercadopago"
-
-PAYMENT_PROVIDER_SLUGS: tuple[str, ...] = (
-    STRIPE,
-    MERCADOPAGO,
-)
+from vinta_billing.provider_slugs import *  # noqa: F403

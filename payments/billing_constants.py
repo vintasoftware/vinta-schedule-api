@@ -1,59 +1,47 @@
+"""Transitional shim over ``vinta_billing.constants`` -- and the last home of the
+two enums the package deliberately has no counterpart for.
+
+Seven of the nine classes this module used to define moved to the package
+unchanged and are re-exported below. ``LimitedResource`` and ``Entitlement`` did
+not: section 3.3 of
+``ai-plans/2026-08-19-MIGRATE_BILLING_ENGINE_TO_VINTA_DJANGO_BILLING_IMPLEMENTATION_PLAN.md``
+turns them into *registrations* against ``vinta_billing.registry`` (see
+``payments/seams/resources.py``, which is their definition site now and writes
+its keys and labels as its own literals). A closed enum of "things this product
+sells" is exactly what a billing library cannot own, so there is nothing to
+import them from -- they stay defined here, verbatim, for the consumers that
+still name them: ``organizations/``, ``calendar_integration/``, ``webhooks/``,
+``public_api/``, and migrations ``0007`` and ``0021``.
+
+Phases 3 and 4 retarget those consumers at registry keys; **Phase 6 then deletes
+this module entirely**, including the two class definitions below.
+"""
+
 from django.db.models import TextChoices
 from django.utils.translation import gettext as _
 
-
-class BillingState(TextChoices):
-    """Billing lifecycle state of an organization's ``Subscription``.
-
-    The billing state machine's transition table is the authority on the
-    transitions between these states.
-    """
-
-    FREE = ("free", _("Free"))
-    ACTIVE = ("active", _("Active"))
-    GRACE = ("grace", _("Grace period"))
-    RESTRICTED = ("restricted", _("Restricted"))
-    CANCELLED = ("cancelled", _("Cancelled"))
+from vinta_billing.constants import (
+    BillingInterval,
+    BillingState,
+    DocumentTypes,
+    LimitKind,
+    LimitRemedy,
+    LimitWarningLevel,
+    ProviderWebhookRoute,
+)
 
 
-class BillingInterval(TextChoices):
-    """Billing cadence for a ``Subscription``."""
-
-    MONTHLY = ("monthly", _("Monthly"))
-    ANNUAL = ("annual", _("Annual"))
-
-
-class DocumentTypes(TextChoices):
-    """Kind of tax/identity document on a ``BillingProfile``.
-
-    Sent to MercadoPago as ``payer.identification.type`` (see
-    ``DOCUMENT_TYPES_MAPPING``); ignored by Stripe, which takes no document type.
-    Not every member is accepted by every provider -- this enum is the set the
-    API accepts, and ``DOCUMENT_TYPES_MAPPING`` is the per-provider translation
-    seam. A member valid here can still be refused by a specific provider.
-    """
-
-    CPF = ("CPF", _("CPF"))
-    CNPJ = ("CNPJ", _("CNPJ"))
-    DNI = ("DNI", _("DNI"))
-    CI = ("CI", _("CI"))
-    RUT = ("RUT", _("RUT"))
-    SSN = ("SSN", _("SSN"))
-    EIN = ("EIN", _("EIN"))
-    PASSPORT = ("PASSPORT", _("Passport"))
-    OTHER = ("OTHER", _("Other"))
-
-
-class ProviderWebhookRoute(TextChoices):
-    """Which inbound webhook endpoint received a ``ProviderWebhookEvent``.
-
-    Scopes the idempotency ledger's uniqueness alongside ``provider`` and
-    ``external_event_id`` — a provider's event-id numbering is not guaranteed to be
-    disjoint between its payment and subscription-payment notification streams.
-    """
-
-    PAYMENT_UPDATE = ("payment_update", _("Payment update"))
-    SUBSCRIPTION_PAYMENT_UPDATE = ("subscription_payment_update", _("Subscription payment update"))
+__all__ = [
+    "BillingInterval",
+    "BillingState",
+    "DocumentTypes",
+    "Entitlement",
+    "LimitKind",
+    "LimitRemedy",
+    "LimitWarningLevel",
+    "LimitedResource",
+    "ProviderWebhookRoute",
+]
 
 
 class LimitedResource(TextChoices):
@@ -75,28 +63,6 @@ class LimitedResource(TextChoices):
     EVENT_OCCURRENCES = ("event_occurrences", _("Event occurrences"))
 
 
-class LimitKind(TextChoices):
-    """Whether a ``LimitedResource`` is capped up front or metered and billed after
-    the fact."""
-
-    PREPAID = ("prepaid", _("Prepaid"))
-    POSTPAID = ("postpaid", _("Postpaid"))
-
-
-class LimitRemedy(TextChoices):
-    """What the caller can do about an over-limit rejection.
-
-    Rendered verbatim as the ``remedy`` key of the shared over-limit error body
-    (see ``OverLimitError``), so the client can route the user to the right screen
-    instead of parsing a human-readable message.
-    """
-
-    PURCHASE_ADD_ON = ("purchase_add_on", _("Purchase additional capacity"))
-    UPGRADE_PLAN = ("upgrade_plan", _("Upgrade to a plan with a higher limit"))
-    ADD_PAYMENT_METHOD = ("add_payment_method", _("Add a payment method"))
-    RESOLVE_BILLING = ("resolve_billing", _("Resolve an outstanding billing issue"))
-
-
 class Entitlement(TextChoices):
     """The closed set of boolean feature gates a ``BillingPlan`` can grant."""
 
@@ -105,18 +71,3 @@ class Entitlement(TextChoices):
     PARTNER_API = ("partner_api", _("Partner / public API access"))
     WHITE_LABEL_BRANDING = ("white_label_branding", _("White-label branding"))
     ADVANCED_SCHEDULING = ("advanced_scheduling", _("Advanced scheduling"))
-
-
-class LimitWarningLevel(TextChoices):
-    """How close usage is to the effective limit, as reported by
-    ``UsageWarningService``.
-
-    Two distinct notifications, each debounced independently (see
-    ``LimitWarningNotification``'s unique constraint) so an organization gets
-    exactly one "you're close" and, separately, exactly one "you're at your
-    limit" per resource per billing cycle -- never a rising flood of duplicate
-    warnings as ``check_approaching_limits`` re-checks on every beat tick.
-    """
-
-    APPROACHING = ("approaching", _("Approaching the limit"))
-    REACHED = ("reached", _("At or over the limit"))

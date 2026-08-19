@@ -439,7 +439,7 @@ class IsBillingOwnerOrAdmin(BasePermission):
     both correct inside ``has_permission``.)
 
     - ``has_permission``: coarse gate -- an active membership carrying
-      ``payments.manage_billing`` **in the organization the request resolved**
+      ``vinta_billing.manage_billing`` **in the organization the request resolved**
       (since the ordering fix above, that is the membership
       ``X-Organization-Id`` selected, not "some organization"). Coarse all the
       same, because the organization
@@ -449,9 +449,9 @@ class IsBillingOwnerOrAdmin(BasePermission):
       ``Organization`` -- the resolved billing root). Grants access when either:
 
       1. The caller's active membership is in ``obj`` itself and carries
-         ``payments.manage_billing``.
+         ``vinta_billing.manage_billing``.
       2. An **acting reseller root**: a low-level policy branch for a caller's
-         active membership that carries ``payments.manage_billing``, can
+         active membership that carries ``vinta_billing.manage_billing``, can
          invite/create organizations (``can_invite_organizations``), and has
          ``obj`` within its subtree. It reuses
          ``public_api.capabilities.is_target_in_subtree`` — the boolean form of
@@ -461,7 +461,7 @@ class IsBillingOwnerOrAdmin(BasePermission):
          request shape that would make this branch decisive, so it preserves the
          policy for direct callers without describing current endpoint behavior.
 
-    ``payments.manage_billing`` replaced the flat two-column disjunction this
+    ``vinta_billing.manage_billing`` replaced the flat two-column disjunction this
     used to read (``role == ADMIN or is_billing_owner``); the
     ``organization_admin`` and ``organization_billing_owner`` groups both carry
     the permission, which is what makes the two spellings the same set.

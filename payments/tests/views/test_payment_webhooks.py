@@ -107,7 +107,7 @@ def organization():
 @pytest.fixture
 def billing_address():
     return baker.make(
-        "payments.BillingAddress",
+        "vinta_billing.BillingAddress",
         street_name="Test Street",
         street_number="123",
         city="Test City",
@@ -120,7 +120,7 @@ def billing_address():
 @pytest.fixture
 def billing_profile(organization, billing_address):
     return baker.make(
-        "payments.BillingProfile",
+        "vinta_billing.BillingProfile",
         organization=organization,
         document_type="CPF",
         document_number="12345678900",
@@ -131,7 +131,7 @@ def billing_profile(organization, billing_address):
 @pytest.fixture
 def payment(billing_profile):
     return baker.make(
-        "payments.Payment",
+        "vinta_billing.Payment",
         billing_profile=billing_profile,
         value=Decimal("100"),
         currency="USD",
