@@ -33,6 +33,7 @@ from django.db import connection
 import pytest
 from vinta_billing.models import BillingAddress, BillingPlan, PlanEntitlement, PlanLimit
 
+from common.testing.migration_replay import migration_replay, uninterruptible
 from payments.billing_constants import Entitlement, LimitedResource
 
 
@@ -213,7 +214,7 @@ class TestManageBillingMovedContentType:
 
 @pytest.mark.no_auto_subscription
 @pytest.mark.no_billing_catalog_reseed
-@pytest.mark.timeout(300)
+@migration_replay
 @pytest.mark.django_db(transaction=True)
 class TestTheReversePath:
     """``migrate payments 0022`` is this plan's rollback lever -- there is no
@@ -228,10 +229,46 @@ class TestTheReversePath:
 
     The forward re-apply in ``finally`` is what keeps this test from poisoning
     every test that runs after it in the same xdist worker.
+
+    **It seeds every row it measures.** This used to lean on the catalog
+    ``0007_seed_billing_plans`` left behind, and that made it a test whose result
+    depended on what had run before it: it is a ``transaction=True`` test, and
+    pytest-django runs those last, so under ``-n auto`` it lands in the same tail
+    group as every other transactional test and is routinely handed a worker
+    whose database another one of them has already flushed. ``0007``'s rows are
+    gone at that point, ``no_billing_catalog_reseed`` (which the sibling classes
+    above genuinely need, since their subject *is* what the migration seeded)
+    opts this class out of conftest's repair, and the guard below read zero. It
+    passed alone and failed in the suite -- for the rollback lever this plan has
+    instead of a feature flag, which is the one proof that must hold under the
+    run that actually gates every phase.
+
+    Seeding its own graph fixes that at the source rather than by ordering: the
+    rows it compares before and after are rows it wrote, so no other test can
+    take them away, and the guards below can be ``==`` rather than ``>=``. The
+    graph is deliberately more than one row -- a plan with a limit and an
+    entitlement hanging off it -- because parent-before-child is exactly what
+    ``0024``'s copy order exists to get right, and a single unrelated row would
+    not exercise it.
     """
 
-    def test_reverse_restores_payments_then_forward_restores_vinta_billing(self):
-        seeded = BillingAddress.objects.create(
+    #: Distinctive enough that a value landing in the wrong column is visible.
+    PROBE_PLAN_SLUG = "reverse-path-probe"
+
+    def _seed_a_related_graph(self) -> BillingAddress:
+        plan = BillingPlan.objects.create(
+            slug=self.PROBE_PLAN_SLUG,
+            name="Reverse path probe",
+            monthly_price=0,
+            currency="BRL",
+        )
+        PlanLimit.objects.create(
+            plan=plan, resource_key=LimitedResource.RESOURCE_CALENDARS, limit_value=7
+        )
+        PlanEntitlement.objects.create(
+            plan=plan, entitlement_key=Entitlement.PARTNER_API, is_enabled=True
+        )
+        return BillingAddress.objects.create(
             street_name="Reversible",
             street_number="1",
             city="Sao Paulo",
@@ -239,9 +276,14 @@ class TestTheReversePath:
             country="BR",
             zip_code="01000-000",
         )
+
+    def test_reverse_restores_payments_then_forward_restores_vinta_billing(self):
+        seeded = self._seed_a_related_graph()
         before = {table: _count(f"vinta_billing_{table}") for table in EXPECTED_TABLES}
         assert before["billingaddress"] >= 1
         assert before["billingplan"] >= 1
+        assert before["planlimit"] >= 1
+        assert before["planentitlement"] >= 1
 
         try:
             call_command("migrate", "payments", "0022_capability_permissions", verbosity=0)
@@ -261,6 +303,22 @@ class TestTheReversePath:
                 )
                 assert cursor.fetchone() == ("Reversible", "01000-000")
 
+                # The child rows landed with their parent, and with their own
+                # values intact -- the parent-before-child ordering and the
+                # explicit column lists, both proved on real rows this test put
+                # there rather than on whatever the session happened to hold.
+                cursor.execute(
+                    "SELECT l.resource_key, l.limit_value, e.entitlement_key, e.is_enabled "
+                    "FROM payments_billingplan p "
+                    "JOIN payments_planlimit l ON l.plan_id = p.id "
+                    "JOIN payments_planentitlement e ON e.plan_id = p.id "
+                    "WHERE p.slug = %s",
+                    [self.PROBE_PLAN_SLUG],
+                )
+                assert cursor.fetchall() == [
+                    (LimitedResource.RESOURCE_CALENDARS, 7, Entitlement.PARTNER_API, True)
+                ]
+
                 cursor.execute(
                     "SELECT count(*) FROM auth_group g "
                     "JOIN auth_group_permissions gp ON gp.group_id = g.id "
@@ -270,8 +328,16 @@ class TestTheReversePath:
                 )
                 assert cursor.fetchone()[0] == len(GROUPS_HOLDING_MANAGE_BILLING)
         finally:
-            call_command("migrate", verbosity=0)
+            # `uninterruptible`: see `common.testing.migration_replay`. This
+            # restore is the reason the rest of the worker's session still has a
+            # database; pytest.ini's hang guard fires by signal and would
+            # otherwise be free to land in the middle of it.
+            with uninterruptible():
+                call_command("migrate", verbosity=0)
 
         assert _table_names("payments_") == set()
         assert {table: _count(f"vinta_billing_{table}") for table in EXPECTED_TABLES} == before
         assert BillingAddress.objects.filter(pk=seeded.pk).exists()
+        restored_plan = BillingPlan.objects.get(slug=self.PROBE_PLAN_SLUG)
+        assert restored_plan.limits.get().limit_value == 7
+        assert restored_plan.entitlements.get().is_enabled is True
