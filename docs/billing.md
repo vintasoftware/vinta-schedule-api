@@ -29,6 +29,10 @@ payments/
 ├── billing_plans_catalog.py    # the LIVE plan catalog + seeder (see "Two copies of the
 │                                # catalog, on purpose" below)
 ├── seams/                      # see next section
+├── management/commands/
+│   └── reconcile_billing_period.py  # host-owned, tenancy-binding: re-runs cycle
+│                                     # close's reconciliation for a named closed
+│                                     # period on demand, for finance
 ├── migrations/                 # includes 0023/0024, the one-time table-move migration
 │                                # (payments_* -> vinta_billing_*), and earlier migrations
 │                                # this project wrote before the move

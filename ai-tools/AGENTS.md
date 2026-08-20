@@ -296,7 +296,9 @@ pin, and known package gaps); this is the load-bearing summary.
 - **`payments/` is configuration, not implementation.** Its whole surface is
   `apps.py`, `tasks.py` (thin Celery wrappers over `vinta_billing.jobs`),
   `notification_contexts.py` (vintasend context registrations), `billing_plans_catalog.py`
-  (the live seed catalog), `migrations/` (including the one-time table-move migration
+  (the live seed catalog), `management/commands/reconcile_billing_period.py` (host-owned,
+  tenancy-binding: on-demand reconciliation for a named closed billing period),
+  `migrations/` (including the one-time table-move migration
   that copied `payments_*` rows into `vinta_billing_*`), `tests/`, and `seams/`.
 - **The seams (`payments/seams/`)** are the host-specific objects the package's settings
   ask for — the only shape a generic billing library cannot own by itself:
