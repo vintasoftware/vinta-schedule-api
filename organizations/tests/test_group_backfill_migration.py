@@ -65,11 +65,11 @@ from django.db import connection
 
 import pytest
 from model_bakery import baker
+from vinta_billing.models import Subscription
 
 from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import GROUP_PERMISSIONS as CATALOG_GROUP_PERMISSIONS
 from organizations.permission_catalog import PERMISSIONS as CATALOG_PERMISSIONS
-from payments.models import Subscription
 from users.models import User
 
 

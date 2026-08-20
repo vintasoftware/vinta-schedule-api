@@ -5,6 +5,7 @@ from typing import Any, ClassVar
 from django.conf import settings
 from django.db import models
 
+from vinta_billing.entitlement_cache import has_entitlement_cached
 from vinta_orgs.models import AbstractOrganization, AbstractOrganizationMembership
 
 from common.fields import OrganizationMembershipForeignKey
@@ -15,8 +16,6 @@ from organizations.managers import (
 )
 from organizations.permission_catalog import GROUP_ORGANIZATION_MEMBER, INVITABLE_GROUPS
 from organizations.slug_generation import derive_organization_slug
-from payments.billing_constants import Entitlement
-from payments.entitlement_cache import has_entitlement_cached
 from s3direct_overrides.model_fields import S3DirectImageField
 
 
@@ -528,7 +527,7 @@ def resolve_branding_for_display(org: Organization | None) -> OrganizationBrandi
 
     The entitlement is resolved at the reseller's own billing root, which may differ
     from the branding root when the reseller itself pools against a grandparent — see
-    ``payments.services.subscription_service.resolve_billing_root``. A reseller whose
+    ``vinta_billing.services.subscription_service.resolve_billing_root``. A reseller whose
     plan does not grant the entitlement is treated identically to one with no branding
     row: every presentation caller already falls back to the vinta default in that case
     (``branding_for_tenant``'s ``_vinta_default_branding()``, ``notification_contexts``'s
@@ -566,10 +565,18 @@ def resolve_branding_for_display(org: Organization | None) -> OrganizationBrandi
     # never sees the wired container.
     from di_core.containers import container
 
+    # Also deferred, and for a second, independent reason: `payments.seams.resources`
+    # imports `organizations.models` (the `organization_members` counter), so a
+    # module-level import here would be a direct import cycle -- this module cannot
+    # finish loading `payments.seams.resources` until `payments.seams.resources`
+    # finishes loading this module. Deferring into the function body breaks the
+    # cycle the same way the `container` import above does.
+    from payments.seams.resources import WHITE_LABEL_BRANDING
+
     if container is None:
         return None
     if not has_entitlement_cached(
-        container.entitlement_service(), branding_root, Entitlement.WHITE_LABEL_BRANDING
+        container.entitlement_service(), branding_root, WHITE_LABEL_BRANDING
     ):
         return None
     return getattr(branding_root, "branding", None)

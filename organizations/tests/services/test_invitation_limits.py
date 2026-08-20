@@ -15,13 +15,14 @@ from django.utils import timezone
 
 import pytest
 from model_bakery import baker
+from vinta_billing.constants import BillingState, LimitKind
+from vinta_billing.exceptions import OverLimitError
+from vinta_billing.models import BillingPlan, Subscription, SubscriptionPlanLimit
 
 from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
 from organizations.models import Organization, OrganizationInvitation, OrganizationMembership
 from organizations.services import OrganizationService
-from payments.billing_constants import BillingState, LimitedResource, LimitKind
-from payments.exceptions import OverLimitError
-from payments.models import BillingPlan, Subscription, SubscriptionPlanLimit
+from payments.seams.resources import ORGANIZATION_MEMBERS
 
 
 # This module builds its own Subscription rows (OneToOne with Organization), so it
@@ -46,7 +47,7 @@ def _organization_with_seat_limit(
     baker.make(
         SubscriptionPlanLimit,
         subscription=subscription,
-        resource_key=LimitedResource.ORGANIZATION_MEMBERS,
+        resource_key=ORGANIZATION_MEMBERS,
         limit_value=seat_limit,
         kind=LimitKind.PREPAID,
     )
@@ -85,7 +86,7 @@ class TestInviteAtTheSeatLimit:
                 send_email=False,
             )
 
-        assert exc_info.value.resource_key == LimitedResource.ORGANIZATION_MEMBERS
+        assert exc_info.value.resource_key == ORGANIZATION_MEMBERS
         assert exc_info.value.current_usage == 2
         assert exc_info.value.limit == 2
         assert not OrganizationInvitation.objects.filter(email="blocked@example.com").exists()

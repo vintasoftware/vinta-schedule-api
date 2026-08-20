@@ -34,6 +34,8 @@ from django.utils import timezone
 
 import pytest
 from model_bakery import baker
+from vinta_billing.constants import BillingState
+from vinta_billing.models import BillingPlan, Subscription, SubscriptionEntitlement
 
 from common.organization_context import get_current_organization
 from organizations.exceptions import (
@@ -53,8 +55,7 @@ from organizations.permissions import (
     user_administers_branding_eligible_organization,
 )
 from organizations.tests.helpers import make_membership
-from payments.billing_constants import BillingState, Entitlement
-from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
+from payments.seams.resources import WHITE_LABEL_BRANDING
 
 
 User = get_user_model()
@@ -76,7 +77,7 @@ def _organization(*, entitled: bool, **kwargs) -> Organization:
     baker.make(
         SubscriptionEntitlement,
         subscription=subscription,
-        entitlement_key=Entitlement.WHITE_LABEL_BRANDING,
+        entitlement_key=WHITE_LABEL_BRANDING,
         is_enabled=entitled,
     )
     return organization

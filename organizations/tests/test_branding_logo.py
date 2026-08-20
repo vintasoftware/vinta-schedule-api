@@ -31,6 +31,8 @@ from django.utils import timezone
 import pytest
 from model_bakery import baker
 from rest_framework.test import APIClient
+from vinta_billing.constants import BillingState
+from vinta_billing.models import BillingPlan, Subscription, SubscriptionEntitlement
 
 from organizations.branding_logo import (
     DEFAULT_LOGO_ETAG_IDENTITY,
@@ -38,8 +40,7 @@ from organizations.branding_logo import (
 )
 from organizations.models import Organization, OrganizationBranding
 from organizations.slug_validation import validate_organization_slug
-from payments.billing_constants import BillingState, Entitlement
-from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
+from payments.seams.resources import WHITE_LABEL_BRANDING
 
 
 # This module builds its own Subscription rows (mirroring organizations/tests/
@@ -84,7 +85,7 @@ class TestBrandedLogoDelivery:
 
     def test_streams_the_stored_logo_with_caching_headers(self, client):
         org = _org_with_entitlement(
-            Entitlement.WHITE_LABEL_BRANDING,
+            WHITE_LABEL_BRANDING,
             is_enabled=True,
             can_invite_organizations=True,
             parent=None,
@@ -115,7 +116,7 @@ class TestBrandedLogoDelivery:
 
     def test_jpeg_extension_resolves_jpeg_content_type(self, client):
         org = _org_with_entitlement(
-            Entitlement.WHITE_LABEL_BRANDING,
+            WHITE_LABEL_BRANDING,
             is_enabled=True,
             can_invite_organizations=True,
             parent=None,
@@ -143,7 +144,7 @@ class TestBrandedLogoDelivery:
         """The branding row references a key, but the object itself is gone (e.g.
         deleted directly in S3, out of band). Must degrade cleanly, never 500."""
         org = _org_with_entitlement(
-            Entitlement.WHITE_LABEL_BRANDING,
+            WHITE_LABEL_BRANDING,
             is_enabled=True,
             can_invite_organizations=True,
             parent=None,
@@ -176,7 +177,7 @@ class TestMissConditionsAreIndistinguishable:
         no_branding_row_response = client.get(_logo_url("no-branding-row"))
 
         no_logo_org = _org_with_entitlement(
-            Entitlement.WHITE_LABEL_BRANDING,
+            WHITE_LABEL_BRANDING,
             is_enabled=True,
             can_invite_organizations=True,
             parent=None,
@@ -186,7 +187,7 @@ class TestMissConditionsAreIndistinguishable:
         no_logo_response = client.get(_logo_url("no-logo-set"))
 
         unentitled_org = _org_with_entitlement(
-            Entitlement.WHITE_LABEL_BRANDING,
+            WHITE_LABEL_BRANDING,
             is_enabled=False,
             can_invite_organizations=True,
             parent=None,
@@ -244,7 +245,7 @@ class TestRouteResolvesOnlyThroughABrandingRow:
 
     def test_query_string_cannot_override_the_resolved_key(self, client):
         org = _org_with_entitlement(
-            Entitlement.WHITE_LABEL_BRANDING,
+            WHITE_LABEL_BRANDING,
             is_enabled=True,
             can_invite_organizations=True,
             parent=None,
@@ -316,7 +317,7 @@ class TestForeignPrefixKeyNeverServed:
 
     def test_foreign_prefix_key_forced_into_db_serves_the_default_not_the_object(self, client):
         org = _org_with_entitlement(
-            Entitlement.WHITE_LABEL_BRANDING,
+            WHITE_LABEL_BRANDING,
             is_enabled=True,
             can_invite_organizations=True,
             parent=None,
@@ -353,7 +354,7 @@ class TestDeliveredContentTypeIsInertAndAllowlisted:
 
     def test_svg_extension_is_served_as_octet_stream_not_svg(self, client):
         org = _org_with_entitlement(
-            Entitlement.WHITE_LABEL_BRANDING,
+            WHITE_LABEL_BRANDING,
             is_enabled=True,
             can_invite_organizations=True,
             parent=None,
@@ -380,7 +381,7 @@ class TestDeliveredContentTypeIsInertAndAllowlisted:
 
     def test_html_extension_is_served_as_octet_stream_not_html(self, client):
         org = _org_with_entitlement(
-            Entitlement.WHITE_LABEL_BRANDING,
+            WHITE_LABEL_BRANDING,
             is_enabled=True,
             can_invite_organizations=True,
             parent=None,
@@ -407,7 +408,7 @@ class TestDeliveredContentTypeIsInertAndAllowlisted:
 
     def test_png_still_serves_the_allowlisted_content_type_with_nosniff(self, client):
         org = _org_with_entitlement(
-            Entitlement.WHITE_LABEL_BRANDING,
+            WHITE_LABEL_BRANDING,
             is_enabled=True,
             can_invite_organizations=True,
             parent=None,

@@ -8,6 +8,9 @@ from django.db import IntegrityError, transaction
 
 from allauth.socialaccount.models import SocialAccount
 from dependency_injector.wiring import Provide, inject
+from vinta_billing.exceptions import OverLimitError
+from vinta_billing.services.entitlement_service import EntitlementService
+from vinta_billing.services.subscription_service import SubscriptionService
 from vintasend.services.notification_service import (
     NotificationContextDict,
     NotificationService,
@@ -51,14 +54,11 @@ from organizations.permission_catalog import (
     canonical_groups,
 )
 from organizations.slug_generation import derive_organization_slug
-from payments.billing_constants import LimitedResource
-from payments.exceptions import OverLimitError
+from payments.seams.resources import ORGANIZATION_MEMBERS
 from payments.seams.seats import (
     check_seat_limit_for_invitation_accept,
     check_seat_limit_for_invitation_send,
 )
-from payments.services.entitlement_service import EntitlementService
-from payments.services.subscription_service import SubscriptionService
 from users.models import User
 from webhooks.services.webhook_membership_side_effects import WebhookMembershipSideEffectsService
 
@@ -872,7 +872,7 @@ class OrganizationService:
         if not membership.is_active:
             if not bypass_limits:
                 result = self.entitlement_service.check_limit(
-                    membership.organization, LimitedResource.ORGANIZATION_MEMBERS, lock=True
+                    membership.organization, ORGANIZATION_MEMBERS, lock=True
                 )
                 if not result.allowed:
                     raise OverLimitError.from_check_result(result)

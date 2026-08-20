@@ -23,6 +23,15 @@ import pytest
 from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
+from vinta_billing.constants import BillingState, LimitKind
+from vinta_billing.exceptions import OverLimitError
+from vinta_billing.models import (
+    BillingPlan,
+    Subscription,
+    SubscriptionEntitlement,
+    SubscriptionPlanLimit,
+)
+from vinta_billing.services.entitlement_service import EntitlementService
 
 from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
 from organizations.models import (
@@ -33,15 +42,7 @@ from organizations.models import (
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.services import OrganizationService
 from organizations.tests.helpers import make_membership
-from payments.billing_constants import BillingState, Entitlement, LimitedResource, LimitKind
-from payments.exceptions import OverLimitError
-from payments.models import (
-    BillingPlan,
-    Subscription,
-    SubscriptionEntitlement,
-    SubscriptionPlanLimit,
-)
-from payments.services.entitlement_service import EntitlementService
+from payments.seams.resources import ORGANIZATION_MEMBERS, PARTNER_API
 from payments.tests.billing_fixtures import reseed_billing_plans
 from public_api.models import ResourceAccess
 from public_api.services import PublicAPIAuthService
@@ -98,7 +99,7 @@ def _organization_with_seat_limit(
     baker.make(
         SubscriptionPlanLimit,
         subscription=subscription,
-        resource_key=LimitedResource.ORGANIZATION_MEMBERS,
+        resource_key=ORGANIZATION_MEMBERS,
         limit_value=seat_limit,
         kind=LimitKind.PREPAID,
     )
@@ -113,7 +114,7 @@ def _organization_with_seat_limit(
         baker.make(
             SubscriptionEntitlement,
             subscription=subscription,
-            entitlement_key=Entitlement.PARTNER_API,
+            entitlement_key=PARTNER_API,
             is_enabled=True,
         )
     if existing_active_members:

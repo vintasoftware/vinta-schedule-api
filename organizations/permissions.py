@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING, Annotated
 from dependency_injector.wiring import Provide, inject
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import BasePermission
+from vinta_billing.entitlement_cache import has_entitlement_cached
+from vinta_billing.services.entitlement_service import EntitlementService
 from vinta_orgs.mixins import SingleOrganizationModelMixin
 
 from organizations.authorization import has_organization_permission
@@ -23,9 +25,7 @@ from organizations.permission_catalog import (
     MANAGE_MEMBERS,
     MANAGE_ORGANIZATION,
 )
-from payments.billing_constants import Entitlement
-from payments.entitlement_cache import has_entitlement_cached
-from payments.services.entitlement_service import EntitlementService
+from payments.seams.resources import WHITE_LABEL_BRANDING
 from public_api.capabilities import is_target_in_subtree
 
 
@@ -56,9 +56,7 @@ def _organization_holds_white_label_branding(
     """
     if entitlement_service is None:
         return False
-    return has_entitlement_cached(
-        entitlement_service, organization, Entitlement.WHITE_LABEL_BRANDING
-    )
+    return has_entitlement_cached(entitlement_service, organization, WHITE_LABEL_BRANDING)
 
 
 @inject
@@ -79,7 +77,7 @@ def _organizations_hold_white_label_branding(
     if entitlement_service is None or not organizations:
         return {}
     return entitlement_service.has_entitlement_for_organizations(
-        organizations, Entitlement.WHITE_LABEL_BRANDING
+        organizations, WHITE_LABEL_BRANDING
     )
 
 
