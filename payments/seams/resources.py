@@ -66,6 +66,14 @@ WEBHOOK_SUBSCRIPTIONS = "webhook_subscriptions"
 PUBLIC_API_SYSTEM_USERS = "public_api_system_users"
 EVENT_OCCURRENCES = "event_occurrences"
 
+#: The registered entitlement keys, as symbols -- same rationale as the
+#: resource keys above.
+EXTERNAL_CALENDAR_GOOGLE = "external_calendar_google"
+EXTERNAL_CALENDAR_MICROSOFT = "external_calendar_microsoft"
+PARTNER_API = "partner_api"
+WHITE_LABEL_BRANDING = "white_label_branding"
+ADVANCED_SCHEDULING = "advanced_scheduling"
+
 #: The one ``usage_extra`` key any counter here reads -- see
 #: :func:`_count_organization_members` and ``payments.seams.seats``.
 EXCLUDE_INVITATION_ID = "exclude_invitation_id"
@@ -342,8 +350,8 @@ resources.register(
     usage_extra_keys=READS_NO_USAGE_EXTRA,
 )
 
-entitlements.register("external_calendar_google", label=_("Google Calendar sync"))
-entitlements.register("external_calendar_microsoft", label=_("Microsoft Calendar sync"))
-entitlements.register("partner_api", label=_("Partner / public API access"))
-entitlements.register("white_label_branding", label=_("White-label branding"))
-entitlements.register("advanced_scheduling", label=_("Advanced scheduling"))
+entitlements.register(EXTERNAL_CALENDAR_GOOGLE, label=_("Google Calendar sync"))
+entitlements.register(EXTERNAL_CALENDAR_MICROSOFT, label=_("Microsoft Calendar sync"))
+entitlements.register(PARTNER_API, label=_("Partner / public API access"))
+entitlements.register(WHITE_LABEL_BRANDING, label=_("White-label branding"))
+entitlements.register(ADVANCED_SCHEDULING, label=_("Advanced scheduling"))
