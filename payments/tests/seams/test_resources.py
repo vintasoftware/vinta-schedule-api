@@ -61,16 +61,25 @@ pytestmark = pytest.mark.no_auto_subscription
 #: Used to be a comparison against ``LimitedResource`` / ``Entitlement`` -- see
 #: ``payments/seams/resource_keys.py``'s docstring for why those enums are gone --
 #: but a pinned literal catches the identical drift (a typo'd or retranslated
-#: label) without needing a second side to compare against.
+#: label) without needing a second side to compare against. Keys are bare string
+#: literals, not the ``payments.seams.resource_keys`` constants imported above:
+#: this dict is compared against ``resources.get(key)`` (built from those same
+#: constants in ``payments/seams/resources.py``), so importing the keys here too
+#: would make a typo in ``resource_keys.py`` invisible to this gate -- matches
+#: ``EXPECTED_ENTITLEMENT_LABELS`` below, which already uses bare literals.
+#: Independent confirmation of the same key set lives in
+#: ``payments/tests/test_plan_seed_migration.py`` and
+#: ``payments/tests/test_table_move_migration.py``, which compare against
+#: ``payments.migrations.0007``'s separately frozen literals.
 EXPECTED_RESOURCE_LABELS: dict[str, str] = {
-    ORGANIZATION_MEMBERS: "Organization members",
-    RESOURCE_CALENDARS: "Resource calendars",
-    CALENDAR_GROUPS: "Calendar groups",
-    BUNDLE_CALENDARS: "Bundle calendars",
-    AVAILABILITY_WINDOWS: "Availability windows",
-    WEBHOOK_SUBSCRIPTIONS: "Webhook subscriptions",
-    PUBLIC_API_SYSTEM_USERS: "Public API system users",
-    EVENT_OCCURRENCES: "Event occurrences",
+    "organization_members": "Organization members",
+    "resource_calendars": "Resource calendars",
+    "calendar_groups": "Calendar groups",
+    "bundle_calendars": "Bundle calendars",
+    "availability_windows": "Availability windows",
+    "webhook_subscriptions": "Webhook subscriptions",
+    "public_api_system_users": "Public API system users",
+    "event_occurrences": "Event occurrences",
 }
 EXPECTED_ENTITLEMENT_LABELS: dict[str, str] = {
     "external_calendar_google": "Google Calendar sync",
