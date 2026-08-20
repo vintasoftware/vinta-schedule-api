@@ -23,11 +23,12 @@ from django.urls import path
 import pytest
 import strawberry
 from strawberry.django.views import GraphQLView
+from vinta_billing.constants import LimitRemedy
+from vinta_billing.exceptions import OverLimitError
 
 from calendar_integration.models import CalendarGroup
 from organizations.models import Organization
-from payments.billing_constants import LimitedResource, LimitRemedy
-from payments.exceptions import OverLimitError
+from payments.seams.resources import CALENDAR_GROUPS
 from public_api.extensions import raise_over_limit_graphql_error
 
 
@@ -58,7 +59,7 @@ class Mutation:
         )
         raise_over_limit_graphql_error(
             OverLimitError(
-                resource_key=LimitedResource.CALENDAR_GROUPS,
+                resource_key=CALENDAR_GROUPS,
                 current_usage=1,
                 limit=1,
                 remedy=LimitRemedy.PURCHASE_ADD_ON,

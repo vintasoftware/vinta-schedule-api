@@ -19,6 +19,8 @@ from django.contrib.auth import get_user_model
 import pytest
 from model_bakery import baker
 from rest_framework.test import APIClient
+from vinta_billing.constants import BillingState
+from vinta_billing.models import Subscription
 
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.models import (
@@ -31,8 +33,6 @@ from calendar_integration.models import (
     CalendarOwnership,
 )
 from organizations.models import Organization, OrganizationMembership
-from payments.billing_constants import BillingState
-from payments.models import Subscription
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess
 from public_api.services import PublicAPIAuthService

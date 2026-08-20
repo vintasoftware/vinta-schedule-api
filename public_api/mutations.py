@@ -12,6 +12,8 @@ from django.utils import timezone
 import strawberry
 from dependency_injector.wiring import Provide, inject
 from graphql import GraphQLError
+from vinta_billing.exceptions import OverLimitError
+from vinta_billing.services.subscription_service import SubscriptionService
 
 from audit.constants import AuditAction
 from audit.diff import compute_diff
@@ -85,8 +87,6 @@ from organizations.permissions import (
 from organizations.redirect_url_validation import validate_redirect_url
 from organizations.services import OrganizationService
 from organizations.slug_validation import validate_organization_slug
-from payments.exceptions import OverLimitError
-from payments.services.subscription_service import SubscriptionService
 from public_api.capabilities import assert_org_can_invite, assert_target_in_subtree
 from public_api.constants import PROVIDER_SCOPED_RESOURCES, PublicAPIResources
 from public_api.extensions import raise_over_limit_graphql_error

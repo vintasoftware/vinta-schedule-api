@@ -35,6 +35,10 @@ from allauth.socialaccount.models import SocialAccount, SocialToken
 from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
+from vinta_billing.constants import BillingState
+from vinta_billing.exceptions import OverLimitError
+from vinta_billing.models import BillingPlan, Subscription, SubscriptionEntitlement
+from vinta_billing.services.subscription_service import SubscriptionService
 
 from calendar_integration.constants import CalendarProvider
 from calendar_integration.models import Calendar, CalendarOwnership
@@ -42,10 +46,11 @@ from calendar_integration.services.calendar_service import CalendarService
 from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import make_membership
-from payments.billing_constants import BillingState, Entitlement
-from payments.exceptions import OverLimitError
-from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
-from payments.services.subscription_service import SubscriptionService
+from payments.seams.resources import (
+    EXTERNAL_CALENDAR_GOOGLE,
+    EXTERNAL_CALENDAR_MICROSOFT,
+    PARTNER_API,
+)
 from public_api.models import ResourceAccess
 from users.factories import UserFactory
 
@@ -145,7 +150,7 @@ class TestPartnerApiGate:
     def test_blocks_a_trivial_query_with_a_structured_402(self):
         """Even a document with no application-level field (``__typename``) never
         reaches graphql-core -- the gate is transport-level, not per-resolver."""
-        organization = _organization_with_entitlement(Entitlement.PARTNER_API, is_enabled=False)
+        organization = _organization_with_entitlement(PARTNER_API, is_enabled=False)
         system_user, token = _make_system_user(organization)
         client = APIClient()
 
@@ -155,18 +160,18 @@ class TestPartnerApiGate:
         body = response.json()
         assert set(body.keys()) == _EXPECTED_ERROR_KEYS
         assert body["code"] == "limit_exceeded"
-        assert body["resource"] == Entitlement.PARTNER_API
+        assert body["resource"] == PARTNER_API
         assert body["remedy"] == "upgrade_plan"
 
     def test_blocks_a_real_query_with_the_same_structured_402(self):
-        organization = _organization_with_entitlement(Entitlement.PARTNER_API, is_enabled=False)
+        organization = _organization_with_entitlement(PARTNER_API, is_enabled=False)
         system_user, token = _make_system_user(organization)
         client = APIClient()
 
         response = _post_graphql(client, system_user, token, USERS_QUERY)
 
         assert response.status_code == status.HTTP_402_PAYMENT_REQUIRED
-        assert response.json()["resource"] == Entitlement.PARTNER_API
+        assert response.json()["resource"] == PARTNER_API
 
     def test_missing_entitlement_row_on_a_real_subscription_also_blocks(self):
         """No row at all (rather than an explicit ``is_enabled=False`` row) is how
@@ -190,7 +195,7 @@ class TestPartnerApiGate:
         assert response.status_code == status.HTTP_402_PAYMENT_REQUIRED
 
     def test_org_with_partner_api_enabled_is_not_blocked(self):
-        organization = _organization_with_entitlement(Entitlement.PARTNER_API, is_enabled=True)
+        organization = _organization_with_entitlement(PARTNER_API, is_enabled=True)
         system_user, token = _make_system_user(organization, with_user_access=True)
         client = APIClient()
 
@@ -274,9 +279,7 @@ _with_google_credentials = override_settings(
 @pytest.mark.django_db
 class TestExternalCalendarGoogleGate:
     def test_cannot_import_from_a_google_account_without_the_entitlement(self):
-        organization = _organization_with_entitlement(
-            Entitlement.EXTERNAL_CALENDAR_GOOGLE, is_enabled=False
-        )
+        organization = _organization_with_entitlement(EXTERNAL_CALENDAR_GOOGLE, is_enabled=False)
         membership = _admin_membership(organization)
         _google_account_with_token(membership.user)
 
@@ -286,13 +289,11 @@ class TestExternalCalendarGoogleGate:
         response = client.post(reverse("api:Calendars-request-import"))
 
         assert response.status_code == status.HTTP_402_PAYMENT_REQUIRED
-        assert response.data["resource"] == Entitlement.EXTERNAL_CALENDAR_GOOGLE
+        assert response.data["resource"] == EXTERNAL_CALENDAR_GOOGLE
 
     @_with_google_credentials
     def test_can_import_from_a_google_account_with_the_entitlement(self):
-        organization = _organization_with_entitlement(
-            Entitlement.EXTERNAL_CALENDAR_GOOGLE, is_enabled=True
-        )
+        organization = _organization_with_entitlement(EXTERNAL_CALENDAR_GOOGLE, is_enabled=True)
         membership = _admin_membership(organization)
         _google_account_with_token(membership.user)
 
@@ -371,9 +372,7 @@ class TestExternalCalendarMicrosoftGate:
     """
 
     def test_microsoft_account_is_blocked_without_the_entitlement(self):
-        organization = _organization_with_entitlements(
-            **{Entitlement.EXTERNAL_CALENDAR_MICROSOFT: False}
-        )
+        organization = _organization_with_entitlements(**{EXTERNAL_CALENDAR_MICROSOFT: False})
         membership = _admin_membership(organization)
         account = _microsoft_account_with_token(membership.user)
 
@@ -381,14 +380,12 @@ class TestExternalCalendarMicrosoftGate:
         with pytest.raises(OverLimitError) as exc_info:
             service.authenticate(account=account, organization=organization)
 
-        assert exc_info.value.resource_key == Entitlement.EXTERNAL_CALENDAR_MICROSOFT
+        assert exc_info.value.resource_key == EXTERNAL_CALENDAR_MICROSOFT
         assert isinstance(service, CalendarService)
 
     @_with_ms_credentials
     def test_microsoft_account_is_allowed_with_the_entitlement(self):
-        organization = _organization_with_entitlements(
-            **{Entitlement.EXTERNAL_CALENDAR_MICROSOFT: True}
-        )
+        organization = _organization_with_entitlements(**{EXTERNAL_CALENDAR_MICROSOFT: True})
         membership = _admin_membership(organization)
         account = _microsoft_account_with_token(membership.user)
 
@@ -401,8 +398,8 @@ class TestExternalCalendarMicrosoftGate:
         """The two entitlements are independent — holding one must not imply the other."""
         organization = _organization_with_entitlements(
             **{
-                Entitlement.EXTERNAL_CALENDAR_GOOGLE: True,
-                Entitlement.EXTERNAL_CALENDAR_MICROSOFT: False,
+                EXTERNAL_CALENDAR_GOOGLE: True,
+                EXTERNAL_CALENDAR_MICROSOFT: False,
             }
         )
         membership = _admin_membership(organization)
@@ -412,7 +409,7 @@ class TestExternalCalendarMicrosoftGate:
         with pytest.raises(OverLimitError) as exc_info:
             service.authenticate(account=account, organization=organization)
 
-        assert exc_info.value.resource_key == Entitlement.EXTERNAL_CALENDAR_MICROSOFT
+        assert exc_info.value.resource_key == EXTERNAL_CALENDAR_MICROSOFT
 
 
 @pytest.mark.django_db
@@ -435,8 +432,8 @@ class TestWriteAdapterProviderGate:
     def _setup(self, *, microsoft_enabled: bool):
         organization = _organization_with_entitlements(
             **{
-                Entitlement.EXTERNAL_CALENDAR_GOOGLE: True,
-                Entitlement.EXTERNAL_CALENDAR_MICROSOFT: microsoft_enabled,
+                EXTERNAL_CALENDAR_GOOGLE: True,
+                EXTERNAL_CALENDAR_MICROSOFT: microsoft_enabled,
             }
         )
         actor = _admin_membership(organization)
@@ -471,7 +468,7 @@ class TestWriteAdapterProviderGate:
         with pytest.raises(OverLimitError) as exc_info:
             service._get_write_adapter_for_calendar(calendar)
 
-        assert exc_info.value.resource_key == Entitlement.EXTERNAL_CALENDAR_MICROSOFT
+        assert exc_info.value.resource_key == EXTERNAL_CALENDAR_MICROSOFT
 
     @_with_google_credentials
     @_with_ms_credentials

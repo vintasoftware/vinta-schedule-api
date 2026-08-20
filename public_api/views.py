@@ -13,10 +13,10 @@ from rest_framework.permissions import AllowAny
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.viewsets import GenericViewSet, ViewSet
+from vinta_billing.services.entitlement_service import EntitlementService
 
 from common.utils.view_utils import TenantScopedViewMixin
 from organizations.permissions import IsOrganizationAdmin
-from payments.services.entitlement_service import EntitlementService
 from public_api.constants import PROVIDER_SCOPED_RESOURCES
 from public_api.docs_content import get_concept_doc, list_concept_docs
 from public_api.models import ResourceAccess, SystemUser
