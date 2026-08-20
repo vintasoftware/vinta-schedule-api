@@ -1,97 +1,98 @@
-"""Scheduled billing work.
+"""Scheduled billing work -- thin Celery wrappers over ``vinta_billing.jobs``.
 
-``meter_event_occurrences`` is the only thing that turns computed calendar
-occurrences into billable rows, so the correctness of post-paid billing rests on
-it running — and on it being harmless when it runs twice.
+``vinta_billing.jobs`` ships no Celery integration of its own (see that
+module's own docstring: "wiring it is entirely a project's job") and its own
+documented wiring pattern is exactly what this module does: a ``@shared_task``
+per per-subscription job, and a beat task that calls the package's sweep with
+an explicit ``dispatch`` that enqueues onto that local task rather than
+running inline.
 
-``process_dunning`` is the beat entry point for the grace/dunning state
-machine: it fans out one tick per subscription currently GRACE or RESTRICTED to
-``DunningService.process_subscription`` — the single dispatch point that also
-backs the webhook handlers in ``payments/views.py`` — so the transitions this
-task can drive and the transitions the webhooks can drive are the same set,
-defined once (``payments.services.billing_state_machine``).
+**Every service is resolved through this project's own DI container, not the
+package's.** ``vinta_billing.jobs``' default service resolution
+(``vinta_billing.services.container.get_dunning_service()`` and friends) is a
+*process-wide cache* built from ``VINTA_BILLING`` settings directly -- it has
+no way to see a test's ``di_container.stripe_subscription_gateway.override(...)``,
+and, unlike the shipped views/admin, it does not consult
+``VINTA_BILLING['SERVICE_CONTAINER']`` either (that setting is "where the
+shipped views and the admin get their services" -- ``vinta_billing.conf``'s
+own wording -- and ``vinta_billing.jobs`` imports the package's container
+module directly, not through ``resolve_service()``). Every per-subscription
+job function accepts its service as an optional keyword argument for exactly
+this reason (see each job's docstring in ``vinta_billing.jobs``), so each task
+below resolves its service via ``@inject`` / ``Provide[...]`` -- the same
+container every view, GraphQL resolver and other Celery task in this project
+uses -- and passes it through explicitly.
 
-``check_approaching_limits`` is the beat entry point for the proactive
-usage-warning half of "an organization can see where it stands, and is warned
-before it is blocked" — it fans out one tick per subscription (excluding
-``RESTRICTED``/``CANCELLED``, see ``UsageWarningService.check_subscription``)
-to ``UsageWarningService.check_subscription``, which is where "approaching a
-limit" is actually defined.
+**The per-subscription fan-out therefore does not use
+``VINTA_BILLING['JOB_DISPATCHER']``.** Each beat task below passes its own
+``dispatch`` lambda straight to the package sweep, so
+``payments.seams.dispatch.dispatch_via_celery`` (built for this role in an
+earlier phase, before this DI requirement was discovered against the real
+test suite) is not the path these four sweeps take. It is left in place --
+deleting it is out of this phase's scope -- but it no longer has a caller
+here; see this phase's report for the finding.
+
+Task dotted paths stay ``payments.tasks.*`` for the four beat entry points
+(``vinta_schedule_api/celerybeat_schedule.py`` names them literally) and for
+the four per-subscription tasks (nothing outside this module names their
+dotted paths, but keeping them as real Celery tasks, not inline closures, is
+what lets ``.delay()`` serialize them for a real worker).
+
+**Each per-subscription task binds ``organization_context(subscription
+.organization)`` around its call into ``vinta_billing.jobs``**, mirroring
+what this module did before this phase. ``Subscription`` itself is not
+organization-scoped (billing is read at the billing root, often an ancestor
+of a single organization -- see ``vinta_billing.models``), so nothing here
+strictly *requires* a bound organization to resolve the subscription row.
+But the seams a job's call graph reaches into read organization-scoped models
+(``payments.seams.occurrences.CalendarEventOccurrenceSource`` chief among
+them) and, while every one of those already names its organization
+explicitly (``unscoped()`` + ``organization_id__in=...`` / a safe-relation
+join), an unbound context is enough to turn a structurally-empty scoped
+``SELECT`` (e.g. ``id__in=[None]``, which a plain recurring event with no
+exceptions produces) into a crash rather than the empty result Django's own
+query planner would otherwise hand back silently. Binding the subscription's
+organization here is the same "the obvious, single-organization boundary for
+a per-subscription unit of work" this module always used, and it is not
+merely cosmetic.
 """
 
-import datetime
-import logging
-from typing import Annotated
-
-from django.utils import timezone
+from typing import TYPE_CHECKING, Annotated
 
 from dependency_injector.wiring import Provide, inject
+from vinta_billing import jobs
+from vinta_billing.models import Subscription
+from vinta_billing.services.cycle_close_service import CycleCloseService
+from vinta_billing.services.dunning_service import DunningService
+from vinta_billing.services.metering_service import MeteringService
+from vinta_billing.services.usage_warning_service import UsageWarningService
 
 from common.organization_context import organization_context
-from payments.billing_constants import BillingState
-from payments.models import Subscription
-from payments.services.cycle_close_service import CycleCloseService
-from payments.services.dunning_service import DunningService
-from payments.services.metering_service import MeteringService
-from payments.services.usage_warning_service import UsageWarningService
+from organizations.models import Organization
 from vinta_schedule_api.celery import app
 
 
-logger = logging.getLogger(__name__)
-
-#: `payments` models are plain ``BaseModel`` (not organization-scoped --
-#: billing is read at the billing root, often an ancestor of a single
-#: organization, so binding one is deliberately out of scope here). What each
-#: per-subscription task below binds is the subscription's *own* organization
-#: -- the obvious, single-organization boundary for a per-subscription unit of
-#: work, and the same organization every deleted-subscription early-return
-#: above it is keyed on. It does **not** cover the pooled-reseller-subtree
-#: reads inside ``MeteringService`` (e.g. ``expand_occurrence_identities``,
-#: which explicitly reads ``CalendarEvent`` across every organization
-#: ``EntitlementService.get_pooled_organization_ids`` returns via
-#: ``organization_id__in=...``) -- that cross-organization case is handled by
-#: switching to ``original_manager`` instead, not by binding a single context.
+if TYPE_CHECKING:
+    from vinta_orgs.state import OrganizationContext
 
 
-#: How far back each sweep re-reads. Deliberately **wider than the beat interval**
-#: (see ``CELERYBEAT_SCHEDULE``'s ``meter_event_occurrences`` entry, every 15
-#: minutes), so consecutive runs overlap heavily: at six hours, up to 23
-#: consecutive missed runs — a worker outage, a redeploy, a broker incident — are
-#: made up for by the next successful run with no operator action and no backfill
-#: command. Re-reading an already-metered stretch costs one expansion query and
-#: inserts nothing, because ``MeteredOccurrence``'s unique constraint absorbs it.
-#:
-#: Widening this is cheap and safe; narrowing it below the beat interval would
-#: leave gaps that are silently never billed.
-#:
-#: **Operator action after an outage longer than this.** Self-healing stops at six
-#: hours; beyond that the un-swept stretch is never billed, and nothing raises,
-#: because the next sweep only ever looks six hours back. There is no backfill
-#: management command. Re-meter the gap by calling
-#: ``MeteringService.meter_occurrences_for_period(subscription, gap_start, gap_end)``
-#: for each subscription in ``MeteringService.subscriptions_to_sweep()`` — it is
-#: idempotent, so an over-wide window is safe — then confirm with
-#: ``reconcile_period``, which reports the recovered stretch as ``unmetered``
-#: before the backfill and clean after it.
-METERING_SWEEP_WINDOW = datetime.timedelta(hours=6)
+def _bound_organization(subscription_id: int) -> "OrganizationContext[Organization]":
+    """``organization_context(...)`` bound to ``subscription_id``'s
+    organization, or a no-op context when the subscription no longer exists
+    (the job function being called handles that race on its own -- see each
+    task's docstring below -- so this only has to not raise)."""
+    subscription = Subscription.objects.filter(pk=subscription_id).first()
+    return organization_context(subscription.organization if subscription is not None else None)
 
 
 @app.task
 def meter_event_occurrences() -> None:
-    """Beat entry point: fan out a metering sweep for every subscription.
-
-    The window is computed **once here** and passed explicitly to each
-    per-subscription task, rather than being recomputed inside them. A task that
-    derived its own window from ``timezone.now()`` would sweep a different stretch
-    on every ``CELERY_TASK_ACKS_LATE`` redelivery, so a retry would not be a repeat
-    of the same work — which is exactly the property that makes redelivery safe.
-    """
-    window_end = timezone.now()
-    window_start = window_end - METERING_SWEEP_WINDOW
-    for subscription_id in MeteringService.subscriptions_to_sweep():
-        meter_subscription_event_occurrences.delay(
-            subscription_id, window_start.isoformat(), window_end.isoformat()
-        )
+    """Beat entry point: ``vinta_billing.jobs.meter_event_occurrences``, fanning
+    out onto :func:`meter_subscription_event_occurrences` rather than running
+    each subscription's sweep inline."""
+    jobs.meter_event_occurrences(
+        dispatch=lambda job, *args: meter_subscription_event_occurrences.delay(*args)
+    )
 
 
 @app.task
@@ -102,57 +103,25 @@ def meter_subscription_event_occurrences(
     window_end: str,
     metering_service: Annotated[MeteringService, Provide["metering_service"]],
 ) -> None:
-    """Meter one subscription's pooled subtree over an explicit window.
+    """One subscription's occurrence sweep, dispatched through
+    ``vinta_billing.jobs.meter_subscription_event_occurrences`` with this
+    project's DI-wired ``MeteringService``.
 
-    Idempotent, as ``CELERY_TASK_ACKS_LATE`` requires: the same arguments produce
-    the same rows, and re-running inserts nothing.
-
-    A subscription deleted between fan-out and execution is logged and skipped
-    rather than raising — a raising task is redelivered and fails identically
-    forever, turning a benign race into a permanent stream of alerts.
+    A subscription deleted between fan-out and execution is logged and
+    skipped by that call itself, not raised here.
     """
-    subscription = Subscription.objects.filter(pk=subscription_id).first()
-    if subscription is None:
-        logger.info(
-            "Skipping occurrence metering for subscription %s: it no longer exists.",
-            subscription_id,
+    with _bound_organization(subscription_id):
+        jobs.meter_subscription_event_occurrences(
+            subscription_id, window_start, window_end, metering_service=metering_service
         )
-        return
-
-    with organization_context(subscription.organization):
-        result = metering_service.meter_occurrences_for_period(
-            subscription,
-            datetime.datetime.fromisoformat(window_start),
-            datetime.datetime.fromisoformat(window_end),
-        )
-    logger.info(
-        "Metered subscription %s over [%s, %s): %s occurrences seen, %s newly recorded.",
-        result.subscription_id,
-        result.window_start,
-        result.window_end,
-        result.occurrences_seen,
-        result.occurrences_recorded,
-    )
 
 
 @app.task
 def process_dunning() -> None:
-    """Beat entry point: fan out one dunning tick per subscription currently
-    GRACE or RESTRICTED.
-
-    Subscriptions on any other ``billing_state`` (``ACTIVE``, ``FREE``,
-    ``CANCELLED``) are never selected -- once a subscription leaves GRACE for
-    ACTIVE (a successful retry, confirmed through the subscription-payment
-    webhook), the next run of this query no longer includes it, which is what
-    stops the ladder from retrying an already-resolved subscription.
-    """
-    subscription_ids = list(
-        Subscription.objects.filter(
-            billing_state__in=(BillingState.GRACE, BillingState.RESTRICTED)
-        ).values_list("pk", flat=True)
-    )
-    for subscription_id in subscription_ids:
-        process_dunning_for_subscription.delay(subscription_id)
+    """Beat entry point: ``vinta_billing.jobs.process_dunning``, fanning out
+    onto :func:`process_dunning_for_subscription` rather than running each
+    subscription's tick inline."""
+    jobs.process_dunning(dispatch=lambda job, *args: process_dunning_for_subscription.delay(*args))
 
 
 @app.task
@@ -161,138 +130,28 @@ def process_dunning_for_subscription(
     subscription_id: int,
     dunning_service: Annotated[DunningService, Provide["dunning_service"]],
 ) -> None:
-    """One dunning tick for one subscription, dispatched through
-    ``DunningService.process_subscription`` -- never a direct
-    ``billing_state`` write here (see ``payments.services.billing_state_machine``).
+    """One dunning tick, dispatched through
+    ``vinta_billing.jobs.process_dunning_for_subscription`` with this project's
+    DI-wired ``DunningService``.
 
-    Idempotent under ``CELERY_TASK_ACKS_LATE`` redelivery:
-    ``DunningService``'s own retry-bucket gate (``Subscription.last_dunning_attempt_at``)
-    and the retry charge's bucket-derived ``idempotency_key`` -- both views of
-    one ``retry_attempt_ordinal`` -- are what make a redelivered tick harmless,
-    not anything here.
-
-    A subscription deleted between fan-out and execution is logged and skipped
-    rather than raising -- a raising task is redelivered and fails identically
-    forever, turning a benign race into a permanent stream of alerts (same
-    reasoning as ``meter_subscription_event_occurrences``, above).
-
-    ``dunning_service.process_subscription`` itself is wrapped in the same
-    best-effort ``except Exception`` guard ``close_subscription_billing_period``
-    (below) already carries, for the same reason: a provider fault the
-    adapter layer does not translate into a typed, expected outcome (a
-    genuine Stripe integration/transport error, or a translated error type
-    this call site does not yet know to catch) must not be allowed to raise
-    out of this task. An
-    uncaught raise here is not a one-off failure -- per this task's own
-    docstring above, it is redelivered and fails identically forever, so one
-    subscription's provider fault would silently stop that subscription's
-    entire ladder (no further retry, no reminder, no final-warning email)
-    while looking, from the outside, like nothing is wrong.
+    A subscription deleted between fan-out and execution is logged and
+    skipped by that call itself, not raised here. Same best-effort
+    ``except Exception`` guard around a provider fault as before this phase
+    -- carried inside ``vinta_billing.jobs.process_dunning_for_subscription``
+    itself now, not here.
     """
-    subscription = Subscription.objects.filter(pk=subscription_id).first()
-    if subscription is None:
-        logger.info(
-            "Skipping dunning tick for subscription %s: it no longer exists.",
-            subscription_id,
-        )
-        return
-    try:
-        with organization_context(subscription.organization):
-            dunning_service.process_subscription(subscription)
-    except Exception:  # noqa: BLE001 - best-effort: never let one tick poison the ladder
-        logger.exception(
-            "Dunning tick failed for subscription %s; the ladder's own bookkeeping "
-            "(last_dunning_attempt_at, the retry throttle bucket) is unaffected, so "
-            "the next beat tick retries.",
-            subscription_id,
-        )
-
-
-@app.task
-def close_billing_periods() -> None:
-    """Beat entry point: fan out one cycle-close per subscription whose current
-    billing period has ended.
-
-    The window (which subscriptions are due) is decided **once here** from
-    ``timezone.now()`` and each subscription is closed in its own task, so one
-    subscription's close failing (a declined overage charge, a provider error)
-    records its failure and does not abort the rest of the sweep — a
-    best-effort-across-subscriptions approach. Each close is idempotent (the rolled
-    ``current_period_start`` is the durable marker; the overage charge carries a
-    ``(subscription, period_start)`` idempotency key), so a
-    ``CELERY_TASK_ACKS_LATE`` redelivery is harmless.
-
-    Only billing-root subscriptions with an elapsed period are selected
-    (``CycleCloseService.subscriptions_to_close`` reuses
-    ``MeteringService.subscriptions_to_sweep`` so "which subscription owns this
-    usage" has a single definition).
-    """
-    for subscription_id in CycleCloseService.subscriptions_to_close():
-        close_subscription_billing_period.delay(subscription_id)
-
-
-@app.task
-@inject
-def close_subscription_billing_period(
-    subscription_id: int,
-    cycle_close_service: Annotated[CycleCloseService, Provide["cycle_close_service"]],
-) -> None:
-    """Close every elapsed period for one subscription, dispatched through
-    ``CycleCloseService.close_subscription`` — the single place a period is
-    settled and rolled (see that method's docstring).
-
-    A subscription deleted between fan-out and execution is logged and skipped
-    rather than raising (same reasoning as ``meter_subscription_event_occurrences``).
-
-    A close failure (declined charge, provider error) is caught and logged rather
-    than re-raised: the period stays unrolled, so the next beat tick re-dispatches
-    and retries it (with the same overage idempotency key, so a partially-charged
-    period does not double-charge), and one poison subscription never spins the
-    task or blocks the rest of the sweep.
-    """
-    subscription = Subscription.objects.filter(pk=subscription_id).first()
-    if subscription is None:
-        logger.info(
-            "Skipping cycle close for subscription %s: it no longer exists.",
-            subscription_id,
-        )
-        return
-    try:
-        with organization_context(subscription.organization):
-            closed = cycle_close_service.close_subscription(subscription)
-    except Exception:  # noqa: BLE001 - best-effort: never let one close abort the sweep
-        logger.exception(
-            "Cycle close failed for subscription %s; the period is left unrolled and will be "
-            "retried on the next sweep (the overage idempotency key prevents a double charge).",
-            subscription_id,
-        )
-        return
-    logger.info(
-        "Cycle close for subscription %s settled %s period(s).",
-        subscription_id,
-        len(closed),
-    )
+    with _bound_organization(subscription_id):
+        jobs.process_dunning_for_subscription(subscription_id, dunning_service=dunning_service)
 
 
 @app.task
 def check_approaching_limits() -> None:
-    """Beat entry point: fan out one approaching-limit check per subscription
-    that could still be warned before being blocked.
-
-    Excludes ``RESTRICTED`` (already blocked -- see
-    ``UsageWarningService.check_subscription`` for why warning it further adds
-    nothing) and ``CANCELLED`` (running out the clock to ``FREE``, not
-    accruing toward a block). ``FREE``, ``ACTIVE``, and ``GRACE`` subscriptions
-    are all in scope -- a free-tier organization approaching its seat limit
-    needs the same proactive warning as a paid one.
-    """
-    subscription_ids = list(
-        Subscription.objects.exclude(
-            billing_state__in=(BillingState.RESTRICTED, BillingState.CANCELLED)
-        ).values_list("pk", flat=True)
+    """Beat entry point: ``vinta_billing.jobs.check_approaching_limits``,
+    fanning out onto :func:`check_approaching_limits_for_subscription` rather
+    than running each subscription's check inline."""
+    jobs.check_approaching_limits(
+        dispatch=lambda job, *args: check_approaching_limits_for_subscription.delay(*args)
     )
-    for subscription_id in subscription_ids:
-        check_approaching_limits_for_subscription.delay(subscription_id)
 
 
 @app.task
@@ -301,27 +160,46 @@ def check_approaching_limits_for_subscription(
     subscription_id: int,
     usage_warning_service: Annotated[UsageWarningService, Provide["usage_warning_service"]],
 ) -> None:
-    """One approaching-limit sweep for one subscription, dispatched through
-    ``UsageWarningService.check_subscription`` -- the single place "approaching
-    a limit" is defined (see that method's docstring).
+    """One approaching-limit check, dispatched through
+    ``vinta_billing.jobs.check_approaching_limits_for_subscription`` with this
+    project's DI-wired ``UsageWarningService``.
 
-    Idempotent under ``CELERY_TASK_ACKS_LATE`` redelivery and safe to re-run on
-    every beat tick: ``LimitWarningNotification``'s unique constraint, not
-    anything here, is what keeps a still-crossed threshold from re-notifying
-    every tick within the same billing cycle.
-
-    A subscription deleted between fan-out and execution is logged and skipped
-    rather than raising -- a raising task is redelivered and fails identically
-    forever, turning a benign race into a permanent stream of alerts (same
-    reasoning as ``meter_subscription_event_occurrences``/
-    ``process_dunning_for_subscription``, above).
+    A subscription deleted between fan-out and execution is logged and
+    skipped by that call itself, not raised here.
     """
-    subscription = Subscription.objects.filter(pk=subscription_id).first()
-    if subscription is None:
-        logger.info(
-            "Skipping approaching-limit check for subscription %s: it no longer exists.",
-            subscription_id,
+    with _bound_organization(subscription_id):
+        jobs.check_approaching_limits_for_subscription(
+            subscription_id, usage_warning_service=usage_warning_service
         )
-        return
-    with organization_context(subscription.organization):
-        usage_warning_service.check_subscription(subscription)
+
+
+@app.task
+def close_billing_periods() -> None:
+    """Beat entry point: ``vinta_billing.jobs.close_billing_periods``, fanning
+    out onto :func:`close_subscription_billing_period` rather than running
+    each subscription's close inline."""
+    jobs.close_billing_periods(
+        dispatch=lambda job, *args: close_subscription_billing_period.delay(*args)
+    )
+
+
+@app.task
+@inject
+def close_subscription_billing_period(
+    subscription_id: int,
+    cycle_close_service: Annotated[CycleCloseService, Provide["cycle_close_service"]],
+) -> None:
+    """One subscription's period close(s), dispatched through
+    ``vinta_billing.jobs.close_subscription_billing_period`` with this
+    project's DI-wired ``CycleCloseService``.
+
+    A subscription deleted between fan-out and execution is logged and
+    skipped by that call itself, not raised here. Same best-effort
+    ``except Exception`` guard around a provider fault as before this phase
+    -- carried inside ``vinta_billing.jobs.close_subscription_billing_period``
+    itself now, not here.
+    """
+    with _bound_organization(subscription_id):
+        jobs.close_subscription_billing_period(
+            subscription_id, cycle_close_service=cycle_close_service
+        )

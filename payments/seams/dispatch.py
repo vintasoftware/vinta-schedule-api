@@ -23,10 +23,27 @@ populates the Django app registry before it calls
 ``di_core.apps.DICoreConfig.ready()`` -- which wires every package in
 ``INTERNAL_INSTALLED_APPS``, ``payments`` included, and so imports this module
 -- has already run ``@shared_task`` on ``_dispatch_billing_job`` by the time
-``autodiscover_tasks()`` executes. ``payments.dispatch_billing_job`` is
-reachable via ``.delay()`` from Phase 0 onward; nothing calls it yet, but that
-is a matter of no caller existing, not of the task being unregistered. Phase 2
-(``payments/tasks.py``, the beat wrappers) is where the first caller lands.
+``autodiscover_tasks()`` executes. ``payments.dispatch_billing_job`` has been
+reachable via ``.delay()`` since Phase 0.
+
+**Not actually on the path ``payments/tasks.py``'s four beat tasks take, as of
+Phase 2.** The expectation when this seam was built was that the beat wrappers
+would call ``vinta_billing.jobs.<sweep>()`` with no explicit ``dispatch``,
+letting ``VINTA_BILLING['JOB_DISPATCHER']`` (this module's
+``dispatch_via_celery``) resolve automatically. Phase 2 found that does not
+work for this project: the per-subscription jobs this dispatches
+(``vinta_billing.jobs.process_dunning_for_subscription`` and friends) resolve
+their service from ``vinta_billing.services.container`` when nothing supplies
+one, which is a cache built from ``VINTA_BILLING`` settings directly and does
+not see a test's (or production's) ``di_container.<provider>.override(...)``
+-- unlike the shipped views/admin, it does not consult
+``VINTA_BILLING['SERVICE_CONTAINER']`` either. So ``payments/tasks.py``
+resolves each service through this project's own DI container via
+``@inject`` and passes each one into ``vinta_billing.jobs`` explicitly,
+bypassing ``JOB_DISPATCHER`` (and this module) with a `dispatch` argument
+passed directly to each sweep. This module -- and the ``JOB_DISPATCHER``
+setting -- are left in place for a caller of ``vinta_billing.jobs.*`` that
+does not need a DI-wired service; there is none today.
 """
 
 from __future__ import annotations
@@ -58,9 +75,14 @@ def dispatch_via_celery(job: Any, *args: Any) -> None:
 
     Not wrapped in ``transaction.on_commit`` -- unlike a view, nothing that
     calls into ``vinta_billing.jobs`` runs inside ``ATOMIC_REQUESTS``'s
-    per-request transaction. The beat tasks that call these sweeps (wired in
-    Phase 2, ``payments/tasks.py``) are their own top-level Celery tasks, not
-    request handlers.
+    per-request transaction. Any caller of a sweep would itself be its own
+    top-level Celery task, not a request handler.
+
+    See this module's docstring: ``payments/tasks.py``'s four beat tasks do
+    not call this function as of Phase 2 -- each passes its own ``dispatch``
+    directly to the ``vinta_billing.jobs`` sweep it calls instead, so its
+    per-subscription jobs resolve their services from this project's DI
+    container rather than from here.
     """
     dotted_path = f"{job.__module__}.{job.__qualname__}"
     _dispatch_billing_job.delay(dotted_path, list(args))

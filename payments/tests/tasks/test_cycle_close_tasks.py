@@ -1,6 +1,7 @@
 """The scheduled cycle-close sweep.
 
-Two properties worth a test beyond the service's own unit tests:
+Both tasks now delegate to ``vinta_billing.jobs`` (see ``payments/tasks.py``'s
+module docstring). Two properties are still worth a test here:
 
 - the fan-out selects only subscriptions whose period has **ended** (and only
   billing roots), and dispatches one task each — the beat task decides "who is due"
@@ -37,6 +38,13 @@ def subscription(organization: Organization) -> Subscription:
 
 @pytest.mark.django_db
 class TestCloseBillingPeriodsFanOut:
+    def test_the_beat_task_delegates_to_the_packages_sweep(self, assert_no_unbound_scoped_queries):
+        with patch("payments.tasks.jobs.close_billing_periods") as job:
+            close_billing_periods()
+
+        assert job.call_count == 1
+        assert callable(job.call_args.kwargs["dispatch"])
+
     def test_only_subscriptions_with_an_ended_period_are_dispatched(
         self, assert_no_unbound_scoped_queries, subscription: Subscription
     ):

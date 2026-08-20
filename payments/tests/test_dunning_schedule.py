@@ -1,5 +1,7 @@
-"""Integration tests for the dunning ladder's Celery beat entry points
-(``payments.tasks.process_dunning`` / ``process_dunning_for_subscription``).
+"""Integration tests for the dunning ladder's Celery beat entry point
+(``payments.tasks.process_dunning``, a thin wrapper over
+``vinta_billing.jobs.process_dunning``) and the per-subscription job it fans
+out to (``vinta_billing.jobs.process_dunning_for_subscription``).
 
 Drives the real, DI-wired ``DunningService`` -- not a hand-written double --
 with the MercadoPago SDK mocked (the same pattern

@@ -1,6 +1,7 @@
-"""Integration tests for the approaching-limit warning beat entry points
-(``payments.tasks.check_approaching_limits`` /
-``check_approaching_limits_for_subscription``).
+"""Integration tests for the approaching-limit warning beat entry point
+(``payments.tasks.check_approaching_limits``, a thin wrapper over
+``vinta_billing.jobs.check_approaching_limits``) and the per-subscription job
+it fans out to (``vinta_billing.jobs.check_approaching_limits_for_subscription``).
 
 Drives the real, DI-wired ``UsageWarningService`` (not a hand-written double)
 with only ``notification_service`` swapped out, the same pattern
