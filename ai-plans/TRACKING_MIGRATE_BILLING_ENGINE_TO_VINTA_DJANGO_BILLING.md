@@ -970,6 +970,91 @@ finding: wrong only against a live MercadoPago call, invisible to a green suite.
 two-column keep/drop table **in the PR body**", and no PR existed when the review ran. The
 table goes in the PR at integration, now carrying a corrected row for the dunning module.
 
+### Phase 6 — Delete the shims and close out ✅
+
+Branch `plan/migrate-billing-engine-to-vinta-django-billing/phase-6`, based on phase-5.
+Implementer sonnet (plan suggested Tier 1 — see below). Six commits: `5f912d05` migration
+freeze · `e1143a24` `resource_keys` leaf split · `49e5f3f1` shim deletion · `c96e3d02` docs
+· plus the review fixes and `ef21b48e`.
+
+**The plan called this phase "mechanical deletion and doc edits" and suggested a Tier-1
+implementer.** It was neither. It rewrote three data migrations, and a mistake there breaks
+`migrate` from zero — which is how every test database in the repo is built. Run at sonnet,
+reviewed at opus rather than the configured tier 3.
+
+**Both acceptance criteria, verified by the conductor:**
+
+- `grep -rn "from vinta_billing" payments/ | grep -v seams/ | grep -v tests/` → four files:
+  `tasks.py` and `billing_plans_catalog.py` (the plan's two), plus `notification_contexts.py`
+  and `management/commands/reconcile_billing_period.py`. The latter two are genuinely
+  unforeseen — the plan's Phase 6 inventory forgot the management command exists and never
+  anticipated `LimitedResource(key).label` needing a registry lookup. **The migrations are
+  no longer in this list**, because the review fixes froze them.
+- `find payments -name "*.py" -not -path "*/migrations/*" -not -path "*/tests/*"` → **17**,
+  not "at most ten". Stale prediction: written when `seams/` held five modules. The 17 are
+  four `__init__.py`, `apps.py`, `tasks.py`, `notification_contexts.py`,
+  `billing_plans_catalog.py`, the management command, and eight seams.
+
+**Review: no BLOCKER.** The reviewer ran `migrate` from zero itself against a scratch
+database and verified the frozen enum values byte-for-byte by AST-extracting them from the
+pre-phase `billing_constants.py` — all 8 resource keys, all 5 entitlement keys, both
+`LimitKind` values, and all 13 labels identical, in declaration order.
+
+### The finding nobody had flagged: a data migration that depended on a runtime setting
+
+Phase 6 froze `0007`'s enums correctly but left `0009` importing `billing_root_filter` from
+the package. The conductor verified the chain: that function returns
+`hierarchy.get_hierarchy().billing_root_q()`, `get_hierarchy()` resolves
+`VINTA_BILLING["HIERARCHY"]` **at call time**, and the package's default
+`FlatHierarchy.billing_root_q()` returns a bare `Q()` matching every row.
+
+So a data migration whose entire purpose is backfilling a `Subscription` for billing
+**roots** had become dependent on a live setting. Unset or repoint `HIERARCHY` and a fresh
+`migrate` gives every organization — reseller children included — its own subscription,
+exactly what that migration's docstring forbids. Nothing tested it.
+
+Fixed by freezing the predicate inline as
+`Q(parent__isnull=True) | Q(can_invite_organizations=True)`, and freezing
+`MissingSeedBillingPlanError` as a local exception so a future package rename cannot raise
+`ImportError` in the migration loader and fail every test-database build. `0021`'s
+`DocumentTypes` frozen for the same reason — the original argument for keeping it live
+(avoiding a follow-up migration when choices change) is moot, since `0024` removes the model
+from migration state entirely.
+
+Proven with a five-organization fixture: `plain-root`, `reseller-root` and `reseller-child`
+each got a subscription; `plain-child` and `grandchild` did not.
+
+### A self-comparing gate, for the third time on the same registry
+
+The rewritten `test_resources.py` bridge imported `RESOURCE_KEYS` from the same leaf module
+`resources.py` registers from — **and** used those constants as `EXPECTED_RESOURCE_LABELS`'
+dict keys, so a typo'd key moved both sides together and all four tests stayed green. The
+adjacent `EXPECTED_ENTITLEMENT_LABELS` already used bare literals and was a real control,
+making this an inconsistency inside one file rather than a design choice.
+
+Not a BLOCKER only because the drift is caught two files away, in `test_plan_seed_migration.py`
+and `test_table_move_migration.py`, which compare against `0007`'s **independently** frozen
+literals. Fixed to bare literals with red-then-green proof, plus a comment naming where the
+independent confirmation lives.
+
+*A conductor error, corrected by the reviewer:* the conductor reasoned the label test would
+still catch a typo'd key via `resources.get()` raising. It would not — the dict keys were
+the imported constants too.
+
+Six further SHOULD-FIX items applied: entitlement keys checked by membership rather than
+count; new tests for `notification_contexts.py`'s untested render path (the exception class
+changed from `ValueError` to `ImproperlyConfigured` with no coverage either side); two dead
+comment pointers in `calendar_integration/querysets.py`; the management command added to
+both doc inventories; and unrelated quote churn reverted out of a frozen migration.
+
+**A disagreement worth recording.** The conductor instructed a comment in
+`payments/seams/notifier.py` be repointed at `vinta_billing.services.dunning_service` "for
+the same wrapping". The fixer applied it, then flagged that the claim is false — the package
+passes plain dicts to its `Notifier` protocol and does not wrap. The
+`NotificationContextDict` wrap now happens in exactly one place in the system: that seam.
+Rewritten to say so (`ef21b48e`). Applying the instruction and putting the inaccuracy on the
+record was the right shape for that disagreement.
+
 ## Carry-forward into later phases
 
 Discovered during Phase 0's review. Each one is a correction to a later phase's body,
