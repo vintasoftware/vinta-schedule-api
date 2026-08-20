@@ -120,3 +120,18 @@ class TestScalarSettings:
 
     def test_default_currency_is_usd(self):
         assert get_setting("DEFAULT_CURRENCY") == "USD"
+
+    def test_site_domain_reads_the_primary_vinta_billing_branch(self):
+        """``get_site_domain()`` reads ``VINTA_BILLING["SITE_DOMAIN"]`` first
+        and falls back to a top-level ``settings.SITE_DOMAIN`` only if that is
+        unset. This project configures the former
+        (``vinta_schedule_api/settings/base.py``), so ``get_setting`` must
+        resolve through the primary branch, not the fallback -- the two
+        happen to carry the same value here, so a test that used
+        ``override_settings(SITE_DOMAIN=...)`` instead (exercising only the
+        fallback) would stay green even if the primary branch broke. Wrong
+        only against a live MercadoPago call (the adapter's ``notification_url``
+        builder is the only reader), invisible to a green suite otherwise --
+        same hazard class as the ``URL_NAMESPACE`` finding above.
+        """
+        assert get_setting("SITE_DOMAIN") == settings.SITE_DOMAIN
