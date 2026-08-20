@@ -95,13 +95,34 @@ def make_add_on(subscription, resource_key, quantity, is_active=True):
 @pytest.mark.django_db
 class TestGetEffectiveLimit:
     """The generic shape of ``get_effective_limit`` -- the subscription's own
-    row, add-on aggregation, and the NULL-is-unlimited rule -- is now the
-    package's own to prove (``vinta_billing`` ``tests/test_entitlement_engine
-    .py::TestEffectiveLimit``/``TestAddOns``). What survives here is the
-    query-shape behaviour those generic tests do not pin: the unlimited
-    branch skipping the add-on aggregate entirely, and the kind/overage-price
-    passthrough this project's postpaid resources depend on.
+    row and the NULL-is-unlimited rule -- is now the package's own to prove
+    (``vinta_billing`` ``tests/test_entitlement_engine
+    .py::TestEffectiveLimit``/``TestAddOns``). What survives here is what
+    those generic tests do not pin: the add-on aggregation's cross-resource
+    isolation and multi-row summing (the package's own add-on tests cover
+    only one active row on one resource each), the unlimited branch skipping
+    the add-on aggregate entirely, and the kind/overage-price passthrough
+    this project's postpaid resources depend on.
     """
+
+    def test_adds_active_add_on_quantity_to_the_plan_limit(
+        self, service, organization, subscription
+    ):
+        make_limit(subscription, LimitedResource.ORGANIZATION_MEMBERS, 5)
+        make_add_on(subscription, LimitedResource.ORGANIZATION_MEMBERS, 3)
+        make_add_on(subscription, LimitedResource.ORGANIZATION_MEMBERS, 2)
+
+        result = service.get_effective_limit(organization, LimitedResource.ORGANIZATION_MEMBERS)
+
+        assert result.limit_value == 10
+
+    def test_ignores_add_ons_for_a_different_resource(self, service, organization, subscription):
+        make_limit(subscription, LimitedResource.ORGANIZATION_MEMBERS, 5)
+        make_add_on(subscription, LimitedResource.RESOURCE_CALENDARS, 3)
+
+        result = service.get_effective_limit(organization, LimitedResource.ORGANIZATION_MEMBERS)
+
+        assert result.limit_value == 5
 
     def test_unlimited_plan_limit_never_runs_the_add_on_aggregate(
         self, service, organization, subscription
