@@ -8,6 +8,8 @@ import pytest
 from allauth.account import app_settings as account_app_settings
 from allauth.socialaccount.models import SocialLogin
 from model_bakery import baker
+from vinta_billing.constants import BillingState, LimitKind
+from vinta_billing.models import BillingPlan, Subscription, SubscriptionPlanLimit
 
 from accounts.account_adapters import (
     AccountAdapter,
@@ -16,8 +18,7 @@ from accounts.account_adapters import (
 )
 from legal.factories import UserConsentFactory
 from organizations.models import Organization, OrganizationInvitation, OrganizationMembership
-from payments.billing_constants import BillingState, LimitedResource, LimitKind
-from payments.models import BillingPlan, Subscription, SubscriptionPlanLimit
+from payments.seams.resources import ORGANIZATION_MEMBERS
 from users.models import Profile, User
 
 
@@ -43,7 +44,7 @@ def _org_at_seat_limit_with_pending_invitation(email: str) -> Organization:
     baker.make(
         SubscriptionPlanLimit,
         subscription=subscription,
-        resource_key=LimitedResource.ORGANIZATION_MEMBERS,
+        resource_key=ORGANIZATION_MEMBERS,
         limit_value=1,
         kind=LimitKind.PREPAID,
     )

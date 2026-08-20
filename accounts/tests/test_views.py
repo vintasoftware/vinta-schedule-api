@@ -12,11 +12,12 @@ import pytest
 from allauth.headless.socialaccount.forms import RedirectToProviderForm
 from allauth.socialaccount.providers.base import ProviderException
 from model_bakery import baker
+from vinta_billing.constants import BillingState
+from vinta_billing.models import BillingPlan, Subscription, SubscriptionEntitlement
 
 from accounts.views import ProviderRedirectAPIView
 from organizations.models import Organization, OrganizationBranding, OrganizationMembership
-from payments.billing_constants import BillingState, Entitlement
-from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
+from payments.seams.resources import WHITE_LABEL_BRANDING
 from users.factories import UserFactory
 
 
@@ -208,7 +209,7 @@ class TestProviderCallbackDestinationResolution:
         baker.make(
             SubscriptionEntitlement,
             subscription=subscription,
-            entitlement_key=Entitlement.WHITE_LABEL_BRANDING,
+            entitlement_key=WHITE_LABEL_BRANDING,
             is_enabled=False,
         )
         baker.make(OrganizationMembership, user=user, organization=org)
