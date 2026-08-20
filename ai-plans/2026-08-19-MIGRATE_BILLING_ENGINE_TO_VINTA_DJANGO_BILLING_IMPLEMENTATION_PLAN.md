@@ -81,6 +81,35 @@ Consequences for the rest of this plan:
   once a webhook is registered with a provider, its path must never move again.
 - No phase in this plan is user-visible.
 
+### Post-implementation corrections (2026-08-20)
+
+The plan was executed in full. Six statements below turned out to be false, and are
+corrected here so the plan does not keep asserting them. Each was found by doing the work,
+not by reading; the per-phase detail lives in PRs #284–#290.
+
+| Where | The plan said | What was true |
+|---|---|---|
+| **Risk & Rollout Notes**, "Why the table rename lost" | The copy "leaves the package's own index names in place" | The package has no own names. `vinta_billing.0001_initial` carries 11 constraint and 2 index names byte-identical to this app's, because its models were ported field-for-field, and Postgres namespaces those per **schema**. Its initial migration fails wherever `payments_*` still stands — every environment, including a fresh test database. Phase 1 needed a second migration (`0023_free_colliding_constraint_names`, ordered by `run_before`) to drop them first. |
+| **Guiding Decisions**, "Transitional re-export shims" | The shims are "one-line re-exports" | True for four of five. `payments/billing_constants.py` could not be: the package has seven of its nine classes but deliberately not `LimitedResource` or `Entitlement`, which become registry keys. That shim re-exported seven names and kept two real class definitions until Phase 6. |
+| **Phase 3** and **Phase 4** file lists | Between them they cover the consumers | They omit `organizations/` entirely — five production modules and nine test modules — plus `public_api/extensions.py` and `public_api/admin/system_user.py`. Phase 4's own acceptance grep cannot pass without them. Folded into Phase 4. |
+| **Phase 5** delete list | ~15 modules to delete, ~15,000 LoC | ~4,700 LoC. Applying the phase's own rule — *name a counterpart in the package's suite or do not delete* — reversed most of the list. The package has **zero** concurrency tests; several named modules drive host seams (`audit`, `resync`) or prove DI wiring; and the "migration tests superseded by Phase 1's" category **does not exist** — the modules it names test host data migrations `0009`/`0018`/`0019`/`0021`, unrelated to the table move. |
+| **Phase 6** item 2 | `0007_seed_billing_plans.py` holds a frozen copy and "is **not** touched" | It imported the enums live, as did `0009` and `0021`. Since `migrate` from zero builds every test database, deleting the shims first would have failed the whole suite. `0007` now holds frozen literals; `0009` and `0021` import nothing from the package. |
+| **Phase 6** framing | "Mechanical deletion and doc edits", Tier 1 | It rewrote three data migrations. `0009` had also become dependent on a runtime setting: `billing_root_filter` resolves `VINTA_BILLING["HIERARCHY"]` at call time and falls back to a `Q()` matching every row, so an unset setting would backfill a subscription for every reseller child — what that migration exists to prevent. |
+
+Two further things the plan could not have known, both now in [docs/billing.md](../docs/billing.md):
+
+- **The seam count.** The plan named five. The end state is eight, and not a superset:
+  `dispatch` was planned and proved unnecessary (the package's job dispatcher bypasses host
+  DI), while `seats`, `audit`, `resync` and `resource_keys` were unforeseen. `permissions`
+  and `view_scoping` existed only between Phases 1 and 2 as workarounds for package defects,
+  and were deleted when 0.5.0 fixed them upstream.
+- **Two `vinta-django-billing` releases were required**, not the "conditional, skipped
+  entirely if no gap appears" Phase 2b anticipated. 0.4.0 made the shipped routes mountable
+  at all; 0.5.0 closed an authorization bypass (a child-org admin could cancel a reseller
+  root's subscription), fixed Stripe subscription billing reading a field the SDK does not
+  have, shipped `py.typed`, and added the two seams that let Phase 2 delete the host REST
+  layer instead of keeping it.
+
 ## 2. Guiding Decisions
 
 | Decision | Resolution |
