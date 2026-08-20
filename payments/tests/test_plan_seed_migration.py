@@ -25,6 +25,7 @@ from vinta_billing.models import BillingPlan
 from payments.seams.resource_keys import (
     ENTITLEMENT_KEYS,
     EVENT_OCCURRENCES,
+    ORGANIZATION_MEMBERS,
     RESOURCE_KEYS,
 )
 from payments.tests.historical_apps import historical_apps
@@ -56,7 +57,9 @@ class TestPlanSeedMigration:
     def test_unlimited_plan_has_every_entitlement_enabled(self):
         plan = BillingPlan.objects.get(slug="unlimited")
 
-        assert plan.entitlements.count() == len(ENTITLEMENT_KEYS)
+        assert set(plan.entitlements.values_list("entitlement_key", flat=True)) == set(
+            ENTITLEMENT_KEYS
+        )
         assert all(entitlement.is_enabled for entitlement in plan.entitlements.all())
 
     def test_unlimited_event_occurrences_limit_is_postpaid(self):
@@ -66,6 +69,16 @@ class TestPlanSeedMigration:
 
         limit = plan.limits.get(resource_key=EVENT_OCCURRENCES)
         assert limit.kind == LimitKind.POSTPAID
+
+    def test_unlimited_organization_members_limit_is_prepaid(self):
+        """`payments.0007` freezes `LimitKind.PREPAID`'s stored value as a plain
+        literal (`LIMIT_KIND_PREPAID`) for the seven non-event-occurrences
+        resources. The `POSTPAID` side is pinned against a DB row above; this is
+        the equivalent DB-row pin for the `PREPAID` side."""
+        plan = BillingPlan.objects.get(slug="unlimited")
+
+        limit = plan.limits.get(resource_key=ORGANIZATION_MEMBERS)
+        assert limit.kind == LimitKind.PREPAID
 
     def test_free_plan_exists_with_real_ceilings_and_is_not_default(self):
         plan = BillingPlan.objects.get(slug="free")
