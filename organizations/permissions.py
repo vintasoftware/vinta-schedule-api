@@ -428,6 +428,19 @@ class IsBillingOwnerOrAdmin(BasePermission):
     callers, verified by ``payments/tests/test_reseller_root_billing.py``,
     rather than deleted along with the seam.
 
+    **Phase 5 of the billing migration ratified keeping this class**, rather
+    than deleting it along with its two test modules
+    (``payments/tests/test_reseller_root_billing.py`` and the
+    ``TestIsBillingOwnerOrAdminParity`` rows of
+    ``organizations/tests/test_permissions_parity.py``). Both were reviewed
+    against the object-level equivalence and the branch-2 unreachability
+    argued above -- no authorization regression either way -- and kept
+    because they are honest about what they prove: both test files exercise
+    this class directly (``has_permission``/``has_object_permission``), never
+    through a live view, and neither claims any endpoint is gated by it. This
+    is deliberately retained-but-unwired policy for a request shape no current
+    endpoint produces, not dead code left behind by accident.
+
     Split across ``has_permission``/``has_object_permission`` rather than doing
     everything in ``has_permission``, because the two answer different
     questions: ``has_permission`` cannot know *which* organization is being
