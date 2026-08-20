@@ -4,8 +4,9 @@
 Every test here drives a hand-written ``FakePaymentService`` double rather than
 mocking individual adapter calls. What matters to this suite is *when* the
 provider is driven and *when* capacity is granted, not the wire shape of any one
-provider (that is the adapter tests' job, e.g.
-``test_mercadopago_subscription_adapter.py``/``test_stripe_subscription_adapter.py``).
+provider (that is the adapter tests' job, e.g. the package's own
+``tests/services/subscription_adapters/test_mercadopago_subscription_adapter.py``/
+``tests/services/subscription_adapters/test_stripe_subscription_adapter.py``).
 """
 
 import datetime
@@ -651,8 +652,10 @@ class TestDowngradeDrivesGraceForTheSweep:
     downgrade drives ``billing_state`` into GRACE too, putting it on the one
     path the sweep already watches. This is checked here at the driver. The
     sweep side (``DunningService._process_grace`` skipping the charge retry,
-    and ``expire_grace`` resolving against the just-applied limits) is proven in
-    ``test_dunning_service.py``.
+    and ``expire_grace`` resolving against the just-applied limits) is proven
+    in the package's own ``tests/test_dunning.py``
+    (``test_a_downgrade_grace_is_never_retried`` /
+    ``TestExpireGrace``).
     """
 
     def test_downgrade_from_active_moves_billing_state_to_grace(

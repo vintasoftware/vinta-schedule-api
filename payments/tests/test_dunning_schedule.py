@@ -66,7 +66,7 @@ def make_complete_plan(
     *,
     grace_period_days: int | None = None,
 ) -> BillingPlan:
-    """Mirrors ``test_dunning_service.py``'s helper of the same name."""
+    """Mirrors ``test_dunning_retry_tolerance.py``'s helper of the same name."""
     limit_values = limit_values or {}
     plan = baker.make(
         BillingPlan,

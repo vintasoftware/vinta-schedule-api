@@ -1092,8 +1092,8 @@ class TestRetryPaymentEndpoint:
         subscription's open invoice and pays it -- ``stripe.Invoice.pay``, not
         a proration on a freshly-minted price (``change_subscription_plan``,
         previously used as a mistaken primitive). Stripe SDK calls are mocked at the
-        adapter module's own boundary, same pattern as
-        ``test_stripe_subscription_adapter.py``.
+        adapter module's own boundary, same pattern as the package's own
+        ``tests/services/subscription_adapters/test_stripe_subscription_adapter.py``.
 
         Repoints ``subscription`` (built on MercadoPago by this module's
         fixtures) onto Stripe directly and swaps in a real
