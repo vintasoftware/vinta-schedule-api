@@ -65,9 +65,9 @@ class NotificationServiceNotifier:
             title=title,
             body_template=body_template,
             context_name=context_name,
-            # `NotificationService.create_notification` wants its own
-            # `dict` subclass, not a plain `dict[str, Any]` -- see
-            # `vinta_billing.services.dunning_service` for the same wrapping.
+            # The package's Notifier protocol passes plain dicts, but
+            # NotificationService.create_notification requires the
+            # NotificationContextDict subclass. Wrap at the seam.
             context_kwargs=NotificationContextDict(context_kwargs),
             send_after=send_after,
             subject_template=subject_template or "",
