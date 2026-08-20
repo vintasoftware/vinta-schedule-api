@@ -47,6 +47,17 @@ We use the [`DRF-Spectacular`](https://drf-spectacular.readthedocs.io/en/latest/
 
 The API documentation pages are accessible at `http://localhost:8000/api/schema/swagger-ui/` or `http://localhost:8000/api/schema/redoc/`.
 
+## Billing
+
+Subscriptions, plans, limits, entitlements, provider adapters (Stripe,
+MercadoPago), dunning, and usage metering are implemented by the
+[vinta-django-billing](https://github.com/vintasoftware/vinta-django-billing)
+package, not by this repository. `payments/` is this project's configuration of
+that engine — the resource/entitlement registry, the reseller hierarchy, the
+notification bridge, and the plan catalog. See
+[`docs/billing.md`](docs/billing.md) for the full picture, including how to
+upgrade the pin and a list of known package gaps.
+
 ## Floci S3 Configuration
 
 This project uses [Floci](https://github.com/floci-io/floci) to provide a local AWS S3-compatible service for development instead of MinIO. Floci is a free, open-source AWS emulator that needs no account, auth token, or feature gates, and starts in milliseconds.
