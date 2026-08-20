@@ -38,43 +38,6 @@ PROVIDER_CREDENTIAL_KEYS: dict[str, tuple[str, str]] = {
 }
 
 
-def with_site_domain(site_domain: str | None) -> dict[str, Any]:
-    """A copy of ``VINTA_BILLING`` whose ``SITE_DOMAIN`` is ``site_domain``.
-
-    For ``@override_settings(VINTA_BILLING=with_site_domain(...))``, which is
-    what ``@override_settings(SITE_DOMAIN=...)`` has to become.
-    ``vinta_billing.conf.get_site_domain`` reads ``VINTA_BILLING['SITE_DOMAIN']``
-    first and only falls back to the top-level ``SITE_DOMAIN``; this project sets
-    the former (from the latter, at import), so overriding the top-level name
-    alone changes nothing the adapters read -- and a test asserting that a
-    *missing* domain raises would pass or fail for the wrong reason.
-    """
-    overrides = copy.deepcopy(django_settings.VINTA_BILLING)
-    overrides["SITE_DOMAIN"] = site_domain
-    return overrides
-
-
-#: Matched against the refusal raised when no site domain is configured. The
-#: host adapters used to say "MercadoPagoAdapter requires SITE_DOMAIN"; the
-#: package's say "... VINTA_BILLING['SITE_DOMAIN'] (or a top-level SITE_DOMAIN
-#: setting) must be set", per adapter, and ``urls_helpers.absolute_url`` says it
-#: differently again. ``SITE_DOMAIN`` is the substring all of them share, and it
-#: is the name the caller has to act on.
-MISSING_SITE_DOMAIN_MESSAGE = "SITE_DOMAIN"
-
-
-def no_site_domain() -> dict[str, Any]:
-    """``override_settings(**no_site_domain())`` -- for the tests that assert a
-    deployment with no site domain refuses to build a callback URL.
-
-    Both names, because ``vinta_billing.conf.get_site_domain`` reads
-    ``VINTA_BILLING['SITE_DOMAIN']`` and falls back to the top-level
-    ``SITE_DOMAIN``. Clearing one leaves the other answering, and the test would
-    then pass or fail on the wrong setting.
-    """
-    return {"VINTA_BILLING": with_site_domain(None), "SITE_DOMAIN": None}
-
-
 def billing_settings(*, default_provider: str | None = None, **credentials: str) -> dict[str, Any]:
     """A copy of ``VINTA_BILLING`` with the named credentials replaced.
 
