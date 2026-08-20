@@ -852,6 +852,124 @@ and AGENTS.md warns against tying a data migration's import graph to live model 
 Phase 6 already retargets that file, so the split folds into work it is doing anyway rather
 than reopening `resources.py` a third time.
 
+### Phase 5 — Triage the host billing test suite ✅ (pending opus review)
+
+Branch `plan/migrate-billing-engine-to-vinta-django-billing/phase-5`, based on phase-4.
+Implementer sonnet. Three commits: `ca95b59e` deletions · `f5c941ca` retargets and splits ·
+`9026f455` the `IsBillingOwnerOrAdmin` decision. **13 files changed, +109 / −4737.**
+
+**Suite: 5906 passed, 0 failed** — re-run by the conductor (5m43s, exit 0). The count
+reconciles **exactly**: 6283 − 377 removed = 5906. An exact reconciliation is the strongest
+evidence available that nothing was lost by accident, since a deleted test cannot fail.
+
+**Process note.** This implementer stalled twice waiting on background `pytest -n auto`
+runs, advancing by one file across two resumes and ~315k tokens. The fix was to forbid it
+from running the full suite at all — fast scoped runs only, with the conductor running the
+suite. It finished promptly after that. Worth remembering: when an agent loops on a
+long-running command, remove the command rather than resuming into the same trap.
+
+### The plan's delete list was largely wrong, and that is this phase's real finding
+
+The plan predicted ~15,000 LoC removed; the honest answer is 4,737. The implementer was
+given one rule — *if you cannot name a counterpart in the package's suite, do not delete
+it* — and applying it reversed most of the list:
+
+| Plan said delete | Why it survived |
+|---|---|
+| `test_cycle_close_concurrency.py` | The package has **zero** concurrency tests — conductor verified (`grep ThreadPoolExecutor\|threading` over its `tests/` returns nothing). This is a real two-thread `select_for_update` race test against a real database. |
+| `test_dunning_schedule.py` | Its docstring states its purpose: proving `@inject` on the Celery tasks resolves a working service. Also the only coverage anywhere for two real production bugs (`stripe.CardError` / `InvalidRequestError` swallowed in the dunning tick). |
+| `services/test_payment_services.py` | Two tests drive `payments/seams/audit.py`'s receiver end to end — the audit-trail rollout's one billing write. |
+| `services/test_grace_recovery.py` | Asserts `resync_organization_calendars_task.delay`, i.e. `payments/seams/resync.py`. Host seam, not engine. |
+| `views/test_payment_webhooks.py` | Signature tampering, replay, idempotent duplicate delivery, "resolves off the payment row not the org's pin". The package's webhook tests cover the generic seam-mounting mechanism only. |
+| `test_admin.py` | Drives the package's own admin classes deeper than the package's three admin tests — formset override detection, plan-limit coverage-gap validation. |
+| "migration tests superseded by Phase 1's" | **No such tests exist.** The named modules test host data migrations `0009`, `0018`, `0019`, `0021`, unrelated to the table-move migration. The plan asserted a supersession that never happened. |
+
+Eight modules were deleted, each against a named counterpart: the four provider-adapter
+modules (diffed test-for-test), `services/test_dunning_service.py` (→ the package's
+`test_billing_state_machine.py` + `test_dunning.py`), `test_exceptions.py`, and partial
+class removals from `test_provider_registry.py` and `test_over_limit_error.py`.
+
+**The four mixed modules.** `services/test_entitlement_service.py` was split — 14 tests
+removed against `tests/test_entitlement_engine.py`, keeping `TestUsageCounters` (the eight
+host counters), `TestSeatCountingOnTheAcceptPath`, `TestHasEntitlement` (the package has no
+`has_entitlement` tests at all) and the row-lock tests. The other three were kept whole
+after inspection: `test_metering_reconciliation.py` and `services/test_metering_service.py`
+build every fixture through real `CalendarEventFactory` recurrence rather than the package's
+stub source, so splitting would delete the only proof the host's `OccurrenceSource` seam
+bounds an infinite series correctly; `services/test_subscription_service.py` carries
+`IncompleteBillingPlanError` and retired-resource-key invariants tied to this host.
+
+**`IsBillingOwnerOrAdmin`: kept, ratified as retained-but-unwired** in
+`organizations/permissions.py`'s docstring. The argument: both surviving test modules
+already call the permission directly and never claim an endpoint is gated by it, so nothing
+passes while misrepresenting production. The opus review is checking whether a reader would
+actually come away with that understanding.
+
+**Two package gaps found, reported not worked around**: `vinta-django-billing` has no
+concurrency test for `CycleCloseService.close_subscription`'s row lock, and no direct test
+of `SubscriptionService.retry_payment`'s ordering and idempotency contract — both fully
+package-owned code. Candidates for a future release alongside the 409-vs-503 status-map
+contradiction and `vinta_billing.jobs` ignoring `SERVICE_CONTAINER`.
+
+### Opus review found a BLOCKER: a counterpart claim that was plausible and false
+
+This is the finding that justifies the plan putting a Tier-4 reviewer on this phase, and it
+is worth stating precisely because it is the failure mode the whole phase was designed
+around.
+
+`test_dunning_service.py` was deleted on the claim that the package's `tests/test_dunning.py`
+plus `tests/test_billing_state_machine.py` cover it. Both files exist — but
+`tests/test_dunning.py:42` defines `class FakeSubscriptionService` whose `retry_failed_charge`
+is a **no-op recorder**, and that fake is the *only* occurrence of `retry_failed_charge`
+anywhere in the package's test suite. Conductor verified by grep. The package has zero real
+tests of that method.
+
+Four properties therefore had no enforcement in **either** codebase after the deletion:
+
+- **The money-path guard.** For any provider other than MercadoPago,
+  `CollectionNotSupportedError` must re-raise rather than fall back into
+  `change_subscription_plan`. `vinta_billing/services/subscription_service.py:709-718`
+  documents this across six paragraphs, including that a live Stripe probe proved the
+  fallback "collects **$0.00**" with only an INFO log to notice by — and ships no test.
+- `NoOutstandingBalanceError` swallowed in a `CELERY_TASK_ACKS_LATE` beat tick.
+- Blank `external_id` handling on the beat path (distinct from the user-facing 409, which
+  the deleted class docstring explicitly distinguished).
+- The MercadoPago ladder ordering.
+
+Plus `enter_grace` never touching `PaymentMethod`: the supposed substitute in
+`test_postpaid_enforcement.py` sets `billing_state` **directly** rather than calling
+`enter_grace`, so it would stay green if a future package version deactivated the card.
+
+Restored into `payments/tests/services/test_dunning_retry_tolerance.py` (`37d0300b`), with
+red-then-green proof — the guard was patched out of the installed package and the test gave
+`DID NOT RAISE`, then the patch was reverted under an md5 check. One test was correctly
+*not* restored: `test_charge_declined_…` genuinely is covered by the kept
+`test_dunning_schedule.py` against the real DI stack.
+
+**How the reviewer caught it, worth reusing:** it grepped the package's *source* for the
+guard rather than only its tests, and diffed each deleted file against its counterpart
+instead of trusting name matches. A "does a similarly named file exist?" check passes this
+straight through — which is exactly what happened.
+
+Six SHOULD-FIX items also applied: two add-on tests with no counterpart restored
+(cross-resource leak, and two rows summing); `organizations/authorization.py`'s two
+justifications repointed at `vinta_billing.permissions.IsBillingManager`, the class that
+actually gates; four present-tense statements in `IsBillingOwnerOrAdmin`'s docstring
+converted to past tense with the ratification moved to the top; three orphaned helpers
+deleted; seven stale cross-references repointed.
+
+**An unplanned find from the `SITE_DOMAIN` fix.** Adding the assertion that pins the
+primary `VINTA_BILLING["SITE_DOMAIN"]` branch went red for an unrelated reason:
+`vinta_schedule_api/settings/test.py` overrode the top-level `SITE_DOMAIN` but left
+`VINTA_BILLING["SITE_DOMAIN"]` baked from `base`'s unset-env default, so under test settings
+the primary branch read a stale value. Fixed with a one-line sync rather than writing an
+assertion shaped around the bug. Same hazard class as the pre-flight `URL_NAMESPACE`
+finding: wrong only against a live MercadoPago call, invisible to a green suite.
+
+**A procedural finding against the conductor**, and fair: the phase's own named gate is "a
+two-column keep/drop table **in the PR body**", and no PR existed when the review ran. The
+table goes in the PR at integration, now carrying a corrected row for the dunning module.
+
 ## Carry-forward into later phases
 
 Discovered during Phase 0's review. Each one is a correction to a later phase's body,
