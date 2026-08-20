@@ -168,7 +168,7 @@ Checked before Phase 0, so no phase discovers these the hard way:
 | 1 | Install the app, move the rows, shim the host modules | 4 / opus | ✅ done — reviewed, suite green | `plan/migrate-billing-engine-to-vinta-django-billing/phase-1` |
 | 2 | Point the host's own entry points at the package | 3 / sonnet | ✅ done — reviewed, suite green | `plan/migrate-billing-engine-to-vinta-django-billing/phase-2` |
 | 2b | vinta-django-billing gap release | — | 🚫 deferred — cross-repo (`vintasoftware/vinta-django-billing`) | — |
-| 3 | Consumer imports: `calendar_integration` and `webhooks` | 2 / sonnet (>3 files) | ⏳ pending | — |
+| 3 | Consumer imports: `calendar_integration` and `webhooks` | 2 / sonnet (>3 files) | ✅ done — reviewed clean | `plan/migrate-billing-engine-to-vinta-django-billing/phase-3` |
 | 4 | Consumer imports: `public_api`, `accounts`, `common`, root fixtures | 2 / sonnet (>3 files) | ⏳ pending | — |
 | 5 | Triage the host billing test suite | 3 / sonnet | ⏳ pending | — |
 | 6 | Delete the shims and close out | 1 / haiku | ⏳ pending | — |
@@ -723,6 +723,73 @@ known in advance. Final `payments/seams/`: `resources`, `hierarchy`, `notifier`,
    promise 409 "mapped centrally", and this project has a committed, tested 409 contract.
    If the package's table and its own docstrings really disagree, this is a package bug
    and the divergence is a correction rather than a deviation.
+
+### Phase 3 — Consumer imports: `calendar_integration` and `webhooks` ✅
+
+Branch `plan/migrate-billing-engine-to-vinta-django-billing/phase-3`, based on phase-2.
+Implementer sonnet (plan's Tier 2, stepped up for file count). Commits: `312f1c6b`
+entitlement-key symbols · `746847c0` the 56-import rewrite.
+
+**Review: no BLOCKER, no SHOULD-FIX, one NIT.** The reviewer verified the thing that
+mattered — all 13 constant values byte-identical to the enum members they mirror, every
+`register(...)` call using the constant, and no swapped resource pair across any call
+site. A swapped pair (say `CALENDAR_GROUPS` for `BUNDLE_CALENDARS`) would enforce the
+wrong ceiling and nothing would necessarily go red, which is why that check was the point
+of the review rather than a formality.
+
+It also made an observation worth keeping: because Phase 1's shims were `import *`
+re-exports, these rewrites resolve to **literally the same class objects**, so no `except`
+clause could have broken and no behaviour could have changed. That is the strongest
+possible answer to "did the mapping drift".
+
+**The registry-key constants live in `payments/seams/resources.py`** — the decision Phase 3
+was handed, since the plan named the requirement without naming a home. Reasons: Phase 6
+deletes `payments/billing_constants.py`, so it could not go there; the seam is already the
+definition site after Phase 0's review; and it survives to the end. Phase 3 extended the
+pattern from the eight resource keys to the five entitlement keys and rewired the
+registrations to use the symbols, so a constant and its registered key cannot drift.
+
+**→ Phases 4 and 6 use the same symbols.** Phase 4 needs `PARTNER_API`,
+`WHITE_LABEL_BRANDING` and `ADVANCED_SCHEDULING` for `public_api` and `organizations`;
+Phase 6 retargets `payments/billing_plans_catalog.py` and `payments/tests/billing_fixtures.py`.
+
+Acceptance holds: the only `from payments` imports left in either app are
+`payments.seams.resources` and `payments.seams.occurrences`, both host code. mypy unchanged
+at 294.
+
+**Chasing a flake found a vacuous test — the more serious problem.** Commit `de38b661`.
+
+`payments/tests/seams/test_resources.py::TestCounterBreakdowns::test_event_occurrences`
+failed once under `-n auto` and passed on rerun. The implementer called it pre-existing;
+it is not — Phase 0 wrote that file. It guards `event_occurrences`, the one postpaid
+resource customers are billed for, so it was sent for a fix rather than a rerun.
+
+**The fixer found that the test could not catch the regression it exists to prevent**, and
+the conductor reproduced this independently:
+
+| | broken counter | correct counter |
+|---|---|---|
+| original test | **passed** — vacuous | passed |
+| fixed test | **failed** — a real gate | passed |
+
+"Broken counter" means `_count_event_occurrences` reading `subscription.current_period_start`
+instead of `current_billing_period_start(subscription)` — precisely the bug that counter's
+docstring says it was written to prevent. The original test could not see it, because a
+freshly created subscription's stored column and the freshly computed period always
+coincide. Freezing time alone would have removed the race and inherited the blind spot, so
+the fix also stamps the stored period one cycle stale, forcing the two apart. That mirrors
+the house pattern in `payments/tests/services/test_metering_service.py`.
+
+**A correction to the conductor's own diagnosis.** This tracking file previously stated, as
+fact, that the flake came from the test and the counter "straddling a period boundary under
+contention". The fixer pushed back and is right: with a 30-day period, wall-clock drift
+inside a single test cannot cross that boundary, so that mechanism does not explain the
+observed failure. What is actually established is narrower and still worth the commit — a
+real vacuity (proven above), and a structural race that is real in principle because both
+sides call `timezone.now()` independently. **The cause of the one observed `-n auto` failure
+remains unexplained**; database contention is the likelier candidate, since the fixer saw
+unrelated contention errors across four apps when it ran suites concurrently. Recorded as
+open rather than papered over: the test is now deterministic and non-vacuous either way.
 
 ## Carry-forward into later phases
 
