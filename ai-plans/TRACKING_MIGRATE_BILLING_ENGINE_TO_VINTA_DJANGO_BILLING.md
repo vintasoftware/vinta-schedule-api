@@ -166,7 +166,7 @@ Checked before Phase 0, so no phase discovers these the hard way:
 |---|---|---|---|---|
 | 0 | Install the package and write the seams | 3 / sonnet | ✅ done | `plan/migrate-billing-engine-to-vinta-django-billing/phase-0` |
 | 1 | Install the app, move the rows, shim the host modules | 4 / opus | ✅ done — reviewed, suite green | `plan/migrate-billing-engine-to-vinta-django-billing/phase-1` |
-| 2 | Point the host's own entry points at the package | 3 / sonnet | ⏳ pending | — |
+| 2 | Point the host's own entry points at the package | 3 / sonnet | ✅ done — reviewed, suite green | `plan/migrate-billing-engine-to-vinta-django-billing/phase-2` |
 | 2b | vinta-django-billing gap release | — | 🚫 deferred — cross-repo (`vintasoftware/vinta-django-billing`) | — |
 | 3 | Consumer imports: `calendar_integration` and `webhooks` | 2 / sonnet (>3 files) | ⏳ pending | — |
 | 4 | Consumer imports: `public_api`, `accounts`, `common`, root fixtures | 2 / sonnet (>3 files) | ⏳ pending | — |
@@ -589,6 +589,140 @@ Host settings Phase 2 must add:
 `"VIEW_MIXIN": "common.utils.view_utils.TenantScopedViewMixin"` and
 `"SERVICE_CONTAINER": "di_core.containers.container"` (resolved lazily per view
 construction, so `container.<provider>.override(...)` in tests is honoured).
+
+### Phase 2 — Point the host's own entry points at the package ✅ (pending review)
+
+Branch `plan/migrate-billing-engine-to-vinta-django-billing/phase-2`, based on phase-1.
+Implementer sonnet (plan's Tier 3). Six commits: `f8412fa2` pin · `49bd55dc` beat tasks ·
+`80c6d703` DI + exception handling · `0da368dd` routes + enum settings · `5b47ed70`
+REST-layer deletion · `283366f1` Stripe xfails removed.
+
+The implementer stopped once mid-phase waiting on its own background test run; it was
+resumed with context intact rather than restarted.
+
+**Suite: 6283 passed, 0 failed, 0 xfailed** — re-run independently by the conductor
+(6m15s, exit 0). The seven Stripe `xfail(strict=True)` markers are gone: 0.5.0 fixed the
+field they asserted, so they became ordinary passing tests. That is exactly what
+`strict=True` was there to signal.
+
+**The mypy regression is fully repaid: 858 → 294**, against a pre-migration baseline of
+293/57. Removing `vinta_billing.*` from `ignore_missing_imports` — now that 0.5.0 ships
+`py.typed` — recovered all 562 `[attr-defined]` errors. None of the remaining 294 are in
+any file this phase touched.
+
+**`schema.yml` diff is empty**, confirmed by the conductor against phase-1. Correct: the
+webhook paths moved during Phase 1, so any movement here would have meant a mistake.
+
+**Route surface verified independently by the conductor:**
+
+```
+Payments-payment-update              -> /billing/payments/7/payment-update/stripe/
+Payments-subscription-payment-update -> /billing/payments/7/subscription-payment-update/stripe/
+payment-provider                     -> /billing/payment-provider/
+payment-provider-default             -> /billing/payment-provider/default/
+Payments in get_routes() basenames?  False
+```
+
+That last line is the load-bearing one: the webhooks provably come from
+`get_extra_patterns()`, not the router. A host that mounted only `get_routes()` would have
+404'd both webhooks silently.
+
+**0.5.0 paid off as estimated, and slightly better.** Deleted: `payments/routes.py`,
+`views.py`, `billing_views.py`, `seams/view_scoping.py`, `seams/permissions.py`, **and
+`admin.py`** — the last of which was not in the estimate; `SERVICE_CONTAINER` supplies the
+service its `save_model` subclass existed for.
+
+`payments/seams/permissions.py` was deleted after checking both branches of
+`IsBillingOwnerOrAdmin` against the code rather than the docstrings: branch 1 is exactly
+what the configured `BILLING_MANAGER_PREDICATE` computes, and branch 2's acting-reseller-
+root walk needs the bound membership to differ from the object, which the header resolver
+never produces. The reviewer confirmed both independently against
+`vinta_billing/permissions.py` and `vinta_orgs/drf.py` — no authorization regression.
+
+**Correction.** An earlier revision of this entry said `IsBillingOwnerOrAdmin` "itself was
+kept — `public_api/capabilities.py` still uses it". That is **false**, and the conductor
+propagated it from the implementer's report without checking. `public_api/capabilities.py:35`
+only *mentions* the class in a docstring explaining why the subtree walk is
+transport-neutral; there is no import and no `permission_classes` entry. Every other
+reference in the repo is a docstring, a migration `help_text`, or a test.
+
+So Phase 2 **orphaned** it: deleting `payments/seams/permissions.py` removed its last live
+wiring, and `organizations/permissions.py:417-549` — roughly 130 lines including the
+acting-reseller-root subtree walk — is now unreachable from every request path, REST,
+GraphQL and admin alike. Reachable only from `payments/tests/test_reseller_root_billing.py`
+and `organizations/tests/test_permissions_parity.py`.
+
+**→ Phase 5 owns the decision**, since it is the keep/drop phase and
+`test_reseller_root_billing.py` sits on its explicit *keep* list — a list written before
+the thing it tests became unwired. Either delete the class with its tests, or keep it and
+say plainly in its docstring that it is retained-but-unwired policy. What must not happen
+is leaving tests that pass while proving nothing about production, which is how a future
+reader concludes the policy is enforced when it is not.
+
+**Review (sonnet): no BLOCKERs.** It independently traced the two silent-failure risks —
+branch-2 unreachability through `vinta_orgs/drf.py`'s resolver rather than the docstring,
+and that the beat tasks really dispatch instead of running inline. Three SHOULD-FIX and
+two NITs; the actionable ones applied in `3b1aaa2f`. Suite re-verified by the conductor
+after the fixes: **6283 passed, 0 failed** (3m19s, exit 0).
+
+Fixes applied:
+
+- **The dead dispatch seam is gone.** `payments/seams/dispatch.py` and
+  `VINTA_BILLING["JOB_DISPATCHER"]` deleted, along with the settings test's assertion on
+  the key. The only surviving mentions are a docstring in `payments/tasks.py` recording
+  *why* it went, which is history rather than dead code.
+- **A real bug in multi-tenancy safety tooling, fixed rather than routed around.**
+  `common/organization_context_test_support.py`'s `_is_scoped_enough` caught only
+  `(TypeError, ValueError)` around `str(query)`, but Django raises `EmptyResultSet` — a
+  subclass of neither — for a structurally-empty `IN` clause, which a plain recurring
+  event with no exceptions produces. The guard therefore *crashed* instead of reporting
+  or passing. Demonstrated red (`django.core.exceptions.EmptyResultSet` escaping) then
+  green. A safety check that fails for the wrong reason trains people to work around it,
+  which is why this was worth fixing outside the phase's touch list.
+- A stale pointer in `celerybeat_schedule.py` to a constant this phase moved.
+
+Test count stayed at exactly 6283 for a stated reason: +1 regression test, −1 removed
+`JOB_DISPATCHER` parametrize case.
+
+### The plan predicted five seams; the answer is seven, and not a superset
+
+Worth recording, because it is the clearest measure of how much the plan could not have
+known in advance. Final `payments/seams/`: `resources`, `hierarchy`, `notifier`,
+`occurrences`, `seats`, `audit`, `resync`.
+
+- Four of the five planned seams survive.
+- **`dispatch` was planned and turned out unnecessary** — the package's own job dispatcher
+  bypasses host DI, so the tasks pass services explicitly instead.
+- **`seats`, `audit` and `resync` were unplanned**, each covering a host behaviour the
+  package signals rather than owns.
+- **`permissions` and `view_scoping` existed only between Phase 1 and Phase 2**, purely as
+  workarounds for package defects, and both were deleted once 0.5.0 fixed them upstream.
+
+### Three declared deviations in Phase 2, all reviewed
+
+1. **`JOB_DISPATCHER` is now bypassed, and `payments/seams/dispatch.py` is dead code.**
+   `vinta_billing.jobs`' per-subscription default service resolution builds from the
+   *package's* `services.container` cache and does not consult `SERVICE_CONTAINER`. Found
+   empirically, not by reading: a DI-overridden Stripe adapter with an empty key was
+   silently replaced by the real `STRIPE_SECRET_KEY` from `.env` — a test believing it
+   used a fake while using the real credential. Each per-subscription task now resolves
+   its service through the host's own `@inject` and passes it in, which the implementer
+   argues is the package's documented extension point. **Reported as a package gap, not
+   worked around.** The seam and its setting were left in place as dead code for a later
+   phase to remove.
+2. **A multi-tenancy test-harness bug worked around rather than fixed.**
+   `common/organization_context_test_support.py`'s `_is_scoped_enough` re-compiles a query
+   via `str(query)` and does not catch `EmptyResultSet`, which Django raises for a
+   structurally-empty `IN` clause. Out of scope (shared tooling, not billing), so
+   `organization_context` binding was restored around each per-subscription task to match
+   pre-Phase-2 behaviour.
+3. **`PaymentProviderNotConfiguredError` keeps a hardcoded 409** rather than delegating to
+   `vinta_billing.exception_handling.billing_error_status`, which maps it to 503 — a
+   deliberate departure from the phase's "delegate, do not re-derive" instruction. The
+   argument: the package's own `SubscriptionViewSet.change_plan` / `cancel` docstrings
+   promise 409 "mapped centrally", and this project has a committed, tested 409 contract.
+   If the package's table and its own docstrings really disagree, this is a package bug
+   and the divergence is a correction rather than a deviation.
 
 ## Carry-forward into later phases
 
