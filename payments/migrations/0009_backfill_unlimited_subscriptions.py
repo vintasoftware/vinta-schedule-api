@@ -10,7 +10,7 @@
 # itself invite/create other organizations (a nested reseller is its own billing
 # root, not a child pooling against a grandparent's subscription) — see
 # `billing_root_filter` / `is_billing_root` in
-# `payments.services.subscription_service`, the single predicate for this
+# `vinta_billing.services.subscription_service`, the single predicate for this
 # decision used here, in `SubscriptionService.create_subscription_for_organization`,
 # and in the "no plan-less state" acceptance query. Importing it here (rather than
 # re-deriving the condition against the historical `apps.get_model` models) is a
@@ -18,7 +18,12 @@
 # function only does attribute/field-name access, so it works unchanged against
 # both the historical and the current `Organization` model, and a single
 # predicate is safer than keeping two copies of "is a billing root" in sync by
-# hand.
+# hand. Repointed from `payments.services.subscription_service` (a Phase 1 shim,
+# removed in Phase 6 of
+# `ai-plans/2026-08-19-MIGRATE_BILLING_ENGINE_TO_VINTA_DJANGO_BILLING_IMPLEMENTATION_PLAN.md`)
+# to its package address in that same phase: this is behaviour, not a frozen data
+# value, so it is repointed rather than copied -- see `MissingSeedBillingPlanError`
+# below for the same reasoning.
 #
 # Keyset-paginated on `pk` (not an in-memory id list) so this never materializes
 # more than one batch of organizations at a time, regardless of table size.
@@ -27,8 +32,8 @@ import datetime
 from django.db import migrations
 from django.utils import timezone
 
-from payments.exceptions import MissingSeedBillingPlanError
-from payments.services.subscription_service import billing_root_filter
+from vinta_billing.exceptions import MissingSeedBillingPlanError
+from vinta_billing.services.subscription_service import billing_root_filter
 
 
 BATCH_SIZE = 500
