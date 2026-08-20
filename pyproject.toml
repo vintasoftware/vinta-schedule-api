@@ -72,7 +72,7 @@ dependencies = [
     # Development Status :: Alpha, and its migration onto the host is itself
     # a multi-phase plan (see ai-plans/). Widen only after re-reading the
     # upstream diff for the target minor.
-    "vinta-django-billing>=0.4,<0.5",
+    "vinta-django-billing>=0.5,<0.6",
 ]
 
 [dependency-groups]
@@ -231,7 +231,7 @@ plugins = [
 ]
 
 [[tool.mypy.overrides]]
-module = ["allauth.*", "googleapiclient.*", "storages.*", "twilio.*", "django_filters.*", "mercadopago.*", "s3direct.*", "encrypted_fields.*", "dateutil.*", "vinta_billing.*"]
+module = ["allauth.*", "googleapiclient.*", "storages.*", "twilio.*", "django_filters.*", "mercadopago.*", "s3direct.*", "encrypted_fields.*", "dateutil.*"]
 ignore_missing_imports = true
 
 # Vendored verbatim from the add-one-off-script skill and refreshed by
