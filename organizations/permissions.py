@@ -413,8 +413,22 @@ class CanManageBranding(IsOrganizationAdmin):
 
 
 class IsBillingOwnerOrAdmin(BasePermission):
-    """The host's policy for the billing-management endpoints: change plan,
-    purchase/cancel an add-on, cancel the subscription.
+    """**Phase 5 of the billing migration ratified keeping this class**, rather
+    than deleting it along with its two test modules
+    (``payments/tests/test_reseller_root_billing.py`` and the
+    ``TestIsBillingOwnerOrAdminParity`` rows of
+    ``organizations/tests/test_permissions_parity.py``). Both were reviewed
+    against the object-level equivalence and the branch-2 unreachability
+    argued below -- no authorization regression either way -- and kept
+    because they are honest about what they prove: both test files exercise
+    this class directly (``has_permission``/``has_object_permission``), never
+    through a live view, and neither claims any endpoint is gated by it. This
+    class gates nothing today: it is deliberately retained-but-unwired policy
+    for a request shape no current endpoint produces, not dead code left
+    behind by accident.
+
+    The host's former policy for the billing-management endpoints: changing a
+    plan, purchasing/cancelling an add-on, cancelling the subscription.
 
     No longer wired into those endpoints directly (Phase 2 of the billing
     migration deleted ``payments/seams/permissions.py``, the shim that swapped
@@ -428,27 +442,16 @@ class IsBillingOwnerOrAdmin(BasePermission):
     callers, verified by ``payments/tests/test_reseller_root_billing.py``,
     rather than deleted along with the seam.
 
-    **Phase 5 of the billing migration ratified keeping this class**, rather
-    than deleting it along with its two test modules
-    (``payments/tests/test_reseller_root_billing.py`` and the
-    ``TestIsBillingOwnerOrAdminParity`` rows of
-    ``organizations/tests/test_permissions_parity.py``). Both were reviewed
-    against the object-level equivalence and the branch-2 unreachability
-    argued above -- no authorization regression either way -- and kept
-    because they are honest about what they prove: both test files exercise
-    this class directly (``has_permission``/``has_object_permission``), never
-    through a live view, and neither claims any endpoint is gated by it. This
-    is deliberately retained-but-unwired policy for a request shape no current
-    endpoint produces, not dead code left behind by accident.
-
     Split across ``has_permission``/``has_object_permission`` rather than doing
     everything in ``has_permission``, because the two answer different
     questions: ``has_permission`` cannot know *which* organization is being
     billed. The billing endpoints act on the **billing root**, which is
     frequently an ancestor of the organization the request resolved
-    (``resolve_billing_root``), and the views hand that resolved root to
+    (``resolve_billing_root``); when this class was still wired to those
+    endpoints, the views handed that resolved root to
     ``check_object_permissions`` explicitly (see ``SubscriptionViewSet`` /
-    ``AddOnViewSet``). So the coarse gate runs first and the real decision runs
+    ``AddOnViewSet`` -- the package's own viewsets, which do not use this
+    class). So the coarse gate ran first and the real decision ran
     against ``obj``.
 
     (Historical note: this split was originally *forced* by an ordering defect —
@@ -468,8 +471,9 @@ class IsBillingOwnerOrAdmin(BasePermission):
       same, because the organization
       being *billed* is frequently an ancestor of it; deciding *which*
       organization is ``has_object_permission``'s job.
-    - ``has_object_permission``: the real gate, against ``obj`` (an
-      ``Organization`` -- the resolved billing root). Grants access when either:
+    - ``has_object_permission``: the gate against ``obj`` (an
+      ``Organization`` -- the resolved billing root), when this class was
+      still wired to an endpoint. Granted access when either:
 
       1. The caller's active membership is in ``obj`` itself and carries
          ``vinta_billing.manage_billing``.
@@ -496,10 +500,13 @@ class IsBillingOwnerOrAdmin(BasePermission):
     ``organizations.authorization.has_organization_permission``); nothing else
     about the branch changed.
 
-    Read-only billing endpoints (usage, plan catalog, subscription detail) are
-    intentionally **not** gated by this class — they stay open to any
-    authenticated member, mirroring ``BillingProfileViewSet``'s reads-open,
-    writes-gated split.
+    Read-only billing endpoints (usage, plan catalog, subscription detail)
+    were, back when this class was still wired to an endpoint, intentionally
+    **not** gated by it -- they stayed open to any authenticated member,
+    mirroring ``BillingProfileViewSet``'s reads-open, writes-gated split.
+    Today neither the reads nor the writes are gated by this class: the
+    write endpoints are gated by ``vinta_billing.permissions.IsBillingManager``
+    instead.
     """
 
     def has_permission(self, request, view) -> bool:

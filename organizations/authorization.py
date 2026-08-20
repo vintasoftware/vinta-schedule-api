@@ -81,8 +81,9 @@ check", justified as granting nothing new because a superuser already reads ever
 tenant through the Django admin. It was never true of the code being replaced --
 ``membership.role == ADMIN`` refused a superuser who held no admin membership --
 and the "already reaches everything" argument does not survive the billing
-endpoints, where passing ``IsBillingOwnerOrAdmin`` changes a tenant's plan, buys
-an add-on, or cancels a subscription **at Stripe / MercadoPago**. The Django
+endpoints, where passing ``vinta_billing.permissions.IsBillingManager`` changes
+a tenant's plan, buys an add-on, or cancels a subscription **at Stripe /
+MercadoPago**. The Django
 admin exposes no such button. A superuser is now answered from their memberships
 like anybody else; pinned by ``organizations/tests/test_permissions_parity.py``.
 
@@ -135,9 +136,9 @@ INCLUDE_GLOBAL_PERMISSIONS = False
 #:
 #: ``role == ADMIN`` refused a superuser who held no admin membership, so this is
 #: parity, not policy. "They already reach everything through the Django admin"
-#: is not an argument on ``IsBillingOwnerOrAdmin``: passing it changes a plan,
-#: buys an add-on or cancels a subscription at Stripe / MercadoPago, and the
-#: admin exposes no such button.
+#: is not an argument on ``vinta_billing.permissions.IsBillingManager``: passing
+#: it changes a plan, buys an add-on or cancels a subscription at Stripe /
+#: MercadoPago, and the admin exposes no such button.
 #:
 #: This flag is **not** on its own what keeps superusers out: it guards the
 #: organization half's short-circuit only, and the global half carries its own.
