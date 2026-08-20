@@ -1,16 +1,20 @@
-"""The shared over-limit error contract.
+"""The shared over-limit error contract, on the properties the package's own
+``tests/test_exceptions.py`` does not pin.
 
-Every guarded surface raises ``OverLimitError`` and every surface must render it
-identically — a client that handles the REST body must handle the GraphQL one
-without a second code path. These tests pin the body shape and the 402 status so
-a future surface cannot quietly drift from it.
+``TestOverLimitErrorBody``'s 402-rendering counterpart moved to
+``common/tests/test_exception_handlers.py`` (Phase 2 of the billing migration
+retargeted that class there, since ``vinta_exception_handler`` -- the thing
+under test -- is host code, not this module's concern). What is left here is
+the error's own shape and class hierarchy: the six-key body's ``detail``
+override (the package's own frozen-body test does not cover a custom
+``detail``), and the two ``ValueError``-lineage guarantees that protect
+specific host call sites in ``public_api/mutations.py`` and
+``calendar_integration/views.py`` from a wrapper idiom that would flatten a
+billing error to a plain message.
 """
 
 import pytest
-from rest_framework import status
-from rest_framework.exceptions import NotFound
 
-from common.exception_handlers import vinta_exception_handler
 from payments.billing_constants import LimitedResource, LimitRemedy
 from payments.exceptions import (
     BillingError,
@@ -32,16 +36,6 @@ def build_error():
 
 
 class TestOverLimitErrorBody:
-    def test_body_matches_the_documented_contract(self):
-        assert build_error().as_error_body() == {
-            "detail": "Organization is at its limit for organization members.",
-            "code": "limit_exceeded",
-            "resource": "organization_members",
-            "current_usage": 10,
-            "limit": 10,
-            "remedy": "purchase_add_on",
-        }
-
     def test_detail_can_be_overridden(self):
         error = OverLimitError(
             resource_key=LimitedResource.RESOURCE_CALENDARS,
@@ -52,42 +46,6 @@ class TestOverLimitErrorBody:
         )
 
         assert error.as_error_body()["detail"] == "Custom message."
-
-    def test_unknown_resource_key_degrades_to_the_raw_key(self):
-        """Building an error must never itself raise — an unrecognized key falls
-        back to the key rather than blowing up inside an error path."""
-        error = OverLimitError(
-            resource_key="not_a_real_resource",
-            current_usage=1,
-            limit=1,
-            remedy=LimitRemedy.UPGRADE_PLAN,
-        )
-
-        assert error.as_error_body()["detail"] == (
-            "Organization is at its limit for not_a_real_resource."
-        )
-
-
-class TestExceptionHandler:
-    def test_over_limit_error_renders_as_402_with_the_contract_body(self):
-        """402 rather than 403 so a client can tell "not allowed" from "out of
-        capacity" without parsing the message."""
-        response = vinta_exception_handler(build_error(), {})
-
-        assert response is not None
-        assert response.status_code == status.HTTP_402_PAYMENT_REQUIRED
-        assert response.data == build_error().as_error_body()
-
-    def test_other_exceptions_still_use_drfs_default_rendering(self):
-        """The handler is project-wide; adding it must not change any existing
-        error's rendering."""
-        response = vinta_exception_handler(NotFound(), {})
-
-        assert response is not None
-        assert response.status_code == status.HTTP_404_NOT_FOUND
-
-    def test_unhandled_exception_is_left_to_django(self):
-        assert vinta_exception_handler(ValueError("boom"), {}) is None
 
 
 def test_over_limit_error_is_a_billing_error():

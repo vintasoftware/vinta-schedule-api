@@ -94,58 +94,14 @@ def make_add_on(subscription, resource_key, quantity, is_active=True):
 
 @pytest.mark.django_db
 class TestGetEffectiveLimit:
-    def test_returns_the_subscriptions_own_limit_value(self, service, organization, subscription):
-        make_limit(subscription, LimitedResource.ORGANIZATION_MEMBERS, 5)
-
-        result = service.get_effective_limit(organization, LimitedResource.ORGANIZATION_MEMBERS)
-
-        assert result.limit_value == 5
-        assert result.kind == LimitKind.PREPAID
-        assert result.is_unlimited is False
-
-    def test_adds_active_add_on_quantity_to_the_plan_limit(
-        self, service, organization, subscription
-    ):
-        make_limit(subscription, LimitedResource.ORGANIZATION_MEMBERS, 5)
-        make_add_on(subscription, LimitedResource.ORGANIZATION_MEMBERS, 3)
-        make_add_on(subscription, LimitedResource.ORGANIZATION_MEMBERS, 2)
-
-        result = service.get_effective_limit(organization, LimitedResource.ORGANIZATION_MEMBERS)
-
-        assert result.limit_value == 10
-
-    def test_ignores_inactive_add_ons(self, service, organization, subscription):
-        make_limit(subscription, LimitedResource.ORGANIZATION_MEMBERS, 5)
-        make_add_on(subscription, LimitedResource.ORGANIZATION_MEMBERS, 3, is_active=False)
-
-        result = service.get_effective_limit(organization, LimitedResource.ORGANIZATION_MEMBERS)
-
-        assert result.limit_value == 5
-
-    def test_ignores_add_ons_for_a_different_resource(self, service, organization, subscription):
-        make_limit(subscription, LimitedResource.ORGANIZATION_MEMBERS, 5)
-        make_add_on(subscription, LimitedResource.RESOURCE_CALENDARS, 3)
-
-        result = service.get_effective_limit(organization, LimitedResource.ORGANIZATION_MEMBERS)
-
-        assert result.limit_value == 5
-
-    def test_null_limit_value_is_unlimited(self, service, organization, subscription):
-        make_limit(subscription, LimitedResource.ORGANIZATION_MEMBERS, None)
-
-        result = service.get_effective_limit(organization, LimitedResource.ORGANIZATION_MEMBERS)
-
-        assert result.limit_value is None
-        assert result.is_unlimited is True
-
-    def test_unlimited_plus_an_add_on_is_still_unlimited(self, service, organization, subscription):
-        """NULL must never be coerced into a number by add-on arithmetic."""
-        make_limit(subscription, LimitedResource.ORGANIZATION_MEMBERS, None)
-        make_add_on(subscription, LimitedResource.ORGANIZATION_MEMBERS, 3)
-
-        result = service.get_effective_limit(organization, LimitedResource.ORGANIZATION_MEMBERS)
-
-        assert result.limit_value is None
+    """The generic shape of ``get_effective_limit`` -- the subscription's own
+    row, add-on aggregation, and the NULL-is-unlimited rule -- is now the
+    package's own to prove (``vinta_billing`` ``tests/test_entitlement_engine
+    .py::TestEffectiveLimit``/``TestAddOns``). What survives here is the
+    query-shape behaviour those generic tests do not pin: the unlimited
+    branch skipping the add-on aggregate entirely, and the kind/overage-price
+    passthrough this project's postpaid resources depend on.
+    """
 
     def test_unlimited_plan_limit_never_runs_the_add_on_aggregate(
         self, service, organization, subscription
@@ -169,31 +125,6 @@ class TestGetEffectiveLimit:
             "The unlimited branch ran the add-on aggregate query. Queries seen: "
             f"{[query['sql'] for query in captured.captured_queries]}"
         )
-
-    def test_missing_limit_row_is_unlimited_not_zero(self, service, organization, subscription):
-        """Fail-open: a resource the subscription has no row for is uncapped.
-
-        This is the case a missing/incomplete seed produces. Treating it as zero
-        would lock the organization out of a resource entirely, with no signal and
-        no self-serve remedy.
-        """
-        assert not subscription.limits.filter(
-            resource_key=LimitedResource.RESOURCE_CALENDARS
-        ).exists()
-
-        result = service.get_effective_limit(organization, LimitedResource.RESOURCE_CALENDARS)
-
-        assert result.limit_value is None
-        assert result.is_unlimited is True
-
-    def test_missing_subscription_is_unlimited_not_zero(self, service, organization):
-        """Fail-open again: a billing root with no ``Subscription`` at all is a
-        broken invariant, but it must not become a lockout."""
-        assert not Subscription.objects.filter(organization=organization).exists()
-
-        result = service.get_effective_limit(organization, LimitedResource.ORGANIZATION_MEMBERS)
-
-        assert result.limit_value is None
 
     def test_carries_the_kind_and_overage_price_through(self, service, organization, subscription):
         make_limit(
@@ -303,69 +234,15 @@ class TestUsageCounters:
 
 @pytest.mark.django_db
 class TestCheckLimit:
-    def test_allows_when_under_the_ceiling(self, service, organization, subscription):
-        make_limit(subscription, LimitedResource.CALENDAR_GROUPS, 3)
-        baker.make(CalendarGroup, organization=organization)
-
-        result = service.check_limit(organization, LimitedResource.CALENDAR_GROUPS)
-
-        assert result.allowed is True
-        assert result.current_usage == 1
-        assert result.ceiling == 3
-        assert result.remedy is None
-
-    def test_allows_the_create_that_exactly_reaches_the_ceiling(
-        self, service, organization, subscription
-    ):
-        """``current + delta <= ceiling``: a limit of 3 permits the third row."""
-        make_limit(subscription, LimitedResource.CALENDAR_GROUPS, 3)
-        baker.make(CalendarGroup, organization=organization, _quantity=2)
-
-        assert service.check_limit(organization, LimitedResource.CALENDAR_GROUPS).allowed is True
-
-    def test_blocks_the_create_that_would_exceed_the_ceiling(
-        self, service, organization, subscription
-    ):
-        make_limit(subscription, LimitedResource.CALENDAR_GROUPS, 3)
-        baker.make(CalendarGroup, organization=organization, _quantity=3)
-
-        result = service.check_limit(organization, LimitedResource.CALENDAR_GROUPS)
-
-        assert result.allowed is False
-        assert result.current_usage == 3
-        assert result.ceiling == 3
-        assert result.remedy == LimitRemedy.PURCHASE_ADD_ON
-
-    def test_honours_a_delta_greater_than_one(self, service, organization, subscription):
-        make_limit(subscription, LimitedResource.CALENDAR_GROUPS, 3)
-        baker.make(CalendarGroup, organization=organization)
-
-        assert service.check_limit(organization, LimitedResource.CALENDAR_GROUPS, delta=2).allowed
-        assert not service.check_limit(
-            organization, LimitedResource.CALENDAR_GROUPS, delta=3
-        ).allowed
-
-    def test_unlimited_never_blocks(self, service, organization, subscription):
-        """The rollout switch: an organization on the ``unlimited`` plan behaves
-        exactly as it did before this feature existed."""
-        make_limit(subscription, LimitedResource.CALENDAR_GROUPS, None)
-        baker.make(CalendarGroup, organization=organization, _quantity=50)
-
-        result = service.check_limit(organization, LimitedResource.CALENDAR_GROUPS, delta=1000)
-
-        assert result.allowed is True
-        assert result.ceiling is None
-
-    def test_add_on_lifts_a_blocked_check(self, service, organization, subscription):
-        make_limit(subscription, LimitedResource.CALENDAR_GROUPS, 3)
-        baker.make(CalendarGroup, organization=organization, _quantity=3)
-        assert not service.check_limit(organization, LimitedResource.CALENDAR_GROUPS).allowed
-
-        make_add_on(subscription, LimitedResource.CALENDAR_GROUPS, 2)
-
-        result = service.check_limit(organization, LimitedResource.CALENDAR_GROUPS)
-        assert result.allowed is True
-        assert result.ceiling == 5
+    """The generic allow/block shape -- under the ceiling, exactly at it, past
+    it, a ``delta`` bigger than one, unlimited never blocking, an add-on
+    lifting a blocked check -- is now the package's own to prove
+    (``vinta_billing`` ``tests/test_entitlement_engine.py::TestCheckLimit``/
+    ``TestAddOns``). What survives here is what those generic tests do not
+    reach: this project's billing-state remedy routing, and the row-lock /
+    query-count guarantees ``check_limit`` makes on top of the generic engine
+    behaviour.
+    """
 
     def test_postpaid_resource_recommends_a_plan_upgrade(self, service, organization, subscription):
         """Extra capacity is not purchasable for a post-paid allowance, so pointing
