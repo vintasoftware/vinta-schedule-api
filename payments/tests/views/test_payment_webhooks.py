@@ -798,21 +798,11 @@ class TestZeroAmountSubscriptionPaymentDoesNotResolveDunning:
         assert subscription.grace_period_ends_at is None
 
 
-# Same defect as the six xfails in
+# The Stripe `Invoice.billing`-vs-`Invoice.payments` defect this class's
+# lone `xfail(strict=True)` used to guard against is fixed in
+# `vinta-django-billing` 0.5.0 -- see
 # `payments/tests/services/subscription_adapters/test_stripe_subscription_adapter.py`
-# -- see `STRIPE_INVOICE_PAYMENTS_FIELD_DEFECT` there for the full story.
-# `vinta-django-billing` 0.4.0's `StripeSubscriptionAdapter` reads
-# `Invoice.billing`, a field Stripe does not have, where it means
-# `Invoice.payments`. This is that bug seen from the webhook end: an
-# `invoice.paid` delivery resolves no PaymentIntent, so a GRACE subscription is
-# never recovered and the customer keeps being dunned after paying. Kept as
-# `xfail(strict=True)` rather than rewritten to expect the broken behaviour, so
-# it turns red as XPASS the moment the pin moves to a release that fixes it.
-#
-# On the method, not the class: a class-level marker is inherited by every
-# method in the class, so a second test added here later would XPASS without
-# ever touching the defect. Matches
-# `test_stripe_subscription_adapter.py`'s per-function pattern.
+# for the full story and the same marker removal.
 @pytest.mark.django_db
 class TestStripeInvoicePaidResolvesOffTheEventsOwnInvoice:
     """Reviewer finding BLOCKER 1.
@@ -877,13 +867,6 @@ class TestStripeInvoicePaidResolvesOffTheEventsOwnInvoice:
             secret=self.STRIPE_WEBHOOK_SECRET,
         )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "vinta-django-billing 0.4.0 reads Invoice.billing where Stripe has "
-            "Invoice.payments, so invoice.paid resolves no payment; reported upstream."
-        ),
-    )
     @pytest.mark.no_auto_subscription
     def test_invoice_paid_for_a_non_latest_invoice_resolves_grace_to_active(
         self, di_container, billing_profile

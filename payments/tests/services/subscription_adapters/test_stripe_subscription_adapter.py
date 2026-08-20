@@ -747,37 +747,17 @@ def test_get_subscription_payload(mock_subscription_resource, adapter):
     )
 
 
-#: ``vinta-django-billing`` 0.4.0 reads a Stripe field that does not exist.
-#:
-#: ``StripeSubscriptionAdapter`` resolves an invoice's PaymentIntent id through
-#: ``Invoice.payments`` -- a list of ``InvoicePayment``, populated only when
-#: expanded. In 0.4.0 three of the four places that name it say ``billing``
-#: instead: ``Invoice.retrieve(..., expand=["billing"])``,
-#: ``invoice.to_dict().get("billing")`` and
-#: ``latest_invoice.get("billing")``. The fourth, in the same file, still
-#: expands ``latest_invoice.payments`` -- expanding one field and reading
-#: another is the tell, and it is what an over-eager ``payments`` ->
-#: ``billing`` rename during the extraction did to Stripe's own vocabulary.
-#:
-#: The consequence is silent and expensive: ``get_payment_external_id_*``
-#: returns ``None`` for every Stripe subscription charge, so an
-#: ``invoice.paid`` webhook resolves no payment, dunning is never resolved, and
-#: a customer who has paid keeps being chased.
-#:
-#: These tests assert the correct field and are kept as ``xfail(strict=True)``,
-#: not deleted or rewritten: rewriting them to expect ``billing`` would pin the
-#: bug, and ``strict`` means they fail as XPASS the moment the pin moves to a
-#: release that fixes it -- which is the reminder to delete this marker.
-STRIPE_INVOICE_PAYMENTS_FIELD_DEFECT = pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "vinta-django-billing 0.4.0 reads Invoice.billing where Stripe has "
-        "Invoice.payments; reported upstream, see this module's constant."
-    ),
-)
+#: ``vinta-django-billing`` 0.4.0 read a Stripe field that does not exist
+#: (``Invoice.billing`` where Stripe has ``Invoice.payments``), so
+#: ``get_payment_external_id_*`` returned ``None`` for every Stripe
+#: subscription charge and an ``invoice.paid`` webhook resolved no payment.
+#: Fixed in 0.5.0 -- confirmed via ``'billing' not in
+#: stripe.Invoice.__annotations__`` and ``'payments' in
+#: stripe.Invoice.__annotations__`` on the pinned SDK. The tests below used to
+#: carry an ``xfail(strict=True)`` reminder for this; removed now that they
+#: pass for real.
 
 
-@STRIPE_INVOICE_PAYMENTS_FIELD_DEFECT
 def test_get_payment_external_id_from_subscription_payload_expanded(adapter):
     """Shape derived from introspecting `stripe.InvoicePayment.__annotations__`
     (`payment: InvoicePayment.Payment`) and
@@ -808,7 +788,6 @@ def test_get_payment_external_id_from_subscription_payload_expanded(adapter):
     assert result == "pi_456"
 
 
-@STRIPE_INVOICE_PAYMENTS_FIELD_DEFECT
 def test_get_payment_external_id_from_subscription_payload_unexpanded_id(adapter):
     """`InvoicePayment.Payment.payment_intent` is a bare id string unless
     further expanded — which `get_subscription_payload` never asks for, since
@@ -845,7 +824,6 @@ def test_get_payment_external_id_from_subscription_payload_no_payments_yet(adapt
     assert adapter.get_payment_external_id_from_subscription_payload(subscription_payload) is None
 
 
-@STRIPE_INVOICE_PAYMENTS_FIELD_DEFECT
 def test_get_payment_external_id_from_subscription_payload_picks_the_paid_entry_not_index_zero(
     adapter,
 ):
@@ -890,7 +868,6 @@ def test_get_payment_external_id_from_subscription_payload_picks_the_paid_entry_
     assert result == "pi_new_card_success"
 
 
-@STRIPE_INVOICE_PAYMENTS_FIELD_DEFECT
 def test_get_payment_external_id_from_subscription_payload_falls_back_to_most_recent_when_none_paid(
     adapter,
 ):
@@ -923,7 +900,6 @@ def test_get_payment_external_id_from_subscription_payload_falls_back_to_most_re
     assert result == "pi_newer_failure"
 
 
-@STRIPE_INVOICE_PAYMENTS_FIELD_DEFECT
 @patch(
     "vinta_billing.services.subscription_adapters.stripe_subscription_adapter.stripe.PaymentIntent"
 )
@@ -1031,7 +1007,6 @@ def test_receive_payment_update_invoice_event_with_no_invoice_id_returns_none(
     mock_invoice.retrieve.assert_not_called()
 
 
-@STRIPE_INVOICE_PAYMENTS_FIELD_DEFECT
 @patch(
     "vinta_billing.services.subscription_adapters.stripe_subscription_adapter.stripe.PaymentIntent"
 )
