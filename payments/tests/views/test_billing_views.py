@@ -1,9 +1,10 @@
 """Integration tests for the self-serve billing endpoints
-(``payments/billing_views.py``): plan catalog, usage, subscription detail,
-upgrade/downgrade, and add-on purchase, driven through DRF routing exactly
-like a real client. Permissions, idempotency, and the key acceptance scenario
-(a blocked invitation succeeds after an upgrade, with no manual step) are all
-exercised through real HTTP requests.
+(``vinta_billing.billing_views``, mounted through
+``vinta_billing.routing.get_routes()``): plan catalog, usage, subscription
+detail, upgrade/downgrade, and add-on purchase, driven through DRF routing
+exactly like a real client. Permissions, idempotency, and the key acceptance
+scenario (a blocked invitation succeeds after an upgrade, with no manual step)
+are all exercised through real HTTP requests.
 """
 
 import datetime

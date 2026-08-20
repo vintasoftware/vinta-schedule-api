@@ -1,4 +1,5 @@
-"""Integration tests for ``payments.views.PaymentProviderViewSet``: the unauthenticated
+"""Integration tests for ``vinta_billing.views.PaymentProviderViewSet``, mounted
+through ``vinta_billing.routing.get_extra_patterns()``: the unauthenticated
 system-default endpoint and the authenticated, tenant-scoped organization endpoint.
 """
 

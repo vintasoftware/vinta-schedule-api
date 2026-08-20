@@ -16,17 +16,18 @@ them. Until then these tests hold two properties:
    ``makemigrations`` would start generating a migration for a table that does
    not exist.
 
-Two modules are deliberately *not* pure re-exports and are tested for what they
-keep rather than only for what they forward:
+One module is deliberately *not* a pure re-export and is tested for what it
+keeps rather than only for what it forwards:
 
 - ``payments.billing_constants.LimitedResource`` / ``Entitlement``, which became
   registry keys, so the package has no equivalent to forward to.
-- ``payments.admin``, which re-exports the package's admin (the import is what
-  registers every billing ``ModelAdmin`` with the default site) but overrides
-  ``BillingProfileAdmin`` to supply the DI-built ``SubscriptionService`` its
-  ``save_model`` needs. It is therefore absent from ``SHIMS`` -- a blanket
-  "every name is the package's own" check would forbid exactly the override it
-  exists for -- and has its own test below.
+
+``payments.admin`` no longer exists at all (Phase 2): the one thing it used to
+override, ``BillingProfileAdmin.save_model``'s ``subscription_service``
+argument, is resolved through ``VINTA_BILLING['SERVICE_CONTAINER']`` by the
+package itself from 0.5.0 on, so ``django.contrib.admin.autodiscover()``
+registers ``vinta_billing.admin``'s own classes directly -- nothing left for a
+host-owned admin module to do.
 """
 
 import importlib
@@ -199,54 +200,22 @@ def test_every_public_name_the_shim_exposes_is_the_packages_own(shim_path, packa
     assert divergent == []
 
 
-def test_the_admin_shim_overrides_only_the_billing_profile_admin():
-    """``payments.admin`` forwards everything except the one class it must not.
-
-    ``vinta_billing.admin.BillingProfileAdmin.save_model`` routes a
-    ``payment_provider`` edit through ``SubscriptionService.set_payment_provider``
-    so the repoint is audited, and takes that service as an argument nothing in
-    the package ever supplies -- so on the package's own wiring every such edit
-    raises ``RuntimeError``. This project supplies it from ``di_core``, which is
-    the plan's "DI ownership: the host's" decision, and that requires a subclass.
-
-    Pinned rather than left implicit: the override is a deliberate exception to
-    the rule the rest of this module enforces, and the narrower it stays the
-    sooner it can be deleted (see ``payments/admin.py``). So this asserts both
-    halves -- exactly one name diverges, and the divergent one is still a
-    subclass of the package's, not a reimplementation.
-    """
-    import vinta_billing.admin
-
-    import payments.admin
-
-    divergent = [
-        attribute
-        for attribute in dir(vinta_billing.admin)
-        if not attribute.startswith("_")
-        and hasattr(payments.admin, attribute)
-        and getattr(payments.admin, attribute) is not getattr(vinta_billing.admin, attribute)
-    ]
-
-    assert divergent == ["BillingProfileAdmin"]
-    assert issubclass(payments.admin.BillingProfileAdmin, vinta_billing.admin.BillingProfileAdmin)
-
-
-def test_the_registered_billing_profile_admin_is_the_hosts():
-    """And it is the subclass the admin site actually serves.
-
-    Registering the package's class and defining a subclass nobody registered
-    would leave the audited repoint path dead while every identity assertion
-    above still passed.
+def test_the_registered_billing_profile_admin_is_the_packages_own():
+    """No host subclass sits in front of it any more (Phase 2 deleted
+    ``payments/admin.py``): the package's own ``BillingProfileAdmin`` --
+    ``save_model`` resolving ``subscription_service`` through
+    ``VINTA_BILLING['SERVICE_CONTAINER']`` since 0.5.0 -- is what
+    ``django.contrib.admin.autodiscover()`` registered for
+    ``vinta_billing.models.BillingProfile``.
     """
     from django.contrib import admin as django_admin
 
+    import vinta_billing.admin
     from vinta_billing.models import BillingProfile
-
-    import payments.admin
 
     registered = django_admin.site._registry[BillingProfile]
 
-    assert type(registered) is payments.admin.BillingProfileAdmin
+    assert type(registered) is vinta_billing.admin.BillingProfileAdmin
 
 
 def test_payments_registers_no_models():

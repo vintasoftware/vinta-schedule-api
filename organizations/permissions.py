@@ -415,8 +415,20 @@ class CanManageBranding(IsOrganizationAdmin):
 
 
 class IsBillingOwnerOrAdmin(BasePermission):
-    """Permission for the billing-management endpoints (``payments/billing_views.py``):
-    change plan, purchase/cancel an add-on, cancel the subscription.
+    """The host's policy for the billing-management endpoints: change plan,
+    purchase/cancel an add-on, cancel the subscription.
+
+    No longer wired into those endpoints directly (Phase 2 of the billing
+    migration deleted ``payments/seams/permissions.py``, the shim that swapped
+    this class in for ``vinta_billing.permissions.IsBillingManager``): 0.5.0
+    fixed that class's own object-level check, and its branch-1 answer --
+    a member holding ``vinta_billing.manage_billing`` in the object's own
+    organization -- is exactly what this class's branch 1 already computed, so
+    the swap lost nothing. Branch 2 (the acting-reseller-root subtree walk
+    below) was already unreachable from any endpoint before the deletion --
+    see its own docstring -- so it is kept here as host policy for direct
+    callers, verified by ``payments/tests/test_reseller_root_billing.py``,
+    rather than deleted along with the seam.
 
     Split across ``has_permission``/``has_object_permission`` rather than doing
     everything in ``has_permission``, because the two answer different

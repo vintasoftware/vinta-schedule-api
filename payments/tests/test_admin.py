@@ -3,6 +3,15 @@ row an admin merely viewed without changing is not returned by
 ``formset.save(commit=False)`` and therefore is not stamped ``is_overridden=True``.
 A wrong answer here stamps every row on save and effectively freezes the whole
 subscription against future plan changes.
+
+Every admin class below is now ``vinta_billing.admin``'s own -- Phase 2 deleted
+``payments/admin.py``'s ``BillingProfileAdmin`` subclass, the workaround for
+0.4.0 never supplying ``save_model`` its ``subscription_service``. 0.5.0
+resolves it through ``VINTA_BILLING['SERVICE_CONTAINER']`` instead (see
+``vinta_billing.admin.BillingProfileAdmin.save_model``'s own docstring), which
+is what lets ``TestBillingProfileAdminSaveModel`` below still honour
+``di_container.stripe_payment_gateway.override(...)`` against the package's
+own class, unmodified.
 """
 
 from unittest.mock import patch
@@ -12,9 +21,7 @@ from django.contrib.auth import get_user_model
 
 import pytest
 from model_bakery import baker
-
-from organizations.models import Organization
-from payments.admin import (
+from vinta_billing.admin import (
     BillingPlanAdminForm,
     BillingProfileAdmin,
     PlanLimitInline,
@@ -22,6 +29,8 @@ from payments.admin import (
     SubscriptionEntitlementInline,
     SubscriptionPlanLimitInline,
 )
+
+from organizations.models import Organization
 from payments.billing_constants import Entitlement, LimitedResource, LimitKind
 from payments.constants import PaymentProviders
 from payments.exceptions import UnknownPaymentProviderError
