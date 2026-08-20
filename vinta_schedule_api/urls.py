@@ -11,6 +11,8 @@ from drf_spectacular.views import (
 )
 from rest_framework.routers import DefaultRouter
 from strawberry.django.views import GraphQLView
+from vinta_billing.routing import get_extra_patterns as get_payments_extra_patterns
+from vinta_billing.routing import get_routes as get_payments_routes
 
 from calendar_integration.routes import routes as calendar_integration_routes
 from legal.routes import routes as legal_routes
@@ -18,8 +20,6 @@ from notifications.routes import routes as notifications_routes
 from organizations.routes import extra_patterns as organizations_extra_patterns
 from organizations.routes import routes as organizations_routes
 from organizations.views import AcceptInvitationView
-from payments.routes import extra_patterns as payments_extra_patterns
-from payments.routes import routes as payments_routes
 from public_api.routes import routes as public_api_routes
 from public_api.schema import schema
 from users.routes import routes as users_routes
@@ -27,6 +27,18 @@ from webhooks.routes import routes as webhooks_routes
 
 
 router = DefaultRouter(use_regex_path=False)
+
+# Called, not imported as a module-level list: `vinta_billing.routing.get_routes()` /
+# `get_extra_patterns()` build the route table fresh from the currently-configured
+# `VINTA_BILLING['VIEW_MIXIN']` / `SERVICE_CONTAINER` each call (`apply_view_mixin`
+# is itself idempotent -- see that function's docstring -- so calling this more than
+# once, e.g. under a test that reloads this module, does not multiply the mixin).
+payments_routes = get_payments_routes()
+# `use_regex_path=False` above matches this project's router, so the two provider
+# webhooks (which a router in either mode can only mis-render, see `get_extra_patterns`'s
+# own docstring) need `trailing_slash` left at its default (`True`) to match every
+# other route this router builds.
+payments_extra_patterns = get_payments_extra_patterns()
 
 routes = (
     *calendar_integration_routes,

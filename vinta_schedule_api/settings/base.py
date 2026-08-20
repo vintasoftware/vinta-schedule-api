@@ -10,8 +10,7 @@ from django.core.validators import URLValidator
 from cuid2 import cuid_wrapper
 from decouple import Csv, config  # type: ignore
 from dj_database_url import parse as db_url
-
-from payments.provider_slugs import MERCADOPAGO, PAYMENT_PROVIDER_SLUGS, STRIPE
+from vinta_billing.provider_slugs import MERCADOPAGO, PAYMENT_PROVIDER_SLUGS, STRIPE
 
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -531,12 +530,12 @@ SPECTACULAR_SETTINGS = {
         # choices with `Subscription.billing_interval` -- without this,
         # drf-spectacular creates a second, redundant enum name for the same
         # value set.
-        "PendingBillingIntervalEnum": "payments.billing_constants.BillingInterval.choices",
+        "PendingBillingIntervalEnum": "vinta_billing.constants.BillingInterval.choices",
         # `PaymentProviderSerializer.provider` (payments/serializers.py) is a plain
         # `ChoiceField`, not a model field, so it has no field name to inherit a
         # canonical enum name from the way `Payment.payment_provider` etc. do --
         # pin it to the same enum name those fields already resolve to.
-        "PaymentProviderEnum": "payments.constants.PaymentProviders.choices",
+        "PaymentProviderEnum": "vinta_billing.constants.PaymentProviders.choices",
         # `calendar_integration`'s model field literally named `provider` (a
         # different, unrelated choice set: internal/google/microsoft/apple/ics) is
         # the other contender for the auto-derived "ProviderEnum" name that
@@ -830,7 +829,28 @@ VINTA_BILLING = {
     # Matches `usage_warning_service.APPROACHING_LIMIT_THRESHOLD`, the value
     # this project already enforces today.
     "USAGE_WARNING_THRESHOLD": 0.8,
+    # Not actually on the path `payments/tasks.py`'s four beat tasks take as of
+    # Phase 2 -- each passes its own `dispatch` straight to the
+    # `vinta_billing.jobs` sweep it calls, because the per-subscription jobs
+    # need this project's DI-wired services (`di_container.dunning_service()`
+    # and friends), and `vinta_billing.jobs`' *default* service resolution
+    # does not consult `SERVICE_CONTAINER` below the way the shipped
+    # views/admin do. Left configured -- and `payments.seams.dispatch` left in
+    # place -- for any caller of `vinta_billing.jobs.*` that does not need a
+    # DI-wired service (there is none today).
     "JOB_DISPATCHER": "payments.seams.dispatch.dispatch_via_celery",
+    # Mixed in front of every tenant-scoped viewset `vinta_billing.routing
+    # .get_routes()` / `get_extra_patterns()` mount, so `X-Organization-Id`
+    # resolution (this project's own, not the package's) applies to them too.
+    "VIEW_MIXIN": "common.utils.view_utils.TenantScopedViewMixin",
+    # Where the shipped views and the admin build their services from.
+    # Resolved lazily per view construction (`vinta_billing.services.container
+    # .get_service_container`), so `di_container.<provider>.override(...)` in
+    # tests is honoured -- see `payments/admin.py` and the deleted
+    # `payments/views.py` / `payments/billing_views.py`, whose whole reason
+    # for existing was building services this setting now lets the package's
+    # own views and admin do instead.
+    "SERVICE_CONTAINER": "di_core.containers.container",
     # Same env vars as ever -- `STRIPE_SECRET_KEY` / `MERCADOPAGO_ACCESS_TOKEN`
     # / friends, defined above. Render env groups and CI are untouched; only
     # the shape they are assembled into changed.
