@@ -55,7 +55,7 @@ from organizations.permissions import (
     user_administers_branding_eligible_organization,
 )
 from organizations.tests.helpers import make_membership
-from payments.seams.resources import WHITE_LABEL_BRANDING
+from payments.seams.resource_keys import WHITE_LABEL_BRANDING
 
 
 User = get_user_model()

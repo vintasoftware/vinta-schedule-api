@@ -60,7 +60,7 @@ from calendar_integration.tasks.calendar_sync_tasks import (
     sync_calendar_task,
 )
 from organizations.models import Organization
-from payments.seams.resources import EXTERNAL_CALENDAR_GOOGLE, RESOURCE_CALENDARS
+from payments.seams.resource_keys import EXTERNAL_CALENDAR_GOOGLE, RESOURCE_CALENDARS
 from users.models import Profile, User
 
 

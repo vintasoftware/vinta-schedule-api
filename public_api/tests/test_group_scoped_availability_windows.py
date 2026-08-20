@@ -37,7 +37,7 @@ from calendar_integration.models import (
     CalendarOwnership,
 )
 from organizations.models import Organization, OrganizationMembership
-from payments.seams.resources import AVAILABILITY_WINDOWS, PARTNER_API
+from payments.seams.resource_keys import AVAILABILITY_WINDOWS, PARTNER_API
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess
 from public_api.services import PublicAPIAuthService

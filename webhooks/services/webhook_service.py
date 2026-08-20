@@ -10,7 +10,7 @@ from dependency_injector.wiring import Provide, inject
 from vinta_billing.exceptions import OverLimitError
 
 from organizations.models import Organization
-from payments.seams.resources import WEBHOOK_SUBSCRIPTIONS
+from payments.seams.resource_keys import WEBHOOK_SUBSCRIPTIONS
 from webhooks.constants import WebhookEventType, WebhookStatus
 from webhooks.models import WebhookConfiguration, WebhookEvent
 from webhooks.services.payloads import WebhookEnvelope

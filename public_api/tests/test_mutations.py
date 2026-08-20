@@ -50,7 +50,7 @@ from organizations.permission_catalog import (
     GROUP_ORGANIZATION_MEMBER,
 )
 from organizations.services import OrganizationService
-from payments.seams.resources import PARTNER_API, WHITE_LABEL_BRANDING
+from payments.seams.resource_keys import PARTNER_API, WHITE_LABEL_BRANDING
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess, SystemUser
 from public_api.mutations import (

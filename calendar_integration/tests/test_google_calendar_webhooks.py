@@ -33,7 +33,7 @@ from calendar_integration.services.calendar_adapters.google_calendar_adapter imp
 )
 from calendar_integration.services.calendar_service import CalendarService
 from organizations.models import Organization
-from payments.seams.resources import EXTERNAL_CALENDAR_GOOGLE
+from payments.seams.resource_keys import EXTERNAL_CALENDAR_GOOGLE
 
 
 @override_settings(GOOGLE_CLIENT_ID="test_client_id", GOOGLE_CLIENT_SECRET="test_client_secret")

@@ -143,7 +143,7 @@ from calendar_integration.services.type_guards import (
     is_initialized_or_authenticated_calendar_service,
 )
 from organizations.models import Organization, OrganizationMembership
-from payments.seams.resources import (
+from payments.seams.resource_keys import (
     EXTERNAL_CALENDAR_GOOGLE,
     EXTERNAL_CALENDAR_MICROSOFT,
     RESOURCE_CALENDARS,

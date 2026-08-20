@@ -67,7 +67,7 @@ from calendar_integration.services.dataclasses import (
     ResourceAllocationInputData,
 )
 from organizations.models import Organization
-from payments.seams.resources import AVAILABILITY_WINDOWS, CALENDAR_GROUPS
+from payments.seams.resource_keys import AVAILABILITY_WINDOWS, CALENDAR_GROUPS
 from users.models import User
 
 

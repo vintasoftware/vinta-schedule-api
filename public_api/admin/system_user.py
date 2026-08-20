@@ -12,7 +12,7 @@ from dependency_injector.wiring import Provide, inject
 from vinta_billing.exceptions import OverLimitError
 
 from common.managers import unscoped_default_manager
-from payments.seams.resources import PUBLIC_API_SYSTEM_USERS
+from payments.seams.resource_keys import PUBLIC_API_SYSTEM_USERS
 from public_api.models import ResourceAccess, SystemUser
 from public_api.services import PublicAPIAuthService
 

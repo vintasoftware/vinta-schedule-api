@@ -45,7 +45,7 @@ from calendar_integration.models import AvailableTime, Calendar
 from calendar_integration.querysets import AvailableTimeQuerySet
 from calendar_integration.services.calendar_service import CalendarService
 from organizations.models import Organization
-from payments.seams.resources import AVAILABILITY_WINDOWS
+from payments.seams.resource_keys import AVAILABILITY_WINDOWS
 
 
 # This module builds its own Subscription rows (OneToOne with Organization), so it

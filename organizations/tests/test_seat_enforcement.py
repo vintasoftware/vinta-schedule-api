@@ -42,7 +42,7 @@ from organizations.models import (
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.services import OrganizationService
 from organizations.tests.helpers import make_membership
-from payments.seams.resources import ORGANIZATION_MEMBERS, PARTNER_API
+from payments.seams.resource_keys import ORGANIZATION_MEMBERS, PARTNER_API
 from payments.tests.billing_fixtures import reseed_billing_plans
 from public_api.models import ResourceAccess
 from public_api.services import PublicAPIAuthService

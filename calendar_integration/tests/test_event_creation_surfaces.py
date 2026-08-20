@@ -73,7 +73,7 @@ from calendar_integration.services.dataclasses import (
 )
 from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
 from organizations.models import Organization, OrganizationMembership
-from payments.seams.resources import EVENT_OCCURRENCES
+from payments.seams.resource_keys import EVENT_OCCURRENCES
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess
 from users.models import Profile, User

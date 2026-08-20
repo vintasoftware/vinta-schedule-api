@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, Any
 
 from vinta_billing.services.entitlement_service import EntitlementService, LimitCheckResult
 
-from payments.seams.resources import ORGANIZATION_MEMBERS
+from payments.seams.resource_keys import ORGANIZATION_MEMBERS
 
 
 if TYPE_CHECKING:

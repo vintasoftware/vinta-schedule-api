@@ -76,7 +76,7 @@ from calendar_integration.services.protocols.initializer_or_authenticated_calend
 )
 from calendar_integration.services.type_guards import is_authenticated_calendar_service
 from organizations.models import ExternalEventUpdatePolicy, OrganizationMembership
-from payments.seams.resources import RESOURCE_CALENDARS
+from payments.seams.resource_keys import RESOURCE_CALENDARS
 from users.models import User
 
 

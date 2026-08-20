@@ -13,7 +13,7 @@ from common.utils.authentication_utils import (
     hash_long_lived_token,
     verify_long_lived_token,
 )
-from payments.seams.resources import PUBLIC_API_SYSTEM_USERS
+from payments.seams.resource_keys import PUBLIC_API_SYSTEM_USERS
 from public_api.models import SystemUser
 
 

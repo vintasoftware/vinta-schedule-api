@@ -17,7 +17,7 @@ from vinta_billing.models import BillingPlan, Subscription, SubscriptionEntitlem
 
 from accounts.views import ProviderRedirectAPIView
 from organizations.models import Organization, OrganizationBranding, OrganizationMembership
-from payments.seams.resources import WHITE_LABEL_BRANDING
+from payments.seams.resource_keys import WHITE_LABEL_BRANDING
 from users.factories import UserFactory
 
 

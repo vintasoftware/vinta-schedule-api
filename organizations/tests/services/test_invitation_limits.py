@@ -22,7 +22,7 @@ from vinta_billing.models import BillingPlan, Subscription, SubscriptionPlanLimi
 from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
 from organizations.models import Organization, OrganizationInvitation, OrganizationMembership
 from organizations.services import OrganizationService
-from payments.seams.resources import ORGANIZATION_MEMBERS
+from payments.seams.resource_keys import ORGANIZATION_MEMBERS
 
 
 # This module builds its own Subscription rows (OneToOne with Organization), so it

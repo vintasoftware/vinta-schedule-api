@@ -34,7 +34,7 @@ from calendar_integration.services.calendar_group_service import CalendarGroupSe
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.dataclasses import CalendarGroupInputData
 from organizations.models import Organization
-from payments.seams.resources import (
+from payments.seams.resource_keys import (
     AVAILABILITY_WINDOWS,
     BUNDLE_CALENDARS,
     CALENDAR_GROUPS,

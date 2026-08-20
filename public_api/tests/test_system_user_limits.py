@@ -25,7 +25,7 @@ from vinta_billing.exceptions import OverLimitError
 from vinta_billing.models import BillingPlan, Subscription, SubscriptionPlanLimit
 
 from organizations.models import Organization
-from payments.seams.resources import PUBLIC_API_SYSTEM_USERS
+from payments.seams.resource_keys import PUBLIC_API_SYSTEM_USERS
 from public_api.models import SystemUser
 from public_api.services import PublicAPIAuthService
 

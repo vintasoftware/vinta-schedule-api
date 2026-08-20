@@ -25,7 +25,7 @@ from organizations.models import (
 )
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import make_membership
-from payments.seams.resources import WHITE_LABEL_BRANDING
+from payments.seams.resource_keys import WHITE_LABEL_BRANDING
 
 
 User = get_user_model()

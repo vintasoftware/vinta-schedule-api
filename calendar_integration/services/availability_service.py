@@ -84,7 +84,7 @@ from calendar_integration.services.protocols.initializer_or_authenticated_calend
 from calendar_integration.services.type_guards import (
     is_initialized_or_authenticated_calendar_service,
 )
-from payments.seams.resources import AVAILABILITY_WINDOWS
+from payments.seams.resource_keys import AVAILABILITY_WINDOWS
 
 
 if TYPE_CHECKING:

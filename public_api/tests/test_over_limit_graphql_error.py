@@ -28,7 +28,7 @@ from vinta_billing.exceptions import OverLimitError
 
 from calendar_integration.models import CalendarGroup
 from organizations.models import Organization
-from payments.seams.resources import CALENDAR_GROUPS
+from payments.seams.resource_keys import CALENDAR_GROUPS
 from public_api.extensions import raise_over_limit_graphql_error
 
 

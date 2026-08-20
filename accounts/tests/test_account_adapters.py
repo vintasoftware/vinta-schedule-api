@@ -18,7 +18,7 @@ from accounts.account_adapters import (
 )
 from legal.factories import UserConsentFactory
 from organizations.models import Organization, OrganizationInvitation, OrganizationMembership
-from payments.seams.resources import ORGANIZATION_MEMBERS
+from payments.seams.resource_keys import ORGANIZATION_MEMBERS
 from users.models import Profile, User
 
 

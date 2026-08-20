@@ -25,7 +25,7 @@ from organizations.permission_catalog import (
     MANAGE_MEMBERS,
     MANAGE_ORGANIZATION,
 )
-from payments.seams.resources import WHITE_LABEL_BRANDING
+from payments.seams.resource_keys import WHITE_LABEL_BRANDING
 from public_api.capabilities import is_target_in_subtree
 
 

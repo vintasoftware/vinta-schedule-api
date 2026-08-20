@@ -13,7 +13,7 @@ from vinta_billing.exceptions import OverLimitError
 
 from common.organization_context import organization_context
 from organizations.models import Organization
-from payments.seams.resources import PARTNER_API
+from payments.seams.resource_keys import PARTNER_API
 from public_api.exceptions import InvalidAuthorizationHeaderError, PublicAPIServiceUnavailableError
 from public_api.models import SystemUser
 from public_api.services import PublicAPIAuthService

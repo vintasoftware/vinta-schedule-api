@@ -54,7 +54,7 @@ from organizations.permission_catalog import (
     canonical_groups,
 )
 from organizations.slug_generation import derive_organization_slug
-from payments.seams.resources import ORGANIZATION_MEMBERS
+from payments.seams.resource_keys import ORGANIZATION_MEMBERS
 from payments.seams.seats import (
     check_seat_limit_for_invitation_accept,
     check_seat_limit_for_invitation_send,

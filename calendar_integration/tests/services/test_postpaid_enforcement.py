@@ -33,7 +33,7 @@ from calendar_integration.models import Calendar, CalendarEvent
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.dataclasses import CalendarEventInputData
 from organizations.models import Organization
-from payments.seams.resources import EVENT_OCCURRENCES
+from payments.seams.resource_keys import EVENT_OCCURRENCES
 
 
 # This module builds its own Subscription rows (OneToOne with Organization), so it

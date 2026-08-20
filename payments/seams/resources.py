@@ -6,14 +6,12 @@ calendar" or a "webhook subscription" is entirely this project's vocabulary.
 Registration is what tells the engine that vocabulary exists, and each
 resource's ``counter`` is how the engine learns to count it.
 
-This module is the definition site. The keys and labels registered below are
-literals, not read off ``payments.billing_constants.LimitedResource`` /
-``Entitlement`` -- those enums are what this registry replaces, and they have
-no equivalent in ``vinta_billing``. Copying their string values here once,
-rather than importing and iterating them, is what lets this module keep
-working once Phase 6 deletes ``billing_constants.py``.
-``payments/tests/seams/test_resources.py`` cross-checks the two sides against
-each other for as long as the enums still exist.
+This module is the registration site: it owns the ``register(...)`` calls and
+the counters. The keys and labels themselves live one level down, in
+``payments/seams/resource_keys.py`` -- a zero-import leaf module, so any app's
+``models.py`` can import a key back without forming an import cycle with this
+module's own model imports (see that module's docstring for the concrete
+cycle this split exists to break).
 
 Every counter here is the corresponding ``_count_*`` function that used to
 live on ``payments.services.entitlement_service``, rewritten against
@@ -47,32 +45,24 @@ from vinta_billing.services.subscription_service import current_billing_period_s
 from calendar_integration.constants import CalendarType
 from calendar_integration.models import AvailableTime, BlockedTime, Calendar, CalendarGroup
 from organizations.models import OrganizationInvitation, OrganizationMembership
+from payments.seams.resource_keys import (
+    ADVANCED_SCHEDULING,
+    AVAILABILITY_WINDOWS,
+    BUNDLE_CALENDARS,
+    CALENDAR_GROUPS,
+    EVENT_OCCURRENCES,
+    EXTERNAL_CALENDAR_GOOGLE,
+    EXTERNAL_CALENDAR_MICROSOFT,
+    ORGANIZATION_MEMBERS,
+    PARTNER_API,
+    PUBLIC_API_SYSTEM_USERS,
+    RESOURCE_CALENDARS,
+    WEBHOOK_SUBSCRIPTIONS,
+    WHITE_LABEL_BRANDING,
+)
 from public_api.models import SystemUser
 from webhooks.models import WebhookConfiguration
 
-
-#: The registered resource keys, as symbols. The strings themselves are the
-#: definition -- they are what the ``PlanLimit`` / ``BillingPeriodResourceUsage``
-#: rows already hold and what the API already returns -- but a call site should
-#: still say what it means rather than repeat a literal that nothing would flag
-#: if it were mistyped. This module is where they live: it is the registration
-#: site, so a name here cannot drift from a key that exists.
-ORGANIZATION_MEMBERS = "organization_members"
-RESOURCE_CALENDARS = "resource_calendars"
-CALENDAR_GROUPS = "calendar_groups"
-BUNDLE_CALENDARS = "bundle_calendars"
-AVAILABILITY_WINDOWS = "availability_windows"
-WEBHOOK_SUBSCRIPTIONS = "webhook_subscriptions"
-PUBLIC_API_SYSTEM_USERS = "public_api_system_users"
-EVENT_OCCURRENCES = "event_occurrences"
-
-#: The registered entitlement keys, as symbols -- same rationale as the
-#: resource keys above.
-EXTERNAL_CALENDAR_GOOGLE = "external_calendar_google"
-EXTERNAL_CALENDAR_MICROSOFT = "external_calendar_microsoft"
-PARTNER_API = "partner_api"
-WHITE_LABEL_BRANDING = "white_label_branding"
-ADVANCED_SCHEDULING = "advanced_scheduling"
 
 #: The one ``usage_extra`` key any counter here reads -- see
 #: :func:`_count_organization_members` and ``payments.seams.seats``.

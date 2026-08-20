@@ -57,7 +57,7 @@ from organizations.permissions import (
 from organizations.redirect_url_validation import validate_redirect_url
 from organizations.serializers import CurrentMembershipSerializer, MyMembershipSerializer
 from organizations.tests.helpers import make_membership
-from payments.seams.resources import WHITE_LABEL_BRANDING
+from payments.seams.resource_keys import WHITE_LABEL_BRANDING
 from users.factories import UserFactory
 
 

@@ -40,7 +40,7 @@ from common.utils.authentication_utils import generate_long_lived_token, hash_lo
 from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import grant_membership_groups
-from payments.seams.resources import WHITE_LABEL_BRANDING
+from payments.seams.resource_keys import WHITE_LABEL_BRANDING
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess, SystemUser
 from public_api.queries import _vinta_default_branding

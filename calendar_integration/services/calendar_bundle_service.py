@@ -76,7 +76,7 @@ from calendar_integration.services.type_guards import (
     is_initialized_or_authenticated_calendar_service,
 )
 from organizations.models import OrganizationMembership
-from payments.seams.resources import BUNDLE_CALENDARS
+from payments.seams.resource_keys import BUNDLE_CALENDARS
 from users.models import User
 
 

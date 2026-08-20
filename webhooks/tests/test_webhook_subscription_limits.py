@@ -21,7 +21,7 @@ from vinta_billing.exceptions import OverLimitError
 from vinta_billing.models import BillingPlan, Subscription, SubscriptionPlanLimit
 
 from organizations.models import Organization
-from payments.seams.resources import WEBHOOK_SUBSCRIPTIONS
+from payments.seams.resource_keys import WEBHOOK_SUBSCRIPTIONS
 from webhooks.constants import WebhookEventType
 from webhooks.models import WebhookConfiguration
 from webhooks.services.webhook_service import WebhookService

@@ -40,7 +40,7 @@ from organizations.branding_logo import (
 )
 from organizations.models import Organization, OrganizationBranding
 from organizations.slug_validation import validate_organization_slug
-from payments.seams.resources import WHITE_LABEL_BRANDING
+from payments.seams.resource_keys import WHITE_LABEL_BRANDING
 
 
 # This module builds its own Subscription rows (mirroring organizations/tests/

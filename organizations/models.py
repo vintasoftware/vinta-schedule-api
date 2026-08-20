@@ -16,6 +16,7 @@ from organizations.managers import (
 )
 from organizations.permission_catalog import GROUP_ORGANIZATION_MEMBER, INVITABLE_GROUPS
 from organizations.slug_generation import derive_organization_slug
+from payments.seams.resource_keys import WHITE_LABEL_BRANDING
 from s3direct_overrides.model_fields import S3DirectImageField
 
 
@@ -547,6 +548,12 @@ def resolve_branding_for_display(org: Organization | None) -> OrganizationBrandi
     since the container is only assigned in ``DICoreConfig.ready()`` after import
     time).
 
+    ``WHITE_LABEL_BRANDING`` itself is a module-level import from
+    ``payments.seams.resource_keys`` rather than deferred: that module holds zero
+    imports of its own, so it cannot form the cycle a module-level import from
+    ``payments.seams.resources`` (which imports ``organizations.models`` to build
+    the ``organization_members`` counter) would.
+
     Fails **closed** when the container itself is unavailable, matching
     ``PublicApiSystemUserMiddleware._has_partner_api_entitlement`` on the identical
     condition: an unresolvable entitlement service denies. Here that costs a reseller
@@ -564,14 +571,6 @@ def resolve_branding_for_display(org: Organization | None) -> OrganizationBrandi
     # `from ... import container` binds the `None` the module starts with and
     # never sees the wired container.
     from di_core.containers import container
-
-    # Also deferred, and for a second, independent reason: `payments.seams.resources`
-    # imports `organizations.models` (the `organization_members` counter), so a
-    # module-level import here would be a direct import cycle -- this module cannot
-    # finish loading `payments.seams.resources` until `payments.seams.resources`
-    # finishes loading this module. Deferring into the function body breaks the
-    # cycle the same way the `container` import above does.
-    from payments.seams.resources import WHITE_LABEL_BRANDING
 
     if container is None:
         return None
