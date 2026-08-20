@@ -16,6 +16,7 @@ from decimal import Decimal
 from django.utils import timezone
 
 import pytest
+from freezegun import freeze_time
 from model_bakery import baker
 from vinta_billing.counting import UsageContext
 from vinta_billing.models import BillingPlan, MeteredOccurrence, Subscription
@@ -87,14 +88,32 @@ def organization_two():
     return baker.make(Organization, parent=None, can_invite_organizations=False)
 
 
+#: Fixed, one-cycle-stale period for ``test_event_occurrences``'s subscriptions,
+#: and the frozen "now" the test runs at -- one calendar month past that stored
+#: period. Deliberately *not* anchored to real ``timezone.now()``: stamping the
+#: subscription with whatever "now" happens to be and then immediately reading
+#: ``current_billing_period_start`` at essentially the same instant can never
+#: distinguish a regression that reads ``Subscription.current_period_start``
+#: directly from the correct reconstruction -- the two coincide for a freshly
+#: created row. Pinning the stored period one cycle behind the frozen "now"
+#: forces ``current_billing_period_start`` to reconstruct a *different* period
+#: than the stale column, which is exactly the disagreement
+#: ``test_event_occurrences`` needs to catch that regression -- see that test's
+#: docstring.
+_EVENT_OCCURRENCES_STALE_PERIOD_START = datetime.datetime(2025, 7, 1, tzinfo=datetime.UTC)
+_EVENT_OCCURRENCES_STALE_PERIOD_END = datetime.datetime(2025, 8, 1, tzinfo=datetime.UTC)
+_EVENT_OCCURRENCES_NOW = datetime.datetime(2025, 8, 15, 12, 0, tzinfo=datetime.UTC)
+
+
 def _make_subscription(organization: Organization) -> Subscription:
-    now = timezone.now()
+    """A subscription stamped with the fixed, one-cycle-stale period above --
+    see that constant's docstring for why."""
     return baker.make(
         Subscription,
         organization=organization,
         plan=baker.make(BillingPlan, is_default_for_new_organizations=False),
-        current_period_start=now,
-        current_period_end=now + datetime.timedelta(days=30),
+        current_period_start=_EVENT_OCCURRENCES_STALE_PERIOD_START,
+        current_period_end=_EVENT_OCCURRENCES_STALE_PERIOD_END,
     )
 
 
@@ -211,46 +230,56 @@ class TestCounterBreakdowns:
         assert breakdown == {organization_one.pk: 1, organization_two.pk: 2}
 
     def test_event_occurrences(self, organization_one, organization_two):
-        subscription_one = _make_subscription(organization_one)
-        subscription_two = _make_subscription(organization_two)
-        period_one = current_billing_period_start(subscription_one)
-        period_two = current_billing_period_start(subscription_two)
-        now = timezone.now()
-        baker.make(
-            MeteredOccurrence,
-            organization=organization_one,
-            subscription=subscription_one,
-            event_id=1,
-            occurrence_start=now,
-            billing_period_start=period_one,
-            is_within_allowance=True,
-            unit_price=Decimal("0"),
-        )
-        baker.make(
-            MeteredOccurrence,
-            organization=organization_one,
-            subscription=subscription_one,
-            event_id=2,
-            occurrence_start=now,
-            billing_period_start=period_one,
-            is_within_allowance=True,
-            unit_price=Decimal("0"),
-        )
-        baker.make(
-            MeteredOccurrence,
-            organization=organization_two,
-            subscription=subscription_two,
-            event_id=3,
-            occurrence_start=now,
-            billing_period_start=period_two,
-            is_within_allowance=True,
-            unit_price=Decimal("0"),
-        )
+        """Frozen throughout: this test's own ``current_billing_period_start``
+        call (used to stamp the seeded rows) and the counter's independent call
+        (used to read them back) must resolve to the same period, or the test
+        races the two against the wall clock -- see ``_EVENT_OCCURRENCES_NOW``'s
+        docstring for why the subscriptions' stored period is also pinned stale
+        rather than real-``now``-anchored, which is what keeps this test able to
+        fail if the counter regresses to reading ``current_period_start`` off the
+        row directly.
+        """
+        with freeze_time(_EVENT_OCCURRENCES_NOW):
+            subscription_one = _make_subscription(organization_one)
+            subscription_two = _make_subscription(organization_two)
+            period_one = current_billing_period_start(subscription_one)
+            period_two = current_billing_period_start(subscription_two)
+            now = timezone.now()
+            baker.make(
+                MeteredOccurrence,
+                organization=organization_one,
+                subscription=subscription_one,
+                event_id=1,
+                occurrence_start=now,
+                billing_period_start=period_one,
+                is_within_allowance=True,
+                unit_price=Decimal("0"),
+            )
+            baker.make(
+                MeteredOccurrence,
+                organization=organization_one,
+                subscription=subscription_one,
+                event_id=2,
+                occurrence_start=now,
+                billing_period_start=period_one,
+                is_within_allowance=True,
+                unit_price=Decimal("0"),
+            )
+            baker.make(
+                MeteredOccurrence,
+                organization=organization_two,
+                subscription=subscription_two,
+                event_id=3,
+                occurrence_start=now,
+                billing_period_start=period_two,
+                is_within_allowance=True,
+                unit_price=Decimal("0"),
+            )
 
-        breakdown = resources.counter_for(LimitedResource.EVENT_OCCURRENCES)(
-            UsageContext(organization_ids=[organization_one.pk], subscription=subscription_one)
-        )
-        assert breakdown == {organization_one.pk: 2}
+            breakdown = resources.counter_for(LimitedResource.EVENT_OCCURRENCES)(
+                UsageContext(organization_ids=[organization_one.pk], subscription=subscription_one)
+            )
+            assert breakdown == {organization_one.pk: 2}
 
     def test_event_occurrences_with_no_subscription_is_empty(self):
         """Fail-open: a subscription-less pool is a broken invariant, and
