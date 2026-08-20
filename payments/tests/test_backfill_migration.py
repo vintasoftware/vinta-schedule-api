@@ -37,7 +37,6 @@ import importlib
 
 import pytest
 from model_bakery import baker
-from vinta_billing.exceptions import MissingSeedBillingPlanError
 from vinta_billing.models import BillingPlan, Subscription
 
 from organizations.models import Organization
@@ -55,6 +54,11 @@ migration_module = importlib.import_module(
     "payments.migrations.0009_backfill_unlimited_subscriptions"
 )
 backfill_unlimited_subscriptions = migration_module.backfill_unlimited_subscriptions
+# The migration freezes its own local copy of `vinta_billing.exceptions
+# .MissingSeedBillingPlanError` rather than importing the package's -- see the
+# migration module's docstring for why. This test exercises the migration's actual
+# raised type, not the package's.
+MissingSeedBillingPlanError = migration_module.MissingSeedBillingPlanError
 
 
 @pytest.mark.django_db

@@ -2,31 +2,36 @@
 
 from django.db import migrations, models
 
-from vinta_billing.constants import DocumentTypes
 
-
-# Repointed from `payments.billing_constants` (a Phase 1 shim, removed in Phase 6 of
-# `ai-plans/2026-08-19-MIGRATE_BILLING_ENGINE_TO_VINTA_DJANGO_BILLING_IMPLEMENTATION_PLAN.md`)
-# to its package address, `vinta_billing.constants`, in that same phase. `DocumentTypes`
-# moved to the package byte-for-byte -- same members, same stored values -- and the
-# comment below already establishes that this reference tracks the *live* enum on
-# purpose, so repointing rather than freezing is the choice that was already made here.
+# `DocumentTypes.choices`, frozen as plain literal tuples rather than imported from
+# `vinta_billing.constants`. The original justification for a live reference (that it
+# would avoid a follow-up migration when the choices change) is moot: `payments.0024`
+# removes `payments.billingprofile` from migration state entirely, so the
+# autodetector never compares this `AlterField`'s `choices` against anything again.
+# Freezing removes a third-party import from the migrate-from-zero path for the cost
+# of nine literal tuples -- do not "restore" the live import.
+DOCUMENT_TYPE_CHOICES = [
+    ("CPF", "CPF"),
+    ("CNPJ", "CNPJ"),
+    ("DNI", "DNI"),
+    ("CI", "CI"),
+    ("RUT", "RUT"),
+    ("SSN", "SSN"),
+    ("EIN", "EIN"),
+    ("PASSPORT", "Passport"),
+    ("OTHER", "Other"),
+]
 
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("payments", "0020_billing_period_summary"),
+        ('payments', '0020_billing_period_summary'),
     ]
 
     operations = [
         migrations.AlterField(
-            model_name="billingprofile",
-            name="document_type",
-            # `DocumentTypes.choices` is referenced, not frozen into literals, so
-            # adding or renaming a member does not generate a follow-up migration.
-            # Safe precisely because `choices` is validation metadata Django never
-            # emits DDL for -- the historical state tracking the live enum changes
-            # nothing about the column. Do not "restore" the generated literals.
-            field=models.CharField(choices=DocumentTypes.choices, max_length=50),
+            model_name='billingprofile',
+            name='document_type',
+            field=models.CharField(choices=DOCUMENT_TYPE_CHOICES, max_length=50),
         ),
     ]

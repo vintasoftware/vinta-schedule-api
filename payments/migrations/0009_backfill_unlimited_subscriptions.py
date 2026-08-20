@@ -8,32 +8,52 @@
 #
 # A billing root is an organization with no parent, OR an organization that can
 # itself invite/create other organizations (a nested reseller is its own billing
-# root, not a child pooling against a grandparent's subscription) — see
-# `billing_root_filter` / `is_billing_root` in
-# `vinta_billing.services.subscription_service`, the single predicate for this
-# decision used here, in `SubscriptionService.create_subscription_for_organization`,
-# and in the "no plan-less state" acceptance query. Importing it here (rather than
-# re-deriving the condition against the historical `apps.get_model` models) is a
-# deliberate deviation from the usual migration-isolation convention: the
-# function only does attribute/field-name access, so it works unchanged against
-# both the historical and the current `Organization` model, and a single
-# predicate is safer than keeping two copies of "is a billing root" in sync by
-# hand. Repointed from `payments.services.subscription_service` (a Phase 1 shim,
-# removed in Phase 6 of
-# `ai-plans/2026-08-19-MIGRATE_BILLING_ENGINE_TO_VINTA_DJANGO_BILLING_IMPLEMENTATION_PLAN.md`)
-# to its package address in that same phase: this is behaviour, not a frozen data
-# value, so it is repointed rather than copied -- see `MissingSeedBillingPlanError`
-# below for the same reasoning.
+# root, not a child pooling against a grandparent's subscription). This predicate
+# is FROZEN as `BILLING_ROOT_Q` below, matching the host's configured hierarchy
+# (`payments.seams.hierarchy.ResellerHierarchy`: `parent_field="parent"`,
+# `root_flag_field="can_invite_organizations"`, which
+# `vinta_billing.hierarchy.ParentFieldHierarchy.billing_root_q()` turns into
+# `Q(parent__isnull=True) | Q(can_invite_organizations=True)`), rather than
+# imported from `vinta_billing.services.subscription_service.billing_root_filter`.
+# That function resolves `settings.VINTA_BILLING["HIERARCHY"]` *at call time*, not
+# at migration-write time -- if the setting is ever unset, dropped, or repointed
+# (e.g. reverted to the package's default `FlatHierarchy`, whose `billing_root_q()`
+# is a bare `Q()` matching every row), a fresh `migrate` would silently backfill a
+# `Subscription` for every organization, including reseller children, which is
+# exactly what this migration must never do. Row selection is not "behaviour" that
+# may float with the live setting -- it is data this migration writes, so it is
+# frozen the same way `payments.0007` freezes `LimitKind` and the resource /
+# entitlement keys.
+#
+# `MissingSeedBillingPlanError` (see the local copy below) is frozen for the same
+# reason: a future rename of the package exception would otherwise turn this
+# import into an `ImportError` that fails every test database build (`migrate`
+# from zero).
 #
 # Keyset-paginated on `pk` (not an in-memory id list) so this never materializes
 # more than one batch of organizations at a time, regardless of table size.
 import datetime
 
 from django.db import migrations
+from django.db.models import Q
 from django.utils import timezone
 
-from vinta_billing.exceptions import MissingSeedBillingPlanError
-from vinta_billing.services.subscription_service import billing_root_filter
+
+#: Frozen local copy of `vinta_billing.hierarchy.ParentFieldHierarchy.billing_root_q()`
+#: for the host's configured hierarchy -- see the module docstring above for why this
+#: is frozen rather than imported.
+BILLING_ROOT_Q = Q(parent__isnull=True) | Q(can_invite_organizations=True)
+
+
+class MissingSeedBillingPlanError(RuntimeError):
+    """Frozen local copy of `vinta_billing.exceptions.MissingSeedBillingPlanError`'s
+    message -- see the module docstring above for why this is not imported."""
+
+    def __init__(self, slug: str):
+        super().__init__(
+            f"Required seed BillingPlan {slug!r} is missing. Check migration order "
+            "and seed data before re-running."
+        )
 
 
 BATCH_SIZE = 500
@@ -73,7 +93,7 @@ def backfill_unlimited_subscriptions(apps, schema_editor):
     while True:
         batch_ids = list(
             Organization.objects.filter(
-                billing_root_filter(),
+                BILLING_ROOT_Q,
                 subscription__isnull=True,
                 pk__gt=last_pk,
             )
