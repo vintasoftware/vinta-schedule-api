@@ -6,6 +6,8 @@ from django.utils import timezone
 
 from allauth.socialaccount.models import SocialAccount
 from dependency_injector.wiring import Provide, inject
+from vinta_billing.exceptions import OverLimitError
+from vinta_billing.services.entitlement_service import EntitlementService
 
 from calendar_integration.constants import (
     CalendarOrganizationResourceImportStatus,
@@ -21,8 +23,6 @@ from calendar_integration.models import (
 from calendar_integration.services.calendar_service import CalendarService
 from common.organization_context import organization_context
 from organizations.models import Organization
-from payments.exceptions import OverLimitError
-from payments.services.entitlement_service import EntitlementService
 from vinta_schedule_api.celery import app
 
 

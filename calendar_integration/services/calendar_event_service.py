@@ -39,6 +39,9 @@ from django.db import transaction
 from django.db.models import Q, prefetch_related_objects
 from django.utils import timezone
 
+from vinta_billing.exceptions import OverLimitError
+from vinta_billing.services.subscription_service import resolve_billing_period
+
 from audit.constants import AuditAction, AuditActorType
 from audit.diff import compute_diff
 from calendar_integration.constants import CalendarType
@@ -101,9 +104,7 @@ from calendar_integration.services.type_guards import (
     is_authenticated_calendar_service,
     is_initialized_or_authenticated_calendar_service,
 )
-from payments.exceptions import OverLimitError
 from payments.seams.occurrences import CalendarEventOccurrenceSource
-from payments.services.subscription_service import resolve_billing_period
 from public_api.models import SystemUser
 from users.models import User
 
@@ -134,13 +135,14 @@ def _resolve_token_audit_actor(
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
 
+    from vinta_billing.models import Subscription
+    from vinta_billing.services.entitlement_service import EntitlementService
+
     from calendar_integration.querysets import CalendarEventQuerySet
     from calendar_integration.services.calendar_service_context import CalendarServiceContext
     from calendar_integration.services.dataclasses import AvailableTimeWindow
     from calendar_integration.services.protocols.calendar_adapter import CalendarAdapter
     from calendar_integration.services.recurrence_manager import RecurrenceManager
-    from payments.models import Subscription
-    from payments.services.entitlement_service import EntitlementService
 
 
 class EventServiceHost(Protocol):

@@ -55,6 +55,8 @@ from django.db.models import QuerySet
 from django.http import HttpRequest
 from django.urls import reverse
 
+from vinta_billing.exceptions import OverLimitError
+
 from calendar_integration.constants import (
     CalendarProvider,
     CalendarSyncStatus,
@@ -82,7 +84,6 @@ from calendar_integration.services.type_guards import (
     is_authenticated_calendar_service,
     is_initialized_or_authenticated_calendar_service,
 )
-from payments.exceptions import OverLimitError
 
 
 if TYPE_CHECKING:

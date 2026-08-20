@@ -35,16 +35,17 @@ from django.utils import timezone
 
 import pytest
 from model_bakery import baker
+from vinta_billing.constants import BillingState, LimitKind
+from vinta_billing.exceptions import OverLimitError
+from vinta_billing.models import BillingPlan, Subscription, SubscriptionPlanLimit
+from vinta_billing.services.entitlement_service import EntitlementService
 
 from calendar_integration.constants import CalendarType
 from calendar_integration.models import AvailableTime, Calendar
 from calendar_integration.querysets import AvailableTimeQuerySet
 from calendar_integration.services.calendar_service import CalendarService
 from organizations.models import Organization
-from payments.billing_constants import BillingState, LimitedResource, LimitKind
-from payments.exceptions import OverLimitError
-from payments.models import BillingPlan, Subscription, SubscriptionPlanLimit
-from payments.services.entitlement_service import EntitlementService
+from payments.seams.resources import AVAILABILITY_WINDOWS
 
 
 # This module builds its own Subscription rows (OneToOne with Organization), so it
@@ -77,7 +78,7 @@ def _organization_at_the_ceiling_with_one_shared_row() -> tuple[
     baker.make(
         SubscriptionPlanLimit,
         subscription=subscription,
-        resource_key=LimitedResource.AVAILABILITY_WINDOWS,
+        resource_key=AVAILABILITY_WINDOWS,
         limit_value=3,
         kind=LimitKind.PREPAID,
     )

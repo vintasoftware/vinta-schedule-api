@@ -29,6 +29,15 @@ from django.utils import timezone
 import pytest
 from allauth.socialaccount.models import SocialAccount, SocialToken
 from model_bakery import baker
+from vinta_billing.constants import BillingState, LimitKind
+from vinta_billing.models import (
+    BillingPlan,
+    Subscription,
+    SubscriptionEntitlement,
+    SubscriptionPlanLimit,
+)
+from vinta_billing.services.entitlement_service import EntitlementService
+from vinta_billing.services.subscription_service import SubscriptionService
 
 from calendar_integration.constants import (
     CalendarOrganizationResourceImportStatus,
@@ -51,15 +60,7 @@ from calendar_integration.tasks.calendar_sync_tasks import (
     sync_calendar_task,
 )
 from organizations.models import Organization
-from payments.billing_constants import BillingState, Entitlement, LimitedResource, LimitKind
-from payments.models import (
-    BillingPlan,
-    Subscription,
-    SubscriptionEntitlement,
-    SubscriptionPlanLimit,
-)
-from payments.services.entitlement_service import EntitlementService
-from payments.services.subscription_service import SubscriptionService
+from payments.seams.resources import EXTERNAL_CALENDAR_GOOGLE, RESOURCE_CALENDARS
 from users.models import Profile, User
 
 
@@ -144,7 +145,7 @@ def _organization_with_resource_calendar_limit(limit_value: int | None) -> Organ
     baker.make(
         SubscriptionPlanLimit,
         subscription=subscription,
-        resource_key=LimitedResource.RESOURCE_CALENDARS,
+        resource_key=RESOURCE_CALENDARS,
         limit_value=limit_value,
         kind=LimitKind.PREPAID,
     )
@@ -727,7 +728,7 @@ class TestSyncTasksSkipRatherThanFailOnMissingEntitlement:
         baker.make(
             SubscriptionEntitlement,
             subscription=subscription,
-            entitlement_key=Entitlement.EXTERNAL_CALENDAR_GOOGLE,
+            entitlement_key=EXTERNAL_CALENDAR_GOOGLE,
             is_enabled=False,
         )
         user = User.objects.create_user(email="skip-sync@example.com", password="pw")  # noqa: S106

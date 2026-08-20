@@ -9,6 +9,7 @@ from django.db.models import Exists, OuterRef, QuerySet
 from django.utils import timezone
 
 from dependency_injector.wiring import Provide, inject
+from vinta_billing.exceptions import OverLimitError
 
 from audit.constants import AuditAction
 from audit.diff import compute_diff
@@ -66,16 +67,16 @@ from calendar_integration.services.dataclasses import (
     ResourceAllocationInputData,
 )
 from organizations.models import Organization
-from payments.billing_constants import LimitedResource
-from payments.exceptions import OverLimitError
+from payments.seams.resources import AVAILABILITY_WINDOWS, CALENDAR_GROUPS
 from users.models import User
 
 
 if TYPE_CHECKING:
+    from vinta_billing.services.entitlement_service import EntitlementService
+
     from audit.services import AuditService
     from calendar_integration.services.booking_policy_service import BookingPolicyService
     from calendar_integration.services.calendar_service import CalendarService
-    from payments.services.entitlement_service import EntitlementService
     from public_api.models import SystemUser
 
 
@@ -326,9 +327,7 @@ class CalendarGroupService:
         slots_data, _ = self._validate_slots_input(data.slots)
 
         if not bypass_limits and self.entitlement_service is not None:
-            result = self.entitlement_service.check_limit(
-                organization, LimitedResource.CALENDAR_GROUPS, lock=True
-            )
+            result = self.entitlement_service.check_limit(organization, CALENDAR_GROUPS, lock=True)
             if not result.allowed:
                 raise OverLimitError.from_check_result(result)
 
@@ -1128,7 +1127,7 @@ class CalendarGroupService:
 
         if delta and self.entitlement_service is not None:
             result = self.entitlement_service.check_limit(
-                organization, LimitedResource.AVAILABILITY_WINDOWS, delta=delta, lock=True
+                organization, AVAILABILITY_WINDOWS, delta=delta, lock=True
             )
             if not result.allowed:
                 raise OverLimitError.from_check_result(result)

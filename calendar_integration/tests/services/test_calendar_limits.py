@@ -18,6 +18,9 @@ from django.utils import timezone
 
 import pytest
 from model_bakery import baker
+from vinta_billing.constants import BillingState, LimitKind
+from vinta_billing.exceptions import OverLimitError
+from vinta_billing.models import BillingPlan, Subscription, SubscriptionPlanLimit
 
 from calendar_integration.constants import CalendarType
 from calendar_integration.models import (
@@ -31,9 +34,12 @@ from calendar_integration.services.calendar_group_service import CalendarGroupSe
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.dataclasses import CalendarGroupInputData
 from organizations.models import Organization
-from payments.billing_constants import BillingState, LimitedResource, LimitKind
-from payments.exceptions import OverLimitError
-from payments.models import BillingPlan, Subscription, SubscriptionPlanLimit
+from payments.seams.resources import (
+    AVAILABILITY_WINDOWS,
+    BUNDLE_CALENDARS,
+    CALENDAR_GROUPS,
+    RESOURCE_CALENDARS,
+)
 
 
 # This module builds its own Subscription rows (OneToOne with Organization), so it
@@ -73,7 +79,7 @@ def _organization_with_limit(resource_key: str, limit_value: int | None) -> Orga
 @pytest.mark.django_db
 class TestCreateResourceCalendarLimit:
     def test_raises_and_creates_nothing_at_the_limit(self):
-        organization = _organization_with_limit(LimitedResource.RESOURCE_CALENDARS, 1)
+        organization = _organization_with_limit(RESOURCE_CALENDARS, 1)
         baker.make(
             Calendar,
             organization=organization,
@@ -87,7 +93,7 @@ class TestCreateResourceCalendarLimit:
         with pytest.raises(OverLimitError) as exc_info:
             service.create_resource_calendar(name="Blocked Room")
 
-        assert exc_info.value.resource_key == LimitedResource.RESOURCE_CALENDARS
+        assert exc_info.value.resource_key == RESOURCE_CALENDARS
         assert exc_info.value.current_usage == 1
         assert exc_info.value.limit == 1
         assert (
@@ -100,7 +106,7 @@ class TestCreateResourceCalendarLimit:
 
     @pytest.mark.parametrize("limit_value", [2, None], ids=["headroom", "unlimited"])
     def test_succeeds_with_headroom(self, limit_value):
-        organization = _organization_with_limit(LimitedResource.RESOURCE_CALENDARS, limit_value)
+        organization = _organization_with_limit(RESOURCE_CALENDARS, limit_value)
         baker.make(
             Calendar,
             organization=organization,
@@ -116,7 +122,7 @@ class TestCreateResourceCalendarLimit:
         assert calendar.calendar_type == CalendarType.RESOURCE
 
     def test_bypass_limits_creates_anyway(self):
-        organization = _organization_with_limit(LimitedResource.RESOURCE_CALENDARS, 1)
+        organization = _organization_with_limit(RESOURCE_CALENDARS, 1)
         baker.make(
             Calendar,
             organization=organization,
@@ -136,7 +142,7 @@ class TestCreateResourceCalendarLimit:
 @pytest.mark.django_db
 class TestCreateGroupLimit:
     def test_raises_and_creates_nothing_at_the_limit(self):
-        organization = _organization_with_limit(LimitedResource.CALENDAR_GROUPS, 1)
+        organization = _organization_with_limit(CALENDAR_GROUPS, 1)
         baker.make(CalendarGroup, organization=organization)
 
         service = CalendarGroupService()
@@ -145,7 +151,7 @@ class TestCreateGroupLimit:
         with pytest.raises(OverLimitError) as exc_info:
             service.create_group(CalendarGroupInputData(name="Blocked Group"))
 
-        assert exc_info.value.resource_key == LimitedResource.CALENDAR_GROUPS
+        assert exc_info.value.resource_key == CALENDAR_GROUPS
         assert (
             not CalendarGroup.objects.filter_by_organization(organization)
             .filter(
@@ -156,7 +162,7 @@ class TestCreateGroupLimit:
 
     @pytest.mark.parametrize("limit_value", [2, None], ids=["headroom", "unlimited"])
     def test_succeeds_with_headroom(self, limit_value):
-        organization = _organization_with_limit(LimitedResource.CALENDAR_GROUPS, limit_value)
+        organization = _organization_with_limit(CALENDAR_GROUPS, limit_value)
         baker.make(CalendarGroup, organization=organization)
 
         service = CalendarGroupService()
@@ -166,7 +172,7 @@ class TestCreateGroupLimit:
         assert group.pk is not None
 
     def test_bypass_limits_creates_anyway(self):
-        organization = _organization_with_limit(LimitedResource.CALENDAR_GROUPS, 1)
+        organization = _organization_with_limit(CALENDAR_GROUPS, 1)
         baker.make(CalendarGroup, organization=organization)
 
         service = CalendarGroupService()
@@ -181,7 +187,7 @@ class TestCreateGroupLimit:
 @pytest.mark.django_db
 class TestCreateBundleCalendarLimit:
     def test_raises_and_creates_nothing_at_the_limit(self):
-        organization = _organization_with_limit(LimitedResource.BUNDLE_CALENDARS, 1)
+        organization = _organization_with_limit(BUNDLE_CALENDARS, 1)
         baker.make(
             Calendar,
             organization=organization,
@@ -195,7 +201,7 @@ class TestCreateBundleCalendarLimit:
         with pytest.raises(OverLimitError) as exc_info:
             service.create_bundle_calendar(name="Blocked Bundle")
 
-        assert exc_info.value.resource_key == LimitedResource.BUNDLE_CALENDARS
+        assert exc_info.value.resource_key == BUNDLE_CALENDARS
         assert (
             not Calendar.objects.filter_by_organization(organization)
             .filter(
@@ -206,7 +212,7 @@ class TestCreateBundleCalendarLimit:
 
     @pytest.mark.parametrize("limit_value", [2, None], ids=["headroom", "unlimited"])
     def test_succeeds_with_headroom(self, limit_value):
-        organization = _organization_with_limit(LimitedResource.BUNDLE_CALENDARS, limit_value)
+        organization = _organization_with_limit(BUNDLE_CALENDARS, limit_value)
         baker.make(
             Calendar,
             organization=organization,
@@ -222,7 +228,7 @@ class TestCreateBundleCalendarLimit:
         assert bundle.calendar_type == CalendarType.BUNDLE
 
     def test_bypass_limits_creates_anyway(self):
-        organization = _organization_with_limit(LimitedResource.BUNDLE_CALENDARS, 1)
+        organization = _organization_with_limit(BUNDLE_CALENDARS, 1)
         baker.make(
             Calendar,
             organization=organization,
@@ -249,7 +255,7 @@ def _calendar_managing_windows(organization: Organization) -> Calendar:
 @pytest.mark.django_db
 class TestCreateAvailableTimeLimit:
     def test_raises_and_creates_nothing_at_the_limit(self):
-        organization = _organization_with_limit(LimitedResource.AVAILABILITY_WINDOWS, 1)
+        organization = _organization_with_limit(AVAILABILITY_WINDOWS, 1)
         calendar = _calendar_managing_windows(organization)
         baker.make(AvailableTime, organization=organization, calendar=calendar, timezone="UTC")
 
@@ -264,7 +270,7 @@ class TestCreateAvailableTimeLimit:
                 calendar=calendar, start_time=start, end_time=end, timezone="UTC"
             )
 
-        assert exc_info.value.resource_key == LimitedResource.AVAILABILITY_WINDOWS
+        assert exc_info.value.resource_key == AVAILABILITY_WINDOWS
         assert (
             AvailableTime.objects.filter_by_organization(organization)
             .filter(
@@ -276,7 +282,7 @@ class TestCreateAvailableTimeLimit:
 
     @pytest.mark.parametrize("limit_value", [2, None], ids=["headroom", "unlimited"])
     def test_succeeds_with_headroom(self, limit_value):
-        organization = _organization_with_limit(LimitedResource.AVAILABILITY_WINDOWS, limit_value)
+        organization = _organization_with_limit(AVAILABILITY_WINDOWS, limit_value)
         calendar = _calendar_managing_windows(organization)
         baker.make(AvailableTime, organization=organization, calendar=calendar, timezone="UTC")
 
@@ -292,7 +298,7 @@ class TestCreateAvailableTimeLimit:
         assert available_time.pk is not None
 
     def test_bypass_limits_creates_anyway(self):
-        organization = _organization_with_limit(LimitedResource.AVAILABILITY_WINDOWS, 1)
+        organization = _organization_with_limit(AVAILABILITY_WINDOWS, 1)
         calendar = _calendar_managing_windows(organization)
         baker.make(AvailableTime, organization=organization, calendar=calendar, timezone="UTC")
 
@@ -325,7 +331,7 @@ class TestBlockedTimeCountsTowardTheAvailabilityWindowLimit:
     """
 
     def test_existing_base_blocked_time_blocks_further_window_creation(self):
-        organization = _organization_with_limit(LimitedResource.AVAILABILITY_WINDOWS, 1)
+        organization = _organization_with_limit(AVAILABILITY_WINDOWS, 1)
         calendar = _calendar_managing_windows(organization)
         baker.make(BlockedTime, organization=organization, calendar=calendar, timezone="UTC")
 
@@ -340,7 +346,7 @@ class TestBlockedTimeCountsTowardTheAvailabilityWindowLimit:
                 calendar=calendar, start_time=start, end_time=end, timezone="UTC"
             )
 
-        assert exc_info.value.resource_key == LimitedResource.AVAILABILITY_WINDOWS
+        assert exc_info.value.resource_key == AVAILABILITY_WINDOWS
         assert exc_info.value.current_usage == 1
         assert exc_info.value.limit == 1
         assert (
@@ -355,7 +361,7 @@ class TestBlockedTimeCountsTowardTheAvailabilityWindowLimit:
         """Group-scoped blocks are invisible to ``BlockedTime.objects`` (the default
         manager) but must still be counted -- the metering rule is "every time
         window an organization authors", regardless of scope."""
-        organization = _organization_with_limit(LimitedResource.AVAILABILITY_WINDOWS, 1)
+        organization = _organization_with_limit(AVAILABILITY_WINDOWS, 1)
         calendar = _calendar_managing_windows(organization)
         group = baker.make(CalendarGroup, organization=organization)
         slot = baker.make(CalendarGroupSlot, organization=organization, group=group)
@@ -378,7 +384,7 @@ class TestBlockedTimeCountsTowardTheAvailabilityWindowLimit:
                 calendar=calendar, start_time=start, end_time=end, timezone="UTC"
             )
 
-        assert exc_info.value.resource_key == LimitedResource.AVAILABILITY_WINDOWS
+        assert exc_info.value.resource_key == AVAILABILITY_WINDOWS
         assert exc_info.value.current_usage == 1
         assert (
             not AvailableTime.objects.filter_by_organization(organization)
@@ -389,7 +395,7 @@ class TestBlockedTimeCountsTowardTheAvailabilityWindowLimit:
         )
 
     def test_headroom_left_after_blocked_time_still_allows_a_window(self):
-        organization = _organization_with_limit(LimitedResource.AVAILABILITY_WINDOWS, 2)
+        organization = _organization_with_limit(AVAILABILITY_WINDOWS, 2)
         calendar = _calendar_managing_windows(organization)
         baker.make(BlockedTime, organization=organization, calendar=calendar, timezone="UTC")
 
@@ -413,7 +419,7 @@ class TestBatchModifyAvailableTimesLimit:
     guard entirely."""
 
     def test_batch_of_creates_raises_and_creates_nothing_at_the_limit(self):
-        organization = _organization_with_limit(LimitedResource.AVAILABILITY_WINDOWS, 1)
+        organization = _organization_with_limit(AVAILABILITY_WINDOWS, 1)
         calendar = _calendar_managing_windows(organization)
         baker.make(AvailableTime, organization=organization, calendar=calendar, timezone="UTC")
 
@@ -432,7 +438,7 @@ class TestBatchModifyAvailableTimesLimit:
         with pytest.raises(OverLimitError) as exc_info:
             service.batch_modify_available_times(calendar=calendar, operations=ops)
 
-        assert exc_info.value.resource_key == LimitedResource.AVAILABILITY_WINDOWS
+        assert exc_info.value.resource_key == AVAILABILITY_WINDOWS
         assert (
             AvailableTime.objects.filter_by_organization(organization)
             .filter(
@@ -444,7 +450,7 @@ class TestBatchModifyAvailableTimesLimit:
 
     @pytest.mark.parametrize("limit_value", [3, None], ids=["headroom", "unlimited"])
     def test_batch_of_creates_succeeds_with_headroom(self, limit_value):
-        organization = _organization_with_limit(LimitedResource.AVAILABILITY_WINDOWS, limit_value)
+        organization = _organization_with_limit(AVAILABILITY_WINDOWS, limit_value)
         calendar = _calendar_managing_windows(organization)
         baker.make(AvailableTime, organization=organization, calendar=calendar, timezone="UTC")
 
@@ -500,7 +506,7 @@ class TestBatchModifyAvailableTimesIsNetOfDeletes:
     """
 
     def test_one_for_one_replacement_at_the_ceiling_is_allowed(self):
-        organization = _organization_with_limit(LimitedResource.AVAILABILITY_WINDOWS, 5)
+        organization = _organization_with_limit(AVAILABILITY_WINDOWS, 5)
         calendar = _calendar_managing_windows(organization)
         existing = [
             baker.make(AvailableTime, organization=organization, calendar=calendar, timezone="UTC")
@@ -527,7 +533,7 @@ class TestBatchModifyAvailableTimesIsNetOfDeletes:
         assert not AvailableTime.original_manager.filter(id=existing[0].id).exists()
 
     def test_growing_batch_at_the_ceiling_still_raises(self):
-        organization = _organization_with_limit(LimitedResource.AVAILABILITY_WINDOWS, 5)
+        organization = _organization_with_limit(AVAILABILITY_WINDOWS, 5)
         calendar = _calendar_managing_windows(organization)
         existing = [
             baker.make(AvailableTime, organization=organization, calendar=calendar, timezone="UTC")
@@ -547,7 +553,7 @@ class TestBatchModifyAvailableTimesIsNetOfDeletes:
                 ],
             )
 
-        assert exc_info.value.resource_key == LimitedResource.AVAILABILITY_WINDOWS
+        assert exc_info.value.resource_key == AVAILABILITY_WINDOWS
         # Nothing in the batch was applied -- the delete included.
         assert (
             AvailableTime.objects.filter_by_organization(organization)
@@ -560,7 +566,7 @@ class TestBatchModifyAvailableTimesIsNetOfDeletes:
         assert AvailableTime.original_manager.filter(id=existing[0].id).exists()
 
     def test_update_only_batch_at_the_ceiling_is_allowed(self):
-        organization = _organization_with_limit(LimitedResource.AVAILABILITY_WINDOWS, 2)
+        organization = _organization_with_limit(AVAILABILITY_WINDOWS, 2)
         calendar = _calendar_managing_windows(organization)
         existing = [
             baker.make(AvailableTime, organization=organization, calendar=calendar, timezone="UTC")
@@ -592,7 +598,7 @@ class TestBatchModifyAvailableTimesIsNetOfDeletes:
         )
 
     def test_delete_only_batch_at_the_ceiling_is_allowed(self):
-        organization = _organization_with_limit(LimitedResource.AVAILABILITY_WINDOWS, 2)
+        organization = _organization_with_limit(AVAILABILITY_WINDOWS, 2)
         calendar = _calendar_managing_windows(organization)
         existing = [
             baker.make(AvailableTime, organization=organization, calendar=calendar, timezone="UTC")
@@ -624,7 +630,7 @@ class TestBatchModifyAvailableTimesIsNetOfDeletes:
         capacity for freeing something that occupied none -- and let the batch push real
         usage past the ceiling.
         """
-        organization = _organization_with_limit(LimitedResource.AVAILABILITY_WINDOWS, 1)
+        organization = _organization_with_limit(AVAILABILITY_WINDOWS, 1)
         calendar = _calendar_managing_windows(organization)
         baker.make(AvailableTime, organization=organization, calendar=calendar, timezone="UTC")
         derived = baker.make(
@@ -653,7 +659,7 @@ class TestBulkCreateAvailabilityWindowsLimit:
     single-window path only ever exercises at delta=1."""
 
     def test_multi_window_batch_over_the_ceiling_raises_and_creates_nothing(self):
-        organization = _organization_with_limit(LimitedResource.AVAILABILITY_WINDOWS, 4)
+        organization = _organization_with_limit(AVAILABILITY_WINDOWS, 4)
         calendar = _calendar_managing_windows(organization)
         baker.make(AvailableTime, organization=organization, calendar=calendar, timezone="UTC")
 
@@ -675,7 +681,7 @@ class TestBulkCreateAvailabilityWindowsLimit:
                 calendar=calendar, availability_windows=windows
             )
 
-        assert exc_info.value.resource_key == LimitedResource.AVAILABILITY_WINDOWS
+        assert exc_info.value.resource_key == AVAILABILITY_WINDOWS
         assert (
             AvailableTime.objects.filter_by_organization(organization)
             .filter(
@@ -686,7 +692,7 @@ class TestBulkCreateAvailabilityWindowsLimit:
         )
 
     def test_multi_window_batch_that_exactly_fills_the_ceiling_is_allowed(self):
-        organization = _organization_with_limit(LimitedResource.AVAILABILITY_WINDOWS, 4)
+        organization = _organization_with_limit(AVAILABILITY_WINDOWS, 4)
         calendar = _calendar_managing_windows(organization)
         baker.make(AvailableTime, organization=organization, calendar=calendar, timezone="UTC")
 
