@@ -829,16 +829,6 @@ VINTA_BILLING = {
     # Matches `usage_warning_service.APPROACHING_LIMIT_THRESHOLD`, the value
     # this project already enforces today.
     "USAGE_WARNING_THRESHOLD": 0.8,
-    # Not actually on the path `payments/tasks.py`'s four beat tasks take as of
-    # Phase 2 -- each passes its own `dispatch` straight to the
-    # `vinta_billing.jobs` sweep it calls, because the per-subscription jobs
-    # need this project's DI-wired services (`di_container.dunning_service()`
-    # and friends), and `vinta_billing.jobs`' *default* service resolution
-    # does not consult `SERVICE_CONTAINER` below the way the shipped
-    # views/admin do. Left configured -- and `payments.seams.dispatch` left in
-    # place -- for any caller of `vinta_billing.jobs.*` that does not need a
-    # DI-wired service (there is none today).
-    "JOB_DISPATCHER": "payments.seams.dispatch.dispatch_via_celery",
     # Mixed in front of every tenant-scoped viewset `vinta_billing.routing
     # .get_routes()` / `get_extra_patterns()` mount, so `X-Organization-Id`
     # resolution (this project's own, not the package's) applies to them too.

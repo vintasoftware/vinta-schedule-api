@@ -25,12 +25,11 @@ uses -- and passes it through explicitly.
 
 **The per-subscription fan-out therefore does not use
 ``VINTA_BILLING['JOB_DISPATCHER']``.** Each beat task below passes its own
-``dispatch`` lambda straight to the package sweep, so
-``payments.seams.dispatch.dispatch_via_celery`` (built for this role in an
-earlier phase, before this DI requirement was discovered against the real
-test suite) is not the path these four sweeps take. It is left in place --
-deleting it is out of this phase's scope -- but it no longer has a caller
-here; see this phase's report for the finding.
+``dispatch`` lambda straight to the package sweep. An earlier phase built
+``payments.seams.dispatch.dispatch_via_celery`` for this role, before this DI
+requirement was discovered against the real test suite; once every call site
+here passed its own explicit ``dispatch``, that seam had no caller left, so
+it -- and ``VINTA_BILLING['JOB_DISPATCHER']`` -- were deleted.
 
 Task dotted paths stay ``payments.tasks.*`` for the four beat entry points
 (``vinta_schedule_api/celerybeat_schedule.py`` names them literally) and for
