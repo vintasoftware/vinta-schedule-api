@@ -791,6 +791,67 @@ remains unexplained**; database contention is the likelier candidate, since the 
 unrelated contention errors across four apps when it ran suites concurrently. Recorded as
 open rather than papered over: the test is now deterministic and non-vacuous either way.
 
+### Phase 4 — Consumer imports: `public_api`, `accounts`, `common`, `organizations`, fixtures ✅
+
+Branch `plan/migrate-billing-engine-to-vinta-django-billing/phase-4`, based on phase-3.
+Implementer sonnet. Four per-app commits: `28663ff8` organizations · `652c8819` public_api ·
+`af4b13cc` accounts · `92c72c3a` common + conftest + scripts.
+
+**Scope was 36 files, 14 of them the `organizations/` app the plan never assigned to any
+phase.** The conductor enumerated the file list rather than leaving it to be inferred: a
+raw `from payments` grep returns 118 files, but 68 are `payments/**` itself (Phase 5's
+triage and Phase 6's shims) and several are permanent `payments.seams.*` host imports.
+
+**Acceptance met.** Outside `payments/`, the only surviving `from payments.` imports are
+`payments.seams.*` — the registry-key symbols, the seat seam and the occurrence source,
+all host code — plus two `payments.tests.billing_fixtures` imports deliberately left for
+Phase 6. No shim import remains anywhere outside `payments/`.
+
+*(A conductor error worth noting: the first acceptance grep run used `^\./payments/` as
+its filter, but grep prints paths without the `./` prefix here, so the filter was a no-op
+and appeared to show shim imports surviving. The implementer's `^payments/` form was
+correct.)*
+
+**Review: no BLOCKER.** It cross-checked every entitlement and resource symbol against the
+registration site — `WHITE_LABEL_BRANDING`, `PARTNER_API`, `ORGANIZATION_MEMBERS`,
+`PUBLIC_API_SYSTEM_USERS`, `AVAILABILITY_WINDOWS`, `CALENDAR_GROUPS`, both
+`EXTERNAL_CALENDAR_*` — with no swap or typo anywhere. That was the point of the review:
+this phase rewrote the gates deciding what a paying customer can do, and a swapped
+entitlement silently opens or closes a feature for every tenant without turning a test red.
+
+It also confirmed the three seat-seam calls in `organizations/services.py` are byte-for-byte
+untouched (Phase 1 built that named entry point precisely because the bare-kwarg form fails
+silently), that `reactivate_membership`'s direct `check_limit` kept its lock and exception
+behaviour, and that `usage_extra_keys` declarations were not touched.
+
+mypy unchanged at 294.
+
+### A real import cycle, and why the structural fix waits for Phase 6
+
+Retargeting `organizations/models.py` at the registry-key symbols created a genuine cycle:
+`payments/seams/resources.py` imports `organizations.models` to build the
+`organization_members` counter, so a module-level import back the other way is circular.
+The previous shim import (`payments.billing_constants.Entitlement`, a plain `TextChoices`)
+carried no such transitive weight. Fixed with a deferred import inside
+`resolve_branding_for_display`, matching that file's existing pattern for
+`di_core.containers.container`.
+
+That works, but it treats a symptom. `resources.py` mixes two concerns: 37 call sites want
+a **pure string constant**, while the module also imports live models from four apps to
+build its counters. Any of those four apps' own `models.py` that later wants a resource key
+hits the identical cycle and gets patched the same ad-hoc way.
+
+**→ Phase 6 splits the constants into a leaf module** (`payments/seams/resource_keys.py`,
+zero imports) that `resources.py` imports for registration, so consumers needing only a
+symbol import the leaf and the cycle becomes structurally impossible.
+
+The reviewer argued for Phase 6 over Phase 4 and the conductor agrees: Phase 6 is where the
+risk becomes concrete, since `payments/billing_plans_catalog.py` is reachable from a
+data-migration import path (`0007_seed_billing_plans`, `0009_backfill_unlimited_subscriptions`)
+and AGENTS.md warns against tying a data migration's import graph to live model modules.
+Phase 6 already retargets that file, so the split folds into work it is doing anyway rather
+than reopening `resources.py` a third time.
+
 ## Carry-forward into later phases
 
 Discovered during Phase 0's review. Each one is a correction to a later phase's body,
