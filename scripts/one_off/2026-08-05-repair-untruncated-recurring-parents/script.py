@@ -15,6 +15,9 @@ from django.db import transaction
 from django.db.models import Min
 
 from dateutil.rrule import rrulestr
+from vinta_billing.models import MeteredOccurrence, Subscription
+from vinta_billing.services.billing_dataclasses import OccurrenceIdentity
+from vinta_billing.services.subscription_service import resolve_settlement_period
 
 from calendar_integration.models import (
     AvailableTime,
@@ -25,9 +28,6 @@ from calendar_integration.models import (
     EventBulkModification,
     RecurrenceRule,
 )
-from payments.models import MeteredOccurrence, Subscription
-from payments.services.billing_dataclasses import OccurrenceIdentity
-from payments.services.subscription_service import resolve_settlement_period
 from scripts.one_off._base import BaseOneOffScript, ScriptConfig
 
 

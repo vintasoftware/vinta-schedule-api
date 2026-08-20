@@ -71,7 +71,7 @@ def vinta_exception_handler(exc: Exception, context: dict) -> Response | None:
 
     ``PaymentTokenRequiredError`` / ``AddOnNotPurchasableError`` (400) and
     ``UnconfirmedPlanChangeError`` (409): every ``BillingError`` subclass carries
-    a stable ``code`` (see ``payments.exceptions.BillingError``), and these three
+    a stable ``code`` (see ``vinta_billing.exceptions.BillingError``), and these three
     render it through
     the shared ``as_error_body()`` contract instead of each view improvising its
     own ad hoc body (a field-keyed ``ValidationError`` for the first two, a plain

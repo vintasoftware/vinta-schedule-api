@@ -182,8 +182,9 @@ def provision_default_subscription(request):
         # tests use (see e.g. `public_api/tests/test_system_user_limits.py`'s
         # `service` fixture and `payments/tests/test_prepaid_resource_coverage.py`'s
         # `_container()` helper) rather than a hand-constructed one.
+        from vinta_billing.exceptions import NoDefaultBillingPlanError
+
         from di_core.containers import container
-        from payments.exceptions import NoDefaultBillingPlanError
 
         assert container is not None, "DI container is only assigned in DICoreConfig.ready()"
         subscription_service = container.subscription_service()

@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 from allauth.socialaccount.models import SocialAccount
+from vinta_billing.models import MeteredOccurrence, Subscription
 
 from calendar_integration.constants import CalendarProvider, CalendarType, RecurrenceFrequency
 from calendar_integration.factories import CalendarEventFactory
@@ -27,7 +28,6 @@ from calendar_integration.models import (
     RecurrenceRule,
 )
 from organizations.models import Organization
-from payments.models import MeteredOccurrence, Subscription
 from users.models import Profile, User
 
 
