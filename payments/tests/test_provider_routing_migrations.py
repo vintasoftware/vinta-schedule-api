@@ -25,10 +25,10 @@ from decimal import Decimal
 
 import pytest
 from model_bakery import baker
+from vinta_billing.constants import PaymentProviders, PaymentStatuses
+from vinta_billing.models import BillingPlan, Payment, Subscription
 
 from organizations.models import Organization
-from payments.constants import PaymentProviders, PaymentStatuses
-from payments.models import BillingPlan, Payment, Subscription
 from payments.tests.historical_apps import historical_apps
 from payments.tests.provider_settings import use_providers
 

@@ -14,15 +14,19 @@ from django.utils import timezone
 
 import pytest
 from model_bakery import baker
+from vinta_billing.constants import BillingState, LimitKind
+from vinta_billing.exceptions import OverLimitError
+from vinta_billing.models import BillingPlan, Subscription, SubscriptionPlanLimit
+from vinta_billing.services.entitlement_service import EntitlementService
 
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.models import Calendar
 from calendar_integration.services.calendar_service import CalendarService
 from organizations.models import Organization
-from payments.billing_constants import BillingState, LimitedResource, LimitKind
-from payments.exceptions import OverLimitError
-from payments.models import BillingPlan, Subscription, SubscriptionPlanLimit
-from payments.services.entitlement_service import EntitlementService
+from payments.seams.resource_keys import (
+    EVENT_OCCURRENCES,
+    RESOURCE_KEYS,
+)
 from webhooks.constants import WebhookEventType
 from webhooks.services.webhook_service import WebhookService
 
@@ -45,12 +49,8 @@ def _reseller_tree(root_billing_state: str) -> tuple[Organization, Organization]
         current_period_start=now,
         current_period_end=now + datetime.timedelta(days=30),
     )
-    for resource_key in LimitedResource.values:
-        kind = (
-            LimitKind.POSTPAID
-            if resource_key == LimitedResource.EVENT_OCCURRENCES
-            else LimitKind.PREPAID
-        )
+    for resource_key in RESOURCE_KEYS:
+        kind = LimitKind.POSTPAID if resource_key == EVENT_OCCURRENCES else LimitKind.PREPAID
         baker.make(
             SubscriptionPlanLimit,
             subscription=subscription,
@@ -183,12 +183,8 @@ class TestReservedCascadeBlocksTheWholeSubtree:
             current_period_start=now,
             current_period_end=now + datetime.timedelta(days=30),
         )
-        for resource_key in LimitedResource.values:
-            kind = (
-                LimitKind.POSTPAID
-                if resource_key == LimitedResource.EVENT_OCCURRENCES
-                else LimitKind.PREPAID
-            )
+        for resource_key in RESOURCE_KEYS:
+            kind = LimitKind.POSTPAID if resource_key == EVENT_OCCURRENCES else LimitKind.PREPAID
             baker.make(
                 SubscriptionPlanLimit,
                 subscription=nested_subscription,

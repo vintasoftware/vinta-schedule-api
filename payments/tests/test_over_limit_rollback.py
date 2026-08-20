@@ -26,11 +26,12 @@ import pytest
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from vinta_billing.constants import LimitRemedy
+from vinta_billing.exceptions import OverLimitError, PaymentProviderNotConfiguredError
 
 from calendar_integration.models import CalendarGroup
 from organizations.models import Organization
-from payments.billing_constants import LimitedResource, LimitRemedy
-from payments.exceptions import OverLimitError, PaymentProviderNotConfiguredError
+from payments.seams.resource_keys import CALENDAR_GROUPS
 
 
 #: The organization the two views below write against.
@@ -62,7 +63,7 @@ class WriteThenExceedLimitView(APIView):
             name="written-before-the-guard",
         )
         raise OverLimitError(
-            resource_key=LimitedResource.CALENDAR_GROUPS,
+            resource_key=CALENDAR_GROUPS,
             current_usage=1,
             limit=1,
             remedy=LimitRemedy.PURCHASE_ADD_ON,

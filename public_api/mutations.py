@@ -1329,7 +1329,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         # It is a no-op today: assert_org_can_invite above guarantees acting_org is
         # a billing root, and child_org is always created with parent=acting_org and
         # can_invite_organizations=False, so it never satisfies is_billing_root
-        # (see payments.services.subscription_service) and always pools against
+        # (see vinta_billing.services.subscription_service) and always pools against
         # acting_org's subscription instead of getting its own. Kept as
         # defence-in-depth: if this mutation body is ever changed to create a
         # parent-less or reseller child, this call is what stops it from ending up

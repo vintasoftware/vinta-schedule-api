@@ -34,17 +34,18 @@ from django.db import connection
 import pytest
 from dateutil.relativedelta import relativedelta
 from model_bakery import baker
-
-from organizations.models import Organization
-from payments.billing_constants import BillingInterval, BillingState, LimitedResource, LimitKind
-from payments.models import (
+from vinta_billing.constants import BillingInterval, BillingState, LimitKind
+from vinta_billing.models import (
     BillingPlan,
     MeteredOccurrence,
     Payment,
     Subscription,
     SubscriptionPlanLimit,
 )
-from payments.services.cycle_close_service import CycleCloseService, overage_idempotency_key
+from vinta_billing.services.cycle_close_service import CycleCloseService, overage_idempotency_key
+
+from organizations.models import Organization
+from payments.seams.resource_keys import EVENT_OCCURRENCES
 
 
 # This module builds its own Subscription rows (OneToOne with Organization), so it
@@ -122,7 +123,7 @@ def subscription(organization: Organization) -> Subscription:
     baker.make(
         SubscriptionPlanLimit,
         subscription=sub,
-        resource_key=LimitedResource.EVENT_OCCURRENCES,
+        resource_key=EVENT_OCCURRENCES,
         limit_value=0,
         kind=LimitKind.POSTPAID,
         overage_unit_price=Decimal("0.5000"),

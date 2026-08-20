@@ -6,66 +6,67 @@ from django.db.models.query import QuerySet
 
 import pytest
 from model_bakery import baker
+from vinta_billing.constants import (
+    BillingInterval,
+    BillingState,
+    PaymentProviders,
+    PaymentStatuses,
+    RefundStatuses,
+    SubscriptionStatuses,
+)
+from vinta_billing.exceptions import (
+    BillingProfileContactEmailMissingError,
+    MissingBillingProfileError,
+    PaymentProviderNotConfiguredError,
+    UnknownPaymentProviderError,
+)
+from vinta_billing.models import BillingPlan, ProviderWebhookEvent
+from vinta_billing.models import BillingProfile as BillingProfileModel
+from vinta_billing.models import Payment as PaymentModel
+from vinta_billing.models import Refund as RefundModelForTest
+from vinta_billing.models import Subscription as SubscriptionModel
+from vinta_billing.services.dataclasses import (
+    BillingAddress as BillingAddressDataclass,
+)
+from vinta_billing.services.dataclasses import (
+    BillingProfile as BillingProfileDataclass,
+)
+from vinta_billing.services.dataclasses import (
+    CreatedPlan,
+    RefundResult,
+    SubscriptionPayment,
+)
+from vinta_billing.services.dataclasses import (
+    Payment as PaymentDataclass,
+)
+from vinta_billing.services.dataclasses import (
+    PaymentStatusUpdate as PaymentStatusUpdateDataclass,
+)
+from vinta_billing.services.dataclasses import (
+    Plan as PlanDataclass,
+)
+from vinta_billing.services.dataclasses import (
+    Refund as RefundDataclass,
+)
+from vinta_billing.services.dataclasses import (
+    Subscription as SubscriptionDataclass,
+)
+from vinta_billing.services.payment_adapters.base import BasePaymentAdapter
+from vinta_billing.services.payment_adapters.stripe_payment_adapter import StripePaymentAdapter
+from vinta_billing.services.subscription_adapters.base import (
+    BaseSubscriptionAdapter,
+)
+from vinta_billing.services.subscription_adapters.stripe_subscription_adapter import (
+    StripeSubscriptionAdapter,
+)
+from vinta_billing.services.subscription_plan_factory.base import BaseSubscriptionPlanFactory
+from vinta_billing.services.subscription_service import SubscriptionService
 
 from audit.constants import AuditAction, AuditActorType
 from organizations.authorization import MEMBERSHIP_ROLE_LABEL_ADMIN
 from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import grant_membership_groups
-from payments.billing_constants import BillingInterval, BillingState
-from payments.constants import (
-    PaymentProviders,
-    PaymentStatuses,
-    RefundStatuses,
-    SubscriptionStatuses,
-)
-from payments.exceptions import (
-    BillingProfileContactEmailMissingError,
-    MissingBillingProfileError,
-    PaymentProviderNotConfiguredError,
-    UnknownPaymentProviderError,
-)
-from payments.models import BillingPlan, ProviderWebhookEvent
-from payments.models import BillingProfile as BillingProfileModel
-from payments.models import Payment as PaymentModel
-from payments.models import Refund as RefundModelForTest
-from payments.models import Subscription as SubscriptionModel
-from payments.services.dataclasses import (
-    BillingAddress as BillingAddressDataclass,
-)
-from payments.services.dataclasses import (
-    BillingProfile as BillingProfileDataclass,
-)
-from payments.services.dataclasses import (
-    CreatedPlan,
-    RefundResult,
-    SubscriptionPayment,
-)
-from payments.services.dataclasses import (
-    Payment as PaymentDataclass,
-)
-from payments.services.dataclasses import (
-    PaymentStatusUpdate as PaymentStatusUpdateDataclass,
-)
-from payments.services.dataclasses import (
-    Plan as PlanDataclass,
-)
-from payments.services.dataclasses import (
-    Refund as RefundDataclass,
-)
-from payments.services.dataclasses import (
-    Subscription as SubscriptionDataclass,
-)
-from payments.services.payment_adapters.base import BasePaymentAdapter
-from payments.services.payment_adapters.stripe_payment_adapter import StripePaymentAdapter
-from payments.services.subscription_adapters.base import (
-    BaseSubscriptionAdapter,
-)
-from payments.services.subscription_adapters.stripe_subscription_adapter import (
-    StripeSubscriptionAdapter,
-)
-from payments.services.subscription_plan_factory.base import BaseSubscriptionPlanFactory
-from payments.services.subscription_service import SubscriptionService
 from payments.tests.provider_settings import use_providers
 
 

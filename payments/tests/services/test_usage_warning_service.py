@@ -21,21 +21,26 @@ from unittest.mock import MagicMock
 import pytest
 from freezegun import freeze_time
 from model_bakery import baker
+from vinta_billing.constants import BillingState, LimitKind, LimitWarningLevel
+from vinta_billing.models import (
+    BillingPlan,
+    LimitWarningNotification,
+    Subscription,
+    SubscriptionPlanLimit,
+)
+from vinta_billing.services.entitlement_service import EntitlementService
+from vinta_billing.services.usage_warning_service import UsageWarningService
 
 from calendar_integration.constants import CalendarType
 from calendar_integration.models import BlockedTime, Calendar
 from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import make_membership
-from payments.billing_constants import BillingState, LimitedResource, LimitKind, LimitWarningLevel
-from payments.models import (
-    BillingPlan,
-    LimitWarningNotification,
-    Subscription,
-    SubscriptionPlanLimit,
+from payments.seams.resource_keys import (
+    AVAILABILITY_WINDOWS,
+    ORGANIZATION_MEMBERS,
+    RESOURCE_CALENDARS,
 )
-from payments.services.entitlement_service import EntitlementService
-from payments.services.usage_warning_service import UsageWarningService
 from users.models import User
 
 
@@ -123,7 +128,7 @@ def admin_membership(organization: Organization) -> OrganizationMembership:
 @pytest.mark.django_db
 class TestApproachingThreshold:
     def test_below_threshold_does_not_warn(self, service, organization, subscription):
-        _make_limit(subscription, LimitedResource.ORGANIZATION_MEMBERS, 10)
+        _make_limit(subscription, ORGANIZATION_MEMBERS, 10)
         # + the autouse admin membership = 4 of 10 (40%) -- well under 80%.
         _seed_members(organization, 3)
 
@@ -136,7 +141,7 @@ class TestApproachingThreshold:
     def test_at_threshold_sends_exactly_one_approaching_warning(
         self, service, organization, subscription
     ):
-        _make_limit(subscription, LimitedResource.ORGANIZATION_MEMBERS, 10)
+        _make_limit(subscription, ORGANIZATION_MEMBERS, 10)
         # + the autouse admin membership = 8 of 10, exactly 80%.
         _seed_members(organization, 7)
 
@@ -146,16 +151,16 @@ class TestApproachingThreshold:
         service.notification_service.create_notification.assert_called_once()
         call = service.notification_service.create_notification.call_args
         assert call.kwargs["context_name"] == "approaching_limit_context"
-        assert call.kwargs["context_kwargs"]["resource_key"] == LimitedResource.ORGANIZATION_MEMBERS
+        assert call.kwargs["context_kwargs"]["resource_key"] == ORGANIZATION_MEMBERS
 
         warning = LimitWarningNotification.objects.get(subscription=subscription)
         assert warning.level == LimitWarningLevel.APPROACHING
-        assert warning.resource_key == LimitedResource.ORGANIZATION_MEMBERS
+        assert warning.resource_key == ORGANIZATION_MEMBERS
 
     def test_at_or_over_the_limit_sends_a_reached_warning_not_approaching(
         self, service, organization, subscription
     ):
-        _make_limit(subscription, LimitedResource.ORGANIZATION_MEMBERS, 10)
+        _make_limit(subscription, ORGANIZATION_MEMBERS, 10)
         # + the autouse admin membership = 10 of 10, exactly 100%.
         _seed_members(organization, 9)
 
@@ -168,7 +173,7 @@ class TestApproachingThreshold:
         assert warning.level == LimitWarningLevel.REACHED
 
     def test_unlimited_resource_never_warns(self, service, organization, subscription):
-        _make_limit(subscription, LimitedResource.ORGANIZATION_MEMBERS, None)
+        _make_limit(subscription, ORGANIZATION_MEMBERS, None)
         _seed_members(organization, 500)  # would be "over" any finite ceiling
 
         with freeze_time(FREEZE_START):
@@ -180,7 +185,7 @@ class TestApproachingThreshold:
     def test_zero_limit_with_no_usage_does_not_warn(self, service, organization, subscription):
         """A ``limit_value=0`` resource ("not included", per ``BillingPlan.clean``)
         that the organization has never touched has nothing to warn about."""
-        _make_limit(subscription, LimitedResource.RESOURCE_CALENDARS, 0)
+        _make_limit(subscription, RESOURCE_CALENDARS, 0)
 
         with freeze_time(FREEZE_START):
             service.check_subscription(subscription)
@@ -190,7 +195,7 @@ class TestApproachingThreshold:
     def test_zero_limit_with_any_usage_reaches_immediately(
         self, service, organization, subscription
     ):
-        _make_limit(subscription, LimitedResource.RESOURCE_CALENDARS, 0)
+        _make_limit(subscription, RESOURCE_CALENDARS, 0)
         baker.make(
             Calendar,
             organization=organization,
@@ -213,7 +218,7 @@ class TestApproachingThreshold:
         authored blocked time -- never an availability window -- can already be at
         or past the threshold. Proves the push side picks up the rule change with
         no changes of its own: it reads the same counter enforcement does."""
-        _make_limit(subscription, LimitedResource.AVAILABILITY_WINDOWS, 10)
+        _make_limit(subscription, AVAILABILITY_WINDOWS, 10)
         calendar = baker.make(
             Calendar,
             organization=organization,
@@ -237,12 +242,12 @@ class TestApproachingThreshold:
         service.notification_service.create_notification.assert_called_once()
         call = service.notification_service.create_notification.call_args
         assert call.kwargs["context_name"] == "approaching_limit_context"
-        assert call.kwargs["context_kwargs"]["resource_key"] == LimitedResource.AVAILABILITY_WINDOWS
+        assert call.kwargs["context_kwargs"]["resource_key"] == AVAILABILITY_WINDOWS
         assert call.kwargs["context_kwargs"]["current_usage"] == 8
 
         warning = LimitWarningNotification.objects.get(subscription=subscription)
         assert warning.level == LimitWarningLevel.APPROACHING
-        assert warning.resource_key == LimitedResource.AVAILABILITY_WINDOWS
+        assert warning.resource_key == AVAILABILITY_WINDOWS
 
 
 @pytest.mark.django_db
@@ -250,7 +255,7 @@ class TestDebounce:
     def test_repeated_checks_in_the_same_cycle_send_exactly_one_warning(
         self, service, organization, subscription
     ):
-        _make_limit(subscription, LimitedResource.ORGANIZATION_MEMBERS, 10)
+        _make_limit(subscription, ORGANIZATION_MEMBERS, 10)
         _seed_members(organization, 7)  # + admin = 8 of 10 (80%)
 
         with freeze_time(FREEZE_START):
@@ -267,7 +272,7 @@ class TestDebounce:
     ):
         """Approaching (80%) and reached (100%) are debounced independently --
         both crossings in the same cycle must each notify exactly once."""
-        _make_limit(subscription, LimitedResource.ORGANIZATION_MEMBERS, 10)
+        _make_limit(subscription, ORGANIZATION_MEMBERS, 10)
         _seed_members(organization, 7)  # + admin = 8 of 10 (80%)
 
         with freeze_time(FREEZE_START):
@@ -290,7 +295,7 @@ class TestDebounce:
         """The marker is scoped to ``current_billing_period_start`` -- once the
         cycle rolls over, usage still above the threshold is allowed to warn
         again rather than being permanently silenced by a prior cycle's marker."""
-        _make_limit(subscription, LimitedResource.ORGANIZATION_MEMBERS, 10)
+        _make_limit(subscription, ORGANIZATION_MEMBERS, 10)
         _seed_members(organization, 7)  # + admin = 8 of 10 (80%)
 
         with freeze_time(FREEZE_START):
@@ -307,7 +312,7 @@ class TestDebounce:
 @pytest.mark.django_db
 class TestAlreadyBlockedSubscriptionsAreSkipped:
     def test_restricted_subscription_is_never_warned(self, service, organization, subscription):
-        _make_limit(subscription, LimitedResource.ORGANIZATION_MEMBERS, 10)
+        _make_limit(subscription, ORGANIZATION_MEMBERS, 10)
         _seed_members(organization, 10)
         subscription.billing_state = BillingState.RESTRICTED
         subscription.save(update_fields=["billing_state"])
@@ -318,7 +323,7 @@ class TestAlreadyBlockedSubscriptionsAreSkipped:
         service.notification_service.create_notification.assert_not_called()
 
     def test_cancelled_subscription_is_never_warned(self, service, organization, subscription):
-        _make_limit(subscription, LimitedResource.ORGANIZATION_MEMBERS, 10)
+        _make_limit(subscription, ORGANIZATION_MEMBERS, 10)
         _seed_members(organization, 10)
         subscription.billing_state = BillingState.CANCELLED
         subscription.save(update_fields=["billing_state"])
@@ -337,8 +342,8 @@ class TestBestEffort:
         """A notification-send failure on one resource must not break the
         sweep for the rest of this subscription's resources -- the beat task's
         own resilience contract."""
-        _make_limit(subscription, LimitedResource.ORGANIZATION_MEMBERS, 10)
-        _make_limit(subscription, LimitedResource.RESOURCE_CALENDARS, 10)
+        _make_limit(subscription, ORGANIZATION_MEMBERS, 10)
+        _make_limit(subscription, RESOURCE_CALENDARS, 10)
         _seed_members(organization, 8)
 
         for i in range(8):
@@ -376,7 +381,7 @@ class TestBestEffort:
         billing cycle even though it was never actually delivered. The next
         beat tick within the same cycle must retry and, once the send
         succeeds, be debounced normally from then on."""
-        _make_limit(subscription, LimitedResource.ORGANIZATION_MEMBERS, 10)
+        _make_limit(subscription, ORGANIZATION_MEMBERS, 10)
         _seed_members(organization, 7)  # + admin = 8 of 10 (80%)
 
         flaky_notification_service = MagicMock()

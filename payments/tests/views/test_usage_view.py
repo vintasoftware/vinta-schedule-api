@@ -3,7 +3,7 @@ usage number the API reports and the number enforcement actually counts
 against must be the same derivation.**
 
 The resource set under test is derived from ``LimitedResource`` itself (its
-whole member list, ``LimitedResource.values``), not a hand-typed subset. A
+whole member list, ``RESOURCE_KEYS``), not a hand-typed subset. A
 newly added ``LimitedResource`` member must fail this test until the usage API
 covers it, the same anti-drift discipline ``test_prepaid_resource_coverage.py``
 and ``test_entitlement_service.py::test_every_limited_resource_has_a_counter``
@@ -28,18 +28,29 @@ from django.utils import timezone
 import pytest
 from model_bakery import baker
 from rest_framework import status
+from vinta_billing.constants import BillingState, LimitKind
+from vinta_billing.models import BillingPlan, MeteredOccurrence, PlanLimit
+from vinta_billing.services.entitlement_service import EntitlementService
+from vinta_billing.services.subscription_service import (
+    SubscriptionService,
+    current_billing_period_start,
+)
 
 from calendar_integration.constants import CalendarType
 from calendar_integration.models import AvailableTime, Calendar, CalendarGroup
 from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import make_membership
-from payments.billing_constants import BillingState, LimitedResource, LimitKind
-from payments.models import BillingPlan, MeteredOccurrence, PlanLimit
-from payments.services.entitlement_service import EntitlementService
-from payments.services.subscription_service import (
-    SubscriptionService,
-    current_billing_period_start,
+from payments.seams.resource_keys import (
+    AVAILABILITY_WINDOWS,
+    BUNDLE_CALENDARS,
+    CALENDAR_GROUPS,
+    EVENT_OCCURRENCES,
+    ORGANIZATION_MEMBERS,
+    PUBLIC_API_SYSTEM_USERS,
+    RESOURCE_CALENDARS,
+    RESOURCE_KEYS,
+    WEBHOOK_SUBSCRIPTIONS,
 )
 from public_api.models import SystemUser
 from webhooks.constants import WebhookEventType
@@ -64,20 +75,14 @@ def make_complete_plan() -> BillingPlan:
         monthly_price=Decimal("0"),
         annual_price=None,
     )
-    for resource_key in LimitedResource.values:
+    for resource_key in RESOURCE_KEYS:
         baker.make(
             PlanLimit,
             plan=plan,
             resource_key=resource_key,
             limit_value=LIMIT_VALUE,
-            kind=(
-                LimitKind.POSTPAID
-                if resource_key == LimitedResource.EVENT_OCCURRENCES
-                else LimitKind.PREPAID
-            ),
-            overage_unit_price=(
-                Decimal("0.05") if resource_key == LimitedResource.EVENT_OCCURRENCES else None
-            ),
+            kind=(LimitKind.POSTPAID if resource_key == EVENT_OCCURRENCES else LimitKind.PREPAID),
+            overage_unit_price=(Decimal("0.05") if resource_key == EVENT_OCCURRENCES else None),
         )
     return plan
 
@@ -166,13 +171,13 @@ def _seed_event_occurrences(organization: Organization, subscription) -> None:
 #: hand-typed string list), so `TestUsageMatchesEnforcement` below fails loudly
 #: if a new `LimitedResource` member is added without a seeder registered here.
 SEEDERS = {
-    LimitedResource.ORGANIZATION_MEMBERS: _seed_organization_members,
-    LimitedResource.RESOURCE_CALENDARS: _seed_resource_calendars,
-    LimitedResource.CALENDAR_GROUPS: _seed_calendar_groups,
-    LimitedResource.BUNDLE_CALENDARS: _seed_bundle_calendars,
-    LimitedResource.AVAILABILITY_WINDOWS: _seed_availability_windows,
-    LimitedResource.WEBHOOK_SUBSCRIPTIONS: _seed_webhook_subscriptions,
-    LimitedResource.PUBLIC_API_SYSTEM_USERS: _seed_public_api_system_users,
+    ORGANIZATION_MEMBERS: _seed_organization_members,
+    RESOURCE_CALENDARS: _seed_resource_calendars,
+    CALENDAR_GROUPS: _seed_calendar_groups,
+    BUNDLE_CALENDARS: _seed_bundle_calendars,
+    AVAILABILITY_WINDOWS: _seed_availability_windows,
+    WEBHOOK_SUBSCRIPTIONS: _seed_webhook_subscriptions,
+    PUBLIC_API_SYSTEM_USERS: _seed_public_api_system_users,
 }
 
 
@@ -211,17 +216,15 @@ class TestUsageMatchesEnforcement:
         (``event_occurrences`` has its own dedicated seeder, asserted
         separately below) -- this is what makes the parametrized test below
         fail loudly, rather than silently skip, a newly added member."""
-        expected = set(LimitedResource.values) - {LimitedResource.EVENT_OCCURRENCES}
+        expected = set(RESOURCE_KEYS) - {EVENT_OCCURRENCES}
         assert set(SEEDERS.keys()) == expected
 
-    @pytest.mark.parametrize(
-        "resource_key", list(LimitedResource.values), ids=LimitedResource.values
-    )
+    @pytest.mark.parametrize("resource_key", list(RESOURCE_KEYS), ids=RESOURCE_KEYS)
     def test_usage_view_matches_the_enforcement_primitive(
         self, auth_client, admin_membership, organization, subscription, resource_key
     ):
         entitlement_service = EntitlementService()
-        if resource_key == LimitedResource.EVENT_OCCURRENCES:
+        if resource_key == EVENT_OCCURRENCES:
             enforcement_result = entitlement_service.check_postpaid_allowance(organization, delta=0)
         else:
             enforcement_result = entitlement_service.check_limit(
@@ -250,7 +253,7 @@ class TestUsageMatchesEnforcement:
 
         assert response.status_code == status.HTTP_200_OK
         resource_keys = [row["resource_key"] for row in response.data["limits"]]
-        assert sorted(resource_keys) == sorted(LimitedResource.values)
+        assert sorted(resource_keys) == sorted(RESOURCE_KEYS)
         assert len(resource_keys) == len(set(resource_keys))
 
 
@@ -281,9 +284,9 @@ class TestBackwardsCompatibility:
         assert isinstance(response.data["limits"], list)
 
         rows = {row["resource_key"]: row for row in response.data["limits"]}
-        assert sorted(rows) == sorted(LimitedResource.values)
+        assert sorted(rows) == sorted(RESOURCE_KEYS)
 
-        for resource_key in LimitedResource.values:
+        for resource_key in RESOURCE_KEYS:
             row = rows[resource_key]
             # Every key this row carried before the enrichment fields were added
             # is still present.
@@ -296,7 +299,7 @@ class TestBackwardsCompatibility:
             } <= set(row)
 
             effective_limit = entitlement_service.get_effective_limit(organization, resource_key)
-            if resource_key == LimitedResource.EVENT_OCCURRENCES:
+            if resource_key == EVENT_OCCURRENCES:
                 enforcement_result = entitlement_service.check_postpaid_allowance(
                     organization, delta=0
                 )
@@ -344,8 +347,7 @@ class TestPooledAttributionOmitsNonContributors:
         assert response.status_code == status.HTTP_200_OK
         rows = {row["resource_key"]: row for row in response.data["limits"]}
         by_organization = {
-            entry["organization_id"]: entry
-            for entry in rows[LimitedResource.RESOURCE_CALENDARS]["by_organization"]
+            entry["organization_id"]: entry for entry in rows[RESOURCE_CALENDARS]["by_organization"]
         }
         assert by_organization[contributing_child.pk] == {
             "organization_id": contributing_child.pk,
@@ -520,7 +522,7 @@ class TestRootResolutionAndSubtreeWalkHappenOnce:
         subtree_walk_queries = [
             query for query in queries if '"organizations_organization"."parent_id" IN' in query
         ]
-        assert 0 < len(subtree_walk_queries) < len(LimitedResource.values)
+        assert 0 < len(subtree_walk_queries) < len(RESOURCE_KEYS)
 
         # `resolve_billing_root`'s parent-chain walk issues one single-row
         # lookup per level walked -- exactly one here (child -> root), not

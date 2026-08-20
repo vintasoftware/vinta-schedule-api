@@ -34,7 +34,18 @@ import payments.seams.resources  # noqa: F401,E402
 from calendar_integration.constants import CalendarType
 from calendar_integration.models import AvailableTime, BlockedTime, Calendar, CalendarGroup
 from organizations.models import Organization, OrganizationInvitation, OrganizationMembership
-from payments.billing_constants import Entitlement, LimitedResource
+from payments.seams.resource_keys import (
+    AVAILABILITY_WINDOWS,
+    BUNDLE_CALENDARS,
+    CALENDAR_GROUPS,
+    ENTITLEMENT_KEYS,
+    EVENT_OCCURRENCES,
+    ORGANIZATION_MEMBERS,
+    PUBLIC_API_SYSTEM_USERS,
+    RESOURCE_CALENDARS,
+    RESOURCE_KEYS,
+    WEBHOOK_SUBSCRIPTIONS,
+)
 from public_api.models import SystemUser
 from webhooks.models import WebhookConfiguration
 
@@ -46,36 +57,59 @@ from webhooks.models import WebhookConfiguration
 pytestmark = pytest.mark.no_auto_subscription
 
 
+#: Pinned, byte-identical to the labels ``payments/seams/resources.py`` registers.
+#: Used to be a comparison against ``LimitedResource`` / ``Entitlement`` -- see
+#: ``payments/seams/resource_keys.py``'s docstring for why those enums are gone --
+#: but a pinned literal catches the identical drift (a typo'd or retranslated
+#: label) without needing a second side to compare against.
+EXPECTED_RESOURCE_LABELS: dict[str, str] = {
+    ORGANIZATION_MEMBERS: "Organization members",
+    RESOURCE_CALENDARS: "Resource calendars",
+    CALENDAR_GROUPS: "Calendar groups",
+    BUNDLE_CALENDARS: "Bundle calendars",
+    AVAILABILITY_WINDOWS: "Availability windows",
+    WEBHOOK_SUBSCRIPTIONS: "Webhook subscriptions",
+    PUBLIC_API_SYSTEM_USERS: "Public API system users",
+    EVENT_OCCURRENCES: "Event occurrences",
+}
+EXPECTED_ENTITLEMENT_LABELS: dict[str, str] = {
+    "external_calendar_google": "Google Calendar sync",
+    "external_calendar_microsoft": "Microsoft Calendar sync",
+    "partner_api": "Partner / public API access",
+    "white_label_branding": "White-label branding",
+    "advanced_scheduling": "Advanced scheduling",
+}
+
+
 class TestResourceAndEntitlementRegistration:
-    """``payments.seams.resources`` now writes its keys and labels as its own
-    literals, independent of ``LimitedResource`` / ``Entitlement`` -- see that
-    module's docstring for why. These tests are the bridge: they compare the
-    seam's literals against the enum they replace, so a typo'd key or a label
-    that drifts from the enum's translation fails here, for as long as the
-    enum still exists to compare against."""
+    """``payments.seams.resources`` writes its keys and labels as its own
+    literals -- see ``payments/seams/resource_keys.py``'s docstring for why there
+    is no enum to compare against any more. These tests pin the expected keys and
+    labels as literals instead, so a typo'd key or a drifted label still fails
+    here."""
 
     def test_all_eight_resources_register(self):
-        assert {definition.key for definition in resources} == set(LimitedResource.values)
+        assert {definition.key for definition in resources} == set(RESOURCE_KEYS)
 
-    def test_resource_keys_match_limited_resource_values_exactly(self):
-        assert sorted(resources.keys()) == sorted(LimitedResource.values)
+    def test_resource_keys_match_the_pinned_set_exactly(self):
+        assert sorted(resources.keys()) == sorted(RESOURCE_KEYS)
 
-    def test_resource_labels_are_byte_identical_to_the_textchoices_members(self):
-        for member in LimitedResource:
-            assert resources.get(member.value).label == member.label
+    def test_resource_labels_are_byte_identical_to_the_pinned_literals(self):
+        for key, expected_label in EXPECTED_RESOURCE_LABELS.items():
+            assert str(resources.get(key).label) == expected_label
 
     def test_all_five_entitlements_register(self):
-        assert {definition.key for definition in entitlements} == set(Entitlement.values)
+        assert {definition.key for definition in entitlements} == set(ENTITLEMENT_KEYS)
 
-    def test_entitlement_labels_are_byte_identical_to_the_textchoices_members(self):
-        for member in Entitlement:
-            assert entitlements.get(member.value).label == member.label
+    def test_entitlement_labels_are_byte_identical_to_the_pinned_literals(self):
+        for key, expected_label in EXPECTED_ENTITLEMENT_LABELS.items():
+            assert str(entitlements.get(key).label) == expected_label
 
     def test_event_occurrences_is_the_only_postpaid_resource(self):
         from vinta_billing.constants import LimitKind
 
         postpaid = {d.key for d in resources.of_kind(LimitKind.POSTPAID)}
-        assert postpaid == {LimitedResource.EVENT_OCCURRENCES}
+        assert postpaid == {EVENT_OCCURRENCES}
 
 
 @pytest.fixture
@@ -139,7 +173,7 @@ class TestCounterBreakdowns:
         )
 
         breakdown = self._breakdown(
-            LimitedResource.ORGANIZATION_MEMBERS, [organization_one.pk, organization_two.pk]
+            ORGANIZATION_MEMBERS, [organization_one.pk, organization_two.pk]
         )
         assert breakdown == {organization_one.pk: 3, organization_two.pk: 1}
 
@@ -156,7 +190,7 @@ class TestCounterBreakdowns:
             expires_at=timezone.now() + datetime.timedelta(days=7),
         )
 
-        breakdown = resources.counter_for(LimitedResource.ORGANIZATION_MEMBERS)(
+        breakdown = resources.counter_for(ORGANIZATION_MEMBERS)(
             UsageContext(
                 organization_ids=[organization_one.pk, organization_two.pk],
                 extra={"exclude_invitation_id": invitation.pk},
@@ -179,10 +213,10 @@ class TestCounterBreakdowns:
         )
 
         resource_breakdown = self._breakdown(
-            LimitedResource.RESOURCE_CALENDARS, [organization_one.pk, organization_two.pk]
+            RESOURCE_CALENDARS, [organization_one.pk, organization_two.pk]
         )
         bundle_breakdown = self._breakdown(
-            LimitedResource.BUNDLE_CALENDARS, [organization_one.pk, organization_two.pk]
+            BUNDLE_CALENDARS, [organization_one.pk, organization_two.pk]
         )
         assert resource_breakdown == {organization_one.pk: 1}
         assert bundle_breakdown == {organization_two.pk: 1}
@@ -191,9 +225,7 @@ class TestCounterBreakdowns:
         baker.make(CalendarGroup, organization=organization_one, _quantity=2)
         baker.make(CalendarGroup, organization=organization_two)
 
-        breakdown = self._breakdown(
-            LimitedResource.CALENDAR_GROUPS, [organization_one.pk, organization_two.pk]
-        )
+        breakdown = self._breakdown(CALENDAR_GROUPS, [organization_one.pk, organization_two.pk])
         assert breakdown == {organization_one.pk: 2, organization_two.pk: 1}
 
     def test_availability_windows_merges_available_and_blocked_time(
@@ -204,7 +236,7 @@ class TestCounterBreakdowns:
         baker.make(AvailableTime, organization=organization_two, timezone="UTC")
 
         breakdown = self._breakdown(
-            LimitedResource.AVAILABILITY_WINDOWS, [organization_one.pk, organization_two.pk]
+            AVAILABILITY_WINDOWS, [organization_one.pk, organization_two.pk]
         )
         assert breakdown == {organization_one.pk: 3, organization_two.pk: 1}
 
@@ -216,7 +248,7 @@ class TestCounterBreakdowns:
         )
 
         breakdown = self._breakdown(
-            LimitedResource.WEBHOOK_SUBSCRIPTIONS, [organization_one.pk, organization_two.pk]
+            WEBHOOK_SUBSCRIPTIONS, [organization_one.pk, organization_two.pk]
         )
         assert breakdown == {organization_one.pk: 1, organization_two.pk: 2}
 
@@ -225,7 +257,7 @@ class TestCounterBreakdowns:
         baker.make(SystemUser, organization=organization_two, is_active=True, _quantity=2)
 
         breakdown = self._breakdown(
-            LimitedResource.PUBLIC_API_SYSTEM_USERS, [organization_one.pk, organization_two.pk]
+            PUBLIC_API_SYSTEM_USERS, [organization_one.pk, organization_two.pk]
         )
         assert breakdown == {organization_one.pk: 1, organization_two.pk: 2}
 
@@ -276,7 +308,7 @@ class TestCounterBreakdowns:
                 unit_price=Decimal("0"),
             )
 
-            breakdown = resources.counter_for(LimitedResource.EVENT_OCCURRENCES)(
+            breakdown = resources.counter_for(EVENT_OCCURRENCES)(
                 UsageContext(organization_ids=[organization_one.pk], subscription=subscription_one)
             )
             assert breakdown == {organization_one.pk: 2}
@@ -285,7 +317,7 @@ class TestCounterBreakdowns:
         """Fail-open: a subscription-less pool is a broken invariant, and
         ``event_occurrences`` is post-paid, so under-reporting cannot block
         anybody."""
-        breakdown = resources.counter_for(LimitedResource.EVENT_OCCURRENCES)(
+        breakdown = resources.counter_for(EVENT_OCCURRENCES)(
             UsageContext(organization_ids=[1], subscription=None)
         )
         assert breakdown == {}

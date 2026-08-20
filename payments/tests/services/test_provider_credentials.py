@@ -1,19 +1,19 @@
-"""Unit tests for ``payments.services.provider_credentials`` and
-``payments.services.payment_provider_resolver``.
+"""Unit tests for ``vinta_billing.services.provider_credentials`` and
+``vinta_billing.services.payment_provider_resolver``.
 """
 
 import pytest
 from model_bakery import baker
-
-from organizations.models import Organization
-from payments.constants import PaymentProviders
-from payments.exceptions import PaymentProviderNotConfiguredError
-from payments.models import BillingProfile
-from payments.services.payment_provider_resolver import PaymentProviderResolver
-from payments.services.provider_credentials import (
+from vinta_billing.constants import PaymentProviders
+from vinta_billing.exceptions import PaymentProviderNotConfiguredError
+from vinta_billing.models import BillingProfile
+from vinta_billing.services.payment_provider_resolver import PaymentProviderResolver
+from vinta_billing.services.provider_credentials import (
     PublicProviderCredentials,
     resolve_public_credentials,
 )
+
+from organizations.models import Organization
 from payments.tests.provider_settings import use_providers
 
 

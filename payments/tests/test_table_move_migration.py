@@ -34,7 +34,12 @@ import pytest
 from vinta_billing.models import BillingAddress, BillingPlan, PlanEntitlement, PlanLimit
 
 from common.testing.migration_replay import migration_replay, uninterruptible
-from payments.billing_constants import Entitlement, LimitedResource
+from payments.seams.resource_keys import (
+    ENTITLEMENT_KEYS,
+    PARTNER_API,
+    RESOURCE_CALENDARS,
+    RESOURCE_KEYS,
+)
 
 
 #: The twenty tables, as ``0024`` names them.
@@ -100,9 +105,9 @@ class TestTheTablesMoved:
 
         assert plan.is_active is True
         assert plan.is_default_for_new_organizations is True
-        assert {limit.resource_key for limit in plan.limits.all()} == set(LimitedResource.values)
+        assert {limit.resource_key for limit in plan.limits.all()} == set(RESOURCE_KEYS)
         assert all(limit.limit_value is None for limit in plan.limits.all())
-        assert {row.entitlement_key for row in plan.entitlements.all()} == set(Entitlement.values)
+        assert {row.entitlement_key for row in plan.entitlements.all()} == set(ENTITLEMENT_KEYS)
         assert all(row.is_enabled for row in plan.entitlements.all())
 
     def test_the_copied_rows_kept_their_primary_keys(self):
@@ -113,8 +118,8 @@ class TestTheTablesMoved:
         """
         plan = BillingPlan.objects.get(slug="unlimited")
 
-        assert PlanLimit.objects.filter(plan_id=plan.pk).count() == len(LimitedResource.values)
-        assert PlanEntitlement.objects.filter(plan_id=plan.pk).count() == len(Entitlement.values)
+        assert PlanLimit.objects.filter(plan_id=plan.pk).count() == len(RESOURCE_KEYS)
+        assert PlanEntitlement.objects.filter(plan_id=plan.pk).count() == len(ENTITLEMENT_KEYS)
 
 
 @pytest.mark.django_db
@@ -267,12 +272,8 @@ class TestTheReversePath:
             monthly_price=0,
             currency="BRL",
         )
-        PlanLimit.objects.create(
-            plan=plan, resource_key=LimitedResource.RESOURCE_CALENDARS, limit_value=7
-        )
-        PlanEntitlement.objects.create(
-            plan=plan, entitlement_key=Entitlement.PARTNER_API, is_enabled=True
-        )
+        PlanLimit.objects.create(plan=plan, resource_key=RESOURCE_CALENDARS, limit_value=7)
+        PlanEntitlement.objects.create(plan=plan, entitlement_key=PARTNER_API, is_enabled=True)
         return BillingAddress.objects.create(
             street_name="Reversible",
             street_number="1",
@@ -347,9 +348,7 @@ class TestTheReversePath:
                     "WHERE p.slug = %s",
                     [self.PROBE_PLAN_SLUG],
                 )
-                assert cursor.fetchall() == [
-                    (LimitedResource.RESOURCE_CALENDARS, 7, Entitlement.PARTNER_API, True)
-                ]
+                assert cursor.fetchall() == [(RESOURCE_CALENDARS, 7, PARTNER_API, True)]
 
                 cursor.execute(
                     "SELECT count(*) FROM auth_group g "

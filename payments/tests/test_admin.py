@@ -29,14 +29,19 @@ from vinta_billing.admin import (
     SubscriptionEntitlementInline,
     SubscriptionPlanLimitInline,
 )
+from vinta_billing.constants import LimitKind, PaymentProviders
+from vinta_billing.exceptions import UnknownPaymentProviderError
+from vinta_billing.models import BillingPlan, BillingProfile, PlanLimit, Subscription
+from vinta_billing.services.payment_adapters.stripe_payment_adapter import StripePaymentAdapter
+from vinta_billing.services.subscription_service import SubscriptionService
 
 from organizations.models import Organization
-from payments.billing_constants import Entitlement, LimitedResource, LimitKind
-from payments.constants import PaymentProviders
-from payments.exceptions import UnknownPaymentProviderError
-from payments.models import BillingPlan, BillingProfile, PlanLimit, Subscription
-from payments.services.payment_adapters.stripe_payment_adapter import StripePaymentAdapter
-from payments.services.subscription_service import SubscriptionService
+from payments.seams.resource_keys import (
+    EXTERNAL_CALENDAR_GOOGLE,
+    ORGANIZATION_MEMBERS,
+    RESOURCE_CALENDARS,
+    RESOURCE_KEYS,
+)
 
 
 # This module builds its own Subscription rows (OneToOne with Organization), so it
@@ -57,7 +62,7 @@ class TestSubscriptionAdminSaveFormsetLimits:
     def test_only_the_changed_row_is_marked_overridden(self, rf, superuser):
         org = baker.make(Organization, parent=None)
         subscription = SubscriptionService().create_subscription_for_organization(org)
-        changed_row = subscription.limits.get(resource_key=LimitedResource.ORGANIZATION_MEMBERS)
+        changed_row = subscription.limits.get(resource_key=ORGANIZATION_MEMBERS)
         unchanged_row = subscription.limits.exclude(pk=changed_row.pk).first()
         assert unchanged_row is not None
 
@@ -106,7 +111,7 @@ class TestSubscriptionAdminSaveFormsetLimits:
         """
         org = baker.make(Organization, parent=None)
         subscription = SubscriptionService().create_subscription_for_organization(org)
-        overridden_row = subscription.limits.get(resource_key=LimitedResource.ORGANIZATION_MEMBERS)
+        overridden_row = subscription.limits.get(resource_key=ORGANIZATION_MEMBERS)
         overridden_row.is_overridden = True
         overridden_row.save(update_fields=["is_overridden"])
         other_row = subscription.limits.exclude(pk=overridden_row.pk).first()
@@ -156,9 +161,7 @@ class TestSubscriptionAdminSaveFormsetEntitlements:
     def test_only_the_changed_row_is_marked_overridden(self, rf, superuser):
         org = baker.make(Organization, parent=None)
         subscription = SubscriptionService().create_subscription_for_organization(org)
-        changed_row = subscription.entitlements.get(
-            entitlement_key=Entitlement.EXTERNAL_CALENDAR_GOOGLE
-        )
+        changed_row = subscription.entitlements.get(entitlement_key=EXTERNAL_CALENDAR_GOOGLE)
         unchanged_row = subscription.entitlements.exclude(pk=changed_row.pk).first()
         assert unchanged_row is not None
 
@@ -226,22 +229,20 @@ class TestBillingPlanAdminLimitCoverage:
 
     def test_a_formset_omitting_a_resource_is_rejected(self, rf, superuser):
         plan = baker.make(BillingPlan, is_default_for_new_organizations=False)
-        submitted = [
-            key for key in LimitedResource.values if key != LimitedResource.RESOURCE_CALENDARS
-        ]
+        submitted = [key for key in RESOURCE_KEYS if key != RESOURCE_CALENDARS]
         formset_class = self._formset_class(rf, superuser, plan)
 
         formset = formset_class(self._formset_data(submitted), instance=plan, prefix="limits")
 
         assert not formset.is_valid()
-        assert LimitedResource.RESOURCE_CALENDARS in str(formset.non_form_errors())
+        assert RESOURCE_CALENDARS in str(formset.non_form_errors())
 
     def test_a_formset_covering_every_resource_is_accepted(self, rf, superuser):
         plan = baker.make(BillingPlan, is_default_for_new_organizations=False)
         formset_class = self._formset_class(rf, superuser, plan)
 
         formset = formset_class(
-            self._formset_data(list(LimitedResource.values)), instance=plan, prefix="limits"
+            self._formset_data(list(RESOURCE_KEYS)), instance=plan, prefix="limits"
         )
 
         assert formset.is_valid(), formset.errors
@@ -258,7 +259,7 @@ class TestBillingPlanAdminLimitCoverage:
                 limit_value=0,
                 kind=LimitKind.PREPAID,
             )
-            for resource_key in LimitedResource.values
+            for resource_key in RESOURCE_KEYS
         ]
         data = {
             "limits-TOTAL_FORMS": str(len(rows)),
@@ -309,7 +310,7 @@ class TestBillingPlanAdminLimitCoverage:
         baker.make(
             PlanLimit,
             plan=plan,
-            resource_key=LimitedResource.ORGANIZATION_MEMBERS,
+            resource_key=ORGANIZATION_MEMBERS,
             limit_value=0,
             kind=LimitKind.PREPAID,
         )
@@ -335,7 +336,7 @@ class TestBillingPlanAdminLimitCoverage:
         row = baker.make(
             PlanLimit,
             plan=plan,
-            resource_key=LimitedResource.ORGANIZATION_MEMBERS,
+            resource_key=ORGANIZATION_MEMBERS,
             limit_value=0,
             kind=LimitKind.PREPAID,
         )
@@ -371,7 +372,7 @@ class TestBillingPlanAdminLimitCoverage:
         row = baker.make(
             PlanLimit,
             plan=plan,
-            resource_key=LimitedResource.ORGANIZATION_MEMBERS,
+            resource_key=ORGANIZATION_MEMBERS,
             limit_value=0,
             kind=LimitKind.PREPAID,
         )

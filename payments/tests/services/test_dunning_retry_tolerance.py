@@ -33,16 +33,16 @@ from django.utils import timezone
 
 import pytest
 from model_bakery import baker
+from vinta_billing.constants import BillingState, LimitKind, PaymentProviders
+from vinta_billing.exceptions import CollectionNotSupportedError, NoOutstandingBalanceError
+from vinta_billing.models import BillingPlan, PaymentMethod, PlanLimit, Subscription
+from vinta_billing.services.dataclasses import CreatedPlan
+from vinta_billing.services.dunning_service import DunningService
+from vinta_billing.services.entitlement_service import EntitlementService
+from vinta_billing.services.subscription_service import SubscriptionService
 
 from organizations.models import Organization, OrganizationMembership
-from payments.billing_constants import BillingState, LimitedResource, LimitKind
-from payments.constants import PaymentProviders
-from payments.exceptions import CollectionNotSupportedError, NoOutstandingBalanceError
-from payments.models import BillingPlan, PaymentMethod, PlanLimit, Subscription
-from payments.services.dataclasses import CreatedPlan
-from payments.services.dunning_service import DunningService
-from payments.services.entitlement_service import EntitlementService
-from payments.services.subscription_service import SubscriptionService
+from payments.seams.resource_keys import RESOURCE_KEYS
 from users.models import User
 
 
@@ -66,7 +66,7 @@ def make_complete_plan(
         annual_price=None,
         grace_period_days=grace_period_days,
     )
-    for resource_key in LimitedResource.values:
+    for resource_key in RESOURCE_KEYS:
         baker.make(
             PlanLimit,
             plan=plan,

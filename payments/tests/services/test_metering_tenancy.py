@@ -25,15 +25,16 @@ from django.utils import timezone
 
 import pytest
 from model_bakery import baker
+from vinta_billing.constants import BillingState, LimitKind
+from vinta_billing.models import BillingPlan, MeteredOccurrence, Subscription, SubscriptionPlanLimit
+from vinta_billing.services.entitlement_service import EntitlementService
+from vinta_billing.services.metering_service import MeteringService
 
 from calendar_integration.constants import CalendarProvider, RecurrenceFrequency
 from calendar_integration.factories import CalendarEventFactory
 from calendar_integration.models import Calendar
 from organizations.models import Organization
-from payments.billing_constants import BillingState, LimitedResource, LimitKind
-from payments.models import BillingPlan, MeteredOccurrence, Subscription, SubscriptionPlanLimit
-from payments.services.entitlement_service import EntitlementService
-from payments.services.metering_service import MeteringService
+from payments.seams.resource_keys import EVENT_OCCURRENCES
 
 
 # This module builds its own `Subscription` rows on specific organizations
@@ -72,7 +73,7 @@ def make_subscription(organization: Organization, plan: BillingPlan) -> Subscrip
     baker.make(
         SubscriptionPlanLimit,
         subscription=subscription,
-        resource_key=LimitedResource.EVENT_OCCURRENCES,
+        resource_key=EVENT_OCCURRENCES,
         limit_value=None,
         kind=LimitKind.POSTPAID,
     )
@@ -229,7 +230,7 @@ class TestMeteringPoolBoundary:
             billing_period_start=now - datetime.timedelta(days=1)
         )
 
-        usage = EntitlementService().get_current_usage(child, LimitedResource.EVENT_OCCURRENCES)
+        usage = EntitlementService().get_current_usage(child, EVENT_OCCURRENCES)
         assert usage == 10, "root + child, and specifically not the nested root's 5"
 
 
@@ -361,7 +362,7 @@ class TestPreFilterMatchesTheUniqueConstraint:
         formerly_independent = baker.make(Organization, parent=None, can_invite_organizations=False)
         root_subscription = make_subscription(root, plan)
         own_subscription = make_subscription(formerly_independent, plan)
-        root_subscription.limits.filter(resource_key=LimitedResource.EVENT_OCCURRENCES).update(
+        root_subscription.limits.filter(resource_key=EVENT_OCCURRENCES).update(
             limit_value=5, overage_unit_price=Decimal("1.0000")
         )
 

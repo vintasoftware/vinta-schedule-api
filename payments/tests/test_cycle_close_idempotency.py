@@ -19,11 +19,11 @@ from decimal import Decimal
 import pytest
 from dateutil.relativedelta import relativedelta
 from model_bakery import baker
+from vinta_billing.models import BillingPeriodSummary, MeteredOccurrence, Payment, Subscription
+from vinta_billing.services.cycle_close_service import CycleCloseService
 
 from organizations.models import Organization
-from payments.billing_constants import LimitedResource
-from payments.models import BillingPeriodSummary, MeteredOccurrence, Payment, Subscription
-from payments.services.cycle_close_service import CycleCloseService
+from payments.seams.resource_keys import EVENT_OCCURRENCES
 
 
 PERIOD_START = datetime.datetime(2025, 6, 1, 0, 0, tzinfo=datetime.UTC)
@@ -71,7 +71,7 @@ def subscription(organization: Organization) -> Subscription:
     subscription.save(update_fields=["current_period_start", "current_period_end", "modified"])
     # A finite allowance so the real-money path is exercised (the default unlimited
     # plan would charge nothing and this test would prove nothing).
-    subscription.limits.filter(resource_key=LimitedResource.EVENT_OCCURRENCES).update(
+    subscription.limits.filter(resource_key=EVENT_OCCURRENCES).update(
         limit_value=0, overage_unit_price=Decimal("0.5000")
     )
     return subscription

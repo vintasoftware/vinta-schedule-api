@@ -6,11 +6,8 @@ from django.db import IntegrityError
 
 import pytest
 from model_bakery import baker
-
-from organizations.models import Organization
-from payments.billing_constants import DocumentTypes
-from payments.constants import PaymentProviders, PaymentStatuses, RefundStatuses
-from payments.models import (
+from vinta_billing.constants import DocumentTypes, PaymentProviders, PaymentStatuses, RefundStatuses
+from vinta_billing.models import (
     BillingAddress,
     BillingPlan,
     BillingProfile,
@@ -19,9 +16,11 @@ from payments.models import (
     RefundStatusUpdate,
     Subscription,
 )
-from payments.services.payment_adapters.mercadopago_payment_adapter import (
+from vinta_billing.services.payment_adapters.mercadopago_payment_adapter import (
     DOCUMENT_TYPES_MAPPING,
 )
+
+from organizations.models import Organization
 from payments.tests.historical_apps import historical_apps
 
 

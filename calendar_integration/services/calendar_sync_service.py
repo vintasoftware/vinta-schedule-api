@@ -324,7 +324,7 @@ class CalendarSyncService:
         and capped *before* the bulk write, not per-row after it.
 
         The rule is **"will this write increase**
-        ``payments.services.entitlement_service._count_resource_calendars``**?"** -- not
+        ``vinta_billing.services.entitlement_service._count_resource_calendars``**?"** -- not
         "does a ``Calendar`` row already exist for this org + external_id?". Those two
         differ, and in the permissive direction: the write loop below puts
         ``calendar_type=RESOURCE`` in ``update_or_create``'s ``defaults``, so matching a

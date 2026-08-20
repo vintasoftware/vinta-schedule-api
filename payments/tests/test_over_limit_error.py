@@ -14,21 +14,25 @@ billing error to a plain message.
 """
 
 import pytest
-
-from payments.billing_constants import LimitedResource, LimitRemedy
-from payments.exceptions import (
+from vinta_billing.constants import LimitRemedy
+from vinta_billing.exceptions import (
     BillingError,
     InvalidLimitCheckResultError,
     MissingBillingProfileError,
     OverLimitError,
     PaymentError,
 )
-from payments.services.billing_dataclasses import LimitCheckResult
+from vinta_billing.services.billing_dataclasses import LimitCheckResult
+
+from payments.seams.resource_keys import (
+    ORGANIZATION_MEMBERS,
+    RESOURCE_CALENDARS,
+)
 
 
 def build_error():
     return OverLimitError(
-        resource_key=LimitedResource.ORGANIZATION_MEMBERS,
+        resource_key=ORGANIZATION_MEMBERS,
         current_usage=10,
         limit=10,
         remedy=LimitRemedy.PURCHASE_ADD_ON,
@@ -38,7 +42,7 @@ def build_error():
 class TestOverLimitErrorBody:
     def test_detail_can_be_overridden(self):
         error = OverLimitError(
-            resource_key=LimitedResource.RESOURCE_CALENDARS,
+            resource_key=RESOURCE_CALENDARS,
             current_usage=3,
             limit=3,
             remedy=LimitRemedy.UPGRADE_PLAN,
@@ -100,7 +104,7 @@ class TestFromCheckResultInvariantViolations:
     def _allowed_result(self):
         return LimitCheckResult(
             allowed=True,
-            resource_key=LimitedResource.ORGANIZATION_MEMBERS,
+            resource_key=ORGANIZATION_MEMBERS,
             current_usage=None,
             ceiling=None,
         )
@@ -108,7 +112,7 @@ class TestFromCheckResultInvariantViolations:
     def _incomplete_blocked_result(self):
         return LimitCheckResult(
             allowed=False,
-            resource_key=LimitedResource.ORGANIZATION_MEMBERS,
+            resource_key=ORGANIZATION_MEMBERS,
             current_usage=None,
             ceiling=None,
             remedy=None,

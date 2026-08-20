@@ -22,18 +22,36 @@ Who reads this module:
 from decimal import Decimal
 from typing import TypedDict
 
-from payments.billing_constants import Entitlement, LimitedResource, LimitKind
-from payments.models import BillingPlan, PlanEntitlement, PlanLimit
+from vinta_billing.constants import LimitKind
+from vinta_billing.models import BillingPlan, PlanEntitlement, PlanLimit
+
+from payments.seams.resource_keys import (
+    ADVANCED_SCHEDULING,
+    AVAILABILITY_WINDOWS,
+    BUNDLE_CALENDARS,
+    CALENDAR_GROUPS,
+    ENTITLEMENT_KEYS,
+    EVENT_OCCURRENCES,
+    EXTERNAL_CALENDAR_GOOGLE,
+    EXTERNAL_CALENDAR_MICROSOFT,
+    ORGANIZATION_MEMBERS,
+    PARTNER_API,
+    PUBLIC_API_SYSTEM_USERS,
+    RESOURCE_CALENDARS,
+    RESOURCE_KEYS,
+    WEBHOOK_SUBSCRIPTIONS,
+    WHITE_LABEL_BRANDING,
+)
 
 
 UNLIMITED_PLAN_SLUG = "unlimited"
 FREE_PLAN_SLUG = "free"
 
-# Every LimitedResource member gets a NULL (no ceiling) row on `unlimited` — this is
+# Every registered resource gets a NULL (no ceiling) row on `unlimited` — this is
 # what makes it safe as the rollout switch. Kind still needs to be correct per
 # resource so postpaid/prepaid branching does not have to special-case
 # an unlimited plan.
-POSTPAID_RESOURCES = {LimitedResource.EVENT_OCCURRENCES}
+POSTPAID_RESOURCES = {EVENT_OCCURRENCES}
 
 
 class PlanSetting(TypedDict):
@@ -45,24 +63,24 @@ class PlanSetting(TypedDict):
 # organization is actually rolled onto `free`. Editing
 # them here is safe and expected; `0007`'s copy stays where it is.
 FREE_PLAN_LIMITS: dict[str, PlanSetting] = {
-    LimitedResource.ORGANIZATION_MEMBERS: {"limit_value": 5, "overage_unit_price": None},
-    LimitedResource.RESOURCE_CALENDARS: {"limit_value": 3, "overage_unit_price": None},
-    LimitedResource.CALENDAR_GROUPS: {"limit_value": 2, "overage_unit_price": None},
-    LimitedResource.BUNDLE_CALENDARS: {"limit_value": 1, "overage_unit_price": None},
-    LimitedResource.AVAILABILITY_WINDOWS: {"limit_value": 5, "overage_unit_price": None},
-    LimitedResource.WEBHOOK_SUBSCRIPTIONS: {"limit_value": 1, "overage_unit_price": None},
-    LimitedResource.PUBLIC_API_SYSTEM_USERS: {"limit_value": 0, "overage_unit_price": None},
-    LimitedResource.EVENT_OCCURRENCES: {"limit_value": 50, "overage_unit_price": Decimal("0.0500")},
+    ORGANIZATION_MEMBERS: {"limit_value": 5, "overage_unit_price": None},
+    RESOURCE_CALENDARS: {"limit_value": 3, "overage_unit_price": None},
+    CALENDAR_GROUPS: {"limit_value": 2, "overage_unit_price": None},
+    BUNDLE_CALENDARS: {"limit_value": 1, "overage_unit_price": None},
+    AVAILABILITY_WINDOWS: {"limit_value": 5, "overage_unit_price": None},
+    WEBHOOK_SUBSCRIPTIONS: {"limit_value": 1, "overage_unit_price": None},
+    PUBLIC_API_SYSTEM_USERS: {"limit_value": 0, "overage_unit_price": None},
+    EVENT_OCCURRENCES: {"limit_value": 50, "overage_unit_price": Decimal("0.0500")},
 }
 
 # Restricted on `free` by design: only the core Google-sync path is open. Real product
 # entitlement grants come with the real limit numbers above.
 FREE_PLAN_ENTITLEMENTS: dict[str, bool] = {
-    Entitlement.EXTERNAL_CALENDAR_GOOGLE: True,
-    Entitlement.EXTERNAL_CALENDAR_MICROSOFT: False,
-    Entitlement.PARTNER_API: False,
-    Entitlement.WHITE_LABEL_BRANDING: False,
-    Entitlement.ADVANCED_SCHEDULING: False,
+    EXTERNAL_CALENDAR_GOOGLE: True,
+    EXTERNAL_CALENDAR_MICROSOFT: False,
+    PARTNER_API: False,
+    WHITE_LABEL_BRANDING: False,
+    ADVANCED_SCHEDULING: False,
 }
 
 
@@ -72,7 +90,7 @@ def seed_billing_plans() -> None:
     ``update_or_create`` throughout, so it is idempotent and repairs a partially
     destroyed catalog rather than raising on the half that survived.
 
-    Every ``LimitedResource`` member gets a ``PlanLimit`` row on every plan --
+    Every registered resource gets a ``PlanLimit`` row on every plan --
     ``SubscriptionService.assert_plan_is_complete`` refuses a plan that omits one,
     because an absent row reads as *unlimited* rather than as "not included".
 
@@ -91,7 +109,7 @@ def seed_billing_plans() -> None:
             "grace_period_days": None,
         },
     )
-    for resource_key in LimitedResource.values:
+    for resource_key in RESOURCE_KEYS:
         PlanLimit.objects.update_or_create(
             plan=unlimited_plan,
             resource_key=resource_key,
@@ -103,7 +121,7 @@ def seed_billing_plans() -> None:
                 "overage_unit_price": None,
             },
         )
-    for entitlement_key in Entitlement.values:
+    for entitlement_key in ENTITLEMENT_KEYS:
         PlanEntitlement.objects.update_or_create(
             plan=unlimited_plan,
             entitlement_key=entitlement_key,

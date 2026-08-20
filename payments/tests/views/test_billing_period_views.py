@@ -20,12 +20,12 @@ from django.urls import reverse
 import pytest
 from model_bakery import baker
 from rest_framework import status
+from vinta_billing.constants import BillingInterval
+from vinta_billing.models import BillingPeriodResourceUsage, BillingPeriodSummary, Payment
 
 from organizations.models import Organization
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import make_membership
-from payments.billing_constants import BillingInterval
-from payments.models import BillingPeriodResourceUsage, BillingPeriodSummary, Payment
 
 
 def periods_list_url() -> str:

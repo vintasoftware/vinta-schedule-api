@@ -250,10 +250,10 @@ def _count_event_occurrences(context: UsageContext) -> dict[int, int]:
     read.
 
     ``context.subscription`` is typed against ``vinta_billing.models.Subscription``
-    by the generic ``UsageContext`` dataclass, but at every call site that actually
-    reaches this counter it is the host's own ``payments.models.Subscription`` --
-    the one ``EntitlementService`` resolved for the billing root. The ``cast``
-    below documents that rather than changing behaviour.
+    by the generic ``UsageContext`` dataclass, and at every call site that actually
+    reaches this counter it already is one -- the one ``EntitlementService``
+    resolved for the billing root. The ``cast`` below narrows the type from
+    ``UsageContext``'s broader annotation rather than changing behaviour.
     """
     subscription = cast("Subscription | None", context.subscription)
     if subscription is None:

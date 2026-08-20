@@ -37,11 +37,11 @@ import importlib
 
 import pytest
 from model_bakery import baker
+from vinta_billing.exceptions import MissingSeedBillingPlanError
+from vinta_billing.models import BillingPlan, Subscription
 
 from organizations.models import Organization
-from payments.billing_constants import LimitedResource
-from payments.exceptions import MissingSeedBillingPlanError
-from payments.models import BillingPlan, Subscription
+from payments.seams.resource_keys import RESOURCE_KEYS
 from payments.tests.historical_apps import historical_apps
 
 
@@ -133,7 +133,7 @@ class TestBackfillUnlimitedSubscriptionsMigration:
         backfill_unlimited_subscriptions(historical_apps, None)
 
         subscription = Subscription.objects.get(organization=org)
-        assert subscription.limits.count() == len(LimitedResource.values)
+        assert subscription.limits.count() == len(RESOURCE_KEYS)
         assert all(limit.limit_value is None for limit in subscription.limits.all())
 
     def test_idempotent_does_not_duplicate_or_touch_existing_subscriptions(self):

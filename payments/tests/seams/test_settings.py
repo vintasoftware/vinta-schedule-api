@@ -13,9 +13,8 @@ from django.urls import reverse
 
 import pytest
 from vinta_billing.conf import get_object_from_setting, get_setting
+from vinta_billing.provider_slugs import PAYMENT_PROVIDER_SLUGS
 from vinta_billing.urls_helpers import namespaced
-
-from payments.provider_slugs import PAYMENT_PROVIDER_SLUGS
 
 
 #: Every ``VINTA_BILLING`` key this project configures with a dotted import

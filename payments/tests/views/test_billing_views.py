@@ -19,6 +19,32 @@ import stripe
 from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
+from vinta_billing.constants import BillingInterval, BillingState, LimitKind, PaymentProviders
+from vinta_billing.exceptions import OverLimitError
+from vinta_billing.models import (
+    BillingPlan,
+    PaymentMethod,
+    PlanLimit,
+    Subscription,
+    SubscriptionAddOn,
+)
+from vinta_billing.services.entitlement_service import EntitlementService
+from vinta_billing.services.payment_adapters.base import BasePaymentAdapter
+from vinta_billing.services.payment_adapters.mercadopago_payment_adapter import (
+    MercadoPagoPaymentAdapter,
+)
+from vinta_billing.services.payment_adapters.stripe_payment_adapter import StripePaymentAdapter
+from vinta_billing.services.subscription_adapters.base import BaseSubscriptionAdapter
+from vinta_billing.services.subscription_adapters.mercadopago_subscription_adapter import (
+    MercadoPagoSubscriptionAdapter,
+)
+from vinta_billing.services.subscription_adapters.stripe_subscription_adapter import (
+    StripeSubscriptionAdapter,
+)
+from vinta_billing.services.subscription_service import (
+    SubscriptionService,
+    retry_payment_idempotency_key,
+)
 
 from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import (
@@ -27,32 +53,11 @@ from organizations.permission_catalog import (
 )
 from organizations.services import OrganizationService
 from organizations.tests.helpers import make_membership
-from payments.billing_constants import BillingInterval, BillingState, LimitedResource, LimitKind
-from payments.constants import PaymentProviders
-from payments.exceptions import OverLimitError
-from payments.models import (
-    BillingPlan,
-    PaymentMethod,
-    PlanLimit,
-    Subscription,
-    SubscriptionAddOn,
-)
-from payments.services.entitlement_service import EntitlementService
-from payments.services.payment_adapters.base import BasePaymentAdapter
-from payments.services.payment_adapters.mercadopago_payment_adapter import (
-    MercadoPagoPaymentAdapter,
-)
-from payments.services.payment_adapters.stripe_payment_adapter import StripePaymentAdapter
-from payments.services.subscription_adapters.base import BaseSubscriptionAdapter
-from payments.services.subscription_adapters.mercadopago_subscription_adapter import (
-    MercadoPagoSubscriptionAdapter,
-)
-from payments.services.subscription_adapters.stripe_subscription_adapter import (
-    StripeSubscriptionAdapter,
-)
-from payments.services.subscription_service import (
-    SubscriptionService,
-    retry_payment_idempotency_key,
+from payments.seams.resource_keys import (
+    CALENDAR_GROUPS,
+    ORGANIZATION_MEMBERS,
+    RESOURCE_CALENDARS,
+    RESOURCE_KEYS,
 )
 from payments.tests.views.test_payment_webhooks import sign as sign_webhook
 
@@ -80,7 +85,7 @@ def make_complete_plan(
         monthly_price=monthly_price,
         annual_price=None,
     )
-    for resource_key in LimitedResource.values:
+    for resource_key in RESOURCE_KEYS:
         baker.make(
             PlanLimit,
             plan=plan,
@@ -159,7 +164,7 @@ def plain_member_membership(user, organization):
 @pytest.fixture
 def free_plan():
     return make_complete_plan(
-        {LimitedResource.ORGANIZATION_MEMBERS: 1, LimitedResource.RESOURCE_CALENDARS: 3},
+        {ORGANIZATION_MEMBERS: 1, RESOURCE_CALENDARS: 3},
         monthly_price=Decimal("0"),
     )
 
@@ -167,7 +172,7 @@ def free_plan():
 @pytest.fixture
 def pro_plan():
     return make_complete_plan(
-        {LimitedResource.ORGANIZATION_MEMBERS: 10, LimitedResource.RESOURCE_CALENDARS: 20},
+        {ORGANIZATION_MEMBERS: 10, RESOURCE_CALENDARS: 20},
         monthly_price=Decimal("50"),
     )
 
@@ -336,9 +341,9 @@ class TestReadEndpoints:
         assert response.status_code == status.HTTP_200_OK
         assert response.data["billing_state"] == BillingState.FREE
         rows = {row["resource_key"]: row for row in response.data["limits"]}
-        assert rows[LimitedResource.ORGANIZATION_MEMBERS]["limit_value"] == 1
+        assert rows[ORGANIZATION_MEMBERS]["limit_value"] == 1
         # A plain member (this fixture) already occupies the one seat.
-        assert rows[LimitedResource.ORGANIZATION_MEMBERS]["current_usage"] == 1
+        assert rows[ORGANIZATION_MEMBERS]["current_usage"] == 1
 
     def test_reads_require_authentication(self, anonymous_client):
         for url in (plans_url(), usage_url(), subscription_url()):
@@ -401,7 +406,7 @@ class TestPermissions:
         response = auth_client.post(
             add_ons_url(),
             {
-                "resource_key": LimitedResource.RESOURCE_CALENDARS,
+                "resource_key": RESOURCE_CALENDARS,
                 "quantity": 1,
                 "is_recurring": False,
                 "idempotency_key": "idem-1",
@@ -449,7 +454,7 @@ class TestPermissions:
         reseller_root = baker.make(Organization, parent=None, can_invite_organizations=True)
         child = baker.make(Organization, parent=reseller_root, can_invite_organizations=False)
         # The root (the billing root the child pools against) has the subscription.
-        root_plan = make_complete_plan({LimitedResource.ORGANIZATION_MEMBERS: 1})
+        root_plan = make_complete_plan({ORGANIZATION_MEMBERS: 1})
         SubscriptionService().create_subscription_for_organization(reseller_root, plan=root_plan)
         # The caller is an ADMIN of the child only -- the coarse check passes.
         make_membership(
@@ -479,7 +484,7 @@ class TestPermissions:
         path (which calls ``check_object_permissions`` independently)."""
         reseller_root = baker.make(Organization, parent=None, can_invite_organizations=True)
         child = baker.make(Organization, parent=reseller_root, can_invite_organizations=False)
-        root_plan = make_complete_plan({LimitedResource.RESOURCE_CALENDARS: 3})
+        root_plan = make_complete_plan({RESOURCE_CALENDARS: 3})
         SubscriptionService().create_subscription_for_organization(reseller_root, plan=root_plan)
         make_membership(
             user=user,
@@ -491,7 +496,7 @@ class TestPermissions:
         response = auth_client.post(
             add_ons_url(),
             {
-                "resource_key": LimitedResource.RESOURCE_CALENDARS,
+                "resource_key": RESOURCE_CALENDARS,
                 "quantity": 1,
                 "is_recurring": False,
                 "idempotency_key": "idem-1",
@@ -521,7 +526,7 @@ class TestUpgradeGrantsNoCapacitySynchronously:
 
         assert response.status_code == status.HTTP_200_OK
         effective_limit = EntitlementService().get_effective_limit(
-            organization, LimitedResource.ORGANIZATION_MEMBERS
+            organization, ORGANIZATION_MEMBERS
         )
         # Still the free plan's ceiling -- the webhook never fired.
         assert effective_limit.limit_value == 1
@@ -538,7 +543,7 @@ class TestAddOnIdempotency:
         billing_profile,
     ):
         body = {
-            "resource_key": LimitedResource.RESOURCE_CALENDARS,
+            "resource_key": RESOURCE_CALENDARS,
             "quantity": 2,
             "is_recurring": False,
             "idempotency_key": "idem-add-on-1",
@@ -564,7 +569,7 @@ class TestAddOnIdempotency:
         response = billing_client.post(
             add_ons_url(),
             {
-                "resource_key": LimitedResource.RESOURCE_CALENDARS,
+                "resource_key": RESOURCE_CALENDARS,
                 "quantity": 2,
                 "is_recurring": False,
                 "idempotency_key": "idem-add-on-2",
@@ -575,9 +580,7 @@ class TestAddOnIdempotency:
 
         assert response.status_code == status.HTTP_201_CREATED
         assert response.data["is_active"] is False
-        effective_limit = EntitlementService().get_effective_limit(
-            organization, LimitedResource.RESOURCE_CALENDARS
-        )
+        effective_limit = EntitlementService().get_effective_limit(organization, RESOURCE_CALENDARS)
         assert effective_limit.limit_value == 3
 
     def test_cancel_add_on_stops_recurrence(
@@ -586,7 +589,7 @@ class TestAddOnIdempotency:
         created = billing_client.post(
             add_ons_url(),
             {
-                "resource_key": LimitedResource.RESOURCE_CALENDARS,
+                "resource_key": RESOURCE_CALENDARS,
                 "quantity": 1,
                 "is_recurring": True,
                 "idempotency_key": "idem-add-on-3",
@@ -604,7 +607,7 @@ class TestAddOnIdempotency:
         self, billing_client, admin_membership, subscription, billing_profile
     ):
         other_organization = baker.make(Organization)
-        other_plan = make_complete_plan({LimitedResource.RESOURCE_CALENDARS: 3})
+        other_plan = make_complete_plan({RESOURCE_CALENDARS: 3})
         other_subscription = baker.make(
             Subscription,
             organization=other_organization,
@@ -617,7 +620,7 @@ class TestAddOnIdempotency:
         foreign_add_on = baker.make(
             SubscriptionAddOn,
             subscription=other_subscription,
-            resource_key=LimitedResource.RESOURCE_CALENDARS,
+            resource_key=RESOURCE_CALENDARS,
             quantity=1,
             is_recurring=True,
             purchase_idempotency_key="foreign-idem",
@@ -825,7 +828,7 @@ class TestUnconfiguredProviderMapsTo409:
         response = unconfigured_stripe_client.post(
             add_ons_url(),
             {
-                "resource_key": LimitedResource.RESOURCE_CALENDARS,
+                "resource_key": RESOURCE_CALENDARS,
                 "quantity": 1,
                 "is_recurring": False,
                 "idempotency_key": "idem-409-3",
@@ -875,7 +878,7 @@ class TestBillingErrorCodes:
         response = billing_client.post(
             add_ons_url(),
             {
-                "resource_key": LimitedResource.CALENDAR_GROUPS,
+                "resource_key": CALENDAR_GROUPS,
                 "quantity": 1,
                 "is_recurring": False,
                 "idempotency_key": "idem-unpriced-1",
@@ -891,9 +894,7 @@ class TestBillingErrorCodes:
     def test_second_in_flight_plan_change_returns_409_with_its_code(
         self, billing_client, admin_membership, subscription, pro_plan
     ):
-        premium_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 200}, monthly_price=Decimal("200")
-        )
+        premium_plan = make_complete_plan({ORGANIZATION_MEMBERS: 200}, monthly_price=Decimal("200"))
         first_change = billing_client.post(
             change_plan_url(),
             {

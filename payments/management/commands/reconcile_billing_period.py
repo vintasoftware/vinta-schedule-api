@@ -17,9 +17,10 @@ from typing import Any
 from django.core.management.base import BaseCommand, CommandError, CommandParser
 from django.utils import timezone
 
+from vinta_billing.models import MeteredOccurrence, Subscription
+from vinta_billing.services.subscription_service import resolve_settlement_period
+
 from common.organization_context import organization_context
-from payments.models import MeteredOccurrence, Subscription
-from payments.services.subscription_service import resolve_settlement_period
 
 
 class Command(BaseCommand):

@@ -19,20 +19,20 @@ import pytest
 import stripe
 from freezegun import freeze_time
 from model_bakery import baker
+from vinta_billing.constants import BillingState, LimitKind, PaymentProviders
+from vinta_billing.models import BillingPlan, PlanLimit, Subscription
+from vinta_billing.services.subscription_adapters.base import BaseSubscriptionAdapter
+from vinta_billing.services.subscription_adapters.mercadopago_subscription_adapter import (
+    MercadoPagoSubscriptionAdapter,
+)
+from vinta_billing.services.subscription_adapters.stripe_subscription_adapter import (
+    StripeSubscriptionAdapter,
+)
 
 from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import make_membership
-from payments.billing_constants import BillingState, LimitedResource, LimitKind
-from payments.constants import PaymentProviders
-from payments.models import BillingPlan, PlanLimit, Subscription
-from payments.services.subscription_adapters.base import BaseSubscriptionAdapter
-from payments.services.subscription_adapters.mercadopago_subscription_adapter import (
-    MercadoPagoSubscriptionAdapter,
-)
-from payments.services.subscription_adapters.stripe_subscription_adapter import (
-    StripeSubscriptionAdapter,
-)
+from payments.seams.resource_keys import RESOURCE_KEYS
 from payments.tasks import process_dunning, process_dunning_for_subscription
 from users.models import User
 
@@ -75,7 +75,7 @@ def make_complete_plan(
         annual_price=None,
         grace_period_days=grace_period_days,
     )
-    for resource_key in LimitedResource.values:
+    for resource_key in RESOURCE_KEYS:
         baker.make(
             PlanLimit,
             plan=plan,

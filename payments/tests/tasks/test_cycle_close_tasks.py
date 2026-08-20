@@ -17,9 +17,9 @@ from unittest.mock import patch
 from django.utils import timezone
 
 import pytest
+from vinta_billing.models import Subscription
 
 from organizations.models import Organization
-from payments.models import Subscription
 from payments.tasks import close_billing_periods, close_subscription_billing_period
 
 

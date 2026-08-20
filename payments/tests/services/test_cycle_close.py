@@ -19,11 +19,14 @@ from types import SimpleNamespace
 import pytest
 from dateutil.relativedelta import relativedelta
 from model_bakery import baker
-
-from organizations.models import Organization, OrganizationMembership
-from payments.billing_constants import BillingInterval, BillingState, LimitedResource, LimitKind
-from payments.constants import PaymentProviders, PaymentStatuses
-from payments.models import (
+from vinta_billing.constants import (
+    BillingInterval,
+    BillingState,
+    LimitKind,
+    PaymentProviders,
+    PaymentStatuses,
+)
+from vinta_billing.models import (
     BillingPeriodResourceUsage,
     BillingPeriodSummary,
     BillingPlan,
@@ -33,8 +36,15 @@ from payments.models import (
     PlanLimit,
     Subscription,
 )
-from payments.services.cycle_close_service import CycleCloseService, overage_idempotency_key
-from payments.services.entitlement_service import EntitlementService
+from vinta_billing.services.cycle_close_service import CycleCloseService, overage_idempotency_key
+from vinta_billing.services.entitlement_service import EntitlementService
+
+from organizations.models import Organization, OrganizationMembership
+from payments.seams.resource_keys import (
+    EVENT_OCCURRENCES,
+    ORGANIZATION_MEMBERS,
+    RESOURCE_KEYS,
+)
 
 
 PERIOD_START = datetime.datetime(2025, 6, 1, 0, 0, tzinfo=datetime.UTC)
@@ -151,7 +161,7 @@ def cycle_close_service(fake_payment_service: FakePaymentService) -> CycleCloseS
 def _set_allowance(
     subscription: Subscription, limit_value: int | None, unit_price: str | None
 ) -> None:
-    subscription.limits.filter(resource_key=LimitedResource.EVENT_OCCURRENCES).update(
+    subscription.limits.filter(resource_key=EVENT_OCCURRENCES).update(
         limit_value=limit_value,
         overage_unit_price=None if unit_price is None else Decimal(unit_price),
     )
@@ -168,17 +178,13 @@ def _make_complete_plan(slug: str) -> BillingPlan:
         annual_price=None,
         grace_period_days=None,
     )
-    for resource_key in LimitedResource.values:
+    for resource_key in RESOURCE_KEYS:
         baker.make(
             PlanLimit,
             plan=plan,
             resource_key=resource_key,
             limit_value=None,
-            kind=(
-                LimitKind.POSTPAID
-                if resource_key == LimitedResource.EVENT_OCCURRENCES
-                else LimitKind.PREPAID
-            ),
+            kind=(LimitKind.POSTPAID if resource_key == EVENT_OCCURRENCES else LimitKind.PREPAID),
             overage_unit_price=None,
         )
     return plan
@@ -598,10 +604,10 @@ class TestStatementPersistence:
         assert summary.payment.organization.pk == summary.organization_id
 
         resources = list(summary.resources.all())
-        assert len(resources) == len(LimitedResource.values)
-        assert {row.resource_key for row in resources} == set(LimitedResource.values)
+        assert len(resources) == len(RESOURCE_KEYS)
+        assert {row.resource_key for row in resources} == set(RESOURCE_KEYS)
         event_occurrences_row = next(
-            row for row in resources if row.resource_key == LimitedResource.EVENT_OCCURRENCES
+            row for row in resources if row.resource_key == EVENT_OCCURRENCES
         )
         assert event_occurrences_row.kind == LimitKind.POSTPAID
         assert event_occurrences_row.limit_value == 2
@@ -700,14 +706,14 @@ class TestStatementPersistence:
 
         entitlement_service = EntitlementService()
         expected_breakdown = entitlement_service.get_usage_breakdown(
-            organization, LimitedResource.ORGANIZATION_MEMBERS
+            organization, ORGANIZATION_MEMBERS
         )
         assert expected_breakdown  # sanity: both children contributed
 
         cycle_close_service.close_subscription(subscription, now=AFTER_PERIOD)
 
         summary = BillingPeriodSummary.objects.get()
-        members_row = summary.resources.get(resource_key=LimitedResource.ORGANIZATION_MEMBERS)
+        members_row = summary.resources.get(resource_key=ORGANIZATION_MEMBERS)
         persisted_breakdown = {int(k): v for k, v in members_row.by_organization.items()}
         assert persisted_breakdown == expected_breakdown
         assert members_row.total == sum(expected_breakdown.values())
@@ -750,7 +756,7 @@ class TestStatementPersistence:
         assert charged_count == 3  # the full, unfiltered row set `_charge_overage` reads
 
         summary = BillingPeriodSummary.objects.get()
-        event_row = summary.resources.get(resource_key=LimitedResource.EVENT_OCCURRENCES)
+        event_row = summary.resources.get(resource_key=EVENT_OCCURRENCES)
         assert sum(event_row.by_organization.values()) == charged_count
         assert event_row.total == charged_count
         assert set(event_row.by_organization.keys()) == {str(child_a.pk), str(child_b.pk)}
@@ -827,7 +833,7 @@ class TestStatementPersistence:
         def negative_total_usage_breakdown(self, root, resource_key, subscription, **kwargs):
             # Only one resource goes negative -- enough to trip the CHECK
             # constraint on `bulk_create` without contaminating every row.
-            if resource_key == LimitedResource.ORGANIZATION_MEMBERS:
+            if resource_key == ORGANIZATION_MEMBERS:
                 return {organization.pk: -1}
             return {}
 

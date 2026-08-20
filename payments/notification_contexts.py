@@ -13,9 +13,8 @@ values are passed in directly by ``DunningService``, which already has the
 
 from typing import Any
 
+from vinta_billing.registry import resources
 from vintasend.services.notification_service import register_context
-
-from payments.billing_constants import LimitedResource
 
 
 @register_context("dunning_entered_grace_context")
@@ -78,7 +77,7 @@ def approaching_limit_context(
     return {
         "organization_name": organization_name,
         "resource_key": resource_key,
-        "resource_label": LimitedResource(resource_key).label,
+        "resource_label": resources.get(resource_key).label,
         "current_usage": current_usage,
         "limit_value": limit_value,
         **kwargs,
@@ -99,7 +98,7 @@ def limit_reached_context(
     return {
         "organization_name": organization_name,
         "resource_key": resource_key,
-        "resource_label": LimitedResource(resource_key).label,
+        "resource_label": resources.get(resource_key).label,
         "current_usage": current_usage,
         "limit_value": limit_value,
         **kwargs,

@@ -20,6 +20,8 @@ from django.test import override_settings
 
 import pytest
 from allauth.socialaccount.models import SocialAccount, SocialToken
+from vinta_billing.models import MeteredOccurrence, Subscription
+from vinta_billing.services.metering_service import MeteringService
 
 from calendar_integration.constants import CalendarProvider, CalendarType, RecurrenceFrequency
 from calendar_integration.factories import CalendarEventFactory
@@ -37,8 +39,6 @@ from calendar_integration.services.calendar_permission_service import (
 )
 from calendar_integration.services.calendar_service import CalendarService
 from organizations.models import Organization, OrganizationMembership
-from payments.models import MeteredOccurrence, Subscription
-from payments.services.metering_service import MeteringService
 from users.models import Profile, User
 
 

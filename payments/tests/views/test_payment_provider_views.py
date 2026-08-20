@@ -12,12 +12,12 @@ import pytest
 from model_bakery import baker
 from rest_framework import status
 from rest_framework.throttling import ScopedRateThrottle
+from vinta_billing.constants import PaymentProviders
+from vinta_billing.models import BillingAddress, BillingProfile
 
 from organizations.models import Organization
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import make_membership
-from payments.constants import PaymentProviders
-from payments.models import BillingAddress, BillingProfile
 from payments.tests.provider_settings import use_providers
 
 

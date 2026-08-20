@@ -714,7 +714,7 @@ MERCADOPAGO_ACCESS_TOKEN = config("MERCADOPAGO_ACCESS_TOKEN", default="")
 # Shared secret used to verify MercadoPago's `x-signature` webhook header. Empty
 # by default (matches MERCADOPAGO_ACCESS_TOKEN's dev-time fallback), but an empty
 # secret makes every webhook signature check fail closed (see
-# payments.services.mercadopago_signature.verify_mercadopago_signature) rather
+# vinta_billing.services.mercadopago_signature.verify_mercadopago_signature) rather
 # than skip verification.
 MERCADOPAGO_WEBHOOK_SECRET = config("MERCADOPAGO_WEBHOOK_SECRET", default="")
 # Browser-safe public key used to initialize MercadoPago's payment form. Not a
@@ -728,7 +728,7 @@ MERCADOPAGO_PUBLIC_KEY = config("MERCADOPAGO_PUBLIC_KEY", default="")
 STRIPE_SECRET_KEY = config("STRIPE_SECRET_KEY", default="")
 # Shared secret used to verify Stripe's `Stripe-Signature` webhook header. Empty
 # by default, matching MERCADOPAGO_WEBHOOK_SECRET's fail-closed convention (see
-# payments.services.stripe_signature.verify_stripe_event) rather than skip
+# vinta_billing.services.stripe_signature.verify_stripe_event) rather than skip
 # verification.
 STRIPE_WEBHOOK_SECRET = config("STRIPE_WEBHOOK_SECRET", default="")
 # Browser-safe public key used to initialize Stripe's payment form. Not a secret —
@@ -738,7 +738,7 @@ STRIPE_PUBLISHABLE_KEY = config("STRIPE_PUBLISHABLE_KEY", default="")
 
 # System-wide default payment provider. Resolves to the organization's pinned
 # provider when set; otherwise, every new charge and subscription defaults to this.
-# Value must match a member of payments.constants.PaymentProviders. Validated at
+# Value must match a member of vinta_billing.constants.PaymentProviders. Validated at
 # import time so a typo fails the deploy rather than every checkout.
 _payment_provider = config("DEFAULT_PAYMENT_PROVIDER", default="stripe")
 if _payment_provider not in PAYMENT_PROVIDER_SLUGS:
@@ -752,7 +752,7 @@ DEFAULT_PAYMENT_PROVIDER = _payment_provider
 del _payment_provider
 
 # How far a webhook's signed `ts` may drift from "now" before it is rejected as
-# stale (see payments.services.mercadopago_signature.verify_mercadopago_signature).
+# stale (see vinta_billing.services.mercadopago_signature.verify_mercadopago_signature).
 # Default matches Stripe's own convention; the Stripe adapter reuses this same
 # setting rather than defining its own tolerance window.
 WEBHOOK_SIGNATURE_TOLERANCE_SECONDS = 300

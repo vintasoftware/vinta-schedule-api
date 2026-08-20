@@ -20,21 +20,20 @@ import pytest
 from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
-
-from organizations.models import Organization
-from payments.billing_constants import BillingState
-from payments.constants import PaymentProviders, PaymentStatuses
-from payments.models import Payment, ProviderWebhookEvent
-from payments.services.payment_adapters.mercadopago_payment_adapter import (
+from vinta_billing.constants import BillingState, PaymentProviders, PaymentStatuses
+from vinta_billing.models import Payment, ProviderWebhookEvent
+from vinta_billing.services.payment_adapters.mercadopago_payment_adapter import (
     MercadoPagoPaymentAdapter,
 )
-from payments.services.subscription_adapters.mercadopago_subscription_adapter import (
+from vinta_billing.services.subscription_adapters.mercadopago_subscription_adapter import (
     MercadoPagoSubscriptionAdapter,
 )
-from payments.services.subscription_adapters.stripe_subscription_adapter import (
+from vinta_billing.services.subscription_adapters.stripe_subscription_adapter import (
     StripeSubscriptionAdapter,
 )
-from payments.services.subscription_service import SubscriptionService
+from vinta_billing.services.subscription_service import SubscriptionService
+
+from organizations.models import Organization
 from payments.tests.provider_settings import use_providers
 
 

@@ -43,23 +43,24 @@ from django.utils import timezone
 
 import pytest
 from model_bakery import baker
-
-from calendar_integration.tasks.calendar_sync_tasks import resync_organization_calendars_task
-from organizations.models import Organization
-from payments.billing_constants import BillingState, LimitedResource, LimitKind
-from payments.exceptions import RetryPaymentNotApplicableError, SubscriptionNotAttachedError
-from payments.models import BillingPlan, PlanLimit, Subscription
-from payments.services.dataclasses import CreatedPlan
-from payments.services.dunning_service import (
+from vinta_billing.constants import BillingState, LimitKind
+from vinta_billing.exceptions import RetryPaymentNotApplicableError, SubscriptionNotAttachedError
+from vinta_billing.models import BillingPlan, PlanLimit, Subscription
+from vinta_billing.services.dataclasses import CreatedPlan
+from vinta_billing.services.dunning_service import (
     DunningService,
     dunning_retry_idempotency_key,
     retry_attempt_ordinal,
 )
-from payments.services.entitlement_service import EntitlementService
-from payments.services.subscription_service import (
+from vinta_billing.services.entitlement_service import EntitlementService
+from vinta_billing.services.subscription_service import (
     SubscriptionService,
     retry_payment_idempotency_key,
 )
+
+from calendar_integration.tasks.calendar_sync_tasks import resync_organization_calendars_task
+from organizations.models import Organization
+from payments.seams.resource_keys import RESOURCE_KEYS
 
 
 # This module builds its own Subscription rows directly via SubscriptionService,
@@ -92,7 +93,7 @@ def make_complete_plan(
         annual_price=None,
         grace_period_days=grace_period_days,
     )
-    for resource_key in LimitedResource.values:
+    for resource_key in RESOURCE_KEYS:
         baker.make(
             PlanLimit,
             plan=plan,

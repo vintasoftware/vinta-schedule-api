@@ -18,14 +18,14 @@ from decimal import Decimal
 
 import pytest
 from model_bakery import baker
+from vinta_billing.models import MeteredOccurrence, Payment, Subscription
+from vinta_billing.services.cycle_close_service import CycleCloseService
 
 from calendar_integration.constants import CalendarProvider, RecurrenceFrequency
 from calendar_integration.factories import CalendarEventFactory
 from calendar_integration.models import Calendar, CalendarEvent
 from organizations.models import Organization
-from payments.billing_constants import LimitedResource
-from payments.models import MeteredOccurrence, Payment, Subscription
-from payments.services.cycle_close_service import CycleCloseService
+from payments.seams.resource_keys import EVENT_OCCURRENCES
 
 
 PERIOD_START = datetime.datetime(2025, 6, 1, 0, 0, tzinfo=datetime.UTC)
@@ -126,7 +126,7 @@ def test_a_full_simulated_cycle_reconciles_to_zero_drift(
     """Meter the whole cycle, then close it: the charge equals the metered overage
     and reconciliation reports zero drift."""
     # Allowance of 2 at 0.25 overage: 5 occurrences -> 2 included, 3 overage.
-    subscription.limits.filter(resource_key=LimitedResource.EVENT_OCCURRENCES).update(
+    subscription.limits.filter(resource_key=EVENT_OCCURRENCES).update(
         limit_value=2, overage_unit_price=Decimal("0.2500")
     )
 
