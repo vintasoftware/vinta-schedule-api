@@ -232,7 +232,7 @@ class CalendarQuerySet(OrganizationScopedQuerySet):
         :meth:`live_of_type` itself; a row that is already some other live,
         non-``calendar_type`` type (e.g. a live ``PERSONAL``/``ACTIVE`` calendar) is in
         neither set. :meth:`live_of_type` is the predicate the ``resource_calendars`` /
-        ``bundle_calendars`` usage counters (``vinta_billing.services.entitlement_service``)
+        ``bundle_calendars`` usage counters (``payments.seams.resources``)
         count with. It lives here, next to ``live_of_type``, precisely so the two cannot
         drift apart: a bulk upsert that
         splits "already imported" from "new" using a *different* predicate than the
@@ -779,7 +779,7 @@ class BlockedTimeQuerySet(
         user created can end up as several ``BlockedTime`` rows. Every caller that
         wants "how many blocked times did this organization author" (the billing
         usage counter above all, once blocked time is metered -- see
-        ``vinta_billing.services.entitlement_service._count_availability_windows``) wants
+        ``payments.seams.resources._count_availability_windows``) wants
         this queryset, not a bare ``filter(...)``.
 
         Known gap: identical to ``AvailableTimeQuerySet.only_user_authored``'s --
