@@ -62,11 +62,14 @@ things as pluggable objects. Each one lives in its own module:
 | `resync.py` | Receives `vinta_billing.signals.billing_restriction_lifted` and resumes calendar sync for the pooled subtree. |
 
 `payments/seams/dispatch.py` and `VINTA_BILLING["JOB_DISPATCHER"]` existed briefly
-and were removed once the package's per-subscription job dispatch turned out not to
-consult `SERVICE_CONTAINER` (see **Package gaps** below) — the per-subscription
-Celery tasks in `payments/tasks.py` resolve and pass their own services instead.
-`vinta-django-billing` 0.6.0 fixed that, so the setting composes with the container
-again and could be restored; nothing depends on it today.
+and were removed in Phase 2. **They stay removed, and not for the original reason.**
+A `JOB_DISPATCHER` receives the package's job *function*, so any implementation
+general enough to serialize it has to funnel every job through one generic task
+that re-imports it by dotted path — which is what the deleted seam did, and which
+calls `vinta_billing.jobs.<job>` directly, bypassing `payments/tasks.py`'s
+per-subscription wrappers and the `organization_context` binding they carry. The
+four `dispatch=` lambdas in `payments/tasks.py` are what keep the fan-out on tasks
+that bind an organization; the setting would take it off them.
 
 ### Why `resource_keys.py` is a separate, zero-import module
 
@@ -107,9 +110,16 @@ for the full reasoning, and `AGENTS.md`'s note on data migrations under
 reseller pooling rules, the REST contract, the plan seed migration, tenancy. It
 does not re-test the engine's internals (the billing state machine, provider
 adapters, the dunning ladder, cycle close, plan change) — `vinta-django-billing`'s
-own suite (700+ tests across the py3.11–3.14 × Django 5.2/6.0/6.1 matrix) covers
-those, and duplicating them here would mean every engine fix has to be written and
-verified twice.
+own suite (850+ tests across the py3.11–3.14 × Django 5.2/6.0/6.1 matrix, plus a
+Postgres environment for the row locks) covers those, and duplicating them here
+would mean every engine fix has to be written and verified twice.
+
+Two modules had drifted across that line, both because the package genuinely had
+no equivalent at the time, and both were deleted when 0.6.0 gained one:
+`test_dunning_retry_tolerance.py` and `test_cycle_close_concurrency.py`. The test
+to ask about a candidate is whether any host wiring is in its call path — a test
+that builds package models with `baker` and calls a package service directly is
+the package's to own, wherever it happens to live.
 
 ## Upgrading the pin
 
@@ -149,11 +159,11 @@ Released in **0.6.0**, each with the host-side change the fix allowed:
 1. **`vinta_billing.jobs` didn't consult `VINTA_BILLING["SERVICE_CONTAINER"]`.**
    It resolved services from the package's own `services.container` cache, so a
    test that DI-overrode a Stripe adapter with an empty key still hit the real
-   `STRIPE_SECRET_KEY`. The four sweeps now resolve through `SERVICE_CONTAINER`.
-   `payments/tasks.py` still passes its services explicitly — an explicit
-   argument still wins — but that is now belt-and-braces rather than required,
-   and `VINTA_BILLING["JOB_DISPATCHER"]` can be restored whenever someone wants
-   to simplify those tasks.
+   `STRIPE_SECRET_KEY`. The four sweeps now resolve through `SERVICE_CONTAINER`,
+   and `payments/tasks.py`'s `@inject` / `Provide[...]` plumbing — which existed
+   only to hand each job a DI-built service by hand — was deleted with this bump.
+   `VINTA_BILLING["JOB_DISPATCHER"]` stays unset on purpose — see **The seams**
+   above for why it would take the fan-out off the organization-binding tasks.
 2. **The error-to-HTTP-status map and the package's own viewset annotations
    disagreed** about `PaymentProviderNotConfiguredError`: the table said 503, the
    shipped OpenAPI annotations said 409. This project had sided with the
@@ -167,9 +177,11 @@ Released in **0.6.0**, each with the host-side change the fix allowed:
    The package's suite ran on SQLite, which has no row locks — Django drops
    `SELECT ... FOR UPDATE` there rather than raising, so a two-thread test would
    have passed against a lock that was never taken. 0.6.0 added a Postgres test
-   environment and a real two-thread test. This project's own
-   `payments/tests/test_cycle_close_concurrency.py` is kept: it exercises the
-   same guarantee through *this* project's wiring and database.
+   environment and a real two-thread test that also proves the loser *blocks*
+   rather than failing fast. The host's stand-in
+   `payments/tests/test_cycle_close_concurrency.py` was deleted with this bump:
+   it drove `CycleCloseService` directly with package models and asserted a
+   package-owned guarantee, with no host wiring in the path.
 4. **No direct test of `SubscriptionService.retry_payment` / `retry_failed_charge`.**
    In particular the money-path guard — a `CollectionNotSupportedError` from any
    non-MercadoPago provider must re-raise rather than falling back into

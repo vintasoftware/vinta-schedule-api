@@ -7,37 +7,32 @@ per per-subscription job, and a beat task that calls the package's sweep with
 an explicit ``dispatch`` that enqueues onto that local task rather than
 running inline.
 
-**Every service is resolved through this project's own DI container, not the
-package's.** Each task below resolves its service via ``@inject`` /
-``Provide[...]`` -- the same container every view, GraphQL resolver and other
-Celery task in this project uses -- and passes it into ``vinta_billing.jobs``
-explicitly. Every per-subscription job function accepts its service as an
-optional keyword argument for exactly this purpose (see each job's docstring
-in ``vinta_billing.jobs``), and an explicitly passed service always wins over
-whatever the package would otherwise resolve.
+**Services are not resolved here.** ``vinta_billing.jobs`` resolves each one
+through ``VINTA_BILLING['SERVICE_CONTAINER']``, which this project points at
+``di_core.containers.container`` -- the same container every view, GraphQL
+resolver and other Celery task uses, and the same one a test's
+``di_container.<provider>.override(...)`` reaches.
 
-This used to be *required*: through ``vinta-django-billing`` 0.5.0,
-``vinta_billing.jobs`` imported the package's own factories
-(``services.container.get_dunning_service()`` and friends) directly rather
-than going through ``resolve_service()``, so it did not consult
-``VINTA_BILLING['SERVICE_CONTAINER']`` and had no way to see a test's
-``di_container.stripe_subscription_gateway.override(...)``. 0.6.0 closed that
-gap -- the sweeps now resolve through ``SERVICE_CONTAINER``, which on this
-project already points at ``di_core.containers.container`` -- so the explicit
-passing here is belt-and-braces rather than load-bearing. It is kept because
-it is also what makes each task's dependency visible at its own signature.
+Through ``vinta-django-billing`` 0.5.0 that was not true: ``vinta_billing.jobs``
+imported the package's own factories directly instead of going through
+``resolve_service()``, so a beat tick got a second, parallel set of services
+built straight from settings, blind to any DI override. Each task below
+therefore carried ``@inject`` / ``Provide[...]`` and passed its service in by
+hand. 0.6.0 closed that gap and the plumbing came out; the per-subscription job
+functions still accept an optional service keyword, and an explicit argument
+still wins, but nothing here needs to supply one.
 
 **The per-subscription fan-out does not use
-``VINTA_BILLING['JOB_DISPATCHER']``.** Each beat task below passes its own
-``dispatch`` lambda straight to the package sweep. An earlier phase built
-``payments.seams.dispatch.dispatch_via_celery`` for this role, before the DI
-requirement above was discovered against the real test suite; once every call
-site here passed its own explicit ``dispatch``, that seam had no caller left,
-so it -- and ``VINTA_BILLING['JOB_DISPATCHER']`` -- were deleted. Since 0.6.0
-the two compose (the package's own ``tests/test_jobs.py`` covers exactly
-that), so restoring the setting and dropping these lambdas is now possible;
-it is deliberately left for its own change rather than folded into a version
-bump.
+``VINTA_BILLING['JOB_DISPATCHER']``, and should not.** Each beat task passes
+its own ``dispatch`` lambda so the fan-out lands on the *local* task beside it,
+inside ``_bound_organization(...)``. A ``JOB_DISPATCHER`` is handed the package
+job function itself, so any implementation general enough to serialize it
+(``payments.seams.dispatch``, deleted in Phase 2, funnelled every job through
+one generic task that re-imported it by dotted path) calls
+``vinta_billing.jobs.<job>`` directly and skips these wrappers -- and with them
+the organization binding that ``_bound_organization``'s docstring explains is
+not cosmetic. The four lambdas are what keep the fan-out on this module's own
+tasks.
 
 Task dotted paths stay ``payments.tasks.*`` for the four beat entry points
 (``vinta_schedule_api/celerybeat_schedule.py`` names them literally) and for
@@ -64,15 +59,10 @@ a per-subscription unit of work" this module always used, and it is not
 merely cosmetic.
 """
 
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING
 
-from dependency_injector.wiring import Provide, inject
 from vinta_billing import jobs
 from vinta_billing.models import Subscription
-from vinta_billing.services.cycle_close_service import CycleCloseService
-from vinta_billing.services.dunning_service import DunningService
-from vinta_billing.services.metering_service import MeteringService
-from vinta_billing.services.usage_warning_service import UsageWarningService
 
 from common.organization_context import organization_context
 from organizations.models import Organization
@@ -103,24 +93,19 @@ def meter_event_occurrences() -> None:
 
 
 @app.task
-@inject
 def meter_subscription_event_occurrences(
     subscription_id: int,
     window_start: str,
     window_end: str,
-    metering_service: Annotated[MeteringService, Provide["metering_service"]],
 ) -> None:
     """One subscription's occurrence sweep, dispatched through
-    ``vinta_billing.jobs.meter_subscription_event_occurrences`` with this
-    project's DI-wired ``MeteringService``.
+    ``vinta_billing.jobs.meter_subscription_event_occurrences``.
 
     A subscription deleted between fan-out and execution is logged and
     skipped by that call itself, not raised here.
     """
     with _bound_organization(subscription_id):
-        jobs.meter_subscription_event_occurrences(
-            subscription_id, window_start, window_end, metering_service=metering_service
-        )
+        jobs.meter_subscription_event_occurrences(subscription_id, window_start, window_end)
 
 
 @app.task
@@ -132,14 +117,9 @@ def process_dunning() -> None:
 
 
 @app.task
-@inject
-def process_dunning_for_subscription(
-    subscription_id: int,
-    dunning_service: Annotated[DunningService, Provide["dunning_service"]],
-) -> None:
+def process_dunning_for_subscription(subscription_id: int) -> None:
     """One dunning tick, dispatched through
-    ``vinta_billing.jobs.process_dunning_for_subscription`` with this project's
-    DI-wired ``DunningService``.
+    ``vinta_billing.jobs.process_dunning_for_subscription``.
 
     A subscription deleted between fan-out and execution is logged and
     skipped by that call itself, not raised here. Same best-effort
@@ -148,7 +128,7 @@ def process_dunning_for_subscription(
     itself now, not here.
     """
     with _bound_organization(subscription_id):
-        jobs.process_dunning_for_subscription(subscription_id, dunning_service=dunning_service)
+        jobs.process_dunning_for_subscription(subscription_id)
 
 
 @app.task
@@ -162,22 +142,15 @@ def check_approaching_limits() -> None:
 
 
 @app.task
-@inject
-def check_approaching_limits_for_subscription(
-    subscription_id: int,
-    usage_warning_service: Annotated[UsageWarningService, Provide["usage_warning_service"]],
-) -> None:
+def check_approaching_limits_for_subscription(subscription_id: int) -> None:
     """One approaching-limit check, dispatched through
-    ``vinta_billing.jobs.check_approaching_limits_for_subscription`` with this
-    project's DI-wired ``UsageWarningService``.
+    ``vinta_billing.jobs.check_approaching_limits_for_subscription``.
 
     A subscription deleted between fan-out and execution is logged and
     skipped by that call itself, not raised here.
     """
     with _bound_organization(subscription_id):
-        jobs.check_approaching_limits_for_subscription(
-            subscription_id, usage_warning_service=usage_warning_service
-        )
+        jobs.check_approaching_limits_for_subscription(subscription_id)
 
 
 @app.task
@@ -191,14 +164,9 @@ def close_billing_periods() -> None:
 
 
 @app.task
-@inject
-def close_subscription_billing_period(
-    subscription_id: int,
-    cycle_close_service: Annotated[CycleCloseService, Provide["cycle_close_service"]],
-) -> None:
+def close_subscription_billing_period(subscription_id: int) -> None:
     """One subscription's period close(s), dispatched through
-    ``vinta_billing.jobs.close_subscription_billing_period`` with this
-    project's DI-wired ``CycleCloseService``.
+    ``vinta_billing.jobs.close_subscription_billing_period``.
 
     A subscription deleted between fan-out and execution is logged and
     skipped by that call itself, not raised here. Same best-effort
@@ -207,6 +175,4 @@ def close_subscription_billing_period(
     itself now, not here.
     """
     with _bound_organization(subscription_id):
-        jobs.close_subscription_billing_period(
-            subscription_id, cycle_close_service=cycle_close_service
-        )
+        jobs.close_subscription_billing_period(subscription_id)
