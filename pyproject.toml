@@ -72,7 +72,7 @@ dependencies = [
     # Development Status :: Alpha, and its migration onto the host is itself
     # a multi-phase plan (see ai-plans/). Widen only after re-reading the
     # upstream diff for the target minor.
-    "vinta-django-billing>=0.5,<0.6",
+    "vinta-django-billing>=0.6,<0.7",
 ]
 
 [dependency-groups]

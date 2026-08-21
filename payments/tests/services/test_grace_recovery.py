@@ -29,7 +29,7 @@ The headline test proves four things in one flow:
    bookkeeping cleared and (RESTRICTED only) a calendar resync queued.
 
 Uses a hand-written ``FakePaymentService`` double, exactly like
-``test_plan_change.py``/``test_dunning_retry_tolerance.py`` -- what matters here is
+``test_plan_change.py`` -- what matters here is
 *when* the provider is driven and with *what arguments*, not the wire shape of
 any one real provider.
 """
@@ -65,7 +65,7 @@ from payments.seams.resource_keys import RESOURCE_KEYS
 
 # This module builds its own Subscription rows directly via SubscriptionService,
 # so it opts out of conftest's autouse `provision_default_subscription` --
-# mirrors `test_plan_change.py`/`test_dunning_retry_tolerance.py`.
+# mirrors `test_plan_change.py`.
 pytestmark = pytest.mark.no_auto_subscription
 
 _DUNNING_MODULE = "vinta_billing.services.dunning_service"
@@ -73,7 +73,7 @@ _DUNNING_MODULE = "vinta_billing.services.dunning_service"
 
 def _patch_on_commit():
     """Canonical pattern in this project for testing on_commit-wrapped side
-    effects synchronously -- see ``test_dunning_retry_tolerance.py``."""
+    effects synchronously -- see ``payments/tests/test_dunning_schedule.py``."""
     return patch(f"{_DUNNING_MODULE}.transaction.on_commit", side_effect=lambda fn: fn())
 
 
@@ -84,7 +84,7 @@ def make_complete_plan(
 ) -> BillingPlan:
     """A catalog plan carrying a ``PlanLimit`` row for every ``LimitedResource``
     member -- what ``assert_plan_is_complete`` requires. Mirrors
-    ``test_plan_change.py``/``test_dunning_retry_tolerance.py``'s helper of the same
+    ``test_plan_change.py``'s helper of the same
     name."""
     plan = baker.make(
         BillingPlan,
@@ -238,7 +238,7 @@ class TestRetryPaymentGraceRecovery:
     service calls ``PaymentsViewSet._apply_subscription_payment_side_effects``
     makes for an ``APPROVED`` subscription-payment status update -- not a real
     HTTP webhook payload through the DRF view. Matches the convention already
-    used by ``test_plan_change.py``/``test_dunning_retry_tolerance.py`` for exercising
+    used by ``test_plan_change.py`` for exercising
     webhook-driven state without re-deriving a provider's wire payload.
     """
 

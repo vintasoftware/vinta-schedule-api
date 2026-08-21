@@ -1044,6 +1044,15 @@ paths:
               schema:
                 $ref: '#/components/schemas/BillingProfile'
           description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                description: 'This organization already has a billing profile. Not
+                  a `BillingError` and not routed through `vinta_billing.exception_handling`
+                  -- the body is DRF''s `{''detail'': ...}`, with no machine-readable
+                  `code`.'
+          description: ''
   /billing-profile/create_billing_profile{format}:
     post:
       operationId: billing_profile_create_billing_profile_formatted_create
@@ -1090,6 +1099,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BillingProfile'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                description: 'This organization already has a billing profile. Not
+                  a `BillingError` and not routed through `vinta_billing.exception_handling`
+                  -- the body is DRF''s `{''detail'': ...}`, with no machine-readable
+                  `code`.'
           description: ''
   /billing-profile/partial_update_billing_profile/:
     patch:
@@ -1381,14 +1399,16 @@ paths:
           description: 'The resource''s current plan limit carries no `overage_unit_price`,
             so it has no catalog-derived price to purchase as an add-on (`code: "add_on_not_purchasable"`,
             `AddOnNotPurchasableError`).'
-        '409':
+        '503':
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/BillingErrorBody'
           description: 'The provider this organization resolves to is not configured
             in this deployment, so the one-time charge cannot be driven (`code: "payment_provider_not_configured"`,
-            `PaymentProviderNotConfiguredError`).'
+            `PaymentProviderNotConfiguredError`). A deployment fault, not a bad request
+            -- retrying the same call changes nothing until an operator configures
+            the provider.'
   /billing/add-ons{format}:
     post:
       operationId: billing_add_ons_formatted_create
@@ -1451,14 +1471,16 @@ paths:
           description: 'The resource''s current plan limit carries no `overage_unit_price`,
             so it has no catalog-derived price to purchase as an add-on (`code: "add_on_not_purchasable"`,
             `AddOnNotPurchasableError`).'
-        '409':
+        '503':
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/BillingErrorBody'
           description: 'The provider this organization resolves to is not configured
             in this deployment, so the one-time charge cannot be driven (`code: "payment_provider_not_configured"`,
-            `PaymentProviderNotConfiguredError`).'
+            `PaymentProviderNotConfiguredError`). A deployment fault, not a bad request
+            -- retrying the same call changes nothing until an operator configures
+            the provider.'
   /billing/add-ons/{id}/:
     delete:
       operationId: billing_add_ons_destroy
@@ -1581,12 +1603,14 @@ paths:
               schema:
                 description: No active organization.
           description: ''
-        '409':
+        '503':
           content:
             application/json:
               schema:
                 description: The resolved provider is unknown or has no public credentials
-                  configured in this deployment.
+                  configured in this deployment. A deployment fault, not a bad request
+                  -- matches `DefaultPaymentProviderView` below and the status `vinta_billing.exception_handling`
+                  maps `PaymentProviderNotConfiguredError` to everywhere else.
           description: ''
   /billing/payment-provider/default/:
     get:
@@ -1827,14 +1851,16 @@ paths:
               schema:
                 $ref: '#/components/schemas/Subscription'
           description: ''
-        '409':
+        '503':
           content:
             application/json:
               schema:
-                description: The provider this subscription is stamped with is not
-                  configured in this deployment, so the provider-side cancellation
-                  cannot be driven.
-          description: ''
+                $ref: '#/components/schemas/BillingErrorBody'
+          description: 'The provider this subscription is stamped with is not configured
+            in this deployment, so the provider-side cancellation cannot be driven
+            (`code: "payment_provider_not_configured"`, `PaymentProviderNotConfiguredError`).
+            A deployment fault, not a bad request -- retrying the same call changes
+            nothing until an operator configures the provider.'
   /billing/subscription/cancel{format}:
     post:
       operationId: billing_subscription_cancel_formatted_create
@@ -1872,14 +1898,16 @@ paths:
               schema:
                 $ref: '#/components/schemas/Subscription'
           description: ''
-        '409':
+        '503':
           content:
             application/json:
               schema:
-                description: The provider this subscription is stamped with is not
-                  configured in this deployment, so the provider-side cancellation
-                  cannot be driven.
-          description: ''
+                $ref: '#/components/schemas/BillingErrorBody'
+          description: 'The provider this subscription is stamped with is not configured
+            in this deployment, so the provider-side cancellation cannot be driven
+            (`code: "payment_provider_not_configured"`, `PaymentProviderNotConfiguredError`).
+            A deployment fault, not a bad request -- retrying the same call changes
+            nothing until an operator configures the provider.'
   /billing/subscription/change-plan/:
     post:
       operationId: billing_subscription_change_plan_create
@@ -1934,10 +1962,20 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BillingErrorBody'
-          description: 'Either another plan change is already awaiting payment confirmation
-            (`code: "unconfirmed_plan_change"`, `UnconfirmedPlanChangeError`), or
-            the provider this organization resolves to is not configured in this deployment
-            (`code: "payment_provider_not_configured"`, `PaymentProviderNotConfiguredError`).
+          description: 'Another plan change is already awaiting payment confirmation
+            (`code: "unconfirmed_plan_change"`, `UnconfirmedPlanChangeError`).'
+        '503':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingErrorBody'
+          description: 'A deployment fault, not a bad request -- the same call will
+            fail identically until an operator fixes the deployment, so do not retry
+            with different input. Either the provider this organization resolves to
+            is not configured in this deployment (`code: "payment_provider_not_configured"`,
+            `PaymentProviderNotConfiguredError`), or the target plan is missing a
+            `PlanLimit` row for a registered resource, so the downgrade has no well-defined
+            ceiling to apply (`code: "incomplete_billing_plan"`, `IncompleteBillingPlanError`).
             Both are mapped centrally by `vinta_billing.exception_handling.billing_exception_handler`.'
   /billing/subscription/change-plan{format}:
     post:
@@ -2000,10 +2038,20 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BillingErrorBody'
-          description: 'Either another plan change is already awaiting payment confirmation
-            (`code: "unconfirmed_plan_change"`, `UnconfirmedPlanChangeError`), or
-            the provider this organization resolves to is not configured in this deployment
-            (`code: "payment_provider_not_configured"`, `PaymentProviderNotConfiguredError`).
+          description: 'Another plan change is already awaiting payment confirmation
+            (`code: "unconfirmed_plan_change"`, `UnconfirmedPlanChangeError`).'
+        '503':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingErrorBody'
+          description: 'A deployment fault, not a bad request -- the same call will
+            fail identically until an operator fixes the deployment, so do not retry
+            with different input. Either the provider this organization resolves to
+            is not configured in this deployment (`code: "payment_provider_not_configured"`,
+            `PaymentProviderNotConfiguredError`), or the target plan is missing a
+            `PlanLimit` row for a registered resource, so the downgrade has no well-defined
+            ceiling to apply (`code: "incomplete_billing_plan"`, `IncompleteBillingPlanError`).
             Both are mapped centrally by `vinta_billing.exception_handling.billing_exception_handler`.'
   /billing/subscription/retrieve_subscription/:
     get:

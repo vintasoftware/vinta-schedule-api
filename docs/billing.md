@@ -63,8 +63,10 @@ things as pluggable objects. Each one lives in its own module:
 
 `payments/seams/dispatch.py` and `VINTA_BILLING["JOB_DISPATCHER"]` existed briefly
 and were removed once the package's per-subscription job dispatch turned out not to
-consult it (see **Package gaps** below) — the per-subscription Celery tasks in
-`payments/tasks.py` now resolve and pass their own services instead.
+consult `SERVICE_CONTAINER` (see **Package gaps** below) — the per-subscription
+Celery tasks in `payments/tasks.py` resolve and pass their own services instead.
+`vinta-django-billing` 0.6.0 fixed that, so the setting composes with the container
+again and could be restored; nothing depends on it today.
 
 ### Why `resource_keys.py` is a separate, zero-import module
 
@@ -124,45 +126,14 @@ verified twice.
    changed, and diff it — an unexpected path or shape change is a signal to read
    the package's changelog more carefully before merging.
 
-## Package gaps found during the migration, not yet fixed upstream
+## Package gaps found during the migration — all closed upstream
 
-Four gaps were identified while migrating onto the package and are not host-side
-workarounds — they are documented here so whoever next bumps the pin can check
-whether a newer release closed them, and pick them up in the package repository if
-not.
+Six gaps were identified while migrating onto the package. None of them were
+worked around by subclassing or monkeypatching; all six are now fixed in
+`vinta-django-billing` itself, which is the standing process this project
+follows.
 
-1. **`vinta_billing.jobs`'s per-subscription job dispatch does not consult
-   `VINTA_BILLING["SERVICE_CONTAINER"]`.** It resolves services from the package's
-   own `services.container` cache instead. Found empirically: a test that
-   DI-overrode a Stripe adapter with an empty key still hit the real
-   `STRIPE_SECRET_KEY` from the environment. Worked around by having
-   `payments/tasks.py`'s per-subscription Celery tasks resolve their own services
-   via the host's `@inject` and pass them in explicitly, rather than relying on the
-   package's default resolution — this is also why `payments/seams/dispatch.py` was
-   removed rather than kept as the wiring point.
-2. **The provider-error-to-HTTP-status map and the package's own viewset
-   docstrings disagree.** `vinta_billing.exception_handling.billing_error_status`
-   maps `PaymentProviderNotConfiguredError` to 503, but `SubscriptionViewSet
-   .change_plan` / `.cancel`'s own docstrings promise 409 for that error,
-   "mapped centrally". This project keeps the 409 the docstrings promise via a
-   host-side override in `common/exception_handlers.py` rather than delegating to
-   the package's table for this one exception — see that module for the exact
-   deviation and its justification.
-3. **No concurrency test for `CycleCloseService.close_subscription`'s row lock.**
-   The package's suite has zero tests exercising `select_for_update` under real
-   concurrent access (verified: no `ThreadPoolExecutor` / `threading` usage
-   anywhere in its `tests/`). This project's own
-   `payments/tests/test_cycle_close_concurrency.py` covers it with a real two-thread
-   test against a real database, because nothing else does.
-4. **No direct test of `SubscriptionService.retry_payment`'s ordering/idempotency
-   contract.** In particular, the money-path guard that a `CollectionNotSupportedError`
-   from any non-MercadoPago provider must re-raise rather than silently falling back
-   into `change_subscription_plan` (which a live Stripe probe showed collects
-   **$0.00** with only an INFO log to notice by) has no package-side test. Covered
-   host-side in `payments/tests/services/test_dunning_retry_tolerance.py`.
-
-Two further, more severe gaps were found and **fixed upstream** rather than worked
-around — both released in `vinta-django-billing` 0.5.0:
+Released in **0.5.0**, and severe enough to be worth remembering:
 
 - `IsBillingManager.has_object_permission` was a no-op against a billing-root
   object (it read `obj.organization`, which a root `Organization` doesn't have),
@@ -173,7 +144,41 @@ around — both released in `vinta-django-billing` 0.5.0:
   `invoice.paid` webhooks never resolved a payment and dunning was never cleared
   for Stripe subscription charges.
 
-If you hit a fifth gap: report and fix it in the package (with a test and a
+Released in **0.6.0**, each with the host-side change the fix allowed:
+
+1. **`vinta_billing.jobs` didn't consult `VINTA_BILLING["SERVICE_CONTAINER"]`.**
+   It resolved services from the package's own `services.container` cache, so a
+   test that DI-overrode a Stripe adapter with an empty key still hit the real
+   `STRIPE_SECRET_KEY`. The four sweeps now resolve through `SERVICE_CONTAINER`.
+   `payments/tasks.py` still passes its services explicitly — an explicit
+   argument still wins — but that is now belt-and-braces rather than required,
+   and `VINTA_BILLING["JOB_DISPATCHER"]` can be restored whenever someone wants
+   to simplify those tasks.
+2. **The error-to-HTTP-status map and the package's own viewset annotations
+   disagreed** about `PaymentProviderNotConfiguredError`: the table said 503, the
+   shipped OpenAPI annotations said 409. This project had sided with the
+   annotations, hardcoding 409 in `common/exception_handlers.py`. 0.6.0 settled
+   it at **503** — a deployment fault the caller cannot fix by sending a
+   different request, and the same status as its two sibling faults — corrected
+   the annotations, and added a package test that regenerates the schema and
+   fails if any declared status contradicts the table. The host override is gone;
+   `common/exception_handlers.py` now takes every status from the table.
+3. **No concurrency test for `CycleCloseService.close_subscription`'s row lock.**
+   The package's suite ran on SQLite, which has no row locks — Django drops
+   `SELECT ... FOR UPDATE` there rather than raising, so a two-thread test would
+   have passed against a lock that was never taken. 0.6.0 added a Postgres test
+   environment and a real two-thread test. This project's own
+   `payments/tests/test_cycle_close_concurrency.py` is kept: it exercises the
+   same guarantee through *this* project's wiring and database.
+4. **No direct test of `SubscriptionService.retry_payment` / `retry_failed_charge`.**
+   In particular the money-path guard — a `CollectionNotSupportedError` from any
+   non-MercadoPago provider must re-raise rather than falling back into
+   `change_subscription_plan`, which a live Stripe probe showed collects **$0.00**
+   with only an INFO log to notice by. 0.6.0 covers both methods directly, so the
+   host's stand-in `payments/tests/services/test_dunning_retry_tolerance.py` was
+   deleted with this bump.
+
+If you hit a seventh gap: report and fix it in the package (with a test and a
 `HISTORY.md` entry), release, then bump the pin here. Don't subclass or
 monkeypatch around it in `payments/` — that is exactly the duplication this
 migration was meant to end.

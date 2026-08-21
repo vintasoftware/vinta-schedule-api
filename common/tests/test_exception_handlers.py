@@ -55,17 +55,19 @@ class TestVintaExceptionHandlerStatusCodes:
             "remedy": "purchase_add_on",
         }
 
-    def test_payment_provider_not_configured_error_is_409_not_the_packages_503(self):
-        """The one status this handler does not take from
-        ``vinta_billing.exception_handling.billing_error_status`` -- see the
-        handler's own docstring for why that table's 503 would break this
-        project's committed contract.
+    def test_payment_provider_not_configured_error_is_503(self):
+        """A hardcoded 409 here until ``vinta-django-billing`` 0.6.0, overriding
+        the package's table. 0.6.0 settled the package's own 409/503
+        contradiction in favour of 503, which removed the reason for the
+        override -- see the handler's docstring. The literal below is still
+        pinned by hand, not read from ``billing_error_status``, so the next
+        table change that moves this status has to come here and say so.
         """
         exc = PaymentProviderNotConfiguredError(provider="stripe")
 
         response = vinta_exception_handler(exc, {})
 
-        assert response.status_code == status.HTTP_409_CONFLICT
+        assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
         assert response.data == {
             "code": "payment_provider_not_configured",
             "detail": "Payment provider 'stripe' is not configured in this deployment",

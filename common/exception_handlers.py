@@ -12,7 +12,6 @@ Returning a ``Response`` swallows the exception, so under
 first, exactly as DRF's own handler does for every ``APIException``.
 """
 
-from rest_framework import status as drf_status
 from rest_framework.response import Response
 from rest_framework.views import exception_handler as drf_exception_handler
 from rest_framework.views import set_rollback
@@ -41,33 +40,30 @@ def vinta_exception_handler(exc: Exception, context: dict) -> Response | None:
     renders the same dict through its own error extension, so the two surfaces
     stay byte-identical without either restating the shape.
 
-    ``PaymentProviderNotConfiguredError`` is rendered as **HTTP 409 Conflict**
-    for "the provider this organization resolves to cannot be driven by this
-    deployment". Handled centrally rather than per-action because it is
-    reachable from every billing write that touches a provider
+    ``PaymentProviderNotConfiguredError`` is rendered as **HTTP 503 Service
+    Unavailable** for "the provider this organization resolves to cannot be
+    driven by this deployment". Handled centrally rather than per-action
+    because it is reachable from every billing write that touches a provider
     (``SubscriptionViewSet.change_plan`` / ``cancel``, ``AddOnViewSet.create``,
     and anything added later), and a per-action ``except`` would have to be
     remembered at each new one — the failure mode of forgetting is a 500 on a
     money path. ``vinta_billing.views.PaymentProviderViewSet``'s two
-    provider-credentials endpoints catch it themselves first (409 on the org
-    endpoint, 503 on the unauthenticated default one, which is a deployment
-    error rather than a request conflict), so they are unaffected by this
-    branch.
+    provider-credentials endpoints catch it themselves first, both answering
+    503 as of ``vinta-django-billing`` 0.6.0, so they are unaffected by this
+    branch and agree with it.
 
-    This is the one status **not** taken from
-    ``vinta_billing.exception_handling.billing_error_status`` — that table
-    maps ``PaymentProviderNotConfiguredError`` to 503 across the board
-    (its own "deployment fault" family), which contradicts the 409 the
-    package's own ``SubscriptionViewSet.change_plan`` / ``cancel`` and
-    ``AddOnViewSet.create`` docstrings promise for exactly this error
-    ("mapped centrally by ``vinta_billing.exception_handling
-    .billing_exception_handler``" -- true only if that handler used 409, which
-    it does not). Kept as a hardcoded 409 here rather than adopting the
-    table's 503, to match this project's own committed contract
-    (``payments/tests/views/test_billing_views.py::TestUnconfiguredProviderMapsTo409``,
-    ``payments/tests/test_over_limit_rollback.py``) and the package's own
-    per-view documentation. See this migration's tracking notes for the
-    package-side inconsistency.
+    This status was a hardcoded **409** here until ``vinta-django-billing``
+    0.6.0, deliberately overriding the package's table. The reason no longer
+    exists: the package's own ``change_plan`` / ``cancel`` / ``create``
+    annotations used to promise 409 for this error while its handler returned
+    503, and this project sided with the annotations. 0.6.0 resolved that in
+    favour of 503 — an unconfigured provider is a deployment fault, the same
+    request fails identically until an operator fixes it, and the two sibling
+    faults in that family (``NoDefaultBillingPlanError``,
+    ``IncompleteBillingPlanError``, the latter reachable from ``change-plan``)
+    were already 503, so a 409 here would have split one family across two
+    statuses. The carve-out is gone; every status in this function now comes
+    from ``billing_error_status`` rather than being re-derived by hand.
 
     ``PaymentTokenRequiredError`` / ``AddOnNotPurchasableError`` (400) and
     ``UnconfirmedPlanChangeError`` (409): every ``BillingError`` subclass carries
@@ -143,13 +139,6 @@ def vinta_exception_handler(exc: Exception, context: dict) -> Response | None:
         # Applied uniformly across every branch here rather than reasoned about
         # per call site -- see this function's own docstring for why each of
         # these ten classes renders at the status it does.
-        #
-        # `PaymentProviderNotConfiguredError` keeps its own hardcoded 409 --
-        # see the docstring above for why it cannot come from
-        # `billing_error_status`. Every other status here comes from that
-        # table rather than being re-derived by hand.
         set_rollback()
-        if isinstance(exc, PaymentProviderNotConfiguredError):
-            return Response(exc.as_error_body(), status=drf_status.HTTP_409_CONFLICT)
         return Response(exc.as_error_body(), status=billing_error_status(exc))
     return drf_exception_handler(exc, context)

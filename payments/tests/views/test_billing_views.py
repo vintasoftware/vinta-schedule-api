@@ -229,7 +229,7 @@ def _no_live_stripe_calls(di_container):
 
     Teardown asserts neither double received any call -- a call reaching one is
     a wrong-provider routing regression, and a silent mock absorbing it would
-    make the guard structural in name only. ``TestUnconfiguredProviderMapsTo409``
+    make the guard structural in name only. ``TestUnconfiguredProviderMapsTo503``
     deliberately overrides both DI slots again with a *different* double inside
     its own fixture, which shadows these for the duration of that test (the
     inner ``override`` context manager takes precedence), so these two remain
@@ -750,12 +750,17 @@ class TestAcceptanceScenario:
 
 
 @pytest.mark.django_db
-class TestUnconfiguredProviderMapsTo409:
-    """HTTP 409 is the committed response for ``PaymentProviderNotConfiguredError``,
+class TestUnconfiguredProviderMapsTo503:
+    """HTTP 503 is the committed response for ``PaymentProviderNotConfiguredError``,
     reachable from these actions. Mapped centrally in
     ``common.exception_handlers.vinta_exception_handler`` (with ``set_rollback()``)
     rather than per-action, so a new billing write cannot forget it and 500 on a
     money path.
+
+    It was 409 until ``vinta-django-billing`` 0.6.0, from a hardcoded branch in
+    that handler that overrode the package's status table. 0.6.0 removed the
+    reason for the override -- see the handler's own docstring -- and the status
+    now comes from ``billing_error_status`` like every other billing error's.
 
     Each test repoints the organization onto Stripe *and* swaps the Stripe DI
     slot for a real adapter built with an empty secret -- exactly what the
@@ -791,7 +796,7 @@ class TestUnconfiguredProviderMapsTo409:
         subscription.save(update_fields=["payment_provider", "external_id"])
         return subscription
 
-    def test_change_plan_returns_409(
+    def test_change_plan_returns_503(
         self, unconfigured_stripe_client, admin_membership, subscription, pro_plan
     ):
         self._stripe_subscription(subscription)
@@ -801,16 +806,16 @@ class TestUnconfiguredProviderMapsTo409:
             {
                 "plan_slug": pro_plan.slug,
                 "billing_interval": BillingInterval.MONTHLY,
-                "idempotency_key": "idem-409-1",
+                "idempotency_key": "idem-503-1",
                 "payment_token": "tok-1",
             },
             format="json",
         )
 
-        assert response.status_code == status.HTTP_409_CONFLICT
+        assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
         assert "stripe" in response.data["detail"]
 
-    def test_cancel_returns_409(self, unconfigured_stripe_client, admin_membership, subscription):
+    def test_cancel_returns_503(self, unconfigured_stripe_client, admin_membership, subscription):
         # `SubscriptionService.cancel_subscription` skips the provider round trip
         # entirely for a subscription that never attached an instrument, so an
         # `external_id` is required for this path to reach adapter resolution at
@@ -819,10 +824,10 @@ class TestUnconfiguredProviderMapsTo409:
 
         response = unconfigured_stripe_client.post(cancel_url())
 
-        assert response.status_code == status.HTTP_409_CONFLICT
+        assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
         assert "stripe" in response.data["detail"]
 
-    def test_add_on_create_returns_409(
+    def test_add_on_create_returns_503(
         self, unconfigured_stripe_client, admin_membership, subscription, billing_profile
     ):
         response = unconfigured_stripe_client.post(
@@ -831,13 +836,13 @@ class TestUnconfiguredProviderMapsTo409:
                 "resource_key": RESOURCE_CALENDARS,
                 "quantity": 1,
                 "is_recurring": False,
-                "idempotency_key": "idem-409-3",
+                "idempotency_key": "idem-503-3",
                 "payment_token": "tok-1",
             },
             format="json",
         )
 
-        assert response.status_code == status.HTTP_409_CONFLICT
+        assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
         assert "stripe" in response.data["detail"]
 
 
@@ -1099,7 +1104,7 @@ class TestRetryPaymentEndpoint:
         Repoints ``subscription`` (built on MercadoPago by this module's
         fixtures) onto Stripe directly and swaps in a real
         ``StripeSubscriptionAdapter`` for the duration of the request --
-        mirrors ``TestUnconfiguredProviderMapsTo409.unconfigured_stripe_client``'s
+        mirrors ``TestUnconfiguredProviderMapsTo503.unconfigured_stripe_client``'s
         established pattern for shadowing the module's ``_no_live_stripe_calls``
         guard for one test.
         """

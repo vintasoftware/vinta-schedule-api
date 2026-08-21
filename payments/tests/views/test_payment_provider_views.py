@@ -1,6 +1,14 @@
 """Integration tests for ``vinta_billing.views.PaymentProviderViewSet``, mounted
 through ``vinta_billing.routing.get_extra_patterns()``: the unauthenticated
 system-default endpoint and the authenticated, tenant-scoped organization endpoint.
+
+**Both answer 503 for an unconfigured provider.** They disagreed until
+``vinta-django-billing`` 0.6.0 -- the organization endpoint had a local ``except``
+returning a hardcoded 409 while its sibling in the same module returned 503 -- and
+the tests below pinned that asymmetry. 0.6.0 settled it at 503 in both places, for
+the reason ``common.exception_handlers.vinta_exception_handler`` spells out: an
+unconfigured provider is a deployment fault, not something the caller can fix by
+sending a different request.
 """
 
 from typing import ClassVar
@@ -177,7 +185,7 @@ class TestOrganizationPaymentProviderEndpoint:
 
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
-    def test_409_when_the_pinned_provider_has_no_public_credentials(
+    def test_503_when_the_pinned_provider_has_no_public_credentials(
         self, auth_client, admin_membership, organization, settings
     ):
         use_providers(settings, MERCADOPAGO_PUBLIC_KEY="")
@@ -185,9 +193,9 @@ class TestOrganizationPaymentProviderEndpoint:
 
         response = auth_client.get(org_provider_url())
 
-        assert response.status_code == status.HTTP_409_CONFLICT
+        assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
 
-    def test_409_does_not_fall_back_to_the_default(
+    def test_503_does_not_fall_back_to_the_default(
         self, auth_client, admin_membership, organization, settings
     ):
         """An org pinned to a provider with no public key must not silently receive the
@@ -203,14 +211,14 @@ class TestOrganizationPaymentProviderEndpoint:
 
         response = auth_client.get(org_provider_url())
 
-        assert response.status_code == status.HTTP_409_CONFLICT
+        assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
         assert "pk_test_org" not in str(response.content)
 
-    def test_409_for_a_pin_naming_a_provider_absent_from_the_registry(
+    def test_503_for_a_pin_naming_a_provider_absent_from_the_registry(
         self, auth_client, admin_membership, organization, settings
     ):
         """A pin holding a slug that is not a member of ``PaymentProviders`` at all (e.g.
-        a provider retired after the org was pinned to it) must 409, not silently fall
+        a provider retired after the org was pinned to it) must 503, not silently fall
         back to the default -- ``choices`` is form/admin-level validation, not a DB
         constraint, so this row is constructible in the database even though no API
         surface can write it today.
@@ -225,7 +233,7 @@ class TestOrganizationPaymentProviderEndpoint:
 
         response = auth_client.get(org_provider_url())
 
-        assert response.status_code == status.HTTP_409_CONFLICT
+        assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
         assert "pk_test_org" not in str(response.content)
 
 

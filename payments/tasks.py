@@ -8,28 +8,36 @@ an explicit ``dispatch`` that enqueues onto that local task rather than
 running inline.
 
 **Every service is resolved through this project's own DI container, not the
-package's.** ``vinta_billing.jobs``' default service resolution
-(``vinta_billing.services.container.get_dunning_service()`` and friends) is a
-*process-wide cache* built from ``VINTA_BILLING`` settings directly -- it has
-no way to see a test's ``di_container.stripe_subscription_gateway.override(...)``,
-and, unlike the shipped views/admin, it does not consult
-``VINTA_BILLING['SERVICE_CONTAINER']`` either (that setting is "where the
-shipped views and the admin get their services" -- ``vinta_billing.conf``'s
-own wording -- and ``vinta_billing.jobs`` imports the package's container
-module directly, not through ``resolve_service()``). Every per-subscription
-job function accepts its service as an optional keyword argument for exactly
-this reason (see each job's docstring in ``vinta_billing.jobs``), so each task
-below resolves its service via ``@inject`` / ``Provide[...]`` -- the same
-container every view, GraphQL resolver and other Celery task in this project
-uses -- and passes it through explicitly.
+package's.** Each task below resolves its service via ``@inject`` /
+``Provide[...]`` -- the same container every view, GraphQL resolver and other
+Celery task in this project uses -- and passes it into ``vinta_billing.jobs``
+explicitly. Every per-subscription job function accepts its service as an
+optional keyword argument for exactly this purpose (see each job's docstring
+in ``vinta_billing.jobs``), and an explicitly passed service always wins over
+whatever the package would otherwise resolve.
 
-**The per-subscription fan-out therefore does not use
+This used to be *required*: through ``vinta-django-billing`` 0.5.0,
+``vinta_billing.jobs`` imported the package's own factories
+(``services.container.get_dunning_service()`` and friends) directly rather
+than going through ``resolve_service()``, so it did not consult
+``VINTA_BILLING['SERVICE_CONTAINER']`` and had no way to see a test's
+``di_container.stripe_subscription_gateway.override(...)``. 0.6.0 closed that
+gap -- the sweeps now resolve through ``SERVICE_CONTAINER``, which on this
+project already points at ``di_core.containers.container`` -- so the explicit
+passing here is belt-and-braces rather than load-bearing. It is kept because
+it is also what makes each task's dependency visible at its own signature.
+
+**The per-subscription fan-out does not use
 ``VINTA_BILLING['JOB_DISPATCHER']``.** Each beat task below passes its own
 ``dispatch`` lambda straight to the package sweep. An earlier phase built
-``payments.seams.dispatch.dispatch_via_celery`` for this role, before this DI
-requirement was discovered against the real test suite; once every call site
-here passed its own explicit ``dispatch``, that seam had no caller left, so
-it -- and ``VINTA_BILLING['JOB_DISPATCHER']`` -- were deleted.
+``payments.seams.dispatch.dispatch_via_celery`` for this role, before the DI
+requirement above was discovered against the real test suite; once every call
+site here passed its own explicit ``dispatch``, that seam had no caller left,
+so it -- and ``VINTA_BILLING['JOB_DISPATCHER']`` -- were deleted. Since 0.6.0
+the two compose (the package's own ``tests/test_jobs.py`` covers exactly
+that), so restoring the setting and dropping these lambdas is now possible;
+it is deliberately left for its own change rather than folded into a version
+bump.
 
 Task dotted paths stay ``payments.tasks.*`` for the four beat entry points
 (``vinta_schedule_api/celerybeat_schedule.py`` names them literally) and for
