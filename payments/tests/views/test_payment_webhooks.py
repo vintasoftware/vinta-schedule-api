@@ -20,24 +20,21 @@ import pytest
 from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
-
-from organizations.models import Organization
-from payments.billing_constants import BillingState
-from payments.constants import PaymentProviders, PaymentStatuses
-from payments.models import Payment, ProviderWebhookEvent
-from payments.services.payment_adapters.mercadopago_payment_adapter import (
+from vinta_billing.constants import BillingState, PaymentProviders, PaymentStatuses
+from vinta_billing.models import Payment, ProviderWebhookEvent
+from vinta_billing.services.payment_adapters.mercadopago_payment_adapter import (
     MercadoPagoPaymentAdapter,
 )
-from payments.services.subscription_adapters.mercadopago_subscription_adapter import (
+from vinta_billing.services.subscription_adapters.mercadopago_subscription_adapter import (
     MercadoPagoSubscriptionAdapter,
 )
-from payments.services.subscription_adapters.stripe_subscription_adapter import (
+from vinta_billing.services.subscription_adapters.stripe_subscription_adapter import (
     StripeSubscriptionAdapter,
 )
-from payments.services.subscription_service import SubscriptionService
-from payments.tests.services.subscription_adapters.test_stripe_subscription_adapter import (
-    build_signed_request,
-)
+from vinta_billing.services.subscription_service import SubscriptionService
+
+from organizations.models import Organization
+from payments.tests.provider_settings import use_providers
 
 
 WEBHOOK_SECRET = "test-webhook-secret"
@@ -57,10 +54,51 @@ def sign(data_id: str, request_id: str = "req-123", ts: str | None = None) -> di
     }
 
 
+def build_signed_request(
+    event_id: str = "evt_123",
+    event_type: str = "invoice.paid",
+    object_payload: dict | None = None,
+    secret: str = WEBHOOK_SECRET,
+    ts: str | None = None,
+) -> tuple[bytes, dict[str, str]]:
+    """Build a raw body + headers pair signed the way Stripe signs webhooks.
+
+    Moved here (from the now-deleted
+    ``test_stripe_subscription_adapter.py``, whose signature-verification
+    coverage moved to the package) since this is its only remaining caller.
+
+    ``object_payload`` defaults to the ``2026-06-24.dahlia``-shaped invoice: the
+    subscription id lives at ``parent.subscription_details.subscription``, not
+    the removed ``subscription`` field (see
+    ``StripeSubscriptionAdapter.get_subscription_external_id_from_update``'s
+    docstring). Derived from introspecting the installed `stripe==15.3.1` SDK's
+    ``Invoice``/``Invoice.Parent``/``Invoice.Parent.SubscriptionDetails``
+    ``__annotations__``.
+    """
+    if ts is None:
+        ts = str(int(time.time()))
+    if object_payload is None:
+        object_payload = {
+            "id": "in_123",
+            "object": "invoice",
+            "parent": {
+                "type": "subscription_details",
+                "subscription_details": {"subscription": "sub_123"},
+            },
+        }
+    raw_body = json.dumps(
+        {"id": event_id, "object": "event", "type": event_type, "data": {"object": object_payload}}
+    ).encode()
+    signed_payload = f"{ts}.".encode() + raw_body
+    signature = hmac.new(secret.encode(), signed_payload, hashlib.sha256).hexdigest()
+    headers = {"stripe-signature": f"t={ts},v1={signature}"}
+    return raw_body, headers
+
+
 @pytest.fixture
 def mercadopago_payment_adapter():
     with patch(
-        "payments.services.payment_adapters.mercadopago_payment_adapter.mercadopago.SDK"
+        "vinta_billing.services.payment_adapters.mercadopago_payment_adapter.mercadopago.SDK"
     ) as mock_sdk:
         adapter = MercadoPagoPaymentAdapter("test-access-token", webhook_secret=WEBHOOK_SECRET)
         adapter.sdk = mock_sdk.return_value
@@ -70,7 +108,7 @@ def mercadopago_payment_adapter():
 @pytest.fixture
 def mercadopago_subscription_adapter():
     with patch(
-        "payments.services.subscription_adapters.mercadopago_subscription_adapter.mercadopago.SDK"
+        "vinta_billing.services.subscription_adapters.mercadopago_subscription_adapter.mercadopago.SDK"
     ) as mock_sdk:
         adapter = MercadoPagoSubscriptionAdapter("test-access-token", webhook_secret=WEBHOOK_SECRET)
         adapter.sdk = mock_sdk.return_value
@@ -107,7 +145,7 @@ def organization():
 @pytest.fixture
 def billing_address():
     return baker.make(
-        "payments.BillingAddress",
+        "vinta_billing.BillingAddress",
         street_name="Test Street",
         street_number="123",
         city="Test City",
@@ -120,7 +158,7 @@ def billing_address():
 @pytest.fixture
 def billing_profile(organization, billing_address):
     return baker.make(
-        "payments.BillingProfile",
+        "vinta_billing.BillingProfile",
         organization=organization,
         document_type="CPF",
         document_number="12345678900",
@@ -131,7 +169,7 @@ def billing_profile(organization, billing_address):
 @pytest.fixture
 def payment(billing_profile):
     return baker.make(
-        "payments.Payment",
+        "vinta_billing.Payment",
         billing_profile=billing_profile,
         value=Decimal("100"),
         currency="USD",
@@ -143,15 +181,13 @@ def payment(billing_profile):
 
 
 def payment_update_url(pk: int | str = 1, provider: str = PaymentProviders.MERCADOPAGO) -> str:
-    return reverse("api:Payments-payment-update", kwargs={"pk": pk, "provider": provider})
+    return reverse("Payments-payment-update", kwargs={"pk": pk, "provider": provider})
 
 
 def subscription_payment_update_url(
     pk: int | str = 1, provider: str = PaymentProviders.MERCADOPAGO
 ) -> str:
-    return reverse(
-        "api:Payments-subscription-payment-update", kwargs={"pk": pk, "provider": provider}
-    )
+    return reverse("Payments-subscription-payment-update", kwargs={"pk": pk, "provider": provider})
 
 
 @pytest.mark.django_db
@@ -228,7 +264,7 @@ class TestPaymentUpdateWebhook:
         ``PaymentService.get_payment_adapter`` vs
         ``get_configured_payment_adapter``.
         """
-        settings.MERCADOPAGO_PUBLIC_KEY = ""
+        use_providers(settings, MERCADOPAGO_PUBLIC_KEY="")
         mercadopago_payment_adapter.sdk.payment().get.return_value = {
             "response": {
                 "id": "mp-payment-456",
@@ -636,7 +672,7 @@ class TestSubscriptionPaymentUpdateWebhook:
         Opts out of conftest's autouse ``provision_default_subscription``: this
         test builds its own ``Subscription`` via
         ``create_subscription_for_organization`` below."""
-        settings.DEFAULT_PAYMENT_PROVIDER = PaymentProviders.STRIPE
+        use_providers(settings, default_provider=PaymentProviders.STRIPE)
         assert billing_profile.payment_provider == ""
         subscription = SubscriptionService().create_subscription_for_organization(
             billing_profile.organization
@@ -799,6 +835,11 @@ class TestZeroAmountSubscriptionPaymentDoesNotResolveDunning:
         assert subscription.grace_period_ends_at is None
 
 
+# The Stripe `Invoice.billing`-vs-`Invoice.payments` defect this class's
+# lone `xfail(strict=True)` used to guard against is fixed in
+# `vinta-django-billing` 0.5.0 -- see that package's own
+# `tests/services/subscription_adapters/test_stripe_subscription_adapter.py`
+# for the full story and the same marker removal.
 @pytest.mark.django_db
 class TestStripeInvoicePaidResolvesOffTheEventsOwnInvoice:
     """Reviewer finding BLOCKER 1.
@@ -819,7 +860,9 @@ class TestStripeInvoicePaidResolvesOffTheEventsOwnInvoice:
     `PaymentsViewSet._apply_subscription_payment_side_effects` -- so the
     assertion is "the subscription actually reaches ACTIVE", not merely that
     the adapter method returns the right tuple in isolation (that unit-level
-    proof lives in `test_stripe_subscription_adapter.py`). `stripe.Invoice`/
+    proof now lives in the package's own
+    `tests/services/subscription_adapters/test_stripe_subscription_adapter.py`).
+    `stripe.Invoice`/
     `stripe.PaymentIntent` are mocked at the adapter module's own boundary,
     same pattern as `test_billing_views.py`'s Stripe override; `stripe
     .Subscription` is deliberately left unmocked -- the fixed code must never
@@ -875,10 +918,10 @@ class TestStripeInvoicePaidResolvesOffTheEventsOwnInvoice:
 
         with (
             patch(
-                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice"
+                "vinta_billing.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice"
             ) as mock_invoice,
             patch(
-                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe"
+                "vinta_billing.services.subscription_adapters.stripe_subscription_adapter.stripe"
                 ".PaymentIntent"
             ) as mock_payment_intent,
             di_container.stripe_subscription_gateway.override(stripe_adapter),

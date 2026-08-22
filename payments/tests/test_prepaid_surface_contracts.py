@@ -29,22 +29,21 @@ import pytest
 from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
-
-from organizations.models import Organization, OrganizationMembership
-from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
-from organizations.tests.helpers import make_membership
-from payments.billing_constants import (
-    BillingState,
-    Entitlement,
-    LimitedResource,
-    LimitKind,
-    LimitRemedy,
-)
-from payments.models import (
+from vinta_billing.constants import BillingState, LimitKind, LimitRemedy
+from vinta_billing.models import (
     BillingPlan,
     Subscription,
     SubscriptionEntitlement,
     SubscriptionPlanLimit,
+)
+
+from organizations.models import Organization, OrganizationMembership
+from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
+from organizations.tests.helpers import make_membership
+from payments.seams.resource_keys import (
+    ENTITLEMENT_KEYS,
+    PUBLIC_API_SYSTEM_USERS,
+    WEBHOOK_SUBSCRIPTIONS,
 )
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess, SystemUser
@@ -95,7 +94,7 @@ def _organization_at_ceiling(
         limit_value=limit_value,
         kind=LimitKind.PREPAID,
     )
-    for entitlement_key in Entitlement.values:
+    for entitlement_key in ENTITLEMENT_KEYS:
         baker.make(
             SubscriptionEntitlement,
             subscription=subscription,
@@ -175,7 +174,7 @@ def _seed_webhook(organization: Organization) -> WebhookConfiguration:
 @pytest.mark.django_db
 class TestWebhookSubscriptionSurfaces:
     def test_rest_create_returns_the_shared_402(self):
-        organization = _organization_at_ceiling(LimitedResource.WEBHOOK_SUBSCRIPTIONS, 1)
+        organization = _organization_at_ceiling(WEBHOOK_SUBSCRIPTIONS, 1)
         _seed_webhook(organization)
         membership = _admin_membership(organization)
 
@@ -192,7 +191,7 @@ class TestWebhookSubscriptionSurfaces:
         )
 
         assert response.status_code == status.HTTP_402_PAYMENT_REQUIRED
-        _assert_shared_error_body(response.json(), LimitedResource.WEBHOOK_SUBSCRIPTIONS)
+        _assert_shared_error_body(response.json(), WEBHOOK_SUBSCRIPTIONS)
         assert not (
             WebhookConfiguration.objects.filter_by_organization(organization)
             .filter(url="https://example.com/blocked")
@@ -200,7 +199,7 @@ class TestWebhookSubscriptionSurfaces:
         )
 
     def test_graphql_create_carries_the_same_body_in_extensions(self):
-        organization = _organization_at_ceiling(LimitedResource.WEBHOOK_SUBSCRIPTIONS, 1)
+        organization = _organization_at_ceiling(WEBHOOK_SUBSCRIPTIONS, 1)
         _seed_webhook(organization)
 
         auth_service = _container().public_api_auth_service()
@@ -235,7 +234,7 @@ class TestWebhookSubscriptionSurfaces:
         # graphql-core always answers 200 and puts the failure in `errors`.
         assert response.status_code == status.HTTP_200_OK
         errors = response.json()["errors"]
-        _assert_shared_error_body(errors[0]["extensions"], LimitedResource.WEBHOOK_SUBSCRIPTIONS)
+        _assert_shared_error_body(errors[0]["extensions"], WEBHOOK_SUBSCRIPTIONS)
         assert not (
             WebhookConfiguration.objects.filter_by_organization(organization)
             .filter(url="https://example.com/blocked-gql")
@@ -259,7 +258,7 @@ mutation CreateSystemUserToken($input: CreateSystemUserTokenInput!) {
 @pytest.mark.django_db
 class TestPublicApiSystemUserSurfaces:
     def test_rest_create_returns_the_shared_402(self):
-        organization = _organization_at_ceiling(LimitedResource.PUBLIC_API_SYSTEM_USERS, 1)
+        organization = _organization_at_ceiling(PUBLIC_API_SYSTEM_USERS, 1)
         baker.make(
             SystemUser,
             organization=organization,
@@ -280,7 +279,7 @@ class TestPublicApiSystemUserSurfaces:
         )
 
         assert response.status_code == status.HTTP_402_PAYMENT_REQUIRED
-        _assert_shared_error_body(response.json(), LimitedResource.PUBLIC_API_SYSTEM_USERS)
+        _assert_shared_error_body(response.json(), PUBLIC_API_SYSTEM_USERS)
         assert not (
             SystemUser.objects.filter_by_organization(organization)
             .filter(integration_name="surface-blocked")
@@ -291,7 +290,7 @@ class TestPublicApiSystemUserSurfaces:
         """``createSystemUserToken`` is the reseller-facing minting path -- a *different*
         entry point from the REST serializer, routed through the same guarded service."""
         organization = _organization_at_ceiling(
-            LimitedResource.PUBLIC_API_SYSTEM_USERS, 1, can_invite_organizations=True
+            PUBLIC_API_SYSTEM_USERS, 1, can_invite_organizations=True
         )
         auth_service = _container().public_api_auth_service()
         system_user, token = auth_service.create_system_user(
@@ -327,7 +326,7 @@ class TestPublicApiSystemUserSurfaces:
 
         assert response.status_code == status.HTTP_200_OK
         errors = response.json()["errors"]
-        _assert_shared_error_body(errors[0]["extensions"], LimitedResource.PUBLIC_API_SYSTEM_USERS)
+        _assert_shared_error_body(errors[0]["extensions"], PUBLIC_API_SYSTEM_USERS)
         assert not (
             SystemUser.objects.filter_by_organization(organization)
             .filter(integration_name="surface-blocked-gql")
@@ -344,7 +343,7 @@ class TestPublicApiSystemUserSurfaces:
         ``admin:public_api_systemuser_change`` for a ``None`` pk, instead of the 200
         field-error re-render asserted here.
         """
-        organization = _organization_at_ceiling(LimitedResource.PUBLIC_API_SYSTEM_USERS, 1)
+        organization = _organization_at_ceiling(PUBLIC_API_SYSTEM_USERS, 1)
         baker.make(
             SystemUser,
             organization=organization,

@@ -15,6 +15,9 @@ from django.db import transaction
 from django.db.models import Min
 
 from dateutil.rrule import rrulestr
+from vinta_billing.models import MeteredOccurrence, Subscription
+from vinta_billing.services.billing_dataclasses import OccurrenceIdentity
+from vinta_billing.services.subscription_service import resolve_settlement_period
 
 from calendar_integration.models import (
     AvailableTime,
@@ -25,16 +28,18 @@ from calendar_integration.models import (
     EventBulkModification,
     RecurrenceRule,
 )
-from payments.models import MeteredOccurrence, Subscription
-from payments.services.billing_dataclasses import OccurrenceIdentity
-from payments.services.subscription_service import resolve_settlement_period
 from scripts.one_off._base import BaseOneOffScript, ScriptConfig
 
 
 SCRIPT_NAME = "2026-08-05-repair-untruncated-recurring-parents"
 
 RULE_TABLE = "calendar_integration_recurrencerule"
-METERED_TABLE = "payments_meteredoccurrence"
+# Read off the model rather than written as a literal: the billing engine moved to
+# ``vinta-django-billing`` in ``payments/migrations/0024_move_billing_to_vinta_billing.py``,
+# which renamed this table to ``vinta_billing_meteredoccurrence``. The script already
+# imports the live model (it is a one-off, not a migration), so deriving the name keeps
+# it re-runnable instead of pinning it to a table that no longer exists.
+METERED_TABLE = MeteredOccurrence._meta.db_table
 
 # How far a series-root walk may climb before giving up. Mirrors
 # ``MeteringService.MAX_SERIES_CHAIN_DEPTH`` -- ``bulk_modification_parent`` is

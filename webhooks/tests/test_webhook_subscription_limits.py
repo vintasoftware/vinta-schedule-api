@@ -16,11 +16,12 @@ from django.utils import timezone
 
 import pytest
 from model_bakery import baker
+from vinta_billing.constants import BillingState, LimitKind
+from vinta_billing.exceptions import OverLimitError
+from vinta_billing.models import BillingPlan, Subscription, SubscriptionPlanLimit
 
 from organizations.models import Organization
-from payments.billing_constants import BillingState, LimitedResource, LimitKind
-from payments.exceptions import OverLimitError
-from payments.models import BillingPlan, Subscription, SubscriptionPlanLimit
+from payments.seams.resource_keys import WEBHOOK_SUBSCRIPTIONS
 from webhooks.constants import WebhookEventType
 from webhooks.models import WebhookConfiguration
 from webhooks.services.webhook_service import WebhookService
@@ -50,7 +51,7 @@ def _organization_with_limit(limit_value: int | None) -> Organization:
     baker.make(
         SubscriptionPlanLimit,
         subscription=subscription,
-        resource_key=LimitedResource.WEBHOOK_SUBSCRIPTIONS,
+        resource_key=WEBHOOK_SUBSCRIPTIONS,
         limit_value=limit_value,
         kind=LimitKind.PREPAID,
     )
@@ -81,7 +82,7 @@ class TestCreateConfigurationLimit:
                 headers={},
             )
 
-        assert exc_info.value.resource_key == LimitedResource.WEBHOOK_SUBSCRIPTIONS
+        assert exc_info.value.resource_key == WEBHOOK_SUBSCRIPTIONS
         assert exc_info.value.current_usage == 1
         assert exc_info.value.limit == 1
         assert (

@@ -6,8 +6,8 @@ import sys
 
 from django.conf import settings
 
-from payments.constants import PaymentProviders
-from payments.provider_slugs import PAYMENT_PROVIDER_SLUGS
+from vinta_billing.constants import PaymentProviders
+from vinta_billing.provider_slugs import PAYMENT_PROVIDER_SLUGS
 
 
 class TestDefaultPaymentProviderSetting:
@@ -49,9 +49,9 @@ class TestDefaultPaymentProviderSetting:
         """PaymentProviders.values must match the real PAYMENT_PROVIDER_SLUGS tuple.
 
         settings/base.py validates DEFAULT_PAYMENT_PROVIDER against
-        payments.provider_slugs.PAYMENT_PROVIDER_SLUGS (a Django-import-free leaf
+        vinta_billing.provider_slugs.PAYMENT_PROVIDER_SLUGS (a Django-import-free leaf
         module, to avoid an import cycle -- see that module's docstring).
-        payments.constants.PaymentProviders binds its member values to the same
+        vinta_billing.constants.PaymentProviders binds its member values to the same
         constants, so this test compares the two real objects directly rather than a
         hand-copied literal.
         """

@@ -8,12 +8,12 @@ from django.http import (
 )
 
 from dependency_injector.wiring import Provide, inject
+from vinta_billing.entitlement_cache import entitlement_request_cache, has_entitlement_cached
+from vinta_billing.exceptions import OverLimitError
 
 from common.organization_context import organization_context
 from organizations.models import Organization
-from payments.billing_constants import Entitlement
-from payments.entitlement_cache import entitlement_request_cache, has_entitlement_cached
-from payments.exceptions import OverLimitError
+from payments.seams.resource_keys import PARTNER_API
 from public_api.exceptions import InvalidAuthorizationHeaderError, PublicAPIServiceUnavailableError
 from public_api.models import SystemUser
 from public_api.services import PublicAPIAuthService
@@ -21,7 +21,7 @@ from public_api.types import PublicApiHttpRequest
 
 
 if TYPE_CHECKING:
-    from payments.services.entitlement_service import EntitlementService
+    from vinta_billing.services.entitlement_service import EntitlementService
 
 
 class PublicApiSystemUserMiddleware:
@@ -111,7 +111,7 @@ class PublicApiSystemUserMiddleware:
         """
         if entitlement_service is None:
             return False
-        return has_entitlement_cached(entitlement_service, organization, Entitlement.PARTNER_API)
+        return has_entitlement_cached(entitlement_service, organization, PARTNER_API)
 
     def __call__(self, request: HttpRequest) -> HttpResponse:
         # ignore middleware if request is not the graphql endpoint
@@ -124,7 +124,7 @@ class PublicApiSystemUserMiddleware:
         # just the gate below: `resolve_branding_for_display` checks
         # `white_label_branding` inside resolvers, and `brandingForTenant` is an
         # unauthenticated public query with an attacker-supplied `tenant_id`. See
-        # `payments/entitlement_cache.py` for why the cache is scoped rather than
+        # `vinta_billing/entitlement_cache.py` for why the cache is scoped rather than
         # process-wide.
         with entitlement_request_cache():
             if extended_request.get_full_path().startswith("/graphql/"):
@@ -169,7 +169,7 @@ class PublicApiSystemUserMiddleware:
                 if extended_request.public_api_organization is not None and not (
                     self._has_partner_api_entitlement(extended_request.public_api_organization)
                 ):
-                    error = OverLimitError.from_missing_entitlement(Entitlement.PARTNER_API)
+                    error = OverLimitError.from_missing_entitlement(PARTNER_API)
                     return JsonResponse(error.as_error_body(), status=402)
 
                 return self.get_response(extended_request)

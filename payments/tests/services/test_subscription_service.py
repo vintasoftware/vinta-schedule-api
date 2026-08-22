@@ -9,27 +9,33 @@ already-sold subscription. Each subscription keeps its own copy of the limits.
 
 import pytest
 from model_bakery import baker
-
-from organizations.models import Organization
-from payments.billing_constants import BillingState, Entitlement, LimitedResource, LimitKind
-from payments.constants import PaymentProviders
-from payments.exceptions import (
+from vinta_billing.constants import BillingState, LimitKind, PaymentProviders
+from vinta_billing.exceptions import (
     BillingRootCycleError,
     IncompleteBillingPlanError,
     NoDefaultBillingPlanError,
 )
-from payments.models import (
+from vinta_billing.models import (
     BillingPlan,
     PlanEntitlement,
     PlanLimit,
     Subscription,
     SubscriptionPlanLimit,
 )
-from payments.services.subscription_service import (
+from vinta_billing.services.subscription_service import (
     SubscriptionService,
     is_billing_root,
     resolve_billing_root,
 )
+
+from organizations.models import Organization
+from payments.seams.resource_keys import (
+    ORGANIZATION_MEMBERS,
+    PARTNER_API,
+    RESOURCE_CALENDARS,
+    RESOURCE_KEYS,
+)
+from payments.tests.provider_settings import use_providers
 
 
 # This module builds its own Subscription rows (OneToOne with Organization), so it
@@ -66,7 +72,7 @@ def make_complete_plan(limit_values: dict[str, int | None] | None = None) -> Bil
     """
     limit_values = limit_values or {}
     plan = baker.make(BillingPlan, is_default_for_new_organizations=False)
-    for resource_key in LimitedResource.values:
+    for resource_key in RESOURCE_KEYS:
         baker.make(
             PlanLimit,
             plan=plan,
@@ -79,11 +85,11 @@ def make_complete_plan(limit_values: dict[str, int | None] | None = None) -> Bil
 
 @pytest.fixture
 def plan():
-    catalog_plan = make_complete_plan({LimitedResource.ORGANIZATION_MEMBERS: 5})
+    catalog_plan = make_complete_plan({ORGANIZATION_MEMBERS: 5})
     baker.make(
         PlanEntitlement,
         plan=catalog_plan,
-        entitlement_key=Entitlement.PARTNER_API,
+        entitlement_key=PARTNER_API,
         is_enabled=True,
     )
     return catalog_plan
@@ -164,11 +170,11 @@ class TestCreateSubscriptionForOrganization:
 
         subscription = service.create_subscription_for_organization(org, plan=plan)
 
-        limit = subscription.limits.get(resource_key=LimitedResource.ORGANIZATION_MEMBERS)
+        limit = subscription.limits.get(resource_key=ORGANIZATION_MEMBERS)
         assert limit.limit_value == 5
         assert limit.is_overridden is False
 
-        entitlement = subscription.entitlements.get(entitlement_key=Entitlement.PARTNER_API)
+        entitlement = subscription.entitlements.get(entitlement_key=PARTNER_API)
         assert entitlement.is_enabled is True
         assert entitlement.is_overridden is False
 
@@ -227,9 +233,9 @@ class TestCreateSubscriptionForOrganization:
 
         assert result is not None
         assert result.pk == subscription.pk
-        limit = result.limits.get(resource_key=LimitedResource.ORGANIZATION_MEMBERS)
+        limit = result.limits.get(resource_key=ORGANIZATION_MEMBERS)
         assert limit.limit_value == 5
-        entitlement = result.entitlements.get(entitlement_key=Entitlement.PARTNER_API)
+        entitlement = result.entitlements.get(entitlement_key=PARTNER_API)
         assert entitlement.is_enabled is True
 
     def test_idempotent_returns_existing_subscription(self, service, plan):
@@ -262,13 +268,13 @@ class TestCreateSubscriptionResolvesTheProvider:
 
     def _billing_profile_for(self, org: Organization, provider: str):
         return baker.make(
-            "payments.BillingProfile",
+            "vinta_billing.BillingProfile",
             organization=org,
             contact_email="billing@example.com",
             document_type="CPF",
             document_number="12345678900",
             billing_address=baker.make(
-                "payments.BillingAddress",
+                "vinta_billing.BillingAddress",
                 street_name="Test Street",
                 street_number="123",
                 city="Test City",
@@ -301,7 +307,7 @@ class TestCreateSubscriptionResolvesTheProvider:
         assert subscription.payment_provider == PaymentProviders.MERCADOPAGO
 
     def test_unpinned_org_falls_back_to_the_system_default(self, service, plan, settings):
-        settings.DEFAULT_PAYMENT_PROVIDER = PaymentProviders.STRIPE
+        use_providers(settings, default_provider=PaymentProviders.STRIPE)
         org = baker.make(Organization, parent=None)
         self._billing_profile_for(org, "")
 
@@ -315,7 +321,7 @@ class TestCreateSubscriptionResolvesTheProvider:
     ):
         """The common case at organization creation: the ``Subscription`` is
         created before any ``BillingProfile`` exists."""
-        settings.DEFAULT_PAYMENT_PROVIDER = PaymentProviders.STRIPE
+        use_providers(settings, default_provider=PaymentProviders.STRIPE)
         org = baker.make(Organization, parent=None)
 
         subscription = service.create_subscription_for_organization(org, plan=plan)
@@ -330,11 +336,11 @@ class TestChangePlan:
         org = baker.make(Organization, parent=None)
         subscription = service.create_subscription_for_organization(org, plan=plan)
 
-        new_plan = make_complete_plan({LimitedResource.ORGANIZATION_MEMBERS: 20})
+        new_plan = make_complete_plan({ORGANIZATION_MEMBERS: 20})
         baker.make(
             PlanEntitlement,
             plan=new_plan,
-            entitlement_key=Entitlement.PARTNER_API,
+            entitlement_key=PARTNER_API,
             is_enabled=False,
         )
 
@@ -342,22 +348,22 @@ class TestChangePlan:
         subscription.refresh_from_db()
 
         assert subscription.plan == new_plan
-        limit = subscription.limits.get(resource_key=LimitedResource.ORGANIZATION_MEMBERS)
+        limit = subscription.limits.get(resource_key=ORGANIZATION_MEMBERS)
         assert limit.limit_value == 20
         assert limit.is_overridden is False
-        entitlement = subscription.entitlements.get(entitlement_key=Entitlement.PARTNER_API)
+        entitlement = subscription.entitlements.get(entitlement_key=PARTNER_API)
         assert entitlement.is_enabled is False
 
     def test_overridden_limit_survives_plan_change_untouched(self, service, plan):
         org = baker.make(Organization, parent=None)
         subscription = service.create_subscription_for_organization(org, plan=plan)
 
-        overridden = subscription.limits.get(resource_key=LimitedResource.ORGANIZATION_MEMBERS)
+        overridden = subscription.limits.get(resource_key=ORGANIZATION_MEMBERS)
         overridden.limit_value = 999
         overridden.is_overridden = True
         overridden.save()
 
-        new_plan = make_complete_plan({LimitedResource.ORGANIZATION_MEMBERS: 20})
+        new_plan = make_complete_plan({ORGANIZATION_MEMBERS: 20})
 
         service.change_plan(subscription, new_plan)
         overridden.refresh_from_db()
@@ -369,7 +375,7 @@ class TestChangePlan:
         org = baker.make(Organization, parent=None)
         subscription = service.create_subscription_for_organization(org, plan=plan)
 
-        overridden = subscription.entitlements.get(entitlement_key=Entitlement.PARTNER_API)
+        overridden = subscription.entitlements.get(entitlement_key=PARTNER_API)
         overridden.is_enabled = False
         overridden.is_overridden = True
         overridden.save()
@@ -378,7 +384,7 @@ class TestChangePlan:
         baker.make(
             PlanEntitlement,
             plan=new_plan,
-            entitlement_key=Entitlement.PARTNER_API,
+            entitlement_key=PARTNER_API,
             is_enabled=True,
         )
 
@@ -395,11 +401,11 @@ class TestChangePlan:
         org = baker.make(Organization, parent=None)
         subscription = service.create_subscription_for_organization(org, plan=plan)
 
-        catalog_limit = plan.limits.get(resource_key=LimitedResource.ORGANIZATION_MEMBERS)
+        catalog_limit = plan.limits.get(resource_key=ORGANIZATION_MEMBERS)
         catalog_limit.limit_value = 1
         catalog_limit.save()
 
-        sub_limit = subscription.limits.get(resource_key=LimitedResource.ORGANIZATION_MEMBERS)
+        sub_limit = subscription.limits.get(resource_key=ORGANIZATION_MEMBERS)
         assert sub_limit.limit_value == 5
 
     def test_downgrade_revokes_an_entitlement_absent_from_the_new_plan(self, service):
@@ -416,11 +422,11 @@ class TestChangePlan:
         baker.make(
             PlanEntitlement,
             plan=old_plan,
-            entitlement_key=Entitlement.PARTNER_API,
+            entitlement_key=PARTNER_API,
             is_enabled=True,
         )
         subscription = service.create_subscription_for_organization(org, plan=old_plan)
-        assert subscription.entitlements.filter(entitlement_key=Entitlement.PARTNER_API).exists()
+        assert subscription.entitlements.filter(entitlement_key=PARTNER_API).exists()
 
         # new_plan omits PARTNER_API entirely. Entitlement coverage is *not* an
         # invariant the way limit coverage is: absence fails closed, so an omitted
@@ -429,9 +435,7 @@ class TestChangePlan:
 
         service.change_plan(subscription, new_plan)
 
-        assert not subscription.entitlements.filter(
-            entitlement_key=Entitlement.PARTNER_API
-        ).exists()
+        assert not subscription.entitlements.filter(entitlement_key=PARTNER_API).exists()
 
     def test_downgrade_drops_a_retired_resource_key(self, service):
         """A `resource_key` that is no longer a `LimitedResource` member can never
@@ -478,7 +482,7 @@ class TestChangePlan:
         subscription = service.create_subscription_for_organization(org)
         assert subscription is not None
         assert subscription.plan.slug == "unlimited"
-        stale_row = subscription.limits.get(resource_key=LimitedResource.RESOURCE_CALENDARS)
+        stale_row = subscription.limits.get(resource_key=RESOURCE_CALENDARS)
         assert stale_row.limit_value is None, (
             "This test is only meaningful while the retained row is NULL -- that is "
             "the state a retain-the-stale-row fix silently reads as unlimited."
@@ -488,8 +492,8 @@ class TestChangePlan:
         # catalog expresses "not included" with an explicit limit_value=0 row (as the
         # seeded `free` plan does for public_api_system_users), never by omission.
         incomplete_plan = baker.make(BillingPlan, is_default_for_new_organizations=False)
-        for resource_key in LimitedResource.values:
-            if resource_key == LimitedResource.RESOURCE_CALENDARS:
+        for resource_key in RESOURCE_KEYS:
+            if resource_key == RESOURCE_CALENDARS:
                 continue
             baker.make(
                 PlanLimit,
@@ -502,18 +506,16 @@ class TestChangePlan:
         with pytest.raises(IncompleteBillingPlanError) as exc_info:
             service.change_plan(subscription, incomplete_plan)
 
-        assert exc_info.value.missing_resource_keys == [LimitedResource.RESOURCE_CALENDARS]
+        assert exc_info.value.missing_resource_keys == [RESOURCE_CALENDARS]
         subscription.refresh_from_db()
         assert subscription.plan.slug == "unlimited", (
             "The plan change must not have been applied -- the guard runs before any "
             "write, so the subscription stays coherent with the limits it carries."
         )
         assert subscription.limits.filter(
-            resource_key=LimitedResource.ORGANIZATION_MEMBERS, limit_value=None
+            resource_key=ORGANIZATION_MEMBERS, limit_value=None
         ).exists()
-        assert entitlement_service.get_effective_limit(
-            org, LimitedResource.RESOURCE_CALENDARS
-        ).is_unlimited, (
+        assert entitlement_service.get_effective_limit(org, RESOURCE_CALENDARS).is_unlimited, (
             "Still on `unlimited`, so unlimited is the right answer here. The bug was "
             "reporting unlimited while the subscription claimed a restricted plan."
         )
@@ -529,20 +531,15 @@ class TestChangePlan:
         than the NULL case, not a right one.
         """
         org = baker.make(Organization, parent=None)
-        old_plan = make_complete_plan({LimitedResource.RESOURCE_CALENDARS: 3})
+        old_plan = make_complete_plan({RESOURCE_CALENDARS: 3})
         subscription = service.create_subscription_for_organization(org, plan=old_plan)
-        assert (
-            entitlement_service.get_effective_limit(
-                org, LimitedResource.RESOURCE_CALENDARS
-            ).limit_value
-            == 3
-        )
+        assert entitlement_service.get_effective_limit(org, RESOURCE_CALENDARS).limit_value == 3
 
         incomplete_plan = baker.make(BillingPlan, is_default_for_new_organizations=False)
         baker.make(
             PlanLimit,
             plan=incomplete_plan,
-            resource_key=LimitedResource.ORGANIZATION_MEMBERS,
+            resource_key=ORGANIZATION_MEMBERS,
             limit_value=1,
             kind=LimitKind.PREPAID,
         )
@@ -550,15 +547,10 @@ class TestChangePlan:
         with pytest.raises(IncompleteBillingPlanError) as exc_info:
             service.change_plan(subscription, incomplete_plan)
 
-        assert LimitedResource.RESOURCE_CALENDARS in exc_info.value.missing_resource_keys
+        assert RESOURCE_CALENDARS in exc_info.value.missing_resource_keys
         subscription.refresh_from_db()
         assert subscription.plan == old_plan
-        assert (
-            entitlement_service.get_effective_limit(
-                org, LimitedResource.RESOURCE_CALENDARS
-            ).limit_value
-            == 3
-        )
+        assert entitlement_service.get_effective_limit(org, RESOURCE_CALENDARS).limit_value == 3
 
     def test_creating_a_subscription_on_an_incomplete_plan_is_refused(self, service):
         """`change_plan` is not the only path that puts a subscription on a plan --
@@ -590,7 +582,7 @@ class TestChangePlan:
             kind=LimitKind.PREPAID,
             is_overridden=True,
         )
-        overridden = subscription.limits.get(resource_key=LimitedResource.ORGANIZATION_MEMBERS)
+        overridden = subscription.limits.get(resource_key=ORGANIZATION_MEMBERS)
         overridden.is_overridden = True
         overridden.save()
         overridden_limit_value = overridden.limit_value

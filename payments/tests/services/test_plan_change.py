@@ -4,8 +4,9 @@
 Every test here drives a hand-written ``FakePaymentService`` double rather than
 mocking individual adapter calls. What matters to this suite is *when* the
 provider is driven and *when* capacity is granted, not the wire shape of any one
-provider (that is the adapter tests' job, e.g.
-``test_mercadopago_subscription_adapter.py``/``test_stripe_subscription_adapter.py``).
+provider (that is the adapter tests' job, e.g. the package's own
+``tests/services/subscription_adapters/test_mercadopago_subscription_adapter.py``/
+``tests/services/subscription_adapters/test_stripe_subscription_adapter.py``).
 """
 
 import datetime
@@ -16,23 +17,20 @@ from django.utils import timezone
 
 import pytest
 from model_bakery import baker
-
-from organizations.models import Organization
-from payments.billing_constants import (
+from vinta_billing.constants import (
     BillingInterval,
     BillingState,
-    Entitlement,
-    LimitedResource,
     LimitKind,
+    PaymentProviders,
+    PaymentStatuses,
 )
-from payments.constants import PaymentProviders, PaymentStatuses
-from payments.exceptions import (
+from vinta_billing.exceptions import (
     AddOnNotPurchasableError,
     IncompleteBillingPlanError,
     PaymentTokenRequiredError,
     UnconfirmedPlanChangeError,
 )
-from payments.models import (
+from vinta_billing.models import (
     BillingPlan,
     Payment,
     PaymentMethod,
@@ -42,9 +40,17 @@ from payments.models import (
     SubscriptionAddOn,
     SubscriptionPlanLimit,
 )
-from payments.services.dataclasses import CreatedPlan
-from payments.services.entitlement_service import EntitlementService
-from payments.services.subscription_service import SubscriptionService
+from vinta_billing.services.dataclasses import CreatedPlan
+from vinta_billing.services.entitlement_service import EntitlementService
+from vinta_billing.services.subscription_service import SubscriptionService
+
+from organizations.models import Organization
+from payments.seams.resource_keys import (
+    ORGANIZATION_MEMBERS,
+    PARTNER_API,
+    RESOURCE_CALENDARS,
+    RESOURCE_KEYS,
+)
 
 
 # This module builds its own Subscription rows (OneToOne with Organization), so it
@@ -71,7 +77,7 @@ def make_complete_plan(
         annual_price=annual_price,
         grace_period_days=grace_period_days,
     )
-    for resource_key in LimitedResource.values:
+    for resource_key in RESOURCE_KEYS:
         baker.make(
             PlanLimit,
             plan=plan,
@@ -91,7 +97,7 @@ def organization():
 @pytest.fixture
 def billing_profile(organization):
     billing_address = baker.make(
-        "payments.BillingAddress",
+        "vinta_billing.BillingAddress",
         street_name="Test Street",
         street_number="123",
         city="Test City",
@@ -100,7 +106,7 @@ def billing_profile(organization):
         zip_code="12345",
     )
     return baker.make(
-        "payments.BillingProfile",
+        "vinta_billing.BillingProfile",
         organization=organization,
         contact_email="billing@example.com",
         document_type="CPF",
@@ -199,7 +205,7 @@ class FakePaymentService:
         self.calls.append("create_payment")
         self.idempotency_keys.append(idempotency_key)
         return baker.make(
-            "payments.Payment",
+            "vinta_billing.Payment",
             billing_profile=organization.billing_profile,
             currency=currency,
             value=amount,
@@ -229,12 +235,8 @@ class TestUpgrade:
     def test_upgrade_flips_plan_immediately_but_grants_no_capacity(
         self, service, fake_payment_service, organization, billing_profile
     ):
-        free_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 3}, monthly_price=Decimal("0")
-        )
-        pro_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50")
-        )
+        free_plan = make_complete_plan({ORGANIZATION_MEMBERS: 3}, monthly_price=Decimal("0"))
+        pro_plan = make_complete_plan({ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50"))
         # The organization's pin and the subscription's own stored provider are
         # deliberately made to *disagree*
         # here. `external_id` is blank (no token has ever been attached), so
@@ -259,7 +261,7 @@ class TestUpgrade:
         assert result.plan_id == pro_plan.pk
         # Capacity is NOT granted synchronously -- an initiated-but-unconfirmed
         # upgrade must not lift the ceiling.
-        limit = result.limits.get(resource_key=LimitedResource.ORGANIZATION_MEMBERS)
+        limit = result.limits.get(resource_key=ORGANIZATION_MEMBERS)
         assert limit.limit_value == 3
         assert result.billing_state == BillingState.FREE
         # First-ever paid plan: create the provider-side plan, then attach the
@@ -279,12 +281,8 @@ class TestUpgrade:
         applies unchanged -- the row's own stored provider drives the charge and
         is never overwritten by the organization's current pin, even when the
         two disagree."""
-        free_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 3}, monthly_price=Decimal("0")
-        )
-        pro_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50")
-        )
+        free_plan = make_complete_plan({ORGANIZATION_MEMBERS: 3}, monthly_price=Decimal("0"))
+        pro_plan = make_complete_plan({ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50"))
         billing_profile.payment_provider = PaymentProviders.STRIPE
         billing_profile.save(update_fields=["payment_provider"])
         subscription = _subscription_for(organization, free_plan, external_id="already-on-file")
@@ -306,12 +304,8 @@ class TestUpgrade:
     def test_upgrade_without_a_token_when_none_on_file_raises_and_writes_nothing(
         self, service, fake_payment_service, organization, billing_profile
     ):
-        free_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 3}, monthly_price=Decimal("0")
-        )
-        pro_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50")
-        )
+        free_plan = make_complete_plan({ORGANIZATION_MEMBERS: 3}, monthly_price=Decimal("0"))
+        pro_plan = make_complete_plan({ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50"))
         subscription = _subscription_for(organization, free_plan)
 
         with pytest.raises(PaymentTokenRequiredError):
@@ -324,15 +318,9 @@ class TestUpgrade:
     def test_second_upgrade_reuses_the_existing_instrument_no_token_needed(
         self, service, fake_payment_service, organization, billing_profile
     ):
-        free_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 3}, monthly_price=Decimal("0")
-        )
-        pro_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50")
-        )
-        premium_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 200}, monthly_price=Decimal("200")
-        )
+        free_plan = make_complete_plan({ORGANIZATION_MEMBERS: 3}, monthly_price=Decimal("0"))
+        pro_plan = make_complete_plan({ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50"))
+        premium_plan = make_complete_plan({ORGANIZATION_MEMBERS: 200}, monthly_price=Decimal("200"))
         subscription = _subscription_for(organization, free_plan, external_id="already-on-file")
 
         result = service.request_plan_change(subscription, pro_plan, BillingInterval.MONTHLY)
@@ -350,15 +338,9 @@ class TestUpgrade:
     def test_confirm_plan_change_grants_capacity_and_activates(
         self, service, fake_payment_service, organization, billing_profile
     ):
-        free_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 3}, monthly_price=Decimal("0")
-        )
-        pro_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50")
-        )
-        baker.make(
-            PlanEntitlement, plan=pro_plan, entitlement_key=Entitlement.PARTNER_API, is_enabled=True
-        )
+        free_plan = make_complete_plan({ORGANIZATION_MEMBERS: 3}, monthly_price=Decimal("0"))
+        pro_plan = make_complete_plan({ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50"))
+        baker.make(PlanEntitlement, plan=pro_plan, entitlement_key=PARTNER_API, is_enabled=True)
         subscription = _subscription_for(organization, free_plan)
 
         subscription = service.request_plan_change(
@@ -366,9 +348,9 @@ class TestUpgrade:
         )
         subscription = service.confirm_plan_change(subscription)
 
-        limit = subscription.limits.get(resource_key=LimitedResource.ORGANIZATION_MEMBERS)
+        limit = subscription.limits.get(resource_key=ORGANIZATION_MEMBERS)
         assert limit.limit_value == 50
-        entitlement = subscription.entitlements.get(entitlement_key=Entitlement.PARTNER_API)
+        entitlement = subscription.entitlements.get(entitlement_key=PARTNER_API)
         assert entitlement.is_enabled is True
         assert subscription.billing_state == BillingState.ACTIVE
 
@@ -378,8 +360,8 @@ class TestUpgrade:
         """A routine renewal charge re-runs this on every approved payment, not
         only the first one after an upgrade -- must not raise or duplicate rows
         on a second call."""
-        free_plan = make_complete_plan({LimitedResource.ORGANIZATION_MEMBERS: 3})
-        pro_plan = make_complete_plan({LimitedResource.ORGANIZATION_MEMBERS: 50})
+        free_plan = make_complete_plan({ORGANIZATION_MEMBERS: 3})
+        pro_plan = make_complete_plan({ORGANIZATION_MEMBERS: 50})
         subscription = _subscription_for(organization, free_plan)
         subscription.plan = pro_plan
         subscription.save(update_fields=["plan"])
@@ -387,15 +369,12 @@ class TestUpgrade:
         service.confirm_plan_change(subscription)
         service.confirm_plan_change(subscription)
 
-        assert (
-            subscription.limits.filter(resource_key=LimitedResource.ORGANIZATION_MEMBERS).count()
-            == 1
-        )
+        assert subscription.limits.filter(resource_key=ORGANIZATION_MEMBERS).count() == 1
 
     def test_upgrade_onto_an_incomplete_plan_is_refused(
         self, service, organization, billing_profile
     ):
-        free_plan = make_complete_plan({LimitedResource.ORGANIZATION_MEMBERS: 3})
+        free_plan = make_complete_plan({ORGANIZATION_MEMBERS: 3})
         incomplete_plan = baker.make(
             BillingPlan, is_default_for_new_organizations=False, monthly_price=Decimal("999")
         )
@@ -409,7 +388,7 @@ class TestUpgrade:
     def test_already_on_the_target_plan_is_a_no_op(
         self, service, fake_payment_service, organization, billing_profile
     ):
-        plan = make_complete_plan({LimitedResource.ORGANIZATION_MEMBERS: 3})
+        plan = make_complete_plan({ORGANIZATION_MEMBERS: 3})
         subscription = _subscription_for(organization, plan)
 
         result = service.request_plan_change(subscription, plan, BillingInterval.MONTHLY)
@@ -424,12 +403,8 @@ class TestUpgrade:
         crash-after-charge / retry cannot re-drive it into a second
         subscription. Asserted at the seam regardless of transaction settings.
         It does not depend on any inner atomic committing."""
-        free_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 3}, monthly_price=Decimal("0")
-        )
-        pro_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50")
-        )
+        free_plan = make_complete_plan({ORGANIZATION_MEMBERS: 3}, monthly_price=Decimal("0"))
+        pro_plan = make_complete_plan({ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50"))
         subscription = _subscription_for(organization, free_plan)
 
         service.request_plan_change(
@@ -449,12 +424,8 @@ class TestUpgrade:
         """A second request for the plan already initiated (e.g. a double-click,
         or a client retry) is a no-op under the row-lock re-check. It must not
         drive the provider a second time."""
-        free_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 3}, monthly_price=Decimal("0")
-        )
-        pro_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50")
-        )
+        free_plan = make_complete_plan({ORGANIZATION_MEMBERS: 3}, monthly_price=Decimal("0"))
+        pro_plan = make_complete_plan({ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50"))
         subscription = _subscription_for(organization, free_plan)
 
         service.request_plan_change(
@@ -482,15 +453,9 @@ class TestUpgrade:
         """Initiating a *different* upgrade before the first's charge confirms
         would make the first webhook grant the later tier's capacity. It is
         rejected until the in-flight change settles."""
-        free_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 3}, monthly_price=Decimal("0")
-        )
-        pro_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50")
-        )
-        premium_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 200}, monthly_price=Decimal("200")
-        )
+        free_plan = make_complete_plan({ORGANIZATION_MEMBERS: 3}, monthly_price=Decimal("0"))
+        pro_plan = make_complete_plan({ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50"))
+        premium_plan = make_complete_plan({ORGANIZATION_MEMBERS: 200}, monthly_price=Decimal("200"))
         subscription = _subscription_for(organization, free_plan)
 
         service.request_plan_change(
@@ -518,15 +483,9 @@ class TestUpgrade:
     ):
         """The unconfirmed-change guard clears on confirmation, so a genuinely
         sequential upgrade still works (regression guard for the reject above)."""
-        free_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 3}, monthly_price=Decimal("0")
-        )
-        pro_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50")
-        )
-        premium_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 200}, monthly_price=Decimal("200")
-        )
+        free_plan = make_complete_plan({ORGANIZATION_MEMBERS: 3}, monthly_price=Decimal("0"))
+        pro_plan = make_complete_plan({ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50"))
+        premium_plan = make_complete_plan({ORGANIZATION_MEMBERS: 200}, monthly_price=Decimal("200"))
         subscription = _subscription_for(organization, free_plan, external_id="already-on-file")
 
         result = service.request_plan_change(subscription, pro_plan, BillingInterval.MONTHLY)
@@ -540,17 +499,13 @@ class TestDowngrade:
     def test_downgrade_applies_lower_limits_immediately(
         self, service, fake_payment_service, organization, billing_profile
     ):
-        pro_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50")
-        )
-        free_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 3}, monthly_price=Decimal("0")
-        )
+        pro_plan = make_complete_plan({ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50"))
+        free_plan = make_complete_plan({ORGANIZATION_MEMBERS: 3}, monthly_price=Decimal("0"))
         subscription = _subscription_for(organization, pro_plan, external_id="already-on-file")
 
         result = service.request_plan_change(subscription, free_plan, BillingInterval.MONTHLY)
 
-        limit = result.limits.get(resource_key=LimitedResource.ORGANIZATION_MEMBERS)
+        limit = result.limits.get(resource_key=ORGANIZATION_MEMBERS)
         assert limit.limit_value == 3
         # No cash refund / no provider round trip for a downgrade.
         assert fake_payment_service.calls == []
@@ -558,12 +513,8 @@ class TestDowngrade:
     def test_downgrade_does_not_flip_plan_until_the_boundary(
         self, service, organization, billing_profile
     ):
-        pro_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50")
-        )
-        free_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 3}, monthly_price=Decimal("0")
-        )
+        pro_plan = make_complete_plan({ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50"))
+        free_plan = make_complete_plan({ORGANIZATION_MEMBERS: 3}, monthly_price=Decimal("0"))
         subscription = _subscription_for(organization, pro_plan, external_id="already-on-file")
 
         result = service.request_plan_change(subscription, free_plan, BillingInterval.MONTHLY)
@@ -573,11 +524,9 @@ class TestDowngrade:
         assert result.pending_plan_effective_at == result.current_period_end
 
     def test_downgrade_stamps_a_grace_window(self, service, organization, billing_profile):
-        pro_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50")
-        )
+        pro_plan = make_complete_plan({ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50"))
         free_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 3},
+            {ORGANIZATION_MEMBERS: 3},
             monthly_price=Decimal("0"),
             grace_period_days=14,
         )
@@ -596,12 +545,8 @@ class TestDowngrade:
         downgrade is in its grace window must NOT restore the old higher plan's
         limits. `subscription.plan` is still the paid higher plan, but
         `confirm_plan_change` must sync from the pending (lower) plan."""
-        pro_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50")
-        )
-        free_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 3}, monthly_price=Decimal("0")
-        )
+        pro_plan = make_complete_plan({ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50"))
+        free_plan = make_complete_plan({ORGANIZATION_MEMBERS: 3}, monthly_price=Decimal("0"))
         subscription = _subscription_for(organization, pro_plan, external_id="already-on-file")
         service.request_plan_change(subscription, free_plan, BillingInterval.MONTHLY)
         subscription.refresh_from_db()
@@ -610,7 +555,7 @@ class TestDowngrade:
         service.confirm_plan_change(subscription)
 
         limit = SubscriptionPlanLimit.objects.get(
-            subscription=subscription, resource_key=LimitedResource.ORGANIZATION_MEMBERS
+            subscription=subscription, resource_key=ORGANIZATION_MEMBERS
         )
         # Stays at the lower (downgrade-target) ceiling, not the paid plan's 50.
         assert limit.limit_value == 3
@@ -626,18 +571,14 @@ class TestDowngrade:
         deletes), but a *new* create above the lower ceiling must be blocked
         right away -- proven directly against `SubscriptionPlanLimit`, the row
         `EntitlementService` reads."""
-        pro_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50")
-        )
-        free_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 1}, monthly_price=Decimal("0")
-        )
+        pro_plan = make_complete_plan({ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50"))
+        free_plan = make_complete_plan({ORGANIZATION_MEMBERS: 1}, monthly_price=Decimal("0"))
         subscription = _subscription_for(organization, pro_plan, external_id="already-on-file")
 
         service.request_plan_change(subscription, free_plan, BillingInterval.MONTHLY)
 
         limit = SubscriptionPlanLimit.objects.get(
-            subscription=subscription, resource_key=LimitedResource.ORGANIZATION_MEMBERS
+            subscription=subscription, resource_key=ORGANIZATION_MEMBERS
         )
         assert limit.limit_value == 1
 
@@ -651,19 +592,17 @@ class TestDowngradeDrivesGraceForTheSweep:
     downgrade drives ``billing_state`` into GRACE too, putting it on the one
     path the sweep already watches. This is checked here at the driver. The
     sweep side (``DunningService._process_grace`` skipping the charge retry,
-    and ``expire_grace`` resolving against the just-applied limits) is proven in
-    ``test_dunning_service.py``.
+    and ``expire_grace`` resolving against the just-applied limits) is proven
+    in the package's own ``tests/test_dunning.py``
+    (``test_a_downgrade_grace_is_never_retried`` /
+    ``TestExpireGrace``).
     """
 
     def test_downgrade_from_active_moves_billing_state_to_grace(
         self, service, organization, billing_profile
     ):
-        pro_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50")
-        )
-        free_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 1}, monthly_price=Decimal("0")
-        )
+        pro_plan = make_complete_plan({ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50"))
+        free_plan = make_complete_plan({ORGANIZATION_MEMBERS: 1}, monthly_price=Decimal("0"))
         subscription = _subscription_for(
             organization, pro_plan, external_id="already-on-file", billing_state=BillingState.ACTIVE
         )
@@ -682,12 +621,8 @@ class TestDowngradeDrivesGraceForTheSweep:
         (``LEGAL_BILLING_STATE_TRANSITIONS``) -- the downgrade itself (limits,
         ``pending_plan``, ``grace_period_ends_at``) must still apply; only the
         ``billing_state`` write is refused and swallowed."""
-        pro_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50")
-        )
-        free_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 1}, monthly_price=Decimal("0")
-        )
+        pro_plan = make_complete_plan({ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50"))
+        free_plan = make_complete_plan({ORGANIZATION_MEMBERS: 1}, monthly_price=Decimal("0"))
         subscription = _subscription_for(
             organization,
             pro_plan,
@@ -702,7 +637,7 @@ class TestDowngradeDrivesGraceForTheSweep:
         assert result.pending_plan_id == free_plan.pk
         assert result.grace_period_ends_at is not None
         limit = SubscriptionPlanLimit.objects.get(
-            subscription=subscription, resource_key=LimitedResource.ORGANIZATION_MEMBERS
+            subscription=subscription, resource_key=ORGANIZATION_MEMBERS
         )
         assert limit.limit_value == 1
 
@@ -712,12 +647,8 @@ class TestDowngradeDrivesGraceForTheSweep:
         """The ``(FREE, GRACE)`` edge, not only ``(ACTIVE, GRACE)`` -- a
         downgrade can be requested from FREE too (e.g. a reseller moving a
         pooled child's effective plan down)."""
-        pro_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50")
-        )
-        free_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 1}, monthly_price=Decimal("0")
-        )
+        pro_plan = make_complete_plan({ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50"))
+        free_plan = make_complete_plan({ORGANIZATION_MEMBERS: 1}, monthly_price=Decimal("0"))
         subscription = _subscription_for(
             organization, pro_plan, external_id="already-on-file", billing_state=BillingState.FREE
         )
@@ -732,15 +663,9 @@ class TestDowngradeDrivesGraceForTheSweep:
     ):
         """A second downgrade requested while already GRACE from the first one
         must not raise (GRACE -> GRACE is the machine's same-state no-op)."""
-        pro_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50")
-        )
-        mid_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 10}, monthly_price=Decimal("10")
-        )
-        free_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 1}, monthly_price=Decimal("0")
-        )
+        pro_plan = make_complete_plan({ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50"))
+        mid_plan = make_complete_plan({ORGANIZATION_MEMBERS: 10}, monthly_price=Decimal("10"))
+        free_plan = make_complete_plan({ORGANIZATION_MEMBERS: 1}, monthly_price=Decimal("0"))
         subscription = _subscription_for(organization, pro_plan, external_id="already-on-file")
 
         service.request_plan_change(subscription, mid_plan, BillingInterval.MONTHLY)
@@ -785,14 +710,12 @@ class TestPurchaseAddOn:
     def test_purchase_creates_an_inactive_add_on_and_charges_once(
         self, service, fake_payment_service, organization, billing_profile
     ):
-        plan = make_complete_plan(
-            {LimitedResource.RESOURCE_CALENDARS: 3}, overage_unit_price=Decimal("2.5000")
-        )
+        plan = make_complete_plan({RESOURCE_CALENDARS: 3}, overage_unit_price=Decimal("2.5000"))
         subscription = _subscription_for(organization, plan)
 
         add_on = service.purchase_add_on(
             subscription,
-            LimitedResource.RESOURCE_CALENDARS,
+            RESOURCE_CALENDARS,
             quantity=2,
             is_recurring=False,
             idempotency_key="idem-1",
@@ -804,21 +727,17 @@ class TestPurchaseAddOn:
         assert add_on.payment.value == Decimal("5.0000")
         assert fake_payment_service.calls == ["create_payment"]
         # Initiated-but-unconfirmed purchase grants no capacity.
-        effective_limit = EntitlementService().get_effective_limit(
-            organization, LimitedResource.RESOURCE_CALENDARS
-        )
+        effective_limit = EntitlementService().get_effective_limit(organization, RESOURCE_CALENDARS)
         assert effective_limit.limit_value == 3
 
     def test_confirming_the_payment_activates_and_lifts_the_effective_limit(
         self, service, organization, billing_profile
     ):
-        plan = make_complete_plan(
-            {LimitedResource.RESOURCE_CALENDARS: 3}, overage_unit_price=Decimal("2.5000")
-        )
+        plan = make_complete_plan({RESOURCE_CALENDARS: 3}, overage_unit_price=Decimal("2.5000"))
         subscription = _subscription_for(organization, plan)
         add_on = service.purchase_add_on(
             subscription,
-            LimitedResource.RESOURCE_CALENDARS,
+            RESOURCE_CALENDARS,
             quantity=2,
             is_recurring=False,
             idempotency_key="idem-1",
@@ -827,22 +746,18 @@ class TestPurchaseAddOn:
 
         service.activate_add_on(add_on)
 
-        effective_limit = EntitlementService().get_effective_limit(
-            organization, LimitedResource.RESOURCE_CALENDARS
-        )
+        effective_limit = EntitlementService().get_effective_limit(organization, RESOURCE_CALENDARS)
         assert effective_limit.limit_value == 5
 
     def test_same_idempotency_key_twice_yields_one_add_on_and_one_charge(
         self, service, fake_payment_service, organization, billing_profile
     ):
-        plan = make_complete_plan(
-            {LimitedResource.RESOURCE_CALENDARS: 3}, overage_unit_price=Decimal("2.5000")
-        )
+        plan = make_complete_plan({RESOURCE_CALENDARS: 3}, overage_unit_price=Decimal("2.5000"))
         subscription = _subscription_for(organization, plan)
 
         first = service.purchase_add_on(
             subscription,
-            LimitedResource.RESOURCE_CALENDARS,
+            RESOURCE_CALENDARS,
             quantity=2,
             is_recurring=False,
             idempotency_key="idem-1",
@@ -850,7 +765,7 @@ class TestPurchaseAddOn:
         )
         second = service.purchase_add_on(
             subscription,
-            LimitedResource.RESOURCE_CALENDARS,
+            RESOURCE_CALENDARS,
             quantity=2,
             is_recurring=False,
             idempotency_key="idem-1",
@@ -868,14 +783,12 @@ class TestPurchaseAddOn:
         charge that succeeded before a rollback is not re-issued when the dedup
         row vanishes and the retry `get_or_create`s a fresh one. Asserted at
         the seam, independent of whether the local dedup row committed."""
-        plan = make_complete_plan(
-            {LimitedResource.RESOURCE_CALENDARS: 3}, overage_unit_price=Decimal("2.5000")
-        )
+        plan = make_complete_plan({RESOURCE_CALENDARS: 3}, overage_unit_price=Decimal("2.5000"))
         subscription = _subscription_for(organization, plan)
 
         service.purchase_add_on(
             subscription,
-            LimitedResource.RESOURCE_CALENDARS,
+            RESOURCE_CALENDARS,
             quantity=2,
             is_recurring=False,
             idempotency_key="idem-add-on-key",
@@ -887,13 +800,13 @@ class TestPurchaseAddOn:
     def test_purchasing_a_resource_with_no_overage_price_is_refused(
         self, service, organization, billing_profile
     ):
-        plan = make_complete_plan({LimitedResource.RESOURCE_CALENDARS: 3})
+        plan = make_complete_plan({RESOURCE_CALENDARS: 3})
         subscription = _subscription_for(organization, plan)
 
         with pytest.raises(AddOnNotPurchasableError):
             service.purchase_add_on(
                 subscription,
-                LimitedResource.RESOURCE_CALENDARS,
+                RESOURCE_CALENDARS,
                 quantity=2,
                 is_recurring=False,
                 idempotency_key="idem-1",
@@ -905,13 +818,11 @@ class TestPurchaseAddOn:
     def test_cancel_add_on_stops_recurrence_without_dropping_current_capacity(
         self, service, organization, billing_profile
     ):
-        plan = make_complete_plan(
-            {LimitedResource.RESOURCE_CALENDARS: 3}, overage_unit_price=Decimal("2.5000")
-        )
+        plan = make_complete_plan({RESOURCE_CALENDARS: 3}, overage_unit_price=Decimal("2.5000"))
         subscription = _subscription_for(organization, plan)
         add_on = service.purchase_add_on(
             subscription,
-            LimitedResource.RESOURCE_CALENDARS,
+            RESOURCE_CALENDARS,
             quantity=2,
             is_recurring=True,
             idempotency_key="idem-1",

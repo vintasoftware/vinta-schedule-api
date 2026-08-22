@@ -5,6 +5,7 @@ from typing import Any, ClassVar
 from django.conf import settings
 from django.db import models
 
+from vinta_billing.entitlement_cache import has_entitlement_cached
 from vinta_orgs.models import AbstractOrganization, AbstractOrganizationMembership
 
 from common.fields import OrganizationMembershipForeignKey
@@ -15,8 +16,7 @@ from organizations.managers import (
 )
 from organizations.permission_catalog import GROUP_ORGANIZATION_MEMBER, INVITABLE_GROUPS
 from organizations.slug_generation import derive_organization_slug
-from payments.billing_constants import Entitlement
-from payments.entitlement_cache import has_entitlement_cached
+from payments.seams.resource_keys import WHITE_LABEL_BRANDING
 from s3direct_overrides.model_fields import S3DirectImageField
 
 
@@ -528,7 +528,7 @@ def resolve_branding_for_display(org: Organization | None) -> OrganizationBrandi
 
     The entitlement is resolved at the reseller's own billing root, which may differ
     from the branding root when the reseller itself pools against a grandparent — see
-    ``payments.services.subscription_service.resolve_billing_root``. A reseller whose
+    ``vinta_billing.services.subscription_service.resolve_billing_root``. A reseller whose
     plan does not grant the entitlement is treated identically to one with no branding
     row: every presentation caller already falls back to the vinta default in that case
     (``branding_for_tenant``'s ``_vinta_default_branding()``, ``notification_contexts``'s
@@ -547,6 +547,12 @@ def resolve_branding_for_display(org: Organization | None) -> OrganizationBrandi
     the same way for the same reason (a module-level import would bind ``None``,
     since the container is only assigned in ``DICoreConfig.ready()`` after import
     time).
+
+    ``WHITE_LABEL_BRANDING`` itself is a module-level import from
+    ``payments.seams.resource_keys`` rather than deferred: that module holds zero
+    imports of its own, so it cannot form the cycle a module-level import from
+    ``payments.seams.resources`` (which imports ``organizations.models`` to build
+    the ``organization_members`` counter) would.
 
     Fails **closed** when the container itself is unavailable, matching
     ``PublicApiSystemUserMiddleware._has_partner_api_entitlement`` on the identical
@@ -569,7 +575,7 @@ def resolve_branding_for_display(org: Organization | None) -> OrganizationBrandi
     if container is None:
         return None
     if not has_entitlement_cached(
-        container.entitlement_service(), branding_root, Entitlement.WHITE_LABEL_BRANDING
+        container.entitlement_service(), branding_root, WHITE_LABEL_BRANDING
     ):
         return None
     return getattr(branding_root, "branding", None)

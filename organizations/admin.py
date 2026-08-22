@@ -27,11 +27,11 @@ from django.http import HttpRequest
 # ``admin.site.register`` would then raise ``AlreadyRegistered``.
 import vinta_orgs.admin  # noqa: F401
 from dependency_injector.wiring import Provide, inject
+from vinta_billing.services.subscription_service import SubscriptionService
 
 from organizations.models import Organization, OrganizationBranding, OrganizationMembership
 from organizations.slug_generation import opaque_organization_slug
 from organizations.slug_validation import validate_organization_slug
-from payments.services.subscription_service import SubscriptionService
 
 
 # ``vinta_orgs.admin`` registers a ``ModelAdmin`` against whatever

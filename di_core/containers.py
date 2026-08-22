@@ -1,4 +1,26 @@
 from dependency_injector import containers, providers
+from vinta_billing.constants import PaymentProviders
+from vinta_billing.services.cycle_close_service import CycleCloseService
+from vinta_billing.services.dunning_service import DunningService
+from vinta_billing.services.entitlement_service import EntitlementService
+from vinta_billing.services.metering_service import MeteringService
+from vinta_billing.services.payment_adapters.mercadopago_payment_adapter import (
+    MercadoPagoPaymentAdapter,
+)
+from vinta_billing.services.payment_adapters.stripe_payment_adapter import StripePaymentAdapter
+from vinta_billing.services.payment_provider_resolver import PaymentProviderResolver
+from vinta_billing.services.payment_service import PaymentService
+from vinta_billing.services.subscription_adapters.mercadopago_subscription_adapter import (
+    MercadoPagoSubscriptionAdapter,
+)
+from vinta_billing.services.subscription_adapters.stripe_subscription_adapter import (
+    StripeSubscriptionAdapter,
+)
+from vinta_billing.services.subscription_plan_factory.billing_plan_factory import (
+    BillingPlanFactory,
+)
+from vinta_billing.services.subscription_service import SubscriptionService
+from vinta_billing.services.usage_warning_service import UsageWarningService
 from vintasend.services.notification_service import NotificationService
 from vintasend_django.services.notification_backends.django_db_notification_backend import (
     DjangoDbNotificationBackend,
@@ -33,24 +55,6 @@ from notifications.notification_template_renderers.django_in_app_renderer import
     DjangoTemplatedInAppRenderer,
 )
 from organizations.services import OrganizationService
-from payments.constants import PaymentProviders
-from payments.services.cycle_close_service import CycleCloseService
-from payments.services.dunning_service import DunningService
-from payments.services.entitlement_service import EntitlementService
-from payments.services.metering_service import MeteringService
-from payments.services.payment_adapters.mercadopago_payment_adapter import MercadoPagoPaymentAdapter
-from payments.services.payment_adapters.stripe_payment_adapter import StripePaymentAdapter
-from payments.services.payment_provider_resolver import PaymentProviderResolver
-from payments.services.payment_service import PaymentService
-from payments.services.subscription_adapters.mercadopago_subscription_adapter import (
-    MercadoPagoSubscriptionAdapter,
-)
-from payments.services.subscription_adapters.stripe_subscription_adapter import (
-    StripeSubscriptionAdapter,
-)
-from payments.services.subscription_plan_factory.billing_plan_factory import BillingPlanFactory
-from payments.services.subscription_service import SubscriptionService
-from payments.services.usage_warning_service import UsageWarningService
 from public_api.services import PublicAPIAuthService
 from vintasend_django_sms_template_renderer.services.notification_template_renderers.django_sms_template_renderer import (
     DjangoTemplatedSMSRenderer,
@@ -119,7 +123,8 @@ class AppContainer(containers.DeclarativeContainer):
     )
 
     #: Single source of the pin -> default provider resolution rule -- shared by the
-    #: provider-credentials endpoints (`payments.views.PaymentProviderViewSet`) and
+    #: provider-credentials endpoints (`vinta_billing.views.PaymentProviderViewSet`,
+    #: resolved through `VINTA_BILLING['SERVICE_CONTAINER']`) and
     #: `PaymentService`'s charge-routing (`create_payment`/`create_subscription`). No
     #: adapter dependency, so it does not need the `payment_gateway`/`subscription_gateway`
     #: providers above.
@@ -144,10 +149,16 @@ class AppContainer(containers.DeclarativeContainer):
     #: organization's resolved provider onto the one `Subscription` it will ever
     #: have, which is the row every later subscription operation resolves its
     #: adapter from.
+    #: No `audit_service` here, unlike every other audited service below:
+    #: `SubscriptionService` is `vinta_billing`'s now, and a library cannot take
+    #: this project's audit service as a constructor argument. It publishes
+    #: `vinta_billing.signals.payment_provider_repointed` at the same point the
+    #: inline `audit_service.record(...)` used to sit, and
+    #: `payments/seams/audit.py` receives it. Passing the kwarg would be a
+    #: `TypeError` at first resolution.
     subscription_service = providers.Factory(
         SubscriptionService,
         payment_service=payment_service,
-        audit_service=audit_service,
         payment_provider_resolver=payment_provider_resolver,
     )
 

@@ -26,11 +26,12 @@ import pytest
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from vinta_billing.constants import LimitRemedy
+from vinta_billing.exceptions import OverLimitError, PaymentProviderNotConfiguredError
 
 from calendar_integration.models import CalendarGroup
 from organizations.models import Organization
-from payments.billing_constants import LimitedResource, LimitRemedy
-from payments.exceptions import OverLimitError, PaymentProviderNotConfiguredError
+from payments.seams.resource_keys import CALENDAR_GROUPS
 
 
 #: The organization the two views below write against.
@@ -62,7 +63,7 @@ class WriteThenExceedLimitView(APIView):
             name="written-before-the-guard",
         )
         raise OverLimitError(
-            resource_key=LimitedResource.CALENDAR_GROUPS,
+            resource_key=CALENDAR_GROUPS,
             current_usage=1,
             limit=1,
             remedy=LimitRemedy.PURCHASE_ADD_ON,
@@ -200,7 +201,7 @@ class TestOverLimitErrorRollsBackTheRequestTransaction:
 @pytest.mark.django_db
 @pytest.mark.usefixtures("test_urlconf", "atomic_requests")
 class TestUnconfiguredProviderRollsBackTheRequestTransaction:
-    """The same ``set_rollback()`` contract, for the 409 branch added alongside
+    """The same ``set_rollback()`` contract, for the 503 branch added alongside
     the 402 one.
 
     It matters more here, not less: the paths that raise this write local rows
@@ -211,12 +212,12 @@ class TestUnconfiguredProviderRollsBackTheRequestTransaction:
     never paid for.
     """
 
-    def test_nothing_written_before_the_provider_call_survives_the_409(
+    def test_nothing_written_before_the_provider_call_survives_the_503(
         self, anonymous_client, organization
     ):
         response = anonymous_client.post("/unconfigured-provider/")
 
-        assert response.status_code == status.HTTP_409_CONFLICT
+        assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
         assert (
             CalendarGroup.objects.filter_by_organization(organization.pk)
             .filter(
@@ -230,7 +231,7 @@ class TestUnconfiguredProviderRollsBackTheRequestTransaction:
             "set_rollback(), so ATOMIC_REQUESTS committed the request transaction."
         )
 
-    def test_the_409_body_carries_the_errors_message(self, anonymous_client, organization):
+    def test_the_503_body_carries_the_errors_message(self, anonymous_client, organization):
         """``PaymentProviderNotConfiguredError`` now renders through the shared
         ``BillingError.as_error_body()`` contract, so the body gains a stable
         ``code`` alongside the existing ``detail`` message."""

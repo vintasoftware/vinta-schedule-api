@@ -48,6 +48,8 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 from django.db import transaction
 from django.db.models import Q
 
+from vinta_billing.exceptions import OverLimitError
+
 from audit.constants import AuditAction
 from audit.diff import compute_diff
 from calendar_integration.constants import CalendarType
@@ -82,8 +84,7 @@ from calendar_integration.services.protocols.initializer_or_authenticated_calend
 from calendar_integration.services.type_guards import (
     is_initialized_or_authenticated_calendar_service,
 )
-from payments.billing_constants import LimitedResource
-from payments.exceptions import OverLimitError
+from payments.seams.resource_keys import AVAILABILITY_WINDOWS
 
 
 if TYPE_CHECKING:
@@ -496,7 +497,7 @@ class AvailabilityService:
         if not bypass_limits and entitlement_service is not None and availability_windows:
             result = entitlement_service.check_limit(
                 context.organization,
-                LimitedResource.AVAILABILITY_WINDOWS,
+                AVAILABILITY_WINDOWS,
                 delta=len(availability_windows),
                 lock=True,
             )
@@ -615,7 +616,7 @@ class AvailabilityService:
         if not bypass_limits and entitlement_service is not None and delta:
             result = entitlement_service.check_limit(
                 context.organization,
-                LimitedResource.AVAILABILITY_WINDOWS,
+                AVAILABILITY_WINDOWS,
                 delta=delta,
                 lock=True,
             )

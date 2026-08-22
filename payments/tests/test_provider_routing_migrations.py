@@ -12,7 +12,7 @@
 Same deviation from strict migration isolation as ``test_backfill_migration.py``
 and ``test_plan_seed_migration.py``, for the same reason and with the same
 caveat: these call the migrations' own functions with the *live* app registry
-(``django.apps.apps``) rather than the historical state a real ``RunPython``
+(``payments.tests.historical_apps``) rather than the historical state a real ``RunPython``
 receives. Safe here because both functions touch only ``Subscription``,
 ``BillingProfile``, and ``Payment``, whose shapes at 0017/0018 are identical to
 their current ones. If a later migration changes any of those, switch these to a
@@ -23,14 +23,14 @@ import datetime
 import importlib
 from decimal import Decimal
 
-from django.apps import apps
-
 import pytest
 from model_bakery import baker
+from vinta_billing.constants import PaymentProviders, PaymentStatuses
+from vinta_billing.models import BillingPlan, Payment, Subscription
 
 from organizations.models import Organization
-from payments.constants import PaymentProviders, PaymentStatuses
-from payments.models import BillingPlan, Payment, Subscription
+from payments.tests.historical_apps import historical_apps
+from payments.tests.provider_settings import use_providers
 
 
 # These modules build their own Subscription rows (OneToOne with Organization),
@@ -53,12 +53,12 @@ unset_on_subscription_payments = _payment_backfill_module.unset_on_subscription_
 
 def _billing_profile_for(organization: Organization, provider: str):
     return baker.make(
-        "payments.BillingProfile",
+        "vinta_billing.BillingProfile",
         organization=organization,
         contact_email="billing@example.com",
         document_type="CPF",
         document_number="12345678900",
-        billing_address=baker.make("payments.BillingAddress"),
+        billing_address=baker.make("vinta_billing.BillingAddress"),
         payment_provider=provider,
     )
 
@@ -84,12 +84,12 @@ def plan():
 @pytest.mark.django_db
 class TestRepointSubscriptionPaymentProvider:
     def test_stripe_pinned_org_subscription_is_repointed_off_mercadopago(self, plan, settings):
-        settings.DEFAULT_PAYMENT_PROVIDER = PaymentProviders.STRIPE
+        use_providers(settings, default_provider=PaymentProviders.STRIPE)
         org = baker.make(Organization, parent=None)
         _billing_profile_for(org, PaymentProviders.STRIPE)
         subscription = _subscription(org, plan, PaymentProviders.MERCADOPAGO)
 
-        repoint_to_organization_provider(apps, None)
+        repoint_to_organization_provider(historical_apps, None)
 
         subscription.refresh_from_db()
         assert subscription.payment_provider == PaymentProviders.STRIPE
@@ -98,25 +98,25 @@ class TestRepointSubscriptionPaymentProvider:
         """The discriminating half: an organization genuinely pinned to
         MercadoPago keeps ``mercadopago``, so the migration is a *repoint*, not a
         blanket rewrite to the default."""
-        settings.DEFAULT_PAYMENT_PROVIDER = PaymentProviders.STRIPE
+        use_providers(settings, default_provider=PaymentProviders.STRIPE)
         org = baker.make(Organization, parent=None)
         _billing_profile_for(org, PaymentProviders.MERCADOPAGO)
         subscription = _subscription(org, plan, PaymentProviders.MERCADOPAGO)
 
-        repoint_to_organization_provider(apps, None)
+        repoint_to_organization_provider(historical_apps, None)
 
         subscription.refresh_from_db()
         assert subscription.payment_provider == PaymentProviders.MERCADOPAGO
 
     def test_unpinned_and_profileless_orgs_take_the_system_default(self, plan, settings):
-        settings.DEFAULT_PAYMENT_PROVIDER = PaymentProviders.STRIPE
+        use_providers(settings, default_provider=PaymentProviders.STRIPE)
         unpinned_org = baker.make(Organization, parent=None)
         _billing_profile_for(unpinned_org, "")
         unpinned = _subscription(unpinned_org, plan, PaymentProviders.MERCADOPAGO)
         profileless_org = baker.make(Organization, parent=None)
         profileless = _subscription(profileless_org, plan, PaymentProviders.MERCADOPAGO)
 
-        repoint_to_organization_provider(apps, None)
+        repoint_to_organization_provider(historical_apps, None)
 
         unpinned.refresh_from_db()
         profileless.refresh_from_db()
@@ -129,16 +129,16 @@ class TestRepointSubscriptionPaymentProvider:
         ``payments.0009`` are the only two writers there ever were -- so that is
         what the reverse restores it to, per-row, via the ``meta`` stamp the
         forward pass leaves behind (not a single hardcoded literal)."""
-        settings.DEFAULT_PAYMENT_PROVIDER = PaymentProviders.STRIPE
+        use_providers(settings, default_provider=PaymentProviders.STRIPE)
         org = baker.make(Organization, parent=None)
         _billing_profile_for(org, PaymentProviders.STRIPE)
         subscription = _subscription(org, plan, PaymentProviders.MERCADOPAGO)
 
-        repoint_to_organization_provider(apps, None)
+        repoint_to_organization_provider(historical_apps, None)
         subscription.refresh_from_db()
         assert subscription.payment_provider == PaymentProviders.STRIPE
 
-        restore_previous_payment_provider(apps, None)
+        restore_previous_payment_provider(historical_apps, None)
 
         subscription.refresh_from_db()
         assert subscription.payment_provider == PaymentProviders.MERCADOPAGO
@@ -153,12 +153,12 @@ class TestRepointSubscriptionPaymentProvider:
         also destroy the evidence needed to verify, on rollback, that no
         Stripe-provider Payment or Subscription rows were created in the
         window."""
-        settings.DEFAULT_PAYMENT_PROVIDER = PaymentProviders.STRIPE
+        use_providers(settings, default_provider=PaymentProviders.STRIPE)
         repointed_org = baker.make(Organization, parent=None)
         _billing_profile_for(repointed_org, PaymentProviders.STRIPE)
         repointed = _subscription(repointed_org, plan, PaymentProviders.MERCADOPAGO)
 
-        repoint_to_organization_provider(apps, None)
+        repoint_to_organization_provider(historical_apps, None)
         repointed.refresh_from_db()
         assert repointed.payment_provider == PaymentProviders.STRIPE
 
@@ -168,7 +168,7 @@ class TestRepointSubscriptionPaymentProvider:
         _billing_profile_for(untouched_org, PaymentProviders.STRIPE)
         untouched = _subscription(untouched_org, plan, PaymentProviders.STRIPE)
 
-        restore_previous_payment_provider(apps, None)
+        restore_previous_payment_provider(historical_apps, None)
 
         repointed.refresh_from_db()
         untouched.refresh_from_db()
@@ -176,13 +176,13 @@ class TestRepointSubscriptionPaymentProvider:
         assert untouched.payment_provider == PaymentProviders.STRIPE
 
     def test_is_idempotent(self, plan, settings):
-        settings.DEFAULT_PAYMENT_PROVIDER = PaymentProviders.STRIPE
+        use_providers(settings, default_provider=PaymentProviders.STRIPE)
         org = baker.make(Organization, parent=None)
         _billing_profile_for(org, PaymentProviders.STRIPE)
         subscription = _subscription(org, plan, PaymentProviders.MERCADOPAGO)
 
-        repoint_to_organization_provider(apps, None)
-        repoint_to_organization_provider(apps, None)
+        repoint_to_organization_provider(historical_apps, None)
+        repoint_to_organization_provider(historical_apps, None)
 
         subscription.refresh_from_db()
         assert subscription.payment_provider == PaymentProviders.STRIPE
@@ -209,7 +209,7 @@ class TestBackfillSubscriptionPaymentProviderOnPayments:
         subscription = _subscription(org, plan, PaymentProviders.MERCADOPAGO)
         payment = self._payment(billing_profile, subscription, "", "mp-sub-payment-1")
 
-        backfill_from_subscription(apps, None)
+        backfill_from_subscription(historical_apps, None)
 
         payment.refresh_from_db()
         assert payment.payment_provider == PaymentProviders.MERCADOPAGO
@@ -225,7 +225,7 @@ class TestBackfillSubscriptionPaymentProviderOnPayments:
             billing_profile, subscription, PaymentProviders.MERCADOPAGO, "mp-legacy-1"
         )
 
-        backfill_from_subscription(apps, None)
+        backfill_from_subscription(historical_apps, None)
 
         payment.refresh_from_db()
         assert payment.payment_provider == PaymentProviders.MERCADOPAGO
@@ -248,7 +248,7 @@ class TestBackfillSubscriptionPaymentProviderOnPayments:
             external_id="one-off-1",
         )
 
-        backfill_from_subscription(apps, None)
+        backfill_from_subscription(historical_apps, None)
 
         payment.refresh_from_db()
         assert payment.payment_provider == ""
@@ -259,11 +259,11 @@ class TestBackfillSubscriptionPaymentProviderOnPayments:
         subscription = _subscription(org, plan, PaymentProviders.MERCADOPAGO)
         payment = self._payment(billing_profile, subscription, "", "mp-sub-payment-1")
 
-        backfill_from_subscription(apps, None)
+        backfill_from_subscription(historical_apps, None)
         payment.refresh_from_db()
         assert payment.payment_provider == PaymentProviders.MERCADOPAGO
 
-        unset_on_subscription_payments(apps, None)
+        unset_on_subscription_payments(historical_apps, None)
 
         payment.refresh_from_db()
         assert payment.payment_provider == ""
@@ -293,11 +293,11 @@ class TestBackfillSubscriptionPaymentProviderOnPayments:
             stripe_billing_profile, stripe_subscription, PaymentProviders.STRIPE, "stripe-payment-1"
         )
 
-        backfill_from_subscription(apps, None)
+        backfill_from_subscription(historical_apps, None)
         filled.refresh_from_db()
         assert filled.payment_provider == PaymentProviders.MERCADOPAGO
 
-        unset_on_subscription_payments(apps, None)
+        unset_on_subscription_payments(historical_apps, None)
 
         filled.refresh_from_db()
         already_stamped.refresh_from_db()
@@ -310,8 +310,8 @@ class TestBackfillSubscriptionPaymentProviderOnPayments:
         subscription = _subscription(org, plan, PaymentProviders.MERCADOPAGO)
         payment = self._payment(billing_profile, subscription, "", "mp-sub-payment-1")
 
-        backfill_from_subscription(apps, None)
-        backfill_from_subscription(apps, None)
+        backfill_from_subscription(historical_apps, None)
+        backfill_from_subscription(historical_apps, None)
 
         payment.refresh_from_db()
         assert payment.payment_provider == PaymentProviders.MERCADOPAGO

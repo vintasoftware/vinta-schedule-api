@@ -20,6 +20,7 @@ from rest_framework.mixins import ListModelMixin, RetrieveModelMixin
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.viewsets import GenericViewSet
+from vinta_billing.services.entitlement_service import EntitlementService
 from vinta_orgs.querysets import split_permission_label
 
 from audit.constants import AuditAction
@@ -94,7 +95,6 @@ from organizations.serializers import (
     ServiceAccountWriteSerializer,
 )
 from organizations.services import OrganizationService, assign_membership_groups
-from payments.services.entitlement_service import EntitlementService
 
 
 logger = logging.getLogger(__name__)

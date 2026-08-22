@@ -1,6 +1,7 @@
-"""Integration tests for the approaching-limit warning beat entry points
-(``payments.tasks.check_approaching_limits`` /
-``check_approaching_limits_for_subscription``).
+"""Integration tests for the approaching-limit warning beat entry point
+(``payments.tasks.check_approaching_limits``, a thin wrapper over
+``vinta_billing.jobs.check_approaching_limits``) and the per-subscription job
+it fans out to (``vinta_billing.jobs.check_approaching_limits_for_subscription``).
 
 Drives the real, DI-wired ``UsageWarningService`` (not a hand-written double)
 with only ``notification_service`` swapped out, the same pattern
@@ -15,12 +16,16 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from model_bakery import baker
+from vinta_billing.constants import BillingState, LimitKind
+from vinta_billing.models import BillingPlan, LimitWarningNotification, PlanLimit, Subscription
 
 from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import make_membership
-from payments.billing_constants import BillingState, LimitedResource, LimitKind
-from payments.models import BillingPlan, LimitWarningNotification, PlanLimit, Subscription
+from payments.seams.resource_keys import (
+    ORGANIZATION_MEMBERS,
+    RESOURCE_KEYS,
+)
 from payments.tasks import check_approaching_limits, check_approaching_limits_for_subscription
 from users.models import User
 
@@ -38,7 +43,7 @@ def make_complete_plan(limit_values: dict[str, int | None] | None = None) -> Bil
         monthly_price=Decimal("0"),
         annual_price=None,
     )
-    for resource_key in LimitedResource.values:
+    for resource_key in RESOURCE_KEYS:
         baker.make(
             PlanLimit,
             plan=plan,
@@ -65,7 +70,7 @@ def _add_admin_membership(organization: Organization) -> OrganizationMembership:
     """A billing-notification recipient.
 
     ``OrganizationMembershipQuerySet.billing_recipients`` reads
-    ``payments.manage_billing``, which a membership only holds through its
+    ``vinta_billing.manage_billing``, which a membership only holds through its
     groups -- and a bare ``baker.make`` assigns none.
     """
     membership = make_membership(
@@ -162,7 +167,7 @@ class TestWarningFiresOnceAcrossBeatRuns:
     ):
         _add_admin_membership(organization)
         _seed_members(organization, 7)  # + admin = 8 of 10 (80%)
-        plan = make_complete_plan({LimitedResource.ORGANIZATION_MEMBERS: 10})
+        plan = make_complete_plan({ORGANIZATION_MEMBERS: 10})
         subscription = _subscription_for(
             subscription_service, organization, plan, billing_state=BillingState.ACTIVE
         )
@@ -175,7 +180,7 @@ class TestWarningFiresOnceAcrossBeatRuns:
         assert mock_notification_service.create_notification.call_count == 1
         assert (
             LimitWarningNotification.objects.filter(
-                subscription=subscription, resource_key=LimitedResource.ORGANIZATION_MEMBERS
+                subscription=subscription, resource_key=ORGANIZATION_MEMBERS
             ).count()
             == 1
         )
@@ -193,7 +198,7 @@ class TestWarningFiresOnceAcrossBeatRuns:
         fan-out's query)."""
         _add_admin_membership(organization)
         _seed_members(organization, 9)
-        plan = make_complete_plan({LimitedResource.ORGANIZATION_MEMBERS: 10})
+        plan = make_complete_plan({ORGANIZATION_MEMBERS: 10})
         subscription = _subscription_for(
             subscription_service, organization, plan, billing_state=BillingState.RESTRICTED
         )

@@ -14,7 +14,7 @@ Single Django project, multiple installed apps under the repo root:
 - `di_core/` — dependency-injector containers; every service registers here.
 - `calendar_integration/` — calendar provider integrations, recurrence calculation, calendar bundles, availability.
 - `notifications/` — outbound notifications (via vintasend).
-- `payments/` — payment integrations (MercadoPago, Stripe).
+- `payments/` — the host's *configuration* of [vinta-django-billing](https://github.com/vintasoftware/vinta-django-billing), which is the billing engine of record (models, services, provider adapters for MercadoPago/Stripe, REST views). See [Billing](#billing) below.
 - `public_api/` — GraphQL public API (Strawberry).
 - `webhooks/` — inbound webhook handlers.
 - `s3direct_overrides/` — overrides for `django-s3direct`.
@@ -30,6 +30,8 @@ Postgres is the only persistent store. Recurring-event occurrences are calculate
 - **django-allauth 65** (with `socialaccount`, `mfa`) — auth, social login, MFA.
 - **django-virtual-models** — queryset optimization driven by DRF serializers.
 - **dependency_injector 4.47** — DI containers in `di_core/containers.py`.
+- **vinta-django-billing** — billing engine of record (models, services, provider
+  adapters, REST views); `payments/` configures it. See [Billing](#billing).
 - **django-fernet-encrypted-fields** — at-rest encrypted fields.
 - **Celery 5.5** + **celery-redbeat** — async tasks + scheduled jobs.
 - **psycopg 3** — Postgres driver.
@@ -158,7 +160,7 @@ Custom DB-defined code is versioned via the framework in `common/raw_sql_migrati
 - **New structure:** create a directory named after the structure under the appropriate type directory; add `0001.sql` with the body. Then define a migration manager in `__init__.py` inheriting from the manager classes in `common/raw_sql_migration_managers.py`. Then create a Django migration whose `operations` calls `manager.migration(...)`.
 - **Update an existing structure:** add the next-numbered SQL file (`0002.sql`, `0003.sql`, ...) and create a Django migration whose `operations` calls `manager.migrate(...)` referencing the new version name.
 - Examples: `calendar_integration/migrations/sql/functions/calculate_recurring_events`, `.../get_event_occurrences_json`.
-- Data migrations should normally re-derive their logic against `apps.get_model(...)` historical models, not import from a live service module — `payments/migrations/0009_backfill_unlimited_subscriptions.py` is a deliberate, documented exception (imports `billing_root_filter` from `payments/services/subscription_service.py`), so a future rename of `can_invite_organizations` / `parent` would retroactively change that historical migration's behavior; keep that in mind before renaming either field.
+- Data migrations should normally re-derive their logic against `apps.get_model(...)` historical models, not import from a live service module — `payments/migrations/0009_backfill_unlimited_subscriptions.py` is a deliberate, documented exception (imports `billing_root_filter` from `vinta_billing.services.subscription_service`), so a future change to `is_billing_root`'s definition (which currently reads `can_invite_organizations` / `parent`) would retroactively change that historical migration's behavior; keep that in mind, and see [Billing](#billing) for the fuller rule this follows.
 
 ### Testing
 
@@ -175,7 +177,7 @@ Custom DB-defined code is versioned via the framework in `common/raw_sql_migrati
 
 Tenancy is enforced at the manager layer, on top of [vinta-django-orgs](https://github.com/vintasoftware/vinta-django-orgs). Every model that holds tenant-scoped data inherits `vinta_orgs.mixins.SingleOrganizationModelMixin` (plus `common.models.SafeRelationNullInitMixin` and `common.models.BaseModel`) and declares `objects = OrganizationScopedManager()` from `common/managers.py` — **or a subclass built with `OrganizationScopedManager.from_queryset(...)`** when the model needs its own queryset methods (build it that way, never by returning a custom queryset from a hand-rolled `get_queryset`, which skips the scoping entirely).
 
-- **Scoping is implicit and strict.** `objects` filters by the organization bound to the current `contextvars` context, and `SHARED_SCHEMA_ORGANIZATIONS["STRICT_ORGANIZATION_FILTER"] = True` makes an *unbound* query raise `OrganizationNotFoundError` rather than quietly return nothing. Bind with `common.organization_context.organization_context(...)`. Requests bind automatically only on the two paths that do it explicitly: `TenantScopedViewMixin` (i.e. views built on the `*VintaScheduleModelViewSet` bases in `common/utils/view_utils.py`, or ones that name the mixin themselves) and `PublicApiSystemUserMiddleware` for the public GraphQL API. Both unbind on every exit path. **A DRF view that is not one of those binds nothing** — about a dozen exist (`public_api/views.py`, three in `organizations/views.py`, `payments/billing_views.py`, `payments/views.py`, `users/views.py`, `notifications/views.py`, `legal/views.py`, and the plain `View`s in `calendar_integration/webhook_views.py`) — so a scoped read from one raises `OrganizationNotFoundError` (a 500) unless it narrows explicitly with `filter_by_organization(...)`. Prefer adding the mixin; narrow explicitly only when you cannot. Celery tasks and management commands bind from their own arguments, never from request state.
+- **Scoping is implicit and strict.** `objects` filters by the organization bound to the current `contextvars` context, and `SHARED_SCHEMA_ORGANIZATIONS["STRICT_ORGANIZATION_FILTER"] = True` makes an *unbound* query raise `OrganizationNotFoundError` rather than quietly return nothing. Bind with `common.organization_context.organization_context(...)`. Requests bind automatically only on the two paths that do it explicitly: `TenantScopedViewMixin` (i.e. views built on the `*VintaScheduleModelViewSet` bases in `common/utils/view_utils.py`, or ones that name the mixin themselves) and `PublicApiSystemUserMiddleware` for the public GraphQL API. Both unbind on every exit path. **A DRF view that is not one of those binds nothing** — about a dozen exist (`public_api/views.py`, three in `organizations/views.py`, `users/views.py`, `notifications/views.py`, `legal/views.py`, and the plain `View`s in `calendar_integration/webhook_views.py`) — so a scoped read from one raises `OrganizationNotFoundError` (a 500) unless it narrows explicitly with `filter_by_organization(...)`. The billing REST views (`vinta_billing.billing_views`, mounted by `vinta_billing.routing.get_routes()`) are *not* on this list: `VINTA_BILLING["VIEW_MIXIN"]` names `TenantScopedViewMixin`, and the package mixes it in ahead of every tenant-scoped viewset it mounts, so they bind the same way a host-owned `*VintaScheduleModelViewSet` would. The two provider webhooks (`vinta_billing.views.PaymentsViewSet`, mounted by `get_extra_patterns()`) are the one billing exception — inbound, unauthenticated provider callbacks, not tenant-scoped by design. Prefer adding the mixin; narrow explicitly only when you cannot. Celery tasks and management commands bind from their own arguments, never from request state.
 - **Reaching outside the bound organization is explicit**, and at a call site only these three spellings are allowed: `filter_by_organization(org_or_id)` / `exclude_by_organization(...)` (start from the unscoped queryset and name an organization), `unscoped()` (every row, keeps the model's own queryset class), and `original_manager` (every row, generic queryset). Each use gets a comment saying why.
 - **There is one escape hatch, for code that is not a call site**: `common.managers.unscoped_default_manager()` (a context manager that makes `objects` behave as `original_manager` on *every* scoped model for the duration of the block) and `common.models.UnscopedUniqueChecksMixin` (which applies it to `Model.validate_unique`). They exist only for the places where **Django itself** reaches for `Model._default_manager` and no argument can redirect it — `ForeignKey.formfield` in the admin, and Django's uniqueness pre-check, whose probe must be global because the `UNIQUE` index is. Keep the block down to that one call, and never use either where a call site could say `filter_by_organization(...)` instead.
 - **Foreign keys to tenant-scoped models** use `OrganizationSafeForeignKey` / `OrganizationSafeOneToOneField` (re-exported from `common/fields.py`). These create **two** Django fields: a concrete `<name>_fk` (the actual FK column) and a `ForeignObject` named `<name>` that joins on both the FK and the organization. Query and traverse through `<name>`; touching `<name>_fk` drops the organization out of the `ON` clause. Foreign keys to non-tenant-scoped models use stock Django fields.
@@ -222,13 +224,13 @@ DEFAULT_PAYMENT_PROVIDER
 ```
 
 - `ACCOUNT_PHONE_VERIFICATION_ENABLED` (bool, default `False`) — per-environment rollout gate for SMS phone verification. Stays off until Twilio approves the messaging profile for that environment; an operator flips it in the environment (Render dashboard / `.env`) with no code change.
-- `MERCADOPAGO_ACCESS_TOKEN` (str, default `""`) — MercadoPago secret API key, used by `MercadoPagoPaymentAdapter`/`MercadoPagoSubscriptionAdapter` to authenticate every **outbound** call. This — not `MERCADOPAGO_PUBLIC_KEY` — is what `BasePaymentAdapter.is_configured` reports on, and therefore what decides whether a charge through MercadoPago is attempted or refused with `PaymentProviderNotConfiguredError` (HTTP 409).
-- `MERCADOPAGO_WEBHOOK_SECRET` (str, default `""`) — shared secret used to verify MercadoPago's `x-signature` webhook header (`payments/services/mercadopago_signature.py`). An empty secret makes signature verification fail closed rather than skip the check.
+- `MERCADOPAGO_ACCESS_TOKEN` (str, default `""`) — MercadoPago secret API key, used by `vinta_billing`'s `MercadoPagoPaymentAdapter`/`MercadoPagoSubscriptionAdapter` to authenticate every **outbound** call. This — not `MERCADOPAGO_PUBLIC_KEY` — is what `BasePaymentAdapter.is_configured` reports on, and therefore what decides whether a charge through MercadoPago is attempted or refused with `PaymentProviderNotConfiguredError` (HTTP 409).
+- `MERCADOPAGO_WEBHOOK_SECRET` (str, default `""`) — shared secret used to verify MercadoPago's `x-signature` webhook header (`vinta_billing.services.mercadopago_signature`). An empty secret makes signature verification fail closed rather than skip the check.
 - `MERCADOPAGO_PUBLIC_KEY` (str, default `""`) — browser-safe public key used to initialize MercadoPago's payment form. Not a secret; intentionally served on unauthenticated endpoints.
-- `STRIPE_SECRET_KEY` (str, default `""`) — Stripe API key used by `StripePaymentAdapter`/`StripeSubscriptionAdapter` to authenticate every **outbound** call. Stripe's half of the `is_configured` contract described under `MERCADOPAGO_ACCESS_TOKEN`; it is `DEFAULT_PAYMENT_PROVIDER`'s credential, so an empty value refuses charges for every unpinned organization.
-- `STRIPE_WEBHOOK_SECRET` (str, default `""`) — shared secret used to verify Stripe's `Stripe-Signature` webhook header (`payments/services/stripe_signature.py`). Same fail-closed convention as `MERCADOPAGO_WEBHOOK_SECRET`.
+- `STRIPE_SECRET_KEY` (str, default `""`) — Stripe API key used by `vinta_billing`'s `StripePaymentAdapter`/`StripeSubscriptionAdapter` to authenticate every **outbound** call. Stripe's half of the `is_configured` contract described under `MERCADOPAGO_ACCESS_TOKEN`; it is `DEFAULT_PAYMENT_PROVIDER`'s credential, so an empty value refuses charges for every unpinned organization.
+- `STRIPE_WEBHOOK_SECRET` (str, default `""`) — shared secret used to verify Stripe's `Stripe-Signature` webhook header (`vinta_billing.services.stripe_signature`). Same fail-closed convention as `MERCADOPAGO_WEBHOOK_SECRET`.
 - `STRIPE_PUBLISHABLE_KEY` (str, default `""`) — browser-safe public key used to initialize Stripe's payment form. Not a secret; intentionally served on unauthenticated endpoints.
-- `DEFAULT_PAYMENT_PROVIDER` (str, default `"stripe"`) — system-wide default payment provider slug. Must be one of the valid providers in `payments.constants.PaymentProviders`. Read at import time to fail fast on misconfiguration.
+- `DEFAULT_PAYMENT_PROVIDER` (str, default `"stripe"`) — system-wide default payment provider slug. Must be one of the valid providers in `vinta_billing.constants.PaymentProviders`; `settings/base.py` assembles `VINTA_BILLING["PROVIDERS"]` / `["DEFAULT_PROVIDER"]` from this and the six credential vars above. Read at import time to fail fast on misconfiguration.
 
 Production-only vars (set via Render `envVarGroups`): `SECRET_KEY`, `SENTRY_DSN`, `SMTP_HOST`/`USERNAME`/`PASSWORD`, `ALLOWED_HOSTS`, `SITE_DOMAIN`, `API_DOMAIN`, `DEFAULT_BCC_EMAILS`, AWS bucket / CloudFront settings, `ENABLE_DJANGO_COLLECTSTATIC`, `AUTO_MIGRATE`. Adding a new env var requires updates to both example files and `render.yaml` envVarGroups — see the `add-env-var` skill.
 
@@ -283,6 +285,58 @@ Occurrences are calculated **in Postgres**, not in Python, from the master event
 - `get_calendar_events_expanded()` deduplicates bundle events automatically.
 - Primary calendar selection is **explicit** at bundle creation: pass `primary_calendar` to `create_bundle_calendar()`.
 
+## Billing
+
+The billing engine — models, services, provider adapters, REST views, dunning, cycle
+close, metering — lives in the [vinta-django-billing](https://github.com/vintasoftware/vinta-django-billing)
+package (`vinta_billing`, pinned in `pyproject.toml`), not in `payments/`. See
+`docs/billing.md` for the full picture (what moved, the seams, how to upgrade the
+pin, and known package gaps); this is the load-bearing summary.
+
+- **`payments/` is configuration, not implementation.** Its whole surface is
+  `apps.py`, `tasks.py` (thin Celery wrappers over `vinta_billing.jobs`),
+  `notification_contexts.py` (vintasend context registrations), `billing_plans_catalog.py`
+  (the live seed catalog), `management/commands/reconcile_billing_period.py` (host-owned,
+  tenancy-binding: on-demand reconciliation for a named closed billing period),
+  `migrations/` (including the one-time table-move migration
+  that copied `payments_*` rows into `vinta_billing_*`), `tests/`, and `seams/`.
+- **The seams (`payments/seams/`)** are the host-specific objects the package's settings
+  ask for — the only shape a generic billing library cannot own by itself:
+  - `resource_keys.py` — the thirteen resource/entitlement key string constants, with
+    **zero imports**. Import from here, not from `resources.py`, when a call site only
+    needs a key symbol — importing `resources.py` pulls in `calendar_integration`,
+    `organizations`, `public_api` and `webhooks` models as a side effect and risks an
+    import cycle with any of those apps' own `models.py`.
+  - `resources.py` — registers the eight resources / five entitlements against
+    `vinta_billing.registry`, with a counter function per resource.
+  - `hierarchy.py` — `ResellerHierarchy`, this project's parent/child reseller shape.
+  - `notifier.py` — bridges the package's notification calls to the vintasend
+    `NotificationService` the DI container builds.
+  - `occurrences.py` — the metered-occurrence source over `calendar_integration.CalendarEvent`.
+  - `seats.py` — the two seat-limit checks (`check_seat_limit_for_invitation_accept`/`_send`)
+    that must exclude a pending invitation, via the package's `usage_extra_resolver`.
+  - `audit.py` / `resync.py` — receivers on package-published signals
+    (`payment_provider_repointed`, `billing_restriction_lifted`) that write this
+    project's audit trail and resume calendar sync, respectively.
+- **`VINTA_BILLING` in `settings/base.py`** is where every one of those seams, plus the
+  provider credentials, the manager predicate, and the tenant-scoping `VIEW_MIXIN` /
+  `SERVICE_CONTAINER`, are wired in. `di_core/containers.py` still constructs every
+  billing service explicitly, importing the classes from `vinta_billing.services.*` —
+  DI ownership stayed with the host.
+- **Routes** come from `vinta_billing.routing.get_routes()` (tenant-scoped REST views,
+  mixed with `TenantScopedViewMixin` via `VIEW_MIXIN`) and `get_extra_patterns()` (the
+  two inbound provider webhooks — unauthenticated, not tenant-scoped by design, and
+  **frozen** the moment a webhook URL is registered with a live provider; see that
+  setting's comment in `settings/base.py` before ever moving one).
+- **Registry keys, not enums.** `LimitedResource` / `Entitlement` no longer exist as
+  `TextChoices` — a billing library cannot own the closed set of things *this* product
+  sells, so they became registrations against `vinta_billing.registry` instead. Use the
+  string constants in `payments/seams/resource_keys.py`.
+- **Upgrading the pin:** bump `vinta-django-billing` in `pyproject.toml`, `uv sync`,
+  then run the full suite — the package's own 700+-test suite is what covers the engine
+  internals this project no longer duplicates in `payments/tests/`. Check `HISTORY.md`
+  in the package repo for behavior changes before bumping a minor version.
+
 ## PR + Commit Conventions
 
 - **Branch naming:** `feature/<slug>` (also accepted: `fix/<slug>`, `chore/<slug>`).
@@ -320,6 +374,8 @@ Occurrences are calculated **in Postgres**, not in Python, from the master event
 
 - `README.md` — setup, Docker, Floci, Render, opinionated settings.
 - `docs/README.md`, `docs/glossary.md`, `docs/concepts/` — domain concepts.
+- `docs/billing.md` — where the billing engine lives (`vinta-django-billing`), the
+  seams `payments/` configures it with, how to upgrade the pin, and known package gaps.
 - `pyproject.toml` — ruff + mypy + coverage config.
 - `pytest.ini` — pytest config (forced test settings).
 - `render.yaml` — production deploy config.

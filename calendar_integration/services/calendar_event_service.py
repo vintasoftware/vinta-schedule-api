@@ -39,6 +39,9 @@ from django.db import transaction
 from django.db.models import Q, prefetch_related_objects
 from django.utils import timezone
 
+from vinta_billing.exceptions import OverLimitError
+from vinta_billing.services.subscription_service import resolve_billing_period
+
 from audit.constants import AuditAction, AuditActorType
 from audit.diff import compute_diff
 from calendar_integration.constants import CalendarType
@@ -101,9 +104,7 @@ from calendar_integration.services.type_guards import (
     is_authenticated_calendar_service,
     is_initialized_or_authenticated_calendar_service,
 )
-from payments.exceptions import OverLimitError
-from payments.services.metering_service import MeteringService
-from payments.services.subscription_service import resolve_billing_period
+from payments.seams.occurrences import CalendarEventOccurrenceSource
 from public_api.models import SystemUser
 from users.models import User
 
@@ -134,13 +135,14 @@ def _resolve_token_audit_actor(
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
 
+    from vinta_billing.models import Subscription
+    from vinta_billing.services.entitlement_service import EntitlementService
+
     from calendar_integration.querysets import CalendarEventQuerySet
     from calendar_integration.services.calendar_service_context import CalendarServiceContext
     from calendar_integration.services.dataclasses import AvailableTimeWindow
     from calendar_integration.services.protocols.calendar_adapter import CalendarAdapter
     from calendar_integration.services.recurrence_manager import RecurrenceManager
-    from payments.models import Subscription
-    from payments.services.entitlement_service import EntitlementService
 
 
 class EventServiceHost(Protocol):
@@ -482,8 +484,9 @@ class CalendarEventService:
         row cannot be expanded -- and re-deriving the count in Python from the rrule
         string would be a second expansion, the exact "two predicates that must agree"
         defect this plan keeps producing. So the row is written first and
-        ``MeteringService.occurrence_starts_of`` -- the meter's own expansion, shared
-        rather than copied -- is asked how many occurrences it yields.
+        ``CalendarEventOccurrenceSource.occurrence_starts_of`` -- the meter's own
+        expansion, shared rather than copied -- is asked how many occurrences it
+        yields.
         ``create_event`` is ``@transaction.atomic``, so raising here rolls the insert
         (and everything else in the caller's transaction) back.
 
@@ -512,7 +515,7 @@ class CalendarEventService:
             _period_start, period_end = resolve_billing_period(subscription, now)
             if period_end <= now:
                 return 1
-            starts = MeteringService.occurrence_starts_of(event, now, period_end)
+            starts = CalendarEventOccurrenceSource.occurrence_starts_of(event, now, period_end)
             return max(1, sum(1 for start in starts if now <= start < period_end))
 
         result = entitlement_service.check_postpaid_allowance(
@@ -626,7 +629,7 @@ class CalendarEventService:
         # *exception* -- a modification of an occurrence slot the owning master's rule
         # already accounts for, not a new one (``calculate_recurring_events``
         # substitutes the exception row in place of the original occurrence; see
-        # ``MeteringService.expand_occurrence_identities``). It is deliberately
+        # ``CalendarEventOccurrenceSource.iter_occurrences``). It is deliberately
         # excluded here with the exact predicate ``occurrence_bearing_masters_in_range``
         # uses to exclude the same rows (``parent_recurring_object__isnull=True``) --
         # checking it as a new unit would disagree with what the meter will ever bill

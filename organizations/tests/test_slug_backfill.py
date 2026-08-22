@@ -24,6 +24,7 @@ from django.db.migrations.executor import MigrationExecutor
 import pytest
 from model_bakery import baker
 
+from common.testing.migration_replay import migration_replay, uninterruptible
 from organizations.exceptions import SlugDerivationError
 from organizations.models import Organization
 from organizations.slug_generation import (
@@ -128,6 +129,7 @@ class TestDeriveOrganizationSlug:
         assert slug.startswith("org-")
 
 
+@migration_replay
 @pytest.mark.django_db(transaction=True)
 class TestTheBackfillMigration:
     """Drives ``0025`` against a real database, backwards then forwards.
@@ -239,9 +241,13 @@ class TestTheBackfillMigration:
             # ``0027``-``0030`` unapplied for every later test sharing this
             # worker's database -- which since ``0030`` means a NOT NULL ``role``
             # column no live model writes.
-            executor = MigrationExecutor(connection)
-            executor.migrate(executor.loader.graph.leaf_nodes())
-            executor.loader.build_graph()
+            # `uninterruptible`: see `common.testing.migration_replay`. The
+            # alarm landing inside this restore leaves the worker's database
+            # mid-graph and fails every test scheduled after it.
+            with uninterruptible():
+                executor = MigrationExecutor(connection)
+                executor.migrate(executor.loader.graph.leaf_nodes())
+                executor.loader.build_graph()
 
 
 @pytest.mark.django_db(transaction=True)

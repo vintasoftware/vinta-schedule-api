@@ -20,11 +20,12 @@ from django.utils import timezone
 
 import pytest
 from model_bakery import baker
+from vinta_billing.constants import BillingState, LimitKind
+from vinta_billing.exceptions import OverLimitError
+from vinta_billing.models import BillingPlan, Subscription, SubscriptionPlanLimit
 
 from organizations.models import Organization
-from payments.billing_constants import BillingState, LimitedResource, LimitKind
-from payments.exceptions import OverLimitError
-from payments.models import BillingPlan, Subscription, SubscriptionPlanLimit
+from payments.seams.resource_keys import PUBLIC_API_SYSTEM_USERS
 from public_api.models import SystemUser
 from public_api.services import PublicAPIAuthService
 
@@ -54,7 +55,7 @@ def _organization_with_limit(limit_value: int | None) -> Organization:
     baker.make(
         SubscriptionPlanLimit,
         subscription=subscription,
-        resource_key=LimitedResource.PUBLIC_API_SYSTEM_USERS,
+        resource_key=PUBLIC_API_SYSTEM_USERS,
         limit_value=limit_value,
         kind=LimitKind.PREPAID,
     )
@@ -96,7 +97,7 @@ class TestCreateSystemUserLimit:
                 organization=organization,
             )
 
-        assert exc_info.value.resource_key == LimitedResource.PUBLIC_API_SYSTEM_USERS
+        assert exc_info.value.resource_key == PUBLIC_API_SYSTEM_USERS
         assert exc_info.value.current_usage == 1
         assert exc_info.value.limit == 1
         assert (

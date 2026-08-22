@@ -19,14 +19,17 @@ contain — which is the migration's subject, covered in `test_plan_seed_migrati
 """
 
 import pytest
+from vinta_billing.models import BillingPlan
 
-from payments.billing_constants import Entitlement, LimitedResource
 from payments.billing_plans_catalog import (
     FREE_PLAN_SLUG,
     UNLIMITED_PLAN_SLUG,
     seed_billing_plans,
 )
-from payments.models import BillingPlan
+from payments.seams.resource_keys import (
+    ENTITLEMENT_KEYS,
+    RESOURCE_KEYS,
+)
 
 
 @pytest.mark.django_db
@@ -44,7 +47,7 @@ class TestTheLiveSeederWritesACompleteCatalog:
         }
 
     def test_every_seeded_plan_covers_every_limited_resource(self):
-        expected = set(LimitedResource.values)
+        expected = set(RESOURCE_KEYS)
 
         for plan in BillingPlan.objects.all():
             covered = set(plan.limits.values_list("resource_key", flat=True))
@@ -59,7 +62,7 @@ class TestTheLiveSeederWritesACompleteCatalog:
         """Absent is not the same as disabled to a reader, but it is to this catalog:
         spelling every entitlement out is what keeps ``has_entitlement`` answering from
         data rather than from a default."""
-        expected = set(Entitlement.values)
+        expected = set(ENTITLEMENT_KEYS)
 
         for plan in BillingPlan.objects.all():
             declared = set(plan.entitlements.values_list("entitlement_key", flat=True))

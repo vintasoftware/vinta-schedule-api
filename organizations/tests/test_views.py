@@ -13,6 +13,8 @@ from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import AccessToken
+from vinta_billing.constants import BillingState
+from vinta_billing.models import Subscription
 
 from calendar_integration.models import GoogleCalendarServiceAccount
 from common.organization_context import get_current_organization
@@ -29,8 +31,6 @@ from organizations.models import (
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN, MANAGE_MEMBERS
 from organizations.tests.helpers import grant_membership_groups, make_membership
 from organizations.views import OrganizationViewSet
-from payments.billing_constants import BillingState
-from payments.models import Subscription
 from users.factories import UserFactory
 
 

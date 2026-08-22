@@ -42,6 +42,7 @@ from django.db import transaction
 from django.db.models import Q
 
 from allauth.socialaccount.models import SocialAccount
+from vinta_billing.exceptions import OverLimitError
 
 from calendar_integration.constants import (
     CalendarOrganizationResourceImportStatus,
@@ -75,8 +76,7 @@ from calendar_integration.services.protocols.initializer_or_authenticated_calend
 )
 from calendar_integration.services.type_guards import is_authenticated_calendar_service
 from organizations.models import ExternalEventUpdatePolicy, OrganizationMembership
-from payments.billing_constants import LimitedResource
-from payments.exceptions import OverLimitError
+from payments.seams.resource_keys import RESOURCE_CALENDARS
 from users.models import User
 
 
@@ -324,7 +324,7 @@ class CalendarSyncService:
         and capped *before* the bulk write, not per-row after it.
 
         The rule is **"will this write increase**
-        ``payments.services.entitlement_service._count_resource_calendars``**?"** -- not
+        ``vinta_billing.services.entitlement_service._count_resource_calendars``**?"** -- not
         "does a ``Calendar`` row already exist for this org + external_id?". Those two
         differ, and in the permissive direction: the write loop below puts
         ``calendar_type=RESOURCE`` in ``update_or_create``'s ``defaults``, so matching a
@@ -392,7 +392,7 @@ class CalendarSyncService:
 
         result = entitlement_service.check_limit(
             organization,
-            LimitedResource.RESOURCE_CALENDARS,
+            RESOURCE_CALENDARS,
             delta=len(chargeable_resources),
             lock=True,
         )
@@ -562,8 +562,8 @@ class CalendarSyncService:
         This is **not** subject to a limit check. Every calendar this method creates is
         seeded with ``calendar_type=PERSONAL`` (``create_defaults`` below); it never sets
         ``calendar_type=RESOURCE``, so it never creates anything counted by the
-        ``resource_calendars`` member of ``LimitedResource`` (the closed set of limited
-        resources).
+        ``resource_calendars`` resource key (see ``payments.seams.resources``, the
+        registration site).
         A pre-existing RESOURCE calendar that also shows up in this account's calendar list
         (e.g. a domain-wide account listing a room mailbox) is matched by ``update_or_create``
         and only *updated* -- ``calendar_type`` is not in ``defaults`` below, so its type is

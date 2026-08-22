@@ -191,7 +191,7 @@ class TestDomainMethodsSurvivedTheManagerChange:
         assert list(seats) == [active]
 
     def test_billing_recipients_returns_admins_and_billing_owners(self):
-        """``billing_recipients`` reads ``payments.manage_billing``, which a
+        """``billing_recipients`` reads ``vinta_billing.manage_billing``, which a
         membership holds only through its groups -- so a membership written
         straight through ``objects.create`` has to be put in them the way
         ``OrganizationService`` does. The query itself is covered in

@@ -21,6 +21,12 @@ from django.utils import timezone
 import pytest
 from allauth.socialaccount.models import SocialAccount, SocialToken
 from model_bakery import baker
+from vinta_billing.constants import BillingState
+from vinta_billing.exceptions import OverLimitError
+from vinta_billing.models import BillingPlan, Subscription, SubscriptionEntitlement
+from vinta_billing.services.dunning_service import DunningService
+from vinta_billing.services.entitlement_service import EntitlementService
+from vinta_billing.services.subscription_service import SubscriptionService
 
 from calendar_integration.constants import CalendarProvider, CalendarSyncStatus
 from calendar_integration.models import (
@@ -42,12 +48,7 @@ from calendar_integration.tasks.calendar_sync_tasks import (
     sync_calendar_task,
 )
 from organizations.models import Organization, OrganizationMembership
-from payments.billing_constants import BillingState, Entitlement
-from payments.exceptions import OverLimitError
-from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
-from payments.services.dunning_service import DunningService
-from payments.services.entitlement_service import EntitlementService
-from payments.services.subscription_service import SubscriptionService
+from payments.seams.resource_keys import EXTERNAL_CALENDAR_GOOGLE
 from users.models import Profile, User
 
 
@@ -84,7 +85,7 @@ def _organization_with_billing_state(
         baker.make(
             SubscriptionEntitlement,
             subscription=subscription,
-            entitlement_key=Entitlement.EXTERNAL_CALENDAR_GOOGLE,
+            entitlement_key=EXTERNAL_CALENDAR_GOOGLE,
             is_enabled=True,
         )
     return organization
@@ -481,7 +482,7 @@ class TestRecoveryDispatchesAResync:
 
         with (
             patch(
-                "payments.services.dunning_service.transaction.on_commit",
+                "vinta_billing.services.dunning_service.transaction.on_commit",
                 side_effect=lambda fn: fn(),
             ),
             patch.object(resync_organization_calendars_task, "delay") as dispatched,
@@ -504,7 +505,7 @@ class TestRecoveryDispatchesAResync:
 
         with (
             patch(
-                "payments.services.dunning_service.transaction.on_commit",
+                "vinta_billing.services.dunning_service.transaction.on_commit",
                 side_effect=lambda fn: fn(),
             ),
             patch.object(resync_organization_calendars_task, "delay") as dispatched,

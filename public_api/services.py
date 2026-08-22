@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Annotated, Any
 from django.db import transaction
 
 from dependency_injector.wiring import Provide, inject
+from vinta_billing.exceptions import OverLimitError
 
 from audit.constants import AuditAction
 from audit.services import AuditService
@@ -12,14 +13,14 @@ from common.utils.authentication_utils import (
     hash_long_lived_token,
     verify_long_lived_token,
 )
-from payments.billing_constants import LimitedResource
-from payments.exceptions import OverLimitError
+from payments.seams.resource_keys import PUBLIC_API_SYSTEM_USERS
 from public_api.models import SystemUser
 
 
 if TYPE_CHECKING:
+    from vinta_billing.services.entitlement_service import EntitlementService
+
     from organizations.models import Organization, OrganizationMembership
-    from payments.services.entitlement_service import EntitlementService
 
 
 logger = logging.getLogger(__name__)
@@ -113,7 +114,7 @@ class PublicAPIAuthService:
             )
         elif not bypass_limits and self.entitlement_service is not None:
             result = self.entitlement_service.check_limit(
-                organization, LimitedResource.PUBLIC_API_SYSTEM_USERS, lock=True
+                organization, PUBLIC_API_SYSTEM_USERS, lock=True
             )
             if not result.allowed:
                 raise OverLimitError.from_check_result(result)

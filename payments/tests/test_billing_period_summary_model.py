@@ -26,9 +26,9 @@ from django.db import IntegrityError
 
 import pytest
 from model_bakery import baker
+from vinta_billing.models import BillingPeriodResourceUsage, BillingPeriodSummary, Subscription
 
 from organizations.models import Organization
-from payments.models import BillingPeriodResourceUsage, BillingPeriodSummary, Subscription
 
 
 PERIOD_START = datetime.datetime(2026, 7, 1, tzinfo=datetime.UTC)

@@ -1,17 +1,13 @@
 import datetime
 import importlib
 
-from django.apps import apps
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 
 import pytest
 from model_bakery import baker
-
-from organizations.models import Organization
-from payments.billing_constants import DocumentTypes
-from payments.constants import PaymentProviders, PaymentStatuses, RefundStatuses
-from payments.models import (
+from vinta_billing.constants import DocumentTypes, PaymentProviders, PaymentStatuses, RefundStatuses
+from vinta_billing.models import (
     BillingAddress,
     BillingPlan,
     BillingProfile,
@@ -20,9 +16,12 @@ from payments.models import (
     RefundStatusUpdate,
     Subscription,
 )
-from payments.services.payment_adapters.mercadopago_payment_adapter import (
+from vinta_billing.services.payment_adapters.mercadopago_payment_adapter import (
     DOCUMENT_TYPES_MAPPING,
 )
+
+from organizations.models import Organization
+from payments.tests.historical_apps import historical_apps
 
 
 # This module builds its own Subscription rows (OneToOne with Organization), so it
@@ -116,7 +115,7 @@ backfill_payment_provider_migration = importlib.import_module(
 @pytest.mark.django_db
 class TestBackfillBillingProfilePaymentProviderMigration:
     """Verifies the ``0017_backfill_billingprofile_payment_provider`` data
-    migration's end state directly, the same live-``apps``-registry precedent
+    migration's end state directly, the same live-model-class precedent
     ``test_backfill_migration.py`` establishes for ``0009``: safe here because
     the migration's own function is a plain ``filter().update()`` against
     ``BillingProfile.payment_provider``, whose shape has not changed since."""
@@ -131,7 +130,7 @@ class TestBackfillBillingProfilePaymentProviderMigration:
             payment_provider="",
         )
 
-        backfill_payment_provider_migration.backfill_payment_provider(apps, None)
+        backfill_payment_provider_migration.backfill_payment_provider(historical_apps, None)
 
         profile.refresh_from_db()
         assert profile.payment_provider == PaymentProviders.STRIPE
@@ -144,7 +143,7 @@ class TestBackfillBillingProfilePaymentProviderMigration:
             payment_provider=PaymentProviders.MERCADOPAGO,
         )
 
-        backfill_payment_provider_migration.backfill_payment_provider(apps, None)
+        backfill_payment_provider_migration.backfill_payment_provider(historical_apps, None)
 
         profile.refresh_from_db()
         assert profile.payment_provider == PaymentProviders.MERCADOPAGO
@@ -157,8 +156,8 @@ class TestBackfillBillingProfilePaymentProviderMigration:
             payment_provider="",
         )
 
-        backfill_payment_provider_migration.backfill_payment_provider(apps, None)
-        backfill_payment_provider_migration.backfill_payment_provider(apps, None)
+        backfill_payment_provider_migration.backfill_payment_provider(historical_apps, None)
+        backfill_payment_provider_migration.backfill_payment_provider(historical_apps, None)
 
         profile.refresh_from_db()
         assert profile.payment_provider == PaymentProviders.STRIPE
@@ -171,8 +170,8 @@ class TestBackfillBillingProfilePaymentProviderMigration:
             payment_provider="",
         )
 
-        backfill_payment_provider_migration.backfill_payment_provider(apps, None)
-        backfill_payment_provider_migration.unset_payment_provider(apps, None)
+        backfill_payment_provider_migration.backfill_payment_provider(historical_apps, None)
+        backfill_payment_provider_migration.unset_payment_provider(historical_apps, None)
 
         profile.refresh_from_db()
         assert profile.payment_provider == ""
@@ -188,7 +187,7 @@ class TestBackfillBillingProfilePaymentProviderMigration:
             payment_provider=PaymentProviders.MERCADOPAGO,
         )
 
-        backfill_payment_provider_migration.unset_payment_provider(apps, None)
+        backfill_payment_provider_migration.unset_payment_provider(historical_apps, None)
 
         profile.refresh_from_db()
         assert profile.payment_provider == PaymentProviders.MERCADOPAGO

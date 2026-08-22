@@ -32,18 +32,18 @@ from django.urls import reverse
 import pytest
 from model_bakery import baker
 from rest_framework.test import APIClient
-
-from organizations.models import Organization, OrganizationInvitation
-from organizations.permission_catalog import GROUP_ORGANIZATION_MEMBER
-from organizations.services import OrganizationService
-from payments.exceptions import BillingRootCycleError
-from payments.models import Subscription
-from payments.services.subscription_service import (
+from vinta_billing.exceptions import BillingRootCycleError
+from vinta_billing.models import Subscription
+from vinta_billing.services.subscription_service import (
     SubscriptionService,
     billing_root_filter,
     is_billing_root,
     resolve_billing_root,
 )
+
+from organizations.models import Organization, OrganizationInvitation
+from organizations.permission_catalog import GROUP_ORGANIZATION_MEMBER
+from organizations.services import OrganizationService
 from public_api.models import ResourceAccess
 from public_api.services import PublicAPIAuthService
 

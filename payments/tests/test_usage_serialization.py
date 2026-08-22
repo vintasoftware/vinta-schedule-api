@@ -22,16 +22,23 @@ import pytest
 from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
+from vinta_billing.constants import BillingState, LimitKind
+from vinta_billing.models import BillingPlan, PlanLimit, SubscriptionAddOn
+from vinta_billing.serializers import UsageResponseSerializer
+from vinta_billing.services.subscription_service import SubscriptionService
 
 from calendar_integration.constants import CalendarType
 from calendar_integration.models import Calendar
 from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import make_membership
-from payments.billing_constants import BillingState, LimitedResource, LimitKind
-from payments.models import BillingPlan, PlanLimit, SubscriptionAddOn
-from payments.serializers import UsageResponseSerializer
-from payments.services.subscription_service import SubscriptionService
+from payments.seams.resource_keys import (
+    CALENDAR_GROUPS,
+    EVENT_OCCURRENCES,
+    ORGANIZATION_MEMBERS,
+    RESOURCE_CALENDARS,
+    RESOURCE_KEYS,
+)
 from users.factories import UserFactory
 
 
@@ -48,7 +55,7 @@ def make_complete_plan(limit_values: dict[str, int | None] | None = None) -> Bil
         monthly_price=Decimal("0"),
         annual_price=None,
     )
-    for resource_key in LimitedResource.values:
+    for resource_key in RESOURCE_KEYS:
         baker.make(
             PlanLimit,
             plan=plan,
@@ -73,14 +80,14 @@ class TestUnlimitedResourceSerializesAsNull:
             groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
-        plan = make_complete_plan({LimitedResource.RESOURCE_CALENDARS: None})
+        plan = make_complete_plan({RESOURCE_CALENDARS: None})
         SubscriptionService().create_subscription_for_organization(organization, plan=plan)
 
         response = auth_client.get(usage_url())
 
         assert response.status_code == status.HTTP_200_OK
         rows = {row["resource_key"]: row for row in response.data["limits"]}
-        row = rows[LimitedResource.RESOURCE_CALENDARS]
+        row = rows[RESOURCE_CALENDARS]
         assert row["limit_value"] is None
         # Pinned at the wire level too: `null`, not the string `"0"` or absent.
         assert (
@@ -93,7 +100,7 @@ class TestResellerChildReportsPooledRootFigures:
     def test_child_usage_is_the_roots_pooled_total(self, auth_client, user):
         root = baker.make(Organization, parent=None, can_invite_organizations=True)
         child = baker.make(Organization, parent=root, can_invite_organizations=False)
-        root_plan = make_complete_plan({LimitedResource.ORGANIZATION_MEMBERS: 20})
+        root_plan = make_complete_plan({ORGANIZATION_MEMBERS: 20})
         subscription = SubscriptionService().create_subscription_for_organization(
             root, plan=root_plan
         )
@@ -118,7 +125,7 @@ class TestResellerChildReportsPooledRootFigures:
         # Reports the *root's* billing_state, not a child-local notion.
         assert response.data["billing_state"] == subscription.billing_state
         rows = {row["resource_key"]: row for row in response.data["limits"]}
-        row = rows[LimitedResource.ORGANIZATION_MEMBERS]
+        row = rows[ORGANIZATION_MEMBERS]
         assert row["limit_value"] == 20
         # 2 (root) + 1 (the calling user's own child membership) + 3 (child) == 6,
         # summed across the whole pooled subtree, not just `child`'s own rows.
@@ -129,7 +136,7 @@ class TestResellerChildReportsPooledRootFigures:
         proven by hitting the endpoint as a root-side caller too."""
         root = baker.make(Organization, parent=None, can_invite_organizations=True)
         child = baker.make(Organization, parent=root, can_invite_organizations=False)
-        root_plan = make_complete_plan({LimitedResource.RESOURCE_CALENDARS: 5})
+        root_plan = make_complete_plan({RESOURCE_CALENDARS: 5})
         SubscriptionService().create_subscription_for_organization(root, plan=root_plan)
 
         baker.make(
@@ -171,11 +178,8 @@ class TestResellerChildReportsPooledRootFigures:
         assert child_response.status_code == status.HTTP_200_OK
         root_rows = {row["resource_key"]: row for row in root_response.data["limits"]}
         child_rows = {row["resource_key"]: row for row in child_response.data["limits"]}
-        assert (
-            root_rows[LimitedResource.RESOURCE_CALENDARS]
-            == child_rows[LimitedResource.RESOURCE_CALENDARS]
-        )
-        assert child_rows[LimitedResource.RESOURCE_CALENDARS]["current_usage"] == 2
+        assert root_rows[RESOURCE_CALENDARS] == child_rows[RESOURCE_CALENDARS]
+        assert child_rows[RESOURCE_CALENDARS]["current_usage"] == 2
 
 
 @pytest.mark.django_db
@@ -188,7 +192,7 @@ class TestRestrictedOrganizationCanStillReadUsage:
             groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
-        plan = make_complete_plan({LimitedResource.RESOURCE_CALENDARS: 5})
+        plan = make_complete_plan({RESOURCE_CALENDARS: 5})
         subscription = SubscriptionService().create_subscription_for_organization(
             organization, plan=plan
         )
@@ -213,7 +217,7 @@ class TestRestrictedOrganizationCanStillReadUsage:
         assert response.status_code == status.HTTP_200_OK
         assert response.data["billing_state"] == BillingState.RESTRICTED
         rows = {row["resource_key"]: row for row in response.data["limits"]}
-        row = rows[LimitedResource.RESOURCE_CALENDARS]
+        row = rows[RESOURCE_CALENDARS]
         assert row["limit_value"] == 5
         assert row["current_usage"] == 3
 
@@ -235,7 +239,7 @@ class TestEnrichedResponseSerialization:
             "estimated_overage_total": Decimal("12.5"),
             "limits": [
                 {
-                    "resource_key": LimitedResource.EVENT_OCCURRENCES,
+                    "resource_key": EVENT_OCCURRENCES,
                     "kind": LimitKind.POSTPAID,
                     "limit_value": 1000,
                     "current_usage": 1250,
@@ -279,7 +283,7 @@ class TestEnrichedResponseSerialization:
             "estimated_overage_total": Decimal("0"),
             "limits": [
                 {
-                    "resource_key": LimitedResource.RESOURCE_CALENDARS,
+                    "resource_key": RESOURCE_CALENDARS,
                     "kind": None,
                     "limit_value": None,
                     "current_usage": 0,
@@ -315,7 +319,7 @@ class TestPlanAddOnDecompositionInvariant:
             groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
-        plan = make_complete_plan({LimitedResource.CALENDAR_GROUPS: 5})
+        plan = make_complete_plan({CALENDAR_GROUPS: 5})
         subscription = SubscriptionService().create_subscription_for_organization(
             organization, plan=plan
         )
@@ -323,7 +327,7 @@ class TestPlanAddOnDecompositionInvariant:
         baker.make(
             SubscriptionAddOn,
             subscription=subscription,
-            resource_key=LimitedResource.CALENDAR_GROUPS,
+            resource_key=CALENDAR_GROUPS,
             quantity=3,
             is_recurring=True,
             is_active=True,
@@ -337,7 +341,7 @@ class TestPlanAddOnDecompositionInvariant:
             if row["limit_value"] is not None:
                 assert row["included_in_plan"] + row["add_on_quantity"] == row["limit_value"]
 
-        add_on_row = rows[LimitedResource.CALENDAR_GROUPS]
+        add_on_row = rows[CALENDAR_GROUPS]
         assert add_on_row["included_in_plan"] == 5
         assert add_on_row["add_on_quantity"] == 3
         assert add_on_row["limit_value"] == 8
@@ -359,7 +363,7 @@ class TestAddOnPurchasedOnUnlimitedPlan:
             groups=[GROUP_ORGANIZATION_ADMIN],
             is_active=True,
         )
-        plan = make_complete_plan({LimitedResource.CALENDAR_GROUPS: None})
+        plan = make_complete_plan({CALENDAR_GROUPS: None})
         subscription = SubscriptionService().create_subscription_for_organization(
             organization, plan=plan
         )
@@ -367,7 +371,7 @@ class TestAddOnPurchasedOnUnlimitedPlan:
         baker.make(
             SubscriptionAddOn,
             subscription=subscription,
-            resource_key=LimitedResource.CALENDAR_GROUPS,
+            resource_key=CALENDAR_GROUPS,
             quantity=3,
             is_recurring=True,
             is_active=True,
@@ -377,7 +381,7 @@ class TestAddOnPurchasedOnUnlimitedPlan:
 
         assert response.status_code == status.HTTP_200_OK
         rows = {row["resource_key"]: row for row in response.data["limits"]}
-        row = rows[LimitedResource.CALENDAR_GROUPS]
+        row = rows[CALENDAR_GROUPS]
         assert row["limit_value"] is None
         assert row["included_in_plan"] is None
         assert row["add_on_quantity"] == 3

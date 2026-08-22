@@ -47,6 +47,7 @@ from django.utils import timezone
 import pytest
 from model_bakery import baker
 
+from common.testing.migration_replay import migration_replay, uninterruptible
 from organizations.models import Organization
 from users.models import User
 
@@ -71,9 +72,14 @@ def _migrate_to(target: tuple[str, str]):
 
 
 def _restore_leaf_nodes() -> None:
-    executor = MigrationExecutor(connection)
-    executor.migrate(executor.loader.graph.leaf_nodes())
-    executor.loader.build_graph()
+    # `uninterruptible`: this is the half that must complete. See
+    # `common.testing.migration_replay` -- pytest.ini's 10s hang guard fires by
+    # signal, and landing inside this restore leaves the whole worker's database
+    # mid-graph rather than failing one test.
+    with uninterruptible():
+        executor = MigrationExecutor(connection)
+        executor.migrate(executor.loader.graph.leaf_nodes())
+        executor.loader.build_graph()
 
 
 def _delete_rows(table: str, ids: list[int]) -> None:
@@ -83,6 +89,7 @@ def _delete_rows(table: str, ids: list[int]) -> None:
         cursor.execute(f"DELETE FROM {table} WHERE id = ANY(%s)", [ids])  # noqa: S608
 
 
+@migration_replay
 @pytest.mark.django_db(transaction=True)
 class TestTheBackfillOverRealRows:
     """``0029``'s loop, executed -- not just its mapping function.
@@ -193,6 +200,7 @@ class TestTheBackfillOverRealRows:
             _restore_leaf_nodes()
 
 
+@migration_replay
 @pytest.mark.django_db(transaction=True)
 class TestTheInvitationValueRemap:
     """``0030``'s ``role`` -> ``group`` value remap, both directions.

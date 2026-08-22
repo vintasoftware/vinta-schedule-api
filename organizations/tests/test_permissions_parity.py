@@ -445,7 +445,7 @@ class TestIsOrganizationAdminParity:
 
 
 # ---------------------------------------------------------------------------
-# 4. IsBillingOwnerOrAdmin -- payments.manage_billing (+ the hand-written walk)
+# 4. IsBillingOwnerOrAdmin -- vinta_billing.manage_billing (+ the hand-written walk)
 # ---------------------------------------------------------------------------
 
 

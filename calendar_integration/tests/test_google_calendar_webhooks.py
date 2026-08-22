@@ -9,6 +9,8 @@ from django.utils import timezone
 
 import pytest
 from model_bakery import baker
+from vinta_billing.constants import BillingState
+from vinta_billing.models import BillingPlan, Subscription, SubscriptionEntitlement
 
 from calendar_integration.constants import (
     CalendarProvider,
@@ -31,8 +33,7 @@ from calendar_integration.services.calendar_adapters.google_calendar_adapter imp
 )
 from calendar_integration.services.calendar_service import CalendarService
 from organizations.models import Organization
-from payments.billing_constants import BillingState, Entitlement
-from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
+from payments.seams.resource_keys import EXTERNAL_CALENDAR_GOOGLE
 
 
 @override_settings(GOOGLE_CLIENT_ID="test_client_id", GOOGLE_CLIENT_SECRET="test_client_secret")
@@ -524,7 +525,7 @@ class GoogleCalendarWebhookOverLimitEntitlementTest(TestCase):
         baker.make(
             SubscriptionEntitlement,
             subscription=subscription,
-            entitlement_key=Entitlement.EXTERNAL_CALENDAR_GOOGLE,
+            entitlement_key=EXTERNAL_CALENDAR_GOOGLE,
             is_enabled=False,
         )
         self.calendar = Calendar.objects.create(

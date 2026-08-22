@@ -24,6 +24,9 @@ from django.utils import timezone
 
 import pytest
 from model_bakery import baker
+from vinta_billing.constants import BillingState, LimitKind
+from vinta_billing.exceptions import OverLimitError
+from vinta_billing.models import BillingPlan, Subscription, SubscriptionPlanLimit
 
 from calendar_integration.constants import CalendarType
 from calendar_integration.models import AvailableTime, Calendar, CalendarGroup
@@ -31,9 +34,16 @@ from calendar_integration.services.calendar_group_service import CalendarGroupSe
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.dataclasses import CalendarGroupInputData
 from organizations.models import Organization, OrganizationInvitation, OrganizationMembership
-from payments.billing_constants import BillingState, LimitedResource, LimitKind
-from payments.exceptions import OverLimitError
-from payments.models import BillingPlan, Subscription, SubscriptionPlanLimit
+from payments.seams.resource_keys import (
+    AVAILABILITY_WINDOWS,
+    BUNDLE_CALENDARS,
+    CALENDAR_GROUPS,
+    EVENT_OCCURRENCES,
+    ORGANIZATION_MEMBERS,
+    PUBLIC_API_SYSTEM_USERS,
+    RESOURCE_CALENDARS,
+    WEBHOOK_SUBSCRIPTIONS,
+)
 from public_api.models import SystemUser
 from webhooks.constants import WebhookEventType
 from webhooks.models import WebhookConfiguration
@@ -87,7 +97,7 @@ def _organization_with_limit(resource_key: str, limit_value: int) -> Organizatio
 
 
 def _probe_organization_members() -> None:
-    organization = _organization_with_limit(LimitedResource.ORGANIZATION_MEMBERS, 1)
+    organization = _organization_with_limit(ORGANIZATION_MEMBERS, 1)
     baker.make(OrganizationMembership, organization=organization, is_active=True)
 
     with pytest.raises(OverLimitError) as exc_info:
@@ -99,14 +109,14 @@ def _probe_organization_members() -> None:
             send_email=False,
         )
 
-    assert exc_info.value.resource_key == LimitedResource.ORGANIZATION_MEMBERS
+    assert exc_info.value.resource_key == ORGANIZATION_MEMBERS
     assert not OrganizationInvitation.objects.filter(
         organization=organization, email="blocked@example.com"
     ).exists()
 
 
 def _probe_resource_calendars() -> None:
-    organization = _organization_with_limit(LimitedResource.RESOURCE_CALENDARS, 1)
+    organization = _organization_with_limit(RESOURCE_CALENDARS, 1)
     baker.make(
         Calendar,
         organization=organization,
@@ -120,7 +130,7 @@ def _probe_resource_calendars() -> None:
     with pytest.raises(OverLimitError) as exc_info:
         service.create_resource_calendar(name="Blocked Room")
 
-    assert exc_info.value.resource_key == LimitedResource.RESOURCE_CALENDARS
+    assert exc_info.value.resource_key == RESOURCE_CALENDARS
     assert (
         not Calendar.objects.filter_by_organization(organization)
         .filter(
@@ -131,7 +141,7 @@ def _probe_resource_calendars() -> None:
 
 
 def _probe_calendar_groups() -> None:
-    organization = _organization_with_limit(LimitedResource.CALENDAR_GROUPS, 1)
+    organization = _organization_with_limit(CALENDAR_GROUPS, 1)
     baker.make(CalendarGroup, organization=organization)
 
     service = CalendarGroupService()
@@ -140,7 +150,7 @@ def _probe_calendar_groups() -> None:
     with pytest.raises(OverLimitError) as exc_info:
         service.create_group(CalendarGroupInputData(name="Blocked Group"))
 
-    assert exc_info.value.resource_key == LimitedResource.CALENDAR_GROUPS
+    assert exc_info.value.resource_key == CALENDAR_GROUPS
     assert (
         not CalendarGroup.objects.filter_by_organization(organization)
         .filter(
@@ -151,7 +161,7 @@ def _probe_calendar_groups() -> None:
 
 
 def _probe_bundle_calendars() -> None:
-    organization = _organization_with_limit(LimitedResource.BUNDLE_CALENDARS, 1)
+    organization = _organization_with_limit(BUNDLE_CALENDARS, 1)
     baker.make(
         Calendar,
         organization=organization,
@@ -165,7 +175,7 @@ def _probe_bundle_calendars() -> None:
     with pytest.raises(OverLimitError) as exc_info:
         service.create_bundle_calendar(name="Blocked Bundle")
 
-    assert exc_info.value.resource_key == LimitedResource.BUNDLE_CALENDARS
+    assert exc_info.value.resource_key == BUNDLE_CALENDARS
     assert (
         not Calendar.objects.filter_by_organization(organization)
         .filter(
@@ -176,7 +186,7 @@ def _probe_bundle_calendars() -> None:
 
 
 def _probe_availability_windows() -> None:
-    organization = _organization_with_limit(LimitedResource.AVAILABILITY_WINDOWS, 1)
+    organization = _organization_with_limit(AVAILABILITY_WINDOWS, 1)
     calendar = baker.make(
         Calendar,
         organization=organization,
@@ -195,7 +205,7 @@ def _probe_availability_windows() -> None:
             calendar=calendar, start_time=start, end_time=end, timezone="UTC"
         )
 
-    assert exc_info.value.resource_key == LimitedResource.AVAILABILITY_WINDOWS
+    assert exc_info.value.resource_key == AVAILABILITY_WINDOWS
     assert (
         AvailableTime.objects.filter_by_organization(organization)
         .filter(
@@ -207,7 +217,7 @@ def _probe_availability_windows() -> None:
 
 
 def _probe_webhook_subscriptions() -> None:
-    organization = _organization_with_limit(LimitedResource.WEBHOOK_SUBSCRIPTIONS, 1)
+    organization = _organization_with_limit(WEBHOOK_SUBSCRIPTIONS, 1)
     baker.make(
         WebhookConfiguration,
         organization=organization,
@@ -225,7 +235,7 @@ def _probe_webhook_subscriptions() -> None:
             headers={},
         )
 
-    assert exc_info.value.resource_key == LimitedResource.WEBHOOK_SUBSCRIPTIONS
+    assert exc_info.value.resource_key == WEBHOOK_SUBSCRIPTIONS
     assert not (
         WebhookConfiguration.objects.filter_by_organization(organization)
         .filter(url="https://example.com/coverage-blocked")
@@ -234,7 +244,7 @@ def _probe_webhook_subscriptions() -> None:
 
 
 def _probe_public_api_system_users() -> None:
-    organization = _organization_with_limit(LimitedResource.PUBLIC_API_SYSTEM_USERS, 1)
+    organization = _organization_with_limit(PUBLIC_API_SYSTEM_USERS, 1)
     baker.make(
         SystemUser,
         organization=organization,
@@ -250,7 +260,7 @@ def _probe_public_api_system_users() -> None:
             organization=organization,
         )
 
-    assert exc_info.value.resource_key == LimitedResource.PUBLIC_API_SYSTEM_USERS
+    assert exc_info.value.resource_key == PUBLIC_API_SYSTEM_USERS
     assert not (
         SystemUser.objects.filter_by_organization(organization)
         .filter(integration_name="coverage-blocked-integration")
@@ -264,13 +274,13 @@ def _probe_public_api_system_users() -> None:
 # post-paid allowance, not a pre-paid ceiling), so it is correctly excluded below
 # rather than missing by oversight -- the test asserts that distinction explicitly.
 GUARDED_CREATION_PROBES = {
-    LimitedResource.ORGANIZATION_MEMBERS: _probe_organization_members,
-    LimitedResource.RESOURCE_CALENDARS: _probe_resource_calendars,
-    LimitedResource.CALENDAR_GROUPS: _probe_calendar_groups,
-    LimitedResource.BUNDLE_CALENDARS: _probe_bundle_calendars,
-    LimitedResource.AVAILABILITY_WINDOWS: _probe_availability_windows,
-    LimitedResource.WEBHOOK_SUBSCRIPTIONS: _probe_webhook_subscriptions,
-    LimitedResource.PUBLIC_API_SYSTEM_USERS: _probe_public_api_system_users,
+    ORGANIZATION_MEMBERS: _probe_organization_members,
+    RESOURCE_CALENDARS: _probe_resource_calendars,
+    CALENDAR_GROUPS: _probe_calendar_groups,
+    BUNDLE_CALENDARS: _probe_bundle_calendars,
+    AVAILABILITY_WINDOWS: _probe_availability_windows,
+    WEBHOOK_SUBSCRIPTIONS: _probe_webhook_subscriptions,
+    PUBLIC_API_SYSTEM_USERS: _probe_public_api_system_users,
 }
 
 
@@ -312,7 +322,7 @@ class TestEveryPrepaidLimitedResourceHasAGuardedCreationPath:
         """Pins the one deliberate exclusion from ``GUARDED_CREATION_PROBES`` to a
         real assertion about the catalog, rather than leaving it as an unverified
         comment that could silently go stale."""
-        assert LimitedResource.EVENT_OCCURRENCES not in self._prepaid_resource_keys()
+        assert EVENT_OCCURRENCES not in self._prepaid_resource_keys()
 
     @pytest.mark.parametrize(
         "resource_key,probe",

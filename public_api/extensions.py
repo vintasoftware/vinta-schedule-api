@@ -12,9 +12,9 @@ from pyrate_limiter import (
 from rest_framework.views import set_rollback
 from strawberry.extensions import SchemaExtension
 from strawberry.utils.await_maybe import AsyncIteratorOrIterator
+from vinta_billing.exceptions import OverLimitError
 
 from common.redis import ResilientLimiter
-from payments.exceptions import OverLimitError
 
 
 def raise_over_limit_graphql_error(exc: OverLimitError) -> NoReturn:

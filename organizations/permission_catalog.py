@@ -85,12 +85,20 @@ MANAGE_BRANDING_TUPLE = (
     "Can manage the organization's branding",
 )
 
-#: ``payments.Subscription`` -- may change the plan, buy add-ons, manage the
+#: ``vinta_billing.Subscription`` -- may change the plan, buy add-ons, manage the
 #: payment method. Also what ``billing_recipients`` reads to decide who receives
 #: the dunning ladder, so "who may write billing" and "who is told about it"
 #: derive from one source.
+#:
+#: The app label is ``vinta_billing``, not ``payments``: the billing models moved
+#: to the package in
+#: ``payments/migrations/0024_move_billing_to_vinta_billing.py``, which also
+#: re-grants this permission on the new content type and deletes the old one.
+#: ``organizations/migrations/0028_seed_permission_groups.py`` still says
+#: ``payments`` and always will -- it describes the world as it was, and 0023
+#: depends on it.
 MANAGE_BILLING_TUPLE = (
-    "payments",
+    "vinta_billing",
     "subscription",
     "manage_billing",
     "Can manage the organization's billing",

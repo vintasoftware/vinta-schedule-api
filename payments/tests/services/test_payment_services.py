@@ -6,67 +6,68 @@ from django.db.models.query import QuerySet
 
 import pytest
 from model_bakery import baker
+from vinta_billing.constants import (
+    BillingInterval,
+    BillingState,
+    PaymentProviders,
+    PaymentStatuses,
+    RefundStatuses,
+    SubscriptionStatuses,
+)
+from vinta_billing.exceptions import (
+    BillingProfileContactEmailMissingError,
+    MissingBillingProfileError,
+    PaymentProviderNotConfiguredError,
+    UnknownPaymentProviderError,
+)
+from vinta_billing.models import BillingPlan, ProviderWebhookEvent
+from vinta_billing.models import BillingProfile as BillingProfileModel
+from vinta_billing.models import Payment as PaymentModel
+from vinta_billing.models import Refund as RefundModelForTest
+from vinta_billing.models import Subscription as SubscriptionModel
+from vinta_billing.services.dataclasses import (
+    BillingAddress as BillingAddressDataclass,
+)
+from vinta_billing.services.dataclasses import (
+    BillingProfile as BillingProfileDataclass,
+)
+from vinta_billing.services.dataclasses import (
+    CreatedPlan,
+    RefundResult,
+    SubscriptionPayment,
+)
+from vinta_billing.services.dataclasses import (
+    Payment as PaymentDataclass,
+)
+from vinta_billing.services.dataclasses import (
+    PaymentStatusUpdate as PaymentStatusUpdateDataclass,
+)
+from vinta_billing.services.dataclasses import (
+    Plan as PlanDataclass,
+)
+from vinta_billing.services.dataclasses import (
+    Refund as RefundDataclass,
+)
+from vinta_billing.services.dataclasses import (
+    Subscription as SubscriptionDataclass,
+)
+from vinta_billing.services.payment_adapters.base import BasePaymentAdapter
+from vinta_billing.services.payment_adapters.stripe_payment_adapter import StripePaymentAdapter
+from vinta_billing.services.subscription_adapters.base import (
+    BaseSubscriptionAdapter,
+)
+from vinta_billing.services.subscription_adapters.stripe_subscription_adapter import (
+    StripeSubscriptionAdapter,
+)
+from vinta_billing.services.subscription_plan_factory.base import BaseSubscriptionPlanFactory
+from vinta_billing.services.subscription_service import SubscriptionService
 
 from audit.constants import AuditAction, AuditActorType
 from organizations.authorization import MEMBERSHIP_ROLE_LABEL_ADMIN
 from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import grant_membership_groups
-from payments.billing_constants import BillingInterval, BillingState
-from payments.constants import (
-    PaymentProviders,
-    PaymentStatuses,
-    RefundStatuses,
-    SubscriptionStatuses,
-)
-from payments.exceptions import (
-    BillingProfileContactEmailMissingError,
-    MissingBillingProfileError,
-    PaymentProviderNotConfiguredError,
-    UnknownPaymentProviderError,
-)
-from payments.models import BillingPlan, ProviderWebhookEvent
-from payments.models import BillingProfile as BillingProfileModel
-from payments.models import Payment as PaymentModel
-from payments.models import Refund as RefundModelForTest
-from payments.models import Subscription as SubscriptionModel
-from payments.services.dataclasses import (
-    BillingAddress as BillingAddressDataclass,
-)
-from payments.services.dataclasses import (
-    BillingProfile as BillingProfileDataclass,
-)
-from payments.services.dataclasses import (
-    CreatedPlan,
-    RefundResult,
-    SubscriptionPayment,
-)
-from payments.services.dataclasses import (
-    Payment as PaymentDataclass,
-)
-from payments.services.dataclasses import (
-    PaymentStatusUpdate as PaymentStatusUpdateDataclass,
-)
-from payments.services.dataclasses import (
-    Plan as PlanDataclass,
-)
-from payments.services.dataclasses import (
-    Refund as RefundDataclass,
-)
-from payments.services.dataclasses import (
-    Subscription as SubscriptionDataclass,
-)
-from payments.services.payment_adapters.base import BasePaymentAdapter
-from payments.services.payment_adapters.stripe_payment_adapter import StripePaymentAdapter
-from payments.services.payment_service import PaymentService
-from payments.services.subscription_adapters.base import (
-    BaseSubscriptionAdapter,
-)
-from payments.services.subscription_adapters.stripe_subscription_adapter import (
-    StripeSubscriptionAdapter,
-)
-from payments.services.subscription_plan_factory.base import BaseSubscriptionPlanFactory
-from payments.services.subscription_service import SubscriptionService
+from payments.tests.provider_settings import use_providers
 
 
 # This module builds its own Subscription rows (OneToOne with Organization), so it
@@ -95,7 +96,7 @@ def organization():
 @pytest.fixture
 def billing_address():
     return baker.make(
-        "payments.BillingAddress",
+        "vinta_billing.BillingAddress",
         street_name="Test Street",
         street_number="123",
         city="Test City",
@@ -115,7 +116,7 @@ def billing_profile(organization, billing_address):
     ``settings.DEFAULT_PAYMENT_PROVIDER`` and driving the real, unmocked
     Stripe adapter."""
     return baker.make(
-        "payments.BillingProfile",
+        "vinta_billing.BillingProfile",
         organization=organization,
         document_type="CPF",
         document_number="12345678900",
@@ -187,14 +188,27 @@ def payment_service(
     """Both provider slots are mocked -- MercadoPago (what ``billing_profile``
     is pinned to by default) and Stripe (used by the Rule A/Rule B routing
     tests) -- so no test constructing this fixture can accidentally reach a
-    real, unconfigured adapter over the network."""
+    real, unconfigured adapter over the network.
+
+    Built through ``di_container.payment_service``, not by calling
+    ``PaymentService(...)`` directly. That used to be equivalent: the host's own
+    ``PaymentService.__init__`` carried ``@inject``, so the two registries and
+    the resolver arrived from the container -- and therefore from the overrides
+    above -- without being named. ``vinta_billing``'s constructor takes the same
+    four collaborators but falls back to building its own from ``VINTA_BILLING``
+    when they are not passed, which no ``di_container.<provider>.override(...)``
+    can reach. The container is where this project wires all four
+    (``di_core/containers.py``), so asking it for the service is what keeps the
+    mocks in the loop -- and what makes these tests exercise the object
+    production actually builds.
+    """
     with (
         di_container.payment_gateway.override(payment_adapter),
         di_container.subscription_gateway.override(subscription_adapter),
         di_container.stripe_payment_gateway.override(stripe_payment_adapter),
         di_container.stripe_subscription_gateway.override(stripe_subscription_adapter),
     ):
-        return PaymentService(subscription_plan_factory=subscription_plan_factory)
+        return di_container.payment_service(subscription_plan_factory=subscription_plan_factory)
 
 
 @pytest.fixture
@@ -263,7 +277,7 @@ def test_create_payment_raises_when_billing_profile_missing_contact_email(
 def test_success_process_payment(payment_service, payment_adapter, billing_profile):
     # Create a payment
     payment = baker.make(
-        "payments.Payment",
+        "vinta_billing.Payment",
         billing_profile=billing_profile,
         value=Decimal("100"),
         currency="USD",
@@ -295,7 +309,7 @@ def test_success_process_payment(payment_service, payment_adapter, billing_profi
 def test_success_check_payment_status(payment_service, payment_adapter, billing_profile):
     # Create a payment
     payment = baker.make(
-        "payments.Payment",
+        "vinta_billing.Payment",
         billing_profile=billing_profile,
         value=Decimal("100"),
         currency="USD",
@@ -331,7 +345,7 @@ def test_success_check_payment_status(payment_service, payment_adapter, billing_
 def test_success_create_refund(payment_service, payment_adapter, billing_profile):
     # Create payment and refund
     payment = baker.make(
-        "payments.Payment",
+        "vinta_billing.Payment",
         billing_profile=billing_profile,
         value=Decimal("100"),
         currency="USD",
@@ -376,7 +390,7 @@ def test_create_refund_persists_unknown_status_from_provider(
     (not silently coerced into something else), and the corresponding
     `RefundStatusUpdate` row must record it too."""
     payment = baker.make(
-        "payments.Payment",
+        "vinta_billing.Payment",
         billing_profile=billing_profile,
         value=Decimal("100"),
         currency="USD",
@@ -411,7 +425,7 @@ def test_create_refund_persists_failed_status_from_provider(
     """A provider-reported `failed` refund status must persist as-is, not be
     silently downgraded to `UNKNOWN` or left at `PENDING_SEND`."""
     payment = baker.make(
-        "payments.Payment",
+        "vinta_billing.Payment",
         billing_profile=billing_profile,
         value=Decimal("100"),
         currency="USD",
@@ -443,7 +457,7 @@ def test_create_refund_persists_failed_status_from_provider(
 def test_success_check_refund_status(payment_service, payment_adapter, billing_profile):
     # Create payment and refund
     payment = baker.make(
-        "payments.Payment",
+        "vinta_billing.Payment",
         billing_profile=billing_profile,
         value=Decimal("100"),
         currency="USD",
@@ -455,7 +469,7 @@ def test_success_check_refund_status(payment_service, payment_adapter, billing_p
     )
 
     refund = baker.make(
-        "payments.Refund",
+        "vinta_billing.Refund",
         payment=payment,
         value=Decimal("100"),
         currency="USD",
@@ -487,7 +501,7 @@ def test_success_check_refund_status(payment_service, payment_adapter, billing_p
 def test_success_receive_payment_update(payment_service, payment_adapter, billing_profile):
     # Create a payment
     payment = baker.make(
-        "payments.Payment",
+        "vinta_billing.Payment",
         billing_profile=billing_profile,
         value=Decimal("100"),
         currency="USD",
@@ -653,7 +667,7 @@ def test_success_cancel_subscription(
     # Create a subscription
     now = datetime.datetime.now(tz=datetime.UTC)
     subscription = baker.make(
-        "payments.Subscription",
+        "vinta_billing.Subscription",
         organization=billing_profile.organization,
         plan=billing_plan,
         current_period_start=now,
@@ -683,7 +697,7 @@ def test_success_receive_subscription_payment_update(
     # Create a subscription
     now = datetime.datetime.now(tz=datetime.UTC)
     subscription = baker.make(
-        "payments.Subscription",
+        "vinta_billing.Subscription",
         organization=billing_profile.organization,
         plan=billing_plan,
         current_period_start=now,
@@ -764,7 +778,7 @@ def test_receive_subscription_payment_update_without_billing_profile_returns_non
     should log a warning and return `None` instead of a 500."""
     now = datetime.datetime.now(tz=datetime.UTC)
     subscription = baker.make(
-        "payments.Subscription",
+        "vinta_billing.Subscription",
         organization=organization,
         plan=billing_plan,
         current_period_start=now,
@@ -857,7 +871,7 @@ def test_mercadopago_payment_is_refunded_and_status_checked_via_mercadopago_even
     billing_profile.save(update_fields=["payment_provider"])
 
     payment = baker.make(
-        "payments.Payment",
+        "vinta_billing.Payment",
         billing_profile=billing_profile,
         value=Decimal("100"),
         currency="USD",
@@ -926,7 +940,7 @@ def test_create_payment_for_unpinned_org_drives_default_payment_provider(
     """Rule B, unpinned case: an org with no pin at all resolves to
     `settings.DEFAULT_PAYMENT_PROVIDER`, not to whatever adapter happens to be
     mocked in this test suite."""
-    settings.DEFAULT_PAYMENT_PROVIDER = PaymentProviders.STRIPE
+    use_providers(settings, default_provider=PaymentProviders.STRIPE)
     billing_profile.payment_provider = ""
     billing_profile.save(update_fields=["payment_provider"])
     stripe_payment_adapter.process.return_value = "stripe_payment_default"
@@ -972,7 +986,9 @@ def test_create_payment_for_org_pinned_to_unconfigured_provider_raises_and_creat
         di_container.subscription_gateway.override(subscription_adapter),
         di_container.stripe_payment_gateway.override(unconfigured_stripe),
     ):
-        payment_service = PaymentService(subscription_plan_factory=subscription_plan_factory)
+        payment_service = di_container.payment_service(
+            subscription_plan_factory=subscription_plan_factory
+        )
 
         with pytest.raises(PaymentProviderNotConfiguredError):
             payment_service.create_payment(
@@ -995,7 +1011,7 @@ def test_configured_check_reads_the_outbound_credential_not_the_publishable_key(
     *publishable* key must not stop a charge through a provider whose secret key
     is present. `STRIPE_PUBLISHABLE_KEY` is what a browser needs to build a form;
     it is never sent on an outbound call from this process."""
-    settings.STRIPE_PUBLISHABLE_KEY = ""
+    use_providers(settings, STRIPE_PUBLISHABLE_KEY="")
     billing_profile.payment_provider = PaymentProviders.STRIPE
     billing_profile.save(update_fields=["payment_provider"])
     stripe_payment_adapter.process.return_value = "stripe_payment_no_pubkey"
@@ -1041,7 +1057,7 @@ def test_create_payment_for_org_pinned_to_slug_that_is_not_a_real_provider_raise
 def test_handle_payment_webhook_is_idempotent(payment_service, payment_adapter, billing_profile):
     """A redelivery of the same provider event runs the handler at most once."""
     payment = baker.make(
-        "payments.Payment",
+        "vinta_billing.Payment",
         billing_profile=billing_profile,
         value=Decimal("100"),
         currency="USD",
@@ -1085,7 +1101,7 @@ def test_handle_subscription_payment_webhook_is_idempotent(
     once the event has actually been processed (a non-`None` result)."""
     now = datetime.datetime.now(tz=datetime.UTC)
     subscription = baker.make(
-        "payments.Subscription",
+        "vinta_billing.Subscription",
         organization=billing_profile.organization,
         plan=billing_plan,
         current_period_start=now,
@@ -1163,7 +1179,7 @@ def test_handle_payment_webhook_none_result_does_not_burn_the_delivery(
     via `transaction.atomic()` — allowing exactly this kind of retry. The `None`
     return path must preserve that property instead of silently swallowing it."""
     payment = baker.make(
-        "payments.Payment",
+        "vinta_billing.Payment",
         billing_profile=billing_profile,
         value=Decimal("100"),
         currency="USD",
@@ -1264,7 +1280,7 @@ def test_record_payment_method_second_call_different_provider_leaves_pin_unchang
     billing_profile.refresh_from_db()
     assert billing_profile.payment_provider == PaymentProviders.MERCADOPAGO
 
-    with caplog.at_level("WARNING", logger="payments.services.subscription_service"):
+    with caplog.at_level("WARNING", logger="vinta_billing.services.subscription_service"):
         subscription_service.record_payment_method(
             billing_profile.organization, PaymentProviders.STRIPE, "instrument_2"
         )
@@ -1309,7 +1325,7 @@ def test_record_payment_method_pin_write_is_a_conditional_update_not_read_then_w
         return result
 
     with patch.object(QuerySet, "update", spying_update):
-        with caplog.at_level("WARNING", logger="payments.services.subscription_service"):
+        with caplog.at_level("WARNING", logger="vinta_billing.services.subscription_service"):
             subscription_service.record_payment_method(
                 billing_profile.organization, PaymentProviders.STRIPE, "instrument_2"
             )
@@ -1355,7 +1371,7 @@ def test_set_payment_provider_writes_audit_entry_naming_previous_provider(
     payload = mock_task.delay.call_args_list[0].args[0]
     assert payload["organization_id"] == billing_profile.organization_id
     assert payload["action"] == AuditAction.UPDATE
-    assert payload["subject"]["subject_type"] == "payments.BillingProfile"
+    assert payload["subject"]["subject_type"] == "vinta_billing.BillingProfile"
     assert payload["subject"]["subject_id"] == str(billing_profile.pk)
     assert payload["diff"] == {
         "payment_provider": {
@@ -1488,7 +1504,7 @@ def test_process_payment_drives_the_payment_rows_provider_not_the_org_pin(
     payment_service, payment_adapter, stripe_payment_adapter, stripe_pinned_billing_profile
 ):
     payment = baker.make(
-        "payments.Payment",
+        "vinta_billing.Payment",
         billing_profile=stripe_pinned_billing_profile,
         value=Decimal("100"),
         currency="USD",
@@ -1613,7 +1629,9 @@ def test_get_payment_adapter_ignores_the_outbound_credential(
         di_container.subscription_gateway.override(subscription_adapter),
         di_container.stripe_payment_gateway.override(unconfigured_stripe),
     ):
-        payment_service = PaymentService(subscription_plan_factory=subscription_plan_factory)
+        payment_service = di_container.payment_service(
+            subscription_plan_factory=subscription_plan_factory
+        )
 
         assert payment_service.get_payment_adapter(PaymentProviders.STRIPE) is unconfigured_stripe
         with pytest.raises(PaymentProviderNotConfiguredError):
@@ -1631,7 +1649,9 @@ def test_get_subscription_adapter_ignores_the_outbound_credential(
         di_container.subscription_gateway.override(subscription_adapter),
         di_container.stripe_subscription_gateway.override(unconfigured_stripe),
     ):
-        payment_service = PaymentService(subscription_plan_factory=subscription_plan_factory)
+        payment_service = di_container.payment_service(
+            subscription_plan_factory=subscription_plan_factory
+        )
 
         assert (
             payment_service.get_subscription_adapter(PaymentProviders.STRIPE) is unconfigured_stripe
@@ -1672,7 +1692,7 @@ def test_create_refund_does_not_mislabel_a_local_data_error_as_a_provider_declin
         payment_provider=PaymentProviders.MERCADOPAGO,
     )
     payment = baker.make(
-        "payments.Payment",
+        "vinta_billing.Payment",
         billing_profile=billing_profile,
         value=Decimal("100"),
         currency="USD",

@@ -15,6 +15,8 @@ from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
 from s3direct.utils import AWSCredentials
+from vinta_billing.constants import BillingState
+from vinta_billing.models import BillingPlan, Subscription, SubscriptionEntitlement
 
 from organizations.models import (
     Organization,
@@ -23,8 +25,7 @@ from organizations.models import (
 )
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import make_membership
-from payments.billing_constants import BillingState, Entitlement
-from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
+from payments.seams.resource_keys import WHITE_LABEL_BRANDING
 
 
 User = get_user_model()
@@ -49,7 +50,7 @@ def _make_unentitled_org(**org_kwargs) -> Organization:
     baker.make(
         SubscriptionEntitlement,
         subscription=subscription,
-        entitlement_key=Entitlement.WHITE_LABEL_BRANDING,
+        entitlement_key=WHITE_LABEL_BRANDING,
         is_enabled=False,
     )
     return org
@@ -1227,7 +1228,7 @@ class TestCanManageBrandingOnMembershipPayload:
         with the caller's distinct-org membership count. Batched via
         ``is_branding_eligible_organizations`` /
         ``EntitlementService.has_entitlement_for_organizations``: the number of
-        ``payments_subscription`` queries the endpoint issues must stay the
+        ``vinta_billing_subscription`` queries the endpoint issues must stay the
         same regardless of how many organizations the caller belongs to."""
 
         def _subscription_query_count(organization_count: int) -> int:
@@ -1251,7 +1252,9 @@ class TestCanManageBrandingOnMembershipPayload:
             assert_response_status_code(response, status.HTTP_200_OK)
             assert len(response.json()) == organization_count
             return sum(
-                1 for query in captured.captured_queries if "payments_subscription" in query["sql"]
+                1
+                for query in captured.captured_queries
+                if "vinta_billing_subscription" in query["sql"]
             )
 
         small_batch_query_count = _subscription_query_count(2)

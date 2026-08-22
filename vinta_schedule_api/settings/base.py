@@ -10,8 +10,7 @@ from django.core.validators import URLValidator
 from cuid2 import cuid_wrapper
 from decouple import Csv, config  # type: ignore
 from dj_database_url import parse as db_url
-
-from payments.provider_slugs import PAYMENT_PROVIDER_SLUGS
+from vinta_billing.provider_slugs import MERCADOPAGO, PAYMENT_PROVIDER_SLUGS, STRIPE
 
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -85,6 +84,14 @@ INSTALLED_APPS = [
     # reaches the package's admin module first; organizations/admin.py additionally
     # imports it explicitly so the unregistration below does not depend on this order.
     "vinta_orgs.apps.OrganizationsConfig",
+    # ``vinta-django-billing`` -- the billing engine of record. Like ``vinta_orgs``,
+    # deliberately NOT in INTERNAL_INSTALLED_APPS: that list drives di_core's DI
+    # wiring and names only this project's own apps. The ``payments`` app keeps its
+    # label and stays installed, but owns configuration (the resource registry and
+    # the four other seams, the plan catalog, the Celery entry points) rather than
+    # models -- every billing table lives under the ``vinta_billing`` label from
+    # ``payments/migrations/0024_move_billing_to_vinta_billing.py`` onward.
+    "vinta_billing",
     *INTERNAL_INSTALLED_APPS,
 ]
 
@@ -523,12 +530,12 @@ SPECTACULAR_SETTINGS = {
         # choices with `Subscription.billing_interval` -- without this,
         # drf-spectacular creates a second, redundant enum name for the same
         # value set.
-        "PendingBillingIntervalEnum": "payments.billing_constants.BillingInterval.choices",
+        "PendingBillingIntervalEnum": "vinta_billing.constants.BillingInterval.choices",
         # `PaymentProviderSerializer.provider` (payments/serializers.py) is a plain
         # `ChoiceField`, not a model field, so it has no field name to inherit a
         # canonical enum name from the way `Payment.payment_provider` etc. do --
         # pin it to the same enum name those fields already resolve to.
-        "PaymentProviderEnum": "payments.constants.PaymentProviders.choices",
+        "PaymentProviderEnum": "vinta_billing.constants.PaymentProviders.choices",
         # `calendar_integration`'s model field literally named `provider` (a
         # different, unrelated choice set: internal/google/microsoft/apple/ics) is
         # the other contender for the auto-derived "ProviderEnum" name that
@@ -707,7 +714,7 @@ MERCADOPAGO_ACCESS_TOKEN = config("MERCADOPAGO_ACCESS_TOKEN", default="")
 # Shared secret used to verify MercadoPago's `x-signature` webhook header. Empty
 # by default (matches MERCADOPAGO_ACCESS_TOKEN's dev-time fallback), but an empty
 # secret makes every webhook signature check fail closed (see
-# payments.services.mercadopago_signature.verify_mercadopago_signature) rather
+# vinta_billing.services.mercadopago_signature.verify_mercadopago_signature) rather
 # than skip verification.
 MERCADOPAGO_WEBHOOK_SECRET = config("MERCADOPAGO_WEBHOOK_SECRET", default="")
 # Browser-safe public key used to initialize MercadoPago's payment form. Not a
@@ -721,7 +728,7 @@ MERCADOPAGO_PUBLIC_KEY = config("MERCADOPAGO_PUBLIC_KEY", default="")
 STRIPE_SECRET_KEY = config("STRIPE_SECRET_KEY", default="")
 # Shared secret used to verify Stripe's `Stripe-Signature` webhook header. Empty
 # by default, matching MERCADOPAGO_WEBHOOK_SECRET's fail-closed convention (see
-# payments.services.stripe_signature.verify_stripe_event) rather than skip
+# vinta_billing.services.stripe_signature.verify_stripe_event) rather than skip
 # verification.
 STRIPE_WEBHOOK_SECRET = config("STRIPE_WEBHOOK_SECRET", default="")
 # Browser-safe public key used to initialize Stripe's payment form. Not a secret —
@@ -731,7 +738,7 @@ STRIPE_PUBLISHABLE_KEY = config("STRIPE_PUBLISHABLE_KEY", default="")
 
 # System-wide default payment provider. Resolves to the organization's pinned
 # provider when set; otherwise, every new charge and subscription defaults to this.
-# Value must match a member of payments.constants.PaymentProviders. Validated at
+# Value must match a member of vinta_billing.constants.PaymentProviders. Validated at
 # import time so a typo fails the deploy rather than every checkout.
 _payment_provider = config("DEFAULT_PAYMENT_PROVIDER", default="stripe")
 if _payment_provider not in PAYMENT_PROVIDER_SLUGS:
@@ -745,7 +752,7 @@ DEFAULT_PAYMENT_PROVIDER = _payment_provider
 del _payment_provider
 
 # How far a webhook's signed `ts` may drift from "now" before it is rejected as
-# stale (see payments.services.mercadopago_signature.verify_mercadopago_signature).
+# stale (see vinta_billing.services.mercadopago_signature.verify_mercadopago_signature).
 # Default matches Stripe's own convention; the Stripe adapter reuses this same
 # setting rather than defining its own tolerance window.
 WEBHOOK_SIGNATURE_TOLERANCE_SECONDS = 300
@@ -756,6 +763,101 @@ WEBHOOK_SIGNATURE_TOLERANCE_SECONDS = 300
 # still tune it without a deploy; this setting is only the catalog-wide default.
 # Tunable per environment with no code change.
 BILLING_DEFAULT_GRACE_PERIOD_DAYS = config("BILLING_DEFAULT_GRACE_PERIOD_DAYS", default=7, cast=int)
+
+# The host's configuration of `vinta_billing` -- the engine's five seams and
+# the handful of scalars it cannot infer on its own. `vinta_billing.conf`
+# rejects any key outside its own defaults at first access, so a typo here
+# fails loudly rather than silently keeping the library's default.
+#
+# `vinta_billing` is not in INSTALLED_APPS yet (that is Phase 1), so nothing
+# reads this dict today -- it exists now because every later phase reads one
+# of these five objects out of settings, and Phase 0's whole job is to make
+# them resolvable.
+VINTA_BILLING = {
+    # `organizations.Organization` is self-referential (`parent`) with a
+    # `can_invite_organizations` reseller flag -- exactly the shape
+    # `ParentFieldHierarchy` expects. See `payments.seams.hierarchy
+    # .ResellerHierarchy`, which only names the two field names.
+    "HIERARCHY": "payments.seams.hierarchy.ResellerHierarchy",
+    # `organizations.0028_seed_permission_groups` already seeds
+    # `organization_admin` and `organization_billing_owner` with
+    # `manage_billing`, so the stricter predicate is safe to select on day
+    # one here -- see AGENTS.md's billing section / the migration plan's
+    # "Who may manage billing" guiding decision for why the package does not
+    # default to this itself.
+    "BILLING_MANAGER_PREDICATE": "vinta_billing.permissions.member_holding_manage_billing",
+    # Forwards dunning/usage-warning notifications to the vintasend
+    # `NotificationService` the DI container already builds for every other
+    # notification-sending service in this project.
+    "NOTIFIER": "payments.seams.notifier.NotificationServiceNotifier",
+    # What "a billable occurrence happened" means here: one `CalendarEvent`
+    # start, in or out of a recurring series.
+    "OCCURRENCE_SOURCE": "payments.seams.occurrences.CalendarEventOccurrenceSource",
+    # The only postpaid resource this project registers (see
+    # `payments.seams.resources`) -- set explicitly rather than left for the
+    # "single registered postpaid resource" fallback, so a second postpaid
+    # resource registered later fails loudly instead of silently changing
+    # which one the meter bills.
+    "METERED_RESOURCE_KEY": "event_occurrences",
+    # The counterpart to `BILLING_MANAGER_PREDICATE`: who the dunning ladder
+    # and usage warnings tell. Same "safe because 0028 already seeds the
+    # grant" reasoning.
+    "BILLING_RECIPIENTS": "vinta_billing.recipients.members_holding_manage_billing",
+    # `vinta_billing`'s MercadoPago adapters `reverse()` their own webhook
+    # callback URLs through this namespace (`vinta_billing/urls_helpers.py`),
+    # and those two names -- `Payments-payment-update` and
+    # `Payments-subscription-payment-update` -- are the *only* thing this key
+    # governs.
+    #
+    # Empty, not "api". Up to `vinta-django-billing` 0.3.0 both webhooks came
+    # out of the shared DRF router, which this project mounts as
+    # `include((router.urls, "api"))` (`vinta_schedule_api/urls.py`), so "api"
+    # was right. 0.4.0 moved them into `routing.get_extra_patterns()` -- each
+    # carries the provider slug as a URL segment, which a router can only spell
+    # in its own mode -- and this project mounts those patterns *unnamespaced*
+    # (`path("", include(payments_extra_patterns))`), exactly as it already did
+    # for the two `billing/payment-provider/` endpoints. Left at "api", or at
+    # the package's own default ("billing"), MercadoPago callback-URL
+    # construction raises `NoReverseMatch` -- and only once MercadoPago is
+    # actually exercised, so a green suite would not catch a wrong value here
+    # on its own. `payments/tests/seams/test_settings.py` reverses both names
+    # through `namespaced()` rather than pinning this literal.
+    "URL_NAMESPACE": "",
+    "SITE_DOMAIN": SITE_DOMAIN,
+    "DEFAULT_CURRENCY": "USD",
+    "GRACE_PERIOD_DAYS": BILLING_DEFAULT_GRACE_PERIOD_DAYS,
+    # Matches `usage_warning_service.APPROACHING_LIMIT_THRESHOLD`, the value
+    # this project already enforces today.
+    "USAGE_WARNING_THRESHOLD": 0.8,
+    # Mixed in front of every tenant-scoped viewset `vinta_billing.routing
+    # .get_routes()` / `get_extra_patterns()` mount, so `X-Organization-Id`
+    # resolution (this project's own, not the package's) applies to them too.
+    "VIEW_MIXIN": "common.utils.view_utils.TenantScopedViewMixin",
+    # Where the shipped views and the admin build their services from.
+    # Resolved lazily per view construction (`vinta_billing.services.container
+    # .get_service_container`), so `di_container.<provider>.override(...)` in
+    # tests is honoured -- see `payments/admin.py` and the deleted
+    # `payments/views.py` / `payments/billing_views.py`, whose whole reason
+    # for existing was building services this setting now lets the package's
+    # own views and admin do instead.
+    "SERVICE_CONTAINER": "di_core.containers.container",
+    # Same env vars as ever -- `STRIPE_SECRET_KEY` / `MERCADOPAGO_ACCESS_TOKEN`
+    # / friends, defined above. Render env groups and CI are untouched; only
+    # the shape they are assembled into changed.
+    "PROVIDERS": {
+        STRIPE: {
+            "API_KEY": STRIPE_SECRET_KEY,
+            "WEBHOOK_SECRET": STRIPE_WEBHOOK_SECRET,
+            "PUBLISHABLE_KEY": STRIPE_PUBLISHABLE_KEY,
+        },
+        MERCADOPAGO: {
+            "ACCESS_TOKEN": MERCADOPAGO_ACCESS_TOKEN,
+            "WEBHOOK_SECRET": MERCADOPAGO_WEBHOOK_SECRET,
+            "PUBLIC_KEY": MERCADOPAGO_PUBLIC_KEY,
+        },
+    },
+    "DEFAULT_PROVIDER": DEFAULT_PAYMENT_PROVIDER,
+}
 
 SALT_KEY = config("SALT_KEY")
 

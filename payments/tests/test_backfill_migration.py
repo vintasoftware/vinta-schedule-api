@@ -23,19 +23,25 @@ for every operation this migration performs. If a future migration changes one
 of those models' shape, this deviation becomes a real risk and these tests
 should switch to a ``django_test_migrations``/``MigrationExecutor``-driven
 historical-state fixture instead.
+
+What it can no longer be handed is ``django.apps.apps`` itself.
+``0024_move_billing_to_vinta_billing`` moved every billing model to the
+``vinta_billing`` label, so ``apps.get_model("payments", "BillingPlan")`` --
+which resolves perfectly well inside the real migration, running at a state long
+before ``0024`` -- raises ``LookupError`` against the live registry.
+``payments.tests.historical_apps`` closes exactly that gap and nothing else: the
+same live classes, reachable under the label the migration asks for.
 """
 
 import importlib
 
-from django.apps import apps
-
 import pytest
 from model_bakery import baker
+from vinta_billing.models import BillingPlan, Subscription
 
 from organizations.models import Organization
-from payments.billing_constants import LimitedResource
-from payments.exceptions import MissingSeedBillingPlanError
-from payments.models import BillingPlan, Subscription
+from payments.seams.resource_keys import RESOURCE_KEYS
+from payments.tests.historical_apps import historical_apps
 
 
 # This module is *about* the plan-less state the backfill migration repairs, so it opts
@@ -48,6 +54,11 @@ migration_module = importlib.import_module(
     "payments.migrations.0009_backfill_unlimited_subscriptions"
 )
 backfill_unlimited_subscriptions = migration_module.backfill_unlimited_subscriptions
+# The migration freezes its own local copy of `vinta_billing.exceptions
+# .MissingSeedBillingPlanError` rather than importing the package's -- see the
+# migration module's docstring for why. This test exercises the migration's actual
+# raised type, not the package's.
+MissingSeedBillingPlanError = migration_module.MissingSeedBillingPlanError
 
 
 @pytest.mark.django_db
@@ -56,7 +67,7 @@ class TestBackfillUnlimitedSubscriptionsMigration:
         root_a = baker.make(Organization, parent=None)
         root_b = baker.make(Organization, parent=None)
 
-        backfill_unlimited_subscriptions(apps, None)
+        backfill_unlimited_subscriptions(historical_apps, None)
 
         for org in (root_a, root_b):
             subscription = Subscription.objects.get(organization=org)
@@ -70,7 +81,7 @@ class TestBackfillUnlimitedSubscriptionsMigration:
         the `meta.backfilled_by` stamp is what makes that possible."""
         org = baker.make(Organization, parent=None)
 
-        backfill_unlimited_subscriptions(apps, None)
+        backfill_unlimited_subscriptions(historical_apps, None)
 
         subscription = Subscription.objects.get(organization=org)
         assert subscription.meta.get("backfilled_by") == "payments.0009"
@@ -82,7 +93,7 @@ class TestBackfillUnlimitedSubscriptionsMigration:
         backfilled_org = baker.make(Organization, parent=None)
         organic_org = baker.make(Organization, parent=None)
 
-        backfill_unlimited_subscriptions(apps, None)
+        backfill_unlimited_subscriptions(historical_apps, None)
 
         # Simulate an org legitimately placed on `unlimited` some other way (e.g.
         # the documented support rollback) by clearing the migration's stamp on
@@ -92,7 +103,7 @@ class TestBackfillUnlimitedSubscriptionsMigration:
         organic_subscription.meta = {}
         organic_subscription.save(update_fields=["meta"])
 
-        migration_module.delete_backfilled_subscriptions(apps, None)
+        migration_module.delete_backfilled_subscriptions(historical_apps, None)
 
         assert not Subscription.objects.filter(organization=backfilled_org).exists()
         assert Subscription.objects.filter(organization=organic_org).exists()
@@ -101,7 +112,7 @@ class TestBackfillUnlimitedSubscriptionsMigration:
         root = baker.make(Organization, parent=None, can_invite_organizations=True)
         child = baker.make(Organization, parent=root, can_invite_organizations=False)
 
-        backfill_unlimited_subscriptions(apps, None)
+        backfill_unlimited_subscriptions(historical_apps, None)
 
         assert Subscription.objects.filter(organization=root).exists()
         assert not Subscription.objects.filter(organization=child).exists()
@@ -114,7 +125,7 @@ class TestBackfillUnlimitedSubscriptionsMigration:
         mid = baker.make(Organization, parent=root, can_invite_organizations=True)
         leaf = baker.make(Organization, parent=mid, can_invite_organizations=False)
 
-        backfill_unlimited_subscriptions(apps, None)
+        backfill_unlimited_subscriptions(historical_apps, None)
 
         assert Subscription.objects.filter(organization=root).exists()
         assert Subscription.objects.filter(organization=mid).exists()
@@ -123,16 +134,16 @@ class TestBackfillUnlimitedSubscriptionsMigration:
     def test_copies_every_limited_resource_as_a_subscription_plan_limit(self):
         org = baker.make(Organization, parent=None)
 
-        backfill_unlimited_subscriptions(apps, None)
+        backfill_unlimited_subscriptions(historical_apps, None)
 
         subscription = Subscription.objects.get(organization=org)
-        assert subscription.limits.count() == len(LimitedResource.values)
+        assert subscription.limits.count() == len(RESOURCE_KEYS)
         assert all(limit.limit_value is None for limit in subscription.limits.all())
 
     def test_idempotent_does_not_duplicate_or_touch_existing_subscriptions(self):
         org = baker.make(Organization, parent=None)
 
-        backfill_unlimited_subscriptions(apps, None)
+        backfill_unlimited_subscriptions(historical_apps, None)
         first_subscription = Subscription.objects.get(organization=org)
 
         # An org already placed on a real (non-unlimited) plan by the time the
@@ -141,7 +152,7 @@ class TestBackfillUnlimitedSubscriptionsMigration:
         first_subscription.plan = free_plan
         first_subscription.save(update_fields=["plan"])
 
-        backfill_unlimited_subscriptions(apps, None)
+        backfill_unlimited_subscriptions(historical_apps, None)
 
         assert Subscription.objects.filter(organization=org).count() == 1
         first_subscription.refresh_from_db()
@@ -155,7 +166,7 @@ class TestBackfillUnlimitedSubscriptionsMigration:
         monkeypatch.setattr(migration_module, "BATCH_SIZE", 2)
         orgs = [baker.make(Organization, parent=None) for _ in range(5)]
 
-        backfill_unlimited_subscriptions(apps, None)
+        backfill_unlimited_subscriptions(historical_apps, None)
 
         for org in orgs:
             subscription = Subscription.objects.get(organization=org)
@@ -170,4 +181,4 @@ class TestBackfillUnlimitedSubscriptionsMigration:
         BillingPlan.objects.filter(slug="unlimited").delete()
 
         with pytest.raises(MissingSeedBillingPlanError):
-            backfill_unlimited_subscriptions(apps, None)
+            backfill_unlimited_subscriptions(historical_apps, None)

@@ -33,6 +33,11 @@ import pytest
 from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
+from vinta_billing.constants import BillingInterval, BillingState, LimitKind
+from vinta_billing.exceptions import OverLimitError
+from vinta_billing.models import BillingPlan, PlanLimit, Subscription, SubscriptionPlanLimit
+from vinta_billing.services.entitlement_service import EntitlementService
+from vinta_billing.services.subscription_service import SubscriptionService
 
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.models import (
@@ -57,11 +62,17 @@ from organizations.permission_catalog import (
     GROUP_ORGANIZATION_BILLING_OWNER,
 )
 from organizations.tests.helpers import make_membership
-from payments.billing_constants import BillingInterval, BillingState, LimitedResource, LimitKind
-from payments.exceptions import OverLimitError
-from payments.models import BillingPlan, PlanLimit, Subscription, SubscriptionPlanLimit
-from payments.services.entitlement_service import EntitlementService
-from payments.services.subscription_service import SubscriptionService
+from payments.seams.resource_keys import (
+    AVAILABILITY_WINDOWS,
+    BUNDLE_CALENDARS,
+    CALENDAR_GROUPS,
+    EVENT_OCCURRENCES,
+    ORGANIZATION_MEMBERS,
+    PUBLIC_API_SYSTEM_USERS,
+    RESOURCE_CALENDARS,
+    RESOURCE_KEYS,
+    WEBHOOK_SUBSCRIPTIONS,
+)
 from public_api.models import SystemUser
 from users.factories import UserFactory
 from users.models import User
@@ -106,12 +117,8 @@ def _organization_with_billing_state(billing_state: str, *, unlimited: bool = Tr
         current_period_end=now + datetime.timedelta(days=30),
     )
     if unlimited:
-        for resource_key in LimitedResource.values:
-            kind = (
-                LimitKind.POSTPAID
-                if resource_key == LimitedResource.EVENT_OCCURRENCES
-                else LimitKind.PREPAID
-            )
+        for resource_key in RESOURCE_KEYS:
+            kind = LimitKind.POSTPAID if resource_key == EVENT_OCCURRENCES else LimitKind.PREPAID
             baker.make(
                 SubscriptionPlanLimit,
                 subscription=subscription,
@@ -566,38 +573,36 @@ def _create_system_user(organization: Organization) -> None:
 #: service-level probe set -- see ``GUARDED_MUTATING_SERVICE_METHODS`` for the
 #: enumerated service-level update/delete surface this file pins.
 RESTRICTED_WRITE_PROBES: dict[str, WriteProbe] = {
-    LimitedResource.ORGANIZATION_MEMBERS: WriteProbe(
+    ORGANIZATION_MEMBERS: WriteProbe(
         create=_invite_member, update=_reactivate_member, delete=_revoke_invitation
     ),
-    LimitedResource.RESOURCE_CALENDARS: WriteProbe(
+    RESOURCE_CALENDARS: WriteProbe(
         create=_create_resource_calendar,
         update=_update_resource_calendar,
         delete=_disable_resource_calendar,
     ),
-    LimitedResource.CALENDAR_GROUPS: WriteProbe(
+    CALENDAR_GROUPS: WriteProbe(
         create=_create_calendar_group,
         update=_update_calendar_group,
         delete=_delete_calendar_group,
     ),
-    LimitedResource.BUNDLE_CALENDARS: WriteProbe(
+    BUNDLE_CALENDARS: WriteProbe(
         create=_create_bundle_calendar,
         update=_update_bundle_calendar,
         delete=_disable_bundle_calendar,
     ),
-    LimitedResource.WEBHOOK_SUBSCRIPTIONS: WriteProbe(
+    WEBHOOK_SUBSCRIPTIONS: WriteProbe(
         create=_create_webhook_configuration,
         update=_update_webhook_configuration,
         delete=_delete_webhook_configuration,
     ),
-    LimitedResource.AVAILABILITY_WINDOWS: WriteProbe(
+    AVAILABILITY_WINDOWS: WriteProbe(
         create=_create_available_time, delete=_delete_only_available_time_batch
     ),
-    LimitedResource.PUBLIC_API_SYSTEM_USERS: WriteProbe(
+    PUBLIC_API_SYSTEM_USERS: WriteProbe(
         create=_create_system_user,
     ),
-    LimitedResource.EVENT_OCCURRENCES: WriteProbe(
-        create=_create_event, update=_update_event, delete=_delete_event
-    ),
+    EVENT_OCCURRENCES: WriteProbe(create=_create_event, update=_update_event, delete=_delete_event),
 }
 
 
@@ -605,7 +610,7 @@ RESTRICTED_WRITE_PROBES: dict[str, WriteProbe] = {
 #: These six ``CalendarGroupService`` methods are NOT tied to a ``LimitedResource``
 #: ceiling -- they call ``_check_not_restricted()`` directly, never ``check_limit``
 #: -- so they cannot live in ``RESTRICTED_WRITE_PROBES`` (keyed exhaustively against
-#: ``LimitedResource.values`` by ``test_every_limited_resource_has_a_create_probe``).
+#: ``RESOURCE_KEYS`` by ``test_every_limited_resource_has_a_create_probe``).
 #: Kept in a sibling registry, driven by ``TestRestrictedOrganizationBlocksGroupScopedWrites``
 #: below, so the same real-guarded-method proof applies to them.
 GROUP_SCOPED_WRITE_PROBES: dict[str, WriteProbe] = {
@@ -709,7 +714,7 @@ class TestRestrictedWriteProbeCoverage:
         new member added without a probe (the ``BUNDLE_CALENDARS`` /
         ``PUBLIC_API_SYSTEM_USERS`` gap that motivated this test) fails loudly, and
         a probe left behind for a renamed/removed resource fails the other way."""
-        resource_keys = set(LimitedResource.values)
+        resource_keys = set(RESOURCE_KEYS)
         probe_keys = set(RESTRICTED_WRITE_PROBES)
 
         missing = resource_keys - probe_keys
@@ -852,8 +857,8 @@ class TestRestrictedOrganizationReadsStayOpen:
         service = EntitlementService()
 
         # Must not raise for a restricted organization -- only writes are guarded.
-        service.get_current_usage(organization, LimitedResource.RESOURCE_CALENDARS)
-        service.get_effective_limit(organization, LimitedResource.RESOURCE_CALENDARS)
+        service.get_current_usage(organization, RESOURCE_CALENDARS)
+        service.get_effective_limit(organization, RESOURCE_CALENDARS)
 
     def test_calendar_reads_are_open(self):
         organization = _organization_with_billing_state(BillingState.RESTRICTED)
@@ -889,7 +894,7 @@ def _plan(
         monthly_price=monthly_price,
         annual_price=None,
     )
-    for resource_key in LimitedResource.values:
+    for resource_key in RESOURCE_KEYS:
         baker.make(
             PlanLimit,
             plan=plan,
@@ -911,8 +916,8 @@ class TestRestrictedOrganizationBillingSurfaceStaysOpen:
     def _client_for_restricted_org(self):
         user = UserFactory().create_user()
         organization = baker.make(Organization, parent=None, can_invite_organizations=False)
-        pro_plan = _plan({LimitedResource.ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50"))
-        free_plan = _plan({LimitedResource.ORGANIZATION_MEMBERS: 3}, monthly_price=Decimal("0"))
+        pro_plan = _plan({ORGANIZATION_MEMBERS: 50}, monthly_price=Decimal("50"))
+        free_plan = _plan({ORGANIZATION_MEMBERS: 3}, monthly_price=Decimal("0"))
         subscription = SubscriptionService().create_subscription_for_organization(
             organization, plan=pro_plan
         )

@@ -32,6 +32,17 @@ from allauth.socialaccount.models import SocialAccount, SocialToken
 from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
+from vinta_billing.constants import BillingState, LimitKind, LimitRemedy, PaymentProviders
+from vinta_billing.exceptions import OverLimitError
+from vinta_billing.models import (
+    BillingPlan,
+    MeteredOccurrence,
+    PaymentMethod,
+    Subscription,
+    SubscriptionEntitlement,
+    SubscriptionPlanLimit,
+)
+from vinta_billing.registry import entitlements
 
 from calendar_integration.constants import (
     CalendarProvider,
@@ -62,23 +73,7 @@ from calendar_integration.services.dataclasses import (
 )
 from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
 from organizations.models import Organization, OrganizationMembership
-from payments.billing_constants import (
-    BillingState,
-    Entitlement,
-    LimitedResource,
-    LimitKind,
-    LimitRemedy,
-)
-from payments.constants import PaymentProviders
-from payments.exceptions import OverLimitError
-from payments.models import (
-    BillingPlan,
-    MeteredOccurrence,
-    PaymentMethod,
-    Subscription,
-    SubscriptionEntitlement,
-    SubscriptionPlanLimit,
-)
+from payments.seams.resource_keys import EVENT_OCCURRENCES
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess
 from users.models import Profile, User
@@ -98,10 +93,10 @@ def _organization_with_postpaid_limit(
     organization's actual state for the whole rollout, and the property every
     surface below must prove is inert.
 
-    Every ``Entitlement`` is granted so the ``partner_api`` gate (public GraphQL)
-    and the ``external_calendar_google`` / ``external_calendar_microsoft`` gates
-    (any Google/Microsoft-provider calendar) never mask the postpaid guard under
-    test -- this file is about ``event_occurrences``, not those other gates.
+    Every registered entitlement is granted so the ``partner_api`` gate (public
+    GraphQL) and the ``external_calendar_google`` / ``external_calendar_microsoft``
+    gates (any Google/Microsoft-provider calendar) never mask the postpaid guard
+    under test -- this file is about ``event_occurrences``, not those other gates.
     """
     organization = baker.make(Organization, parent=None, can_invite_organizations=False)
     now = datetime.datetime.now(datetime.UTC)
@@ -116,11 +111,11 @@ def _organization_with_postpaid_limit(
     baker.make(
         SubscriptionPlanLimit,
         subscription=subscription,
-        resource_key=LimitedResource.EVENT_OCCURRENCES,
+        resource_key=EVENT_OCCURRENCES,
         limit_value=limit_value,
         kind=LimitKind.POSTPAID,
     )
-    for entitlement_key in Entitlement.values:
+    for entitlement_key in entitlements.keys():
         baker.make(
             SubscriptionEntitlement,
             subscription=subscription,
@@ -302,7 +297,7 @@ class TestRestSurface:
         assert response.status_code == status.HTTP_402_PAYMENT_REQUIRED
         body = response.json()
         assert body["code"] == "limit_exceeded"
-        assert body["resource"] == LimitedResource.EVENT_OCCURRENCES
+        assert body["resource"] == EVENT_OCCURRENCES
         assert body["remedy"] == LimitRemedy.ADD_PAYMENT_METHOD
         assert not CalendarEvent.original_manager.filter(calendar=calendar).exists()
 
@@ -408,7 +403,7 @@ class TestTokenSurface:
 
         assert response.status_code == status.HTTP_402_PAYMENT_REQUIRED
         body = response.json()
-        assert body["resource"] == LimitedResource.EVENT_OCCURRENCES
+        assert body["resource"] == EVENT_OCCURRENCES
         assert body["remedy"] == LimitRemedy.ADD_PAYMENT_METHOD
         assert not CalendarEvent.original_manager.filter(calendar=calendar).exists()
 
@@ -529,7 +524,7 @@ class TestPublicApiScheduleEventSurface:
         errors = response.json()["errors"]
         body = errors[0]["extensions"]
         assert body["code"] == "limit_exceeded"
-        assert body["resource"] == LimitedResource.EVENT_OCCURRENCES
+        assert body["resource"] == EVENT_OCCURRENCES
         assert body["remedy"] == LimitRemedy.ADD_PAYMENT_METHOD
         assert not CalendarEvent.original_manager.filter(calendar=calendar).exists()
 
@@ -640,7 +635,7 @@ class TestBookingCodeEventSurface:
         assert data.get("errors"), data
         body = data["errors"][0]["extensions"]
         assert body["code"] == "limit_exceeded"
-        assert body["resource"] == LimitedResource.EVENT_OCCURRENCES
+        assert body["resource"] == EVENT_OCCURRENCES
         assert not CalendarEvent.original_manager.filter(calendar=calendar).exists()
         # The code must not have been consumed by a rejected booking.
         token.refresh_from_db()
@@ -768,7 +763,7 @@ class TestBookingCodeGroupEventSurface:
         assert data.get("errors"), data
         body = data["errors"][0]["extensions"]
         assert body["code"] == "limit_exceeded"
-        assert body["resource"] == LimitedResource.EVENT_OCCURRENCES
+        assert body["resource"] == EVENT_OCCURRENCES
         assert not CalendarEvent.original_manager.filter(calendar=calendar).exists()
         token.refresh_from_db()
         assert token.used_at is None
@@ -999,7 +994,7 @@ class TestBundleEventFanOutHeadroom:
                 ),
             )
 
-        assert exc_info.value.resource_key == LimitedResource.EVENT_OCCURRENCES
+        assert exc_info.value.resource_key == EVENT_OCCURRENCES
         assert not CalendarEvent.original_manager.filter(bundle_calendar=bundle_calendar).exists()
 
     def test_five_internal_children_with_headroom_for_five_succeeds(self):
@@ -1178,10 +1173,10 @@ class TestUnlimitedPlanTakesNoLock:
             query["sql"]
             for query in captured.captured_queries
             if "FOR UPDATE" in query["sql"].upper()
-            and "PAYMENTS_SUBSCRIPTION" in query["sql"].upper()
+            and "VINTA_BILLING_SUBSCRIPTION" in query["sql"].upper()
         ]
         assert not locking, (
-            "check_postpaid_allowance took SELECT ... FOR UPDATE on payments_subscription "
+            "check_postpaid_allowance took SELECT ... FOR UPDATE on vinta_billing_subscription "
             "for an organization with a NULL event_occurrences ceiling. Every organization "
             "is on `unlimited` for this rollout and create_event is @transaction.atomic "
             "around a provider round-trip, so this serializes every booking in the "
@@ -1223,7 +1218,8 @@ class TestUnlimitedPlanTakesNoLock:
             )
 
         assert any(
-            "FOR UPDATE" in query["sql"].upper() and "PAYMENTS_SUBSCRIPTION" in query["sql"].upper()
+            "FOR UPDATE" in query["sql"].upper()
+            and "VINTA_BILLING_SUBSCRIPTION" in query["sql"].upper()
             for query in captured.captured_queries
         )
 
@@ -1253,8 +1249,8 @@ class TestRecurringMasterCostsItsOccurrences:
     below its ceiling create an open-ended daily series and accrue unbillable usage
     forever, never tripping the guard on that series again.
 
-    The delta comes from ``MeteringService.occurrence_starts_of`` -- the meter's own
-    expansion, called rather than re-implemented.
+    The delta comes from ``CalendarEventOccurrenceSource.occurrence_starts_of`` --
+    the meter's own expansion, called rather than re-implemented.
     """
 
     def test_a_daily_series_costs_its_occurrences_not_one(self):
@@ -1283,7 +1279,7 @@ class TestRecurringMasterCostsItsOccurrences:
                 ),
             )
 
-        assert exc_info.value.resource_key == LimitedResource.EVENT_OCCURRENCES
+        assert exc_info.value.resource_key == EVENT_OCCURRENCES
         assert exc_info.value.remedy == LimitRemedy.ADD_PAYMENT_METHOD
         # Stage 2 runs after the insert and rolls it back; nothing survives.
         assert not CalendarEvent.original_manager.filter(calendar=calendar).exists()
@@ -1392,7 +1388,7 @@ class TestRecurringMasterCostsItsOccurrences:
             query["sql"]
             for query in captured.captured_queries
             if "FOR UPDATE" in query["sql"].upper()
-            and "PAYMENTS_SUBSCRIPTION" in query["sql"].upper()
+            and "VINTA_BILLING_SUBSCRIPTION" in query["sql"].upper()
         ]
 
 
@@ -1449,7 +1445,7 @@ class TestInternalCreateEventReentries:
                 modified_title="Weekly sync (moved)",
             )
 
-        assert exc_info.value.resource_key == LimitedResource.EVENT_OCCURRENCES
+        assert exc_info.value.resource_key == EVENT_OCCURRENCES
 
     def test_transfer_between_calendars_is_not_charged(self):
         """A transfer is a **move**: ``transfer_event`` creates the event on

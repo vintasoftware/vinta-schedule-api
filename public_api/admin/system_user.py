@@ -9,16 +9,16 @@ from django.db.models import QuerySet
 from django.http import HttpRequest
 
 from dependency_injector.wiring import Provide, inject
+from vinta_billing.exceptions import OverLimitError
 
 from common.managers import unscoped_default_manager
-from payments.billing_constants import LimitedResource
-from payments.exceptions import OverLimitError
+from payments.seams.resource_keys import PUBLIC_API_SYSTEM_USERS
 from public_api.models import ResourceAccess, SystemUser
 from public_api.services import PublicAPIAuthService
 
 
 if TYPE_CHECKING:
-    from payments.services.entitlement_service import EntitlementService
+    from vinta_billing.services.entitlement_service import EntitlementService
 
 
 class SystemUserAdminForm(forms.ModelForm):
@@ -72,9 +72,7 @@ class SystemUserAdminForm(forms.ModelForm):
             # Org-less tokens are unmetered by design (see create_system_user).
             return cleaned_data
 
-        result = entitlement_service.check_limit(
-            organization, LimitedResource.PUBLIC_API_SYSTEM_USERS
-        )
+        result = entitlement_service.check_limit(organization, PUBLIC_API_SYSTEM_USERS)
         if not result.allowed:
             raise forms.ValidationError(
                 {"organization": OverLimitError.from_check_result(result).as_error_body()["detail"]}

@@ -29,7 +29,7 @@ The headline test proves four things in one flow:
    bookkeeping cleared and (RESTRICTED only) a calendar resync queued.
 
 Uses a hand-written ``FakePaymentService`` double, exactly like
-``test_plan_change.py``/``test_dunning_service.py`` -- what matters here is
+``test_plan_change.py`` -- what matters here is
 *when* the provider is driven and with *what arguments*, not the wire shape of
 any one real provider.
 """
@@ -43,36 +43,37 @@ from django.utils import timezone
 
 import pytest
 from model_bakery import baker
-
-from calendar_integration.tasks.calendar_sync_tasks import resync_organization_calendars_task
-from organizations.models import Organization
-from payments.billing_constants import BillingState, LimitedResource, LimitKind
-from payments.exceptions import RetryPaymentNotApplicableError, SubscriptionNotAttachedError
-from payments.models import BillingPlan, PlanLimit, Subscription
-from payments.services.dataclasses import CreatedPlan
-from payments.services.dunning_service import (
+from vinta_billing.constants import BillingState, LimitKind
+from vinta_billing.exceptions import RetryPaymentNotApplicableError, SubscriptionNotAttachedError
+from vinta_billing.models import BillingPlan, PlanLimit, Subscription
+from vinta_billing.services.dataclasses import CreatedPlan
+from vinta_billing.services.dunning_service import (
     DunningService,
     dunning_retry_idempotency_key,
     retry_attempt_ordinal,
 )
-from payments.services.entitlement_service import EntitlementService
-from payments.services.subscription_service import (
+from vinta_billing.services.entitlement_service import EntitlementService
+from vinta_billing.services.subscription_service import (
     SubscriptionService,
     retry_payment_idempotency_key,
 )
 
+from calendar_integration.tasks.calendar_sync_tasks import resync_organization_calendars_task
+from organizations.models import Organization
+from payments.seams.resource_keys import RESOURCE_KEYS
+
 
 # This module builds its own Subscription rows directly via SubscriptionService,
 # so it opts out of conftest's autouse `provision_default_subscription` --
-# mirrors `test_plan_change.py`/`test_dunning_service.py`.
+# mirrors `test_plan_change.py`.
 pytestmark = pytest.mark.no_auto_subscription
 
-_DUNNING_MODULE = "payments.services.dunning_service"
+_DUNNING_MODULE = "vinta_billing.services.dunning_service"
 
 
 def _patch_on_commit():
     """Canonical pattern in this project for testing on_commit-wrapped side
-    effects synchronously -- see ``test_dunning_service.py``."""
+    effects synchronously -- see ``payments/tests/test_dunning_schedule.py``."""
     return patch(f"{_DUNNING_MODULE}.transaction.on_commit", side_effect=lambda fn: fn())
 
 
@@ -83,7 +84,7 @@ def make_complete_plan(
 ) -> BillingPlan:
     """A catalog plan carrying a ``PlanLimit`` row for every ``LimitedResource``
     member -- what ``assert_plan_is_complete`` requires. Mirrors
-    ``test_plan_change.py``/``test_dunning_service.py``'s helper of the same
+    ``test_plan_change.py``'s helper of the same
     name."""
     plan = baker.make(
         BillingPlan,
@@ -92,7 +93,7 @@ def make_complete_plan(
         annual_price=None,
         grace_period_days=grace_period_days,
     )
-    for resource_key in LimitedResource.values:
+    for resource_key in RESOURCE_KEYS:
         baker.make(
             PlanLimit,
             plan=plan,
@@ -111,7 +112,7 @@ def organization():
 @pytest.fixture
 def billing_profile(organization):
     billing_address = baker.make(
-        "payments.BillingAddress",
+        "vinta_billing.BillingAddress",
         street_name="Test Street",
         street_number="123",
         city="Test City",
@@ -120,7 +121,7 @@ def billing_profile(organization):
         zip_code="12345",
     )
     return baker.make(
-        "payments.BillingProfile",
+        "vinta_billing.BillingProfile",
         organization=organization,
         contact_email="billing@example.com",
         document_type="CPF",
@@ -237,7 +238,7 @@ class TestRetryPaymentGraceRecovery:
     service calls ``PaymentsViewSet._apply_subscription_payment_side_effects``
     makes for an ``APPROVED`` subscription-payment status update -- not a real
     HTTP webhook payload through the DRF view. Matches the convention already
-    used by ``test_plan_change.py``/``test_dunning_service.py`` for exercising
+    used by ``test_plan_change.py`` for exercising
     webhook-driven state without re-deriving a provider's wire payload.
     """
 

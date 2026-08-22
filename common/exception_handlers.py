@@ -12,12 +12,11 @@ Returning a ``Response`` swallows the exception, so under
 first, exactly as DRF's own handler does for every ``APIException``.
 """
 
-from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import exception_handler as drf_exception_handler
 from rest_framework.views import set_rollback
-
-from payments.exceptions import (
+from vinta_billing.exception_handling import billing_error_status
+from vinta_billing.exceptions import (
     AddOnNotPurchasableError,
     ChargeDeclinedError,
     CollectionNotSupportedError,
@@ -41,21 +40,34 @@ def vinta_exception_handler(exc: Exception, context: dict) -> Response | None:
     renders the same dict through its own error extension, so the two surfaces
     stay byte-identical without either restating the shape.
 
-    ``PaymentProviderNotConfiguredError`` is rendered as **HTTP 409 Conflict**
-    for "the provider this organization resolves to cannot be driven by this
-    deployment". Handled centrally rather than per-action because it is
-    reachable from every billing write that touches a provider
+    ``PaymentProviderNotConfiguredError`` is rendered as **HTTP 503 Service
+    Unavailable** for "the provider this organization resolves to cannot be
+    driven by this deployment". Handled centrally rather than per-action
+    because it is reachable from every billing write that touches a provider
     (``SubscriptionViewSet.change_plan`` / ``cancel``, ``AddOnViewSet.create``,
     and anything added later), and a per-action ``except`` would have to be
     remembered at each new one — the failure mode of forgetting is a 500 on a
-    money path. ``payments.views``'s two provider-credentials endpoints catch it
-    themselves first (409 on the org endpoint, 503 on the unauthenticated default
-    one, which is a deployment error rather than a request conflict), so they are
-    unaffected by this branch.
+    money path. ``vinta_billing.views.PaymentProviderViewSet``'s two
+    provider-credentials endpoints catch it themselves first, both answering
+    503 as of ``vinta-django-billing`` 0.6.0, so they are unaffected by this
+    branch and agree with it.
+
+    This status was a hardcoded **409** here until ``vinta-django-billing``
+    0.6.0, deliberately overriding the package's table. The reason no longer
+    exists: the package's own ``change_plan`` / ``cancel`` / ``create``
+    annotations used to promise 409 for this error while its handler returned
+    503, and this project sided with the annotations. 0.6.0 resolved that in
+    favour of 503 — an unconfigured provider is a deployment fault, the same
+    request fails identically until an operator fixes it, and the two sibling
+    faults in that family (``NoDefaultBillingPlanError``,
+    ``IncompleteBillingPlanError``, the latter reachable from ``change-plan``)
+    were already 503, so a 409 here would have split one family across two
+    statuses. The carve-out is gone; every status in this function now comes
+    from ``billing_error_status`` rather than being re-derived by hand.
 
     ``PaymentTokenRequiredError`` / ``AddOnNotPurchasableError`` (400) and
     ``UnconfirmedPlanChangeError`` (409): every ``BillingError`` subclass carries
-    a stable ``code`` (see ``payments.exceptions.BillingError``), and these three
+    a stable ``code`` (see ``vinta_billing.exceptions.BillingError``), and these three
     render it through
     the shared ``as_error_body()`` contract instead of each view improvising its
     own ad hoc body (a field-keyed ``ValidationError`` for the first two, a plain
@@ -105,64 +117,28 @@ def vinta_exception_handler(exc: Exception, context: dict) -> Response | None:
     redeliver forever against a still-dead card (see ``ChargeDeclinedError``'s
     own docstring).
     """
-    if isinstance(exc, OverLimitError):
+    if isinstance(
+        exc,
+        OverLimitError
+        | PaymentProviderNotConfiguredError
+        | PaymentTokenRequiredError
+        | AddOnNotPurchasableError
+        | UnconfirmedPlanChangeError
+        | RetryPaymentNotApplicableError
+        | SubscriptionNotAttachedError
+        | NoOutstandingBalanceError
+        | CollectionNotSupportedError
+        | ChargeDeclinedError,
+    ):
         # Mandatory before returning a Response: swallowing the exception here
         # would otherwise commit the ATOMIC_REQUESTS transaction, persisting
-        # whatever a guarded service wrote before it hit the limit check (an
-        # invitation row, a membership reactivation, audit entries) while the
-        # client is told 402.
+        # whatever a guarded service wrote before it hit the guard (an
+        # invitation row, a membership reactivation, audit entries, a
+        # `SubscriptionAddOn`, a `Subscription.plan` move, a `Refund` and its
+        # status update) while the client is told the request did not succeed.
+        # Applied uniformly across every branch here rather than reasoned about
+        # per call site -- see this function's own docstring for why each of
+        # these ten classes renders at the status it does.
         set_rollback()
-        return Response(exc.as_error_body(), status=status.HTTP_402_PAYMENT_REQUIRED)
-    if isinstance(exc, PaymentProviderNotConfiguredError):
-        # Same mandatory rollback as above, and it matters more here: the charge
-        # paths that raise this write local rows (a `Refund` + its status update,
-        # a `SubscriptionAddOn`, a `Subscription.plan` move) before or around the
-        # provider call, and committing those while telling the client 409 would
-        # leave capacity or a refund recorded that no provider ever saw.
-        set_rollback()
-        return Response(exc.as_error_body(), status=status.HTTP_409_CONFLICT)
-    if isinstance(exc, PaymentTokenRequiredError | AddOnNotPurchasableError):
-        # Same mandatory rollback discipline as the branches above.
-        set_rollback()
-        return Response(exc.as_error_body(), status=status.HTTP_400_BAD_REQUEST)
-    if isinstance(exc, UnconfirmedPlanChangeError):
-        # A different plan change is already in flight and unconfirmed -- 409
-        # Conflict rather than a validation error on any one field.
-        set_rollback()
-        return Response(exc.as_error_body(), status=status.HTTP_409_CONFLICT)
-    if isinstance(exc, RetryPaymentNotApplicableError | SubscriptionNotAttachedError):
-        # Same mandatory rollback discipline as the branches above --
-        # `retry_payment` re-reads the subscription under a row lock inside its
-        # own `transaction.atomic()` before either check can raise, so there is
-        # nothing written yet by the time either of these fires in practice, but
-        # the discipline is applied uniformly rather than reasoned about per call
-        # site.
-        set_rollback()
-        return Response(exc.as_error_body(), status=status.HTTP_409_CONFLICT)
-    if isinstance(exc, NoOutstandingBalanceError):
-        # Same mandatory rollback discipline as the branches above. Raised
-        # *after* `update_subscription_payment_token` has already run inside
-        # `retry_payment`'s row lock -- that provider call writes nothing
-        # locally either, but `set_rollback()` is applied uniformly rather
-        # than reasoned about per call site, same as every branch above.
-        set_rollback()
-        return Response(exc.as_error_body(), status=status.HTTP_409_CONFLICT)
-    if isinstance(exc, CollectionNotSupportedError):
-        # Same mandatory rollback discipline as the branches above -- raised
-        # after `update_subscription_payment_token` has already run inside
-        # `retry_payment`'s row lock, which writes nothing locally either, but
-        # the discipline is applied uniformly rather than reasoned about per
-        # call site, same as every branch above.
-        set_rollback()
-        return Response(exc.as_error_body(), status=status.HTTP_409_CONFLICT)
-    if isinstance(exc, ChargeDeclinedError):
-        # Same mandatory rollback discipline as every branch above -- raised
-        # after `update_subscription_payment_token` has already run inside
-        # `retry_payment`'s row lock, which writes nothing locally either.
-        # `ATOMIC_REQUESTS` is production-only, so this branch is unreachable
-        # under test settings without corrupting anything -- the discipline is
-        # applied uniformly rather than reasoned about per call site, same as
-        # every branch above.
-        set_rollback()
-        return Response(exc.as_error_body(), status=status.HTTP_402_PAYMENT_REQUIRED)
+        return Response(exc.as_error_body(), status=billing_error_status(exc))
     return drf_exception_handler(exc, context)
