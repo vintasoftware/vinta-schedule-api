@@ -24,17 +24,17 @@ from django.db import IntegrityError
 import pytest
 from dateutil.relativedelta import relativedelta
 from freezegun import freeze_time
+from vinta_billing.exceptions import BillingPeriodResolutionError
+from vinta_billing.models import MeteredOccurrence, Subscription
+from vinta_billing.services.entitlement_service import EntitlementService
+from vinta_billing.services.metering_service import MAX_SERIES_CHAIN_DEPTH, MeteringService
+from vinta_billing.services.subscription_service import resolve_billing_period
 
 from calendar_integration.constants import CalendarProvider, RecurrenceFrequency
 from calendar_integration.factories import CalendarEventFactory
 from calendar_integration.models import Calendar, CalendarEvent
 from organizations.models import Organization
-from payments.billing_constants import LimitedResource
-from payments.exceptions import BillingPeriodResolutionError
-from payments.models import MeteredOccurrence, Subscription
-from payments.services.entitlement_service import EntitlementService
-from payments.services.metering_service import MAX_SERIES_CHAIN_DEPTH, MeteringService
-from payments.services.subscription_service import resolve_billing_period
+from payments.seams.resource_keys import EVENT_OCCURRENCES
 
 
 #: A whole calendar month used as the subscription's billing period, chosen so the
@@ -319,7 +319,7 @@ class TestAllowanceAndPriceStamping:
     def _set_allowance(
         subscription: Subscription, limit_value: int | None, unit_price: str | None
     ) -> None:
-        subscription.limits.filter(resource_key=LimitedResource.EVENT_OCCURRENCES).update(
+        subscription.limits.filter(resource_key=EVENT_OCCURRENCES).update(
             limit_value=limit_value,
             overage_unit_price=None if unit_price is None else Decimal(unit_price),
         )
@@ -474,21 +474,11 @@ class TestUsageCounterReadsTheMeter:
     ):
         entitlement_service = EntitlementService()
         with freeze_time(INSIDE_PERIOD):
-            assert (
-                entitlement_service.get_current_usage(
-                    organization, LimitedResource.EVENT_OCCURRENCES
-                )
-                == 0
-            )
+            assert entitlement_service.get_current_usage(organization, EVENT_OCCURRENCES) == 0
 
             metering_service.meter_occurrences_for_period(subscription, PERIOD_START, PERIOD_END)
 
-            assert (
-                entitlement_service.get_current_usage(
-                    organization, LimitedResource.EVENT_OCCURRENCES
-                )
-                == 5
-            )
+            assert entitlement_service.get_current_usage(organization, EVENT_OCCURRENCES) == 5
 
     def test_the_counter_still_reads_the_meter_when_the_stored_period_is_stale(
         self,
@@ -544,12 +534,7 @@ class TestUsageCounterReadsTheMeter:
         )
 
         with freeze_time(occurrence_moment):
-            assert (
-                EntitlementService().get_current_usage(
-                    organization, LimitedResource.EVENT_OCCURRENCES
-                )
-                == 1
-            )
+            assert EntitlementService().get_current_usage(organization, EVENT_OCCURRENCES) == 1
 
     def test_usage_is_scoped_to_the_current_billing_period(
         self,
@@ -585,12 +570,7 @@ class TestUsageCounterReadsTheMeter:
             < PERIOD_START
         )
         with freeze_time(INSIDE_PERIOD):
-            assert (
-                EntitlementService().get_current_usage(
-                    organization, LimitedResource.EVENT_OCCURRENCES
-                )
-                == 0
-            )
+            assert EntitlementService().get_current_usage(organization, EVENT_OCCURRENCES) == 0
 
 
 @pytest.mark.django_db
@@ -694,7 +674,7 @@ class TestBillingPeriodBoundary:
         fall into overage. Because it belongs to the next cycle it gets that
         cycle's fresh allowance, and both are included at zero.
         """
-        subscription.limits.filter(resource_key=LimitedResource.EVENT_OCCURRENCES).update(
+        subscription.limits.filter(resource_key=EVENT_OCCURRENCES).update(
             limit_value=1, overage_unit_price=Decimal("0.5000")
         )
         previous_period_start = PERIOD_START - relativedelta(months=1)
@@ -745,7 +725,7 @@ class TestBillingPeriodBoundary:
         this, the test above would pass just as well if `billing_period_start` were
         ignored entirely and everything were always within allowance.
         """
-        subscription.limits.filter(resource_key=LimitedResource.EVENT_OCCURRENCES).update(
+        subscription.limits.filter(resource_key=EVENT_OCCURRENCES).update(
             limit_value=1, overage_unit_price=Decimal("0.5000")
         )
         for label, offset in (("first", 2), ("second", 4)):

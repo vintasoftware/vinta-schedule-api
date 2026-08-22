@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from allauth.socialaccount.models import SocialAccount
+    from vinta_billing.services.entitlement_service import EntitlementService
 
     from audit.services import AuditService
     from calendar_integration.models import GoogleCalendarServiceAccount
@@ -30,7 +31,6 @@ if TYPE_CHECKING:
     )
     from calendar_integration.services.protocols.calendar_adapter import CalendarAdapter
     from organizations.models import Organization
-    from payments.services.entitlement_service import EntitlementService
     from public_api.models import SystemUser
     from users.models import User
 

@@ -1,5 +1,14 @@
-"""Integration tests for ``payments.views.PaymentProviderViewSet``: the unauthenticated
+"""Integration tests for ``vinta_billing.views.PaymentProviderViewSet``, mounted
+through ``vinta_billing.routing.get_extra_patterns()``: the unauthenticated
 system-default endpoint and the authenticated, tenant-scoped organization endpoint.
+
+**Both answer 503 for an unconfigured provider.** They disagreed until
+``vinta-django-billing`` 0.6.0 -- the organization endpoint had a local ``except``
+returning a hardcoded 409 while its sibling in the same module returned 503 -- and
+the tests below pinned that asymmetry. 0.6.0 settled it at 503 in both places, for
+the reason ``common.exception_handlers.vinta_exception_handler`` spells out: an
+unconfigured provider is a deployment fault, not something the caller can fix by
+sending a different request.
 """
 
 from typing import ClassVar
@@ -11,12 +20,13 @@ import pytest
 from model_bakery import baker
 from rest_framework import status
 from rest_framework.throttling import ScopedRateThrottle
+from vinta_billing.constants import PaymentProviders
+from vinta_billing.models import BillingAddress, BillingProfile
 
 from organizations.models import Organization
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import make_membership
-from payments.constants import PaymentProviders
-from payments.models import BillingAddress, BillingProfile
+from payments.tests.provider_settings import use_providers
 
 
 pytestmark = pytest.mark.django_db
@@ -60,9 +70,12 @@ def make_billing_profile(organization: Organization, payment_provider: str = "")
 
 class TestDefaultPaymentProviderEndpoint:
     def test_reachable_with_no_session_at_all(self, anonymous_client, settings):
-        settings.DEFAULT_PAYMENT_PROVIDER = PaymentProviders.STRIPE
-        settings.STRIPE_PUBLISHABLE_KEY = "pk_test_default"
-        settings.MERCADOPAGO_PUBLIC_KEY = "pub_test_default"
+        use_providers(
+            settings,
+            default_provider=PaymentProviders.STRIPE,
+            STRIPE_PUBLISHABLE_KEY="pk_test_default",
+            MERCADOPAGO_PUBLIC_KEY="pub_test_default",
+        )
 
         response = anonymous_client.get(default_provider_url())
 
@@ -74,16 +87,18 @@ class TestDefaultPaymentProviderEndpoint:
         }
 
     def test_503_when_default_provider_has_no_public_credentials(self, anonymous_client, settings):
-        settings.DEFAULT_PAYMENT_PROVIDER = PaymentProviders.STRIPE
-        settings.STRIPE_PUBLISHABLE_KEY = ""
+        use_providers(settings, default_provider=PaymentProviders.STRIPE, STRIPE_PUBLISHABLE_KEY="")
 
         response = anonymous_client.get(default_provider_url())
 
         assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
 
     def test_throttled_past_the_scoped_rate(self, anonymous_client, settings, monkeypatch):
-        settings.DEFAULT_PAYMENT_PROVIDER = PaymentProviders.STRIPE
-        settings.STRIPE_PUBLISHABLE_KEY = "pk_test_default"
+        use_providers(
+            settings,
+            default_provider=PaymentProviders.STRIPE,
+            STRIPE_PUBLISHABLE_KEY="pk_test_default",
+        )
         # `ScopedRateThrottle.THROTTLE_RATES` is bound to `settings.REST_FRAMEWORK
         # ["DEFAULT_THROTTLE_RATES"]` once, at import time -- reassigning
         # `settings.REST_FRAMEWORK` later (even via the `settings` fixture, which
@@ -105,9 +120,12 @@ class TestOrganizationPaymentProviderEndpoint:
     def test_returns_the_pin_for_a_pinned_organization(
         self, auth_client, admin_membership, organization, settings
     ):
-        settings.DEFAULT_PAYMENT_PROVIDER = PaymentProviders.STRIPE
-        settings.STRIPE_PUBLISHABLE_KEY = "pk_test_org"
-        settings.MERCADOPAGO_PUBLIC_KEY = "pub_test_org"
+        use_providers(
+            settings,
+            default_provider=PaymentProviders.STRIPE,
+            STRIPE_PUBLISHABLE_KEY="pk_test_org",
+            MERCADOPAGO_PUBLIC_KEY="pub_test_org",
+        )
         make_billing_profile(organization, payment_provider=PaymentProviders.MERCADOPAGO)
 
         response = auth_client.get(org_provider_url())
@@ -122,8 +140,11 @@ class TestOrganizationPaymentProviderEndpoint:
     def test_returns_the_default_for_an_unpinned_organization(
         self, auth_client, admin_membership, organization, settings
     ):
-        settings.DEFAULT_PAYMENT_PROVIDER = PaymentProviders.STRIPE
-        settings.STRIPE_PUBLISHABLE_KEY = "pk_test_org"
+        use_providers(
+            settings,
+            default_provider=PaymentProviders.STRIPE,
+            STRIPE_PUBLISHABLE_KEY="pk_test_org",
+        )
         make_billing_profile(organization, payment_provider="")
 
         response = auth_client.get(org_provider_url())
@@ -138,8 +159,11 @@ class TestOrganizationPaymentProviderEndpoint:
     def test_returns_the_default_for_an_organization_with_no_billing_profile(
         self, auth_client, admin_membership, organization, settings
     ):
-        settings.DEFAULT_PAYMENT_PROVIDER = PaymentProviders.STRIPE
-        settings.STRIPE_PUBLISHABLE_KEY = "pk_test_org"
+        use_providers(
+            settings,
+            default_provider=PaymentProviders.STRIPE,
+            STRIPE_PUBLISHABLE_KEY="pk_test_org",
+        )
         assert not BillingProfile.objects.filter(organization=organization).exists()
 
         response = auth_client.get(org_provider_url())
@@ -161,49 +185,55 @@ class TestOrganizationPaymentProviderEndpoint:
 
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
-    def test_409_when_the_pinned_provider_has_no_public_credentials(
+    def test_503_when_the_pinned_provider_has_no_public_credentials(
         self, auth_client, admin_membership, organization, settings
     ):
-        settings.MERCADOPAGO_PUBLIC_KEY = ""
+        use_providers(settings, MERCADOPAGO_PUBLIC_KEY="")
         make_billing_profile(organization, payment_provider=PaymentProviders.MERCADOPAGO)
 
         response = auth_client.get(org_provider_url())
 
-        assert response.status_code == status.HTTP_409_CONFLICT
+        assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
 
-    def test_409_does_not_fall_back_to_the_default(
+    def test_503_does_not_fall_back_to_the_default(
         self, auth_client, admin_membership, organization, settings
     ):
         """An org pinned to a provider with no public key must not silently receive the
         *other* provider's credentials -- a card token minted for one provider is
         meaningless at the other."""
-        settings.DEFAULT_PAYMENT_PROVIDER = PaymentProviders.STRIPE
-        settings.STRIPE_PUBLISHABLE_KEY = "pk_test_org"
-        settings.MERCADOPAGO_PUBLIC_KEY = ""
+        use_providers(
+            settings,
+            default_provider=PaymentProviders.STRIPE,
+            STRIPE_PUBLISHABLE_KEY="pk_test_org",
+            MERCADOPAGO_PUBLIC_KEY="",
+        )
         make_billing_profile(organization, payment_provider=PaymentProviders.MERCADOPAGO)
 
         response = auth_client.get(org_provider_url())
 
-        assert response.status_code == status.HTTP_409_CONFLICT
+        assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
         assert "pk_test_org" not in str(response.content)
 
-    def test_409_for_a_pin_naming_a_provider_absent_from_the_registry(
+    def test_503_for_a_pin_naming_a_provider_absent_from_the_registry(
         self, auth_client, admin_membership, organization, settings
     ):
         """A pin holding a slug that is not a member of ``PaymentProviders`` at all (e.g.
-        a provider retired after the org was pinned to it) must 409, not silently fall
+        a provider retired after the org was pinned to it) must 503, not silently fall
         back to the default -- ``choices`` is form/admin-level validation, not a DB
         constraint, so this row is constructible in the database even though no API
         surface can write it today.
         """
-        settings.DEFAULT_PAYMENT_PROVIDER = PaymentProviders.STRIPE
-        settings.STRIPE_PUBLISHABLE_KEY = "pk_test_org"
-        settings.MERCADOPAGO_PUBLIC_KEY = "pub_test_org"
+        use_providers(
+            settings,
+            default_provider=PaymentProviders.STRIPE,
+            STRIPE_PUBLISHABLE_KEY="pk_test_org",
+            MERCADOPAGO_PUBLIC_KEY="pub_test_org",
+        )
         make_billing_profile(organization, payment_provider="legacy_provider_removed")
 
         response = auth_client.get(org_provider_url())
 
-        assert response.status_code == status.HTTP_409_CONFLICT
+        assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
         assert "pk_test_org" not in str(response.content)
 
 
@@ -222,8 +252,7 @@ class TestNoSecretLeak:
     }
 
     def _set_sentinels(self, settings) -> None:
-        for name, value in self.SENTINELS.items():
-            setattr(settings, name, value)
+        use_providers(settings, **self.SENTINELS)
 
     def _assert_no_sentinel_leak(self, response) -> None:
         body = str(response.content)
@@ -231,9 +260,12 @@ class TestNoSecretLeak:
             assert value not in body
 
     def test_default_endpoint_never_leaks_a_secret(self, anonymous_client, settings):
-        settings.DEFAULT_PAYMENT_PROVIDER = PaymentProviders.STRIPE
-        settings.STRIPE_PUBLISHABLE_KEY = "pk_test_default"
-        settings.MERCADOPAGO_PUBLIC_KEY = "pub_test_default"
+        use_providers(
+            settings,
+            default_provider=PaymentProviders.STRIPE,
+            STRIPE_PUBLISHABLE_KEY="pk_test_default",
+            MERCADOPAGO_PUBLIC_KEY="pub_test_default",
+        )
         self._set_sentinels(settings)
 
         response = anonymous_client.get(default_provider_url())
@@ -244,9 +276,12 @@ class TestNoSecretLeak:
     def test_org_endpoint_never_leaks_a_secret(
         self, auth_client, admin_membership, organization, settings
     ):
-        settings.DEFAULT_PAYMENT_PROVIDER = PaymentProviders.STRIPE
-        settings.STRIPE_PUBLISHABLE_KEY = "pk_test_org"
-        settings.MERCADOPAGO_PUBLIC_KEY = "pub_test_org"
+        use_providers(
+            settings,
+            default_provider=PaymentProviders.STRIPE,
+            STRIPE_PUBLISHABLE_KEY="pk_test_org",
+            MERCADOPAGO_PUBLIC_KEY="pub_test_org",
+        )
         self._set_sentinels(settings)
         make_billing_profile(organization, payment_provider=PaymentProviders.MERCADOPAGO)
 

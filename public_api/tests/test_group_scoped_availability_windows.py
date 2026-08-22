@@ -19,6 +19,13 @@ from django.utils import timezone as django_timezone
 import pytest
 from model_bakery import baker
 from rest_framework.test import APIClient
+from vinta_billing.constants import BillingState, LimitKind
+from vinta_billing.models import (
+    BillingPlan,
+    Subscription,
+    SubscriptionEntitlement,
+    SubscriptionPlanLimit,
+)
 
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.models import (
@@ -30,13 +37,7 @@ from calendar_integration.models import (
     CalendarOwnership,
 )
 from organizations.models import Organization, OrganizationMembership
-from payments.billing_constants import BillingState, Entitlement, LimitedResource, LimitKind
-from payments.models import (
-    BillingPlan,
-    Subscription,
-    SubscriptionEntitlement,
-    SubscriptionPlanLimit,
-)
+from payments.seams.resource_keys import AVAILABILITY_WINDOWS, PARTNER_API
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess
 from public_api.services import PublicAPIAuthService
@@ -202,14 +203,14 @@ class TestGroupScopedAvailabilityWindowsPublicAPI:
         baker.make(
             SubscriptionPlanLimit,
             subscription=subscription,
-            resource_key=LimitedResource.AVAILABILITY_WINDOWS,
+            resource_key=AVAILABILITY_WINDOWS,
             limit_value=limit_value,
             kind=LimitKind.PREPAID,
         )
         baker.make(
             SubscriptionEntitlement,
             subscription=subscription,
-            entitlement_key=Entitlement.PARTNER_API,
+            entitlement_key=PARTNER_API,
             is_enabled=True,
         )
         return organization
@@ -513,7 +514,7 @@ class TestGroupScopedAvailabilityWindowsPublicAPI:
         assert len(base_data["errors"]) == 1
         base_extensions = base_data["errors"][0]["extensions"]
         assert base_extensions["code"] == "limit_exceeded"
-        assert base_extensions["resource"] == LimitedResource.AVAILABILITY_WINDOWS
+        assert base_extensions["resource"] == AVAILABILITY_WINDOWS
         assert (
             AvailableTime.objects.filter_by_organization(org.id)
             .filter(calendar_fk_id=base_calendar.id)
@@ -559,7 +560,7 @@ class TestGroupScopedAvailabilityWindowsPublicAPI:
         # OverLimitError contract renders identically for either write path.
         assert group_extensions == base_extensions
         assert group_extensions["code"] == "limit_exceeded"
-        assert group_extensions["resource"] == LimitedResource.AVAILABILITY_WINDOWS
+        assert group_extensions["resource"] == AVAILABILITY_WINDOWS
 
         assert (
             AvailableTime.objects.for_group_slot(slot.id).filter_by_organization(org.id).count()

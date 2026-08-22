@@ -49,6 +49,8 @@ from typing import TYPE_CHECKING, Protocol, cast
 
 from django.db import transaction
 
+from vinta_billing.exceptions import OverLimitError
+
 from audit.constants import AuditAction, AuditActorType
 from audit.diff import compute_diff
 from calendar_integration.constants import CalendarProvider, CalendarType
@@ -74,8 +76,7 @@ from calendar_integration.services.type_guards import (
     is_initialized_or_authenticated_calendar_service,
 )
 from organizations.models import OrganizationMembership
-from payments.billing_constants import LimitedResource
-from payments.exceptions import OverLimitError
+from payments.seams.resource_keys import BUNDLE_CALENDARS
 from users.models import User
 
 
@@ -246,7 +247,7 @@ class CalendarBundleService:
         entitlement_service = self._context.entitlement_service
         if not bypass_limits and entitlement_service is not None:
             result = entitlement_service.check_limit(
-                context.organization, LimitedResource.BUNDLE_CALENDARS, lock=True
+                context.organization, BUNDLE_CALENDARS, lock=True
             )
             if not result.allowed:
                 raise OverLimitError.from_check_result(result)

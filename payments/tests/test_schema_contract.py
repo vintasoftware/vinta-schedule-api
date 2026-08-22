@@ -54,16 +54,31 @@ class TestBillingErrorBodyIsDocumented:
         assert "code" in schema.get("required", [])
 
     def test_change_plan_409_documents_code(self, openapi_schema: dict) -> None:
-        """``UnconfirmedPlanChangeError`` / ``PaymentProviderNotConfiguredError``
-        share the same 409 body -- documented once, not by accident."""
+        """``UnconfirmedPlanChangeError`` is what a 409 means here -- a request
+        that conflicts with state the caller can resolve. The deployment faults
+        moved to 503 in ``vinta-django-billing`` 0.6.0; see below."""
         schema = _resolve_response_schema(
             openapi_schema, "/billing/subscription/change-plan/", "post", "409"
         )
 
         assert "code" in schema["properties"]
 
-    def test_add_on_create_409_documents_code(self, openapi_schema: dict) -> None:
-        schema = _resolve_response_schema(openapi_schema, "/billing/add-ons/", "post", "409")
+    def test_change_plan_503_documents_code(self, openapi_schema: dict) -> None:
+        """``PaymentProviderNotConfiguredError`` / ``IncompleteBillingPlanError``
+        share the 503 body: an operator has to fix the deployment, and retrying
+        the same request changes nothing until they do."""
+        schema = _resolve_response_schema(
+            openapi_schema, "/billing/subscription/change-plan/", "post", "503"
+        )
+
+        assert "code" in schema["properties"]
+
+    def test_add_on_create_503_documents_code(self, openapi_schema: dict) -> None:
+        """The add-on purchase documents no 409 at all -- its only provider fault
+        is the unconfigured-provider one, which is a 503."""
+        assert "409" not in openapi_schema["paths"]["/billing/add-ons/"]["post"]["responses"]
+
+        schema = _resolve_response_schema(openapi_schema, "/billing/add-ons/", "post", "503")
 
         assert "code" in schema["properties"]
 

@@ -3,9 +3,16 @@ from django.db import IntegrityError
 
 import pytest
 from model_bakery import baker
+from vinta_billing.constants import LimitKind
+from vinta_billing.models import BillingPlan, PlanEntitlement, PlanLimit
 
-from payments.billing_constants import Entitlement, LimitedResource, LimitKind
-from payments.models import BillingPlan, PlanEntitlement, PlanLimit
+from payments.seams.resource_keys import (
+    EVENT_OCCURRENCES,
+    ORGANIZATION_MEMBERS,
+    PARTNER_API,
+    RESOURCE_CALENDARS,
+    RESOURCE_KEYS,
+)
 
 
 @pytest.fixture
@@ -21,7 +28,7 @@ class TestPlanLimit:
         baker.make(
             PlanLimit,
             plan=billing_plan,
-            resource_key=LimitedResource.ORGANIZATION_MEMBERS,
+            resource_key=ORGANIZATION_MEMBERS,
             kind=LimitKind.PREPAID,
         )
 
@@ -29,7 +36,7 @@ class TestPlanLimit:
             baker.make(
                 PlanLimit,
                 plan=billing_plan,
-                resource_key=LimitedResource.ORGANIZATION_MEMBERS,
+                resource_key=ORGANIZATION_MEMBERS,
                 kind=LimitKind.PREPAID,
             )
 
@@ -41,19 +48,19 @@ class TestPlanLimit:
         baker.make(
             PlanLimit,
             plan=plan_a,
-            resource_key=LimitedResource.ORGANIZATION_MEMBERS,
+            resource_key=ORGANIZATION_MEMBERS,
             kind=LimitKind.PREPAID,
         )
         baker.make(
             PlanLimit,
             plan=plan_b,
-            resource_key=LimitedResource.ORGANIZATION_MEMBERS,
+            resource_key=ORGANIZATION_MEMBERS,
             kind=LimitKind.PREPAID,
         )
 
         assert (
             PlanLimit.objects.filter(
-                plan__in=[plan_a, plan_b], resource_key=LimitedResource.ORGANIZATION_MEMBERS
+                plan__in=[plan_a, plan_b], resource_key=ORGANIZATION_MEMBERS
             ).count()
             == 2
         )
@@ -62,7 +69,7 @@ class TestPlanLimit:
         limit = baker.make(
             PlanLimit,
             plan=billing_plan,
-            resource_key=LimitedResource.EVENT_OCCURRENCES,
+            resource_key=EVENT_OCCURRENCES,
             kind=LimitKind.POSTPAID,
             limit_value=None,
         )
@@ -83,7 +90,7 @@ class TestBillingPlanLimitCoverage:
         baker.make(
             PlanLimit,
             plan=billing_plan,
-            resource_key=LimitedResource.ORGANIZATION_MEMBERS,
+            resource_key=ORGANIZATION_MEMBERS,
             limit_value=5,
             kind=LimitKind.PREPAID,
         )
@@ -92,10 +99,10 @@ class TestBillingPlanLimitCoverage:
             billing_plan.full_clean()
 
         message = str(exc_info.value)
-        assert LimitedResource.RESOURCE_CALENDARS in message
+        assert RESOURCE_CALENDARS in message
 
     def test_clean_accepts_a_plan_covering_every_limited_resource(self, billing_plan):
-        for resource_key in LimitedResource.values:
+        for resource_key in RESOURCE_KEYS:
             baker.make(
                 PlanLimit,
                 plan=billing_plan,
@@ -109,7 +116,7 @@ class TestBillingPlanLimitCoverage:
     def test_missing_keys_are_reported_for_an_unsaved_plan(self):
         """An unsaved plan has no rows to read, so it is missing everything —
         rather than raising on the related manager or reporting a vacuous pass."""
-        assert BillingPlan().get_missing_limited_resource_keys() == sorted(LimitedResource.values)
+        assert BillingPlan().get_missing_limited_resource_keys() == sorted(RESOURCE_KEYS)
 
 
 @pytest.mark.django_db
@@ -118,12 +125,12 @@ class TestPlanEntitlement:
         baker.make(
             PlanEntitlement,
             plan=billing_plan,
-            entitlement_key=Entitlement.PARTNER_API,
+            entitlement_key=PARTNER_API,
         )
 
         with pytest.raises(IntegrityError):
             baker.make(
                 PlanEntitlement,
                 plan=billing_plan,
-                entitlement_key=Entitlement.PARTNER_API,
+                entitlement_key=PARTNER_API,
             )

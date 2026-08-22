@@ -13,6 +13,8 @@ import icalendar
 import pytest
 from model_bakery import baker
 from rest_framework.test import APIClient
+from vinta_billing.constants import BillingState
+from vinta_billing.models import BillingPlan, Subscription, SubscriptionEntitlement
 
 from calendar_integration.constants import CalendarType, CalendarVisibility
 from calendar_integration.models import (
@@ -38,8 +40,7 @@ from common.utils.authentication_utils import generate_long_lived_token, hash_lo
 from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import grant_membership_groups
-from payments.billing_constants import BillingState, Entitlement
-from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
+from payments.seams.resource_keys import WHITE_LABEL_BRANDING
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess, SystemUser
 from public_api.queries import _vinta_default_branding
@@ -6794,7 +6795,7 @@ class TestBrandingForTenantEntitlementDowngrade:
         baker.make(
             SubscriptionEntitlement,
             subscription=subscription,
-            entitlement_key=Entitlement.WHITE_LABEL_BRANDING,
+            entitlement_key=WHITE_LABEL_BRANDING,
             is_enabled=False,
         )
         baker.make(

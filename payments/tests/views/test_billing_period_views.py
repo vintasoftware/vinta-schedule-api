@@ -20,12 +20,12 @@ from django.urls import reverse
 import pytest
 from model_bakery import baker
 from rest_framework import status
+from vinta_billing.constants import BillingInterval
+from vinta_billing.models import BillingPeriodResourceUsage, BillingPeriodSummary, Payment
 
 from organizations.models import Organization
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import make_membership
-from payments.billing_constants import BillingInterval
-from payments.models import BillingPeriodResourceUsage, BillingPeriodSummary, Payment
 
 
 def periods_list_url() -> str:
@@ -416,7 +416,7 @@ class TestDetailPrefetchesResources:
         resource_usage_queries = [
             query
             for query in captured.captured_queries
-            if "payments_billingperiodresourceusage" in query["sql"]
+            if "vinta_billing_billingperiodresourceusage" in query["sql"]
         ]
         # Exactly one query fetches every resource row -- the prefetch -- not
         # one per row (which would scale with `len(resource_keys)`).

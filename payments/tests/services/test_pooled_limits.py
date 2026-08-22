@@ -21,12 +21,13 @@ from django.utils import timezone
 
 import pytest
 from model_bakery import baker
+from vinta_billing.constants import BillingState, LimitKind
+from vinta_billing.exceptions import BillingRootCycleError
+from vinta_billing.models import BillingPlan, Subscription, SubscriptionAddOn, SubscriptionPlanLimit
+from vinta_billing.services.entitlement_service import EntitlementService
 
 from organizations.models import Organization, OrganizationMembership
-from payments.billing_constants import BillingState, LimitedResource, LimitKind
-from payments.exceptions import BillingRootCycleError
-from payments.models import BillingPlan, Subscription, SubscriptionAddOn, SubscriptionPlanLimit
-from payments.services.entitlement_service import EntitlementService
+from payments.seams.resource_keys import ORGANIZATION_MEMBERS
 
 
 # This module builds its own Subscription rows (OneToOne with Organization), so it
@@ -57,7 +58,7 @@ def make_subscription(organization, plan, member_limit):
     baker.make(
         SubscriptionPlanLimit,
         subscription=subscription,
-        resource_key=LimitedResource.ORGANIZATION_MEMBERS,
+        resource_key=ORGANIZATION_MEMBERS,
         limit_value=member_limit,
         kind=LimitKind.PREPAID,
     )
@@ -82,9 +83,9 @@ class TestPooledUsage:
         add_members(grandchild, 4)
 
         for organization in (root, child, grandchild):
-            assert (
-                service.get_current_usage(organization, LimitedResource.ORGANIZATION_MEMBERS) == 7
-            ), f"usage seen from {organization.pk} should be the whole pool"
+            assert service.get_current_usage(organization, ORGANIZATION_MEMBERS) == 7, (
+                f"usage seen from {organization.pk} should be the whole pool"
+            )
 
     def test_child_resolves_to_the_roots_ceiling(self, service, plan):
         """A child holds no subscription of its own — its ceiling is the root's."""
@@ -93,7 +94,7 @@ class TestPooledUsage:
         make_subscription(root, plan, member_limit=5)
 
         assert not Subscription.objects.filter(organization=child).exists()
-        result = service.get_effective_limit(child, LimitedResource.ORGANIZATION_MEMBERS)
+        result = service.get_effective_limit(child, ORGANIZATION_MEMBERS)
         assert result.limit_value == 5
 
     def test_two_children_over_the_pooled_ceiling_block_each_other(self, service, plan):
@@ -106,7 +107,7 @@ class TestPooledUsage:
         add_members(child_a, 3)
         add_members(child_b, 3)
 
-        result = service.check_limit(child_a, LimitedResource.ORGANIZATION_MEMBERS)
+        result = service.check_limit(child_a, ORGANIZATION_MEMBERS)
 
         assert result.allowed is False
         assert result.current_usage == 6
@@ -129,14 +130,9 @@ class TestPooledUsage:
         add_members(nested_reseller, 1)
         add_members(nested_child, 1)
 
-        assert service.get_current_usage(root, LimitedResource.ORGANIZATION_MEMBERS) == 2
-        assert service.get_current_usage(nested_reseller, LimitedResource.ORGANIZATION_MEMBERS) == 2
-        assert (
-            service.get_effective_limit(
-                nested_child, LimitedResource.ORGANIZATION_MEMBERS
-            ).limit_value
-            == 2
-        )
+        assert service.get_current_usage(root, ORGANIZATION_MEMBERS) == 2
+        assert service.get_current_usage(nested_reseller, ORGANIZATION_MEMBERS) == 2
+        assert service.get_effective_limit(nested_child, ORGANIZATION_MEMBERS).limit_value == 2
 
     def test_sibling_subtree_usage_does_not_leak(self, service, plan):
         """Two unrelated roots keep separate pools."""
@@ -150,8 +146,8 @@ class TestPooledUsage:
         add_members(child_a, 2)
         add_members(child_b, 4)
 
-        assert service.get_current_usage(child_a, LimitedResource.ORGANIZATION_MEMBERS) == 2
-        assert service.get_current_usage(child_b, LimitedResource.ORGANIZATION_MEMBERS) == 4
+        assert service.get_current_usage(child_a, ORGANIZATION_MEMBERS) == 2
+        assert service.get_current_usage(child_b, ORGANIZATION_MEMBERS) == 4
 
     def test_add_on_on_the_root_lifts_the_whole_subtree(self, service, plan):
         root = baker.make(Organization, parent=None, can_invite_organizations=True)
@@ -159,18 +155,18 @@ class TestPooledUsage:
         subscription = make_subscription(root, plan, member_limit=5)
         add_members(child, 5)
 
-        assert not service.check_limit(child, LimitedResource.ORGANIZATION_MEMBERS).allowed
+        assert not service.check_limit(child, ORGANIZATION_MEMBERS).allowed
 
         baker.make(
             SubscriptionAddOn,
             subscription=subscription,
-            resource_key=LimitedResource.ORGANIZATION_MEMBERS,
+            resource_key=ORGANIZATION_MEMBERS,
             quantity=3,
             is_recurring=True,
             is_active=True,
         )
 
-        result = service.check_limit(child, LimitedResource.ORGANIZATION_MEMBERS)
+        result = service.check_limit(child, ORGANIZATION_MEMBERS)
         assert result.allowed is True
         assert result.ceiling == 8
 
@@ -191,7 +187,7 @@ class TestCyclicParentChain:
         org_a.refresh_from_db()
 
         with pytest.raises(BillingRootCycleError):
-            service.check_limit(org_a, LimitedResource.ORGANIZATION_MEMBERS)
+            service.check_limit(org_a, ORGANIZATION_MEMBERS)
 
     def test_cycle_reachable_by_descent_terminates(self, service, plan):
         """The case a ``seen`` set on the *descent* is needed for.
@@ -211,4 +207,4 @@ class TestCyclicParentChain:
         add_members(root, 1)
         add_members(child, 2)
 
-        assert service.get_current_usage(root, LimitedResource.ORGANIZATION_MEMBERS) == 3
+        assert service.get_current_usage(root, ORGANIZATION_MEMBERS) == 3

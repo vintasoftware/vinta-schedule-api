@@ -11,6 +11,7 @@ import strawberry
 from allauth.socialaccount.models import SocialAccount
 from dependency_injector.wiring import Provide, inject
 from graphql import GraphQLError
+from vinta_billing.exceptions import OverLimitError
 
 from calendar_integration.constants import ExternalEventChangeRequestStatus
 from calendar_integration.exceptions import (
@@ -61,7 +62,6 @@ from calendar_integration.services.external_event_change_request_service import 
 )
 from calendar_integration.services.webhook_analytics_service import WebhookAnalyticsService
 from organizations.models import Organization, OrganizationMembership
-from payments.exceptions import OverLimitError
 from public_api.extensions import raise_over_limit_graphql_error
 from public_api.permissions import IsAuthenticated, OrganizationResourceAccess
 

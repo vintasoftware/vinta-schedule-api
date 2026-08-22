@@ -1,9 +1,10 @@
 """Integration tests for the self-serve billing endpoints
-(``payments/billing_views.py``): plan catalog, usage, subscription detail,
-upgrade/downgrade, and add-on purchase, driven through DRF routing exactly
-like a real client. Permissions, idempotency, and the key acceptance scenario
-(a blocked invitation succeeds after an upgrade, with no manual step) are all
-exercised through real HTTP requests.
+(``vinta_billing.billing_views``, mounted through
+``vinta_billing.routing.get_routes()``): plan catalog, usage, subscription
+detail, upgrade/downgrade, and add-on purchase, driven through DRF routing
+exactly like a real client. Permissions, idempotency, and the key acceptance
+scenario (a blocked invitation succeeds after an upgrade, with no manual step)
+are all exercised through real HTTP requests.
 """
 
 import datetime
@@ -18,6 +19,32 @@ import stripe
 from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
+from vinta_billing.constants import BillingInterval, BillingState, LimitKind, PaymentProviders
+from vinta_billing.exceptions import OverLimitError
+from vinta_billing.models import (
+    BillingPlan,
+    PaymentMethod,
+    PlanLimit,
+    Subscription,
+    SubscriptionAddOn,
+)
+from vinta_billing.services.entitlement_service import EntitlementService
+from vinta_billing.services.payment_adapters.base import BasePaymentAdapter
+from vinta_billing.services.payment_adapters.mercadopago_payment_adapter import (
+    MercadoPagoPaymentAdapter,
+)
+from vinta_billing.services.payment_adapters.stripe_payment_adapter import StripePaymentAdapter
+from vinta_billing.services.subscription_adapters.base import BaseSubscriptionAdapter
+from vinta_billing.services.subscription_adapters.mercadopago_subscription_adapter import (
+    MercadoPagoSubscriptionAdapter,
+)
+from vinta_billing.services.subscription_adapters.stripe_subscription_adapter import (
+    StripeSubscriptionAdapter,
+)
+from vinta_billing.services.subscription_service import (
+    SubscriptionService,
+    retry_payment_idempotency_key,
+)
 
 from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import (
@@ -26,32 +53,11 @@ from organizations.permission_catalog import (
 )
 from organizations.services import OrganizationService
 from organizations.tests.helpers import make_membership
-from payments.billing_constants import BillingInterval, BillingState, LimitedResource, LimitKind
-from payments.constants import PaymentProviders
-from payments.exceptions import OverLimitError
-from payments.models import (
-    BillingPlan,
-    PaymentMethod,
-    PlanLimit,
-    Subscription,
-    SubscriptionAddOn,
-)
-from payments.services.entitlement_service import EntitlementService
-from payments.services.payment_adapters.base import BasePaymentAdapter
-from payments.services.payment_adapters.mercadopago_payment_adapter import (
-    MercadoPagoPaymentAdapter,
-)
-from payments.services.payment_adapters.stripe_payment_adapter import StripePaymentAdapter
-from payments.services.subscription_adapters.base import BaseSubscriptionAdapter
-from payments.services.subscription_adapters.mercadopago_subscription_adapter import (
-    MercadoPagoSubscriptionAdapter,
-)
-from payments.services.subscription_adapters.stripe_subscription_adapter import (
-    StripeSubscriptionAdapter,
-)
-from payments.services.subscription_service import (
-    SubscriptionService,
-    retry_payment_idempotency_key,
+from payments.seams.resource_keys import (
+    CALENDAR_GROUPS,
+    ORGANIZATION_MEMBERS,
+    RESOURCE_CALENDARS,
+    RESOURCE_KEYS,
 )
 from payments.tests.views.test_payment_webhooks import sign as sign_webhook
 
@@ -79,7 +85,7 @@ def make_complete_plan(
         monthly_price=monthly_price,
         annual_price=None,
     )
-    for resource_key in LimitedResource.values:
+    for resource_key in RESOURCE_KEYS:
         baker.make(
             PlanLimit,
             plan=plan,
@@ -99,7 +105,7 @@ def organization():
 @pytest.fixture
 def billing_profile(organization):
     billing_address = baker.make(
-        "payments.BillingAddress",
+        "vinta_billing.BillingAddress",
         street_name="Test Street",
         street_number="123",
         city="Test City",
@@ -108,7 +114,7 @@ def billing_profile(organization):
         zip_code="12345",
     )
     return baker.make(
-        "payments.BillingProfile",
+        "vinta_billing.BillingProfile",
         organization=organization,
         contact_email="billing@example.com",
         document_type="CPF",
@@ -158,7 +164,7 @@ def plain_member_membership(user, organization):
 @pytest.fixture
 def free_plan():
     return make_complete_plan(
-        {LimitedResource.ORGANIZATION_MEMBERS: 1, LimitedResource.RESOURCE_CALENDARS: 3},
+        {ORGANIZATION_MEMBERS: 1, RESOURCE_CALENDARS: 3},
         monthly_price=Decimal("0"),
     )
 
@@ -166,7 +172,7 @@ def free_plan():
 @pytest.fixture
 def pro_plan():
     return make_complete_plan(
-        {LimitedResource.ORGANIZATION_MEMBERS: 10, LimitedResource.RESOURCE_CALENDARS: 20},
+        {ORGANIZATION_MEMBERS: 10, RESOURCE_CALENDARS: 20},
         monthly_price=Decimal("50"),
     )
 
@@ -183,7 +189,7 @@ def subscription(organization, free_plan, billing_profile):
 @pytest.fixture
 def mercadopago_payment_adapter():
     with patch(
-        "payments.services.payment_adapters.mercadopago_payment_adapter.mercadopago.SDK"
+        "vinta_billing.services.payment_adapters.mercadopago_payment_adapter.mercadopago.SDK"
     ) as mock_sdk:
         adapter = MercadoPagoPaymentAdapter("test-access-token", webhook_secret=WEBHOOK_SECRET)
         adapter.sdk = mock_sdk.return_value
@@ -194,7 +200,7 @@ def mercadopago_payment_adapter():
 @pytest.fixture
 def mercadopago_subscription_adapter():
     with patch(
-        "payments.services.subscription_adapters.mercadopago_subscription_adapter.mercadopago.SDK"
+        "vinta_billing.services.subscription_adapters.mercadopago_subscription_adapter.mercadopago.SDK"
     ) as mock_sdk:
         adapter = MercadoPagoSubscriptionAdapter("test-access-token", webhook_secret=WEBHOOK_SECRET)
         adapter.sdk = mock_sdk.return_value
@@ -223,7 +229,7 @@ def _no_live_stripe_calls(di_container):
 
     Teardown asserts neither double received any call -- a call reaching one is
     a wrong-provider routing regression, and a silent mock absorbing it would
-    make the guard structural in name only. ``TestUnconfiguredProviderMapsTo409``
+    make the guard structural in name only. ``TestUnconfiguredProviderMapsTo503``
     deliberately overrides both DI slots again with a *different* double inside
     its own fixture, which shadows these for the duration of that test (the
     inner ``override`` context manager takes precedence), so these two remain
@@ -307,9 +313,7 @@ def add_on_detail_url(pk) -> str:
 
 
 def subscription_payment_update_url(provider: str = PaymentProviders.MERCADOPAGO) -> str:
-    return reverse(
-        "api:Payments-subscription-payment-update", kwargs={"provider": provider, "pk": 1}
-    )
+    return reverse("Payments-subscription-payment-update", kwargs={"provider": provider, "pk": 1})
 
 
 @pytest.mark.django_db
@@ -337,9 +341,9 @@ class TestReadEndpoints:
         assert response.status_code == status.HTTP_200_OK
         assert response.data["billing_state"] == BillingState.FREE
         rows = {row["resource_key"]: row for row in response.data["limits"]}
-        assert rows[LimitedResource.ORGANIZATION_MEMBERS]["limit_value"] == 1
+        assert rows[ORGANIZATION_MEMBERS]["limit_value"] == 1
         # A plain member (this fixture) already occupies the one seat.
-        assert rows[LimitedResource.ORGANIZATION_MEMBERS]["current_usage"] == 1
+        assert rows[ORGANIZATION_MEMBERS]["current_usage"] == 1
 
     def test_reads_require_authentication(self, anonymous_client):
         for url in (plans_url(), usage_url(), subscription_url()):
@@ -402,7 +406,7 @@ class TestPermissions:
         response = auth_client.post(
             add_ons_url(),
             {
-                "resource_key": LimitedResource.RESOURCE_CALENDARS,
+                "resource_key": RESOURCE_CALENDARS,
                 "quantity": 1,
                 "is_recurring": False,
                 "idempotency_key": "idem-1",
@@ -450,7 +454,7 @@ class TestPermissions:
         reseller_root = baker.make(Organization, parent=None, can_invite_organizations=True)
         child = baker.make(Organization, parent=reseller_root, can_invite_organizations=False)
         # The root (the billing root the child pools against) has the subscription.
-        root_plan = make_complete_plan({LimitedResource.ORGANIZATION_MEMBERS: 1})
+        root_plan = make_complete_plan({ORGANIZATION_MEMBERS: 1})
         SubscriptionService().create_subscription_for_organization(reseller_root, plan=root_plan)
         # The caller is an ADMIN of the child only -- the coarse check passes.
         make_membership(
@@ -480,7 +484,7 @@ class TestPermissions:
         path (which calls ``check_object_permissions`` independently)."""
         reseller_root = baker.make(Organization, parent=None, can_invite_organizations=True)
         child = baker.make(Organization, parent=reseller_root, can_invite_organizations=False)
-        root_plan = make_complete_plan({LimitedResource.RESOURCE_CALENDARS: 3})
+        root_plan = make_complete_plan({RESOURCE_CALENDARS: 3})
         SubscriptionService().create_subscription_for_organization(reseller_root, plan=root_plan)
         make_membership(
             user=user,
@@ -492,7 +496,7 @@ class TestPermissions:
         response = auth_client.post(
             add_ons_url(),
             {
-                "resource_key": LimitedResource.RESOURCE_CALENDARS,
+                "resource_key": RESOURCE_CALENDARS,
                 "quantity": 1,
                 "is_recurring": False,
                 "idempotency_key": "idem-1",
@@ -522,7 +526,7 @@ class TestUpgradeGrantsNoCapacitySynchronously:
 
         assert response.status_code == status.HTTP_200_OK
         effective_limit = EntitlementService().get_effective_limit(
-            organization, LimitedResource.ORGANIZATION_MEMBERS
+            organization, ORGANIZATION_MEMBERS
         )
         # Still the free plan's ceiling -- the webhook never fired.
         assert effective_limit.limit_value == 1
@@ -539,7 +543,7 @@ class TestAddOnIdempotency:
         billing_profile,
     ):
         body = {
-            "resource_key": LimitedResource.RESOURCE_CALENDARS,
+            "resource_key": RESOURCE_CALENDARS,
             "quantity": 2,
             "is_recurring": False,
             "idempotency_key": "idem-add-on-1",
@@ -565,7 +569,7 @@ class TestAddOnIdempotency:
         response = billing_client.post(
             add_ons_url(),
             {
-                "resource_key": LimitedResource.RESOURCE_CALENDARS,
+                "resource_key": RESOURCE_CALENDARS,
                 "quantity": 2,
                 "is_recurring": False,
                 "idempotency_key": "idem-add-on-2",
@@ -576,9 +580,7 @@ class TestAddOnIdempotency:
 
         assert response.status_code == status.HTTP_201_CREATED
         assert response.data["is_active"] is False
-        effective_limit = EntitlementService().get_effective_limit(
-            organization, LimitedResource.RESOURCE_CALENDARS
-        )
+        effective_limit = EntitlementService().get_effective_limit(organization, RESOURCE_CALENDARS)
         assert effective_limit.limit_value == 3
 
     def test_cancel_add_on_stops_recurrence(
@@ -587,7 +589,7 @@ class TestAddOnIdempotency:
         created = billing_client.post(
             add_ons_url(),
             {
-                "resource_key": LimitedResource.RESOURCE_CALENDARS,
+                "resource_key": RESOURCE_CALENDARS,
                 "quantity": 1,
                 "is_recurring": True,
                 "idempotency_key": "idem-add-on-3",
@@ -605,7 +607,7 @@ class TestAddOnIdempotency:
         self, billing_client, admin_membership, subscription, billing_profile
     ):
         other_organization = baker.make(Organization)
-        other_plan = make_complete_plan({LimitedResource.RESOURCE_CALENDARS: 3})
+        other_plan = make_complete_plan({RESOURCE_CALENDARS: 3})
         other_subscription = baker.make(
             Subscription,
             organization=other_organization,
@@ -618,7 +620,7 @@ class TestAddOnIdempotency:
         foreign_add_on = baker.make(
             SubscriptionAddOn,
             subscription=other_subscription,
-            resource_key=LimitedResource.RESOURCE_CALENDARS,
+            resource_key=RESOURCE_CALENDARS,
             quantity=1,
             is_recurring=True,
             purchase_idempotency_key="foreign-idem",
@@ -684,7 +686,7 @@ class TestAcceptanceScenario:
             }
         ).encode()
         with patch(
-            "payments.services.subscription_adapters.mercadopago_subscription_adapter"
+            "vinta_billing.services.subscription_adapters.mercadopago_subscription_adapter"
             ".mercadopago.SDK"
         ) as mock_sdk:
             adapter = MercadoPagoSubscriptionAdapter(
@@ -748,12 +750,17 @@ class TestAcceptanceScenario:
 
 
 @pytest.mark.django_db
-class TestUnconfiguredProviderMapsTo409:
-    """HTTP 409 is the committed response for ``PaymentProviderNotConfiguredError``,
+class TestUnconfiguredProviderMapsTo503:
+    """HTTP 503 is the committed response for ``PaymentProviderNotConfiguredError``,
     reachable from these actions. Mapped centrally in
     ``common.exception_handlers.vinta_exception_handler`` (with ``set_rollback()``)
     rather than per-action, so a new billing write cannot forget it and 500 on a
     money path.
+
+    It was 409 until ``vinta-django-billing`` 0.6.0, from a hardcoded branch in
+    that handler that overrode the package's status table. 0.6.0 removed the
+    reason for the override -- see the handler's own docstring -- and the status
+    now comes from ``billing_error_status`` like every other billing error's.
 
     Each test repoints the organization onto Stripe *and* swaps the Stripe DI
     slot for a real adapter built with an empty secret -- exactly what the
@@ -789,7 +796,7 @@ class TestUnconfiguredProviderMapsTo409:
         subscription.save(update_fields=["payment_provider", "external_id"])
         return subscription
 
-    def test_change_plan_returns_409(
+    def test_change_plan_returns_503(
         self, unconfigured_stripe_client, admin_membership, subscription, pro_plan
     ):
         self._stripe_subscription(subscription)
@@ -799,16 +806,16 @@ class TestUnconfiguredProviderMapsTo409:
             {
                 "plan_slug": pro_plan.slug,
                 "billing_interval": BillingInterval.MONTHLY,
-                "idempotency_key": "idem-409-1",
+                "idempotency_key": "idem-503-1",
                 "payment_token": "tok-1",
             },
             format="json",
         )
 
-        assert response.status_code == status.HTTP_409_CONFLICT
+        assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
         assert "stripe" in response.data["detail"]
 
-    def test_cancel_returns_409(self, unconfigured_stripe_client, admin_membership, subscription):
+    def test_cancel_returns_503(self, unconfigured_stripe_client, admin_membership, subscription):
         # `SubscriptionService.cancel_subscription` skips the provider round trip
         # entirely for a subscription that never attached an instrument, so an
         # `external_id` is required for this path to reach adapter resolution at
@@ -817,25 +824,25 @@ class TestUnconfiguredProviderMapsTo409:
 
         response = unconfigured_stripe_client.post(cancel_url())
 
-        assert response.status_code == status.HTTP_409_CONFLICT
+        assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
         assert "stripe" in response.data["detail"]
 
-    def test_add_on_create_returns_409(
+    def test_add_on_create_returns_503(
         self, unconfigured_stripe_client, admin_membership, subscription, billing_profile
     ):
         response = unconfigured_stripe_client.post(
             add_ons_url(),
             {
-                "resource_key": LimitedResource.RESOURCE_CALENDARS,
+                "resource_key": RESOURCE_CALENDARS,
                 "quantity": 1,
                 "is_recurring": False,
-                "idempotency_key": "idem-409-3",
+                "idempotency_key": "idem-503-3",
                 "payment_token": "tok-1",
             },
             format="json",
         )
 
-        assert response.status_code == status.HTTP_409_CONFLICT
+        assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
         assert "stripe" in response.data["detail"]
 
 
@@ -876,7 +883,7 @@ class TestBillingErrorCodes:
         response = billing_client.post(
             add_ons_url(),
             {
-                "resource_key": LimitedResource.CALENDAR_GROUPS,
+                "resource_key": CALENDAR_GROUPS,
                 "quantity": 1,
                 "is_recurring": False,
                 "idempotency_key": "idem-unpriced-1",
@@ -892,9 +899,7 @@ class TestBillingErrorCodes:
     def test_second_in_flight_plan_change_returns_409_with_its_code(
         self, billing_client, admin_membership, subscription, pro_plan
     ):
-        premium_plan = make_complete_plan(
-            {LimitedResource.ORGANIZATION_MEMBERS: 200}, monthly_price=Decimal("200")
-        )
+        premium_plan = make_complete_plan({ORGANIZATION_MEMBERS: 200}, monthly_price=Decimal("200"))
         first_change = billing_client.post(
             change_plan_url(),
             {
@@ -1093,13 +1098,13 @@ class TestRetryPaymentEndpoint:
         subscription's open invoice and pays it -- ``stripe.Invoice.pay``, not
         a proration on a freshly-minted price (``change_subscription_plan``,
         previously used as a mistaken primitive). Stripe SDK calls are mocked at the
-        adapter module's own boundary, same pattern as
-        ``test_stripe_subscription_adapter.py``.
+        adapter module's own boundary, same pattern as the package's own
+        ``tests/services/subscription_adapters/test_stripe_subscription_adapter.py``.
 
         Repoints ``subscription`` (built on MercadoPago by this module's
         fixtures) onto Stripe directly and swaps in a real
         ``StripeSubscriptionAdapter`` for the duration of the request --
-        mirrors ``TestUnconfiguredProviderMapsTo409.unconfigured_stripe_client``'s
+        mirrors ``TestUnconfiguredProviderMapsTo503.unconfigured_stripe_client``'s
         established pattern for shadowing the module's ``_no_live_stripe_calls``
         guard for one test.
         """
@@ -1112,19 +1117,19 @@ class TestRetryPaymentEndpoint:
         stripe_adapter = StripeSubscriptionAdapter(api_key="sk_test_123", webhook_secret="whsec")
         with (
             patch(
-                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe"
+                "vinta_billing.services.subscription_adapters.stripe_subscription_adapter.stripe"
                 ".Subscription"
             ) as mock_subscription_resource,
             patch(
-                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe"
+                "vinta_billing.services.subscription_adapters.stripe_subscription_adapter.stripe"
                 ".PaymentMethod"
             ) as mock_payment_method,
             patch(
-                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe"
+                "vinta_billing.services.subscription_adapters.stripe_subscription_adapter.stripe"
                 ".Customer"
             ) as mock_customer,
             patch(
-                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice"
+                "vinta_billing.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice"
             ) as mock_invoice,
             di_container.stripe_subscription_gateway.override(stripe_adapter),
         ):
@@ -1206,19 +1211,19 @@ class TestRetryPaymentEndpoint:
         stripe_adapter = StripeSubscriptionAdapter(api_key="sk_test_123", webhook_secret="whsec")
         with (
             patch(
-                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe"
+                "vinta_billing.services.subscription_adapters.stripe_subscription_adapter.stripe"
                 ".Subscription"
             ) as mock_subscription_resource,
             patch(
-                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe"
+                "vinta_billing.services.subscription_adapters.stripe_subscription_adapter.stripe"
                 ".PaymentMethod"
             ),
             patch(
-                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe"
+                "vinta_billing.services.subscription_adapters.stripe_subscription_adapter.stripe"
                 ".Customer"
             ),
             patch(
-                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice"
+                "vinta_billing.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice"
             ) as mock_invoice,
             di_container.stripe_subscription_gateway.override(stripe_adapter),
         ):
@@ -1263,19 +1268,19 @@ class TestRetryPaymentEndpoint:
         stripe_adapter = StripeSubscriptionAdapter(api_key="sk_test_123", webhook_secret="whsec")
         with (
             patch(
-                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe"
+                "vinta_billing.services.subscription_adapters.stripe_subscription_adapter.stripe"
                 ".Subscription"
             ) as mock_subscription_resource,
             patch(
-                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe"
+                "vinta_billing.services.subscription_adapters.stripe_subscription_adapter.stripe"
                 ".PaymentMethod"
             ),
             patch(
-                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe"
+                "vinta_billing.services.subscription_adapters.stripe_subscription_adapter.stripe"
                 ".Customer"
             ),
             patch(
-                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice"
+                "vinta_billing.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice"
             ) as mock_invoice,
             di_container.stripe_subscription_gateway.override(stripe_adapter),
         ):

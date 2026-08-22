@@ -1,7 +1,7 @@
 """``billing_recipients``: who receives the dunning ladder.
 
 ``billing_recipients`` is built on
-``active().holding_permission("payments.manage_billing")``, so "who may write
+``active().holding_permission("vinta_billing.manage_billing")``, so "who may write
 billing" and "who is told about billing" derive from one source. The two
 consumers are ``DunningService._recipient_user_ids`` and
 ``UsageWarningService._recipient_user_ids``.
@@ -198,7 +198,7 @@ class TestWhoReceivesBilling:
         """The one behavioural widening ``holding_permission`` brings.
 
         The filter it replaced read ``groups__permissions`` only, so a
-        membership holding ``payments.manage_billing`` through the model's own
+        membership holding ``vinta_billing.manage_billing`` through the model's own
         ``permissions`` M2M could write billing and never be
         told about it. The package's ``holding_permission`` unions both sources
         -- deliberately, since under-counting is the dangerous direction for the
@@ -211,7 +211,7 @@ class TestWhoReceivesBilling:
         """
         organization = baker.make(Organization, name="Direct Grant Co", slug="direct-grant-co")
         manage_billing = Permission.objects.get(
-            content_type__app_label="payments", codename="manage_billing"
+            content_type__app_label="vinta_billing", codename="manage_billing"
         )
 
         directly_granted = _membership(organization)
@@ -232,7 +232,7 @@ class TestWhoReceivesBilling:
         grant does not smuggle a soft-deleted membership back onto the list."""
         organization = baker.make(Organization, name="Direct Gone Co", slug="direct-gone-co")
         manage_billing = Permission.objects.get(
-            content_type__app_label="payments", codename="manage_billing"
+            content_type__app_label="vinta_billing", codename="manage_billing"
         )
         deactivated = _membership(organization, is_active=False)
         deactivated.permissions.add(manage_billing)

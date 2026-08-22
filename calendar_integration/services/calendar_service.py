@@ -41,6 +41,7 @@ from django.utils import timezone as _tz
 
 from allauth.socialaccount.models import SocialAccount, SocialToken
 from dependency_injector.wiring import Provide, inject
+from vinta_billing.exceptions import OverLimitError
 
 from audit.constants import AuditAction
 from audit.diff import compute_diff
@@ -142,18 +143,22 @@ from calendar_integration.services.type_guards import (
     is_initialized_or_authenticated_calendar_service,
 )
 from organizations.models import Organization, OrganizationMembership
-from payments.billing_constants import Entitlement, LimitedResource
-from payments.exceptions import OverLimitError
+from payments.seams.resource_keys import (
+    EXTERNAL_CALENDAR_GOOGLE,
+    EXTERNAL_CALENDAR_MICROSOFT,
+    RESOURCE_CALENDARS,
+)
 from public_api.models import SystemUser
 from users.models import User
 
 
 if TYPE_CHECKING:
+    from vinta_billing.services.entitlement_service import EntitlementService
+
     from audit.services import AuditService
     from calendar_integration.services.external_event_change_request_service import (
         ExternalEventChangeRequestService,
     )
-    from payments.services.entitlement_service import EntitlementService
 
 
 logger = logging.getLogger(__name__)
@@ -164,10 +169,11 @@ _UNCHANGED = object()
 # The boolean entitlement required for each external provider, checked in
 # `authenticate()` -- the chokepoint both the Google and Microsoft connection paths
 # flow through. Providers with no entry (INTERNAL, APPLE, ICS) are unrestricted: the
-# `Entitlement` closed set only names Google and Microsoft.
+# registered entitlement keys (``payments.seams.resources``) only name Google and
+# Microsoft.
 _PROVIDER_ENTITLEMENTS: dict[str, str] = {
-    CalendarProvider.GOOGLE: Entitlement.EXTERNAL_CALENDAR_GOOGLE,
-    CalendarProvider.MICROSOFT: Entitlement.EXTERNAL_CALENDAR_MICROSOFT,
+    CalendarProvider.GOOGLE: EXTERNAL_CALENDAR_GOOGLE,
+    CalendarProvider.MICROSOFT: EXTERNAL_CALENDAR_MICROSOFT,
 }
 
 
@@ -446,7 +452,7 @@ class CalendarService(BaseCalendarService):
         organization is not entitled to it.
 
         Providers with no ``_PROVIDER_ENTITLEMENTS`` entry (INTERNAL, APPLE, ICS) are
-        unrestricted: the closed ``Entitlement`` set only names Google and Microsoft.
+        unrestricted: the registered entitlement keys only name Google and Microsoft.
         A no-op when the service has no ``entitlement_service`` injected, or when
         ``authenticate(bypass_limits=True)`` put this instance in bypass mode.
         """
@@ -747,11 +753,11 @@ class CalendarService(BaseCalendarService):
         """
         Create a new application calendar using the calendar adapter.
 
-        This is **not** subject to a limit check. ``LimitedResource`` (the closed
-        set of limited resources) caps only ``resource_calendars`` (type RESOURCE) and
-        ``bundle_calendars`` (type BUNDLE) among calendar types; this method creates
-        an application-owned calendar with no ``calendar_type`` counted by either. See
-        ``create_resource_calendar`` for the limit-checked sibling.
+        This is **not** subject to a limit check. The registered resource keys (see
+        ``payments.seams.resources``) cap only ``resource_calendars`` (type RESOURCE)
+        and ``bundle_calendars`` (type BUNDLE) among calendar types; this method
+        creates an application-owned calendar with no ``calendar_type`` counted by
+        either. See ``create_resource_calendar`` for the limit-checked sibling.
         :return: Created ApplicationCalendarData instance.
         """
         if not is_authenticated_calendar_service(self):
@@ -867,8 +873,8 @@ class CalendarService(BaseCalendarService):
         Create a new calendar in the application without linking to an external provider.
 
         This is **not** subject to a limit check -- ``calendar_type=VIRTUAL`` is not a
-        member of ``LimitedResource`` (see ``create_resource_calendar`` for the
-        limit-checked sibling and the closed-set rationale).
+        registered resource key (see ``create_resource_calendar`` for the
+        limit-checked sibling).
         :param name: Name of the calendar.
         :param description: Description of the calendar.
         :return: Created Calendar instance.
@@ -947,7 +953,7 @@ class CalendarService(BaseCalendarService):
 
         if not bypass_limits and entitlement_service is not None:
             result = entitlement_service.check_limit(
-                self.organization, LimitedResource.RESOURCE_CALENDARS, lock=True
+                self.organization, RESOURCE_CALENDARS, lock=True
             )
             if not result.allowed:
                 raise OverLimitError.from_check_result(result)
@@ -998,8 +1004,8 @@ class CalendarService(BaseCalendarService):
         capacity or availability-window management semantics.
 
         This is **not** subject to a limit check -- ``calendar_type=PERSONAL`` is not a
-        member of ``LimitedResource`` (see ``create_resource_calendar`` for the
-        limit-checked sibling and the closed-set rationale).
+        registered resource key (see ``create_resource_calendar`` for the
+        limit-checked sibling).
 
         :param name: Name of the calendar.
         :param description: Description of the calendar.

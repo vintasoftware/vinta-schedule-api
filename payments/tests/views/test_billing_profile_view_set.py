@@ -3,11 +3,11 @@ from django.urls import reverse
 import pytest
 from model_bakery import baker
 from rest_framework import status
+from vinta_billing.models import BillingAddress, BillingProfile
 
 from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import make_membership
-from payments.models import BillingAddress, BillingProfile
 
 
 @pytest.fixture

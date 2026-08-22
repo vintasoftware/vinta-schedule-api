@@ -14,6 +14,8 @@ from graphql import GraphQLError
 from model_bakery import baker
 from rest_framework.test import APIClient
 from s3direct.utils import AWSCredentials
+from vinta_billing.constants import BillingState
+from vinta_billing.models import BillingPlan, Subscription, SubscriptionEntitlement
 
 from calendar_integration.constants import CalendarType, CalendarVisibility
 from calendar_integration.exceptions import CalendarGroupValidationError
@@ -48,8 +50,7 @@ from organizations.permission_catalog import (
     GROUP_ORGANIZATION_MEMBER,
 )
 from organizations.services import OrganizationService
-from payments.billing_constants import BillingState, Entitlement
-from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
+from payments.seams.resource_keys import PARTNER_API, WHITE_LABEL_BRANDING
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess, SystemUser
 from public_api.mutations import (
@@ -2657,13 +2658,13 @@ def _make_unentitled_organization(**org_kwargs) -> Organization:
     baker.make(
         SubscriptionEntitlement,
         subscription=subscription,
-        entitlement_key=Entitlement.WHITE_LABEL_BRANDING,
+        entitlement_key=WHITE_LABEL_BRANDING,
         is_enabled=False,
     )
     baker.make(
         SubscriptionEntitlement,
         subscription=subscription,
-        entitlement_key=Entitlement.PARTNER_API,
+        entitlement_key=PARTNER_API,
         is_enabled=True,
     )
     return org

@@ -172,6 +172,22 @@ def test_records_a_violation_for_a_read_addressed_by_primary_key(organization, c
     assert refresh_violations == ["Calendar (SELECT)"]
 
 
+def test_does_not_crash_on_a_structurally_empty_in_clause(organization):
+    """``id__in=[]`` compiles to no SQL at all -- Django's query planner raises
+    ``EmptyResultSet`` from ``Query.get_compiler(...).as_sql()`` rather than
+    emit a statement, and ``str(query)`` (which ``_is_scoped_enough`` calls to
+    render the SQL it inspects) goes through that same path. A plain recurring
+    event with no exceptions produces the same shape via ``id__in=[None]``.
+    ``EmptyResultSet`` is neither a ``TypeError`` nor a ``ValueError``, so it
+    must be caught on its own rather than escape the guard: an empty result
+    set is not evidence of a tenancy leak.
+    """
+    with assert_all_scoped_queries_are_bound() as violations:
+        list(Calendar.original_manager.filter(id__in=[]))
+
+    assert violations == []
+
+
 def test_records_nothing_for_the_update_and_delete_behind_an_instance(
     organization, calendar, calendar_webhook_event
 ):

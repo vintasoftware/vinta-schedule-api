@@ -7,10 +7,10 @@ from django.db import transaction
 
 import requests
 from dependency_injector.wiring import Provide, inject
+from vinta_billing.exceptions import OverLimitError
 
 from organizations.models import Organization
-from payments.billing_constants import LimitedResource
-from payments.exceptions import OverLimitError
+from payments.seams.resource_keys import WEBHOOK_SUBSCRIPTIONS
 from webhooks.constants import WebhookEventType, WebhookStatus
 from webhooks.models import WebhookConfiguration, WebhookEvent
 from webhooks.services.payloads import WebhookEnvelope
@@ -18,7 +18,7 @@ from webhooks.tasks import process_webhook_event
 
 
 if TYPE_CHECKING:
-    from payments.services.entitlement_service import EntitlementService
+    from vinta_billing.services.entitlement_service import EntitlementService
 
 
 MAX_WEBHOOK_RETRIES = 5
@@ -91,7 +91,7 @@ class WebhookService:
         self._validate_config_fields(event_type, url)
         if not bypass_limits and self.entitlement_service is not None:
             result = self.entitlement_service.check_limit(
-                organization, LimitedResource.WEBHOOK_SUBSCRIPTIONS, lock=True
+                organization, WEBHOOK_SUBSCRIPTIONS, lock=True
             )
             if not result.allowed:
                 raise OverLimitError.from_check_result(result)

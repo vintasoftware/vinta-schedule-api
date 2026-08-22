@@ -2,7 +2,7 @@
 
 The test DB is fully migrated before any test runs (pytest-django), so asserting
 against `BillingPlan.objects` here is asserting against what the seed migration
-actually produced — not a factory standing in for it. `LimitedResource.values` is
+actually produced — not a factory standing in for it. `RESOURCE_KEYS` is
 enumerated dynamically (never a hardcoded list) so a limited resource added later is
 caught here if its `unlimited` row goes missing. There is no feature flag: keeping
 every organization on the `unlimited` plan is the rollback path.
@@ -18,12 +18,17 @@ go red on a flushed database than go green on a synthetic one.
 
 import importlib
 
-from django.apps import apps
-
 import pytest
+from vinta_billing.constants import LimitKind
+from vinta_billing.models import BillingPlan
 
-from payments.billing_constants import Entitlement, LimitedResource, LimitKind
-from payments.models import BillingPlan
+from payments.seams.resource_keys import (
+    ENTITLEMENT_KEYS,
+    EVENT_OCCURRENCES,
+    ORGANIZATION_MEMBERS,
+    RESOURCE_KEYS,
+)
+from payments.tests.historical_apps import historical_apps
 
 
 @pytest.mark.no_billing_catalog_reseed
@@ -40,10 +45,10 @@ class TestPlanSeedMigration:
         `PlanLimit` row for any `LimitedResource` member, current or future."""
         plan = BillingPlan.objects.get(slug="unlimited")
 
-        assert plan.limits.count() == len(LimitedResource.values)
+        assert plan.limits.count() == len(RESOURCE_KEYS)
 
         limits_by_resource = {limit.resource_key: limit for limit in plan.limits.all()}
-        for resource_key in LimitedResource.values:
+        for resource_key in RESOURCE_KEYS:
             assert resource_key in limits_by_resource, (
                 f"unlimited plan is missing a PlanLimit row for {resource_key!r}"
             )
@@ -52,7 +57,9 @@ class TestPlanSeedMigration:
     def test_unlimited_plan_has_every_entitlement_enabled(self):
         plan = BillingPlan.objects.get(slug="unlimited")
 
-        assert plan.entitlements.count() == len(Entitlement.values)
+        assert set(plan.entitlements.values_list("entitlement_key", flat=True)) == set(
+            ENTITLEMENT_KEYS
+        )
         assert all(entitlement.is_enabled for entitlement in plan.entitlements.all())
 
     def test_unlimited_event_occurrences_limit_is_postpaid(self):
@@ -60,21 +67,31 @@ class TestPlanSeedMigration:
         branching does not have to special-case the unlimited plan."""
         plan = BillingPlan.objects.get(slug="unlimited")
 
-        limit = plan.limits.get(resource_key=LimitedResource.EVENT_OCCURRENCES)
+        limit = plan.limits.get(resource_key=EVENT_OCCURRENCES)
         assert limit.kind == LimitKind.POSTPAID
+
+    def test_unlimited_organization_members_limit_is_prepaid(self):
+        """`payments.0007` freezes `LimitKind.PREPAID`'s stored value as a plain
+        literal (`LIMIT_KIND_PREPAID`) for the seven non-event-occurrences
+        resources. The `POSTPAID` side is pinned against a DB row above; this is
+        the equivalent DB-row pin for the `PREPAID` side."""
+        plan = BillingPlan.objects.get(slug="unlimited")
+
+        limit = plan.limits.get(resource_key=ORGANIZATION_MEMBERS)
+        assert limit.kind == LimitKind.PREPAID
 
     def test_free_plan_exists_with_real_ceilings_and_is_not_default(self):
         plan = BillingPlan.objects.get(slug="free")
 
         assert plan.is_active is True
         assert plan.is_default_for_new_organizations is False
-        assert plan.limits.count() == len(LimitedResource.values)
+        assert plan.limits.count() == len(RESOURCE_KEYS)
         assert all(limit.limit_value is not None for limit in plan.limits.all())
 
     def test_free_plan_event_occurrences_is_postpaid_with_an_allowance(self):
         plan = BillingPlan.objects.get(slug="free")
 
-        limit = plan.limits.get(resource_key=LimitedResource.EVENT_OCCURRENCES)
+        limit = plan.limits.get(resource_key=EVENT_OCCURRENCES)
         assert limit.kind == LimitKind.POSTPAID
         assert limit.limit_value is not None
         assert limit.overage_unit_price is not None
@@ -101,7 +118,7 @@ class TestPlanSeedMigration:
             "No seeded plans at all — without this guard the loop below passes "
             "vacuously and asserts nothing."
         )
-        expected = set(LimitedResource.values)
+        expected = set(RESOURCE_KEYS)
         for plan in BillingPlan.objects.all():
             covered = set(plan.limits.values_list("resource_key", flat=True))
             assert expected <= covered, (
@@ -132,12 +149,12 @@ class TestPlanSeedMigration:
         plan.save()
 
         # Also corrupt a PlanLimit row to verify it converges too.
-        limit = plan.limits.get(resource_key=LimitedResource.EVENT_OCCURRENCES)
+        limit = plan.limits.get(resource_key=EVENT_OCCURRENCES)
         limit.kind = LimitKind.PREPAID  # Should be POSTPAID
         limit.save()
 
         # Re-run the seeding function; it should converge to the canonical state.
-        seed_billing_plans(apps, None)
+        seed_billing_plans(historical_apps, None)
 
         # Assert the plan was corrected.
         plan.refresh_from_db()

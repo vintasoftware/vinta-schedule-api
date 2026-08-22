@@ -43,6 +43,7 @@ import contextlib
 from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING, Any
 
+from django.core.exceptions import EmptyResultSet
 from django.db.models.sql.compiler import SQLCompiler
 
 from vinta_orgs.mixins import SingleOrganizationModelMixin
@@ -145,9 +146,14 @@ def _is_scoped_enough(query: Query, model: type[Model], compiler_name: str) -> b
     """
     try:
         sql = str(query)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, EmptyResultSet):
         # A query this cannot render (an unresolvable expression, a compiler
         # that needs state ``str()`` does not set up) is not evidence of a leak.
+        # Nor is a structurally-empty ``IN`` clause (``id__in=[]`` /
+        # ``id__in=[None]``, which a plain recurring event with no exceptions
+        # produces): Django's query planner raises ``EmptyResultSet`` from
+        # ``as_sql()`` for these rather than emit a statement, and
+        # ``EmptyResultSet`` subclasses neither ``TypeError`` nor ``ValueError``.
         return True
 
     clauses = _clauses_of(sql)

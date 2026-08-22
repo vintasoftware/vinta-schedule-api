@@ -1,16 +1,18 @@
 """The scheduled sweep that actually turns occurrences into billable rows.
 
-Two things here are worth a test even though they look like plumbing, because both
-have failed silently in this codebase before:
+Both tasks now delegate to ``vinta_billing.jobs`` (see ``payments/tasks.py``'s
+module docstring for why they still exist as real Celery tasks: DI injection
+and dispatch, not a re-implementation). Two things are still worth a test:
 
-- ``@inject`` on a Celery task can be a **no-op** — dependency_injector cannot read
-  ``Provide[...]`` out of a stringified annotation, and returns the function
-  unpatched. The task then runs with ``None`` where a service should be. Nothing in
-  a mocked test would notice; this drives the task for real and asserts rows appear.
+- ``@inject`` on a Celery task can be a **no-op** -- dependency_injector cannot
+  read ``Provide[...]`` out of a stringified annotation, and returns the
+  function unpatched. The task then runs with ``None`` where a service should
+  be. Nothing in a mocked test would notice; this drives the task for real and
+  asserts rows appear.
 - The sweep window is computed **once, by the beat task**, and passed to each
-  per-subscription task explicitly. A task that recomputed it from ``now()`` would
-  sweep a different stretch on every ``CELERY_TASK_ACKS_LATE`` redelivery, so a
-  retry would not repeat the work it was retrying.
+  per-subscription task explicitly. A task that recomputed it from ``now()``
+  would sweep a different stretch on every ``CELERY_TASK_ACKS_LATE``
+  redelivery, so a retry would not repeat the work it was retrying.
 """
 
 import datetime
@@ -19,14 +21,14 @@ from unittest.mock import patch
 from django.utils import timezone
 
 import pytest
+from vinta_billing.jobs import METERING_SWEEP_WINDOW
+from vinta_billing.models import MeteredOccurrence, Subscription
 
 from calendar_integration.constants import CalendarProvider, RecurrenceFrequency
 from calendar_integration.factories import CalendarEventFactory
 from calendar_integration.models import Calendar
 from organizations.models import Organization
-from payments.models import MeteredOccurrence, Subscription
 from payments.tasks import (
-    METERING_SWEEP_WINDOW,
     meter_event_occurrences,
     meter_subscription_event_occurrences,
 )
@@ -122,6 +124,16 @@ class TestMeterSubscriptionEventOccurrences:
 
 @pytest.mark.django_db
 class TestMeterEventOccurrencesFanOut:
+    def test_the_beat_task_delegates_to_the_packages_sweep(self, assert_no_unbound_scoped_queries):
+        """``payments.tasks.meter_event_occurrences`` calls straight through to
+        ``vinta_billing.jobs.meter_event_occurrences`` -- no re-implementation
+        left behind to drift from it."""
+        with patch("payments.tasks.jobs.meter_event_occurrences") as job:
+            meter_event_occurrences()
+
+        assert job.call_count == 1
+        assert callable(job.call_args.kwargs["dispatch"])
+
     def test_every_subscription_is_swept_over_one_shared_window(
         self, assert_no_unbound_scoped_queries, subscription: Subscription
     ):
@@ -154,3 +166,15 @@ class TestMeterEventOccurrencesFanOut:
         )
         assert span == METERING_SWEEP_WINDOW
         assert span > datetime.timedelta(minutes=15)
+
+    def test_the_dispatcher_enqueues_rather_than_running_inline(
+        self, assert_no_unbound_scoped_queries, subscription: Subscription
+    ):
+        """The beat task's own dispatch enqueues a Celery task rather than
+        metering synchronously -- nothing is recorded until a worker (or, in a
+        test, a direct call) actually picks up the per-subscription task."""
+        with patch("payments.tasks.meter_subscription_event_occurrences.delay") as dispatched:
+            meter_event_occurrences()
+
+        assert dispatched.called
+        assert MeteredOccurrence.objects.count() == 0

@@ -17,23 +17,23 @@ from django.utils import timezone
 
 import pytest
 from model_bakery import baker
-
-from calendar_integration.constants import CalendarProvider, CalendarType
-from calendar_integration.models import Calendar, CalendarEvent
-from calendar_integration.services.calendar_service import CalendarService
-from calendar_integration.services.dataclasses import CalendarEventInputData
-from organizations.models import Organization
-from payments.billing_constants import BillingState, LimitedResource, LimitKind, LimitRemedy
-from payments.constants import PaymentProviders
-from payments.exceptions import OverLimitError
-from payments.models import (
+from vinta_billing.constants import BillingState, LimitKind, LimitRemedy, PaymentProviders
+from vinta_billing.exceptions import OverLimitError
+from vinta_billing.models import (
     BillingPlan,
     MeteredOccurrence,
     PaymentMethod,
     Subscription,
     SubscriptionPlanLimit,
 )
-from payments.services.entitlement_service import EntitlementService
+from vinta_billing.services.entitlement_service import EntitlementService
+
+from calendar_integration.constants import CalendarProvider, CalendarType
+from calendar_integration.models import Calendar, CalendarEvent
+from calendar_integration.services.calendar_service import CalendarService
+from calendar_integration.services.dataclasses import CalendarEventInputData
+from organizations.models import Organization
+from payments.seams.resource_keys import EVENT_OCCURRENCES
 
 
 # This module builds its own Subscription rows (OneToOne with Organization), so it
@@ -63,7 +63,7 @@ def _organization_with_postpaid_limit(
     baker.make(
         SubscriptionPlanLimit,
         subscription=subscription,
-        resource_key=LimitedResource.EVENT_OCCURRENCES,
+        resource_key=EVENT_OCCURRENCES,
         limit_value=limit_value,
         kind=LimitKind.POSTPAID,
     )
@@ -378,7 +378,7 @@ class TestCreateEventPostpaidGuard:
         with pytest.raises(OverLimitError) as exc_info:
             service.create_event(calendar.id, _event_input(start))
 
-        assert exc_info.value.resource_key == LimitedResource.EVENT_OCCURRENCES
+        assert exc_info.value.resource_key == EVENT_OCCURRENCES
         assert exc_info.value.remedy == LimitRemedy.ADD_PAYMENT_METHOD
         assert not CalendarEvent.original_manager.filter(calendar=calendar).exists()
 

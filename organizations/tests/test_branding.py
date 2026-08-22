@@ -15,6 +15,9 @@ from django.utils import timezone
 import pytest
 from model_bakery import baker
 from s3direct.utils import AWSCredentials
+from vinta_billing.constants import BillingState
+from vinta_billing.models import BillingPlan, Subscription, SubscriptionEntitlement
+from vinta_billing.services.subscription_service import SubscriptionService
 from vintasend.app_settings import NotificationSettings
 from vintasend.constants import NotificationTypes
 from vintasend.services.dataclasses import NotificationContextDict
@@ -54,9 +57,7 @@ from organizations.permissions import (
 from organizations.redirect_url_validation import validate_redirect_url
 from organizations.serializers import CurrentMembershipSerializer, MyMembershipSerializer
 from organizations.tests.helpers import make_membership
-from payments.billing_constants import BillingState, Entitlement
-from payments.models import BillingPlan, Subscription, SubscriptionEntitlement
-from payments.services.subscription_service import SubscriptionService
+from payments.seams.resource_keys import WHITE_LABEL_BRANDING
 from users.factories import UserFactory
 
 
@@ -264,7 +265,7 @@ class TestResolveBrandingForDisplayEntitlementGate:
     """
 
     def test_branding_is_hidden_when_the_entitlement_is_disabled(self):
-        reseller = _reseller_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=False)
+        reseller = _reseller_with_entitlement(WHITE_LABEL_BRANDING, is_enabled=False)
         baker.make(OrganizationBranding, organization=reseller)
 
         assert resolve_branding_for_display(reseller) is None
@@ -297,7 +298,7 @@ class TestResolveBrandingForDisplayEntitlementGate:
         assert resolve_branding_for_display(reseller) is None
 
     def test_branding_is_returned_when_the_entitlement_is_enabled(self):
-        reseller = _reseller_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=True)
+        reseller = _reseller_with_entitlement(WHITE_LABEL_BRANDING, is_enabled=True)
         branding = baker.make(OrganizationBranding, organization=reseller)
 
         result = resolve_branding_for_display(reseller)
@@ -334,7 +335,7 @@ class TestResolveBrandingIsUngated:
     """
 
     def test_returns_the_row_even_without_the_entitlement(self):
-        reseller = _reseller_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=False)
+        reseller = _reseller_with_entitlement(WHITE_LABEL_BRANDING, is_enabled=False)
         branding = baker.make(OrganizationBranding, organization=reseller)
 
         result = resolve_branding(reseller)
@@ -437,7 +438,7 @@ class TestResolveBrandingForDisplayParentlessOrganization:
     """
 
     def test_entitled_parentless_organization_own_branding_is_applied(self):
-        org = _org_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None)
+        org = _org_with_entitlement(WHITE_LABEL_BRANDING, is_enabled=True, parent=None)
         branding = baker.make(OrganizationBranding, organization=org, app_name="SoloBrand")
 
         result = resolve_branding_for_display(org)
@@ -448,7 +449,7 @@ class TestResolveBrandingForDisplayParentlessOrganization:
         """The downgrade case: display resolves to ``None`` (defaults apply
         upstream), while the row itself is untouched in the database -- nothing is
         deleted, only stops being read for presentation."""
-        org = _org_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=False, parent=None)
+        org = _org_with_entitlement(WHITE_LABEL_BRANDING, is_enabled=False, parent=None)
         branding = baker.make(OrganizationBranding, organization=org, app_name="KeepMe")
 
         assert resolve_branding_for_display(org) is None
@@ -459,12 +460,12 @@ class TestResolveBrandingForDisplayParentlessOrganization:
     def test_reupgrade_applies_the_saved_values_with_no_re_entry(self):
         """On re-upgrade, the previously-saved values apply again -- there is no
         separate re-save step, since the row was never touched by the downgrade."""
-        org = _org_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=False, parent=None)
+        org = _org_with_entitlement(WHITE_LABEL_BRANDING, is_enabled=False, parent=None)
         branding = baker.make(OrganizationBranding, organization=org, app_name="KeepMe")
         assert resolve_branding_for_display(org) is None
 
         subscription_entitlement = SubscriptionEntitlement.objects.get(
-            subscription__organization=org, entitlement_key=Entitlement.WHITE_LABEL_BRANDING
+            subscription__organization=org, entitlement_key=WHITE_LABEL_BRANDING
         )
         subscription_entitlement.is_enabled = True
         subscription_entitlement.save(update_fields=["is_enabled"])
@@ -487,14 +488,14 @@ class TestEvaluateBrandingWriteGate:
 
     def test_admits_a_parentless_entitled_slugged_organization(self):
         org = _org_with_entitlement(
-            Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="eligible-org"
+            WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="eligible-org"
         )
 
         assert evaluate_branding_write_gate(org) is BrandingWriteGateReason.OK
 
     def test_refuses_an_organization_with_a_parent(self):
         parent_org = _org_with_entitlement(
-            Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="parent-org"
+            WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="parent-org"
         )
         # No subscription needed on the child: the gate short-circuits on
         # `parent_id is not None` before ever checking entitlement or slug.
@@ -504,7 +505,7 @@ class TestEvaluateBrandingWriteGate:
 
     def test_refuses_an_unentitled_organization(self):
         org = _org_with_entitlement(
-            Entitlement.WHITE_LABEL_BRANDING, is_enabled=False, parent=None, slug="free-plan-org"
+            WHITE_LABEL_BRANDING, is_enabled=False, parent=None, slug="free-plan-org"
         )
 
         assert evaluate_branding_write_gate(org) is BrandingWriteGateReason.NOT_ENTITLED
@@ -517,7 +518,7 @@ class TestEvaluateBrandingWriteGate:
         is parentless and entitled now passes the gate outright -- no separate
         "pick a slug first" step.
         """
-        org = _org_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None)
+        org = _org_with_entitlement(WHITE_LABEL_BRANDING, is_enabled=True, parent=None)
 
         assert org.slug
         assert evaluate_branding_write_gate(org) is BrandingWriteGateReason.OK
@@ -534,7 +535,7 @@ class TestEvaluateBrandingWriteGate:
         re-narrowing.
         """
         entitled = _org_with_entitlement(
-            Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="entitled-org-gate"
+            WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="entitled-org-gate"
         )
         unsaved = Organization(pk=entitled.pk, name=entitled.name, slug="")
 
@@ -550,11 +551,11 @@ class TestEvaluateBrandingWriteGate:
         ``test_a_blank_slug_no_longer_refuses_anything``).
         """
         parent_org = _org_with_entitlement(
-            Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="parent-org-2"
+            WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="parent-org-2"
         )
         child_org = baker.make(Organization, parent=parent_org, slug="child-org-2")
         unentitled_org = _org_with_entitlement(
-            Entitlement.WHITE_LABEL_BRANDING, is_enabled=False, parent=None, slug="unentitled-org"
+            WHITE_LABEL_BRANDING, is_enabled=False, parent=None, slug="unentitled-org"
         )
 
         reasons = {
@@ -575,7 +576,7 @@ class TestEvaluateBrandingWriteGate:
         future change reintroducing a third condition to only one of them would
         break here."""
         org = _org_with_entitlement(
-            Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="agreeing-org"
+            WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="agreeing-org"
         )
 
         assert is_branding_eligible_organization(org) is True
@@ -609,7 +610,7 @@ class TestCanManageBrandingCapabilityField:
 
     def test_true_for_a_parentless_entitled_organization(self):
         org = _org_with_entitlement(
-            Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="eligible-org"
+            WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="eligible-org"
         )
         membership = self._membership(org)
 
@@ -627,10 +628,10 @@ class TestCanManageBrandingCapabilityField:
         reports ``False``, with the write gate never consulted.
         """
         eligible = _org_with_entitlement(
-            Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="capability-org"
+            WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="capability-org"
         )
         unentitled = _org_with_entitlement(
-            Entitlement.WHITE_LABEL_BRANDING,
+            WHITE_LABEL_BRANDING,
             is_enabled=False,
             parent=None,
             slug="capability-org-off",
@@ -646,7 +647,7 @@ class TestCanManageBrandingCapabilityField:
 
     def test_false_for_a_parented_organization(self):
         parent_org = _org_with_entitlement(
-            Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="parent-org-cap"
+            WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="parent-org-cap"
         )
         child_org = baker.make(Organization, parent=parent_org, slug="child-org-cap")
         membership = self._membership(child_org)
@@ -656,7 +657,7 @@ class TestCanManageBrandingCapabilityField:
 
     def test_false_for_an_unentitled_organization(self):
         org = _org_with_entitlement(
-            Entitlement.WHITE_LABEL_BRANDING, is_enabled=False, parent=None, slug="free-plan-cap"
+            WHITE_LABEL_BRANDING, is_enabled=False, parent=None, slug="free-plan-cap"
         )
         membership = self._membership(org)
 
@@ -666,7 +667,7 @@ class TestCanManageBrandingCapabilityField:
     def test_entitled_member_without_branding_permission_reports_false(self):
         """The field is the published composite capability, not eligibility alone."""
         org = _org_with_entitlement(
-            Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="member-org-cap"
+            WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="member-org-cap"
         )
         admin_membership = self._membership(org, groups=(GROUP_ORGANIZATION_ADMIN,))
         member_membership = self._membership(org, groups=(GROUP_ORGANIZATION_MEMBER,))
@@ -685,7 +686,7 @@ class TestCanManageBrandingCapabilityField:
         self, permission_codename, permission_model, expected
     ):
         org = _org_with_entitlement(
-            Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="direct-branding"
+            WHITE_LABEL_BRANDING, is_enabled=True, parent=None, slug="direct-branding"
         )
         membership = self._membership(org, groups=(GROUP_ORGANIZATION_MEMBER,))
         membership.permissions.add(
@@ -702,12 +703,8 @@ class TestCanManageBrandingCapabilityField:
         """Every case above is also directly pinned against
         `is_branding_eligible_organization` itself, so a change to the shared
         helper's semantics is guaranteed to move this field too."""
-        eligible = _org_with_entitlement(
-            Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None
-        )
-        ineligible = _org_with_entitlement(
-            Entitlement.WHITE_LABEL_BRANDING, is_enabled=False, parent=None
-        )
+        eligible = _org_with_entitlement(WHITE_LABEL_BRANDING, is_enabled=True, parent=None)
+        ineligible = _org_with_entitlement(WHITE_LABEL_BRANDING, is_enabled=False, parent=None)
 
         for org in (eligible, ineligible):
             membership = self._membership(org)
@@ -742,20 +739,20 @@ class TestBrandingLogoDestinationAuth:
         return user
 
     def test_admits_admin_of_an_eligible_organization(self):
-        org = _org_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None)
+        org = _org_with_entitlement(WHITE_LABEL_BRANDING, is_enabled=True, parent=None)
         user = self._make_admin(org)
 
         assert self._auth_callable()(user) is True
 
     def test_refuses_a_free_plan_user(self):
         """Admin of a parentless organization that lacks the entitlement."""
-        org = _org_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=False, parent=None)
+        org = _org_with_entitlement(WHITE_LABEL_BRANDING, is_enabled=False, parent=None)
         user = self._make_admin(org)
 
         assert self._auth_callable()(user) is False
 
     def test_refuses_a_non_admin_member(self):
-        org = _org_with_entitlement(Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None)
+        org = _org_with_entitlement(WHITE_LABEL_BRANDING, is_enabled=True, parent=None)
         user = baker.make(User)
         baker.make(
             OrganizationMembership,
@@ -767,9 +764,7 @@ class TestBrandingLogoDestinationAuth:
         assert self._auth_callable()(user) is False
 
     def test_refuses_an_admin_of_an_organization_with_a_parent(self):
-        parent_org = _org_with_entitlement(
-            Entitlement.WHITE_LABEL_BRANDING, is_enabled=True, parent=None
-        )
+        parent_org = _org_with_entitlement(WHITE_LABEL_BRANDING, is_enabled=True, parent=None)
         # No subscription needed on the child: `is_branding_eligible_organization`
         # short-circuits on `parent_id is not None` before ever checking entitlement.
         child_org = baker.make(Organization, parent=parent_org)
@@ -851,7 +846,7 @@ class TestInvitationContextLogoUrl:
 
     def test_branded_organization_logo_is_an_absolute_delivery_url(self):
         reseller = _org_with_entitlement(
-            Entitlement.WHITE_LABEL_BRANDING,
+            WHITE_LABEL_BRANDING,
             is_enabled=True,
             can_invite_organizations=True,
             parent=None,
@@ -895,7 +890,7 @@ class TestInvitationContextLogoUrl:
         branding root, so its invitation email carries its own app name, logo, and
         colors -- not the vinta default and not some other organization's."""
         org = _org_with_entitlement(
-            Entitlement.WHITE_LABEL_BRANDING,
+            WHITE_LABEL_BRANDING,
             is_enabled=True,
             can_invite_organizations=False,
             parent=None,
@@ -928,7 +923,7 @@ class TestInvitationContextLogoUrl:
         invitation email must revert fully to the vinta defaults, not a mix of the
         two."""
         org = _org_with_entitlement(
-            Entitlement.WHITE_LABEL_BRANDING,
+            WHITE_LABEL_BRANDING,
             is_enabled=False,
             parent=None,
         )
@@ -1022,7 +1017,7 @@ class TestInvitationReplyToEmailSend:
 
     def test_branded_entitled_organization_reply_to_is_its_support_address(self):
         org = _org_with_entitlement(
-            Entitlement.WHITE_LABEL_BRANDING,
+            WHITE_LABEL_BRANDING,
             is_enabled=True,
             parent=None,
         )
@@ -1064,7 +1059,7 @@ class TestInvitationReplyToEmailSend:
         included), but the invitation must fully revert to vinta defaults -- reply-to
         included, not just app_name/logo/colors."""
         org = _org_with_entitlement(
-            Entitlement.WHITE_LABEL_BRANDING,
+            WHITE_LABEL_BRANDING,
             is_enabled=False,
             parent=None,
         )
@@ -1090,7 +1085,7 @@ class TestInvitationReplyToEmailSend:
         no Reply-To header at all -- a blank support_email is falsy, not a
         distinct "empty reply-to" state."""
         org = _org_with_entitlement(
-            Entitlement.WHITE_LABEL_BRANDING,
+            WHITE_LABEL_BRANDING,
             is_enabled=True,
             parent=None,
         )

@@ -587,7 +587,7 @@ class AssignMembershipGroupsSerializer(serializers.Serializer):
         help_text=(
             "Groups to assign to this membership, replacing the ones it holds. "
             "``organization_admin`` carries every capability; "
-            "``organization_billing_owner`` carries ``payments.manage_billing``; "
+            "``organization_billing_owner`` carries ``vinta_billing.manage_billing``; "
             "``organization_member`` carries none and is what a member with no "
             "capabilities holds. Naming a capability group alongside "
             "``organization_member`` stores the capability group alone."

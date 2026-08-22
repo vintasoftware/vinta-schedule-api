@@ -2,11 +2,28 @@
 
 from django.db import migrations, models
 
-from payments.billing_constants import DocumentTypes
+
+# `DocumentTypes.choices`, frozen as plain literal tuples rather than imported from
+# `vinta_billing.constants`. The original justification for a live reference (that it
+# would avoid a follow-up migration when the choices change) is moot: `payments.0024`
+# removes `payments.billingprofile` from migration state entirely, so the
+# autodetector never compares this `AlterField`'s `choices` against anything again.
+# Freezing removes a third-party import from the migrate-from-zero path for the cost
+# of nine literal tuples -- do not "restore" the live import.
+DOCUMENT_TYPE_CHOICES = [
+    ("CPF", "CPF"),
+    ("CNPJ", "CNPJ"),
+    ("DNI", "DNI"),
+    ("CI", "CI"),
+    ("RUT", "RUT"),
+    ("SSN", "SSN"),
+    ("EIN", "EIN"),
+    ("PASSPORT", "Passport"),
+    ("OTHER", "Other"),
+]
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ('payments', '0020_billing_period_summary'),
     ]
@@ -15,11 +32,6 @@ class Migration(migrations.Migration):
         migrations.AlterField(
             model_name='billingprofile',
             name='document_type',
-            # `DocumentTypes.choices` is referenced, not frozen into literals, so
-            # adding or renaming a member does not generate a follow-up migration.
-            # Safe precisely because `choices` is validation metadata Django never
-            # emits DDL for -- the historical state tracking the live enum changes
-            # nothing about the column. Do not "restore" the generated literals.
-            field=models.CharField(choices=DocumentTypes.choices, max_length=50),
+            field=models.CharField(choices=DOCUMENT_TYPE_CHOICES, max_length=50),
         ),
     ]

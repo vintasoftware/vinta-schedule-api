@@ -26,6 +26,9 @@ from model_bakery import baker
 from rest_framework import status
 from rest_framework.request import Request
 from rest_framework.test import APIRequestFactory
+from vinta_billing.models import MeteredOccurrence
+from vinta_billing.pagination import LargeLimitOffsetPagination
+from vinta_billing.services.subscription_service import current_billing_period_start
 
 from calendar_integration.factories import create_calendar_ownership
 from calendar_integration.models import Calendar, CalendarEvent
@@ -35,9 +38,6 @@ from organizations.permission_catalog import (
     GROUP_ORGANIZATION_BILLING_OWNER,
 )
 from organizations.tests.helpers import make_membership
-from payments.models import MeteredOccurrence
-from payments.pagination import LargeLimitOffsetPagination
-from payments.services.subscription_service import current_billing_period_start
 from users.factories import UserFactory
 
 

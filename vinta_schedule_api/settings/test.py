@@ -53,6 +53,13 @@ CELERY_TASK_ALWAYS_EAGER = True
 CELERY_TASK_EAGER_PROPAGATES = True
 
 SITE_DOMAIN = "test-schedule.vinta.com.br"
+# `VINTA_BILLING["SITE_DOMAIN"]` was already baked from `base`'s (unset-env)
+# default when `from .base import *` ran above, so the override on the line
+# above alone left the two diverged -- `vinta_billing.conf.get_setting`
+# reads the dict, not this module attribute, so a MercadoPago adapter test
+# asserting against `settings.SITE_DOMAIN` would silently prove nothing about
+# what the adapter actually sends. Kept in sync here.
+VINTA_BILLING = {**VINTA_BILLING, "SITE_DOMAIN": SITE_DOMAIN}
 SALT_KEY = "123467890asdfghjkl"
 
 # Pinned to fake non-empty values, like SECRET_KEY/SALT_KEY above -- so

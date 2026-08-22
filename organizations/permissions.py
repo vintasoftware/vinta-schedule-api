@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING, Annotated
 from dependency_injector.wiring import Provide, inject
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import BasePermission
+from vinta_billing.entitlement_cache import has_entitlement_cached
+from vinta_billing.services.entitlement_service import EntitlementService
 from vinta_orgs.mixins import SingleOrganizationModelMixin
 
 from organizations.authorization import has_organization_permission
@@ -23,9 +25,7 @@ from organizations.permission_catalog import (
     MANAGE_MEMBERS,
     MANAGE_ORGANIZATION,
 )
-from payments.billing_constants import Entitlement
-from payments.entitlement_cache import has_entitlement_cached
-from payments.services.entitlement_service import EntitlementService
+from payments.seams.resource_keys import WHITE_LABEL_BRANDING
 from public_api.capabilities import is_target_in_subtree
 
 
@@ -56,9 +56,7 @@ def _organization_holds_white_label_branding(
     """
     if entitlement_service is None:
         return False
-    return has_entitlement_cached(
-        entitlement_service, organization, Entitlement.WHITE_LABEL_BRANDING
-    )
+    return has_entitlement_cached(entitlement_service, organization, WHITE_LABEL_BRANDING)
 
 
 @inject
@@ -79,7 +77,7 @@ def _organizations_hold_white_label_branding(
     if entitlement_service is None or not organizations:
         return {}
     return entitlement_service.has_entitlement_for_organizations(
-        organizations, Entitlement.WHITE_LABEL_BRANDING
+        organizations, WHITE_LABEL_BRANDING
     )
 
 
@@ -415,17 +413,45 @@ class CanManageBranding(IsOrganizationAdmin):
 
 
 class IsBillingOwnerOrAdmin(BasePermission):
-    """Permission for the billing-management endpoints (``payments/billing_views.py``):
-    change plan, purchase/cancel an add-on, cancel the subscription.
+    """**Phase 5 of the billing migration ratified keeping this class**, rather
+    than deleting it along with its two test modules
+    (``payments/tests/test_reseller_root_billing.py`` and the
+    ``TestIsBillingOwnerOrAdminParity`` rows of
+    ``organizations/tests/test_permissions_parity.py``). Both were reviewed
+    against the object-level equivalence and the branch-2 unreachability
+    argued below -- no authorization regression either way -- and kept
+    because they are honest about what they prove: both test files exercise
+    this class directly (``has_permission``/``has_object_permission``), never
+    through a live view, and neither claims any endpoint is gated by it. This
+    class gates nothing today: it is deliberately retained-but-unwired policy
+    for a request shape no current endpoint produces, not dead code left
+    behind by accident.
+
+    The host's former policy for the billing-management endpoints: changing a
+    plan, purchasing/cancelling an add-on, cancelling the subscription.
+
+    No longer wired into those endpoints directly (Phase 2 of the billing
+    migration deleted ``payments/seams/permissions.py``, the shim that swapped
+    this class in for ``vinta_billing.permissions.IsBillingManager``): 0.5.0
+    fixed that class's own object-level check, and its branch-1 answer --
+    a member holding ``vinta_billing.manage_billing`` in the object's own
+    organization -- is exactly what this class's branch 1 already computed, so
+    the swap lost nothing. Branch 2 (the acting-reseller-root subtree walk
+    below) was already unreachable from any endpoint before the deletion --
+    see its own docstring -- so it is kept here as host policy for direct
+    callers, verified by ``payments/tests/test_reseller_root_billing.py``,
+    rather than deleted along with the seam.
 
     Split across ``has_permission``/``has_object_permission`` rather than doing
     everything in ``has_permission``, because the two answer different
     questions: ``has_permission`` cannot know *which* organization is being
     billed. The billing endpoints act on the **billing root**, which is
     frequently an ancestor of the organization the request resolved
-    (``resolve_billing_root``), and the views hand that resolved root to
+    (``resolve_billing_root``); when this class was still wired to those
+    endpoints, the views handed that resolved root to
     ``check_object_permissions`` explicitly (see ``SubscriptionViewSet`` /
-    ``AddOnViewSet``). So the coarse gate runs first and the real decision runs
+    ``AddOnViewSet`` -- the package's own viewsets, which do not use this
+    class). So the coarse gate ran first and the real decision ran
     against ``obj``.
 
     (Historical note: this split was originally *forced* by an ordering defect —
@@ -439,19 +465,20 @@ class IsBillingOwnerOrAdmin(BasePermission):
     both correct inside ``has_permission``.)
 
     - ``has_permission``: coarse gate -- an active membership carrying
-      ``payments.manage_billing`` **in the organization the request resolved**
+      ``vinta_billing.manage_billing`` **in the organization the request resolved**
       (since the ordering fix above, that is the membership
       ``X-Organization-Id`` selected, not "some organization"). Coarse all the
       same, because the organization
       being *billed* is frequently an ancestor of it; deciding *which*
       organization is ``has_object_permission``'s job.
-    - ``has_object_permission``: the real gate, against ``obj`` (an
-      ``Organization`` -- the resolved billing root). Grants access when either:
+    - ``has_object_permission``: the gate against ``obj`` (an
+      ``Organization`` -- the resolved billing root), when this class was
+      still wired to an endpoint. Granted access when either:
 
       1. The caller's active membership is in ``obj`` itself and carries
-         ``payments.manage_billing``.
+         ``vinta_billing.manage_billing``.
       2. An **acting reseller root**: a low-level policy branch for a caller's
-         active membership that carries ``payments.manage_billing``, can
+         active membership that carries ``vinta_billing.manage_billing``, can
          invite/create organizations (``can_invite_organizations``), and has
          ``obj`` within its subtree. It reuses
          ``public_api.capabilities.is_target_in_subtree`` — the boolean form of
@@ -461,7 +488,7 @@ class IsBillingOwnerOrAdmin(BasePermission):
          request shape that would make this branch decisive, so it preserves the
          policy for direct callers without describing current endpoint behavior.
 
-    ``payments.manage_billing`` replaced the flat two-column disjunction this
+    ``vinta_billing.manage_billing`` replaced the flat two-column disjunction this
     used to read (``role == ADMIN or is_billing_owner``); the
     ``organization_admin`` and ``organization_billing_owner`` groups both carry
     the permission, which is what makes the two spellings the same set.
@@ -473,10 +500,13 @@ class IsBillingOwnerOrAdmin(BasePermission):
     ``organizations.authorization.has_organization_permission``); nothing else
     about the branch changed.
 
-    Read-only billing endpoints (usage, plan catalog, subscription detail) are
-    intentionally **not** gated by this class — they stay open to any
-    authenticated member, mirroring ``BillingProfileViewSet``'s reads-open,
-    writes-gated split.
+    Read-only billing endpoints (usage, plan catalog, subscription detail)
+    were, back when this class was still wired to an endpoint, intentionally
+    **not** gated by it -- they stayed open to any authenticated member,
+    mirroring ``BillingProfileViewSet``'s reads-open, writes-gated split.
+    Today neither the reads nor the writes are gated by this class: the
+    write endpoints are gated by ``vinta_billing.permissions.IsBillingManager``
+    instead.
     """
 
     def has_permission(self, request, view) -> bool:

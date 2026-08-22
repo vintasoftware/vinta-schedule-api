@@ -5,7 +5,7 @@ reseller-root subtree branch. The latter names the membership organization
 explicitly rather than asking the backend from ambient context.
 
 ``vinta_orgs.auth_backends.OrganizationModelBackend`` resolves a bare
-``user.has_perm("payments.manage_billing")`` only for the organization bound to
+``user.has_perm("vinta_billing.manage_billing")`` only for the organization bound to
 the current context. The package header resolver currently always binds that
 same organization as the resolved membership, so no endpoint request can make
 the subtree branch decisive. The tests preserve the branch's direct, low-level
@@ -117,7 +117,7 @@ class TestActingResellerRoot:
             assert self.permission.has_object_permission(_request(user), None, descendant) is True
 
     def test_a_billing_owner_of_the_root_may_too(self, reseller_root, descendant):
-        """``payments.manage_billing`` is the capability, not "is an admin" --
+        """``vinta_billing.manage_billing`` is the capability, not "is an admin" --
         the ``organization_billing_owner`` group carries it as well, which is
         what makes the flat two-column disjunction it replaced one permission
         rather than two."""

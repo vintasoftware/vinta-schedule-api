@@ -18,6 +18,7 @@ from allauth.socialaccount.adapter import get_adapter as get_socialaccount_adapt
 from allauth.socialaccount.models import SocialLogin
 from allauth.utils import build_absolute_uri
 from dependency_injector.wiring import Provide, inject
+from vinta_billing.exceptions import OverLimitError
 from vintasend.constants import NotificationTypes
 from vintasend.services.dataclasses import NotificationContextDict
 from vintasend.services.notification_service import NotificationService
@@ -30,7 +31,6 @@ from legal.services import ConsentService
 from organizations.exceptions import UserAlreadyHasMembershipError
 from organizations.models import OrganizationMembership
 from organizations.services import OrganizationService
-from payments.exceptions import OverLimitError
 from users.models import Profile, User
 from users.tasks import download_social_profile_picture
 

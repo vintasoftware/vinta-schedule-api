@@ -109,7 +109,21 @@ ADMIN_PERMISSIONS = [
     "organizations.manage_members",
     "organizations.manage_organization",
     "organizations.manage_branding",
-    "payments.manage_billing",
+    "vinta_billing.manage_billing",
+]
+
+# What ``0028`` itself seeds, which is not the same list any more.
+# ``payments/migrations/0024_move_billing_to_vinta_billing.py`` moved
+# ``manage_billing`` onto the ``vinta_billing.subscription`` content type;
+# ``0028`` is frozen and still writes it against ``payments.subscription``,
+# because a data migration keeps meaning what it meant. Only
+# ``TestTheSeededGroupsExist`` uses this list -- it re-runs ``0028``'s own seeder
+# and so observes the pre-move world on purpose. Every other assertion in this
+# module reads the migrated database and uses ``ADMIN_PERMISSIONS``.
+SEED_MIGRATION_MANAGE_BILLING = "payments.manage_billing"
+SEED_MIGRATION_ADMIN_PERMISSIONS = [
+    *ADMIN_PERMISSIONS[:3],
+    SEED_MIGRATION_MANAGE_BILLING,
 ]
 
 
@@ -237,7 +251,7 @@ class TestTheSeededGroupsExist:
             )
         }
 
-        assert labelled == set(ADMIN_PERMISSIONS)
+        assert labelled == set(SEED_MIGRATION_ADMIN_PERMISSIONS)
 
     def test_the_billing_owner_group_carries_only_manage_billing(self):
         group = Group.objects.get(name=GROUP_ORGANIZATION_BILLING_OWNER)
@@ -249,7 +263,7 @@ class TestTheSeededGroupsExist:
             )
         }
 
-        assert labelled == {"payments.manage_billing"}
+        assert labelled == {SEED_MIGRATION_MANAGE_BILLING}
 
     def test_the_member_group_is_deliberately_empty(self):
         group = Group.objects.get(name=GROUP_ORGANIZATION_MEMBER)

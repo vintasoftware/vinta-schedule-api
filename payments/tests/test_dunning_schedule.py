@@ -1,5 +1,7 @@
-"""Integration tests for the dunning ladder's Celery beat entry points
-(``payments.tasks.process_dunning`` / ``process_dunning_for_subscription``).
+"""Integration tests for the dunning ladder's Celery beat entry point
+(``payments.tasks.process_dunning``, a thin wrapper over
+``vinta_billing.jobs.process_dunning``) and the per-subscription job it fans
+out to (``vinta_billing.jobs.process_dunning_for_subscription``).
 
 Drives the real, DI-wired ``DunningService`` -- not a hand-written double --
 with the MercadoPago SDK mocked (the same pattern
@@ -17,20 +19,20 @@ import pytest
 import stripe
 from freezegun import freeze_time
 from model_bakery import baker
+from vinta_billing.constants import BillingState, LimitKind, PaymentProviders
+from vinta_billing.models import BillingPlan, PlanLimit, Subscription
+from vinta_billing.services.subscription_adapters.base import BaseSubscriptionAdapter
+from vinta_billing.services.subscription_adapters.mercadopago_subscription_adapter import (
+    MercadoPagoSubscriptionAdapter,
+)
+from vinta_billing.services.subscription_adapters.stripe_subscription_adapter import (
+    StripeSubscriptionAdapter,
+)
 
 from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
 from organizations.tests.helpers import make_membership
-from payments.billing_constants import BillingState, LimitedResource, LimitKind
-from payments.constants import PaymentProviders
-from payments.models import BillingPlan, PlanLimit, Subscription
-from payments.services.subscription_adapters.base import BaseSubscriptionAdapter
-from payments.services.subscription_adapters.mercadopago_subscription_adapter import (
-    MercadoPagoSubscriptionAdapter,
-)
-from payments.services.subscription_adapters.stripe_subscription_adapter import (
-    StripeSubscriptionAdapter,
-)
+from payments.seams.resource_keys import RESOURCE_KEYS
 from payments.tasks import process_dunning, process_dunning_for_subscription
 from users.models import User
 
@@ -39,7 +41,7 @@ pytestmark = pytest.mark.no_auto_subscription
 
 WEBHOOK_SECRET = "test-webhook-secret"
 
-_DUNNING_SERVICE_MODULE = "payments.services.dunning_service"
+_DUNNING_SERVICE_MODULE = "vinta_billing.services.dunning_service"
 
 
 @pytest.fixture(autouse=True)
@@ -64,7 +66,7 @@ def make_complete_plan(
     *,
     grace_period_days: int | None = None,
 ) -> BillingPlan:
-    """Mirrors ``test_dunning_service.py``'s helper of the same name."""
+    """Mirrors ``payments/tests/services/test_plan_change.py``'s helper of the same name."""
     limit_values = limit_values or {}
     plan = baker.make(
         BillingPlan,
@@ -73,7 +75,7 @@ def make_complete_plan(
         annual_price=None,
         grace_period_days=grace_period_days,
     )
-    for resource_key in LimitedResource.values:
+    for resource_key in RESOURCE_KEYS:
         baker.make(
             PlanLimit,
             plan=plan,
@@ -107,7 +109,7 @@ def _add_admin_membership(organization: Organization) -> OrganizationMembership:
     """A billing-notification recipient.
 
     ``OrganizationMembershipQuerySet.billing_recipients`` reads
-    ``payments.manage_billing``, which a membership only holds through its
+    ``vinta_billing.manage_billing``, which a membership only holds through its
     groups -- and a bare ``baker.make`` assigns none.
     """
     membership = make_membership(
@@ -140,7 +142,7 @@ def organization():
 @pytest.fixture
 def billing_profile(organization):
     billing_address = baker.make(
-        "payments.BillingAddress",
+        "vinta_billing.BillingAddress",
         street_name="Test Street",
         street_number="123",
         city="Test City",
@@ -149,7 +151,7 @@ def billing_profile(organization):
         zip_code="12345",
     )
     return baker.make(
-        "payments.BillingProfile",
+        "vinta_billing.BillingProfile",
         organization=organization,
         contact_email="billing@example.com",
         document_type="CPF",
@@ -169,7 +171,7 @@ def billing_profile(organization):
 @pytest.fixture
 def mercadopago_subscription_adapter():
     with patch(
-        "payments.services.subscription_adapters.mercadopago_subscription_adapter.mercadopago.SDK"
+        "vinta_billing.services.subscription_adapters.mercadopago_subscription_adapter.mercadopago.SDK"
     ) as mock_sdk:
         adapter = MercadoPagoSubscriptionAdapter("test-access-token", webhook_secret=WEBHOOK_SECRET)
         adapter.sdk = mock_sdk.return_value
@@ -239,13 +241,13 @@ class TestProcessDunningFanOut:
 
         org2 = baker.make(Organization, parent=None, can_invite_organizations=False)
         baker.make(
-            "payments.BillingProfile",
+            "vinta_billing.BillingProfile",
             organization=org2,
             contact_email="billing2@example.com",
             document_type="CPF",
             document_number="98765432100",
             billing_address=baker.make(
-                "payments.BillingAddress",
+                "vinta_billing.BillingAddress",
                 street_name="St",
                 street_number="1",
                 city="C",
@@ -260,13 +262,13 @@ class TestProcessDunningFanOut:
 
         org3 = baker.make(Organization, parent=None, can_invite_organizations=False)
         baker.make(
-            "payments.BillingProfile",
+            "vinta_billing.BillingProfile",
             organization=org3,
             contact_email="billing3@example.com",
             document_type="CPF",
             document_number="11122233300",
             billing_address=baker.make(
-                "payments.BillingAddress",
+                "vinta_billing.BillingAddress",
                 street_name="St",
                 street_number="1",
                 city="C",
@@ -660,7 +662,7 @@ class TestDunningTickToleratesADeclinedStripeCharge:
         stripe_adapter = StripeSubscriptionAdapter(api_key="sk_test_123", webhook_secret="whsec")
         with (
             patch(
-                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice"
+                "vinta_billing.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice"
             ) as mock_invoice,
             di_container.stripe_subscription_gateway.override(stripe_adapter),
         ):
@@ -750,7 +752,7 @@ class TestDunningTickToleratesADeclinedStripeCharge:
         stripe_adapter = StripeSubscriptionAdapter(api_key="sk_test_123", webhook_secret="whsec")
         with (
             patch(
-                "payments.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice"
+                "vinta_billing.services.subscription_adapters.stripe_subscription_adapter.stripe.Invoice"
             ) as mock_invoice,
             di_container.stripe_subscription_gateway.override(stripe_adapter),
         ):

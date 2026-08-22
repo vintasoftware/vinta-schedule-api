@@ -13,10 +13,10 @@ from django.urls import reverse
 
 import pytest
 from model_bakery import baker
+from vinta_billing.models import Subscription
+from vinta_billing.services.subscription_service import SubscriptionService
 
 from organizations.models import Organization, OrganizationBranding
-from payments.models import Subscription
-from payments.services.subscription_service import SubscriptionService
 
 
 User = get_user_model()

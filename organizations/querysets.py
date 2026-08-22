@@ -44,7 +44,7 @@ class OrganizationMembershipQuerySet(_PackageOrganizationMembershipQuerySet):
 
     def billing_recipients(self, organization_id: int) -> OrganizationMembershipQuerySet:
         """Active memberships eligible to receive billing/dunning notifications for
-        ``organization_id``: the ones holding ``payments.manage_billing``.
+        ``organization_id``: the ones holding ``vinta_billing.manage_billing``.
 
         Used by ``DunningService`` (``payments/services/dunning_service.py``) and
         ``UsageWarningService`` to resolve who receives the dunning ladder's
