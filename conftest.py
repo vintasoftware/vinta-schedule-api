@@ -20,6 +20,38 @@ from rest_framework.test import APIClient
 pytest_plugins = ["vinta_orgs.testing"]
 
 
+@pytest.fixture(scope="session", autouse=True)
+def preload_urlconf():
+    """Import the root URLconf once, in *setup*, instead of inside a test body.
+
+    ``vinta_schedule_api/urls.py`` is not imported by ``django.setup()`` and not by
+    collection -- the first ``reverse()`` or test-client request in a worker process
+    triggers it. That import is not small: it pulls in every app's routes (viewsets,
+    serializers, virtual models), the admin, drf-spectacular, and
+    ``from public_api.schema import schema``, which builds the entire Strawberry GraphQL
+    schema. Measured at 1.5s cold in a single process and 3.4s with the box under load,
+    both without ``--cov``, which ``addopts`` adds.
+
+    All of that used to be charged to the *call* phase of whichever test reversed a URL
+    first, because ``timeout_func_only`` (see ``pytest.ini``) excludes fixtures and the
+    database build but not a lazy import inside the test function. Under ``-n auto``
+    every worker pays it, and they collide -- they walk the same early part of the
+    collection order. The systematic victim was
+    ``accounts/tests/test_views.py::TestProviderCallbackAPIView::test_missing_provider_id``,
+    an assertion about a 400 response that has nothing to do with any of this.
+
+    Session-scoped fixtures run in the setup phase, which the timeout already excludes,
+    so this puts the cost where the rest of the one-time warm-up already lives.
+
+    Deferred import: this module is imported during collection, before pytest-django
+    calls ``django.setup()``.
+    """
+    from django.urls import get_resolver
+
+    # Resolving the property is what triggers the import; the value itself is not needed.
+    _ = get_resolver().url_patterns
+
+
 _ALLOWED_NETWORK_HOSTS = {
     "127.0.0.1",
     "::1",
@@ -215,22 +247,48 @@ _FLUSHING_FIXTURES = frozenset({"transactional_db", "django_db_reset_sequences",
 #: this fixture may touch the ORM at all -- see ``ensure_seeded_billing_catalog``.
 _DATABASE_FIXTURES = _FLUSHING_FIXTURES | {"db", "django_db_serialized_rollback"}
 
-#: Session state: has a test flushed the plan catalog since it was last seeded? Module
+#: Session state: has the plan catalog been flushed since it was last seeded? Module
 #: scope rather than a fixture because it must outlive the test that set it -- it is
 #: consumed by the *next* test, in the next fixture instance.
+#:
+#:
+#: Covers flushes that happen *within* a session only. It starts ``False`` because at
+#: session start nothing has flushed yet -- which is true of the process, and says
+#: nothing about the database the process was handed. A database left flushed by a
+#: *previous* ``--reuse-db`` run is the other half of the problem, and
+#: ``_repaired_inherited_billing_catalog`` below is what answers it.
 _billing_catalog_was_flushed = False
 
+#: Did ``_repaired_inherited_billing_catalog`` have to rebuild the catalog from live
+#: code because this session inherited a flushed database? Read by
+#: ``ensure_seeded_billing_catalog`` to skip the tests that assert on the *migration's*
+#: output, which a rebuild cannot stand in for.
+_billing_catalog_was_rebuilt_from_live_code = False
 
-def _test_uses_the_database(request) -> bool:
-    if request.node.get_closest_marker("django_db") is not None:
+
+def _node_uses_the_database(node) -> bool:
+    """Same question as ``_test_uses_the_database``, asked of a collected item.
+
+    Split out so ``_repaired_inherited_billing_catalog`` can ask it at *session* scope,
+    where there is no ``request.node`` and no ``request.fixturenames`` -- only the
+    collected items. ``node.fixturenames`` is populated during collection for function
+    items, so the fixture-name half of the test still works here.
+    """
+    if node.get_closest_marker("django_db") is not None:
         return True
-    if _DATABASE_FIXTURES & set(request.fixturenames):
+    if _DATABASE_FIXTURES & set(getattr(node, "fixturenames", ())):
         return True
 
     from django.test import TransactionTestCase
 
-    cls = getattr(request.node, "cls", None)
+    cls = getattr(node, "cls", None)
     return isinstance(cls, type) and issubclass(cls, TransactionTestCase)
+
+
+def _test_uses_the_database(request) -> bool:
+    if _node_uses_the_database(request.node):
+        return True
+    return bool(_DATABASE_FIXTURES & set(request.fixturenames))
 
 
 def _test_flushes_the_database(request) -> bool:
@@ -248,6 +306,69 @@ def _test_flushes_the_database(request) -> bool:
         and issubclass(cls, TransactionTestCase)
         and not issubclass(cls, TestCase)
     )
+
+
+def _seeded_billing_catalog_is_missing() -> bool:
+    """Is the seeded plan catalog absent from the database right now?
+
+    The default plan is what every consumer of the catalog actually needs --
+    ``SubscriptionService.create_subscription_for_organization`` raises
+    ``NoDefaultBillingPlanError`` without it -- so its absence is the condition worth
+    repairing, and one indexed existence check is cheap enough to run once per session.
+
+    Deferred import for the reason given on ``assert_no_unbound_scoped_queries``: this
+    module is imported during collection, before ``django.setup()``.
+    """
+    from payments.models import BillingPlan
+
+    return not BillingPlan.objects.filter(is_default_for_new_organizations=True).exists()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _repaired_inherited_billing_catalog(request):
+    """Put the catalog back once per session when the database arrived without one.
+
+    Session-scoped **and autouse**, which is what puts it before every function-scoped
+    fixture in the run. Both matter: pytest-django wraps each non-transactional test in
+    an atomic block and rolls it back, so a reseed that lands inside one is undone at
+    that test's teardown. Requesting this lazily from ``ensure_seeded_billing_catalog``
+    is not enough to avoid that -- ``vinta_orgs.testing.seeded_organization_groups`` is a
+    *plugin* autouse fixture and pytest sets plugin fixtures up before conftest ones, so
+    it has already forced ``_django_db_helper`` (and with it the test transaction) by the
+    time anything in this file runs. Only session scope is reliably earlier.
+
+    It stays lazy about the database anyway: a run whose collected items include no
+    database test must not build a test database just to inspect a catalog nothing will
+    read, and must keep pytest-django's ``Database access not allowed`` guard firing.
+    Hence the scan of ``session.items`` before ``django_db_setup`` is pulled up.
+
+    This handles the *inherited* case only: a database left flushed by a previous
+    ``--reuse-db`` run. Flushes that happen *during* a session are handled by
+    ``ensure_seeded_billing_catalog``'s per-test flag, which is a different problem with
+    a different answer (those tests are transactional, so their repair commits anyway).
+
+    Repairing here does put a catalog *rebuilt from live code* under the whole session,
+    which is precisely what ``no_billing_catalog_reseed`` exists to prevent for the
+    modules whose subject is what ``0007`` actually wrote. Those cannot be served by any
+    repair -- what they need is a database the migration really ran against. So this
+    records that it rebuilt, and ``ensure_seeded_billing_catalog`` *skips* those tests
+    with an actionable reason rather than letting them report green on a synthetic
+    catalog. The contract in ``payments/tests/test_plan_seed_migration.py``'s docstring
+    holds: it still never goes green on a rebuilt catalog. It just says "rerun with
+    ``--create-db``" instead of failing with a bare ``BillingPlan.DoesNotExist``.
+    """
+    global _billing_catalog_was_rebuilt_from_live_code
+
+    if not any(_node_uses_the_database(item) for item in request.session.items):
+        yield
+        return
+
+    request.getfixturevalue("django_db_setup")
+    with request.getfixturevalue("django_db_blocker").unblock():
+        if _seeded_billing_catalog_is_missing():
+            _reseed_billing_plans()
+            _billing_catalog_was_rebuilt_from_live_code = True
+    yield
 
 
 @pytest.fixture(autouse=True)
@@ -284,6 +405,17 @@ def ensure_seeded_billing_catalog(request):
     if not _test_uses_the_database(request):
         yield
         return
+
+    if _billing_catalog_was_rebuilt_from_live_code and request.node.get_closest_marker(
+        "no_billing_catalog_reseed"
+    ):
+        pytest.skip(
+            "This test asserts on what payments/migrations/0007_seed_billing_plans.py "
+            "wrote, but the reused test database arrived without a seeded catalog (a "
+            "previous run's last transactional test flushed it), so it was rebuilt from "
+            "payments.billing_plans_catalog. Passing against that rebuild would prove "
+            "nothing about the migration. Rerun with --create-db (or `make test_reset`)."
+        )
 
     if _billing_catalog_was_flushed and not request.node.get_closest_marker(
         "no_billing_catalog_reseed"
