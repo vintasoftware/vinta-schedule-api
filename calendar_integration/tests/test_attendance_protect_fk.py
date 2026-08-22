@@ -29,6 +29,7 @@ from model_bakery import baker
 
 from calendar_integration.factories import create_event_attendance
 from calendar_integration.models import CalendarEvent, EventAttendance
+from common.deferred_constraint_test_support import check_deferred_constraints_now
 from organizations.models import Organization, OrganizationMembership
 from users.models import User
 
@@ -65,7 +66,7 @@ def event(organization) -> CalendarEvent:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.django_db(transaction=True)
+@pytest.mark.django_db
 def test_delete_membership_with_live_attendance_is_blocked(organization, member_user, event):
     """Deleting an OrganizationMembership referenced by a live attendance raises IntegrityError."""
     create_event_attendance(event=event, user=member_user)
@@ -73,9 +74,10 @@ def test_delete_membership_with_live_attendance_is_blocked(organization, member_
 
     with pytest.raises(IntegrityError), transaction.atomic():
         membership.delete()
+        check_deferred_constraints_now()
 
 
-@pytest.mark.django_db(transaction=True)
+@pytest.mark.django_db
 def test_delete_user_with_live_attendance_is_blocked(organization, member_user, event):
     """Deleting the User cascades to its membership, which the PROTECT FK blocks.
 
@@ -87,9 +89,10 @@ def test_delete_user_with_live_attendance_is_blocked(organization, member_user, 
 
     with pytest.raises(IntegrityError), transaction.atomic():
         member_user.delete()
+        check_deferred_constraints_now()
 
 
-@pytest.mark.django_db(transaction=True)
+@pytest.mark.django_db
 def test_delete_organization_cascade_with_member_attendance_succeeds(
     organization, member_user, event
 ):
@@ -116,6 +119,7 @@ def test_delete_organization_cascade_with_member_attendance_succeeds(
     membership = OrganizationMembership.objects.get(user=member_user, organization=organization)
 
     organization.delete()  # must not raise IntegrityError
+    check_deferred_constraints_now()
 
     assert not Organization.objects.filter(pk=organization.pk).exists()
     assert not OrganizationMembership.objects.filter(pk=membership.pk).exists()
@@ -123,7 +127,7 @@ def test_delete_organization_cascade_with_member_attendance_succeeds(
     assert not CalendarEvent.original_manager.filter(pk=event.pk).exists()
 
 
-@pytest.mark.django_db(transaction=True)
+@pytest.mark.django_db
 def test_delete_membership_allowed_after_attendance_removed(organization, member_user, event):
     """Once the attendance is gone, the membership can be deleted normally."""
     attendance = create_event_attendance(event=event, user=member_user)
@@ -131,6 +135,7 @@ def test_delete_membership_allowed_after_attendance_removed(organization, member
 
     attendance.delete()
     membership.delete()  # no error
+    check_deferred_constraints_now()
 
     assert not OrganizationMembership.objects.filter(pk=membership.pk).exists()
 
@@ -140,7 +145,7 @@ def test_delete_membership_allowed_after_attendance_removed(organization, member
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.django_db(transaction=True)
+@pytest.mark.django_db
 def test_attendance_with_nonexistent_membership_raises(organization, event):
     """A non-NULL membership_user_id without a matching membership violates the FK."""
     non_member = baker.make("users.User")  # NOT a member of organization
@@ -151,9 +156,10 @@ def test_attendance_with_nonexistent_membership_raises(organization, event):
             event=event,
             membership_user_id=non_member.id,
         )
+        check_deferred_constraints_now()
 
 
-@pytest.mark.django_db(transaction=True)
+@pytest.mark.django_db
 def test_attendance_update_to_nonexistent_membership_raises(organization, member_user, event):
     """Updating membership_user_id to a non-member value violates the FK."""
     attendance = create_event_attendance(event=event, user=member_user)
@@ -163,9 +169,10 @@ def test_attendance_update_to_nonexistent_membership_raises(organization, member
         EventAttendance.original_manager.filter(pk=attendance.pk).update(
             membership_user_id=non_member.id
         )
+        check_deferred_constraints_now()
 
 
-@pytest.mark.django_db(transaction=True)
+@pytest.mark.django_db
 def test_orphan_attendance_null_membership_allowed(organization, event):
     """membership_user_id=NULL (orphan) is allowed — the FK does not constrain NULLs."""
     attendance = EventAttendance.objects.create(
@@ -173,10 +180,12 @@ def test_orphan_attendance_null_membership_allowed(organization, event):
         event=event,
         membership_user_id=None,
     )
+    check_deferred_constraints_now()
+
     assert attendance.membership_user_id is None
 
 
-@pytest.mark.django_db(transaction=True)
+@pytest.mark.django_db
 def test_multiple_orphan_attendances_on_event_allowed(organization, event):
     """Two NULL (orphan) attendances on the same event are allowed (no unique constraint)."""
     first = EventAttendance.objects.create(
@@ -189,6 +198,8 @@ def test_multiple_orphan_attendances_on_event_allowed(organization, event):
         event=event,
         membership_user_id=None,
     )
+    check_deferred_constraints_now()
+
     assert first.pk != second.pk
     assert (
         EventAttendance.objects.filter_by_organization(organization.id)

@@ -29,6 +29,7 @@ import pytest
 from model_bakery import baker
 
 from calendar_integration.models import Calendar, CalendarManagementToken
+from common.deferred_constraint_test_support import check_deferred_constraints_now
 from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
 from organizations.models import Organization, OrganizationMembership
 from users.models import User
@@ -68,7 +69,7 @@ def _make_member_token(organization, calendar, member_user) -> CalendarManagemen
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.django_db(transaction=True)
+@pytest.mark.django_db
 def test_delete_membership_with_live_token_is_blocked(organization, member_user, calendar):
     """Deleting an OrganizationMembership referenced by a live member token raises."""
     _make_member_token(organization, calendar, member_user)
@@ -76,9 +77,10 @@ def test_delete_membership_with_live_token_is_blocked(organization, member_user,
 
     with pytest.raises(IntegrityError), transaction.atomic():
         membership.delete()
+        check_deferred_constraints_now()
 
 
-@pytest.mark.django_db(transaction=True)
+@pytest.mark.django_db
 def test_delete_user_with_live_token_is_blocked(organization, member_user, calendar):
     """Deleting the User cascades to its membership, which the PROTECT FK blocks.
 
@@ -90,9 +92,10 @@ def test_delete_user_with_live_token_is_blocked(organization, member_user, calen
 
     with pytest.raises(IntegrityError), transaction.atomic():
         member_user.delete()
+        check_deferred_constraints_now()
 
 
-@pytest.mark.django_db(transaction=True)
+@pytest.mark.django_db
 def test_delete_organization_cascade_with_member_token_succeeds(
     organization, member_user, calendar
 ):
@@ -118,6 +121,7 @@ def test_delete_organization_cascade_with_member_token_succeeds(
     membership = OrganizationMembership.objects.get(user=member_user, organization=organization)
 
     organization.delete()  # must not raise IntegrityError
+    check_deferred_constraints_now()
 
     assert not Organization.objects.filter(pk=organization.pk).exists()
     assert not OrganizationMembership.objects.filter(pk=membership.pk).exists()
@@ -125,7 +129,7 @@ def test_delete_organization_cascade_with_member_token_succeeds(
     assert not Calendar.original_manager.filter(pk=calendar.pk).exists()
 
 
-@pytest.mark.django_db(transaction=True)
+@pytest.mark.django_db
 def test_delete_membership_allowed_after_token_removed(organization, member_user, calendar):
     """Once the token is gone, the membership can be deleted normally."""
     token = _make_member_token(organization, calendar, member_user)
@@ -133,6 +137,7 @@ def test_delete_membership_allowed_after_token_removed(organization, member_user
 
     token.delete()
     membership.delete()  # no error
+    check_deferred_constraints_now()
 
     assert not OrganizationMembership.objects.filter(pk=membership.pk).exists()
 
@@ -142,7 +147,7 @@ def test_delete_membership_allowed_after_token_removed(organization, member_user
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.django_db(transaction=True)
+@pytest.mark.django_db
 def test_token_with_nonexistent_membership_raises(organization, calendar):
     """A non-NULL membership_user_id without a matching membership violates the FK."""
     non_member = baker.make("users.User")  # NOT a member of organization
@@ -154,9 +159,10 @@ def test_token_with_nonexistent_membership_raises(organization, calendar):
             membership_user_id=non_member.id,
             token_hash=hash_long_lived_token(generate_long_lived_token()),
         )
+        check_deferred_constraints_now()
 
 
-@pytest.mark.django_db(transaction=True)
+@pytest.mark.django_db
 def test_token_update_to_nonexistent_membership_raises(organization, member_user, calendar):
     """Updating membership_user_id to a non-member value violates the FK."""
     token = _make_member_token(organization, calendar, member_user)
@@ -166,9 +172,10 @@ def test_token_update_to_nonexistent_membership_raises(organization, member_user
         CalendarManagementToken.original_manager.filter(pk=token.pk).update(
             membership_user_id=non_member.id
         )
+        check_deferred_constraints_now()
 
 
-@pytest.mark.django_db(transaction=True)
+@pytest.mark.django_db
 def test_null_membership_token_allowed(organization, calendar):
     """membership_user_id=NULL (external / null-membership token) is allowed.
 
@@ -181,14 +188,17 @@ def test_null_membership_token_allowed(organization, calendar):
         membership_user_id=None,
         token_hash=hash_long_lived_token(generate_long_lived_token()),
     )
+    check_deferred_constraints_now()
+
     assert token.membership_user_id is None
 
 
-@pytest.mark.django_db(transaction=True)
+@pytest.mark.django_db
 def test_multiple_member_tokens_on_calendar_allowed(organization, member_user, calendar):
     """A member may hold multiple tokens — there is no partial unique constraint."""
     first = _make_member_token(organization, calendar, member_user)
     second = _make_member_token(organization, calendar, member_user)
+    check_deferred_constraints_now()
 
     assert first.pk != second.pk
     assert (
