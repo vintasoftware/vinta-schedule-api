@@ -16,7 +16,6 @@ Covers:
 
 from __future__ import annotations
 
-import dataclasses
 import logging
 from unittest.mock import MagicMock
 
@@ -45,8 +44,13 @@ from organizations.tests.helpers import grant_membership_groups
 
 
 def build_payload(data: AuditRecordData) -> dict:
-    """Serialize AuditRecordData to the JSON-safe dict the task expects."""
-    return dataclasses.asdict(data)
+    """Serialize AuditRecordData to the JSON-safe dict the task expects.
+
+    Goes through the real serializer rather than a bare ``dataclasses.asdict``:
+    ``uid`` and ``created_at`` are not JSON scalars, and the task's
+    deserializer is written against what ``AuditService.serialize`` emits.
+    """
+    return AuditService.serialize(data)
 
 
 def make_subject(org: Organization) -> SubjectRef:
@@ -302,28 +306,27 @@ class TestPersistAuditRecordErrorHandling:
     def test_malformed_payload_is_logged_and_swallowed(self, caplog) -> None:
         """A payload missing required keys logs an error and does not re-raise.
 
-        We pass a real DjangoORMAuditRepository so the malformed-payload path
-        (not the None-guard path) is exercised.
+        We pass a real service so the malformed-payload path (not the None-guard
+        path) is exercised.
 
-        Note: repository= is passed explicitly here to isolate the error branch.
-        Injection itself is proven by the happy-path test test_full_round_trip_via_service_record,
-        which goes record() → on_commit → .delay() → task with @inject and NO explicit repository.
+        Note: audit_service= is passed explicitly here to isolate the error
+        branch. Injection itself is proven by the happy-path test
+        test_full_round_trip_via_service_record, which goes record() →
+        on_commit → .delay() → task with @inject and NO explicit service.
         """
-        repository = DjangoORMAuditRepository()
+        service = AuditService(repository=DjangoORMAuditRepository())
 
         with caplog.at_level(logging.ERROR, logger="audit.tasks"):
-            # Call the task function directly, injecting the repository explicitly,
-            # so we exercise the malformed-payload error path.
-            persist_audit_record({"bad": "payload"}, repository=repository)
+            persist_audit_record({"bad": "payload"}, audit_service=service)
 
         assert any("malformed payload" in r.message for r in caplog.records)
 
-    def test_task_swallows_repository_failure(self, caplog) -> None:
-        """A repository.add() failure is logged and swallowed.
+    def test_task_swallows_persist_failure(self, caplog) -> None:
+        """A failing main-repository write is logged and swallowed.
 
-        Note: repository= is passed explicitly here to isolate the repository-failure branch.
-        Injection itself is proven by the happy-path test test_full_round_trip_via_service_record,
-        which goes record() → on_commit → .delay() → task with @inject and NO explicit repository.
+        Note: audit_service= is passed explicitly here to isolate the
+        persist-failure branch. Injection itself is proven by the happy-path
+        test test_full_round_trip_via_service_record.
         """
         org = baker.make(Organization)
         data = AuditRecordData(
@@ -336,15 +339,15 @@ class TestPersistAuditRecordErrorHandling:
 
         failing_repository = MagicMock()
         failing_repository.add.side_effect = RuntimeError("database unavailable")
+        service = AuditService(repository=failing_repository)
 
         with caplog.at_level(logging.ERROR, logger="audit.tasks"):
-            # Pass the failing repository directly (bypassing DI injection).
-            persist_audit_record(payload, repository=failing_repository)
+            persist_audit_record(payload, audit_service=service)
 
-        assert any("repository.add() failed" in r.message for r in caplog.records)
+        assert any("persist() failed" in r.message for r in caplog.records)
 
-    def test_none_repository_guard_logs_and_returns(self, caplog) -> None:
-        """When repository=None (DI not wired), the task logs and returns without writing."""
+    def test_none_service_guard_logs_and_returns(self, caplog) -> None:
+        """When audit_service=None (DI not wired), the task logs and writes nothing."""
         org = baker.make(Organization)
         data = AuditRecordData(
             organization_id=org.pk,
@@ -355,8 +358,8 @@ class TestPersistAuditRecordErrorHandling:
         payload = build_payload(data)
 
         with caplog.at_level(logging.ERROR, logger="audit.tasks"):
-            persist_audit_record(payload, repository=None)
+            persist_audit_record(payload, audit_service=None)
 
-        assert any("repository is not injected" in r.message for r in caplog.records)
+        assert any("audit_service is not injected" in r.message for r in caplog.records)
         # No Audit row was created.
         assert not Audit.original_manager.filter(organization_id=org.pk).exists()

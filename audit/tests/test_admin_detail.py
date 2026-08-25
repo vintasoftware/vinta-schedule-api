@@ -78,6 +78,9 @@ class StubAuditRepository(AuditRepository):
     def add(self, data: Any) -> AuditRecord:  # type: ignore[override]
         raise NotImplementedError("StubAuditRepository is read-only")
 
+    def bulk_add(self, data: Any) -> list[AuditRecord]:  # type: ignore[override]
+        raise NotImplementedError("StubAuditRepository is read-only")
+
     def get(self, audit_id: int) -> AuditRecord | None:
         return self._records.get(audit_id)
 

@@ -72,7 +72,23 @@ from webhooks.services import (
 class AppContainer(containers.DeclarativeContainer):
     config = providers.Configuration()
 
+    #: The audit log's system of record. Every audit record is written here
+    #: first, and this is what `AuditService` reads from unless a caller names
+    #: another repository.
     audit_repository = providers.Singleton(DjangoORMAuditRepository)
+
+    #: Extra audit backends, keyed by the alias callers pass as
+    #: `repository="..."` to the `AuditService` read methods and as the target
+    #: of `sync_repository`. Empty by default: the ORM repository is the only
+    #: one this project runs. Add an entry (a search index, a warehouse loader,
+    #: an archive) and every record starts being replicated there, best effort,
+    #: on top of the main write -- with `audit.tasks.sync_audit_repository`
+    #: available to backfill whatever replication missed.
+    #:
+    #: Do NOT register "main" here; the key belongs to `audit_repository` and
+    #: `AuditService` drops it.
+    audit_additional_repositories = providers.Dict({})
+
     audit_service = providers.Factory(AuditService)
 
     payment_gateway = providers.Factory(

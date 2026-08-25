@@ -44,6 +44,9 @@ class StubRepositoryCapture:
     def add(self, data: Any) -> AuditRecord:  # type: ignore[override]
         raise NotImplementedError()
 
+    def bulk_add(self, data: Any) -> list[AuditRecord]:  # type: ignore[override]
+        raise NotImplementedError("StubRepositoryCapture is read-only")
+
     def get(self, audit_id: int) -> AuditRecord | None:
         return None
 
@@ -416,7 +419,7 @@ class TestAuditAdminSearchRepositoryIntegration:
 
         assert response.status_code == 200
         assert stub.last_query is not None
-        assert stub.last_query.affected_membership_id == 42
+        assert stub.last_query.affected_membership_ids == [42]
 
     def test_both_search_and_affected_membership_id(self, admin_client: Client, db: Any) -> None:
         """Both search and affected_membership_id can be combined in one request.
@@ -436,7 +439,7 @@ class TestAuditAdminSearchRepositoryIntegration:
         assert response.status_code == 200
         assert stub.last_query is not None
         assert stub.last_query.search == "test-term"
-        assert stub.last_query.affected_membership_id == 99
+        assert stub.last_query.affected_membership_ids == [99]
 
 
 # ---------------------------------------------------------------------------

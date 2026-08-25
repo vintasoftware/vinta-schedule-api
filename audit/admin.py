@@ -153,15 +153,20 @@ def _build_audit_query(params: dict[str, str | list[str]]) -> AuditQuery:
     search = _first(params.get("search"))
     affected_membership_id = _parse_int(_first(params.get("affected_membership_id")))
 
+    # Every AuditQuery filter is a set membership test, so each single-valued
+    # admin filter becomes a one-element list. `None` (rather than `[]`) when the
+    # param is absent: an empty list is an active filter that matches nothing.
     return AuditQuery(
         organization_id=organization_id,
         actions=[action] if action else None,
-        actor_type=actor_type,
+        actor_types=[actor_type] if actor_type else None,
         created_after=created_after,
         created_before=created_before,
         has_diff=has_diff,
         search=search,
-        affected_membership_id=affected_membership_id,
+        affected_membership_ids=(
+            [affected_membership_id] if affected_membership_id is not None else None
+        ),
     )
 
 

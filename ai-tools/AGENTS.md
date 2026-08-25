@@ -24,6 +24,7 @@ Postgres is the only persistent store. Recurring-event occurrences are calculate
 
 ## Tech Stack
 
+- **Python 3.14** (`requires-python`, `.python-version`) — the floor is 3.14 because the audit trail's cross-repository id uses `uuid.uuid7`, which the stdlib only gained in 3.14. Also pinned in both Dockerfiles, `.github/workflows/main.yml` (`PYTHON_VERSION`) and `render.yaml`; a bump has to touch all five.
 - **Django 6** (`pyproject.toml`) — primary framework.
 - **Django REST Framework 3.16** + **drf-spectacular** — REST API + OpenAPI schema export (`schema.yml`, `schema-auth.yml`).
 - **Strawberry GraphQL** + **strawberry-graphql-django** — public API at `public_api/`.
@@ -99,7 +100,7 @@ All six must pass. Skill-specific Verification blocks add commands on top (schem
 
 ## Code Style
 
-- **Ruff is the source of truth.** Config in `pyproject.toml#[tool.ruff]`. Line length 100, indent 4, py3.13 target. Selected rule sets: `E`, `F`, `N`, `UP`, `B`, `S`, `BLE`, `A`, `DJ`, `I`, `G`, `INP`, `RUF`. Migrations + tests + settings + `__init__.py` have rule-set carveouts (see `[tool.ruff.lint.per-file-ignores]`).
+- **Ruff is the source of truth.** Config in `pyproject.toml#[tool.ruff]`. Line length 100, indent 4. The interpreter is **3.14** (`requires-python`), but ruff's `target-version` is deliberately held at `py313` — see the comment at that setting: 3.14's two syntax additions (PEP 758 `except A, B:`, and UP037 stripping quotes from forward references) are both unwanted here, the second because it breaks DI at runtime. Selected rule sets: `E`, `F`, `N`, `UP`, `B`, `S`, `BLE`, `A`, `DJ`, `I`, `G`, `INP`, `RUF`. Migrations + tests + settings + `__init__.py` have rule-set carveouts (see `[tool.ruff.lint.per-file-ignores]`).
 - **isort sections** (configured under ruff): `future`, `standard-library`, `django`, `third-party`, `first-party`, `local-folder`. Two blank lines after imports.
 - **Static typing required** on every function, method, and class. Use Python's type inference rather than redefining types when possible. `mypy` is configured with `django-stubs` + `djangorestframework-stubs` plugins.
 - **Absolute imports only.** Imports at the top of the file unless there is a concrete reason to defer (typing.TYPE_CHECKING is the most common exception).

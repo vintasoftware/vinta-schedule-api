@@ -1,4 +1,4 @@
-FROM python:3.13-slim AS base
+FROM python:3.14-slim AS base
 ENV PYTHONFAULTHANDLER=1 \
   PYTHONUNBUFFERED=1 \
   PYTHONHASHSEED=random \
@@ -36,7 +36,7 @@ ENV PATH="/home/user/app/.venv/bin:$PATH"
 
 # -----------------------------------------------------------------------------
 
-FROM python:3.13-slim AS final
+FROM python:3.14-slim AS final
 
 RUN groupadd user && useradd --create-home --home-dir /home/user -g user user
 USER user

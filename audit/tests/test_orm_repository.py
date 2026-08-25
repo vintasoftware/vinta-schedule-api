@@ -555,3 +555,37 @@ class TestDjangoORMAuditRepositoryGet:
 
         assert fetched is not None
         assert fetched.diff is None
+
+
+@pytest.mark.django_db
+class TestIterRecordsQueryShape:
+    """The ORM repository overrides iter_records for one reason: query volume."""
+
+    def test_streaming_does_not_count_the_log_per_chunk(self, django_assert_num_queries) -> None:
+        """A backfill must not run a COUNT(*) for every chunk it walks.
+
+        `query()` totals the filtered set on every call, which paginated reads
+        want and a full walk does not -- a million records in chunks of 500
+        would be two thousand counts nobody reads. Each chunk here should cost
+        the page fetch plus its affected_membership_links prefetch, and one
+        final fetch that comes back empty.
+        """
+        org = baker.make(Organization)
+        repo = DjangoORMAuditRepository()
+        repo.bulk_add(
+            [
+                AuditRecordData(
+                    organization_id=org.pk,
+                    action=AuditAction.CREATE,
+                    actor=make_system_actor(),
+                    subject=make_subject(),
+                )
+                for _ in range(4)
+            ]
+        )
+
+        # 2 chunks of 2 (page + prefetch each) + 1 empty page that ends the walk.
+        with django_assert_num_queries(5):
+            records = list(repo.iter_records(AuditQuery(organization_id=org.pk), chunk_size=2))
+
+        assert len(records) == 4

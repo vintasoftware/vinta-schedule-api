@@ -7,7 +7,7 @@ on: [push]
 # `DJANGO_SETTINGS_MODULE` is the one value that genuinely differs (test vs
 # production), so it is set per job / per step below and deliberately absent here.
 env:
-  PYTHON_VERSION: "3.13"
+  PYTHON_VERSION: "3.14"
   UV_VERSION: "0.11.18"
   SECRET_KEY: "ci-secret-key-not-for-production-use-only-0123456789"
   DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/vinta_schedule_test"

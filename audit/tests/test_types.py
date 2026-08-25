@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from audit.services import AuditService
 from audit.types import (
     ActorSnapshot,
     AuditPage,
@@ -159,13 +160,16 @@ class TestAuditRecordData:
             affected_membership_ids=[1, 2, 3],
             diff={"title": {"old": "Old Title", "new": "New Title"}},
         )
-        d = dataclasses.asdict(data)
+        # AuditService.serialize, not a bare dataclasses.asdict: uid and
+        # created_at are not JSON scalars, so the service converts them.
+        d = AuditService.serialize(data)
         assert d["organization_id"] == 1
         assert d["action"] == "create"
         assert d["actor"]["actor_type"] == "membership"
         assert d["subject"]["subject_type"] == "calendar_integration.CalendarEvent"
         assert d["affected_membership_ids"] == [1, 2, 3]
         assert d["diff"] == {"title": {"old": "Old Title", "new": "New Title"}}
+        assert d["uid"] == str(data.uid)
         # Verify JSON round-trip (Celery serialization requirement)
         json_str = json.dumps(d)
         reconstructed = json.loads(json_str)
@@ -241,7 +245,12 @@ class TestAuditQuery:
         q = AuditQuery()
         assert q.organization_id is None
         assert q.actions is None
-        assert q.actor_type is None
+        assert q.actor_types is None
+        assert q.actors is None
+        assert q.subject_types is None
+        assert q.subjects is None
+        assert q.affected_membership_ids is None
+        assert q.uids is None
         assert q.search is None
 
     def test_selective_filters(self):
@@ -253,7 +262,7 @@ class TestAuditQuery:
         )
         assert q.organization_id == 1
         assert q.actions == ["create", "update"]
-        assert q.actor_type is None
+        assert q.actor_types is None
         assert q.created_after == datetime(2026, 6, 1, tzinfo=ZoneInfo("UTC"))
 
     def test_frozen(self):

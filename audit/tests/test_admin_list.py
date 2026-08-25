@@ -18,6 +18,7 @@ Covers:
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -109,6 +110,9 @@ class StubAuditRepository(AuditRepository):
     def add(self, data: Any) -> AuditRecord:  # type: ignore[override]
         raise NotImplementedError("StubAuditRepository is read-only")
 
+    def bulk_add(self, data: Any) -> list[AuditRecord]:  # type: ignore[override]
+        raise NotImplementedError("StubAuditRepository is read-only")
+
     def get(self, audit_id: int) -> AuditRecord | None:
         for r in self._records:
             if r.id == audit_id:
@@ -121,7 +125,7 @@ class StubAuditRepository(AuditRepository):
         *,
         offset: int = 0,
         limit: int = 50,
-        ordering: str = "-created_at",
+        ordering: str | Sequence[str] = "-created_at",
     ) -> AuditPage:
         self.last_query = q
         page = self._records[offset : offset + limit]
@@ -610,7 +614,7 @@ class TestAuditAdminBackendAgnosticism:
         assert stub.last_query is not None, "Repository.query() was never called"
         assert stub.last_query.organization_id == 99
         assert stub.last_query.actions == ["create"]
-        assert stub.last_query.actor_type == "system"
+        assert stub.last_query.actor_types == ["system"]
 
     def test_orm_not_used_when_stub_overrides(self, admin_client: Client, db: Any) -> None:
         """With the stub active, real ORM audit records are NOT visible in the admin.

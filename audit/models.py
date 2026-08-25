@@ -13,9 +13,11 @@ Unscoped read access:
   `STRICT_ORGANIZATION_FILTER`, an unbound read through `objects` raises.
 """
 
+import uuid
 from typing import TYPE_CHECKING, ClassVar
 
 from django.db import models
+from django.utils import timezone
 
 from vinta_orgs.mixins import SingleOrganizationModelMixin
 
@@ -37,10 +39,37 @@ class Audit(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel):
 
     objects: ClassVar[OrganizationScopedManager] = OrganizationScopedManager()
 
+    # Cross-repository identity. Generated once, at emit time, by
+    # ``AuditService.record`` and carried unchanged into every repository the
+    # record is written to, so that writing the same record twice -- a retried
+    # Celery task, a re-run backfill, a replica catching up -- upserts the one
+    # row instead of appending a copy. ``id`` cannot do this job: it is assigned
+    # per backend, so two copies of one record hold different ids. The unique
+    # index is the ``ON CONFLICT`` target of every write (see
+    # ``DjangoORMAuditRepository.bulk_add``), so it is load-bearing, not just a
+    # guard.
+    #
+    # UUID *version 7* (RFC 9562), not 4: the first 48 bits are a millisecond
+    # timestamp, so values arrive in roughly generation order and the unique
+    # index above takes its inserts at its right edge instead of scattered
+    # across the whole tree. On a table that only ever appends, and at audit-log
+    # volume, that is the difference between a hot index that stays cached and
+    # one that page-splits its way to bloat.
+    uid = models.UUIDField(default=uuid.uuid7, unique=True, editable=False)
+
     # Duplicates BaseModel.created by design: created_at is append-only and
     # semantically clearer for audit ordering. Prefer created_at over created
     # when ordering or filtering Audit records.
-    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    #
+    # ``default=timezone.now`` rather than ``auto_now_add=True`` for two
+    # reasons. It lets ``AuditService.record`` stamp the moment the audited
+    # action *happened* instead of the moment a Celery worker got around to the
+    # write, which is the timestamp an audit trail is supposed to carry. And it
+    # lets a replica reuse the value the record already carries -- ``auto_now_add``
+    # overwrites any assigned value in ``pre_save``, which would give every copy
+    # of a record a different created_at and break both ordering agreement
+    # between repositories and the created_at windows a sync runs under.
+    created_at = models.DateTimeField(default=timezone.now, db_index=True)
 
     action = models.CharField(max_length=100, choices=AuditAction, db_index=True)
 

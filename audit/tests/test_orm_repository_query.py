@@ -25,7 +25,14 @@ from model_bakery import baker
 from audit.constants import AuditAction, AuditActorType
 from audit.factories import AuditFactory
 from audit.repositories import DjangoORMAuditRepository
-from audit.types import ActorSnapshot, AuditQuery, AuditRecordData, SubjectRef
+from audit.types import (
+    ActorRef,
+    ActorSnapshot,
+    AuditQuery,
+    AuditRecordData,
+    SubjectKey,
+    SubjectRef,
+)
 from organizations.models import Organization, OrganizationMembership
 
 
@@ -202,7 +209,7 @@ class TestQueryActorTypeFilter:
         )
 
         page = repo.query(
-            AuditQuery(organization_id=org.pk, actor_type=AuditActorType.SYSTEM), limit=100
+            AuditQuery(organization_id=org.pk, actor_types=[AuditActorType.SYSTEM]), limit=100
         )
         ids = {r.id for r in page.items}
         assert system_rec.id in ids
@@ -237,7 +244,11 @@ class TestQueryActorIdFilter:
         )
 
         page = repo.query(
-            AuditQuery(organization_id=org.pk, actor_id=membership.user_id), limit=100
+            AuditQuery(
+                organization_id=org.pk,
+                actors=[ActorRef(AuditActorType.MEMBERSHIP, membership.user_id)],
+            ),
+            limit=100,
         )
         ids = {r.id for r in page.items}
         assert target_rec.id in ids
@@ -265,7 +276,7 @@ class TestQuerySubjectFilters:
         page = repo.query(
             AuditQuery(
                 organization_id=org.pk,
-                subject_type="calendar_integration.CalendarEvent",
+                subject_types=["calendar_integration.CalendarEvent"],
             ),
             limit=100,
         )
@@ -281,7 +292,13 @@ class TestQuerySubjectFilters:
         target = add_record(repo, org, subject=make_subject(subject_id="42"))
         add_record(repo, org, subject=make_subject(subject_id="99"))
 
-        page = repo.query(AuditQuery(organization_id=org.pk, subject_id="42"), limit=100)
+        page = repo.query(
+            AuditQuery(
+                organization_id=org.pk,
+                subjects=[SubjectKey("organizations.Organization", "42")],
+            ),
+            limit=100,
+        )
         assert target.id in {r.id for r in page.items}
         assert all(r.subject.subject_id == "42" for r in page.items)
 
@@ -305,7 +322,7 @@ class TestQueryAffectedMembershipIdFilter:
         add_record(repo, org, affected_membership_ids=[m2.user_id])
 
         page = repo.query(
-            AuditQuery(organization_id=org.pk, affected_membership_id=m1.user_id), limit=100
+            AuditQuery(organization_id=org.pk, affected_membership_ids=[m1.user_id]), limit=100
         )
         ids = {r.id for r in page.items}
         assert linked.id in ids
@@ -321,7 +338,7 @@ class TestQueryAffectedMembershipIdFilter:
         add_record(repo, org, affected_membership_ids=[membership.user_id])
 
         page = repo.query(
-            AuditQuery(organization_id=org.pk, affected_membership_id=membership.user_id),
+            AuditQuery(organization_id=org.pk, affected_membership_ids=[membership.user_id]),
             limit=100,
         )
         # Confirm total is 1, not inflated by JOIN multiplication.
@@ -345,7 +362,7 @@ class TestQueryAffectedMembershipIdFilter:
         add_record(repo, org, affected_membership_ids=[m_other.user_id])
 
         page = repo.query(
-            AuditQuery(organization_id=org.pk, affected_membership_id=m_target.user_id),
+            AuditQuery(organization_id=org.pk, affected_membership_ids=[m_target.user_id]),
             limit=100,
         )
         assert page.total == 2

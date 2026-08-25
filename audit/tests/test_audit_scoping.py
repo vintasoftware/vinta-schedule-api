@@ -18,7 +18,6 @@ membership and therefore no organization. Both halves are pinned here.
   answer on the record.
 """
 
-import dataclasses
 from typing import Any
 
 from django.contrib.auth import get_user_model
@@ -30,6 +29,7 @@ from vinta_orgs.exceptions import OrganizationNotFoundError
 from audit.constants import AuditAction, AuditActorType
 from audit.factories import AuditFactory
 from audit.models import Audit, AuditAffectedMembership
+from audit.services import AuditService
 from audit.tasks import persist_audit_record
 from audit.types import ActorSnapshot, AuditRecordData, SubjectRef
 from common.organization_context import organization_context
@@ -228,7 +228,7 @@ class TestTheAuditTaskBindsTheRecordsOwnOrganization:
         payload; this pins that the row still lands in the payload's
         organization now that the manager reads that binding.
         """
-        payload = dataclasses.asdict(_record_data(organization))
+        payload = AuditService.serialize(_record_data(organization))
 
         persist_audit_record(payload)
 
