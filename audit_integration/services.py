@@ -12,15 +12,15 @@ user's groups are all mutable state, and an audit trail that re-reads them in
 the worker records what was true at write time rather than at action time.
 """
 
-from __future__ import annotations
+from typing import Annotated, Any
 
-from typing import Any
-
+from dependency_injector.wiring import Provide, inject
 from vinta_audit_logs.constants import ScopeType
 from vinta_audit_logs.services import AuditService
 from vinta_audit_logs.types import IdentitySnapshot, ScopeRef
 
 from audit_integration.constants import AuditActorType
+from audit_integration.repositories import OrganizationAuditRepository
 
 
 class OrganizationAuditService(AuditService):
@@ -242,7 +242,10 @@ class OrganizationAuditService(AuditService):
         ]
 
 
-def audit_service_factory() -> OrganizationAuditService:
+@inject
+def audit_service_factory(
+    audit_service: Annotated[OrganizationAuditService | None, Provide["audit_service"]] = None,
+) -> OrganizationAuditService:
     """Build the service the background tasks write through.
 
     Named by ``AUDIT_SERVICE_FACTORY``. The indirection exists so
@@ -250,26 +253,27 @@ def audit_service_factory() -> OrganizationAuditService:
     package names a callable, and this project's callable happens to reach into
     the container.
     """
-    from di_core.containers import container
-
-    if container is None:
+    if audit_service is None:
         raise RuntimeError(
             "DI container is not wired; audit_service_factory cannot resolve "
             "audit_service before di_core.apps.DICoreConfig.ready() runs."
         )
-    return container.audit_service()
+    return audit_service
 
 
-def audit_repository_factory():
+@inject
+def audit_repository_factory(
+    audit_repository: Annotated[
+        OrganizationAuditRepository | None, Provide["audit_repository"]
+    ] = None,
+) -> OrganizationAuditRepository:
     """Build the repository the audit admin reads through.
 
     Named by ``AUDIT_REPOSITORY_FACTORY``. Same indirection, same reason.
     """
-    from di_core.containers import container
-
-    if container is None:
+    if audit_repository is None:
         raise RuntimeError(
             "DI container is not wired; audit_repository_factory cannot resolve "
             "audit_repository before di_core.apps.DICoreConfig.ready() runs."
         )
-    return container.audit_repository()
+    return audit_repository

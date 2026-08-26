@@ -57,7 +57,6 @@ INTERNAL_INSTALLED_APPS = [
     "accounts",
     "users",
     "organizations",
-    "vinta_audit_logs",
     "audit_integration",
     "payments",
     "notifications",
@@ -110,6 +109,18 @@ INSTALLED_APPS = [
     # models -- every billing table lives under the ``vinta_billing`` label from
     # ``payments/migrations/0024_move_billing_to_vinta_billing.py`` onward.
     "vinta_billing",
+    # ``vinta-django-audit-logs`` -- the audit log itself. Same reasoning as the two
+    # packages above: INTERNAL_INSTALLED_APPS drives di_core's DI wiring and names
+    # only this project's own apps. There is a concrete cost to getting this wrong
+    # here, not just an inconsistency -- wiring a package makes the container import
+    # every module in it at startup, and ``vinta_audit_logs.tasks`` is the one module
+    # that pulls in Celery. The package uses no ``@inject`` anywhere, so it would be
+    # paying that import for nothing.
+    #
+    # ``audit_integration`` stays in the list above, and has to: its
+    # ``audit_service_factory`` / ``audit_repository_factory`` are ``@inject``-ed,
+    # and an unwired module means the markers are never resolved.
+    "vinta_audit_logs",
     *INTERNAL_INSTALLED_APPS,
 ]
 
