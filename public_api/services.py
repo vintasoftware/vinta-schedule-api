@@ -6,8 +6,8 @@ from django.db import transaction
 from dependency_injector.wiring import Provide, inject
 from vinta_billing.exceptions import OverLimitError
 
-from audit.constants import AuditAction
-from audit.services import AuditService
+from audit_integration.constants import AuditAction
+from audit_integration.services import OrganizationAuditService
 from common.utils.authentication_utils import (
     generate_long_lived_token,
     hash_long_lived_token,
@@ -30,7 +30,7 @@ class PublicAPIAuthService:
     @inject
     def __init__(
         self,
-        audit_service: Annotated[AuditService, Provide["audit_service"]],
+        audit_service: Annotated[OrganizationAuditService, Provide["audit_service"]],
         entitlement_service: Annotated[
             "EntitlementService | None", Provide["entitlement_service"]
         ] = None,
@@ -134,7 +134,7 @@ class PublicAPIAuthService:
         # No acting Django User is threaded here, so the actor is the system; when the
         # token is membership-scoped, that membership is the affected party.
         #
-        # Skipped entirely for an org-less token: `AuditService.record` requires an
+        # Skipped entirely for an org-less token: `OrganizationAuditService.record` requires an
         # `organization_id` (the audit trail is org-scoped by design and has no sentinel
         # for "all organizations"), and this line previously raised `AttributeError` on
         # `None` — the org-less admin path never reached a successful return. The WARNING
@@ -142,12 +142,13 @@ class PublicAPIAuthService:
         # cross-organization scope.
         if organization is not None:
             self.audit_service.record(
-                organization_id=organization.id,
                 action=AuditAction.CREATE,
                 actor=self.audit_service.system_actor(),
                 subject=self.audit_service.subject_from_instance(system_user),
-                affected_membership_ids=(
-                    [scoped_to_membership.user_id] if scoped_to_membership is not None else []
+                scope=self.audit_service.scope_from_organization_id(organization.id),
+                affected=self.audit_service.affected_from_membership_ids(
+                    organization.id,
+                    ([scoped_to_membership.user_id] if scoped_to_membership is not None else []),
                 ),
             )
         return system_user, token

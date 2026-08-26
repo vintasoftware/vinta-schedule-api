@@ -49,10 +49,10 @@ from typing import TYPE_CHECKING, Protocol, cast
 
 from django.db import transaction
 
+from vinta_audit_logs.diff import compute_diff
 from vinta_billing.exceptions import OverLimitError
 
-from audit.constants import AuditAction, AuditActorType
-from audit.diff import compute_diff
+from audit_integration.constants import AuditAction, AuditActorType
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.models import (
     BlockedTime,
@@ -191,15 +191,15 @@ class CalendarBundleService:
                     "membership_user_id", flat=True
                 )
             )
-            if actor.actor_type == AuditActorType.MEMBERSHIP and actor.actor_id is not None:
-                affected.add(actor.actor_id)
+            if actor.identity_type == AuditActorType.MEMBERSHIP and actor.identity_key:
+                affected.add(int(actor.identity_key))
         audit_service.record(
-            organization_id=organization.id,
             action=action,
             actor=actor,
             subject=audit_service.subject_from_instance(subject_instance, label=label),
-            affected_membership_ids=sorted(affected),
             diff=diff,
+            scope=audit_service.scope_from_organization_id(organization.id),
+            affected=audit_service.affected_from_membership_ids(organization.id, sorted(affected)),
         )
 
     # ------------------------------------------------------------------

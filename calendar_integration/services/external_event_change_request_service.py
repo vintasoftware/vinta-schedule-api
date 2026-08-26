@@ -2,7 +2,7 @@
 
 ``ExternalEventChangeRequestService`` is the single place that creates, supersedes,
 approves, rejects, and auto-undoes change requests. It is DI-injected and consumes
-``AuditService`` for audit trail emission.
+``OrganizationAuditService`` for audit trail emission.
 
 The service handles several paths:
 
@@ -48,11 +48,11 @@ from django.db import transaction
 from django.utils import timezone
 
 from dependency_injector.wiring import Provide
+from vinta_audit_logs.types import IdentitySnapshot
 from vintasend.constants import NotificationTypes
 from vintasend.services.notification_service import NotificationContextDict
 
-from audit.constants import AuditAction, AuditActorType
-from audit.types import ActorSnapshot
+from audit_integration.constants import AuditAction, AuditActorType
 from calendar_integration.constants import (
     CalendarProvider,
     ExternalEventChangeKind,
@@ -80,7 +80,7 @@ from organizations.permission_catalog import MANAGE_MEMBERS
 if TYPE_CHECKING:
     from vintasend.services.notification_service import NotificationService
 
-    from audit.services import AuditService
+    from audit_integration.services import OrganizationAuditService
     from calendar_integration.models import CalendarEvent
     from calendar_integration.services.protocols.calendar_adapter import CalendarAdapter
 
@@ -113,7 +113,7 @@ class ExternalEventChangeRequestService:
 
     def __init__(
         self,
-        audit_service: Annotated[AuditService | None, Provide["audit_service"]] = None,
+        audit_service: Annotated[OrganizationAuditService | None, Provide["audit_service"]] = None,
         notification_service: Annotated[
             NotificationService | None, Provide["notification_service"]
         ] = None,
@@ -380,7 +380,7 @@ class ExternalEventChangeRequestService:
             )
 
         # Record audit entry after the atomic block so the commit-based
-        # on_commit delivery in AuditService fires after the row is visible.
+        # on_commit delivery in OrganizationAuditService fires after the row is visible.
         if self.audit_service is not None:
             actor = self.audit_service.system_actor()
             subject = self.audit_service.subject_from_instance(change_request)
@@ -390,11 +390,11 @@ class ExternalEventChangeRequestService:
                 if retained_values.get(field) != proposed_values.get(field)
             }
             self.audit_service.record(
-                organization_id=event.organization_id,
                 action=AuditAction.EXTERNAL_CHANGE_REQUESTED,
                 actor=actor,
                 subject=subject,
                 diff=diff or None,
+                scope=self.audit_service.scope_from_organization_id(event.organization_id),
             )
 
         # Notify each eligible approver in-app via on_commit (fires after the PENDING row commits).
@@ -459,7 +459,7 @@ class ExternalEventChangeRequestService:
             )
 
         # Record audit entry after the atomic block so the commit-based
-        # on_commit delivery in AuditService fires after the outermost transaction commits.
+        # on_commit delivery in OrganizationAuditService fires after the outermost transaction commits.
         if self.audit_service is not None:
             actor = self.audit_service.system_actor()
             subject = self.audit_service.subject_from_instance(change_request)
@@ -469,11 +469,11 @@ class ExternalEventChangeRequestService:
                 field: {"old": retained_values.get(field), "new": None} for field in retained_values
             }
             self.audit_service.record(
-                organization_id=event.organization_id,
                 action=AuditAction.EXTERNAL_CHANGE_REQUESTED,
                 actor=actor,
                 subject=subject,
                 diff=diff or None,
+                scope=self.audit_service.scope_from_organization_id(event.organization_id),
             )
 
         # Notify each eligible approver in-app via on_commit (fires after the PENDING row commits).
@@ -652,11 +652,11 @@ class ExternalEventChangeRequestService:
             actor = self.audit_service.actor_from_membership(membership)
             subject = self.audit_service.subject_from_instance(request)
             self.audit_service.record(
-                organization_id=organization_id,
                 action=AuditAction.EXTERNAL_CHANGE_APPROVED,
                 actor=actor,
                 subject=subject,
                 diff=diff or None,
+                scope=self.audit_service.scope_from_organization_id(organization_id),
             )
 
         return request
@@ -761,7 +761,7 @@ class ExternalEventChangeRequestService:
         final_status: str,
         resolved_by_user_id: int | None,
         audit_action: AuditAction,
-        actor: ActorSnapshot,
+        actor: IdentitySnapshot,
         diff: dict[str, Any],
         event: CalendarEvent,
         organization_id: int,
@@ -884,11 +884,11 @@ class ExternalEventChangeRequestService:
         if self.audit_service is not None:
             subject = self.audit_service.subject_from_instance(request)
             self.audit_service.record(
-                organization_id=organization_id,
                 action=audit_action,
                 actor=actor,
                 subject=subject,
                 diff=diff or None,
+                scope=self.audit_service.scope_from_organization_id(organization_id),
             )
 
         return request
@@ -984,13 +984,14 @@ class ExternalEventChangeRequestService:
             }
 
         if self.audit_service is not None:
-            actor: ActorSnapshot = self.audit_service.actor_from_membership(membership)
+            actor: IdentitySnapshot = self.audit_service.actor_from_membership(membership)
         else:
             # No audit service — build a minimal actor so _resolve_with_undo signature is
             # satisfied; the audit call inside will be skipped anyway.
-            actor = ActorSnapshot(
-                actor_type=AuditActorType.MEMBERSHIP,
-                actor_id=membership.user_id,
+            actor = IdentitySnapshot(
+                identity_type=AuditActorType.MEMBERSHIP,
+                identity_key=str(membership.user_id),
+                user_id=membership.user_id,
             )
 
         # request.event was already guarded non-None above; cast for mypy.
@@ -1080,10 +1081,10 @@ class ExternalEventChangeRequestService:
 
         # Resolve the system actor for the audit entry.
         if self.audit_service is not None:
-            system_actor: ActorSnapshot = self.audit_service.system_actor()
+            system_actor: IdentitySnapshot = self.audit_service.system_actor()
         else:
             # No audit service — build a minimal actor; the audit call will be skipped.
-            system_actor = ActorSnapshot(actor_type=AuditActorType.SYSTEM, actor_id=None)
+            system_actor = IdentitySnapshot(identity_type=AuditActorType.SYSTEM, identity_key="")
 
         def _prepare() -> ExternalEventChangeRequest:
             # Called INSIDE the single atomic block in _resolve_with_undo, AFTER the

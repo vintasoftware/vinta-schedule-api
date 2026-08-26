@@ -2193,7 +2193,7 @@ class TestUpdateBranding:
         )
         baker.make(ResourceAccess, system_user=system_user, resource_name="branding")
 
-        with patch("audit.services.persist_audit_record") as mock_task:
+        with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
             with django_capture_on_commit_callbacks(execute=True):
                 with container.public_api_auth_service.override(auth_service):
                     response = self.client.post(
@@ -2213,11 +2213,11 @@ class TestUpdateBranding:
         payloads = [call.args[0] for call in mock_task.delay.call_args_list]
         assert len(payloads) == 1
         record = payloads[0]
-        assert record["organization_id"] == org.id
-        assert record["action"] == "create"
-        assert record["subject"]["subject_type"] == "organizations.OrganizationBranding"
-        assert record["actor"]["actor_type"] == "system_user"
-        assert record["actor"]["actor_id"] == system_user.id
+        assert record["scope"]["scope_key"] == str(org.id)
+        assert record["action_key"] == "create"
+        assert record["subject"]["subject_type"] == "organizations.organizationbranding"
+        assert record["actor"]["identity_type"] == "system_user"
+        assert record["actor"]["identity_key"] == str(system_user.id)
         assert record["diff"] is None
 
     def test_update_branding_update_records_diff_of_changed_fields_only(
@@ -2249,7 +2249,7 @@ class TestUpdateBranding:
         )
         baker.make(ResourceAccess, system_user=system_user, resource_name="branding")
 
-        with patch("audit.services.persist_audit_record") as mock_task:
+        with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
             with django_capture_on_commit_callbacks(execute=True):
                 with container.public_api_auth_service.override(auth_service):
                     response = self.client.post(
@@ -2277,7 +2277,7 @@ class TestUpdateBranding:
         payloads = [call.args[0] for call in mock_task.delay.call_args_list]
         assert len(payloads) == 1
         record = payloads[0]
-        assert record["action"] == "update"
+        assert record["action_key"] == "update"
         diff = record["diff"]
         assert diff is not None
         assert set(diff.keys()) == {"app_name"}
@@ -2306,7 +2306,7 @@ class TestUpdateBranding:
         )
         baker.make(ResourceAccess, system_user=system_user, resource_name="branding")
 
-        with patch("audit.services.persist_audit_record") as mock_task:
+        with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
             with django_capture_on_commit_callbacks(execute=True):
                 with container.public_api_auth_service.override(auth_service):
                     response = self.client.post(
@@ -2931,7 +2931,7 @@ class TestGetCalendarMutationDependencies:
         # Create a mock strawberry.Info with public_api_organization and public_api_system_user
         mock_request = Mock()
         mock_request.public_api_organization = test_org
-        mock_system_user = baker.make("public_api.SystemUser", organization=test_org, id=999)
+        mock_system_user = baker.make("public_api.systemuser", organization=test_org, id=999)
         mock_request.public_api_system_user = mock_system_user
 
         mock_info = Mock()
@@ -3341,7 +3341,7 @@ class TestDisableResourceCalendarMutation:
 
         # Create a personal (non-resource) calendar
         personal_cal = baker.make(
-            "calendar_integration.Calendar",
+            "calendar_integration.calendar",
             organization=org,
             calendar_type=CalendarType.PERSONAL,
         )
@@ -3368,7 +3368,7 @@ class TestDisableResourceCalendarMutation:
         # Create a resource calendar in a DIFFERENT org
         other_org = baker.make(Organization, name="Other Org")
         other_cal = baker.make(
-            "calendar_integration.Calendar",
+            "calendar_integration.calendar",
             organization=other_org,
             calendar_type=CalendarType.RESOURCE,
         )
@@ -3400,7 +3400,7 @@ class TestDisableResourceCalendarMutation:
         )
 
         other_cal = baker.make(
-            "calendar_integration.Calendar",
+            "calendar_integration.calendar",
             organization=org,
             calendar_type=CalendarType.RESOURCE,
         )
@@ -3759,7 +3759,7 @@ class TestCreateAvailabilityWindowMutation:
         # Create a managing calendar in a DIFFERENT org
         other_org = baker.make(Organization, name="Other Org")
         other_calendar = baker.make(
-            "calendar_integration.Calendar",
+            "calendar_integration.calendar",
             organization=other_org,
             calendar_type=CalendarType.RESOURCE,
             manage_available_windows=True,
@@ -3800,7 +3800,7 @@ class TestCreateAvailabilityWindowMutation:
         )
 
         other_calendar = baker.make(
-            "calendar_integration.Calendar",
+            "calendar_integration.calendar",
             organization=org,
             calendar_type=CalendarType.RESOURCE,
             manage_available_windows=True,
@@ -4056,7 +4056,7 @@ class TestUpdateAvailabilityWindowMutation:
         # Create an AvailableTime in a DIFFERENT org
         other_org = baker.make(Organization, name="Other Org")
         other_calendar = baker.make(
-            "calendar_integration.Calendar",
+            "calendar_integration.calendar",
             organization=other_org,
             calendar_type=CalendarType.RESOURCE,
             manage_available_windows=True,
@@ -4075,7 +4075,7 @@ class TestUpdateAvailabilityWindowMutation:
 
         # Create an available time in the OTHER org's calendar directly
         other_available_time = baker.make(
-            "calendar_integration.AvailableTime",
+            "calendar_integration.availabletime",
             calendar=other_calendar,
             organization=other_org,
             start_time_tz_unaware=datetime.datetime(2026, 9, 1, 9, 0, 0, tzinfo=datetime.UTC),
@@ -4116,7 +4116,7 @@ class TestUpdateAvailabilityWindowMutation:
         )
 
         other_calendar = baker.make(
-            "calendar_integration.Calendar",
+            "calendar_integration.calendar",
             organization=org,
             calendar_type=CalendarType.RESOURCE,
             manage_available_windows=True,
@@ -4159,7 +4159,7 @@ class TestUpdateAvailabilityWindowMutation:
 
         # Create an AvailableTime outside the service (bypass the flag check at create time)
         available_time = baker.make(
-            "calendar_integration.AvailableTime",
+            "calendar_integration.availabletime",
             calendar=non_managing_calendar,
             organization=org,
             start_time_tz_unaware=datetime.datetime(2026, 9, 1, 9, 0, 0, tzinfo=datetime.UTC),
@@ -4389,7 +4389,7 @@ class TestDeleteAvailabilityWindowMutation:
         # Create an AvailableTime in a DIFFERENT org
         other_org = baker.make(Organization, name="Other Org")
         other_calendar = baker.make(
-            "calendar_integration.Calendar",
+            "calendar_integration.calendar",
             organization=other_org,
             calendar_type=CalendarType.RESOURCE,
             manage_available_windows=True,
@@ -4408,7 +4408,7 @@ class TestDeleteAvailabilityWindowMutation:
 
         # Create an available time in the OTHER org's calendar directly
         other_available_time = baker.make(
-            "calendar_integration.AvailableTime",
+            "calendar_integration.availabletime",
             calendar=other_calendar,
             organization=other_org,
             start_time_tz_unaware=datetime.datetime(2026, 9, 1, 9, 0, 0, tzinfo=datetime.UTC),
@@ -4462,7 +4462,7 @@ class TestDeleteAvailabilityWindowMutation:
 
         # Create an AvailableTime outside the service (bypass the flag check at create time)
         available_time = baker.make(
-            "calendar_integration.AvailableTime",
+            "calendar_integration.availabletime",
             calendar=non_managing_calendar,
             organization=org,
             start_time_tz_unaware=datetime.datetime(2026, 9, 1, 9, 0, 0, tzinfo=datetime.UTC),
@@ -4513,7 +4513,7 @@ class TestDeleteAvailabilityWindowMutation:
             manage_available_windows=True,
         )
         calendar_b = baker.make(
-            "calendar_integration.Calendar",
+            "calendar_integration.calendar",
             organization=org,
             calendar_type=CalendarType.RESOURCE,
             manage_available_windows=True,
@@ -4522,7 +4522,7 @@ class TestDeleteAvailabilityWindowMutation:
 
         # Create an AvailableTime that belongs to calendar_b
         available_time_b = baker.make(
-            "calendar_integration.AvailableTime",
+            "calendar_integration.availabletime",
             calendar=calendar_b,
             organization=org,
             start_time_tz_unaware=datetime.datetime(2026, 9, 1, 9, 0, 0, tzinfo=datetime.UTC),
@@ -4567,7 +4567,7 @@ class TestDeleteAvailabilityWindowMutation:
         )
 
         other_calendar = baker.make(
-            "calendar_integration.Calendar",
+            "calendar_integration.calendar",
             organization=org,
             calendar_type=CalendarType.RESOURCE,
             manage_available_windows=True,
@@ -4895,7 +4895,7 @@ class TestBatchUpdateAvailabilityWindowsMutation:
         )
 
         managing_calendar = baker.make(
-            "calendar_integration.Calendar",
+            "calendar_integration.calendar",
             organization=org,
             calendar_type=CalendarType.RESOURCE,
             manage_available_windows=True,
@@ -4949,7 +4949,7 @@ class TestBatchUpdateAvailabilityWindowsMutation:
         # Calendar belongs to a DIFFERENT org
         other_org = baker.make(Organization, name="Other Org")
         other_calendar = baker.make(
-            "calendar_integration.Calendar",
+            "calendar_integration.calendar",
             organization=other_org,
             calendar_type=CalendarType.RESOURCE,
             manage_available_windows=True,
@@ -5193,7 +5193,7 @@ class TestCreateBlockedTimeMutation:
         # Create a calendar in a DIFFERENT org
         other_org = baker.make(Organization, name="Other Org")
         other_calendar = baker.make(
-            "calendar_integration.Calendar",
+            "calendar_integration.calendar",
             organization=other_org,
             calendar_type=CalendarType.RESOURCE,
         )
@@ -5233,7 +5233,7 @@ class TestCreateBlockedTimeMutation:
         )
 
         other_calendar = baker.make(
-            "calendar_integration.Calendar",
+            "calendar_integration.calendar",
             organization=org,
             calendar_type=CalendarType.RESOURCE,
         )
@@ -5504,7 +5504,7 @@ class TestUpdateBlockedTimeMutation:
 
         other_org = baker.make(Organization, name="Other Org")
         other_calendar = baker.make(
-            "calendar_integration.Calendar",
+            "calendar_integration.calendar",
             organization=other_org,
             calendar_type=CalendarType.RESOURCE,
         )
@@ -5538,7 +5538,7 @@ class TestUpdateBlockedTimeMutation:
         )
 
         other_calendar = baker.make(
-            "calendar_integration.Calendar",
+            "calendar_integration.calendar",
             organization=org,
             calendar_type=CalendarType.RESOURCE,
         )
@@ -5765,7 +5765,7 @@ class TestDeleteBlockedTimeMutation:
 
         other_org = baker.make(Organization, name="Other Org")
         other_calendar = baker.make(
-            "calendar_integration.Calendar",
+            "calendar_integration.calendar",
             organization=other_org,
             calendar_type=CalendarType.RESOURCE,
         )
@@ -5798,7 +5798,7 @@ class TestDeleteBlockedTimeMutation:
         )
 
         other_calendar = baker.make(
-            "calendar_integration.Calendar",
+            "calendar_integration.calendar",
             organization=org,
             calendar_type=CalendarType.RESOURCE,
         )

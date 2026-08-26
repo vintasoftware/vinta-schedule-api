@@ -760,7 +760,10 @@ class TestCreateBookingPolicy:
         mock_audit.record.assert_called_once()
         call_kwargs = mock_audit.record.call_args.kwargs
         assert call_kwargs["action"] == "create"
-        assert call_kwargs["organization_id"] == org.id
+        # The audit service is a mock here, so the scope it returns is a mock too.
+        # What this test can meaningfully assert is that the service was asked to
+        # build the scope for this organization.
+        mock_audit.scope_from_organization_id.assert_called_once_with(org.id)
         # subject_from_instance was called with the newly created policy.
         mock_audit.subject_from_instance.assert_called_once_with(policy)
 

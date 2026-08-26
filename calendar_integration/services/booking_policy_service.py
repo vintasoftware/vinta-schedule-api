@@ -17,17 +17,17 @@ or a calendar group via a deterministic precedence chain:
   most-restrictive combination across all calendars that belong to any slot in
   the group → unconstrained.
 
-All write paths (create / update / delete) emit ``AuditService`` records and
+All write paths (create / update / delete) emit ``OrganizationAuditService`` records and
 enforce the uniqueness contract (one policy per target per org).
 """
 
 from typing import TYPE_CHECKING, Annotated
 
 from dependency_injector.wiring import Provide, inject
+from vinta_audit_logs.diff import compute_diff
 
-from audit.constants import AuditAction
-from audit.diff import compute_diff
-from audit.services import AuditService
+from audit_integration.constants import AuditAction
+from audit_integration.services import OrganizationAuditService
 from calendar_integration.exceptions import (
     CalendarServiceOrganizationNotSetError,
     DuplicateBookingPolicyError,
@@ -44,7 +44,8 @@ from organizations.models import Organization, OrganizationMembership
 
 
 if TYPE_CHECKING:
-    from audit.types import ActorSnapshot
+    from vinta_audit_logs.types import IdentitySnapshot
+
     from calendar_integration.querysets import BookingPolicyQuerySet
 
 
@@ -61,14 +62,16 @@ class BookingPolicyService:
     @inject
     def __init__(
         self,
-        audit_service: Annotated["AuditService | None", Provide["audit_service"]] = None,
+        audit_service: Annotated[
+            "OrganizationAuditService | None", Provide["audit_service"]
+        ] = None,
     ) -> None:
         self.organization = None
         self.audit_service = audit_service
         # Optional actor context for audit records — set by the caller via
         # ``set_actor`` when the acting principal is known (e.g. a REST view or
         # GraphQL mutation that has an authenticated user/system-user).
-        self._actor: ActorSnapshot | None = None
+        self._actor: IdentitySnapshot | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -78,10 +81,10 @@ class BookingPolicyService:
         """Bind this service instance to a tenant organization."""
         self.organization = organization
 
-    def set_actor(self, actor: "ActorSnapshot") -> None:
+    def set_actor(self, actor: "IdentitySnapshot") -> None:
         """Capture the acting principal for audit records.
 
-        Pass the resolved ``ActorSnapshot`` from the calling layer (REST view or
+        Pass the resolved ``IdentitySnapshot`` from the calling layer (REST view or
         GraphQL resolver) so the audit trail records the right actor.  When not
         called, ``_actor`` stays ``None`` and the audit helper falls back to the
         system actor.
@@ -113,15 +116,15 @@ class BookingPolicyService:
         """
         if self.audit_service is None or self.organization is None:
             return
-        actor: ActorSnapshot = (
-            self._actor if self._actor is not None else AuditService.system_actor()
+        actor: IdentitySnapshot = (
+            self._actor if self._actor is not None else self.audit_service.system_actor()
         )
         self.audit_service.record(
-            organization_id=self.organization.id,
             action=action,
             actor=actor,
             subject=self.audit_service.subject_from_instance(policy),
             diff=diff,
+            scope=self.audit_service.scope_from_organization_id(self.organization.id),
         )
 
     # ------------------------------------------------------------------
@@ -308,7 +311,7 @@ class BookingPolicyService:
         Exactly one target must be specified.  Raises ``DuplicateBookingPolicyError``
         when a policy already exists for the same target (mirroring the DB's
         partial-unique-index constraint, but caught earlier with a clear message).
-        Emits an ``AuditService`` CREATE record on success.
+        Emits an ``OrganizationAuditService`` CREATE record on success.
         """
         self._assert_initialized()
 
@@ -385,7 +388,7 @@ class BookingPolicyService:
 
         Target fields (calendar, membership, calendar_group, is_organization_default)
         are intentionally not updatable — to change a target, delete and re-create.
-        Emits an ``AuditService`` UPDATE record with field diffs on success.
+        Emits an ``OrganizationAuditService`` UPDATE record with field diffs on success.
         """
         self._assert_initialized()
 
@@ -428,7 +431,7 @@ class BookingPolicyService:
         """Delete a BookingPolicy.
 
         Idempotent no-op when ``policy`` is ``None`` (delete-absent semantics).
-        Emits an ``AuditService`` DELETE record when an actual row is deleted.
+        Emits an ``OrganizationAuditService`` DELETE record when an actual row is deleted.
         """
         self._assert_initialized()
 

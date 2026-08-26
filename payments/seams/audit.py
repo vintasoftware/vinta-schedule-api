@@ -1,6 +1,6 @@
 """Writes this project's audit trail from the billing engine's signals.
 
-``SubscriptionService.set_payment_provider`` used to hold an ``AuditService``
+``SubscriptionService.set_payment_provider`` used to hold an ``OrganizationAuditService``
 and call ``record()`` inline. ``vinta_billing``'s copy cannot: a library has no
 way to know a project keeps an audit log, so it publishes
 ``vinta_billing.signals.payment_provider_repointed`` at the same point --
@@ -16,7 +16,7 @@ are available if that decision changes.
 
 The receiver runs inside the caller's transaction, exactly where the inline
 call did, so a failure here still rolls the repoint back with it rather than
-leaving a repoint nobody can account for. ``AuditService.record`` itself defers
+leaving a repoint nobody can account for. ``OrganizationAuditService.record`` itself defers
 the write to a Celery task through ``transaction.on_commit``, so the slow part
 was never in the transaction to begin with.
 """
@@ -30,7 +30,7 @@ from django.dispatch import receiver
 
 from vinta_billing.signals import payment_provider_repointed
 
-from audit.constants import AuditAction
+from audit_integration.constants import AuditAction
 
 
 @receiver(payment_provider_repointed, dispatch_uid="payments.seams.audit.record_repoint")
@@ -68,9 +68,9 @@ def record_payment_provider_repoint(
         else audit_service.system_actor()
     )
     audit_service.record(
-        organization_id=organization.pk,
         action=AuditAction.UPDATE,
         actor=actor_snapshot,
         subject=audit_service.subject_from_instance(billing_profile),
         diff={"payment_provider": {"old": from_provider, "new": to_provider}},
+        scope=audit_service.scope_from_organization_id(organization.pk),
     )

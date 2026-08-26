@@ -2,7 +2,7 @@
 
 Each test drives a real OrganizationService (audit_service injected via the DI
 container) and asserts that the expected audit record(s) are enqueued. We patch
-``audit.services.persist_audit_record`` and execute the on_commit callbacks so the
+``vinta_audit_logs.tasks.persist_audit_record`` and execute the on_commit callbacks so the
 enqueue happens, then inspect the serialized payloads.
 """
 
@@ -14,9 +14,8 @@ from unittest.mock import Mock, patch
 import pytest
 from model_bakery import baker
 
-from audit.constants import AuditAction
+from audit_integration.constants import AuditAction
 from common.utils.authentication_utils import generate_long_lived_token, hash_long_lived_token
-from organizations.authorization import MEMBERSHIP_ROLE_LABEL_ADMIN
 from organizations.models import (
     Organization,
     OrganizationInvitation,
@@ -45,29 +44,31 @@ class TestOrganizationServiceAudit:
     def test_create_organization_records_org_and_membership(
         self, django_capture_on_commit_callbacks
     ) -> None:
-        user = baker.make("users.User")
+        user = baker.make("users.user")
         service = self._service()
 
-        with patch("audit.services.persist_audit_record") as mock_task:
+        with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
             with django_capture_on_commit_callbacks(execute=True):
                 org = service.create_organization(creator=user, name="ACME")
 
         payloads = _payloads(mock_task)
         assert _subjects(mock_task) == {
-            "organizations.Organization",
-            "organizations.OrganizationMembership",
+            "organizations.organization",
+            "organizations.organizationmembership",
         }
         # Actor is the creator's freshly-minted admin membership.
         for p in payloads:
-            assert p["organization_id"] == org.id
-            assert p["action"] == AuditAction.CREATE
-            assert p["actor"]["actor_type"] == "membership"
-            assert p["actor"]["actor_id"] == user.id
-            assert p["actor"]["actor_role"] == MEMBERSHIP_ROLE_LABEL_ADMIN
+            assert p["scope"]["scope_key"] == str(org.id)
+            assert p["action_key"] == AuditAction.CREATE
+            assert p["actor"]["identity_type"] == "membership"
+            assert p["actor"]["identity_key"] == str(user.id)
+            # The snapshot records what the membership actually held, not a
+            # label derived from it -- there is no role column any more.
+            assert GROUP_ORGANIZATION_ADMIN in p["actor"]["group_names"]
 
     def test_invite_user_records_create(self, django_capture_on_commit_callbacks) -> None:
         org = baker.make(Organization)
-        inviter = baker.make("users.User")
+        inviter = baker.make("users.user")
         make_membership(
             user=inviter,
             organization=org,
@@ -75,7 +76,7 @@ class TestOrganizationServiceAudit:
         )
         service = self._service()
 
-        with patch("audit.services.persist_audit_record") as mock_task:
+        with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
             with django_capture_on_commit_callbacks(execute=True):
                 service.invite_user_to_organization(
                     email="new@example.com",
@@ -88,15 +89,15 @@ class TestOrganizationServiceAudit:
 
         payloads = _payloads(mock_task)
         assert len(payloads) == 1
-        assert payloads[0]["subject"]["subject_type"] == "organizations.OrganizationInvitation"
-        assert payloads[0]["action"] == AuditAction.CREATE
-        assert payloads[0]["actor"]["actor_id"] == inviter.id
+        assert payloads[0]["subject"]["subject_type"] == "organizations.organizationinvitation"
+        assert payloads[0]["action_key"] == AuditAction.CREATE
+        assert payloads[0]["actor"]["identity_key"] == str(inviter.id)
 
     def test_accept_invitation_records_membership_and_invitation(
         self, django_capture_on_commit_callbacks
     ) -> None:
         org = baker.make(Organization)
-        user = baker.make("users.User", email="joiner@example.com")
+        user = baker.make("users.user", email="joiner@example.com")
         raw = generate_long_lived_token()
         invitation = OrganizationInvitation.objects.create(
             email="joiner@example.com",
@@ -107,17 +108,17 @@ class TestOrganizationServiceAudit:
         )
         service = self._service()
 
-        with patch("audit.services.persist_audit_record") as mock_task:
+        with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
             with django_capture_on_commit_callbacks(execute=True):
                 service.accept_invitation(token=raw, user=user)
 
         assert _subjects(mock_task) == {
-            "organizations.OrganizationMembership",
-            "organizations.OrganizationInvitation",
+            "organizations.organizationmembership",
+            "organizations.organizationinvitation",
         }
         for p in _payloads(mock_task):
-            assert p["organization_id"] == org.id
-            assert p["actor"]["actor_id"] == user.id
+            assert p["scope"]["scope_key"] == str(org.id)
+            assert p["actor"]["identity_key"] == str(user.id)
         assert invitation.organization_id == org.id
 
     def test_revoke_invitation_records_update_with_system_actor(
@@ -133,12 +134,12 @@ class TestOrganizationServiceAudit:
         )
         service = self._service()
 
-        with patch("audit.services.persist_audit_record") as mock_task:
+        with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
             with django_capture_on_commit_callbacks(execute=True):
                 service.revoke_invitation(invitation_id=str(invitation.id))
 
         payloads = _payloads(mock_task)
         assert len(payloads) == 1
-        assert payloads[0]["action"] == AuditAction.UPDATE
-        assert payloads[0]["actor"]["actor_type"] == "system"
+        assert payloads[0]["action_key"] == AuditAction.UPDATE
+        assert payloads[0]["actor"]["identity_type"] == "system"
         assert "expires_at" in payloads[0]["diff"]

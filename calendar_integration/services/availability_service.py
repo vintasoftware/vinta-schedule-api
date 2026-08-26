@@ -48,10 +48,10 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 from django.db import transaction
 from django.db.models import Q
 
+from vinta_audit_logs.diff import compute_diff
 from vinta_billing.exceptions import OverLimitError
 
-from audit.constants import AuditAction
-from audit.diff import compute_diff
+from audit_integration.constants import AuditAction
 from calendar_integration.constants import CalendarType
 from calendar_integration.models import (
     AvailableTime,
@@ -171,7 +171,6 @@ class AvailabilityService:
 
         label = subject_instance.reason if isinstance(subject_instance, BlockedTime) else None
         audit_service.record(
-            organization_id=organization.id,
             action=action,
             actor=audit_service.actor_from_user_or_token(
                 self._context.user_or_token,
@@ -182,6 +181,7 @@ class AvailabilityService:
             ),
             subject=audit_service.subject_from_instance(subject_instance, label=label),
             diff=diff,
+            scope=audit_service.scope_from_organization_id(organization.id),
         )
 
     # ------------------------------------------------------------------

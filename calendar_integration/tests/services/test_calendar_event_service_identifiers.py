@@ -442,7 +442,14 @@ def test_update_event_omitting_attendee_identifiers_issues_no_extra_query(
         ]
     )
 
-    with django_assert_num_queries(29):
+    # 30, up from 29, since the audit actor snapshot moved off the derived role
+    # label. The old ``membership_role_label()`` cost one query to answer a
+    # yes/no question ("does this membership hold manage_members"); the snapshot
+    # now reads the membership's groups and its permissions -- two queries, no
+    # N+1 in either -- and records what it actually held. One extra query on the
+    # request path, for the difference between a one-bit label and the real
+    # authorization state at the moment of the action.
+    with django_assert_num_queries(30):
         event_service.update_event(calendar.id, created.id, updated_input)
 
 
@@ -525,7 +532,18 @@ def test_update_event_on_commit_dispatch_reuses_prefetched_identifiers(
     # ``external_attendances`` explicitly, so it takes the same reconciliation path
     # it always did. The counts that Phase 7 changes are those of callers that OMIT
     # a field -- which now skip their reconciliation entirely.
-    with django_assert_num_queries(78):
+    #
+    # 86, up from 78, since the audit log moved to ``vinta_audit_logs``. The +8 is
+    # the normalized write: an audit record now resolves a scope row and an action
+    # row (a SELECT, and on first sight an INSERT inside a savepoint) and inserts
+    # its identity snapshots, where the old flat table wrote everything as columns
+    # on one row. It lands in this count only because the test executes on-commit
+    # callbacks inline; in production every one of those queries runs in the Celery
+    # worker that ``AuditService.record`` hands off to, so none of it is on the
+    # request path this test is otherwise measuring. The identifier prefetch this
+    # test exists to guard is untouched -- still one identifier query shared by all
+    # three dispatches.
+    with django_assert_num_queries(86):
         with django_capture_on_commit_callbacks(execute=True):
             event_service.update_event(calendar.id, created.id, updated_input)
 
@@ -909,14 +927,14 @@ def test_update_event_audit_diff_includes_identifier_change(
         ]
     )
 
-    with patch("audit.services.persist_audit_record") as mock_task:
+    with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
         with django_capture_on_commit_callbacks(execute=True):
             event_service.update_event(calendar.id, created.id, updated_input)
 
     event_payloads = [
         p
         for p in _payloads(mock_task)
-        if p["subject"]["subject_type"] == "calendar_integration.CalendarEvent"
+        if p["subject"]["subject_type"] == "calendar_integration.calendarevent"
     ]
     assert len(event_payloads) == 1
     diff = event_payloads[0]["diff"]
@@ -960,14 +978,14 @@ def test_update_event_audit_diff_omits_identifier_key_when_unchanged(
     # must not carry an `external_client_identifiers` key.
     updated_input = _base_event_input(title="New Title")
 
-    with patch("audit.services.persist_audit_record") as mock_task:
+    with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
         with django_capture_on_commit_callbacks(execute=True):
             event_service.update_event(calendar.id, created.id, updated_input)
 
     event_payloads = [
         p
         for p in _payloads(mock_task)
-        if p["subject"]["subject_type"] == "calendar_integration.CalendarEvent"
+        if p["subject"]["subject_type"] == "calendar_integration.calendarevent"
     ]
     assert len(event_payloads) == 1
     diff = event_payloads[0]["diff"]
@@ -994,14 +1012,14 @@ def test_update_event_audit_has_no_diff_when_nothing_changes(
         created = event_service.create_event(calendar.id, _base_event_input())
     _grant_event_owner_token(created, social_account.user, calendar.organization)
 
-    with patch("audit.services.persist_audit_record") as mock_task:
+    with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
         with django_capture_on_commit_callbacks(execute=True):
             event_service.update_event(calendar.id, created.id, _base_event_input())
 
     event_payloads = [
         p
         for p in _payloads(mock_task)
-        if p["subject"]["subject_type"] == "calendar_integration.CalendarEvent"
+        if p["subject"]["subject_type"] == "calendar_integration.calendarevent"
     ]
     assert len(event_payloads) == 1
     assert event_payloads[0]["diff"] is None

@@ -28,6 +28,23 @@ ADMINS = ["hugo@vinta.com.br"]
 
 AUTH_USER_MODEL = "users.User"
 
+# --- vinta_audit_logs ---------------------------------------------------
+# The audit log app is generic and knows nothing about this project. These four
+# settings are the whole of what it needs to learn.
+#
+# The two model settings are the AUTH_USER_MODEL pattern: they name the concrete
+# scope and identity `audit_integration` defines, so audit records are scoped to
+# an Organization and actors can be memberships, API tokens and single-use codes
+# rather than only users.
+AUDIT_SCOPE_MODEL = "audit_integration.OrganizationAuditScope"
+AUDIT_IDENTITY_MODEL = "audit_integration.OrganizationAuditIdentity"
+# The two factory settings are dotted paths rather than DI providers, because a
+# package should not force its DI library on the projects installing it. Both
+# resolve through this project's container -- see audit_integration.services.
+AUDIT_CELERY_APP = "vinta_schedule_api.celery.app"
+AUDIT_SERVICE_FACTORY = "audit_integration.services.audit_service_factory"
+AUDIT_REPOSITORY_FACTORY = "audit_integration.services.audit_repository_factory"
+
 ALLOWED_HOSTS: list[str] = []
 
 DATABASES = {
@@ -40,7 +57,8 @@ INTERNAL_INSTALLED_APPS = [
     "accounts",
     "users",
     "organizations",
-    "audit",
+    "vinta_audit_logs",
+    "audit_integration",
     "payments",
     "notifications",
     "calendar_integration",

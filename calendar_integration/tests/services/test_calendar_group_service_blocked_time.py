@@ -18,8 +18,8 @@ from django.utils import timezone as django_timezone
 
 import pytest
 
-from audit.constants import AuditAction
-from audit.services import AuditService
+from audit_integration.constants import AuditAction
+from audit_integration.services import OrganizationAuditService
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.exceptions import CalendarGroupSlotConfigNotFoundError
 from calendar_integration.models import (
@@ -72,7 +72,7 @@ def organization(db: Any) -> Organization:
 
 
 @pytest.fixture
-def audit_service() -> AuditService:
+def audit_service() -> OrganizationAuditService:
     from di_core.containers import container
 
     return container.audit_service()
@@ -205,7 +205,9 @@ def other_slot(
 
 
 @pytest.fixture
-def service(organization: Organization, audit_service: AuditService) -> CalendarGroupService:
+def service(
+    organization: Organization, audit_service: OrganizationAuditService
+) -> CalendarGroupService:
     svc = CalendarGroupService(
         calendar_permission_service=CalendarPermissionService(),
         audit_service=audit_service,
@@ -231,7 +233,7 @@ def test_create_group_scoped_blocked_time_admin_happy_path(
     group_slot: CalendarGroupSlot,
     django_capture_on_commit_callbacks,
 ) -> None:
-    with patch("audit.services.persist_audit_record") as mock_task:
+    with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
         with django_capture_on_commit_callbacks(execute=True):
             result = service.create_group_scoped_blocked_time(
                 acting_user=admin_user,
@@ -266,8 +268,8 @@ def test_create_group_scoped_blocked_time_admin_happy_path(
 
     payloads = _payloads(mock_task)
     assert len(payloads) == 1
-    assert payloads[0]["action"] == AuditAction.CREATE
-    assert payloads[0]["subject"]["subject_type"] == "calendar_integration.BlockedTime"
+    assert payloads[0]["action_key"] == AuditAction.CREATE
+    assert payloads[0]["subject"]["subject_type"] == "calendar_integration.blockedtime"
     assert payloads[0]["subject"]["subject_id"] == str(block.pk)
 
 
@@ -504,7 +506,7 @@ def test_update_group_scoped_blocked_time_records_diff(
     )
     block_id = created.block.id  # type: ignore[union-attr]
 
-    with patch("audit.services.persist_audit_record") as mock_task:
+    with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
         with django_capture_on_commit_callbacks(execute=True):
             result = service.update_group_scoped_blocked_time(
                 acting_user=admin_user,
@@ -518,7 +520,7 @@ def test_update_group_scoped_blocked_time_records_diff(
     assert result.block.recurrence_rule.to_rrule_string() == "FREQ=WEEKLY;BYDAY=TH"
 
     payloads = _payloads(mock_task)
-    update_payloads = [p for p in payloads if p["action"] == AuditAction.UPDATE]
+    update_payloads = [p for p in payloads if p["action_key"] == AuditAction.UPDATE]
     assert len(update_payloads) == 1
     diff = update_payloads[0]["diff"]
     assert diff is not None
@@ -745,13 +747,13 @@ def test_delete_group_scoped_blocked_time_admin(
     )
     block_id = created.block.id  # type: ignore[union-attr]
 
-    with patch("audit.services.persist_audit_record") as mock_task:
+    with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
         with django_capture_on_commit_callbacks(execute=True):
             service.delete_group_scoped_blocked_time(acting_user=admin_user, block_id=block_id)
 
     assert not BlockedTime.objects.unscoped().filter(id=block_id).exists()
     payloads = _payloads(mock_task)
-    delete_payloads = [p for p in payloads if p["action"] == AuditAction.DELETE]
+    delete_payloads = [p for p in payloads if p["action_key"] == AuditAction.DELETE]
     assert len(delete_payloads) == 1
     assert delete_payloads[0]["subject"]["subject_id"] == str(block_id)
 
@@ -871,7 +873,7 @@ def test_removing_calendar_from_slot_removes_group_scoped_blocks(
     assert BlockedTime.objects.unscoped().filter(id=block2_id).exists()
 
     # Remove ONLY the first calendar from the slot (via update_group → _reconcile_slot).
-    with patch("audit.services.persist_audit_record") as mock_task:
+    with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
         with django_capture_on_commit_callbacks(execute=True):
             service.update_group(
                 group.id,
@@ -906,11 +908,11 @@ def test_removing_calendar_from_slot_removes_group_scoped_blocks(
 
     # Verify that a DELETE audit record was emitted for the deleted block.
     payloads = _payloads(mock_task)
-    delete_payloads = [p for p in payloads if p["action"] == AuditAction.DELETE]
+    delete_payloads = [p for p in payloads if p["action_key"] == AuditAction.DELETE]
     block_delete_payloads = [
         p
         for p in delete_payloads
-        if p["subject"]["subject_type"] == "calendar_integration.BlockedTime"
+        if p["subject"]["subject_type"] == "calendar_integration.blockedtime"
     ]
     assert len(block_delete_payloads) == 1
     assert block_delete_payloads[0]["subject"]["subject_id"] == str(block1_id)

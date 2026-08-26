@@ -534,7 +534,7 @@ class TestCreateBookingPolicyMutation:
         org, system_user, token, auth_service = _setup_org_and_token()
         cal = baker.make(Calendar, organization=org)
 
-        with patch("audit.services.persist_audit_record") as mock_task:
+        with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
             with django_capture_on_commit_callbacks(execute=True):
                 _post_graphql(
                     CREATE_BOOKING_POLICY_MUTATION,
@@ -546,8 +546,8 @@ class TestCreateBookingPolicyMutation:
 
         assert mock_task.delay.called
         payload = mock_task.delay.call_args[0][0]
-        assert payload["action"] == "create"
-        assert "BookingPolicy" in payload["subject"]["subject_type"]
+        assert payload["action_key"] == "create"
+        assert "bookingpolicy" in payload["subject"]["subject_type"]
 
     def test_create_missing_resource_denied(self):
         """A token without BOOKING_POLICY resource cannot create a policy."""
@@ -789,7 +789,7 @@ class TestUpdateBookingPolicyMutation:
         cal = baker.make(Calendar, organization=org)
         policy = create_booking_policy(calendar=cal, lead_time_seconds=0)
 
-        with patch("audit.services.persist_audit_record") as mock_task:
+        with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
             with django_capture_on_commit_callbacks(execute=True):
                 _post_graphql(
                     UPDATE_BOOKING_POLICY_MUTATION,
@@ -801,8 +801,8 @@ class TestUpdateBookingPolicyMutation:
 
         assert mock_task.delay.called
         payload = mock_task.delay.call_args[0][0]
-        assert payload["action"] == "update"
-        assert "BookingPolicy" in payload["subject"]["subject_type"]
+        assert payload["action_key"] == "update"
+        assert "bookingpolicy" in payload["subject"]["subject_type"]
 
 
 # ---------------------------------------------------------------------------
@@ -889,7 +889,7 @@ class TestDeleteBookingPolicyMutation:
         cal = baker.make(Calendar, organization=org)
         policy = create_booking_policy(calendar=cal)
 
-        with patch("audit.services.persist_audit_record") as mock_task:
+        with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
             with django_capture_on_commit_callbacks(execute=True):
                 _post_graphql(
                     DELETE_BOOKING_POLICY_MUTATION,
@@ -901,14 +901,14 @@ class TestDeleteBookingPolicyMutation:
 
         assert mock_task.delay.called
         payload = mock_task.delay.call_args[0][0]
-        assert payload["action"] == "delete"
-        assert "BookingPolicy" in payload["subject"]["subject_type"]
+        assert payload["action_key"] == "delete"
+        assert "bookingpolicy" in payload["subject"]["subject_type"]
 
     def test_delete_absent_not_audited(self, django_capture_on_commit_callbacks):
         """No audit record is enqueued when the policy was already absent (no-op)."""
         _org, system_user, token, auth_service = _setup_org_and_token()
 
-        with patch("audit.services.persist_audit_record") as mock_task:
+        with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
             with django_capture_on_commit_callbacks(execute=True):
                 _post_graphql(
                     DELETE_BOOKING_POLICY_MUTATION,

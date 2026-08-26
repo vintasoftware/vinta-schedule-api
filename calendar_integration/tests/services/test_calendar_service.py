@@ -11,7 +11,7 @@ from django.utils import timezone
 import pytest
 from allauth.socialaccount.models import SocialAccount, SocialToken
 
-from audit.constants import AuditAction
+from audit_integration.constants import AuditAction
 from calendar_integration.constants import (
     CalendarProvider,
     CalendarSyncStatus,

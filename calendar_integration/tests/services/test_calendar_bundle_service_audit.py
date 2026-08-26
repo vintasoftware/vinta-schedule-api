@@ -2,7 +2,7 @@
 
 Each test drives the real bundle sub-service (its auth context carries the
 DI-injected ``audit_service``) and asserts that the expected audit record is
-enqueued for the business write. We patch ``audit.services.persist_audit_record``
+enqueued for the business write. We patch ``vinta_audit_logs.tasks.persist_audit_record``
 and execute the on_commit callbacks (the record() write path only fires on
 transaction commit), then inspect the serialized payloads.
 
@@ -147,7 +147,7 @@ def test_create_bundle_calendar_records_create(
     child_calendar_google,
     django_capture_on_commit_callbacks,
 ):
-    with patch("audit.services.persist_audit_record") as mock_task:
+    with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
         with django_capture_on_commit_callbacks(execute=True):
             cal = bundle_service.create_bundle_calendar(
                 name="Audited Bundle",
@@ -160,9 +160,9 @@ def test_create_bundle_calendar_records_create(
     # rows are mechanical and must NOT be audited.
     assert len(payloads) == 1
     record = payloads[0]
-    assert record["organization_id"] == organization.id
-    assert record["action"] == "create"
-    assert record["subject"]["subject_type"] == "calendar_integration.Calendar"
+    assert record["scope"]["scope_key"] == str(organization.id)
+    assert record["action_key"] == "create"
+    assert record["subject"]["subject_type"] == "calendar_integration.calendar"
     assert record["subject"]["subject_id"] == str(cal.id)
     assert record["subject"]["subject_label"] == "Audited Bundle"
     assert record["diff"] is None
@@ -182,7 +182,7 @@ def test_update_bundle_calendar_records_update(
     child_calendar_google,
     django_capture_on_commit_callbacks,
 ):
-    with patch("audit.services.persist_audit_record") as mock_task:
+    with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
         with django_capture_on_commit_callbacks(execute=True):
             bundle_service.update_bundle_calendar(
                 bundle_calendar=bundle_calendar,
@@ -193,9 +193,9 @@ def test_update_bundle_calendar_records_update(
     payloads = _payloads(mock_task)
     assert len(payloads) == 1
     record = payloads[0]
-    assert record["organization_id"] == organization.id
-    assert record["action"] == "update"
-    assert record["subject"]["subject_type"] == "calendar_integration.Calendar"
+    assert record["scope"]["scope_key"] == str(organization.id)
+    assert record["action_key"] == "update"
+    assert record["subject"]["subject_type"] == "calendar_integration.calendar"
     assert record["subject"]["subject_id"] == str(bundle_calendar.id)
     # This method only reconciles child relationships -> no field-level diff.
     assert record["diff"] is None
@@ -255,7 +255,7 @@ def test_create_bundle_event_records_single_create(
         evt.save()
         return evt
 
-    with patch("audit.services.persist_audit_record") as mock_task:
+    with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
         with django_capture_on_commit_callbacks(execute=True):
             with patch.object(
                 initialized_facade,
@@ -273,9 +273,9 @@ def test_create_bundle_event_records_single_create(
     # (create_event is stubbed, so the child event service does not emit either).
     assert len(payloads) == 1
     record = payloads[0]
-    assert record["organization_id"] == organization.id
-    assert record["action"] == "create"
-    assert record["subject"]["subject_type"] == "calendar_integration.CalendarEvent"
+    assert record["scope"]["scope_key"] == str(organization.id)
+    assert record["action_key"] == "create"
+    assert record["subject"]["subject_type"] == "calendar_integration.calendarevent"
     assert record["subject"]["subject_id"] == str(primary_event.id)
     assert record["subject"]["subject_label"] == primary_event.title
 
@@ -329,7 +329,7 @@ def test_update_bundle_event_records_update(
         evt.save(update_fields=["title", "description"])
         return evt
 
-    with patch("audit.services.persist_audit_record") as mock_task:
+    with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
         with django_capture_on_commit_callbacks(execute=True):
             with patch.object(initialized_facade, "update_event", side_effect=fake_update_event):
                 service.update_bundle_event(primary_event, event_data)
@@ -337,9 +337,9 @@ def test_update_bundle_event_records_update(
     payloads = _payloads(mock_task)
     assert len(payloads) == 1
     record = payloads[0]
-    assert record["organization_id"] == organization.id
-    assert record["action"] == "update"
-    assert record["subject"]["subject_type"] == "calendar_integration.CalendarEvent"
+    assert record["scope"]["scope_key"] == str(organization.id)
+    assert record["action_key"] == "update"
+    assert record["subject"]["subject_type"] == "calendar_integration.calendarevent"
     assert record["subject"]["subject_id"] == str(primary_event.id)
     # title + description changed; timezone unchanged. start/end intentionally omitted.
     assert record["diff"] is not None
@@ -386,7 +386,7 @@ def test_delete_bundle_event_records_delete(
             id=event_id,
         ).delete()
 
-    with patch("audit.services.persist_audit_record") as mock_task:
+    with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
         with django_capture_on_commit_callbacks(execute=True):
             with patch.object(initialized_facade, "delete_event", side_effect=fake_delete_event):
                 service.delete_bundle_event(primary_event)
@@ -394,9 +394,9 @@ def test_delete_bundle_event_records_delete(
     payloads = _payloads(mock_task)
     assert len(payloads) == 1
     record = payloads[0]
-    assert record["organization_id"] == organization.id
-    assert record["action"] == "delete"
-    assert record["subject"]["subject_type"] == "calendar_integration.CalendarEvent"
+    assert record["scope"]["scope_key"] == str(organization.id)
+    assert record["action_key"] == "delete"
+    assert record["subject"]["subject_type"] == "calendar_integration.calendarevent"
     # Subject pk must reference the now-deleted primary event row.
     assert record["subject"]["subject_id"] == str(primary_event_id)
     assert record["subject"]["subject_label"] == "Original Title"

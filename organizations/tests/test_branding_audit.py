@@ -3,7 +3,7 @@
 Mirrors ``organizations/tests/test_audit.py``'s approach for ``OrganizationService``
 and ``public_api/tests/test_booking_policy_graphql.py``'s ``test_create_audited`` /
 ``test_update_audited`` for the GraphQL surface: patch
-``audit.services.persist_audit_record``, drive the real endpoint through
+``vinta_audit_logs.tasks.persist_audit_record``, drive the real endpoint through
 ``django_capture_on_commit_callbacks(execute=True)``, and inspect the serialized
 payload(s) the enqueue call received.
 """
@@ -15,7 +15,6 @@ from model_bakery import baker
 from rest_framework import status
 from rest_framework.test import APIClient
 
-from organizations.authorization import MEMBERSHIP_ROLE_LABEL_ADMIN
 from organizations.models import (
     Organization,
     OrganizationBranding,
@@ -80,7 +79,7 @@ class TestOrganizationBrandingViewAudit:
             "redirect_url": "https://example.com/return",
         }
 
-        with patch("audit.services.persist_audit_record") as mock_task:
+        with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
             with django_capture_on_commit_callbacks(execute=True):
                 response = client.put(BRANDING_URL, data=payload, format="json")
 
@@ -88,12 +87,13 @@ class TestOrganizationBrandingViewAudit:
         payloads = _payloads(mock_task)
         assert len(payloads) == 1
         record = payloads[0]
-        assert record["organization_id"] == eligible_org.id
-        assert record["action"] == "create"
-        assert record["subject"]["subject_type"] == "organizations.OrganizationBranding"
-        assert record["actor"]["actor_type"] == "membership"
-        assert record["actor"]["actor_id"] == admin_user.id
-        assert record["actor"]["actor_role"] == MEMBERSHIP_ROLE_LABEL_ADMIN
+        assert record["scope"]["scope_key"] == str(eligible_org.id)
+        assert record["action_key"] == "create"
+        assert record["subject"]["subject_type"] == "organizations.organizationbranding"
+        assert record["actor"]["identity_type"] == "membership"
+        assert record["actor"]["identity_key"] == str(admin_user.id)
+        # The snapshot records the groups the membership held, not a derived label.
+        assert GROUP_ORGANIZATION_ADMIN in record["actor"]["group_names"]
         assert record["diff"] is None
 
     def test_put_over_existing_row_records_update_with_diff_of_changed_fields_only(
@@ -121,7 +121,7 @@ class TestOrganizationBrandingViewAudit:
             "redirect_url": "https://example.com/before",
         }
 
-        with patch("audit.services.persist_audit_record") as mock_task:
+        with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
             with django_capture_on_commit_callbacks(execute=True):
                 response = client.put(BRANDING_URL, data=payload, format="json")
 
@@ -129,7 +129,7 @@ class TestOrganizationBrandingViewAudit:
         payloads = _payloads(mock_task)
         assert len(payloads) == 1
         record = payloads[0]
-        assert record["action"] == "update"
+        assert record["action_key"] == "update"
         diff = record["diff"]
         assert diff is not None
         assert set(diff.keys()) == {"app_name", "primary_color"}
@@ -150,7 +150,7 @@ class TestOrganizationBrandingViewAudit:
         )
         self._authed_client(client, admin_user, eligible_org)
 
-        with patch("audit.services.persist_audit_record") as mock_task:
+        with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
             with django_capture_on_commit_callbacks(execute=True):
                 response = client.patch(
                     BRANDING_URL, data={"secondary_color": "#444444"}, format="json"
@@ -160,7 +160,7 @@ class TestOrganizationBrandingViewAudit:
         payloads = _payloads(mock_task)
         assert len(payloads) == 1
         record = payloads[0]
-        assert record["action"] == "update"
+        assert record["action_key"] == "update"
         diff = record["diff"]
         assert diff is not None
         assert set(diff.keys()) == {"secondary_color"}
@@ -189,7 +189,7 @@ class TestOrganizationBrandingViewAudit:
             "redirect_url": "",
         }
 
-        with patch("audit.services.persist_audit_record") as mock_task:
+        with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
             with django_capture_on_commit_callbacks(execute=True):
                 response = client.put(BRANDING_URL, data=payload, format="json")
 
@@ -213,7 +213,7 @@ class TestOrganizationBrandingViewAudit:
             "redirect_url": "",
         }
 
-        with patch("audit.services.persist_audit_record") as mock_task:
+        with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
             with django_capture_on_commit_callbacks(execute=True):
                 response = client.put(BRANDING_URL, data=payload, format="json")
 

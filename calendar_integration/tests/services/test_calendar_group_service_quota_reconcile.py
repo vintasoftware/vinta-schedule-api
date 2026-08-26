@@ -21,8 +21,8 @@ from unittest.mock import patch
 
 import pytest
 
-from audit.constants import AuditAction
-from audit.services import AuditService
+from audit_integration.constants import AuditAction
+from audit_integration.services import OrganizationAuditService
 from calendar_integration.constants import CalendarProvider, CalendarType, QuotaPeriod
 from calendar_integration.factories import create_group_slot_quota_rule
 from calendar_integration.models import (
@@ -46,14 +46,16 @@ def organization(db: Any) -> Organization:
 
 
 @pytest.fixture
-def audit_service() -> AuditService:
+def audit_service() -> OrganizationAuditService:
     from di_core.containers import container
 
     return container.audit_service()
 
 
 @pytest.fixture
-def service(organization: Organization, audit_service: AuditService) -> CalendarGroupService:
+def service(
+    organization: Organization, audit_service: OrganizationAuditService
+) -> CalendarGroupService:
     svc = CalendarGroupService(audit_service=audit_service)
     svc.initialize(organization=organization)
     return svc
@@ -143,7 +145,7 @@ def test_removing_calendar_from_slot_removes_quota_rules(
         .exists()
     )
 
-    with patch("audit.services.persist_audit_record") as mock_task:
+    with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
         with django_capture_on_commit_callbacks(execute=True):
             service.update_group(
                 group.id,
@@ -176,8 +178,8 @@ def test_removing_calendar_from_slot_removes_quota_rules(
     quota_rule_delete_payloads = [
         p
         for p in payloads
-        if p["action"] == AuditAction.DELETE
-        and p["subject"]["subject_type"] == "calendar_integration.CalendarGroupSlotQuotaRule"
+        if p["action_key"] == AuditAction.DELETE
+        and p["subject"]["subject_type"] == "calendar_integration.calendargroupslotquotarule"
     ]
     assert len(quota_rule_delete_payloads) == 1
     assert quota_rule_delete_payloads[0]["subject"]["subject_id"] == str(rule1.id)

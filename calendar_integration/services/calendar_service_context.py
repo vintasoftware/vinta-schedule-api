@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from allauth.socialaccount.models import SocialAccount
     from vinta_billing.services.entitlement_service import EntitlementService
 
-    from audit.services import AuditService
+    from audit_integration.services import OrganizationAuditService
     from calendar_integration.models import GoogleCalendarServiceAccount
     from calendar_integration.services.calendar_permission_service import CalendarPermissionService
     from calendar_integration.services.calendar_side_effects_service import (
@@ -55,7 +55,7 @@ class CalendarServiceContext:
     # Audit trail recorder, threaded from the facade so sub-services can emit audit
     # records for the business writes they perform. Defaults to None so contexts built
     # directly in tests (without DI) still construct.
-    audit_service: AuditService | None = None
+    audit_service: OrganizationAuditService | None = None
     # Pre-paid limit enforcement, passed from the facade so sub-services
     # (bundle, availability, sync) can check their own creation paths without each
     # taking a separate DI-injected constructor parameter. Defaults to None so

@@ -7,7 +7,7 @@ from django.utils import timezone
 
 from dependency_injector.wiring import Provide, inject
 
-from audit.constants import AuditAction
+from audit_integration.constants import AuditAction
 from calendar_integration.exceptions import (
     InvalidParameterCombinationError,
     InvalidTokenError,
@@ -44,7 +44,7 @@ from users.models import User
 
 
 if TYPE_CHECKING:
-    from audit.services import AuditService
+    from audit_integration.services import OrganizationAuditService
     from public_api.models import SystemUser
 
 
@@ -99,7 +99,9 @@ class CalendarPermissionService:
     @inject
     def __init__(
         self,
-        audit_service: Annotated["AuditService | None", Provide["audit_service"]] = None,
+        audit_service: Annotated[
+            "OrganizationAuditService | None", Provide["audit_service"]
+        ] = None,
     ) -> None:
         self.token = None
         self.audit_service = audit_service
@@ -120,11 +122,12 @@ class CalendarPermissionService:
         if self.audit_service is None:
             return
         self.audit_service.record(
-            organization_id=organization_id,
             action=action,
-            actor=actor,  # type: ignore[arg-type]
+            actor=actor,
+            # type: ignore[arg-type]
             subject=self.audit_service.subject_from_instance(token),
             diff=diff,
+            scope=self.audit_service.scope_from_organization_id(organization_id),
         )
 
     def initialize_with_token(self, token_str_base64: str, organization_id: int):

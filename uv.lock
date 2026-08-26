@@ -2316,6 +2316,18 @@ wheels = [
 ]
 
 [[package]]
+name = "vinta-django-audit-logs"
+version = "0.1.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "django" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f2/cf/4decc37b407bf2a0c02d16c7a013e7f1602c2a22a61b341a9997838043bf/vinta_django_audit_logs-0.1.2.tar.gz", hash = "sha256:998bc59fd883e4c23a6ccfbdbe7b6ecf90adfa31ff6f97ea1812705557912e04", size = 79565, upload-time = "2026-08-26T05:09:30.631Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/bf/cd/e0ec38c90cfdfd4f6e2ec117dd95ef2d3c6b60b8e9a7ca38e3b8418c46a6/vinta_django_audit_logs-0.1.2-py3-none-any.whl", hash = "sha256:9adf719b12ad4fa881216ed2c71b0fecb14d67162960dd2c8a45fac20ea4ed5a", size = 72553, upload-time = "2026-08-26T05:09:29.467Z" },
+]
+
+[[package]]
 name = "vinta-django-billing"
 version = "0.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2400,6 +2412,7 @@ dependencies = [
     { name = "strawberry-graphql-django" },
     { name = "stripe" },
     { name = "twilio" },
+    { name = "vinta-django-audit-logs" },
     { name = "vinta-django-billing" },
     { name = "vinta-django-orgs" },
     { name = "vintasend" },
@@ -2477,6 +2490,7 @@ requires-dist = [
     { name = "strawberry-graphql-django", specifier = ">=0.86.0,<0.87.0" },
     { name = "stripe", specifier = ">=15.3.1,<16" },
     { name = "twilio", specifier = ">=9.6.5,<10" },
+    { name = "vinta-django-audit-logs", specifier = ">=0.1.2,<0.2" },
     { name = "vinta-django-billing", specifier = ">=0.6,<0.7" },
     { name = "vinta-django-orgs", specifier = ">=0.5,<0.6" },
     { name = "vintasend", specifier = ">=1.2.0,<2" },

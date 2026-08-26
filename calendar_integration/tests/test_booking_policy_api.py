@@ -364,7 +364,7 @@ class TestBookingPolicyCreate:
         client = _auth_client(membership)
         cal = _make_calendar(org)
 
-        with patch("audit.services.persist_audit_record") as mock_task:
+        with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
             with django_capture_on_commit_callbacks(execute=True):
                 response = client.post(
                     _list_url(),
@@ -374,8 +374,8 @@ class TestBookingPolicyCreate:
         assert response.status_code == status.HTTP_201_CREATED, response.json()
         assert mock_task.delay.called
         payload = mock_task.delay.call_args[0][0]
-        assert payload["action"] == "create"
-        assert payload["subject"]["subject_type"] == "calendar_integration.BookingPolicy"
+        assert payload["action_key"] == "create"
+        assert payload["subject"]["subject_type"] == "calendar_integration.bookingpolicy"
 
     def test_cross_org_calendar_not_accepted(self):
         """Passing a calendar from a different org is rejected (FK queryset check)."""
@@ -500,7 +500,7 @@ class TestBookingPolicyUpdate:
         cal = _make_calendar(org)
         policy = create_booking_policy(calendar=cal, lead_time_seconds=60)
 
-        with patch("audit.services.persist_audit_record") as mock_task:
+        with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
             with django_capture_on_commit_callbacks(execute=True):
                 response = client.patch(
                     _detail_url(policy.pk),
@@ -510,7 +510,7 @@ class TestBookingPolicyUpdate:
         assert response.status_code == status.HTTP_200_OK, response.json()
         assert mock_task.delay.called
         payload = mock_task.delay.call_args[0][0]
-        assert payload["action"] == "update"
+        assert payload["action_key"] == "update"
         assert payload["diff"] is not None
 
 
@@ -590,21 +590,21 @@ class TestBookingPolicyDestroy:
         cal = _make_calendar(org)
         policy = create_booking_policy(calendar=cal)
 
-        with patch("audit.services.persist_audit_record") as mock_task:
+        with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
             with django_capture_on_commit_callbacks(execute=True):
                 response = client.delete(_detail_url(policy.pk))
 
         assert response.status_code == status.HTTP_204_NO_CONTENT
         assert mock_task.delay.called
         payload = mock_task.delay.call_args[0][0]
-        assert payload["action"] == "delete"
+        assert payload["action_key"] == "delete"
 
     def test_delete_absent_does_not_emit_audit_record(self, django_capture_on_commit_callbacks):
         """No audit record when the policy was already absent (truly idempotent)."""
         _, membership = _make_org_with_member(is_admin=True)
         client = _auth_client(membership)
 
-        with patch("audit.services.persist_audit_record") as mock_task:
+        with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
             with django_capture_on_commit_callbacks(execute=True):
                 response = client.delete(_detail_url(9_999_998))
 

@@ -36,7 +36,7 @@ from vinta_billing.models import MeteredOccurrence, Subscription
 from vinta_billing.services.entitlement_service import EntitlementService
 from vinta_billing.services.subscription_service import current_billing_period_start
 
-from audit.services import AuditService
+from audit_integration.services import OrganizationAuditService
 from calendar_integration.constants import CalendarProvider, CalendarType
 from calendar_integration.models import (
     AvailableTime,
@@ -98,7 +98,7 @@ def user(db: Any, organization: Organization) -> User:
 
 
 @pytest.fixture
-def audit_service() -> AuditService:
+def audit_service() -> OrganizationAuditService:
     from di_core.containers import container
 
     assert container is not None
@@ -118,7 +118,7 @@ def managed_calendar(db: Any, organization: Organization) -> Calendar:
 
 @pytest.fixture
 def availability_service(
-    organization: Organization, user: User, audit_service: AuditService
+    organization: Organization, user: User, audit_service: OrganizationAuditService
 ) -> AvailabilityService:
     context = CalendarServiceContext(
         organization=organization,
