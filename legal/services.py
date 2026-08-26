@@ -16,8 +16,8 @@ from typing import Annotated
 
 from dependency_injector.wiring import Provide, inject
 
-from audit.constants import AuditAction
-from audit.services import AuditService
+from audit_integration.constants import AuditAction
+from audit_integration.services import OrganizationAuditService
 from common.organization_services import memberships
 from common.utils.phone_utils import normalize_phone_number
 from legal.exceptions import NoPolicyDocumentError
@@ -32,7 +32,7 @@ class ConsentService:
     """Service for recording and querying per-user policy consent.
 
     ``UserConsent`` is a global, non-tenant-scoped model (consent is per-user,
-    not per-organization — see ``legal.models.UserConsent``). ``AuditService``,
+    not per-organization — see ``legal.models.UserConsent``). ``OrganizationAuditService``,
     however, records business writes against a tenant-scoped ``Audit`` table
     that requires an ``organization_id``. To bridge this, consent grants are
     audited against the user's active organization membership when exactly one
@@ -47,7 +47,7 @@ class ConsentService:
     @inject
     def __init__(
         self,
-        audit_service: Annotated[AuditService, Provide["audit_service"]],
+        audit_service: Annotated[OrganizationAuditService, Provide["audit_service"]],
     ) -> None:
         self.audit_service = audit_service
 
@@ -66,7 +66,7 @@ class ConsentService:
         Resolves the latest ``PolicyDocument`` of `document_type` (raises
         ``NoPolicyDocumentError`` when none has ever been published) and
         creates a new, version-pinned ``UserConsent`` row. Emits an
-        ``AuditService`` CREATE record when the user has exactly one active
+        ``OrganizationAuditService`` CREATE record when the user has exactly one active
         organization membership.
 
         :param user: The user granting consent.
@@ -138,7 +138,7 @@ class ConsentService:
         return UserConsent.objects.has_sms_consent_for_phone_and_user(phone, user)
 
     def _audit_consent_created(self, consent: UserConsent) -> None:
-        """Emit an AuditService CREATE record for a newly-created UserConsent.
+        """Emit an OrganizationAuditService CREATE record for a newly-created UserConsent.
 
         No-op (with a log line) when the consenting user has no unique active
         organization membership — see the class docstring for why that is
@@ -147,7 +147,7 @@ class ConsentService:
         membership = memberships.resolve_for_user(consent.user, strict=False)
         if membership is None:
             logger.info(
-                "Skipping AuditService record for UserConsent %s: user %s has no unique "
+                "Skipping OrganizationAuditService record for UserConsent %s: user %s has no unique "
                 "active organization membership.",
                 consent.id,
                 consent.user_id,
@@ -156,8 +156,8 @@ class ConsentService:
 
         actor = self.audit_service.actor_from_membership(membership)
         self.audit_service.record(
-            organization_id=membership.organization_id,
             action=AuditAction.CREATE,
             actor=actor,
             subject=self.audit_service.subject_from_instance(consent),
+            scope=self.audit_service.scope_from_organization_id(membership.organization_id),
         )

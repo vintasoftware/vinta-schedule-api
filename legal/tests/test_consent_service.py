@@ -1,7 +1,7 @@
 """Tests for ConsentService.
 
 Audit-emission tests mirror organizations/tests/test_audit.py: patch
-``audit.services.persist_audit_record`` and execute on_commit callbacks so the
+``vinta_audit_logs.tasks.persist_audit_record`` and execute on_commit callbacks so the
 enqueue happens, then inspect the serialized payloads.
 """
 
@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 import pytest
 from model_bakery import baker
 
-from audit.constants import AuditAction
+from audit_integration.constants import AuditAction
 from legal.exceptions import NoPolicyDocumentError
 from legal.factories import PolicyDocumentFactory, UserConsentFactory
 from legal.models import ConsentSource, PolicyDocumentType, UserConsent
@@ -114,7 +114,7 @@ class TestRecordConsent:
         PolicyDocumentFactory().create(document_type=PolicyDocumentType.SMS_CONSENT, version=1)
         service = ConsentService()
 
-        with patch("audit.services.persist_audit_record") as mock_task:
+        with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
             with django_capture_on_commit_callbacks(execute=True):
                 consent = service.record_consent(
                     user,
@@ -124,12 +124,12 @@ class TestRecordConsent:
 
         payloads = _payloads(mock_task)
         assert len(payloads) == 1
-        assert payloads[0]["organization_id"] == org.id
-        assert payloads[0]["action"] == AuditAction.CREATE
-        assert payloads[0]["subject"]["subject_type"] == "legal.UserConsent"
+        assert payloads[0]["scope"]["scope_key"] == str(org.id)
+        assert payloads[0]["action_key"] == AuditAction.CREATE
+        assert payloads[0]["subject"]["subject_type"] == "legal.userconsent"
         assert payloads[0]["subject"]["subject_id"] == str(consent.id)
-        assert payloads[0]["actor"]["actor_type"] == "membership"
-        assert payloads[0]["actor"]["actor_id"] == user.id
+        assert payloads[0]["actor"]["identity_type"] == "membership"
+        assert payloads[0]["actor"]["identity_key"] == str(user.id)
 
     def test_skips_audit_when_user_has_no_organization(
         self, django_capture_on_commit_callbacks
@@ -138,7 +138,7 @@ class TestRecordConsent:
         PolicyDocumentFactory().create(document_type=PolicyDocumentType.SMS_CONSENT, version=1)
         service = ConsentService()
 
-        with patch("audit.services.persist_audit_record") as mock_task:
+        with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
             with django_capture_on_commit_callbacks(execute=True):
                 service.record_consent(
                     user,
@@ -162,7 +162,7 @@ class TestRecordConsent:
         audit_service = Mock()
         service = ConsentService(audit_service=audit_service)
 
-        with patch("audit.services.persist_audit_record") as mock_task:
+        with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
             with django_capture_on_commit_callbacks(execute=True):
                 consent = service.record_consent(
                     user,

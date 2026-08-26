@@ -9,10 +9,10 @@ from django.db.models import Exists, OuterRef, QuerySet
 from django.utils import timezone
 
 from dependency_injector.wiring import Provide, inject
+from vinta_audit_logs.diff import compute_diff
 from vinta_billing.exceptions import OverLimitError
 
-from audit.constants import AuditAction
-from audit.diff import compute_diff
+from audit_integration.constants import AuditAction
 from calendar_integration.constants import (
     CalendarProvider,
     CalendarType,
@@ -74,7 +74,7 @@ from users.models import User
 if TYPE_CHECKING:
     from vinta_billing.services.entitlement_service import EntitlementService
 
-    from audit.services import AuditService
+    from audit_integration.services import OrganizationAuditService
     from calendar_integration.services.booking_policy_service import BookingPolicyService
     from calendar_integration.services.calendar_service import CalendarService
     from public_api.models import SystemUser
@@ -126,7 +126,9 @@ class CalendarGroupService:
         calendar_permission_service: Annotated[
             "CalendarPermissionService | None", Provide["calendar_permission_service"]
         ] = None,
-        audit_service: Annotated["AuditService | None", Provide["audit_service"]] = None,
+        audit_service: Annotated[
+            "OrganizationAuditService | None", Provide["audit_service"]
+        ] = None,
         booking_policy_service: Annotated[
             "BookingPolicyService | None", Provide["booking_policy_service"]
         ] = None,
@@ -159,7 +161,6 @@ class CalendarGroupService:
         user_or_token = getattr(self.calendar_service, "user_or_token", None)
         permission_service = getattr(self.calendar_service, "calendar_permission_service", None)
         self.audit_service.record(
-            organization_id=self.organization.id,
             action=action,
             actor=self.audit_service.actor_from_user_or_token(
                 user_or_token,
@@ -168,6 +169,7 @@ class CalendarGroupService:
             ),
             subject=self.audit_service.subject_from_instance(subject_instance),
             diff=diff,
+            scope=self.audit_service.scope_from_organization_id(self.organization.id),
         )
 
     def initialize(self, organization: Organization) -> None:
@@ -464,7 +466,7 @@ class CalendarGroupService:
             permission_service = getattr(self.calendar_service, "calendar_permission_service", None)
             # One actor snapshot for every row. ``user_or_token``, the
             # organization and the permission service are all loop-invariant, and
-            # ``ActorSnapshot`` is frozen, so the answer cannot differ between
+            # ``IdentitySnapshot`` is frozen, so the answer cannot differ between
             # iterations -- but building it per row cost a membership lookup
             # *plus* the permission query behind
             # ``membership_role_label`` (which derives the published role name
@@ -478,10 +480,10 @@ class CalendarGroupService:
             )
             for row in rows:
                 self.audit_service.record(
-                    organization_id=self.organization.id,
                     action=AuditAction.DELETE,
                     actor=actor,
                     subject=self.audit_service.subject_from_instance(row),
+                    scope=self.audit_service.scope_from_organization_id(self.organization.id),
                 )
         queryset.delete()
 
@@ -640,16 +642,16 @@ class CalendarGroupService:
         is bound, so instrumentation never breaks a write path.
 
         ``acting_user`` accepts a ``SystemUser`` too (public-API batch write) --
-        ``AuditService.actor_from_user_or_token`` already resolves either.
+        ``OrganizationAuditService.actor_from_user_or_token`` already resolves either.
         """
         if self.audit_service is None or self.organization is None:
             return
         self.audit_service.record(
-            organization_id=self.organization.id,
             action=action,
             actor=self.audit_service.actor_from_user_or_token(acting_user, self.organization.id),
             subject=self.audit_service.subject_from_instance(subject_instance),
             diff=diff,
+            scope=self.audit_service.scope_from_organization_id(self.organization.id),
         )
 
     def _group_scoped_available_times_expanded(
@@ -1243,11 +1245,11 @@ class CalendarGroupService:
         if self.audit_service is None or self.organization is None:
             return
         self.audit_service.record(
-            organization_id=self.organization.id,
             action=action,
             actor=self.audit_service.actor_from_user_or_token(acting_user, self.organization.id),
             subject=self.audit_service.subject_from_instance(subject_instance),
             diff=diff,
+            scope=self.audit_service.scope_from_organization_id(self.organization.id),
         )
 
     def _group_scoped_blocked_times_expanded(
@@ -1789,11 +1791,11 @@ class CalendarGroupService:
         if self.audit_service is None or self.organization is None:
             return
         self.audit_service.record(
-            organization_id=self.organization.id,
             action=action,
             actor=self.audit_service.actor_from_user_or_token(acting_user, self.organization.id),
             subject=self.audit_service.subject_from_instance(subject_instance),
             diff=diff,
+            scope=self.audit_service.scope_from_organization_id(self.organization.id),
         )
 
     def _find_matching_group_scoped_quota_rule(

@@ -2,7 +2,7 @@
 
 Tests exercise the full sync diff engine path via ``CalendarSyncService._execute_calendar_sync``.
 A real ``ExternalEventChangeRequestService`` is wired in (with its ``audit_service`` set to a
-real ``AuditService`` for audit-assertion tests and ``None`` for non-audit tests). The adapter
+real ``OrganizationAuditService`` for audit-assertion tests and ``None`` for non-audit tests). The adapter
 is a MagicMock. DB writes are exercised against the real test database.
 
 Test matrix:
@@ -30,7 +30,7 @@ from django.core.exceptions import ImproperlyConfigured
 import pytest
 from allauth.socialaccount.models import SocialAccount
 
-from audit.constants import AuditAction
+from audit_integration.constants import AuditAction
 from calendar_integration.constants import (
     CalendarProvider,
     CalendarSyncStatus,
@@ -212,10 +212,10 @@ def change_request_service() -> ExternalEventChangeRequestService:
 
 @pytest.fixture
 def change_request_service_with_audit() -> ExternalEventChangeRequestService:
-    """Service with a real AuditService for audit-assertion tests.
+    """Service with a real OrganizationAuditService for audit-assertion tests.
 
     Uses the DI container to construct the service so the repository is wired
-    correctly (AuditService.__init__ requires a repository via @inject).
+    correctly (OrganizationAuditService.__init__ requires a repository via @inject).
     """
     from di_core.containers import container
 
@@ -654,23 +654,23 @@ def test_change_request_deletion_creation_records_audit_entry(
         external_event_change_request_service=change_request_service_with_audit,
     )
 
-    with patch("audit.services.persist_audit_record") as mock_task:
+    with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
         with django_capture_on_commit_callbacks(execute=True):
             service._execute_calendar_sync(calendar_sync, sync_token="tok-prev")
 
     payloads = [call.args[0] for call in mock_task.delay.call_args_list]
 
     # Find the change-request audit entry.
-    cr_payloads = [p for p in payloads if p["action"] == AuditAction.EXTERNAL_CHANGE_REQUESTED]
+    cr_payloads = [p for p in payloads if p["action_key"] == AuditAction.EXTERNAL_CHANGE_REQUESTED]
     assert len(cr_payloads) == 1
     payload = cr_payloads[0]
 
-    assert payload["organization_id"] == organization_change_request.id
-    assert payload["actor"]["actor_type"] == "system"
-    assert payload["actor"]["actor_id"] is None
+    assert payload["scope"]["scope_key"] == str(organization_change_request.id)
+    assert payload["actor"]["identity_type"] == "system"
+    assert payload["actor"]["identity_key"] == ""
 
     # The subject is the ExternalEventChangeRequest.
-    assert payload["subject"]["subject_type"] == "calendar_integration.ExternalEventChangeRequest"
+    assert payload["subject"]["subject_type"] == "calendar_integration.externaleventchangerequest"
 
     # The diff must show the retained values as "old" with None as "new" (deletion intent).
     assert "title" in payload["diff"]

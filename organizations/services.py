@@ -8,6 +8,7 @@ from django.db import IntegrityError, transaction
 
 from allauth.socialaccount.models import SocialAccount
 from dependency_injector.wiring import Provide, inject
+from vinta_audit_logs.diff import compute_diff
 from vinta_billing.exceptions import OverLimitError
 from vinta_billing.services.entitlement_service import EntitlementService
 from vinta_billing.services.subscription_service import SubscriptionService
@@ -17,9 +18,8 @@ from vintasend.services.notification_service import (
     NotificationTypes,
 )
 
-from audit.constants import AuditAction
-from audit.diff import compute_diff
-from audit.services import AuditService
+from audit_integration.constants import AuditAction
+from audit_integration.services import OrganizationAuditService
 from calendar_integration.constants import CalendarSyncTriggerSource
 from calendar_integration.models import (
     Calendar,
@@ -115,7 +115,7 @@ class OrganizationService:
             WebhookMembershipSideEffectsService,
             Provide["webhook_membership_side_effects_service"],
         ],
-        audit_service: Annotated[AuditService, Provide["audit_service"]],
+        audit_service: Annotated[OrganizationAuditService, Provide["audit_service"]],
         subscription_service: Annotated[SubscriptionService, Provide["subscription_service"]],
         entitlement_service: Annotated[EntitlementService, Provide["entitlement_service"]],
     ):
@@ -253,17 +253,19 @@ class OrganizationService:
         # organization creation and their own admin membership.
         actor = self.audit_service.actor_from_membership(admin_membership)
         self.audit_service.record(
-            organization_id=self.organization.id,
             action=AuditAction.CREATE,
             actor=actor,
             subject=self.audit_service.subject_from_instance(self.organization),
+            scope=self.audit_service.scope_from_organization_id(self.organization.id),
         )
         self.audit_service.record(
-            organization_id=self.organization.id,
             action=AuditAction.CREATE,
             actor=actor,
             subject=self.audit_service.subject_from_instance(admin_membership),
-            affected_membership_ids=[admin_membership.user_id],
+            scope=self.audit_service.scope_from_organization_id(self.organization.id),
+            affected=self.audit_service.affected_from_membership_ids(
+                self.organization.id, [admin_membership.user_id]
+            ),
         )
 
         if should_sync_rooms:
@@ -525,11 +527,11 @@ class OrganizationService:
             else self.audit_service.system_actor()
         )
         self.audit_service.record(
-            organization_id=organization.id,
             action=AuditAction.CREATE if created else AuditAction.UPDATE,
             actor=actor,
             subject=self.audit_service.subject_from_instance(invitation),
             diff=diff,
+            scope=self.audit_service.scope_from_organization_id(organization.id),
         )
 
         # Attach the raw token as a transient attribute so the caller can surface it once.
@@ -656,18 +658,20 @@ class OrganizationService:
                 # invitation transitions to accepted. The user is the actor for both.
                 actor = self.audit_service.actor_from_membership(membership)
                 self.audit_service.record(
-                    organization_id=invitation.organization_id,
                     action=AuditAction.CREATE,
                     actor=actor,
                     subject=self.audit_service.subject_from_instance(membership),
-                    affected_membership_ids=[membership.user_id],
+                    scope=self.audit_service.scope_from_organization_id(invitation.organization_id),
+                    affected=self.audit_service.affected_from_membership_ids(
+                        invitation.organization_id, [membership.user_id]
+                    ),
                 )
                 self.audit_service.record(
-                    organization_id=invitation.organization_id,
                     action=AuditAction.UPDATE,
                     actor=actor,
                     subject=self.audit_service.subject_from_instance(invitation),
                     diff={"accepted_at": {"old": None, "new": now.isoformat()}},
+                    scope=self.audit_service.scope_from_organization_id(invitation.organization_id),
                 )
                 return membership
 
@@ -772,18 +776,24 @@ class OrganizationService:
             # accept_invitation (membership CREATE + invitation accepted UPDATE).
             actor = self.audit_service.actor_from_membership(membership)
             self.audit_service.record(
-                organization_id=pending_invitation.organization_id,
                 action=AuditAction.CREATE,
                 actor=actor,
                 subject=self.audit_service.subject_from_instance(membership),
-                affected_membership_ids=[membership.user_id],
+                scope=self.audit_service.scope_from_organization_id(
+                    pending_invitation.organization_id
+                ),
+                affected=self.audit_service.affected_from_membership_ids(
+                    pending_invitation.organization_id, [membership.user_id]
+                ),
             )
             self.audit_service.record(
-                organization_id=pending_invitation.organization_id,
                 action=AuditAction.UPDATE,
                 actor=actor,
                 subject=self.audit_service.subject_from_instance(pending_invitation),
                 diff={"accepted_at": {"old": None, "new": now.isoformat()}},
+                scope=self.audit_service.scope_from_organization_id(
+                    pending_invitation.organization_id
+                ),
             )
             return membership
 
@@ -828,7 +838,6 @@ class OrganizationService:
         # Audit: revoking an invitation expires it immediately. No acting User is
         # threaded into this method, so the actor is the system.
         self.audit_service.record(
-            organization_id=invitation.organization_id,
             action=AuditAction.UPDATE,
             actor=self.audit_service.system_actor(),
             subject=self.audit_service.subject_from_instance(invitation),
@@ -838,6 +847,7 @@ class OrganizationService:
                     "new": now.isoformat(),
                 }
             },
+            scope=self.audit_service.scope_from_organization_id(invitation.organization_id),
         )
 
     @transaction.atomic()

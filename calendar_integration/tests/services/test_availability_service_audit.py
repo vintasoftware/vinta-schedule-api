@@ -1,8 +1,8 @@
 """Audit-emission tests for AvailabilityService business write paths.
 
-Each test constructs a real AvailabilityService (with a real AuditService bound on
+Each test constructs a real AvailabilityService (with a real OrganizationAuditService bound on
 the context) and asserts that the expected audit record(s) are enqueued. We patch
-``audit.services.persist_audit_record`` and execute the on_commit callbacks so the
+``vinta_audit_logs.tasks.persist_audit_record`` and execute the on_commit callbacks so the
 enqueue happens, then inspect the serialized payloads.
 
 The AvailabilityService is built directly (bypassing the CalendarService facade)
@@ -18,8 +18,8 @@ from unittest.mock import patch
 
 import pytest
 
-from audit.constants import AuditAction
-from audit.services import AuditService
+from audit_integration.constants import AuditAction
+from audit_integration.services import OrganizationAuditService
 from calendar_integration.constants import CalendarProvider
 from calendar_integration.models import BlockedTime, Calendar
 from calendar_integration.services.availability_service import AvailabilityService
@@ -66,7 +66,7 @@ def user(db: Any, organization: Organization) -> User:
 
 
 @pytest.fixture
-def audit_service() -> AuditService:
+def audit_service() -> OrganizationAuditService:
     from di_core.containers import container
 
     return container.audit_service()
@@ -95,7 +95,7 @@ def managed_calendar(db: Any, organization: Organization) -> Calendar:
 
 @pytest.fixture
 def context(
-    organization: Organization, user: User, audit_service: AuditService
+    organization: Organization, user: User, audit_service: OrganizationAuditService
 ) -> CalendarServiceContext:
     return CalendarServiceContext(
         organization=organization,
@@ -129,7 +129,7 @@ def test_create_blocked_time_records_create(
     calendar: Calendar,
     django_capture_on_commit_callbacks,
 ) -> None:
-    with patch("audit.services.persist_audit_record") as mock_task:
+    with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
         with django_capture_on_commit_callbacks(execute=True):
             bt = service.create_blocked_time(
                 calendar=calendar,
@@ -141,8 +141,8 @@ def test_create_blocked_time_records_create(
 
     payloads = _payloads(mock_task)
     assert len(payloads) == 1
-    assert payloads[0]["action"] == AuditAction.CREATE
-    assert payloads[0]["subject"]["subject_type"] == "calendar_integration.BlockedTime"
+    assert payloads[0]["action_key"] == AuditAction.CREATE
+    assert payloads[0]["subject"]["subject_type"] == "calendar_integration.blockedtime"
     assert payloads[0]["subject"]["subject_id"] == str(bt.pk)
     assert payloads[0]["subject"]["subject_label"] == "Focus"
 
@@ -166,7 +166,7 @@ def test_update_blocked_time_records_update_with_reason_diff(
         reason="Old reason",
     )
 
-    with patch("audit.services.persist_audit_record") as mock_task:
+    with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
         with django_capture_on_commit_callbacks(execute=True):
             service.update_blocked_time(
                 calendar=calendar,
@@ -176,8 +176,8 @@ def test_update_blocked_time_records_update_with_reason_diff(
 
     payloads = _payloads(mock_task)
     assert len(payloads) == 1
-    assert payloads[0]["action"] == AuditAction.UPDATE
-    assert payloads[0]["subject"]["subject_type"] == "calendar_integration.BlockedTime"
+    assert payloads[0]["action_key"] == AuditAction.UPDATE
+    assert payloads[0]["subject"]["subject_type"] == "calendar_integration.blockedtime"
     assert payloads[0]["diff"] == {"reason": {"old": "Old reason", "new": "New reason"}}
 
 
@@ -195,7 +195,7 @@ def test_update_blocked_time_time_only_records_update_with_null_diff(
         reason="Same",
     )
 
-    with patch("audit.services.persist_audit_record") as mock_task:
+    with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
         with django_capture_on_commit_callbacks(execute=True):
             service.update_blocked_time(
                 calendar=calendar,
@@ -206,7 +206,7 @@ def test_update_blocked_time_time_only_records_update_with_null_diff(
 
     payloads = _payloads(mock_task)
     assert len(payloads) == 1
-    assert payloads[0]["action"] == AuditAction.UPDATE
+    assert payloads[0]["action_key"] == AuditAction.UPDATE
     # reason unchanged -> compute_diff returns None.
     assert payloads[0]["diff"] is None
 
@@ -231,14 +231,14 @@ def test_delete_blocked_time_records_delete(
     )
     bt_pk = bt.pk
 
-    with patch("audit.services.persist_audit_record") as mock_task:
+    with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
         with django_capture_on_commit_callbacks(execute=True):
             service.delete_blocked_time(calendar=calendar, blocked_time_id=bt_pk)
 
     payloads = _payloads(mock_task)
     assert len(payloads) == 1
-    assert payloads[0]["action"] == AuditAction.DELETE
-    assert payloads[0]["subject"]["subject_type"] == "calendar_integration.BlockedTime"
+    assert payloads[0]["action_key"] == AuditAction.DELETE
+    assert payloads[0]["subject"]["subject_type"] == "calendar_integration.blockedtime"
     assert payloads[0]["subject"]["subject_id"] == str(bt_pk)
     assert not BlockedTime.original_manager.filter(pk=bt_pk).exists()
 
@@ -254,7 +254,7 @@ def test_create_available_time_records_create(
     managed_calendar: Calendar,
     django_capture_on_commit_callbacks,
 ) -> None:
-    with patch("audit.services.persist_audit_record") as mock_task:
+    with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
         with django_capture_on_commit_callbacks(execute=True):
             at = service.create_available_time(
                 calendar=managed_calendar,
@@ -265,8 +265,8 @@ def test_create_available_time_records_create(
 
     payloads = _payloads(mock_task)
     assert len(payloads) == 1
-    assert payloads[0]["action"] == AuditAction.CREATE
-    assert payloads[0]["subject"]["subject_type"] == "calendar_integration.AvailableTime"
+    assert payloads[0]["action_key"] == AuditAction.CREATE
+    assert payloads[0]["subject"]["subject_type"] == "calendar_integration.availabletime"
     assert payloads[0]["subject"]["subject_id"] == str(at.pk)
     # AvailableTime has no human-readable scalar -> no label.
     assert payloads[0]["subject"]["subject_label"] is None
@@ -292,7 +292,7 @@ def test_create_recurring_blocked_time_exception_records_update_on_parent(
         rrule_string="RRULE:FREQ=DAILY;COUNT=5",
     )
 
-    with patch("audit.services.persist_audit_record") as mock_task:
+    with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
         with django_capture_on_commit_callbacks(execute=True):
             service.create_recurring_blocked_time_exception(
                 parent_blocked_time=parent,
@@ -307,8 +307,8 @@ def test_create_recurring_blocked_time_exception_records_update_on_parent(
     update_records = [
         p
         for p in _payloads(mock_task)
-        if p["action"] == AuditAction.UPDATE
-        and p["subject"]["subject_type"] == "calendar_integration.BlockedTime"
+        if p["action_key"] == AuditAction.UPDATE
+        and p["subject"]["subject_type"] == "calendar_integration.blockedtime"
         and p["subject"]["subject_id"] == parent_subject_id
     ]
     assert len(update_records) == 1
@@ -329,7 +329,7 @@ def test_create_recurring_available_time_exception_records_update_on_parent(
         rrule_string="RRULE:FREQ=DAILY;COUNT=5",
     )
 
-    with patch("audit.services.persist_audit_record") as mock_task:
+    with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
         with django_capture_on_commit_callbacks(execute=True):
             service.create_recurring_available_time_exception(
                 parent_available_time=parent,
@@ -341,8 +341,8 @@ def test_create_recurring_available_time_exception_records_update_on_parent(
     update_records = [
         p
         for p in _payloads(mock_task)
-        if p["action"] == AuditAction.UPDATE
-        and p["subject"]["subject_type"] == "calendar_integration.AvailableTime"
+        if p["action_key"] == AuditAction.UPDATE
+        and p["subject"]["subject_type"] == "calendar_integration.availabletime"
         and p["subject"]["subject_id"] == parent_subject_id
     ]
     assert len(update_records) == 1
@@ -364,7 +364,7 @@ def test_create_recurring_blocked_time_bulk_modification_records_update_on_paren
         rrule_string="RRULE:FREQ=DAILY;COUNT=5",
     )
 
-    with patch("audit.services.persist_audit_record") as mock_task:
+    with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
         with django_capture_on_commit_callbacks(execute=True):
             service.create_recurring_blocked_time_bulk_modification(
                 parent_blocked_time=parent,
@@ -376,8 +376,8 @@ def test_create_recurring_blocked_time_bulk_modification_records_update_on_paren
     update_records = [
         p
         for p in _payloads(mock_task)
-        if p["action"] == AuditAction.UPDATE
-        and p["subject"]["subject_type"] == "calendar_integration.BlockedTime"
+        if p["action_key"] == AuditAction.UPDATE
+        and p["subject"]["subject_type"] == "calendar_integration.blockedtime"
         and p["subject"]["subject_id"] == parent_subject_id
     ]
     assert len(update_records) == 1
@@ -398,7 +398,7 @@ def test_create_recurring_available_time_bulk_modification_records_update_on_par
         rrule_string="RRULE:FREQ=DAILY;COUNT=5",
     )
 
-    with patch("audit.services.persist_audit_record") as mock_task:
+    with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
         with django_capture_on_commit_callbacks(execute=True):
             service.create_recurring_available_time_bulk_modification(
                 parent_available_time=parent,
@@ -410,8 +410,8 @@ def test_create_recurring_available_time_bulk_modification_records_update_on_par
     update_records = [
         p
         for p in _payloads(mock_task)
-        if p["action"] == AuditAction.UPDATE
-        and p["subject"]["subject_type"] == "calendar_integration.AvailableTime"
+        if p["action_key"] == AuditAction.UPDATE
+        and p["subject"]["subject_type"] == "calendar_integration.availabletime"
         and p["subject"]["subject_id"] == parent_subject_id
     ]
     assert len(update_records) == 1
@@ -445,7 +445,7 @@ def test_no_audit_service_skips_emission(
         host=FakeHost(organization=organization),
     )
 
-    with patch("audit.services.persist_audit_record") as mock_task:
+    with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
         with django_capture_on_commit_callbacks(execute=True):
             bt = service.create_blocked_time(
                 calendar=calendar,

@@ -33,7 +33,7 @@ from django.core.exceptions import ImproperlyConfigured
 import pytest
 from allauth.socialaccount.models import SocialAccount
 
-from audit.constants import AuditAction, AuditActorType
+from audit_integration.constants import AuditAction, AuditActorType
 from calendar_integration.constants import (
     CalendarProvider,
     CalendarSyncStatus,
@@ -227,7 +227,7 @@ def change_request_service() -> ExternalEventChangeRequestService:
 
 @pytest.fixture
 def change_request_service_with_audit() -> ExternalEventChangeRequestService:
-    """Service with a real AuditService for audit-assertion tests."""
+    """Service with a real OrganizationAuditService for audit-assertion tests."""
     from di_core.containers import container
 
     return container.external_event_change_request_service()
@@ -929,20 +929,20 @@ def test_forbidden_update_records_auto_undone_audit_entry(
         external_event_change_request_service=change_request_service_with_audit,
     )
 
-    with patch("audit.services.persist_audit_record") as mock_task:
+    with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
         with django_capture_on_commit_callbacks(execute=True):
             service._execute_calendar_sync(calendar_sync, sync_token="tok-prev")
 
     payloads = [call.args[0] for call in mock_task.delay.call_args_list]
     auto_undone_payloads = [
-        p for p in payloads if p["action"] == AuditAction.EXTERNAL_CHANGE_AUTO_UNDONE
+        p for p in payloads if p["action_key"] == AuditAction.EXTERNAL_CHANGE_AUTO_UNDONE
     ]
     assert len(auto_undone_payloads) == 1
     payload = auto_undone_payloads[0]
 
-    assert payload["organization_id"] == organization_forbidden.id
-    assert payload["actor"]["actor_type"] == AuditActorType.SYSTEM
-    assert payload["subject"]["subject_type"] == "calendar_integration.ExternalEventChangeRequest"
+    assert payload["scope"]["scope_key"] == str(organization_forbidden.id)
+    assert payload["actor"]["identity_type"] == AuditActorType.SYSTEM
+    assert payload["subject"]["subject_type"] == "calendar_integration.externaleventchangerequest"
     # Diff: old=proposed (inbound), new=retained (what we restore).
     assert "title" in payload["diff"]
     assert payload["diff"]["title"]["old"] == "Inbound Title"
@@ -984,20 +984,20 @@ def test_forbidden_delete_records_auto_undone_audit_entry(
         external_event_change_request_service=change_request_service_with_audit,
     )
 
-    with patch("audit.services.persist_audit_record") as mock_task:
+    with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
         with django_capture_on_commit_callbacks(execute=True):
             service._execute_calendar_sync(calendar_sync, sync_token="tok-prev")
 
     payloads = [call.args[0] for call in mock_task.delay.call_args_list]
     auto_undone_payloads = [
-        p for p in payloads if p["action"] == AuditAction.EXTERNAL_CHANGE_AUTO_UNDONE
+        p for p in payloads if p["action_key"] == AuditAction.EXTERNAL_CHANGE_AUTO_UNDONE
     ]
     assert len(auto_undone_payloads) == 1
     payload = auto_undone_payloads[0]
 
-    assert payload["organization_id"] == organization_forbidden.id
-    assert payload["actor"]["actor_type"] == AuditActorType.SYSTEM
-    assert payload["subject"]["subject_type"] == "calendar_integration.ExternalEventChangeRequest"
+    assert payload["scope"]["scope_key"] == str(organization_forbidden.id)
+    assert payload["actor"]["identity_type"] == AuditActorType.SYSTEM
+    assert payload["subject"]["subject_type"] == "calendar_integration.externaleventchangerequest"
     # For DELETE: old=None (nothing, event was gone), new=retained values (what we restore).
     assert "title" in payload["diff"]
     assert payload["diff"]["title"]["old"] is None

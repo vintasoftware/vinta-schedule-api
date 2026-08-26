@@ -19,7 +19,6 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.response import Response
 
-from audit.services import AuditService
 from calendar_integration.constants import (
     CalendarProvider,
     CalendarSyncTriggerSource,
@@ -2630,9 +2629,16 @@ class BookingPolicyViewSet(VintaScheduleModelViewSet):
 
         booking_policy_service.initialize(membership.organization)
 
-        # Resolve the acting principal for audit records.
-        actor = AuditService.actor_from_user(self.request.user, membership.organization_id)
-        booking_policy_service.set_actor(actor)
+        # Resolve the acting principal for audit records. The builder is a hook on
+        # the service (a project can override how a user becomes an actor), so it
+        # is called on the instance the service already holds rather than on the
+        # class.
+        if booking_policy_service.audit_service is not None:
+            booking_policy_service.set_actor(
+                booking_policy_service.audit_service.actor_from_user(
+                    self.request.user, membership.organization_id
+                )
+            )
 
         return booking_policy_service
 

@@ -12,12 +12,12 @@ from django.utils import timezone
 import strawberry
 from dependency_injector.wiring import Provide, inject
 from graphql import GraphQLError
+from vinta_audit_logs.diff import compute_diff
 from vinta_billing.exceptions import OverLimitError
 from vinta_billing.services.subscription_service import SubscriptionService
 
-from audit.constants import AuditAction
-from audit.diff import compute_diff
-from audit.services import AuditService
+from audit_integration.constants import AuditAction
+from audit_integration.services import OrganizationAuditService
 from calendar_integration.constants import CalendarType
 from calendar_integration.exceptions import (
     BookingPolicyViolationError,
@@ -305,9 +305,9 @@ def get_booking_policy_permission_service(
 
 @inject
 def get_audit_service(
-    audit_service: Annotated["AuditService | None", Provide["audit_service"]] = None,
-) -> "AuditService":
-    """Resolve the AuditService from the DI container.
+    audit_service: Annotated["OrganizationAuditService | None", Provide["audit_service"]] = None,
+) -> "OrganizationAuditService":
+    """Resolve the OrganizationAuditService from the DI container.
 
     Used by mutations that write directly (no dedicated service layer holding
     its own injected ``audit_service``) -- e.g. ``update_branding`` -- mirroring
@@ -1697,7 +1697,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         replaces an existing row records an UPDATE with a diff naming only the
         fields that changed, using the before-state captured BEFORE the
         transaction starts. Actor is the token's system user
-        (``AuditService.actor_from_system_user``), matching the actor
+        (``OrganizationAuditService.actor_from_system_user``), matching the actor
         derivation already used by the BookingPolicy partner-API mutations.
 
         The token's OrganizationResourceAccess must include the BRANDING resource.
@@ -1784,24 +1784,24 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             )
 
         audit_service = get_audit_service()
-        actor = AuditService.actor_from_system_user(info.context.request.public_api_system_user)
+        actor = audit_service.actor_from_system_user(info.context.request.public_api_system_user)
         subject = audit_service.subject_from_instance(branding, label=branding.app_name)
         if created:
             audit_service.record(
-                organization_id=acting_org.id,
                 action=AuditAction.CREATE,
                 actor=actor,
                 subject=subject,
+                scope=audit_service.scope_from_organization_id(acting_org.id),
             )
         else:
             after_state = branding_diff_state(branding)
             diff = compute_diff(before_state or {}, after_state)
             audit_service.record(
-                organization_id=acting_org.id,
                 action=AuditAction.UPDATE,
                 actor=actor,
                 subject=subject,
                 diff=diff,
+                scope=audit_service.scope_from_organization_id(acting_org.id),
             )
 
         # Return the branding without internal fields (no support_email, no redirect_url).
@@ -4005,7 +4005,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         request: PublicApiHttpRequest = info.context.request
         service = get_booking_policy_mutation_dependencies()
         service.initialize(org)
-        actor = AuditService.actor_from_system_user(request.public_api_system_user)
+        actor = get_audit_service().actor_from_system_user(request.public_api_system_user)
         service.set_actor(actor)
 
         # Owner-scope enforcement: a membership-scoped token may only manage its
@@ -4080,7 +4080,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         request: PublicApiHttpRequest = info.context.request
         service = get_booking_policy_mutation_dependencies()
         service.initialize(org)
-        actor = AuditService.actor_from_system_user(request.public_api_system_user)
+        actor = get_audit_service().actor_from_system_user(request.public_api_system_user)
         service.set_actor(actor)
 
         try:
@@ -4127,7 +4127,7 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         request: PublicApiHttpRequest = info.context.request
         service = get_booking_policy_mutation_dependencies()
         service.initialize(org)
-        actor = AuditService.actor_from_system_user(request.public_api_system_user)
+        actor = get_audit_service().actor_from_system_user(request.public_api_system_user)
         service.set_actor(actor)
 
         # Idempotent: a missing policy is a no-op success.

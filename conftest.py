@@ -319,7 +319,7 @@ def _seeded_billing_catalog_is_missing() -> bool:
     Deferred import for the reason given on ``assert_no_unbound_scoped_queries``: this
     module is imported during collection, before ``django.setup()``.
     """
-    from payments.models import BillingPlan
+    from vinta_billing.models import BillingPlan
 
     return not BillingPlan.objects.filter(is_default_for_new_organizations=True).exists()
 

@@ -39,11 +39,11 @@ from django.db import transaction
 from django.db.models import Q, prefetch_related_objects
 from django.utils import timezone
 
+from vinta_audit_logs.diff import compute_diff
 from vinta_billing.exceptions import OverLimitError
 from vinta_billing.services.subscription_service import resolve_billing_period
 
-from audit.constants import AuditAction, AuditActorType
-from audit.diff import compute_diff
+from audit_integration.constants import AuditAction, AuditActorType
 from calendar_integration.constants import CalendarType
 from calendar_integration.exceptions import NoAvailableTimeWindowsError
 from calendar_integration.models import (
@@ -293,17 +293,17 @@ class CalendarEventService:
         )
         affected = self._event_attendee_membership_ids(event)
         # The acting member is an affected party (the host/organizer). actor_from_user
-        # only yields a MEMBERSHIP actor when a real membership exists, so actor_id is a
-        # valid membership user_id to include.
-        if actor.actor_type == AuditActorType.MEMBERSHIP and actor.actor_id is not None:
-            affected.add(actor.actor_id)
+        # only yields a MEMBERSHIP actor when a real membership exists, so the identity
+        # key is a valid membership user_id to include.
+        if actor.identity_type == AuditActorType.MEMBERSHIP and actor.identity_key:
+            affected.add(int(actor.identity_key))
         audit_service.record(
-            organization_id=organization.id,
             action=action,
             actor=actor,
             subject=audit_service.subject_from_instance(event, label=event.title),
-            affected_membership_ids=sorted(affected),
             diff=diff,
+            scope=audit_service.scope_from_organization_id(organization.id),
+            affected=audit_service.affected_from_membership_ids(organization.id, sorted(affected)),
         )
 
     def _get_calendar_by_id(self, calendar_id: int) -> Calendar:

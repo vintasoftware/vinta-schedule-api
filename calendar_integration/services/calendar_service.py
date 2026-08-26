@@ -41,10 +41,10 @@ from django.utils import timezone as _tz
 
 from allauth.socialaccount.models import SocialAccount, SocialToken
 from dependency_injector.wiring import Provide, inject
+from vinta_audit_logs.diff import compute_diff
 from vinta_billing.exceptions import OverLimitError
 
-from audit.constants import AuditAction
-from audit.diff import compute_diff
+from audit_integration.constants import AuditAction
 from calendar_integration.constants import (
     CalendarProvider,
     CalendarSyncTriggerSource,
@@ -155,7 +155,7 @@ from users.models import User
 if TYPE_CHECKING:
     from vinta_billing.services.entitlement_service import EntitlementService
 
-    from audit.services import AuditService
+    from audit_integration.services import OrganizationAuditService
     from calendar_integration.services.external_event_change_request_service import (
         ExternalEventChangeRequestService,
     )
@@ -225,7 +225,9 @@ class CalendarService(BaseCalendarService):
         calendar_permission_service: Annotated[
             "CalendarPermissionService | None", Provide["calendar_permission_service"]
         ] = None,
-        audit_service: Annotated["AuditService | None", Provide["audit_service"]] = None,
+        audit_service: Annotated[
+            "OrganizationAuditService | None", Provide["audit_service"]
+        ] = None,
         external_event_change_request_service: Annotated[
             "ExternalEventChangeRequestService | None",
             Provide["external_event_change_request_service"],
@@ -282,7 +284,6 @@ class CalendarService(BaseCalendarService):
         if self.audit_service is None or self.organization is None:
             return
         self.audit_service.record(
-            organization_id=self.organization.id,
             action=action,
             actor=self.audit_service.actor_from_user_or_token(
                 self.user_or_token,
@@ -293,6 +294,7 @@ class CalendarService(BaseCalendarService):
             ),
             subject=self.audit_service.subject_from_instance(calendar, label=calendar.name),
             diff=diff,
+            scope=self.audit_service.scope_from_organization_id(self.organization.id),
         )
 
     def _grant_calendar_owner_permissions(self, calendar: Calendar) -> None:

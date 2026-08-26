@@ -27,7 +27,7 @@ from unittest.mock import patch
 
 import pytest
 
-from audit.constants import AuditAction, AuditActorType
+from audit_integration.constants import AuditAction, AuditActorType
 from calendar_integration.constants import (
     CalendarProvider,
     ExternalEventChangeKind,
@@ -130,7 +130,7 @@ def service() -> ExternalEventChangeRequestService:
 
 @pytest.fixture
 def service_with_audit() -> ExternalEventChangeRequestService:
-    """Service with a real AuditService wired via DI container."""
+    """Service with a real OrganizationAuditService wired via DI container."""
     from di_core.containers import container
 
     return container.external_event_change_request_service()
@@ -415,26 +415,28 @@ def test_approve_records_external_change_approved_audit_entry(
         retained_values={"title": "Original Title", "description": "Original description"},
     )
 
-    with patch("audit.services.persist_audit_record") as mock_task:
+    with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
         with django_capture_on_commit_callbacks(execute=True):
             service_with_audit.approve(change_request, membership=admin_membership)
 
     payloads = [call.args[0] for call in mock_task.delay.call_args_list]
 
     # Find the EXTERNAL_CHANGE_APPROVED audit entry.
-    approved_payloads = [p for p in payloads if p["action"] == AuditAction.EXTERNAL_CHANGE_APPROVED]
+    approved_payloads = [
+        p for p in payloads if p["action_key"] == AuditAction.EXTERNAL_CHANGE_APPROVED
+    ]
     assert len(approved_payloads) == 1
     payload = approved_payloads[0]
 
     # Organization matches.
-    assert payload["organization_id"] == event.organization_id
+    assert payload["scope"]["scope_key"] == str(event.organization_id)
 
     # Actor is the approving membership.
-    assert payload["actor"]["actor_type"] == AuditActorType.MEMBERSHIP
-    assert payload["actor"]["actor_id"] == admin_membership.user_id
+    assert payload["actor"]["identity_type"] == AuditActorType.MEMBERSHIP
+    assert payload["actor"]["identity_key"] == str(admin_membership.user_id)
 
     # Subject is the ExternalEventChangeRequest.
-    assert payload["subject"]["subject_type"] == "calendar_integration.ExternalEventChangeRequest"
+    assert payload["subject"]["subject_type"] == "calendar_integration.externaleventchangerequest"
 
     # Diff includes the changed fields.
     assert "title" in payload["diff"]

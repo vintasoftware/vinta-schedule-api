@@ -5,7 +5,7 @@ description = "Django 5, React, Bootstrap 5 with Python 3 and webpack project bo
 authors = [{ name = "Vinta Software", email = "contact@vinta.com.br" }]
 license = "MIT"
 readme = "README.md"
-requires-python = ">=3.13,<3.14"
+requires-python = ">=3.14,<3.15"
 dependencies = [
     "Django>=6.0,<7",
     "celery>=5.5.2,<6",
@@ -73,6 +73,12 @@ dependencies = [
     # a multi-phase plan (see ai-plans/). Widen only after re-reading the
     # upstream diff for the target minor.
     "vinta-django-billing>=0.6,<0.7",
+    # The audit log, extracted from this project. Pinned to the minor for the
+    # same reason as its two siblings above: it is pre-1.0, so a minor is where a
+    # breaking change is allowed to live. `audit_integration` supplies the scope
+    # and identity models it points at, and subclasses its service and repository
+    # -- read that app's README before widening this range.
+    "vinta-django-audit-logs>=0.1.2,<0.2",
 ]
 
 [dependency-groups]
@@ -125,6 +131,20 @@ exclude = [
 ]
 line-length = 100
 indent-width = 4
+# Deliberately ONE version behind the interpreter (which is 3.14 -- see
+# requires-python). This setting decides which syntax ruff is willing to
+# introduce, and both of 3.14's additions are ones this codebase does not want:
+#
+# * The formatter rewrites `except (OSError, ValueError):` into PEP 758's
+#   `except OSError, ValueError:` across 17 files. Valid 3.14, but it reads like
+#   the Python 2 `except E, name:` form it is not, for no benefit.
+# * UP037 offers to strip the quotes from 317 forward references. Taking that
+#   offer breaks dependency injection -- see the "UP037" entry under
+#   lint.ignore, which stays in place as the second guard if this line is ever
+#   moved to py314.
+#
+# Nothing here caps the interpreter; 3.14-only *library* features (uuid.uuid7)
+# are used freely.
 target-version = "py313"
 
 [tool.ruff.lint]
@@ -177,6 +197,22 @@ ignore = [
   "ISC002",
   # Disable unused `noqa` directive
   "RUF100",
+  # Keep the quotes around forward references in annotations.
+  #
+  # On the py313 target they were mandatory. On py314, PEP 649 defers annotation
+  # evaluation, so UP037 reads most of them as redundant and offers to strip all
+  # 317. Taking that offer breaks dependency injection at runtime, which is not
+  # something the type checker or the test collector would tell you about
+  # quietly: `dependency_injector`'s `@inject` walks `__annotations__` looking
+  # for `Annotated[..., Provide["..."]]` markers -- on services, DRF views and
+  # Celery tasks alike -- and under PEP 649 reading `__annotations__` evaluates
+  # them. A name imported only under `TYPE_CHECKING` then raises `NameError` at
+  # injection time. Quoted, it stays an unresolved string inside `Annotated`,
+  # the marker is still found, and the injection works.
+  #
+  # `[tool.ruff.lint.pyupgrade] keep-runtime-typing` does NOT cover UP037 (only
+  # UP006/UP007/UP045), so the rule has to be named here.
+  "UP037",
 ]
 # Allow unused variables when underscore-prefixed:
 dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
@@ -224,7 +260,7 @@ omit = [
 ]
 
 [tool.mypy]
-python_version = "3.13"
+python_version = "3.14"
 plugins = [
   "mypy_django_plugin.main",
   "mypy_drf_plugin.main",

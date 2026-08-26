@@ -416,7 +416,7 @@ class TestBillingProfileAdminSaveModel:
     @pytest.fixture
     def billing_profile(self):
         organization = baker.make(Organization, parent=None)
-        billing_address = baker.make("vinta_billing.BillingAddress")
+        billing_address = baker.make("vinta_billing.billingaddress")
         return baker.make(
             BillingProfile,
             organization=organization,
@@ -471,7 +471,7 @@ class TestBillingProfileAdminSaveModel:
         self, rf, superuser
     ):
         organization = baker.make(Organization, parent=None)
-        billing_address = baker.make("vinta_billing.BillingAddress")
+        billing_address = baker.make("vinta_billing.billingaddress")
         new_profile = BillingProfile(
             organization=organization,
             contact_first_name="Ada",
@@ -508,7 +508,7 @@ class TestBillingProfileAdminSaveModel:
         billing_profile.payment_provider = ""
         form = FakeChangedDataForm(changed_data=["payment_provider"])
 
-        with patch("audit.services.persist_audit_record"):
+        with patch("vinta_audit_logs.tasks.persist_audit_record"):
             with django_capture_on_commit_callbacks(execute=True):
                 admin_instance.save_model(request, billing_profile, form, change=True)
 
@@ -538,7 +538,7 @@ class TestBillingProfileAdminSaveModel:
         form = FakeChangedDataForm(changed_data=["payment_provider"])
 
         with di_container.stripe_payment_gateway.override(unconfigured_stripe):
-            with patch("audit.services.persist_audit_record"):
+            with patch("vinta_audit_logs.tasks.persist_audit_record"):
                 with django_capture_on_commit_callbacks(execute=True):
                     admin_instance.save_model(request, billing_profile, form, change=True)
 

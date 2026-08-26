@@ -20,12 +20,12 @@ from rest_framework.mixins import ListModelMixin, RetrieveModelMixin
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.viewsets import GenericViewSet
+from vinta_audit_logs.diff import compute_diff
 from vinta_billing.services.entitlement_service import EntitlementService
 from vinta_orgs.querysets import split_permission_label
 
-from audit.constants import AuditAction
-from audit.diff import compute_diff
-from audit.services import AuditService
+from audit_integration.constants import AuditAction
+from audit_integration.services import OrganizationAuditService
 from calendar_integration.models import GoogleCalendarServiceAccount
 from calendar_integration.serializers import CalendarSyncRequestSerializer
 from common.media_storage_backend import MediaStorage
@@ -1096,7 +1096,7 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
     def __init__(
         self,
         *args,
-        audit_service: Annotated[AuditService, Provide["audit_service"]],
+        audit_service: Annotated[OrganizationAuditService, Provide["audit_service"]],
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -1272,7 +1272,7 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
         created: bool,
         before: dict[str, str] | None,
     ) -> None:
-        """Emit the ``AuditService`` CREATE/UPDATE record for a successful
+        """Emit the ``OrganizationAuditService`` CREATE/UPDATE record for a successful
         branding write. Actor is the acting admin's membership (mirrors
         ``OrganizationService.create_organization``'s actor derivation for an
         org-level write). ``UPDATE`` carries a diff naming only the fields that
@@ -1281,21 +1281,21 @@ class OrganizationBrandingView(TenantScopedViewMixin, views.APIView):
         subject = self.audit_service.subject_from_instance(instance, label=instance.app_name)
         if created:
             self.audit_service.record(
-                organization_id=membership.organization_id,
                 action=AuditAction.CREATE,
                 actor=actor,
                 subject=subject,
+                scope=self.audit_service.scope_from_organization_id(membership.organization_id),
             )
             return
 
         after = branding_diff_state(instance)
         diff = compute_diff(before or {}, after)
         self.audit_service.record(
-            organization_id=membership.organization_id,
             action=AuditAction.UPDATE,
             actor=actor,
             subject=subject,
             diff=diff,
+            scope=self.audit_service.scope_from_organization_id(membership.organization_id),
         )
 
 

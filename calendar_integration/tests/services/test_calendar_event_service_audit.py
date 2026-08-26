@@ -3,7 +3,7 @@
 These drive the real event sub-service (built from a facade whose ``audit_service``
 is injected via the DI container, exactly as the production wiring does) and assert
 that ``create_event`` / ``update_event`` / ``delete_event`` enqueue the expected audit
-records. We patch ``audit.services.persist_audit_record`` and execute the on_commit
+records. We patch ``vinta_audit_logs.tasks.persist_audit_record`` and execute the on_commit
 callbacks so the enqueue happens, then inspect the serialized payloads. Mechanical /
 sync writes (attendees, resources, recurrence rule) are intentionally NOT audited and
 must not appear in the payloads.
@@ -15,7 +15,7 @@ from unittest.mock import Mock, patch
 import pytest
 from allauth.socialaccount.models import SocialAccount, SocialToken
 
-from audit.constants import AuditAction
+from audit_integration.constants import AuditAction
 from calendar_integration.constants import CalendarProvider
 from calendar_integration.models import Calendar, CalendarManagementToken
 from calendar_integration.services.calendar_event_service import CalendarEventService
@@ -179,25 +179,26 @@ def test_create_event_records_create(
 ):
     mock_google_adapter.create_event.return_value = _adapter_output("event_audit_create")
 
-    with patch("audit.services.persist_audit_record") as mock_task:
+    with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
         with django_capture_on_commit_callbacks(execute=True):
             event = event_service.create_event(calendar.id, sample_event_input_data)
 
     payloads = _payloads(mock_task)
     event_payloads = [
-        p for p in payloads if p["subject"]["subject_type"] == "calendar_integration.CalendarEvent"
+        p for p in payloads if p["subject"]["subject_type"] == "calendar_integration.calendarevent"
     ]
     assert len(event_payloads) == 1
     payload = event_payloads[0]
-    assert payload["action"] == AuditAction.CREATE
+    assert payload["action_key"] == AuditAction.CREATE
     assert payload["subject"]["subject_id"] == str(event.id)
     assert payload["subject"]["subject_label"] == "Audit Event"
-    assert payload["organization_id"] == calendar.organization_id
-    assert payload["actor"]["actor_type"] == "membership"
-    assert payload["actor"]["actor_id"] == social_account.user.id
+    assert payload["scope"]["scope_key"] == str(calendar.organization_id)
+    assert payload["actor"]["identity_type"] == "membership"
+    assert payload["actor"]["identity_key"] == str(social_account.user.id)
     assert payload["diff"] is None
     # With no attendees, the acting member (organizer/host) is the only affected party.
-    assert payload["affected_membership_ids"] == [social_account.user.id]
+    # ``affected`` carries identity snapshots now, so compare on the identifying half.
+    assert [entry["identity_key"] for entry in payload["affected"]] == [str(social_account.user.id)]
 
 
 @pytest.mark.django_db
@@ -227,19 +228,19 @@ def test_create_event_affected_memberships_include_organizer_and_attendees(
     )
     mock_google_adapter.create_event.return_value = _adapter_output("event_audit_affected")
 
-    with patch("audit.services.persist_audit_record") as mock_task:
+    with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
         with django_capture_on_commit_callbacks(execute=True):
             event_service.create_event(calendar.id, event_input)
 
     event_payloads = [
         p
         for p in _payloads(mock_task)
-        if p["subject"]["subject_type"] == "calendar_integration.CalendarEvent"
+        if p["subject"]["subject_type"] == "calendar_integration.calendarevent"
     ]
     assert len(event_payloads) == 1
-    affected = event_payloads[0]["affected_membership_ids"]
+    affected = sorted(entry["identity_key"] for entry in event_payloads[0]["affected"])
     # Both the organizer (acting member) and the internal attendee are affected.
-    assert affected == sorted({social_account.user.id, attendee_user.id})
+    assert affected == sorted({str(social_account.user.id), str(attendee_user.id)})
 
 
 @pytest.mark.django_db
@@ -269,18 +270,18 @@ def test_update_event_records_update_with_diff(
         resource_allocations=[],
     )
 
-    with patch("audit.services.persist_audit_record") as mock_task:
+    with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
         with django_capture_on_commit_callbacks(execute=True):
             event_service.update_event(calendar.id, created.id, updated_input)
 
     event_payloads = [
         p
         for p in _payloads(mock_task)
-        if p["subject"]["subject_type"] == "calendar_integration.CalendarEvent"
+        if p["subject"]["subject_type"] == "calendar_integration.calendarevent"
     ]
     assert len(event_payloads) == 1
     payload = event_payloads[0]
-    assert payload["action"] == AuditAction.UPDATE
+    assert payload["action_key"] == AuditAction.UPDATE
     assert payload["subject"]["subject_id"] == str(created.id)
     diff = payload["diff"]
     assert diff is not None
@@ -315,17 +316,17 @@ def test_delete_event_records_delete(
     created_id = created.id
     _grant_event_owner_token(created, social_account.user, calendar.organization)
 
-    with patch("audit.services.persist_audit_record") as mock_task:
+    with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
         with django_capture_on_commit_callbacks(execute=True):
             event_service.delete_event(calendar.id, created_id)
 
     event_payloads = [
         p
         for p in _payloads(mock_task)
-        if p["subject"]["subject_type"] == "calendar_integration.CalendarEvent"
+        if p["subject"]["subject_type"] == "calendar_integration.calendarevent"
     ]
     assert len(event_payloads) == 1
     payload = event_payloads[0]
-    assert payload["action"] == AuditAction.DELETE
+    assert payload["action_key"] == AuditAction.DELETE
     assert payload["subject"]["subject_id"] == str(created_id)
-    assert payload["organization_id"] == calendar.organization_id
+    assert payload["scope"]["scope_key"] == str(calendar.organization_id)
