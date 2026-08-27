@@ -241,8 +241,14 @@ class CalendarSerializer(VirtualModelSerializer):
             raise serializers.ValidationError(
                 {"non_field_errors": ["User has no organization membership."]}
             )
-        # `organization` is the 2nd param (1st is user_or_token) — pass as keyword.
-        self.calendar_service.initialize_without_provider(organization=membership.organization)
+        # Pass the acting user. The service writes the creator's `CalendarOwnership`
+        # only when `user_or_token` is a `User`, and `CalendarViewSet.get_queryset`
+        # filters non-admin listings on that ownership -- so a calendar created
+        # without one is invisible to the member who created it.
+        self.calendar_service.initialize_without_provider(
+            user_or_token=self.context["request"].user,
+            organization=membership.organization,
+        )
         return self.calendar_service.create_virtual_calendar(
             name=validated_data.get("name"),
             description=validated_data.get("description"),
@@ -273,7 +279,12 @@ class ResourceCalendarCreateSerializer(VirtualModelSerializer):
             raise serializers.ValidationError(
                 {"non_field_errors": ["User has no organization membership."]}
             )
-        self.calendar_service.initialize_without_provider(organization=membership.organization)
+        # Pass the acting user so the creator gets a `CalendarOwnership` --
+        # see `CalendarSerializer.create` above.
+        self.calendar_service.initialize_without_provider(
+            user_or_token=self.context["request"].user,
+            organization=membership.organization,
+        )
         return self.calendar_service.create_resource_calendar(
             name=validated_data.get("name"),
             description=validated_data.get("description"),
@@ -351,8 +362,12 @@ class CalendarBundleCreateSerializer(VirtualModelSerializer):
             raise serializers.ValidationError(
                 {"non_field_errors": ["User has no organization membership."]}
             )
-        # `organization` is the 2nd param (1st is user_or_token) — pass as keyword.
-        self.calendar_service.initialize_without_provider(organization=membership.organization)
+        # Pass the acting user so the creator gets a `CalendarOwnership` --
+        # see `CalendarSerializer.create` above.
+        self.calendar_service.initialize_without_provider(
+            user_or_token=self.context["request"].user,
+            organization=membership.organization,
+        )
 
         return self.calendar_service.create_bundle_calendar(
             name=validated_data.get("name"),

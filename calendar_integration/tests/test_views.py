@@ -2102,6 +2102,153 @@ class TestCalendarViewSet:
         mock_calendar_service.initialize_without_provider.assert_called_once()
         mock_calendar_service.create_virtual_calendar.assert_called_once()
 
+    def test_create_virtual_calendar_assigns_creator_ownership(
+        self, auth_client, organization, user
+    ):
+        """POST /calendar/ must make the caller an owner of the new calendar.
+
+        Without a CalendarOwnership row the calendar is invisible to its own
+        creator: the non-admin list path filters on ``ownerships__membership_user_id``.
+        """
+        url = reverse("api:Calendars-list")
+        response = auth_client.post(
+            url,
+            {"name": "My Calendar", "description": "Mine"},
+            format="json",
+        )
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+
+        calendar_id = response.data["id"]
+        ownerships = CalendarOwnership.objects.filter_by_organization(organization.id).filter(
+            calendar_fk_id=calendar_id
+        )
+        assert [o.membership_user_id for o in ownerships] == [user.id]
+
+        # And the creator can actually see it in their own listing.
+        list_response = auth_client.get(url)
+        assert_response_status_code(list_response, status.HTTP_200_OK)
+        assert [c["id"] for c in list_response.data["results"]] == [calendar_id]
+
+    def test_create_resource_calendar_assigns_creator_ownership(self, organization):
+        """POST /calendar/resource/ must make the admin who created it an owner."""
+        admin_user = baker.make(User)
+        make_membership(
+            user=admin_user,
+            organization=organization,
+            groups=[GROUP_ORGANIZATION_ADMIN],
+        )
+        client = APIClient()
+        client.force_authenticate(user=admin_user)
+
+        response = client.post(
+            reverse("api:Calendars-resource"),
+            {"name": "Conference Room A", "description": "10-person room", "capacity": 10},
+            format="json",
+        )
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+
+        ownerships = CalendarOwnership.objects.filter_by_organization(organization.id).filter(
+            calendar_fk_id=response.data["id"]
+        )
+        assert [o.membership_user_id for o in ownerships] == [admin_user.id]
+
+    def test_create_bundle_calendar_assigns_creator_ownership(
+        self, auth_client, organization, user
+    ):
+        """POST /calendar/bundle/ must make the caller an owner of the new bundle."""
+        child_1 = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            name="Child Calendar 1",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.PERSONAL,
+        )
+        child_2 = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            name="Child Calendar 2",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.PERSONAL,
+        )
+
+        response = auth_client.post(
+            reverse("api:Calendars-bundle"),
+            {
+                "name": "Bundle Calendar",
+                "bundle_calendars": [child_1.id, child_2.id],
+                "primary_calendar": None,
+            },
+            format="json",
+        )
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+
+        ownerships = CalendarOwnership.objects.filter_by_organization(organization.id).filter(
+            calendar_fk_id=response.data["id"]
+        )
+        assert [o.membership_user_id for o in ownerships] == [user.id]
+
+    def test_create_virtual_calendar_without_description(self, auth_client, organization, user):
+        """POST /calendar/ may omit `description` — the OpenAPI schema marks it optional.
+
+        `Calendar.description` is NOT NULL, so the omitted value has to land as "" and
+        not None.
+        """
+        response = auth_client.post(
+            reverse("api:Calendars-list"), {"name": "No Description"}, format="json"
+        )
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        assert response.data["description"] == ""
+        assert (
+            Calendar.objects.filter_by_organization(organization.id)
+            .get(id=response.data["id"])
+            .description
+            == ""
+        )
+
+    def test_create_resource_calendar_without_description(self, organization):
+        """POST /calendar/resource/ may omit the optional `description`."""
+        admin_user = baker.make(User)
+        make_membership(
+            user=admin_user,
+            organization=organization,
+            groups=[GROUP_ORGANIZATION_ADMIN],
+        )
+        client = APIClient()
+        client.force_authenticate(user=admin_user)
+
+        response = client.post(
+            reverse("api:Calendars-resource"),
+            {"name": "Room With No Description", "capacity": 4},
+            format="json",
+        )
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        assert response.data["description"] == ""
+
+    def test_create_bundle_calendar_without_description(self, auth_client, organization, user):
+        """POST /calendar/bundle/ takes no description field at all — it must default to ""."""
+        child_1 = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            name="Child Calendar 1",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.PERSONAL,
+        )
+        child_2 = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            name="Child Calendar 2",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.PERSONAL,
+        )
+
+        response = auth_client.post(
+            reverse("api:Calendars-bundle"),
+            {
+                "name": "Bundle With No Description",
+                "bundle_calendars": [child_1.id, child_2.id],
+                "primary_calendar": None,
+            },
+            format="json",
+        )
+        assert_response_status_code(response, status.HTTP_201_CREATED)
+        assert response.data["description"] == ""
+
     def test_create_resource_calendar_admin(self, organization):
         """Org admin creates a manual resource calendar via POST /calendar/resource/."""
         from di_core.containers import container
