@@ -266,8 +266,11 @@ plugins = [
   "mypy_drf_plugin.main",
 ]
 
+# Third-party packages that ship no stubs and no `py.typed`. `boto3` / `botocore` were
+# missing from this list, but the `[tool.django-stubs]` plugin crash at the bottom of
+# this file meant mypy never got far enough to say so.
 [[tool.mypy.overrides]]
-module = ["allauth.*", "googleapiclient.*", "storages.*", "twilio.*", "django_filters.*", "mercadopago.*", "s3direct.*", "encrypted_fields.*", "dateutil.*"]
+module = ["allauth.*", "googleapiclient.*", "storages.*", "twilio.*", "django_filters.*", "mercadopago.*", "s3direct.*", "encrypted_fields.*", "dateutil.*", "boto3.*", "botocore.*"]
 ignore_missing_imports = true
 
 # Vendored verbatim from the add-one-off-script skill and refreshed by
@@ -278,4 +281,13 @@ module = ["scripts.one_off._base"]
 ignore_errors = true
 
 [tool.django-stubs]
-django_settings_module = "vinta_schedule_api.settings.local"
+# The test settings, not `local` -- `.gitignore` excludes `**/settings/local.py`, so it
+# exists only on a machine that copied `local.py.example` by hand. django-stubs imports
+# this module while mypy is still loading plugins, so naming an absent one does not
+# degrade to a type error: mypy dies with `INTERNAL ERROR -- Error constructing plugin
+# instance of NewSemanalDjangoPlugin` before analysing a single file. `.test` is
+# committed, so every checkout has it, and it is the module the suite already runs under
+# (`pytest.ini`'s `--ds`), which keeps what mypy checks and what the tests exercise the
+# same. Guarded by `common/tests/test_mypy_settings_module.py`, because mypy runs in
+# neither CI nor pre-commit and nothing else would notice this rotting again.
+django_settings_module = "vinta_schedule_api.settings.test"
