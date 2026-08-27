@@ -47,9 +47,9 @@ def organization(db: Any) -> Organization:
 
 @pytest.fixture
 def audit_service() -> OrganizationAuditService:
-    from di_core.containers import container
+    from di_core.containers import get_container
 
-    return container.audit_service()
+    return get_container().audit_service()
 
 
 @pytest.fixture

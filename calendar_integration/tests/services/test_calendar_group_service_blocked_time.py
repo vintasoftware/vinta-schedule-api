@@ -73,9 +73,9 @@ def organization(db: Any) -> Organization:
 
 @pytest.fixture
 def audit_service() -> OrganizationAuditService:
-    from di_core.containers import container
+    from di_core.containers import get_container
 
-    return container.audit_service()
+    return get_container().audit_service()
 
 
 @pytest.fixture
@@ -254,14 +254,14 @@ def test_create_group_scoped_blocked_time_admin_happy_path(
 
     # Invisible on the default (base-rows-only) manager...
     assert (
-        not BlockedTime.objects.filter_by_organization(service.organization.id)
+        not BlockedTime.objects.filter_by_organization(service.organization_id)
         .filter(id=block.id)
         .exists()
     )
     # ...and visible through the explicit group-scoped accessor.
     assert (
         BlockedTime.objects.for_group_slot(group_slot.id)
-        .filter_by_organization(service.organization.id)
+        .filter_by_organization(service.organization_id)
         .get(id=block.id)
         == block
     )
@@ -374,7 +374,7 @@ def test_create_group_scoped_blocked_time_recurrence_and_timezone_round_trip(
     range_end = _utc(2025, 9, 15, 0)
     master = (
         BlockedTime.objects.for_group_slot(group_slot.id)
-        .filter_by_organization(service.organization.id)
+        .filter_by_organization(service.organization_id)
         .annotate_recurring_occurrences_on_date_range(range_start, range_end)
         .get(id=block.id)
     )
@@ -478,7 +478,7 @@ def test_create_group_scoped_blocked_time_detects_orphaned_bookings_on_every_cre
     # The booking itself must be untouched (not cancelled).
     booking.refresh_from_db()
     assert booking.title == "Consult"
-    assert CalendarEvent.objects.filter_by_organization(service.organization.id).count() == 1
+    assert CalendarEvent.objects.filter_by_organization(service.organization_id).count() == 1
 
 
 # ---------------------------------------------------------------------------
@@ -557,7 +557,7 @@ def test_update_group_scoped_blocked_time_timezone_round_trip(
 
     reloaded = (
         BlockedTime.objects.unscoped()
-        .filter_by_organization(service.organization.id)
+        .filter_by_organization(service.organization_id)
         .get(id=block_id)
     )
     assert reloaded.timezone == "America/Sao_Paulo"
@@ -592,7 +592,7 @@ def test_update_group_scoped_blocked_time_explicit_none_clears_recurrence(
 
     reloaded = (
         BlockedTime.objects.unscoped()
-        .filter_by_organization(service.organization.id)
+        .filter_by_organization(service.organization_id)
         .get(id=block_id)
     )
     assert reloaded.recurrence_rule is None
@@ -652,7 +652,7 @@ def test_update_group_scoped_blocked_time_denies_non_owner(
 
     reloaded = (
         BlockedTime.objects.unscoped()
-        .filter_by_organization(service.organization.id)
+        .filter_by_organization(service.organization_id)
         .get(id=block_id)
     )
     assert reloaded.timezone == "UTC"  # untouched
@@ -717,9 +717,9 @@ def test_update_group_scoped_blocked_time_reports_newly_orphaned_booking(
 
     booking.refresh_from_db()
     assert booking.title == "Consult"
-    assert CalendarEvent.objects.filter_by_organization(service.organization.id).count() == 1
+    assert CalendarEvent.objects.filter_by_organization(service.organization_id).count() == 1
     assert (
-        CalendarEventGroupSelection.objects.filter_by_organization(service.organization.id).count()
+        CalendarEventGroupSelection.objects.filter_by_organization(service.organization_id).count()
         == 1
     )
 
@@ -811,7 +811,7 @@ def test_deleting_slot_through_update_group_cascades_group_scoped_blocks(
     service.update_group(group.id, CalendarGroupInputData(name=group.name, slots=[]))
 
     assert (
-        not CalendarGroupSlot.objects.filter_by_organization(service.organization.id)
+        not CalendarGroupSlot.objects.filter_by_organization(service.organization_id)
         .filter(id=group_slot.id)
         .exists()
     )
@@ -895,13 +895,13 @@ def test_removing_calendar_from_slot_removes_group_scoped_blocks(
     assert BlockedTime.objects.unscoped().filter(id=block2_id).exists()
     # The first calendar's membership is gone.
     assert (
-        not CalendarGroupSlotMembership.objects.filter_by_organization(service.organization.id)
+        not CalendarGroupSlotMembership.objects.filter_by_organization(service.organization_id)
         .filter(slot_fk=slot, calendar_fk_id=calendar.id)
         .exists()
     )
     # The second calendar's membership remains.
     assert (
-        CalendarGroupSlotMembership.objects.filter_by_organization(service.organization.id)
+        CalendarGroupSlotMembership.objects.filter_by_organization(service.organization_id)
         .filter(slot_fk=slot, calendar_fk_id=other_calendar.id)
         .exists()
     )
@@ -1056,4 +1056,4 @@ def test_create_group_scoped_blocked_time_detects_partially_overlapping_booking_
     # The booking itself must be untouched (not cancelled).
     booking.refresh_from_db()
     assert booking.title == "Consult"
-    assert CalendarEvent.objects.filter_by_organization(service.organization.id).count() == 1
+    assert CalendarEvent.objects.filter_by_organization(service.organization_id).count() == 1

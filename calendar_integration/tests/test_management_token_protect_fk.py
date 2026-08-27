@@ -45,7 +45,7 @@ def organization(db) -> Organization:
 
 @pytest.fixture
 def member_user(organization) -> User:
-    user = baker.make("users.User")
+    user = baker.make(User)
     OrganizationMembership.objects.create(user=user, organization=organization)
     return user
 
@@ -150,7 +150,7 @@ def test_delete_membership_allowed_after_token_removed(organization, member_user
 @pytest.mark.django_db
 def test_token_with_nonexistent_membership_raises(organization, calendar):
     """A non-NULL membership_user_id without a matching membership violates the FK."""
-    non_member = baker.make("users.User")  # NOT a member of organization
+    non_member = baker.make(User)  # NOT a member of organization
 
     with pytest.raises(IntegrityError), transaction.atomic():
         CalendarManagementToken.objects.create(
@@ -166,7 +166,7 @@ def test_token_with_nonexistent_membership_raises(organization, calendar):
 def test_token_update_to_nonexistent_membership_raises(organization, member_user, calendar):
     """Updating membership_user_id to a non-member value violates the FK."""
     token = _make_member_token(organization, calendar, member_user)
-    non_member = baker.make("users.User")
+    non_member = baker.make(User)
 
     with pytest.raises(IntegrityError), transaction.atomic():
         CalendarManagementToken.original_manager.filter(pk=token.pk).update(

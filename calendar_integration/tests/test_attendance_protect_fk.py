@@ -44,7 +44,7 @@ def organization(db) -> Organization:
 
 @pytest.fixture
 def member_user(organization) -> User:
-    user = baker.make("users.User")
+    user = baker.make(User)
     OrganizationMembership.objects.create(user=user, organization=organization)
     return user
 
@@ -148,7 +148,7 @@ def test_delete_membership_allowed_after_attendance_removed(organization, member
 @pytest.mark.django_db
 def test_attendance_with_nonexistent_membership_raises(organization, event):
     """A non-NULL membership_user_id without a matching membership violates the FK."""
-    non_member = baker.make("users.User")  # NOT a member of organization
+    non_member = baker.make(User)  # NOT a member of organization
 
     with pytest.raises(IntegrityError), transaction.atomic():
         EventAttendance.objects.create(
@@ -163,7 +163,7 @@ def test_attendance_with_nonexistent_membership_raises(organization, event):
 def test_attendance_update_to_nonexistent_membership_raises(organization, member_user, event):
     """Updating membership_user_id to a non-member value violates the FK."""
     attendance = create_event_attendance(event=event, user=member_user)
-    non_member = baker.make("users.User")
+    non_member = baker.make(User)
 
     with pytest.raises(IntegrityError), transaction.atomic():
         EventAttendance.original_manager.filter(pk=attendance.pk).update(

@@ -91,6 +91,15 @@ jobs:
         run: uv run ruff check ./
         env:
           DJANGO_SETTINGS_MODULE: "vinta_schedule_api.settings.test"
+      # A zero-error gate, not a baseline comparison: the backlog this repo carried
+      # (281 errors as of the commit that added this step) is gone, so any new error is
+      # this PR's. mypy needs no database -- the django-stubs plugin only imports the
+      # settings module named by `[tool.django-stubs]` -- but it does need the env vars
+      # that module reads, which the workflow-level `env:` block already provides.
+      - name: Type checking
+        run: uv run mypy .
+        env:
+          DJANGO_SETTINGS_MODULE: "vinta_schedule_api.settings.test"
       - run: uv run pre-commit run --all-files
         env:
           SKIP: ruff,eslint,missing-migrations,backend-schema,backend-auth-schema,check-event-guarded-surfaces,check-legacy-membership-resolution

@@ -68,7 +68,10 @@ class TestDjangoInAppNotificationAdapterSend:
     ) -> None:
         context = NotificationContextDict({"message": "Test message"})
 
-        assert adapter.send(notification, context) is None
+        # `send` is declared `-> None`, so asserting the return value was `None` proved
+        # nothing. What this test is named for -- and what would actually regress -- is
+        # rendering the body template without raising.
+        adapter.send(notification, context)
 
     def test_send_raises_on_render_failure(
         self,

@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Annotated, cast
 
 from django.core.exceptions import PermissionDenied
 from django.db import IntegrityError, transaction
-from django.db.models import Exists, OuterRef, QuerySet
+from django.db.models import Exists, Model, OuterRef, QuerySet
 from django.utils import timezone
 
 from dependency_injector.wiring import Provide, inject
@@ -58,6 +58,7 @@ from calendar_integration.services.dataclasses import (
     CalendarGroupRangeAvailability,
     CalendarGroupSlotAvailability,
     CalendarGroupSlotInputData,
+    CalendarGroupSlotSelectionInputData,
     EffectivePolicy,
     EventAttendanceInputData,
     EventExternalAttendanceInputData,
@@ -146,7 +147,7 @@ class CalendarGroupService:
     def _audit_group_write(
         self,
         action: str,
-        subject_instance: object,
+        subject_instance: Model,
         diff: dict | None = None,
     ) -> None:
         """Emit an audit record for a calendar-group business write.
@@ -164,12 +165,12 @@ class CalendarGroupService:
             action=action,
             actor=self.audit_service.actor_from_user_or_token(
                 user_or_token,
-                self.organization.id,
+                self.organization_id,
                 single_use_token=resolve_acting_single_use_token(user_or_token, permission_service),
             ),
             subject=self.audit_service.subject_from_instance(subject_instance),
             diff=diff,
-            scope=self.audit_service.scope_from_organization_id(self.organization.id),
+            scope=self.audit_service.scope_from_organization_id(self.organization_id),
         )
 
     def initialize(self, organization: Organization) -> None:
@@ -194,6 +195,28 @@ class CalendarGroupService:
                 "CalendarGroupService requires an organization. Call initialize()."
             )
 
+    @property
+    def bound_organization(self) -> Organization:
+        """The organization bound by ``initialize()``.
+
+        ``self.organization`` is ``Organization | None`` because ``__init__`` runs before
+        ``initialize()``, so every read of it needs narrowing. This file used to do that
+        with a bare ``cast`` in 29 places -- which is a no-op at runtime, so a genuinely
+        uninitialized service raised ``AttributeError`` from whichever line happened to
+        touch it first, instead of the domain error ``_assert_initialized`` exists to
+        give. The other 24 reads were left unnarrowed and were this module's mypy errors.
+
+        One checked accessor replaces both: the invariant is enforced where it is stated,
+        and callers get a plain ``Organization``.
+        """
+        self._assert_initialized()
+        return cast(Organization, self.organization)
+
+    @property
+    def organization_id(self) -> int:
+        """The bound organization's primary key -- the overwhelmingly common read."""
+        return self.bound_organization.id
+
     def _check_not_restricted(self) -> None:
         """Raise ``OverLimitError`` if this service's organization's billing root is
         ``RESTRICTED`` -- the same check the sibling
@@ -210,7 +233,7 @@ class CalendarGroupService:
             return
         if getattr(self.calendar_service, "_bypass_entitlement_limits", False):
             return
-        self.entitlement_service.check_not_restricted(cast("Organization", self.organization))
+        self.entitlement_service.check_not_restricted(self.bound_organization)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -229,7 +252,7 @@ class CalendarGroupService:
 
     def _get_group_by_id(self, group_id: int) -> CalendarGroup:
         self._assert_initialized()
-        return CalendarGroup.objects.filter_by_organization(self.organization.id).get(id=group_id)
+        return CalendarGroup.objects.filter_by_organization(self.organization_id).get(id=group_id)
 
     def _validate_slots_input(
         self, slots: Iterable[CalendarGroupSlotInputData]
@@ -278,7 +301,7 @@ class CalendarGroupService:
         all_calendar_ids = {cid for slot in slots for cid in slot.calendar_ids}
         if all_calendar_ids:
             org_calendar_ids = set(
-                Calendar.objects.filter_by_organization(self.organization.id)
+                Calendar.objects.filter_by_organization(self.organization_id)
                 .filter(id__in=all_calendar_ids)
                 .values_list("id", flat=True)
             )
@@ -298,7 +321,7 @@ class CalendarGroupService:
         by `calendar_ids`) for an event that starts in the future."""
         now = timezone.now()
         qs = CalendarEventGroupSelection.objects.filter_by_organization(
-            self.organization.id
+            self.organization_id
         ).filter(slot_fk=slot, event_fk__start_time__gt=now)
         if calendar_ids is not None:
             qs = qs.filter(calendar_fk_id__in=list(calendar_ids))
@@ -325,7 +348,7 @@ class CalendarGroupService:
         self._assert_initialized()
         # _assert_initialized() raises above when None; cast narrows the type for
         # the entitlement check below (mypy does not infer this across the call).
-        organization = cast("Organization", self.organization)
+        organization = self.bound_organization
         slots_data, _ = self._validate_slots_input(data.slots)
 
         if not bypass_limits and self.entitlement_service is not None:
@@ -410,7 +433,7 @@ class CalendarGroupService:
         group = self._get_group_by_id(group_id)
 
         if (
-            CalendarEvent.objects.filter_by_organization(self.organization.id)
+            CalendarEvent.objects.filter_by_organization(self.organization_id)
             .filter(calendar_group_fk=group)
             .exists()
         ):
@@ -475,7 +498,7 @@ class CalendarGroupService:
             # value; hoisting it also removes the pre-existing N+1 underneath.
             actor = self.audit_service.actor_from_user_or_token(
                 user_or_token,
-                self.organization.id,
+                self.organization_id,
                 single_use_token=resolve_acting_single_use_token(user_or_token, permission_service),
             )
             for row in rows:
@@ -483,7 +506,7 @@ class CalendarGroupService:
                     action=AuditAction.DELETE,
                     actor=actor,
                     subject=self.audit_service.subject_from_instance(row),
-                    scope=self.audit_service.scope_from_organization_id(self.organization.id),
+                    scope=self.audit_service.scope_from_organization_id(self.organization_id),
                 )
         queryset.delete()
 
@@ -515,7 +538,7 @@ class CalendarGroupService:
             # group-update diff only captures name/description/
             # accepts_public_scheduling, not membership or window/block/quota
             # changes.
-            org_id = cast(Organization, self.organization).id
+            org_id = self.organization_id
             self._delete_group_scoped_rows_for_removed_calendars(
                 AvailableTime.objects.unscoped()
                 .filter_by_organization(org_id)
@@ -532,7 +555,7 @@ class CalendarGroupService:
                 )
             )
 
-            CalendarGroupSlotMembership.objects.filter_by_organization(self.organization.id).filter(
+            CalendarGroupSlotMembership.objects.filter_by_organization(self.organization_id).filter(
                 slot_fk=slot, calendar_fk_id__in=to_remove
             ).delete()
 
@@ -563,7 +586,7 @@ class CalendarGroupService:
         calendar simply isn't a member of that slot -- callers must not be able
         to tell which case applies from the error alone.
         """
-        org_id = cast(Organization, self.organization).id
+        org_id = self.organization_id
         try:
             return (
                 CalendarGroupSlotMembership.objects.filter_by_organization(org_id)
@@ -581,7 +604,7 @@ class CalendarGroupService:
         set, so an id belonging to a base row raises the same not-found error
         as a genuinely missing id.
         """
-        org_id = cast(Organization, self.organization).id
+        org_id = self.organization_id
         try:
             return (
                 AvailableTime.objects.unscoped()
@@ -621,7 +644,7 @@ class CalendarGroupService:
         """
         if not rrule_string:
             return None
-        organization = cast(Organization, self.organization)
+        organization = self.bound_organization
         recurrence_rule = RecurrenceRule.from_rrule_string(rrule_string, organization)
         recurrence_rule.save()
         return recurrence_rule
@@ -648,10 +671,10 @@ class CalendarGroupService:
             return
         self.audit_service.record(
             action=action,
-            actor=self.audit_service.actor_from_user_or_token(acting_user, self.organization.id),
+            actor=self.audit_service.actor_from_user_or_token(acting_user, self.organization_id),
             subject=self.audit_service.subject_from_instance(subject_instance),
             diff=diff,
-            scope=self.audit_service.scope_from_organization_id(self.organization.id),
+            scope=self.audit_service.scope_from_organization_id(self.organization_id),
         )
 
     def _group_scoped_available_times_expanded(
@@ -676,7 +699,7 @@ class CalendarGroupService:
         group-scoped, ensuring group-scoped exception rows are found if one ever
         becomes reachable.
         """
-        org_id = cast(Organization, self.organization).id
+        org_id = self.organization_id
         return slot_engine.expand_group_scoped_available_times(
             org_id, [group_slot_id], [calendar_id], start_date, end_date
         )
@@ -700,7 +723,7 @@ class CalendarGroupService:
         booking against that single cached expansion, rather than expanding
         once per booking (O(N) → O(1) expansions).
         """
-        org_id = cast(Organization, self.organization).id
+        org_id = self.organization_id
         selections = (
             CalendarEventGroupSelection.objects.filter_by_organization(org_id)
             .filter(
@@ -770,7 +793,7 @@ class CalendarGroupService:
         if now is None:
             now = timezone.now()
 
-        organization = cast(Organization, self.organization)
+        organization = self.bound_organization
         membership = self._resolve_group_scoped_membership(group_slot_id, calendar_id)
         self._authorize_group_scoped_write(acting_user, membership.calendar, membership.slot)
 
@@ -928,7 +951,7 @@ class CalendarGroupService:
         a safe point lookup, not the cross-timezone comparison
         ``start_time_tz_unaware`` is unsafe for (see AGENTS.md).
         """
-        organization = cast(Organization, self.organization)
+        organization = self.bound_organization
         candidates = (
             AvailableTime.objects.for_group_slot(group_slot_id)
             .filter_by_organization(organization.id)
@@ -1020,7 +1043,7 @@ class CalendarGroupService:
             (all calendars) after the batch is applied.
         """
         self._assert_initialized()
-        organization = cast(Organization, self.organization)
+        organization = self.bound_organization
         operations = list(operations)
 
         valid_actions = {"create", "update", "delete"}
@@ -1217,7 +1240,7 @@ class CalendarGroupService:
         set, so an id belonging to a base row raises the same not-found error
         as a genuinely missing id. Mirrors ``_get_group_scoped_window``.
         """
-        org_id = cast(Organization, self.organization).id
+        org_id = self.organization_id
         try:
             return (
                 BlockedTime.objects.unscoped()
@@ -1246,10 +1269,10 @@ class CalendarGroupService:
             return
         self.audit_service.record(
             action=action,
-            actor=self.audit_service.actor_from_user_or_token(acting_user, self.organization.id),
+            actor=self.audit_service.actor_from_user_or_token(acting_user, self.organization_id),
             subject=self.audit_service.subject_from_instance(subject_instance),
             diff=diff,
-            scope=self.audit_service.scope_from_organization_id(self.organization.id),
+            scope=self.audit_service.scope_from_organization_id(self.organization_id),
         )
 
     def _group_scoped_blocked_times_expanded(
@@ -1267,7 +1290,7 @@ class CalendarGroupService:
         case of the same batched implementation the discovery-side fetch
         uses.
         """
-        org_id = cast(Organization, self.organization).id
+        org_id = self.organization_id
         return slot_engine.expand_group_scoped_blocked_times(
             org_id, [group_slot_id], [calendar_id], start_date, end_date
         )
@@ -1289,7 +1312,7 @@ class CalendarGroupService:
         Nothing here is cancelled or modified; this is purely a read (spec
         UC-6's rule applied to blocks).
         """
-        org_id = cast(Organization, self.organization).id
+        org_id = self.organization_id
         selections = (
             CalendarEventGroupSelection.objects.filter_by_organization(org_id)
             .filter(
@@ -1362,7 +1385,7 @@ class CalendarGroupService:
         if now is None:
             now = timezone.now()
 
-        organization = cast(Organization, self.organization)
+        organization = self.bound_organization
         membership = self._resolve_group_scoped_membership(group_slot_id, calendar_id)
         self._authorize_group_scoped_write(acting_user, membership.calendar, membership.slot)
 
@@ -1518,7 +1541,7 @@ class CalendarGroupService:
         a safe point lookup, not the cross-timezone comparison
         ``start_time_tz_unaware`` is unsafe for (see AGENTS.md).
         """
-        organization = cast(Organization, self.organization)
+        organization = self.bound_organization
         candidates = (
             BlockedTime.objects.for_group_slot(group_slot_id)
             .filter_by_organization(organization.id)
@@ -1600,7 +1623,7 @@ class CalendarGroupService:
             calendars) after the batch is applied.
         """
         self._assert_initialized()
-        organization = cast(Organization, self.organization)
+        organization = self.bound_organization
         operations = list(operations)
 
         valid_actions = {"create", "update", "delete"}
@@ -1764,7 +1787,7 @@ class CalendarGroupService:
         (there is no "base" quota rule), so the default manager already
         returns the right rows.
         """
-        org_id = cast(Organization, self.organization).id
+        org_id = self.organization_id
         try:
             return (
                 CalendarGroupSlotQuotaRule.objects.filter_by_organization(org_id)
@@ -1792,10 +1815,10 @@ class CalendarGroupService:
             return
         self.audit_service.record(
             action=action,
-            actor=self.audit_service.actor_from_user_or_token(acting_user, self.organization.id),
+            actor=self.audit_service.actor_from_user_or_token(acting_user, self.organization_id),
             subject=self.audit_service.subject_from_instance(subject_instance),
             diff=diff,
-            scope=self.audit_service.scope_from_organization_id(self.organization.id),
+            scope=self.audit_service.scope_from_organization_id(self.organization_id),
         )
 
     def _find_matching_group_scoped_quota_rule(
@@ -1817,7 +1840,7 @@ class CalendarGroupService:
         unique-constraint violation as a validation error rather than
         silently keeping the old cap.
         """
-        organization = cast(Organization, self.organization)
+        organization = self.bound_organization
         return (
             CalendarGroupSlotQuotaRule.objects.for_group_slot(group_slot_id)
             .filter_by_organization(organization.id)
@@ -1861,7 +1884,7 @@ class CalendarGroupService:
         if period not in QuotaPeriod.values:
             raise CalendarGroupValidationError(f"Invalid period: {period!r}.")
 
-        organization = cast(Organization, self.organization)
+        organization = self.bound_organization
         membership = self._resolve_group_scoped_membership(group_slot_id, calendar_id)
         self._authorize_group_scoped_write(acting_user, membership.calendar, membership.slot)
 
@@ -2016,7 +2039,7 @@ class CalendarGroupService:
             (all calendars) after the batch is applied.
         """
         self._assert_initialized()
-        organization = cast(Organization, self.organization)
+        organization = self.bound_organization
         operations = list(operations)
 
         valid_actions = {"create", "update", "delete"}
@@ -2167,7 +2190,7 @@ class CalendarGroupService:
         group = self._get_group_by_id(group_id)
 
         return (
-            CalendarEvent.objects.filter_by_organization(self.organization.id)
+            CalendarEvent.objects.filter_by_organization(self.organization_id)
             .annotate_recurring_occurrences_on_date_range(start, end)
             .filter(
                 calendar_group_fk=group,
@@ -2205,7 +2228,7 @@ class CalendarGroupService:
         configured, so ``bool(...)`` on any alone tells a caller whether ANY
         group-scoped window / block / quota rule exists anywhere in the group.
         """
-        org_id = cast(Organization, self.organization).id
+        org_id = self.organization_id
         slot_pool_by_id: dict[int, set[int]] = {}
         group_scoped_window_calendar_ids_by_slot: dict[int, set[int]] = {}
         group_scoped_block_calendar_ids_by_slot: dict[int, set[int]] = {}
@@ -2331,7 +2354,7 @@ class CalendarGroupService:
             for ids in group_scoped_window_calendar_ids_by_slot.values():
                 configured_calendar_ids.update(ids)
             group_scoped_spans_by_slot = slot_engine.fetch_group_scoped_available_spans(
-                self.organization.id,
+                self.organization_id,
                 configured_slot_ids,
                 configured_calendar_ids,
                 union_start,
@@ -2349,7 +2372,7 @@ class CalendarGroupService:
             for ids in group_scoped_block_calendar_ids_by_slot.values():
                 configured_block_calendar_ids.update(ids)
             group_scoped_block_spans_by_slot = slot_engine.fetch_group_scoped_blocking_spans(
-                self.organization.id,
+                self.organization_id,
                 configured_block_slot_ids,
                 configured_block_calendar_ids,
                 union_start,
@@ -2358,7 +2381,7 @@ class CalendarGroupService:
 
         group_scoped_quota_rules_by_slot: slot_engine.GroupScopedQuotaRulesBySlot = {}
         group_scoped_quota_counts_by_slot: slot_engine.GroupScopedQuotaCountsBySlot = {}
-        org = cast(Organization, self.organization)
+        org = self.bound_organization
         week_start = org.week_start
         if (
             group_scoped_quota_calendar_ids_by_slot
@@ -2401,7 +2424,7 @@ class CalendarGroupService:
         for start, end in ranges:
             available_ids = set(
                 getattr(
-                    Calendar.objects.filter_by_organization(self.organization.id),
+                    Calendar.objects.filter_by_organization(self.organization_id),
                     calendar_qs_method,
                 )([(start, end)]).values_list("id", flat=True)
             )
@@ -2517,7 +2540,7 @@ class CalendarGroupService:
 
         # Collect ALL calendar IDs in the group's slot pools — the same set
         # find_bookable_slots uses so enforcement matches discovery exactly.
-        org_id = cast(Organization, self.organization).id
+        org_id = self.organization_id
         slots = list(group.slots.all())
         all_calendar_ids: set[int] = set()
         for slot in slots:
@@ -2579,7 +2602,7 @@ class CalendarGroupService:
             raise CalendarGroupValidationError(
                 "The injected CalendarService is not initialized with an organization."
             )
-        if self.calendar_service.organization.id != self.organization.id:
+        if self.calendar_service.organization.id != self.organization_id:
             raise CalendarGroupValidationError(
                 "The injected CalendarService is initialized with a different organization."
             )
@@ -2649,7 +2672,7 @@ class CalendarGroupService:
 
         selected_calendars = {
             c.id: c
-            for c in Calendar.objects.filter_by_organization(self.organization.id).filter(
+            for c in Calendar.objects.filter_by_organization(self.organization_id).filter(
                 id__in=all_selected_ids
             )
         }
@@ -2739,14 +2762,14 @@ class CalendarGroupService:
             raise CalendarGroupValidationError(
                 "The injected CalendarService is not initialized with an organization."
             )
-        if self.calendar_service.organization.id != self.organization.id:
+        if self.calendar_service.organization.id != self.organization_id:
             raise CalendarGroupValidationError(
                 "The injected CalendarService is initialized with a different organization."
             )
 
         # Load the grouped event to validate it is truly grouped.
         try:
-            event = CalendarEvent.objects.filter_by_organization(self.organization.id).get(
+            event = CalendarEvent.objects.filter_by_organization(self.organization_id).get(
                 id=event_id
             )
         except CalendarEvent.DoesNotExist:
@@ -2762,7 +2785,7 @@ class CalendarGroupService:
         primary_calendar_id: int = event.calendar_fk_id  # type: ignore[assignment]
 
         # Delete non-primary BlockedTimes first (string-linked, NOT cascaded).
-        BlockedTime.objects.filter_by_organization(self.organization.id).filter(
+        BlockedTime.objects.filter_by_organization(self.organization_id).filter(
             external_id__startswith=f"group-event-{event_id}-cal-"
         ).delete()
 
@@ -2837,7 +2860,7 @@ class CalendarGroupService:
             raise CalendarGroupValidationError(
                 "The injected CalendarService is not initialized with an organization."
             )
-        if self.calendar_service.organization.id != self.organization.id:
+        if self.calendar_service.organization.id != self.organization_id:
             raise CalendarGroupValidationError(
                 "The injected CalendarService is initialized with a different organization."
             )
@@ -2845,7 +2868,7 @@ class CalendarGroupService:
         # Load the grouped event.
         try:
             event = (
-                CalendarEvent.objects.filter_by_organization(self.organization.id)
+                CalendarEvent.objects.filter_by_organization(self.organization_id)
                 .select_related("calendar")
                 .prefetch_related(
                     "attendances",
@@ -2867,9 +2890,7 @@ class CalendarGroupService:
         # calendar currently selected for this event is outside its
         # group-scoped window for the NEW time.
         selection_pairs = list(
-            CalendarEventGroupSelection.objects.filter_by_organization(
-                cast(Organization, self.organization).id
-            )
+            CalendarEventGroupSelection.objects.filter_by_organization(self.organization_id)
             .filter(event_fk=event)
             .values_list("slot_fk_id", "calendar_fk_id")
         )
@@ -2927,7 +2948,7 @@ class CalendarGroupService:
         new_start_tz_unaware = _convert_naive_utc_datetime_to_timezone(start_time, tz)
         new_end_tz_unaware = _convert_naive_utc_datetime_to_timezone(end_time, tz)
 
-        blocked_times_qs = BlockedTime.objects.filter_by_organization(self.organization.id).filter(
+        blocked_times_qs = BlockedTime.objects.filter_by_organization(self.organization_id).filter(
             external_id__startswith=f"group-event-{event_id}-cal-"
         )
 
@@ -2948,12 +2969,12 @@ class CalendarGroupService:
         self,
         group: CalendarGroup,
         slots: list[CalendarGroupSlot],
-        selections,
-    ) -> dict[int, "object"]:
+        selections: Iterable[CalendarGroupSlotSelectionInputData],
+    ) -> dict[int, CalendarGroupSlotSelectionInputData]:
         slot_by_id = {s.id: s for s in slots}
 
         seen_slot_ids: set[int] = set()
-        selections_by_slot_id: dict[int, object] = {}
+        selections_by_slot_id: dict[int, CalendarGroupSlotSelectionInputData] = {}
         for sel in selections:
             if sel.slot_id in seen_slot_ids:
                 raise CalendarGroupValidationError(
@@ -2975,17 +2996,19 @@ class CalendarGroupService:
             selections_by_slot_id[sel.slot_id] = sel
 
         # Every slot must be covered with >= required_count picks, all from its pool.
+        # Named apart from the loop above deliberately: `.get()` is nullable and that
+        # one's `sel` is not.
         for slot in slots:
-            sel = selections_by_slot_id.get(slot.id)
-            if sel is None:
+            slot_selection = selections_by_slot_id.get(slot.id)
+            if slot_selection is None:
                 raise CalendarGroupValidationError(f"Slot {slot.name!r} has no selection.")
-            if len(sel.calendar_ids) < slot.required_count:
+            if len(slot_selection.calendar_ids) < slot.required_count:
                 raise CalendarGroupValidationError(
                     f"Slot {slot.name!r} requires {slot.required_count} calendar(s); "
-                    f"got {len(sel.calendar_ids)}."
+                    f"got {len(slot_selection.calendar_ids)}."
                 )
             pool = set(slot.memberships.values_list("calendar_fk_id", flat=True))
-            outside_pool = set(sel.calendar_ids) - pool
+            outside_pool = set(slot_selection.calendar_ids) - pool
             if outside_pool:
                 raise CalendarGroupValidationError(
                     f"Calendars {sorted(outside_pool)} are not in the pool of slot {slot.name!r}."
@@ -3002,7 +3025,7 @@ class CalendarGroupService:
         # Resolve owners via membership; orphan ownerships (null membership) are
         # intentionally excluded from the owner set.
         rows = (
-            CalendarOwnership.objects.filter_by_organization(self.organization.id)
+            CalendarOwnership.objects.filter_by_organization(self.organization_id)
             .filter(
                 calendar_fk_id__in=selected_calendar_ids,
                 membership_user_id__isnull=False,
@@ -3048,7 +3071,7 @@ class CalendarGroupService:
         if not calendar_ids:
             return
         available_ids = set(
-            Calendar.objects.filter_by_organization(self.organization.id)
+            Calendar.objects.filter_by_organization(self.organization_id)
             .filter(id__in=calendar_ids)
             .only_calendars_available_in_ranges([(start, end)])
             .values_list("id", flat=True)
@@ -3114,7 +3137,7 @@ class CalendarGroupService:
         if not pairs:
             return
 
-        org_id = cast(Organization, self.organization).id
+        org_id = self.organization_id
         slot_ids = {slot_id for slot_id, _ in pairs}
         calendar_ids = {cid for _, cid in pairs}
 
@@ -3170,7 +3193,7 @@ class CalendarGroupService:
             return
 
         quota_rules_by_slot = slot_engine.group_quota_rules_by_slot(configured_quota_rules)
-        week_start = cast(Organization, self.organization).week_start
+        week_start = self.bound_organization.week_start
         # Widen to the full period boundaries the candidate's own start falls
         # into -- `[start, end)` is typically much narrower than a day/week/
         # month bucket, which would otherwise silently undercount an earlier
@@ -3372,13 +3395,13 @@ class CalendarGroupService:
             return []
 
         managed_ids, unmanaged_ids = slot_engine.split_calendars_by_management(
-            self.organization.id, all_calendar_ids
+            self.organization_id, all_calendar_ids
         )
         available_spans = slot_engine.fetch_available_spans(
-            self.organization.id, managed_ids, search_window_start, search_window_end
+            self.organization_id, managed_ids, search_window_start, search_window_end
         )
         blocking_spans = slot_engine.fetch_blocking_spans(
-            self.organization.id,
+            self.organization_id,
             unmanaged_ids,
             search_window_start,
             search_window_end,
@@ -3401,7 +3424,7 @@ class CalendarGroupService:
             for ids in group_scoped_calendar_ids_by_slot.values():
                 configured_calendar_ids.update(ids)
             group_scoped_spans_by_slot = slot_engine.fetch_group_scoped_available_spans(
-                self.organization.id,
+                self.organization_id,
                 configured_slot_ids,
                 configured_calendar_ids,
                 search_window_start,
@@ -3419,7 +3442,7 @@ class CalendarGroupService:
             for ids in group_scoped_block_calendar_ids_by_slot.values():
                 configured_block_calendar_ids.update(ids)
             group_scoped_block_spans_by_slot = slot_engine.fetch_group_scoped_blocking_spans(
-                self.organization.id,
+                self.organization_id,
                 configured_block_slot_ids,
                 configured_block_calendar_ids,
                 search_window_start,
@@ -3441,7 +3464,7 @@ class CalendarGroupService:
         # counting queries is a function of the roster/config, never of how
         # many candidate windows the loop below will check the result
         # against.
-        org = cast(Organization, self.organization)
+        org = self.bound_organization
         week_start = org.week_start
         group_scoped_quota_rules_by_slot: slot_engine.GroupScopedQuotaRulesBySlot = {}
         group_scoped_quota_counts_by_slot: slot_engine.GroupScopedQuotaCountsBySlot = {}
@@ -3518,7 +3541,7 @@ class CalendarGroupService:
             return proposals
 
         # _assert_initialized() already ran above; org is guaranteed non-None here.
-        org_id = cast(Organization, self.organization).id
+        org_id = self.organization_id
 
         policy = self.booking_policy_service.resolve_for_group(group)
         if policy == EffectivePolicy.unconstrained():

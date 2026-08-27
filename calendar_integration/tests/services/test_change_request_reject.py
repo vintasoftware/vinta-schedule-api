@@ -146,9 +146,9 @@ def service() -> ExternalEventChangeRequestService:
 @pytest.fixture
 def service_with_audit() -> ExternalEventChangeRequestService:
     """Service with a real OrganizationAuditService wired via DI container."""
-    from di_core.containers import container
+    from di_core.containers import get_container
 
-    return container.external_event_change_request_service()
+    return get_container().external_event_change_request_service()
 
 
 def _adapter_output(

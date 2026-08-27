@@ -272,6 +272,11 @@ class CalendarOwnership(SingleOrganizationModelMixin, SafeRelationNullInitMixin,
         null=True,
         blank=True,
     )
+    if TYPE_CHECKING:
+        # Contributed at runtime by ``OrganizationMembershipForeignKey.contribute_to_class``
+        # as a concrete ``BigIntegerField``; declared here so type checkers see it too.
+        membership_user_id: int | None
+
     is_default = models.BooleanField(
         default=False,
         help_text=(
@@ -579,6 +584,11 @@ class EventAttendance(SingleOrganizationModelMixin, SafeRelationNullInitMixin, B
         null=True,
         blank=True,
     )
+    if TYPE_CHECKING:
+        # Contributed at runtime by ``OrganizationMembershipForeignKey.contribute_to_class``
+        # as a concrete ``BigIntegerField``; declared here so type checkers see it too.
+        membership_user_id: int | None
+
     status = models.CharField(
         max_length=50,
         choices=RSVPStatus,
@@ -2019,6 +2029,11 @@ class CalendarManagementToken(SingleOrganizationModelMixin, SafeRelationNullInit
         null=True,
         blank=True,
     )
+    if TYPE_CHECKING:
+        # Contributed at runtime by ``OrganizationMembershipForeignKey.contribute_to_class``
+        # as a concrete ``BigIntegerField``; declared here so type checkers see it too.
+        membership_user_id: int | None
+
     external_attendee = OrganizationSafeForeignKey(
         ExternalAttendee,
         on_delete=models.CASCADE,
@@ -2277,6 +2292,11 @@ class ExternalEventChangeRequest(
         null=True,
         blank=True,
     )
+    if TYPE_CHECKING:
+        # Contributed at runtime by ``OrganizationMembershipForeignKey.contribute_to_class``
+        # as a concrete ``BigIntegerField``; declared here so type checkers see it too.
+        resolved_by_user_id: int | None
+
     resolved_at = models.DateTimeField(null=True, blank=True)
 
     objects: ClassVar[ExternalEventChangeRequestManager] = ExternalEventChangeRequestManager()
@@ -2341,6 +2361,11 @@ class BookingPolicy(SingleOrganizationModelMixin, SafeRelationNullInitMixin, Bas
         blank=True,
         related_name="booking_policies",
     )
+    if TYPE_CHECKING:
+        # Contributed at runtime by ``OrganizationMembershipForeignKey.contribute_to_class``
+        # as a concrete ``BigIntegerField``; declared here so type checkers see it too.
+        membership_user_id: int | None
+
     calendar_group = OrganizationSafeForeignKey(
         CalendarGroup,
         on_delete=models.CASCADE,

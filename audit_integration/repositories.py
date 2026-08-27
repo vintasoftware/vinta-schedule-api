@@ -20,6 +20,7 @@ from django.db.models import Q
 from vinta_audit_logs.repositories import DjangoORMAuditRepository
 from vinta_audit_logs.types import AuditQuery, IdentitySnapshot, ScopeRef
 
+from audit_integration.models import OrganizationAuditIdentity
 from audit_integration.types import OrganizationAuditQuery
 
 
@@ -161,8 +162,8 @@ class OrganizationAuditRepository(DjangoORMAuditRepository):
         ``build_identity_defaults`` above and is what survives those rows being
         deleted.
         """
-        group_links = []
-        permission_links = []
+        group_links: list[tuple[int, int]] = []
+        permission_links: list[tuple[int, int]] = []
         for identity, snapshot in zip(identities, snapshots, strict=True):
             metadata = snapshot.metadata or {}
             group_links.extend(
@@ -173,24 +174,39 @@ class OrganizationAuditRepository(DjangoORMAuditRepository):
                 for permission_id in metadata.get("membership_permission_ids") or []
             )
 
-        identity_model = type(identities[0]) if identities else None
-        if identity_model is None:
+        if not identities:
             return
+        # The base class types these as the abstract `Model` because the package knows
+        # nothing about this project's identity model. `AUDIT_IDENTITY_MODEL` binds it to
+        # `OrganizationAuditIdentity`, which is where `membership_groups` /
+        # `membership_permissions` live -- assert rather than cast, so a future rebinding
+        # fails loudly here instead of at the attribute access below.
+        identity_model = type(identities[0])
+        if not issubclass(identity_model, OrganizationAuditIdentity):
+            raise TypeError(
+                f"{type(self).__name__} is bound to OrganizationAuditIdentity, "
+                f"got {identity_model.__name__}."
+            )
 
+        # Distinct names: the two `through` models are different classes with different
+        # columns (`group_id` vs `permission_id`), so reusing one name for both made the
+        # second block look like it was building rows of the first model's type.
         if group_links:
-            through = identity_model.membership_groups.through
-            through.objects.bulk_create(
+            group_through = identity_model.membership_groups.through
+            group_through.objects.bulk_create(
                 [
-                    through(organizationauditidentity_id=identity_id, group_id=group_id)
+                    group_through(organizationauditidentity_id=identity_id, group_id=group_id)
                     for identity_id, group_id in group_links
                 ],
                 ignore_conflicts=True,
             )
         if permission_links:
-            through = identity_model.membership_permissions.through
-            through.objects.bulk_create(
+            permission_through = identity_model.membership_permissions.through
+            permission_through.objects.bulk_create(
                 [
-                    through(organizationauditidentity_id=identity_id, permission_id=permission_id)
+                    permission_through(
+                        organizationauditidentity_id=identity_id, permission_id=permission_id
+                    )
                     for identity_id, permission_id in permission_links
                 ],
                 ignore_conflicts=True,
@@ -209,6 +225,13 @@ class OrganizationAuditRepository(DjangoORMAuditRepository):
         numbers that resolve to different rows -- or to nothing. The names and
         keys travel instead, on the inherited snapshot fields.
         """
+        # Same reason as `attach_identity_relations`: the base signature is the abstract
+        # `Model`; the two `system_user_*` fields read below are this project's.
+        if not isinstance(identity, OrganizationAuditIdentity):
+            raise TypeError(
+                f"{type(self).__name__} is bound to OrganizationAuditIdentity, "
+                f"got {type(identity).__name__}."
+            )
         snapshot = super().identity_to_snapshot(identity)
         metadata = dict(snapshot.metadata)
         metadata.pop("membership_group_ids", None)

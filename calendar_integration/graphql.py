@@ -1,5 +1,6 @@
 import datetime
 import enum
+from typing import cast
 
 import strawberry
 import strawberry_django
@@ -168,7 +169,11 @@ class CalendarOwnershipGraphQLType:
     @strawberry_django.field
     def membership(self) -> OwnershipMembershipGraphQLType | None:
         """Resolve the owning membership identity via the denormalized columns."""
-        membership = self.membership  # type: ignore[attr-defined]
+        # `self` is the Django model instance at runtime -- strawberry-django passes
+        # the root object to field resolvers -- while statically it is this GraphQL
+        # type, which declares only the exposed fields. The cast states that and
+        # costs nothing at runtime.
+        membership = cast("CalendarOwnership", self).membership
         if membership is None:
             return None
         return OwnershipMembershipGraphQLType(
@@ -194,7 +199,11 @@ class CalendarGraphQLType:
 
     @strawberry_django.field
     def is_private(self) -> bool:
-        return not self.accepts_public_scheduling
+        # `self` is the Django model instance at runtime -- strawberry-django passes
+        # the root object to field resolvers -- while statically it is this GraphQL
+        # type, which declares only the exposed fields. The cast states that and
+        # costs nothing at runtime.
+        return not cast("Calendar", self).accepts_public_scheduling
 
     @strawberry_django.field(prefetch_related=["ownerships__membership"])
     def owners(self) -> list["CalendarOwnershipGraphQLType"]:
@@ -286,7 +295,11 @@ class EventAttendanceGraphQLType:
     @strawberry_django.field
     def membership(self) -> AttendanceMembershipGraphQLType | None:
         """Resolve the attendee membership identity via the denormalized columns."""
-        membership = self.membership  # type: ignore[attr-defined]
+        # `self` is the Django model instance at runtime -- strawberry-django passes
+        # the root object to field resolvers -- while statically it is this GraphQL
+        # type, which declares only the exposed fields. The cast states that and
+        # costs nothing at runtime.
+        membership = cast("EventAttendance", self).membership
         if membership is None:
             return None
         return AttendanceMembershipGraphQLType(
@@ -832,7 +845,11 @@ class CalendarGroupGraphQLType:
 
     @strawberry_django.field
     def is_private(self) -> bool:
-        return not self.accepts_public_scheduling
+        # `self` is the Django model instance at runtime -- strawberry-django passes
+        # the root object to field resolvers -- while statically it is this GraphQL
+        # type, which declares only the exposed fields. The cast states that and
+        # costs nothing at runtime.
+        return not cast("CalendarGroup", self).accepts_public_scheduling
 
 
 # ---------------------------------------------------------------------------
@@ -853,11 +870,19 @@ class CalendarBundleGraphQLType:
     @strawberry_django.field
     def children(self) -> list[CalendarGraphQLType]:
         """Return the child calendars of this bundle calendar."""
-        return list(self.bundle_children.all())  # type: ignore[union-attr]
+        # `self` is the Django model instance at runtime -- strawberry-django passes
+        # the root object to field resolvers -- while statically it is this GraphQL
+        # type, which declares only the exposed fields. The cast states that and
+        # costs nothing at runtime.
+        return list(cast("Calendar", self).bundle_children.all())
 
     @strawberry_django.field
     def is_private(self) -> bool:
-        return not self.accepts_public_scheduling
+        # `self` is the Django model instance at runtime -- strawberry-django passes
+        # the root object to field resolvers -- while statically it is this GraphQL
+        # type, which declares only the exposed fields. The cast states that and
+        # costs nothing at runtime.
+        return not cast("Calendar", self).accepts_public_scheduling
 
     @strawberry_django.field(prefetch_related=["ownerships__membership"])
     def owners(self) -> list["CalendarOwnershipGraphQLType"]:

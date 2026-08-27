@@ -212,7 +212,9 @@ class CalendarSerializer(VirtualModelSerializer):
     def __init__(
         self,
         *args,
-        calendar_service: Annotated["CalendarService | None", Provide["calendar_service"]] = None,
+        # `Provide[...]` as the default rather than `None`: `@inject` supplies it on every
+        # construction and both `create` and `update` dereference it unconditionally.
+        calendar_service: "CalendarService" = Provide["calendar_service"],
         **kwargs,
     ):
         self.calendar_service = calendar_service
@@ -267,7 +269,7 @@ class ResourceCalendarCreateSerializer(VirtualModelSerializer):
     def __init__(
         self,
         *args,
-        calendar_service: Annotated["CalendarService | None", Provide["calendar_service"]] = None,
+        calendar_service: "CalendarService" = Provide["calendar_service"],
         **kwargs,
     ):
         self.calendar_service = calendar_service
@@ -303,7 +305,7 @@ class CalendarBundleCreateSerializer(VirtualModelSerializer):
     def __init__(
         self,
         *args,
-        calendar_service: Annotated["CalendarService | None", Provide["calendar_service"]] = None,
+        calendar_service: "CalendarService" = Provide["calendar_service"],
         **kwargs,
     ):
         self.calendar_service = calendar_service
@@ -384,7 +386,7 @@ class CalendarBundleUpdateSerializer(serializers.Serializer):
     def __init__(
         self,
         *args,
-        calendar_service: Annotated["CalendarService | None", Provide["calendar_service"]] = None,
+        calendar_service: "CalendarService" = Provide["calendar_service"],
         **kwargs,
     ):
         self.calendar_service = calendar_service
@@ -502,7 +504,7 @@ class EventRecurringExceptionSerializer(serializers.Serializer):
     def __init__(
         self,
         *args,
-        calendar_service: Annotated["CalendarService | None", Provide["calendar_service"]] = None,
+        calendar_service: "CalendarService" = Provide["calendar_service"],
         **kwargs,
     ):
         self.calendar_service = calendar_service
@@ -949,7 +951,7 @@ class CalendarEventSerializer(VirtualModelSerializer):
     def __init__(
         self,
         *args,
-        calendar_service: Annotated["CalendarService | None", Provide["calendar_service"]] = None,
+        calendar_service: "CalendarService" = Provide["calendar_service"],
         **kwargs,
     ):
         self.calendar_service = calendar_service
@@ -1556,7 +1558,7 @@ class BlockedTimeSerializer(VirtualModelSerializer):
     def __init__(
         self,
         *args,
-        calendar_service: Annotated["CalendarService | None", Provide["calendar_service"]] = None,
+        calendar_service: "CalendarService" = Provide["calendar_service"],
         **kwargs,
     ):
         self.calendar_service = calendar_service
@@ -1800,7 +1802,7 @@ class AvailableTimeSerializer(VirtualModelSerializer):
     def __init__(
         self,
         *args,
-        calendar_service: Annotated["CalendarService | None", Provide["calendar_service"]] = None,
+        calendar_service: "CalendarService" = Provide["calendar_service"],
         **kwargs,
     ):
         self.calendar_service = calendar_service
@@ -1988,7 +1990,7 @@ class BulkBlockedTimeSerializer(serializers.Serializer):
     def __init__(
         self,
         *args,
-        calendar_service: Annotated["CalendarService | None", Provide["calendar_service"]] = None,
+        calendar_service: "CalendarService" = Provide["calendar_service"],
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -2105,7 +2107,7 @@ class AvailableTimeBatchSerializer(serializers.Serializer):
     def __init__(
         self,
         *args,
-        calendar_service: Annotated["CalendarService | None", Provide["calendar_service"]] = None,
+        calendar_service: "CalendarService" = Provide["calendar_service"],
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -2197,7 +2199,7 @@ class BlockedTimeRecurringExceptionSerializer(serializers.Serializer):
     def __init__(
         self,
         *args,
-        calendar_service: Annotated["CalendarService | None", Provide["calendar_service"]] = None,
+        calendar_service: "CalendarService" = Provide["calendar_service"],
         **kwargs,
     ):
         self.calendar_service = calendar_service
@@ -2284,7 +2286,7 @@ class AvailableTimeRecurringExceptionSerializer(serializers.Serializer):
     def __init__(
         self,
         *args,
-        calendar_service: Annotated["CalendarService | None", Provide["calendar_service"]] = None,
+        calendar_service: "CalendarService" = Provide["calendar_service"],
         **kwargs,
     ):
         self.calendar_service = calendar_service

@@ -37,7 +37,10 @@ class BookingPolicyPermission(BasePermission):
     @inject
     def __init__(
         self,
-        booking_policy_permission_service: "BookingPolicyPermissionService | None" = Provide[
+        # Not `| None`: `@inject` always supplies it, and the two `has_permission`
+        # branches below dereference it unconditionally. The optional annotation only
+        # ever described the pre-injection instant, which no caller observes.
+        booking_policy_permission_service: "BookingPolicyPermissionService" = Provide[
             "booking_policy_permission_service"
         ],
     ):

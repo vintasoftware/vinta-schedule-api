@@ -216,9 +216,9 @@ def change_request_service_with_audit() -> ExternalEventChangeRequestService:
     Uses the DI container to construct the service so the repository is wired
     correctly (OrganizationAuditService.__init__ requires a repository via @inject).
     """
-    from di_core.containers import container
+    from di_core.containers import get_container
 
-    return container.external_event_change_request_service()
+    return get_container().external_event_change_request_service()
 
 
 def _make_existing_event(

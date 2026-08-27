@@ -2,7 +2,7 @@ import datetime
 from collections.abc import Iterable
 from typing import Protocol
 
-from django.contrib.auth import get_user_model
+from allauth.socialaccount.models import SocialAccount
 
 from calendar_integration.models import (
     BlockedTime,
@@ -25,12 +25,9 @@ from calendar_integration.services.protocols.initializer_or_authenticated_calend
 )
 
 
-User = get_user_model()
-
-
 class AuthenticatedCalendarService(InitializedOrAuthenticatedCalendarService, Protocol):
     organization: Organization
-    account: User | GoogleCalendarServiceAccount
+    account: SocialAccount | GoogleCalendarServiceAccount
     calendar_adapter: CalendarAdapter
 
     def request_organization_calendar_resources_import(

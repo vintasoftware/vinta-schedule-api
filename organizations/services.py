@@ -1,7 +1,7 @@
 import datetime
 import logging
 from collections.abc import Iterable
-from typing import Annotated, Any
+from typing import Any
 
 from django.contrib.auth.models import Group
 from django.db import IntegrityError, transaction
@@ -109,15 +109,19 @@ class OrganizationService:
     @inject
     def __init__(
         self,
-        calendar_service: Annotated[CalendarService, Provide["calendar_service"]],
-        notification_service: Annotated[NotificationService, Provide["notification_service"]],
-        webhook_membership_side_effects_service: Annotated[
-            WebhookMembershipSideEffectsService,
-            Provide["webhook_membership_side_effects_service"],
+        # `Provide[...]` as the default, not inside `Annotated`: `@inject` replaces these on
+        # every call, so they are never read at runtime, but they give mypy a default so
+        # `OrganizationService()` -- how the container and the tests build it -- is not a
+        # missing-argument error. `_extract_marker` prefers an `Annotated` marker and then
+        # ignores the default, so only one of the two forms can be used here.
+        calendar_service: CalendarService = Provide["calendar_service"],
+        notification_service: NotificationService = Provide["notification_service"],
+        webhook_membership_side_effects_service: WebhookMembershipSideEffectsService = Provide[
+            "webhook_membership_side_effects_service"
         ],
-        audit_service: Annotated[OrganizationAuditService, Provide["audit_service"]],
-        subscription_service: Annotated[SubscriptionService, Provide["subscription_service"]],
-        entitlement_service: Annotated[EntitlementService, Provide["entitlement_service"]],
+        audit_service: OrganizationAuditService = Provide["audit_service"],
+        subscription_service: SubscriptionService = Provide["subscription_service"],
+        entitlement_service: EntitlementService = Provide["entitlement_service"],
     ):
         self.calendar_service = calendar_service
         self.notification_service = notification_service
@@ -289,7 +293,10 @@ class OrganizationService:
     def request_rooms_sync(
         self,
         organization: Organization,
-        requested_by: User,
+        # `| None`: the parameter is documented and accepted but never read in this
+        # method, and the public GraphQL caller is a `SystemUser` with no Django `User`
+        # to pass. It was already passing `None`; only the annotation disagreed.
+        requested_by: User | None,
         start_time: datetime.datetime | None = None,
         end_time: datetime.datetime | None = None,
     ) -> None:

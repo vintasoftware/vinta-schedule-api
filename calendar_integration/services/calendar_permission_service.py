@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Annotated
 from django.utils import timezone
 
 from dependency_injector.wiring import Provide, inject
+from vinta_audit_logs.types import IdentitySnapshot
 
 from audit_integration.constants import AuditAction
 from calendar_integration.exceptions import (
@@ -111,7 +112,7 @@ class CalendarPermissionService:
         action: str,
         token: CalendarManagementToken,
         organization_id: int,
-        actor: object,
+        actor: IdentitySnapshot,
         diff: dict | None = None,
     ) -> None:
         """Emit an audit record for a CalendarManagementToken lifecycle write.
@@ -124,7 +125,6 @@ class CalendarPermissionService:
         self.audit_service.record(
             action=action,
             actor=actor,
-            # type: ignore[arg-type]
             subject=self.audit_service.subject_from_instance(token),
             diff=diff,
             scope=self.audit_service.scope_from_organization_id(organization_id),

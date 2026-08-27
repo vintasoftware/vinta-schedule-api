@@ -31,13 +31,14 @@ phone-keyed consent tied to phone ownership (a security fix — see
 """
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, create_autospec, patch
 
 from django.test import override_settings
 from django.urls import reverse
 
 import pytest
 from model_bakery import baker
+from vintasend.services.notification_service import NotificationService
 
 from accounts.account_adapters import AccountAdapter
 from accounts.exceptions import ConsentRequiredError
@@ -53,7 +54,12 @@ class TestSendVerificationCodeSmsConsentGate:
 
     @pytest.fixture
     def notification_service(self):
-        return MagicMock()
+        # `create_autospec`, not a bare `MagicMock`: a bare mock accepts any call
+        # signature, so these tests passed while `send_unknown_account_sms` and
+        # `send_account_already_exists_sms` both called `create_one_off_notification`
+        # without its required `first_name` / `last_name` -- a `TypeError` against the
+        # real service. Autospec makes a wrong signature fail here instead.
+        return create_autospec(NotificationService, instance=True)
 
     @pytest.fixture
     def consent_service(self):
@@ -129,7 +135,12 @@ class TestSendUnknownAccountSmsConsentGate:
 
     @pytest.fixture
     def notification_service(self):
-        return MagicMock()
+        # `create_autospec`, not a bare `MagicMock`: a bare mock accepts any call
+        # signature, so these tests passed while `send_unknown_account_sms` and
+        # `send_account_already_exists_sms` both called `create_one_off_notification`
+        # without its required `first_name` / `last_name` -- a `TypeError` against the
+        # real service. Autospec makes a wrong signature fail here instead.
+        return create_autospec(NotificationService, instance=True)
 
     @pytest.fixture
     def consent_service(self):
@@ -183,7 +194,12 @@ class TestSendAccountAlreadyExistsSmsConsentGate:
 
     @pytest.fixture
     def notification_service(self):
-        return MagicMock()
+        # `create_autospec`, not a bare `MagicMock`: a bare mock accepts any call
+        # signature, so these tests passed while `send_unknown_account_sms` and
+        # `send_account_already_exists_sms` both called `create_one_off_notification`
+        # without its required `first_name` / `last_name` -- a `TypeError` against the
+        # real service. Autospec makes a wrong signature fail here instead.
+        return create_autospec(NotificationService, instance=True)
 
     @pytest.fixture
     def consent_service(self):
@@ -308,7 +324,12 @@ class TestAntiEnumerationSmsRealFlowIntegration:
 
     @pytest.fixture
     def notification_service(self):
-        return MagicMock()
+        # `create_autospec`, not a bare `MagicMock`: a bare mock accepts any call
+        # signature, so these tests passed while `send_unknown_account_sms` and
+        # `send_account_already_exists_sms` both called `create_one_off_notification`
+        # without its required `first_name` / `last_name` -- a `TypeError` against the
+        # real service. Autospec makes a wrong signature fail here instead.
+        return create_autospec(NotificationService, instance=True)
 
     @pytest.fixture
     def adapter(self, notification_service):

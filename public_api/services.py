@@ -30,7 +30,12 @@ class PublicAPIAuthService:
     @inject
     def __init__(
         self,
-        audit_service: Annotated[OrganizationAuditService, Provide["audit_service"]],
+        # `Provide[...]` as the *default*, not inside `Annotated`: `@inject` replaces it on
+        # every call, so it is never read at runtime, but it gives mypy a default so
+        # `PublicAPIAuthService()` -- how the container and the tests build this -- is not a
+        # missing-argument error. (`_extract_marker` prefers an `Annotated` marker and then
+        # ignores the default entirely, so the two forms cannot both be stated here.)
+        audit_service: OrganizationAuditService = Provide["audit_service"],
         entitlement_service: Annotated[
             "EntitlementService | None", Provide["entitlement_service"]
         ] = None,

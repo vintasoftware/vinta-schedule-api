@@ -19,7 +19,6 @@ Behaviors covered:
 from collections.abc import Iterable
 from unittest.mock import Mock
 
-from django.contrib.auth import get_user_model
 from django.urls import reverse
 
 import pytest
@@ -43,9 +42,8 @@ from organizations.permission_catalog import (
 )
 from organizations.tests.helpers import grant_membership_groups
 from users.factories import DEFAULT_TEST_USER_PASSWORD
+from users.models import User
 
-
-User = get_user_model()
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -57,7 +55,7 @@ def _make_org(name: str) -> Organization:
 
 
 def _make_membership(
-    user: User,  # type: ignore[valid-type]
+    user: User,
     org: Organization,
     *,
     groups: Iterable[str] = (GROUP_ORGANIZATION_MEMBER,),
@@ -85,7 +83,7 @@ def _make_membership(
     )
 
 
-def _auth_client_for(user: User) -> APIClient:  # type: ignore[valid-type]
+def _auth_client_for(user: User) -> APIClient:
     """Return an API client authenticated as *user* via session login."""
     client = APIClient()
     client.login(email=user.email, password=DEFAULT_TEST_USER_PASSWORD)
@@ -108,7 +106,7 @@ def org_b() -> Organization:
 
 
 @pytest.fixture
-def two_org_user(user: User, org_a: Organization, org_b: Organization):  # type: ignore[valid-type]
+def two_org_user(user: User, org_a: Organization, org_b: Organization):
     """A user with active memberships in both Org A and Org B."""
     _make_membership(user, org_a)
     _make_membership(user, org_b)
@@ -128,7 +126,7 @@ class _StrictView(TenantScopedViewMixin):
 
 
 def _drf_request_for(
-    user: User,  # type: ignore[valid-type]
+    user: User,
     *,
     org_id_header: str | None = None,
 ) -> Request:
@@ -163,7 +161,7 @@ class TestHeaderDrivenOrgResolution:
         self,
         two_org_user: User,
         org_a: Organization,
-        org_b: Organization,  # type: ignore[valid-type]
+        org_b: Organization,
     ) -> None:
         """Header naming Org A resolves to the Org A membership."""
         client = _auth_client_for(two_org_user)
@@ -179,7 +177,7 @@ class TestHeaderDrivenOrgResolution:
         self,
         two_org_user: User,
         org_a: Organization,
-        org_b: Organization,  # type: ignore[valid-type]
+        org_b: Organization,
     ) -> None:
         """Header naming Org B resolves to the Org B membership."""
         client = _auth_client_for(two_org_user)
@@ -195,7 +193,7 @@ class TestHeaderDrivenOrgResolution:
         self,
         two_org_user: User,
         org_a: Organization,
-        org_b: Organization,  # type: ignore[valid-type]
+        org_b: Organization,
     ) -> None:
         """Sending different org headers in successive requests resolves each one correctly."""
         client = _auth_client_for(two_org_user)
@@ -212,7 +210,7 @@ class TestHeaderDrivenOrgResolution:
     def test_header_with_single_membership_user_resolves_that_org(
         self,
         user: User,
-        org_a: Organization,  # type: ignore[valid-type]
+        org_a: Organization,
     ) -> None:
         """For a single-membership user, the header for their org resolves correctly."""
         _make_membership(user, org_a)
@@ -238,7 +236,7 @@ class TestHeaderAbsentSingleMembership:
     def test_no_header_resolves_single_membership(
         self,
         user: User,
-        org_a: Organization,  # type: ignore[valid-type]
+        org_a: Organization,
     ) -> None:
         """No header + one active membership → 200 with that org (preserved behavior)."""
         _make_membership(user, org_a)
@@ -251,7 +249,7 @@ class TestHeaderAbsentSingleMembership:
         data = response.json()
         assert data["organization"]["id"] == org_a.pk
 
-    def test_no_header_gated_user_returns_404(self, user: User) -> None:  # type: ignore[valid-type]
+    def test_no_header_gated_user_returns_404(self, user: User) -> None:
         """No header + zero active memberships → 404 (gated user, unchanged)."""
         client = _auth_client_for(user)
         url = reverse("api:Organizations-current")
@@ -263,7 +261,7 @@ class TestHeaderAbsentSingleMembership:
     def test_no_header_inactive_membership_not_resolved(
         self,
         user: User,
-        org_a: Organization,  # type: ignore[valid-type]
+        org_a: Organization,
     ) -> None:
         """An inactive membership is treated as gated (no active membership)."""
         _make_membership(user, org_a, is_active=False)
@@ -297,7 +295,7 @@ class TestPackageOwnedMembershipResolution:
         self,
         two_org_user: User,
         org_a: Organization,
-        org_b: Organization,  # type: ignore[valid-type]
+        org_b: Organization,
     ) -> None:
         """The current action reads the membership the package put on the request."""
         client = _auth_client_for(two_org_user)
@@ -313,7 +311,7 @@ class TestPackageOwnedMembershipResolution:
     def test_off_request_single_membership_resolves_directly_with_the_package(
         self,
         user: User,
-        org_a: Organization,  # type: ignore[valid-type]
+        org_a: Organization,
     ) -> None:
         """A management command or task may resolve a single membership directly."""
         _make_membership(user, org_a)
@@ -324,7 +322,7 @@ class TestPackageOwnedMembershipResolution:
 
     def test_off_request_two_memberships_are_ambiguous(
         self,
-        two_org_user: User,  # type: ignore[valid-type]
+        two_org_user: User,
     ) -> None:
         """Without an explicit organization, row age no longer selects a tenant."""
         with pytest.raises(AmbiguousOrganizationError):
@@ -347,7 +345,7 @@ class TestCalendarViewSetOrgScoping:
 
     def test_list_with_header_a_returns_only_org_a_calendars(
         self,
-        two_org_user: User,  # type: ignore[valid-type]
+        two_org_user: User,
         org_a: Organization,
         org_b: Organization,
     ) -> None:
@@ -384,7 +382,7 @@ class TestCalendarViewSetOrgScoping:
 
     def test_list_with_header_b_returns_only_org_b_calendars(
         self,
-        two_org_user: User,  # type: ignore[valid-type]
+        two_org_user: User,
         org_a: Organization,
         org_b: Organization,
     ) -> None:
@@ -417,7 +415,7 @@ class TestCalendarViewSetOrgScoping:
 
     def test_create_under_header_b_returns_201_and_lands_in_org_b(
         self,
-        two_org_user: User,  # type: ignore[valid-type]
+        two_org_user: User,
         org_a: Organization,
         org_b: Organization,
     ) -> None:
@@ -488,7 +486,7 @@ class TestMalformedOrgIdHeader:
 
     def test_single_membership_non_integer_header_resolves(
         self,
-        user: User,  # type: ignore[valid-type]
+        user: User,
         org_a: Organization,
     ) -> None:
         """One active membership + 'abc' header → 200 (treated as absent, resolves)."""
@@ -507,7 +505,7 @@ class TestMalformedOrgIdHeader:
 
     def test_multi_org_non_integer_header_returns_400(
         self,
-        two_org_user: User,  # type: ignore[valid-type]
+        two_org_user: User,
         org_a: Organization,
         org_b: Organization,
     ) -> None:
@@ -544,7 +542,7 @@ class TestMultiOrgNoHeaderRejected:
 
     def test_two_memberships_no_header_returns_400(
         self,
-        two_org_user: User,  # type: ignore[valid-type]
+        two_org_user: User,
         org_a: Organization,
         org_b: Organization,
     ) -> None:
@@ -559,7 +557,7 @@ class TestMultiOrgNoHeaderRejected:
 
     def test_single_membership_no_header_still_resolves(
         self,
-        user: User,  # type: ignore[valid-type]
+        user: User,
         org_a: Organization,
     ) -> None:
         """Exactly one active membership + no header → 200 (no regression, not 400)."""
@@ -573,7 +571,7 @@ class TestMultiOrgNoHeaderRejected:
 
     def test_gated_user_no_header_is_not_400(
         self,
-        user: User,  # type: ignore[valid-type]
+        user: User,
     ) -> None:
         """Zero active memberships + no header → gated, never 400 (onboarding unchanged).
 
@@ -592,7 +590,7 @@ class TestMultiOrgNoHeaderRejected:
 
     def test_two_memberships_with_valid_header_still_resolves(
         self,
-        two_org_user: User,  # type: ignore[valid-type]
+        two_org_user: User,
         org_a: Organization,
         org_b: Organization,
     ) -> None:
@@ -625,7 +623,7 @@ class TestActiveOrgResolutionOptionalOptOut:
 
     def test_opt_out_view_does_not_raise_for_multi_org_no_header(
         self,
-        two_org_user: User,  # type: ignore[valid-type]
+        two_org_user: User,
         org_a: Organization,
         org_b: Organization,
     ) -> None:
@@ -641,7 +639,7 @@ class TestActiveOrgResolutionOptionalOptOut:
 
     def test_strict_view_raises_for_multi_org_no_header(
         self,
-        two_org_user: User,  # type: ignore[valid-type]
+        two_org_user: User,
         org_a: Organization,
         org_b: Organization,
     ) -> None:
@@ -680,7 +678,7 @@ class TestNonMemberOrgHeaderRejected:
 
     def test_header_for_non_member_org_returns_403(
         self,
-        two_org_user: User,  # type: ignore[valid-type]
+        two_org_user: User,
         org_a: Organization,
         org_b: Organization,
         org_c: Organization,
@@ -695,7 +693,7 @@ class TestNonMemberOrgHeaderRejected:
 
     def test_header_for_inactive_membership_org_returns_403(
         self,
-        user: User,  # type: ignore[valid-type]
+        user: User,
         org_a: Organization,
         org_b: Organization,
     ) -> None:
@@ -718,7 +716,7 @@ class TestNonMemberOrgHeaderRejected:
 
     def test_header_for_member_org_still_returns_200(
         self,
-        two_org_user: User,  # type: ignore[valid-type]
+        two_org_user: User,
         org_a: Organization,
         org_b: Organization,
     ) -> None:
@@ -737,7 +735,7 @@ class TestNonMemberOrgHeaderOptOut:
 
     def test_opt_out_view_does_not_raise_for_non_member_header(
         self,
-        two_org_user: User,  # type: ignore[valid-type]
+        two_org_user: User,
         org_a: Organization,
         org_b: Organization,
         org_c: Organization,
@@ -754,7 +752,7 @@ class TestNonMemberOrgHeaderOptOut:
 
     def test_strict_view_raises_for_non_member_header(
         self,
-        two_org_user: User,  # type: ignore[valid-type]
+        two_org_user: User,
         org_a: Organization,
         org_b: Organization,
         org_c: Organization,
@@ -800,7 +798,7 @@ class TestADeactivatedAdminIsRefusedThroughTheRealStack:
 
     def test_deactivating_an_admin_flips_the_same_request_from_200_to_403(
         self,
-        user: User,  # type: ignore[valid-type]
+        user: User,
         org_a: Organization,
     ) -> None:
         """Same user, same client, same URL, same header -- only ``is_active`` moves."""
@@ -828,7 +826,7 @@ class TestADeactivatedAdminIsRefusedThroughTheRealStack:
 
     def test_an_active_non_admin_is_refused_by_the_permission_class_instead(
         self,
-        user: User,  # type: ignore[valid-type]
+        user: User,
         org_a: Organization,
     ) -> None:
         """The discriminator between the two ways this endpoint says 403.
