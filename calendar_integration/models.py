@@ -43,6 +43,7 @@ from calendar_integration.managers import (
     ExternalEventChangeRequestManager,
 )
 from common.fields import (
+    NaiveDateTimeField,
     OrganizationMembershipForeignKey,
     OrganizationSafeForeignKey,
     OrganizationSafeOneToOneField,
@@ -849,9 +850,13 @@ class RecurringMixin(SingleOrganizationModelMixin, SafeRelationNullInitMixin, Ba
 
     objects: ClassVar[OrganizationScopedManager] = OrganizationScopedManager()
 
-    # Raw datetime fields stored as UTC timestamps but treated as timezone-unaware
-    start_time_tz_unaware = models.DateTimeField()
-    end_time_tz_unaware = models.DateTimeField()
+    # Local wall-clock readings, not instants: the instant is only recovered by pairing
+    # these with the row's own ``timezone`` column, which is what the generated
+    # ``start_time`` / ``end_time`` columns below do. ``NaiveDateTimeField`` is a
+    # ``DateTimeField`` that takes a naive value as UTC without the "received a naive
+    # datetime" warning -- see its docstring for why the warning is wrong here.
+    start_time_tz_unaware = NaiveDateTimeField()
+    end_time_tz_unaware = NaiveDateTimeField()
 
     # IANA timezone string
     timezone = models.CharField(max_length=50, blank=False, validators=[validate_not_empty])

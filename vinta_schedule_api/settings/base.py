@@ -183,6 +183,15 @@ SHARED_SCHEMA_ORGANIZATIONS = {
     ],
 }
 
+# model-bakery resolves a generator by the field's *exact* class, so it does not
+# inherit one from a custom field's base. Without an entry here, ``baker.make()`` on
+# any model carrying the field raises ``TypeError: ... is not supported by baker``.
+# Both sides are dotted paths, so model-bakery (a dev dependency) is never imported
+# here and this stays inert outside tests.
+BAKER_CUSTOM_FIELDS_GEN = {
+    "common.fields.NaiveDateTimeField": "common.testing.baker_generators.gen_naive_datetime",
+}
+
 MIDDLEWARE = [
     "django.middleware.gzip.GZipMiddleware",
     "django.middleware.security.SecurityMiddleware",

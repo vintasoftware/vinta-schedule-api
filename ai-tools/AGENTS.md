@@ -272,6 +272,7 @@ Occurrences are calculated **in Postgres**, not in Python, from the master event
 - Timezone is stored separately as an IANA string.
 - Editable fields: `start_time_tz_unaware`, `end_time_tz_unaware`. **Do not use these in queries** — comparing them across events in different timezones produces wrong results.
 - Use the generated fields `start_time` and `end_time` for queries. They apply `convert_naive_utc_to_timezone` so DST is respected.
+- The two editable fields are declared as `common.fields.NaiveDateTimeField`, not `models.DateTimeField`. Assign naive datetimes to them and keep doing so — the field takes a naive value as UTC without Django's "received a naive datetime" `RuntimeWarning`, which is wrong here and used to fire on every write. That warning stays active on every other `DateTimeField`, where it does catch real bugs, so do not reach for `NaiveDateTimeField` to quiet one elsewhere: fix the caller instead.
 
 ### Calendar Bundles
 

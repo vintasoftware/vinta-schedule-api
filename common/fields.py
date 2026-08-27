@@ -41,13 +41,16 @@ Why no real DB foreign-key constraint here?
     provides integrity.
 """
 
+import datetime
 import uuid
 from typing import TYPE_CHECKING, Any
 
+from django.conf import settings
 from django.db import models
 from django.db.backends.base.operations import BaseDatabaseOperations
 from django.db.models import AutoField, UUIDField
 from django.db.models.fields.related import ForeignObject
+from django.utils import timezone
 
 
 BaseDatabaseOperations.integer_field_ranges["UUIDField"] = (0, 0)
@@ -80,6 +83,48 @@ else:
         OrganizationSafeForeignKey,
         OrganizationSafeOneToOneField,
     )
+
+
+class NaiveDateTimeField(models.DateTimeField):
+    """A ``DateTimeField`` whose Python value is a *naive* wall-clock datetime.
+
+    ``RecurringMixin.start_time_tz_unaware`` / ``end_time_tz_unaware`` hold a local
+    wall-clock reading, not an instant: the instant is only recovered by pairing them
+    with the row's own ``timezone`` column, which is what the ``convert_naive_utc_to_timezone``
+    Postgres function does to produce the ``start_time`` / ``end_time`` generated
+    columns. So every writer — ``CalendarEventService``, ``AvailabilityService``,
+    ``CalendarBundleService``, ``RecurringMixin``'s own occurrence builders — assigns
+    a value it has deliberately stripped the tzinfo from
+    (``.astimezone(tz).replace(tzinfo=None)``).
+
+    A plain ``DateTimeField`` treats that as a mistake. With ``USE_TZ = True`` its
+    ``get_prep_value`` raises a ``RuntimeWarning`` on every naive value before making
+    it aware in ``settings.TIME_ZONE``. Since the naive value is the *intended* one
+    here, that warning fires on every write of these six columns and never on a real
+    defect: 888 of the test suite's 3915 warnings came from exactly these fields, and
+    the same noise reached production logs. Worse, it drowns out the genuine naive
+    datetimes the warning exists to catch on the project's other ``DateTimeField``s.
+
+    This field interprets a naive value as UTC and skips the warning. That is what
+    ``DateTimeField`` already did — ``settings.TIME_ZONE`` is ``"UTC"``, so
+    ``make_aware(value, get_default_timezone())`` produced this same instant — with
+    the coupling to ``TIME_ZONE`` removed. The stored column stays ``timestamptz``
+    and reads still come back aware-in-UTC, so nothing about the database or the
+    read path changes; only the warning goes away.
+    """
+
+    def get_prep_value(self, value):
+        # ``to_python`` is the same normalization ``DateTimeField.get_prep_value``
+        # runs (str / date / datetime -> datetime), and it is idempotent, so calling
+        # it here and letting ``super()`` call it again costs nothing and keeps every
+        # non-datetime input -- including the ``TypeError`` an expression raises --
+        # behaving exactly as it does on a stock ``DateTimeField``. Attaching UTC
+        # before delegating is what takes ``super()`` down its already-aware path,
+        # past the warning.
+        value = self.to_python(value)
+        if value is not None and settings.USE_TZ and timezone.is_naive(value):
+            value = value.replace(tzinfo=datetime.UTC)
+        return super().get_prep_value(value)
 
 
 class UUIDAutoField(UUIDField, AutoField):  # type: ignore
