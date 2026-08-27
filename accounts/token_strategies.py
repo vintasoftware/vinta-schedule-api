@@ -4,7 +4,6 @@ import hmac
 import secrets
 
 from django.conf import settings
-from django.contrib.auth import get_user_model
 from django.http import HttpRequest
 
 import jwt
@@ -12,9 +11,8 @@ from allauth.headless.tokens.strategies.sessions import SessionTokenStrategy
 from rest_framework_simplejwt.tokens import AccessToken
 
 from accounts.models import RefreshToken
+from users.models import User
 
-
-User = get_user_model()
 
 # Device-tracking fields persisted per refresh token. Captured from request
 # headers on login and carried over on rotation (refresh has no request).
@@ -60,7 +58,7 @@ class AccessAndRefreshTokenStrategy(SessionTokenStrategy):
             algorithm="HS256",
         )
 
-    def _issue_refresh_token(self, user: "User", device: dict) -> str:
+    def _issue_refresh_token(self, user: User, device: dict) -> str:
         """Create a RefreshToken row (with device metadata) and return the encoded token."""
         secret = secrets.token_urlsafe(32)
         expires_at = self._refresh_token_expiry()
@@ -114,7 +112,11 @@ class AccessAndRefreshTokenStrategy(SessionTokenStrategy):
     def create_access_token_payload(self, request: HttpRequest) -> dict | None:
         """Build the access token payload, attaching a device-tracked refresh token."""
         payload = super().create_access_token_payload(request)
-        if payload is None:
+        # The `is_authenticated` half is what narrows `request.user` from
+        # `User | AnonymousUser` to `User` for `_issue_refresh_token` below. It is also
+        # the condition the base class returns `None` on, so this only makes the
+        # dependency explicit rather than inherited from a `super()` call.
+        if payload is None or not request.user.is_authenticated:
             return None
         payload["refresh_token"] = self._issue_refresh_token(
             request.user, self._device_from_request(request)

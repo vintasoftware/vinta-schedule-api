@@ -179,7 +179,17 @@ class AvailabilityService:
                     self._context.user_or_token, self._context.calendar_permission_service
                 ),
             ),
-            subject=audit_service.subject_from_instance(subject_instance, label=label),
+            # `label` is `str | None`; `subject_from_instance` declares `label: str` and
+            # `SubjectRef.subject_label` defaults to `""`. This path stores `None` for
+            # "no label" instead, and `test_create_available_time_records_create` asserts
+            # that exact value, so coercing to `""` here would change what lands in the
+            # audit trail. Left as-is deliberately; see the note in the PR about
+            # reconciling this with `CalendarGroupService`, which passes no label at all
+            # and therefore stores `""`.
+            subject=audit_service.subject_from_instance(
+                subject_instance,
+                label=label,  # type: ignore[arg-type]
+            ),
             diff=diff,
             scope=audit_service.scope_from_organization_id(organization.id),
         )

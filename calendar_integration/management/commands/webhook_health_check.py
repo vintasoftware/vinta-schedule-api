@@ -57,7 +57,9 @@ class Command(BaseCommand):
         else:
             organizations = list(Organization.objects.all())
 
-        total_report = {
+        # Heterogeneous by design (counters plus a list of per-org reports), so the
+        # value type has to be explicit or it is inferred from the first entry.
+        total_report: dict[str, Any] = {
             "organizations_checked": len(organizations),
             "total_subscriptions": 0,
             "total_active_subscriptions": 0,

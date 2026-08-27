@@ -166,9 +166,10 @@ class CalendarOwnershipGraphQLType:
     is_default: strawberry.auto
 
     @strawberry_django.field
-    def membership(self) -> OwnershipMembershipGraphQLType | None:
+    @staticmethod
+    def membership(root: CalendarOwnership) -> OwnershipMembershipGraphQLType | None:
         """Resolve the owning membership identity via the denormalized columns."""
-        membership = self.membership  # type: ignore[attr-defined]
+        membership = root.membership
         if membership is None:
             return None
         return OwnershipMembershipGraphQLType(
@@ -193,13 +194,22 @@ class CalendarGraphQLType:
     modified: datetime.datetime
 
     @strawberry_django.field
-    def is_private(self) -> bool:
-        return not self.accepts_public_scheduling
+    @staticmethod
+    def is_private(root: Calendar) -> bool:
+        return not root.accepts_public_scheduling
 
     @strawberry_django.field(prefetch_related=["ownerships__membership"])
-    def owners(self) -> list["CalendarOwnershipGraphQLType"]:
+    @staticmethod
+    def owners(root: Calendar) -> list["CalendarOwnershipGraphQLType"]:
         """Return all ownership records for this calendar."""
-        return list(self.ownerships.all())  # type: ignore[attr-defined]
+        # The rows are `CalendarOwnership` models; the annotation names the GraphQL
+        # type strawberry-django maps them onto, so the two can never agree. Declaring
+        # this as a relation field instead would type cleanly but drops the
+        # `prefetch_related` above: the calendars reaching here come from org-scoped
+        # *lists*, so `DjangoOptimizerExtension` has no queryset to attach to and the
+        # hint is what keeps `owners` constant-query. Measured, the relation form cost
+        # 15 -> 36 queries on `TestCalendarOwnersField::test_owners_field_no_n_plus_1`.
+        return list(root.ownerships.all())  # type: ignore[arg-type]
 
 
 @strawberry_django.type(RecurrenceRule)
@@ -284,9 +294,10 @@ class EventAttendanceGraphQLType:
     modified: datetime.datetime
 
     @strawberry_django.field
-    def membership(self) -> AttendanceMembershipGraphQLType | None:
+    @staticmethod
+    def membership(root: EventAttendance) -> AttendanceMembershipGraphQLType | None:
         """Resolve the attendee membership identity via the denormalized columns."""
-        membership = self.membership  # type: ignore[attr-defined]
+        membership = root.membership
         if membership is None:
             return None
         return AttendanceMembershipGraphQLType(
@@ -831,8 +842,9 @@ class CalendarGroupGraphQLType:
     slots: list[CalendarGroupSlotGraphQLType] = strawberry_django.field()
 
     @strawberry_django.field
-    def is_private(self) -> bool:
-        return not self.accepts_public_scheduling
+    @staticmethod
+    def is_private(root: CalendarGroup) -> bool:
+        return not root.accepts_public_scheduling
 
 
 # ---------------------------------------------------------------------------
@@ -851,18 +863,22 @@ class CalendarBundleGraphQLType:
     description: strawberry.auto
 
     @strawberry_django.field
-    def children(self) -> list[CalendarGraphQLType]:
+    @staticmethod
+    def children(root: Calendar) -> list[CalendarGraphQLType]:
         """Return the child calendars of this bundle calendar."""
-        return list(self.bundle_children.all())  # type: ignore[union-attr]
+        return list(root.bundle_children.all())  # type: ignore[arg-type]
 
     @strawberry_django.field
-    def is_private(self) -> bool:
-        return not self.accepts_public_scheduling
+    @staticmethod
+    def is_private(root: Calendar) -> bool:
+        return not root.accepts_public_scheduling
 
     @strawberry_django.field(prefetch_related=["ownerships__membership"])
-    def owners(self) -> list["CalendarOwnershipGraphQLType"]:
+    @staticmethod
+    def owners(root: Calendar) -> list["CalendarOwnershipGraphQLType"]:
         """Return all ownership records for this bundle calendar."""
-        return list(self.ownerships.all())  # type: ignore[attr-defined]
+        # See the note on `CalendarGraphQLType.owners`.
+        return list(root.ownerships.all())  # type: ignore[arg-type]
 
 
 @strawberry_django.type(CalendarEventGroupSelection)

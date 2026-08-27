@@ -256,9 +256,14 @@ class CalendarEventService:
         (``membership_user_id IS NULL`` — non-members) carry no membership identity
         and are excluded. Must be called while the rows still exist (before a delete).
         """
+        # `values_list` on a nullable column is typed `int | None`; the `isnull=False`
+        # filter is what rules the `None` out, and django-stubs cannot correlate the two.
         return set(
-            event.attendances.filter(membership_user_id__isnull=False).values_list(
-                "membership_user_id", flat=True
+            cast(
+                "Iterable[int]",
+                event.attendances.filter(membership_user_id__isnull=False).values_list(
+                    "membership_user_id", flat=True
+                ),
             )
         )
 
@@ -403,7 +408,7 @@ class CalendarEventService:
         current_event: CalendarEventData | None = None,
     ) -> CalendarEventData:
         return _serialize_event_data_input_util(
-            event, event_data, self._context.organization, current_event=current_event
+            event, event_data, self._context.bound_organization, current_event=current_event
         )
 
     def convert_naive_utc_datetime_to_timezone(
@@ -1722,6 +1727,13 @@ class CalendarEventService:
             The modified-occurrence ``CalendarEvent``.
         """
         context = cast("BaseCalendarService", self._context)
+        # The narrowing guard this module uses everywhere else it reads `context`. The
+        # check was already happening -- `_load_recurring_master_for_occurrence` below
+        # performs it on the next line -- but not before the four `context.organization`
+        # / `context.calendar_adapter` reads further down, which is why they had no
+        # declared members to resolve against.
+        if not is_initialized_or_authenticated_calendar_service(context):
+            raise
         self._check_not_restricted()
         master = self._load_recurring_master_for_occurrence(calendar_id, master_event_id)
 
@@ -2060,7 +2072,7 @@ class CalendarEventService:
         if not id_set:
             return []
 
-        org_id = self._context.organization.id
+        org_id = self._context.bound_organization.id
 
         base_qs = (
             # See ``get_calendar_events_expanded`` on the ordering.

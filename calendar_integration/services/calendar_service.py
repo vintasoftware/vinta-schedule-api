@@ -53,6 +53,7 @@ from calendar_integration.constants import (
 )
 from calendar_integration.exceptions import (
     BookingPolicyViolationError,
+    CalendarServiceOrganizationNotSetError,
     InvalidCalendarTokenError,
 )
 from calendar_integration.models import (
@@ -317,7 +318,10 @@ class CalendarService(BaseCalendarService):
 
     def _serialize_event_internal_attendee(
         self, attendance: EventAttendance
-    ) -> EventInternalAttendeeData:
+    ) -> EventInternalAttendeeData | None:
+        # `| None` because the util returns it: an orphan attendance whose
+        # `membership_user_id` no longer resolves to a member has no identity to
+        # serialize. `CalendarEventService`'s copy of this method already said so.
         return _serialize_event_internal_attendee_util(attendance)
 
     def _serialize_event_external_attendee(
@@ -1446,7 +1450,23 @@ class CalendarService(BaseCalendarService):
     def _serialize_event_data_input(
         self, event: CalendarEvent, event_data: CalendarEventInputData
     ) -> CalendarEventData:
-        return _serialize_event_data_input_util(event, event_data, self.organization)
+        return _serialize_event_data_input_util(event, event_data, self.bound_organization)
+
+    @property
+    def bound_organization(self) -> Organization:
+        """The organization bound by ``authenticate()`` / ``initialize_without_provider()``.
+
+        Matches ``CalendarGroupService.bound_organization`` and
+        ``CalendarServiceContext.bound_organization``: ``organization`` is declared
+        optional because ``__init__`` runs before either binder, and callers that need
+        the value rather than a branch read it through here.
+        """
+        if self.organization is None:
+            raise CalendarServiceOrganizationNotSetError(
+                "CalendarService requires an organization. "
+                "Call authenticate() or initialize_without_provider()."
+            )
+        return self.organization
 
     def _check_booking_policy(
         self,

@@ -160,7 +160,11 @@ class CalendarWebhookSubscriptionAdmin(admin.ModelAdmin):
 
         return format_html('<span style="color: green;">✓ Healthy</span>')
 
-    actions: ClassVar = ["renew_subscriptions", "deactivate_subscriptions"]
+    # A tuple, not a `ClassVar` list: django-stubs types `ModelAdmin.actions` as an
+    # instance variable, so annotating it `ClassVar` is an illegal override, while a
+    # bare list trips ruff's RUF012 (mutable class default). `Sequence` covers a
+    # tuple, which satisfies both without suppressing either.
+    actions = ("renew_subscriptions", "deactivate_subscriptions")
 
     @admin.action(description="Renew selected subscriptions")
     def renew_subscriptions(self, request: HttpRequest, queryset):
@@ -292,7 +296,11 @@ class CalendarWebhookEventAdmin(admin.ModelAdmin):
             return format_html('<span style="color: red;">{}</span>', error[:100])
         return "No errors"
 
-    actions: ClassVar = ["mark_as_processed", "reprocess_events"]
+    # A tuple, not a `ClassVar` list: django-stubs types `ModelAdmin.actions` as an
+    # instance variable, so annotating it `ClassVar` is an illegal override, while a
+    # bare list trips ruff's RUF012 (mutable class default). `Sequence` covers a
+    # tuple, which satisfies both without suppressing either.
+    actions = ("mark_as_processed", "reprocess_events")
 
     @admin.action(description="Mark selected events as processed")
     def mark_as_processed(self, request: HttpRequest, queryset):

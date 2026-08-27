@@ -72,7 +72,7 @@ make update_deps          # uv sync --no-install-project then rebuild
 uv sync --frozen                              # install deps from uv.lock
 uv run ruff check ./                          # lint (CI gate)
 uv run ruff format ./                         # format
-uv run mypy .                                 # type check (not in CI; baseline gate, see below)
+uv run mypy .                                 # type check (CI gate; must report zero errors)
 uv run pytest -n auto                         # full suite
 uv run pytest <app>/tests/ -n auto            # scoped suite
 uv run pytest <path/to/test_file.py> -vs      # single file
@@ -96,7 +96,9 @@ uv run python manage.py check --deploy
 uv run pytest -n auto
 ```
 
-Five of the six must pass outright. **`mypy` is a baseline gate, not a zero gate** — the repo carries a long-standing backlog of pre-existing errors (281 at the time of writing; `ai-plans/TRACKING_*.md` records earlier counts of 293–315). It passes when your change adds no new error, so measure the baseline on a clean checkout of the base branch — `git stash -u`, not `git stash`, or untracked new files get counted as if they were the base (see the gate-integrity note in `ai-plans/TRACKING_BILLING_PLANS_AND_LIMITS.md`). Corroborate any delta with a second run before acting on it; contention produces phantom counts.
+All six must pass, `mypy` included: it reports **zero** errors and is enforced in CI (the `Type checking` step of the `checks` job). It was a baseline gate for as long as the repo carried a backlog — `ai-plans/TRACKING_*.md` records counts of 293–315 — but that backlog is cleared, so there is no baseline to measure against any more and any error mypy reports is yours.
+
+Two trees are excluded in `[tool.mypy] exclude` and cannot be type-checked: vendored skill resources under `ai-tools/skills/*/resources/` (overwritten by `vinta-sync-ai-tools`) and the dated one-off script folders under `scripts/one_off/`, whose names are not valid Python identifiers, so their tests load `script.py` by path. Reach for a targeted `# type: ignore[code]` only for a genuine third-party limitation, and say which one in a comment.
 
 Skill-specific Verification blocks add commands on top (schema regenerate, migration apply + reverse, view introspection, etc.) — the outer gate stays constant.
 

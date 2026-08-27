@@ -121,6 +121,10 @@ def test_exception_engine_modified_future_occurrence_invokes_callback(
         exception_datetime: datetime.datetime,
         modification_data: dict[str, Any],
     ) -> RecurringMixin:
+        # The manager's callback protocol is typed for the abstract `RecurringMixin`;
+        # this test only ever drives it with a `CalendarEvent`, whose `title` /
+        # `description` the body below reads.
+        assert isinstance(parent_obj, CalendarEvent)
         recorded["parent"] = parent_obj
         recorded["exception_datetime"] = exception_datetime
         recorded["modification_data"] = modification_data
@@ -181,6 +185,10 @@ def test_exception_engine_master_date_creates_continuation_and_demotes_master(
         second_occurrence: RecurringMixin,
         new_recurrence_rule: RecurrenceRule,
     ) -> RecurringMixin:
+        # The manager's callback protocol is typed for the abstract `RecurringMixin`;
+        # this test only ever drives it with a `CalendarEvent`, whose `title` /
+        # `description` the body below reads.
+        assert isinstance(parent_obj, CalendarEvent)
         recorded["parent"] = parent_obj
         recorded["second_occurrence_start"] = second_occurrence.start_time
         recorded["new_rule_id"] = new_recurrence_rule.id
@@ -315,6 +323,10 @@ def test_bulk_modification_engine_invokes_callbacks_and_returns_continuation(
         recurrence_rule: RecurrenceRule | None,
         modification_data: dict[str, Any],
     ) -> RecurringMixin:
+        # The manager's callback protocol is typed for the abstract `RecurringMixin`;
+        # this test only ever drives it with a `CalendarEvent`, whose `title` /
+        # `description` the body below reads.
+        assert isinstance(parent_obj, CalendarEvent)
         invoked["continuation_start"] = start_dt
         invoked["continuation_rule"] = recurrence_rule
         # ``recurrence_rule`` arrives unsaved: real callbacks consume it as an

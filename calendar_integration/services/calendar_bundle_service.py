@@ -187,8 +187,14 @@ class CalendarBundleService:
         affected: set[int] = set()
         if isinstance(subject_instance, CalendarEvent):
             affected = set(
-                subject_instance.attendances.filter(membership_user_id__isnull=False).values_list(
-                    "membership_user_id", flat=True
+                # `values_list` on a nullable column is typed `int | None`; the
+                # `isnull=False` filter above is what rules the `None` out, and
+                # django-stubs cannot correlate the two.
+                cast(
+                    "Iterable[int]",
+                    subject_instance.attendances.filter(
+                        membership_user_id__isnull=False
+                    ).values_list("membership_user_id", flat=True),
                 )
             )
             if actor.identity_type == AuditActorType.MEMBERSHIP and actor.identity_key:

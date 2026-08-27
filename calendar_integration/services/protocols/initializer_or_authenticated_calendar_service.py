@@ -42,6 +42,11 @@ class InitializedOrAuthenticatedCalendarService(Protocol):
     calendar_adapter: CalendarAdapter | None
     calendar_side_effects_service: CalendarSideEffectsService
     calendar_permission_service: CalendarPermissionService
+    # Part of the contract, not an implementation detail: the two `_get_calendar_by_*`
+    # helpers below are the protocol's own members and both read this cache, so a
+    # narrowing TypeGuard that produced this protocol without it left every such read
+    # unresolvable.
+    _calendar_cache: dict[tuple[int, str | int], Calendar]
 
     def _get_calendar_by_id(self, calendar_id: int) -> Calendar: ...
 

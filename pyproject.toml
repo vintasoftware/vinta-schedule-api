@@ -265,6 +265,22 @@ plugins = [
   "mypy_django_plugin.main",
   "mypy_drf_plugin.main",
 ]
+# Two trees mypy cannot say anything useful about. Both already have the equivalent
+# ruff per-file ignore above (INP001), for the same underlying reasons.
+exclude = [
+  # Vendored verbatim from the skills and refreshed by `vinta-sync-ai-tools`, so a fix
+  # applied here is overwritten on the next sync -- the same reasoning as the
+  # `scripts.one_off._base` override below, which this does not replace (that module is
+  # a real import target, not a template).
+  '^ai-tools/skills/.*/resources/',
+  # One-off script folders are named `<YYYY-MM-DD>-<kebab>`: not valid Python
+  # identifiers, so they cannot be packages, so `test_script.py` loads `script.py`
+  # through `importlib.util.spec_from_file_location`. Everything it reaches that way is
+  # invisible to static analysis -- mypy reported the script's own class as having no
+  # attributes and its config dataclass as "not valid as a type". Nothing to fix in the
+  # code; the folder layout is the constraint.
+  '^scripts/one_off/[0-9]{4}-[0-9]{2}-[0-9]{2}-',
+]
 
 # Third-party packages that ship no stubs and no `py.typed`. `boto3` / `botocore` were
 # missing from this list, but the `[tool.django-stubs]` plugin crash at the bottom of

@@ -52,7 +52,9 @@ def billing_settings(*, default_provider: str | None = None, **credentials: str)
         :data:`PROVIDER_CREDENTIAL_KEYS` -- a typo would otherwise configure
         nothing and leave the test asserting against the ambient environment.
     """
-    overrides = copy.deepcopy(django_settings.VINTA_BILLING)
+    # Annotated: the settings dict is heterogeneous, so without it `overrides[...]`
+    # reads back as `object` and cannot be indexed into.
+    overrides: dict[str, Any] = copy.deepcopy(django_settings.VINTA_BILLING)
     if default_provider is not None:
         overrides["DEFAULT_PROVIDER"] = default_provider
     for name, value in credentials.items():

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from django.conf import settings
 from django.db import models
@@ -382,6 +382,10 @@ class OrganizationInvitation(BaseModel):
         null=True,
         blank=True,
     )
+    if TYPE_CHECKING:
+        # Contributed at runtime by ``OrganizationMembershipForeignKey.contribute_to_class``
+        # as a concrete ``BigIntegerField``; declared here so type checkers see it too.
+        membership_user_id: int | None
 
     class Meta:
         constraints: ClassVar = [

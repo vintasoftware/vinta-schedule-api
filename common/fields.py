@@ -224,7 +224,17 @@ class OrganizationMembershipForeignKey(models.Field):
         self.help_text = help_text
 
     def contribute_to_class(self, cls, name: str) -> None:  # type: ignore[override]
-        """Inject the concrete ``<name>_user_id`` column and the ForeignObject descriptor."""
+        """Inject the concrete ``<name>_user_id`` column and the ForeignObject descriptor.
+
+        The ``<name>_user_id`` column is created here, at class-construction time, so no
+        static analyser can see it. Every host model therefore also declares it::
+
+            if TYPE_CHECKING:
+                <name>_user_id: int | None
+
+        Without that, mypy rejects every read of the column -- which it did, 49 times,
+        across five models. Add the declaration alongside any new use of this field.
+        """
         user_id_field_name = f"{name}_user_id"
 
         # 1. Concrete column: plain BigIntegerField matching the User PK type

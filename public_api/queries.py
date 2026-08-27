@@ -618,7 +618,9 @@ class Query:
             end_datetime,
         )
 
-        request: PublicApiHttpRequest = info.context.request
+        # Already annotated earlier in this scope; re-annotating the same name is a
+        # redefinition.
+        request = info.context.request
         allowed_ids = (
             scoped_calendar_ids(request.public_api_system_user, org)
             if request.public_api_system_user is not None
@@ -673,7 +675,9 @@ class Query:
             end_datetime,
         )
 
-        request: PublicApiHttpRequest = info.context.request
+        # Already annotated earlier in this scope; re-annotating the same name is a
+        # redefinition.
+        request = info.context.request
         allowed_ids = (
             scoped_calendar_ids(request.public_api_system_user, org)
             if request.public_api_system_user is not None

@@ -79,7 +79,12 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):
     def __init__(
         self,
         *args,
-        organization_service: Annotated[OrganizationService, Provide["organization_service"]],
+        # `Provide[...]` as the default, not inside `Annotated`: `@inject` replaces it on
+        # every call, so it is never read at runtime, but it gives mypy a default so
+        # `SocialAccountAdapter()` -- how the container and the tests build it -- is not a
+        # missing-argument error. `_extract_marker` prefers an `Annotated` marker and then
+        # ignores the default, so only one of the two forms can be used here.
+        organization_service: OrganizationService = Provide["organization_service"],
         **kwargs,
     ):
         self.organization_service = organization_service
@@ -650,6 +655,13 @@ class AccountAdapter(DefaultAccountAdapter):
 
         self.notification_service.create_one_off_notification(
             email_or_phone=phone,
+            # Empty by necessity, and required by `create_one_off_notification`: these
+            # two enumeration-prevention paths run on a raw submitted phone number with
+            # no `user` -- there is either no account at all or one we must not confirm
+            # exists -- so there is no name to pass, and looking one up is exactly the
+            # leak the uniform response exists to prevent.
+            first_name="",
+            last_name="",
             notification_type=NotificationTypes.SMS.value,
             title="Phone Verification Unknown Account Message",
             body_template="accounts/notifications/sms/unknown_account.body.txt",
@@ -683,6 +695,13 @@ class AccountAdapter(DefaultAccountAdapter):
 
         self.notification_service.create_one_off_notification(
             email_or_phone=phone,
+            # Empty by necessity, and required by `create_one_off_notification`: these
+            # two enumeration-prevention paths run on a raw submitted phone number with
+            # no `user` -- there is either no account at all or one we must not confirm
+            # exists -- so there is no name to pass, and looking one up is exactly the
+            # leak the uniform response exists to prevent.
+            first_name="",
+            last_name="",
             notification_type=NotificationTypes.SMS.value,
             title="Phone Verification Account already exists Message",
             body_template="accounts/notifications/sms/account_already_exists.body.txt",

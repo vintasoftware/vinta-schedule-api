@@ -217,18 +217,25 @@ class MSOutlookCalendarAdapter(CalendarAdapter):
         attendees = []
         for attendee in ms_event.attendees:
             email_address = attendee.get("emailAddress", {})
-            status = attendee.get("status", {}).get("response", "none")
+            # Named apart from the event `status` below: this is an attendee's RSVP
+            # response (a free-form string), that one is the event's own state (one of
+            # two literals). Sharing the name widened the second to plain `str`.
+            attendee_response = attendee.get("status", {}).get("response", "none")
 
             attendees.append(
                 EventAttendeeData(
                     email=email_address.get("address", ""),
                     name=email_address.get("name", ""),
-                    status=self.RSVP_STATUS_MAPPING.get(status, "pending"),
+                    status=self.RSVP_STATUS_MAPPING.get(attendee_response, "pending"),
                 )
             )
 
-        # Determine event status
-        status = "cancelled" if ms_event.is_cancelled else "confirmed"
+        # Determine event status. Annotated because a conditional between two string
+        # literals widens to `str` without a declared target, and
+        # `CalendarEventAdapterOutputData.status` is the two-literal union.
+        status: Literal["confirmed", "cancelled"] = (
+            "cancelled" if ms_event.is_cancelled else "confirmed"
+        )
 
         # Extract recurrence information if present
         recurrence_rule = None

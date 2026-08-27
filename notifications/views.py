@@ -278,6 +278,12 @@ class NotificationViewSet(ViewSet):
         if user_id is None:
             return Response(status=status.HTTP_401_UNAUTHORIZED)
 
+        # `pk` is optional in the `@action(detail=True)` signature DRF requires, but the
+        # detail route cannot match without one. Same 404 the "missing id" case above
+        # documents, rather than passing `None` into the id list.
+        if pk is None:
+            raise NotFound("Notification not found.")
+
         results = list(self.notification_service.mark_read_bulk([pk], user_id=user_id))
         if not results:
             raise NotFound("Notification not found.")

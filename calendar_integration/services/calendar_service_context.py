@@ -15,6 +15,8 @@ from __future__ import annotations
 import dataclasses
 from typing import TYPE_CHECKING
 
+from calendar_integration.exceptions import CalendarServiceOrganizationNotSetError
+
 
 if TYPE_CHECKING:
     from allauth.socialaccount.models import SocialAccount
@@ -80,3 +82,19 @@ class CalendarServiceContext:
     # (without DI) still construct; a checked call site skips the write entirely when
     # this is ``None``, mirroring ``audit_service``'s no-op-when-absent convention.
     external_client_identifier_service: ExternalClientIdentifierService | None = None
+
+    @property
+    def bound_organization(self) -> "Organization":
+        """The organization this context was built for.
+
+        Declared `Organization | None` because the dataclass field has to cover the
+        pre-construction instant, but both construction paths -- `authenticate()` and
+        `initialize_without_provider()` -- set it (see the class docstring), so no holder
+        of a context ever sees `None`. This is what sub-services read instead of
+        narrowing at each use.
+        """
+        if self.organization is None:
+            raise CalendarServiceOrganizationNotSetError(
+                "CalendarServiceContext has no organization bound."
+            )
+        return self.organization

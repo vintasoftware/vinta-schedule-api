@@ -635,7 +635,15 @@ class CalendarSyncService:
             if calendar.calendar_type == CalendarType.RESOURCE:
                 continue
 
-            owner_user = context.account.user if context.account else None
+            # `isinstance`, not a truthiness check: `context.account` is a
+            # `SocialAccount | GoogleCalendarServiceAccount`, and only the former has a
+            # `.user`. A service account reaching here used to raise `AttributeError`;
+            # it now takes the same `owner_membership_user_id = None` orphan-ownership
+            # fallback the comment below describes. Matches the guard already used for
+            # `account_type` further down this module.
+            owner_user = (
+                context.account.user if isinstance(context.account, SocialAccount) else None
+            )
             # Ownership is membership-scoped: the lookup key is the
             # denormalized `membership_user_id`, matched by the partial unique
             # constraint (calendar_fk, membership_user_id). A non-NULL

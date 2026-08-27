@@ -111,11 +111,19 @@ class RecurringQuerySetMixin:
     """
 
     def annotate_recurring_occurrences_on_date_range(
-        self, start_date: datetime.datetime, end_date: datetime.datetime, max_occurrences=10000
+        self,
+        start_date: datetime.datetime,
+        end_date: datetime.datetime,
+        max_occurrences=10000,
+        overlap=False,
     ):
         """
         Annotate objects with their recurring occurrences in the date range.
         This method should be overridden by concrete querysets to use their specific database function.
+
+        ``overlap`` is part of the contract: all three concrete querysets accept it and
+        ``RecurringManager`` passes it through, but it was missing here, so the abstract
+        signature was narrower than every implementation of it.
         """
         raise NotImplementedError(
             "Concrete querysets must implement annotate_recurring_occurrences_on_date_range"

@@ -23,6 +23,7 @@ from organizations.models import (
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN, GROUP_ORGANIZATION_MEMBER
 from organizations.services import OrganizationService
 from organizations.tests.helpers import make_membership
+from users.models import User
 
 
 def _payloads(mock_task) -> list[dict]:
@@ -36,15 +37,15 @@ def _subjects(mock_task) -> set[str]:
 @pytest.mark.django_db
 class TestOrganizationServiceAudit:
     def _service(self) -> OrganizationService:
-        from di_core.containers import container
+        from di_core.containers import get_container
 
-        with container.calendar_service.override(Mock()):
+        with get_container().calendar_service.override(Mock()):
             return OrganizationService()
 
     def test_create_organization_records_org_and_membership(
         self, django_capture_on_commit_callbacks
     ) -> None:
-        user = baker.make("users.user")
+        user = baker.make(User)
         service = self._service()
 
         with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
@@ -68,7 +69,7 @@ class TestOrganizationServiceAudit:
 
     def test_invite_user_records_create(self, django_capture_on_commit_callbacks) -> None:
         org = baker.make(Organization)
-        inviter = baker.make("users.user")
+        inviter = baker.make(User)
         make_membership(
             user=inviter,
             organization=org,
@@ -97,7 +98,7 @@ class TestOrganizationServiceAudit:
         self, django_capture_on_commit_callbacks
     ) -> None:
         org = baker.make(Organization)
-        user = baker.make("users.user", email="joiner@example.com")
+        user = baker.make(User, email="joiner@example.com")
         raw = generate_long_lived_token()
         invitation = OrganizationInvitation.objects.create(
             email="joiner@example.com",

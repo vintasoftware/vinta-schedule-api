@@ -1,4 +1,4 @@
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from django.db import models
 
@@ -94,6 +94,11 @@ class SystemUser(
             "this organization membership's user. NULL = organization-wide token (legacy default)."
         ),
     )
+    if TYPE_CHECKING:
+        # Contributed at runtime by ``OrganizationMembershipForeignKey.contribute_to_class``
+        # as a concrete ``BigIntegerField``; declared here so type checkers see it too.
+        scoped_to_membership_user_id: int | None
+
     integration_name = models.CharField(max_length=150, unique=True, db_index=True)
     long_lived_token_hash = models.CharField(
         max_length=255,

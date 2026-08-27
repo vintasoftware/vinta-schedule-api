@@ -295,6 +295,7 @@ def test_refresh_webhook_subscription_google(
     # Should be approximately 7 days from now
     expected_min = datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=6)
     expected_max = datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=8)
+    assert result.expires_at is not None
     assert expected_min <= result.expires_at <= expected_max
 
 

@@ -2,6 +2,7 @@ import os
 import re
 from collections.abc import Callable
 from datetime import timedelta
+from typing import Any
 from urllib.parse import quote
 
 from django.core.exceptions import ValidationError
@@ -473,7 +474,9 @@ SIMPLE_JWT = {
 # Wildcard origins are incompatible with credentialed requests: the browser
 # rejects `Access-Control-Allow-Origin: *` when credentials are sent. List
 # explicit origins so the response echoes the request origin instead.
-CORS_ALLOWED_ORIGINS = config(
+# Annotated because `Csv()` is untyped (decouple ships no stubs), so mypy cannot infer
+# the element type and asks for one.
+CORS_ALLOWED_ORIGINS: list[str] = config(
     "CORS_ALLOWED_ORIGINS",
     cast=Csv(),
 )
@@ -681,7 +684,11 @@ S3DIRECT_DESTINATIONS = {
     },
 }
 
-SOCIALACCOUNT_PROVIDERS = {}
+# `dict[str, Any]`, not an inferred type: allauth's per-provider config has no single
+# shape -- "apple" carries only APPS, "google" adds SCOPE (list[str]) and AUTH_PARAMS
+# (dict[str, str]). Left bare, mypy infers the value type from whichever provider block
+# is assigned first and rejects every other one.
+SOCIALACCOUNT_PROVIDERS: dict[str, Any] = {}
 if config("APPLE_SERVICE_ID", default=""):
     SOCIALACCOUNT_PROVIDERS["apple"] = {
         "APPS": [
@@ -698,7 +705,7 @@ if config("APPLE_SERVICE_ID", default=""):
                     # The certificate you downloaded when generating the key.
                     "certificate_key": config("APPLE_CERTIFICATE_KEY", default=""),
                 },
-            }  # type: ignore
+            }
         ]
     }
 if config("FACEBOOK_APP_ID", default=""):
@@ -707,7 +714,7 @@ if config("FACEBOOK_APP_ID", default=""):
             {
                 "client_id": config("FACEBOOK_APP_ID", default=""),
                 "secret": config("FACEBOOK_APP_SECRET", default=""),
-            }  # type: ignore
+            }
         ],
         "SCOPE": ["email"],
         "AUTH_PARAMS": {"auth_type": "reauthenticate"},
@@ -719,7 +726,7 @@ if config("GOOGLE_CLIENT_ID", default=""):
                 "client_id": config("GOOGLE_CLIENT_ID", default=""),
                 "secret": config("GOOGLE_CLIENT_SECRET", default=""),
                 "key": "",
-            },  # type: ignore
+            },
         ],
         "SCOPE": [
             "openid",
