@@ -783,7 +783,7 @@ class CalendarService(BaseCalendarService):
             organization=organization,
             external_id=created_calendar.external_id,
             name=created_calendar.name,
-            description=created_calendar.description,
+            description=created_calendar.description or "",
             provider=self.calendar_adapter.provider
             if self.calendar_adapter
             else CalendarProvider.INTERNAL,
@@ -887,7 +887,7 @@ class CalendarService(BaseCalendarService):
         calendar = Calendar.objects.create(
             organization=self.organization,
             name=name,
-            description=description,
+            description=description or "",
             provider=CalendarProvider.INTERNAL,
             calendar_type=CalendarType.VIRTUAL,
         )
@@ -963,7 +963,7 @@ class CalendarService(BaseCalendarService):
         calendar = Calendar.objects.create(
             organization=self.organization,
             name=name,
-            description=description,
+            description=description or "",
             provider=CalendarProvider.INTERNAL,
             calendar_type=CalendarType.RESOURCE,
             capacity=capacity,
@@ -1021,7 +1021,7 @@ class CalendarService(BaseCalendarService):
         calendar = Calendar.objects.create(
             organization=self.organization,
             name=name,
-            description=description,
+            description=description or "",
             provider=CalendarProvider.INTERNAL,
             calendar_type=CalendarType.PERSONAL,
             accepts_public_scheduling=accepts_public_scheduling,
