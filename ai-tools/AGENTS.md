@@ -72,7 +72,7 @@ make update_deps          # uv sync --no-install-project then rebuild
 uv sync --frozen                              # install deps from uv.lock
 uv run ruff check ./                          # lint (CI gate)
 uv run ruff format ./                         # format
-uv run mypy .                                 # type check (configured but not in CI)
+uv run mypy .                                 # type check (not in CI; baseline gate, see below)
 uv run pytest -n auto                         # full suite
 uv run pytest <app>/tests/ -n auto            # scoped suite
 uv run pytest <path/to/test_file.py> -vs      # single file
@@ -96,7 +96,9 @@ uv run python manage.py check --deploy
 uv run pytest -n auto
 ```
 
-All six must pass. Skill-specific Verification blocks add commands on top (schema regenerate, migration apply + reverse, view introspection, etc.) — the outer gate stays constant.
+Five of the six must pass outright. **`mypy` is a baseline gate, not a zero gate** — the repo carries a long-standing backlog of pre-existing errors (281 at the time of writing; `ai-plans/TRACKING_*.md` records earlier counts of 293–315). It passes when your change adds no new error, so measure the baseline on a clean checkout of the base branch — `git stash -u`, not `git stash`, or untracked new files get counted as if they were the base (see the gate-integrity note in `ai-plans/TRACKING_BILLING_PLANS_AND_LIMITS.md`). Corroborate any delta with a second run before acting on it; contention produces phantom counts.
+
+Skill-specific Verification blocks add commands on top (schema regenerate, migration apply + reverse, view introspection, etc.) — the outer gate stays constant.
 
 ## Code Style
 
