@@ -260,6 +260,33 @@ class WebhookEventDocSerializer(serializers.Serializer):
     description = serializers.CharField(read_only=True)
 
 
+class SystemUserScopeSerializer(serializers.Serializer):
+    """Read-only catalog entry for a single ``PublicAPIResources`` member.
+
+    Plain ``Serializer`` over a dict built from the enum — there is no model
+    backing this. Mirrors :class:`WebhookEventDocSerializer`, the other static
+    catalog served off ``/public-api-docs/``.
+
+    ``value`` is a ``ChoiceField`` over ``PublicAPIResources.choices`` on
+    purpose: it makes the generated OpenAPI schema reference the very same
+    ``AvailableResourcesEnum`` component that ``available_resources`` already
+    uses on the token serializers, so a client that lists the catalog gets
+    values typed identically to the ones it posts back.
+
+    ``provider_scoped`` says whether the scope may be granted to a
+    provider-scoped token (one minted with ``scoped_to_user``). The token
+    endpoints reject anything outside ``PROVIDER_SCOPED_RESOURCES`` for those
+    tokens, so a client building a scope picker needs the flag to disable the
+    rest rather than letting the user pick a scope the API will refuse.
+    """
+
+    value = serializers.ChoiceField(choices=PublicAPIResources.choices, read_only=True)
+    # ``label`` shadows ``rest_framework.fields.Field.label``, which the stubs type
+    # incompatibly, so mypy reads this as a bad override.
+    label = serializers.CharField(read_only=True)  # type: ignore[assignment]
+    provider_scoped = serializers.BooleanField(read_only=True)
+
+
 class SystemUserTokenUpdateSerializer(serializers.Serializer):
     """Input serializer for updating a public-API token's resource grants.
 

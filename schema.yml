@@ -13930,6 +13930,82 @@ paths:
           description: ''
         '404':
           description: Unknown slug (including any traversal attempt)
+  /public-api-docs/scopes/:
+    get:
+      operationId: public_api_docs_scopes_list
+      description: |-
+        GET /public-api-docs/scopes/ — one entry per ``PublicAPIResources`` member.
+
+        These are the values a ``SystemUser`` token may be granted through
+        ``available_resources`` on ``/public-api-tokens/``, and the values the
+        public GraphQL API checks a token against when it resolves a field. The
+        catalog is what a client builds its scope picker from, so it never has to
+        carry its own copy of the enum — a copy that silently goes stale every
+        time a resource is added here.
+
+        Returned in enum declaration order, which groups related resources
+        together (all the calendar ones, all the availability-window ones, ...)
+        the way alphabetical order would not.
+
+        Must stay ``detail=False`` so the router registers it before the
+        ``{slug}`` detail route. ``scopes`` is therefore a reserved slug that a
+        concept doc may never use.
+      summary: List the public-API scope catalog
+      tags:
+      - Docs
+      security:
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SystemUserScope'
+          description: ''
+  /public-api-docs/scopes{format}:
+    get:
+      operationId: public_api_docs_scopes_formatted_list
+      description: |-
+        GET /public-api-docs/scopes/ — one entry per ``PublicAPIResources`` member.
+
+        These are the values a ``SystemUser`` token may be granted through
+        ``available_resources`` on ``/public-api-tokens/``, and the values the
+        public GraphQL API checks a token against when it resolves a field. The
+        catalog is what a client builds its scope picker from, so it never has to
+        carry its own copy of the enum — a copy that silently goes stale every
+        time a resource is added here.
+
+        Returned in enum declaration order, which groups related resources
+        together (all the calendar ones, all the availability-window ones, ...)
+        the way alphabetical order would not.
+
+        Must stay ``detail=False`` so the router registers it before the
+        ``{slug}`` detail route. ``scopes`` is therefore a reserved slug that a
+        concept doc may never use.
+      summary: List the public-API scope catalog
+      parameters:
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      tags:
+      - Docs
+      security:
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SystemUserScope'
+          description: ''
   /public-api-docs/webhook-events/:
     get:
       operationId: public_api_docs_webhook_events_list
@@ -20954,6 +21030,41 @@ components:
       - is_recurring
       - quantity
       - resource_key
+    SystemUserScope:
+      type: object
+      description: |-
+        Read-only catalog entry for a single ``PublicAPIResources`` member.
+
+        Plain ``Serializer`` over a dict built from the enum — there is no model
+        backing this. Mirrors :class:`WebhookEventDocSerializer`, the other static
+        catalog served off ``/public-api-docs/``.
+
+        ``value`` is a ``ChoiceField`` over ``PublicAPIResources.choices`` on
+        purpose: it makes the generated OpenAPI schema reference the very same
+        ``AvailableResourcesEnum`` component that ``available_resources`` already
+        uses on the token serializers, so a client that lists the catalog gets
+        values typed identically to the ones it posts back.
+
+        ``provider_scoped`` says whether the scope may be granted to a
+        provider-scoped token (one minted with ``scoped_to_user``). The token
+        endpoints reject anything outside ``PROVIDER_SCOPED_RESOURCES`` for those
+        tokens, so a client building a scope picker needs the flag to disable the
+        rest rather than letting the user pick a scope the API will refuse.
+      properties:
+        value:
+          allOf:
+          - $ref: '#/components/schemas/AvailableResourcesEnum'
+          readOnly: true
+        label:
+          type: string
+          readOnly: true
+        provider_scoped:
+          type: boolean
+          readOnly: true
+      required:
+      - label
+      - provider_scoped
+      - value
     SystemUserToken:
       type: object
       description: |-

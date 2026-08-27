@@ -587,6 +587,15 @@ SPECTACULAR_SETTINGS = {
         # collision (e.g., "PolicyDocumentTypeEnum"). Pin `legal`'s existing,
         # already-published name so the legal app's client contract is not broken.
         "DocumentTypeEnum": "legal.models.PolicyDocumentType.choices",
+        # `SystemUserScopeSerializer.value` (public_api/serializers.py) is a plain
+        # `ChoiceField` over the same choice set the `available_resources` fields
+        # already publish as `AvailableResourcesEnum`. Enum names are derived from
+        # the *field* name, so without this the scope catalog would mint a second,
+        # redundant `ValueEnum` for the identical value set -- and contest that
+        # generic name with any other `value` field that ever gains choices. Pin
+        # the already-published name so both sides of the round trip (the catalog
+        # a client reads, the list it posts back) are one type.
+        "AvailableResourcesEnum": "public_api.constants.PublicAPIResources.choices",
     },
 }
 
