@@ -5,6 +5,7 @@ from django.conf import settings
 import pytest
 from rest_framework import status
 
+from public_api.constants import PROVIDER_SCOPED_RESOURCES, PublicAPIResources
 from public_api.docs_content import _ALLOWLIST
 from webhooks.constants import WebhookEventType
 
@@ -110,3 +111,59 @@ class TestPublicApiDocsWebhookEvents:
         added, it would be shadowed and unreachable — this test fails loudly instead.
         """
         assert "webhook-events" not in _ALLOWLIST
+
+
+@pytest.mark.django_db
+class TestPublicApiDocsScopes:
+    def test_returns_one_entry_per_member_in_declaration_order(self, anonymous_client):
+        response = anonymous_client.get("/public-api-docs/scopes/")
+
+        assert response.status_code == status.HTTP_200_OK
+        body = response.json()
+        expected_values = [member.value for member in PublicAPIResources]
+        assert [entry["value"] for entry in body] == expected_values
+        for entry in body:
+            assert set(entry.keys()) == {"value", "label", "provider_scoped"}
+            assert entry["label"]
+
+    def test_labels_match_the_enum(self, anonymous_client):
+        response = anonymous_client.get("/public-api-docs/scopes/")
+
+        body = response.json()
+        assert {entry["value"]: entry["label"] for entry in body} == {
+            member.value: member.label for member in PublicAPIResources
+        }
+
+    def test_provider_scoped_flag_matches_the_allow_list(self, anonymous_client):
+        """The flag is the only thing telling a client which scopes a
+        provider-scoped token may hold. If it drifts from the allow-list the
+        token endpoints enforce, a scope picker built on it offers grants the
+        API then rejects with a 400.
+        """
+        response = anonymous_client.get("/public-api-docs/scopes/")
+
+        body = response.json()
+        flagged = {entry["value"] for entry in body if entry["provider_scoped"]}
+        assert flagged == set(PROVIDER_SCOPED_RESOURCES)
+
+    def test_covers_every_value_the_token_endpoints_accept(self, anonymous_client):
+        """The catalog is the client's replacement for a hardcoded copy of the
+        enum, so it has to be exhaustive: every value ``available_resources``
+        accepts must appear here, or that grant becomes unreachable from the UI.
+        """
+        response = anonymous_client.get("/public-api-docs/scopes/")
+
+        catalog_values = {entry["value"] for entry in response.json()}
+        assert catalog_values == {value for value, _ in PublicAPIResources.choices}
+
+    def test_succeeds_unauthenticated(self, anonymous_client):
+        assert anonymous_client.get("/public-api-docs/scopes/").status_code == status.HTTP_200_OK
+
+    def test_scopes_slug_does_not_collide_with_a_concept_doc(self):
+        """Same reserved-slug trap as ``webhook-events``.
+
+        ``scopes`` is registered as a detail=False action ahead of the ``{slug}``
+        detail route. A concept doc named ``scopes.md`` would be shadowed and
+        unreachable — this test fails loudly instead.
+        """
+        assert "scopes" not in _ALLOWLIST

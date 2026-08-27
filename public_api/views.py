@@ -17,12 +17,13 @@ from vinta_billing.services.entitlement_service import EntitlementService
 
 from common.utils.view_utils import TenantScopedViewMixin
 from organizations.permissions import IsOrganizationAdmin
-from public_api.constants import PROVIDER_SCOPED_RESOURCES
+from public_api.constants import PROVIDER_SCOPED_RESOURCES, PublicAPIResources
 from public_api.docs_content import get_concept_doc, list_concept_docs
 from public_api.models import ResourceAccess, SystemUser
 from public_api.serializers import (
     ConceptDocSerializer,
     ConceptDocSummarySerializer,
+    SystemUserScopeSerializer,
     SystemUserTokenCreateSerializer,
     SystemUserTokenResponseSerializer,
     SystemUserTokenSerializer,
@@ -346,4 +347,38 @@ class PublicApiDocsViewSet(ViewSet):
             for member in WebhookEventType
         ]
         serializer = WebhookEventDocSerializer(docs, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        summary="List the public-API scope catalog",
+        responses={200: SystemUserScopeSerializer(many=True)},
+    )
+    @action(detail=False, methods=["get"], url_path="scopes")
+    def scopes(self, request: Request) -> Response:
+        """GET /public-api-docs/scopes/ — one entry per ``PublicAPIResources`` member.
+
+        These are the values a ``SystemUser`` token may be granted through
+        ``available_resources`` on ``/public-api-tokens/``, and the values the
+        public GraphQL API checks a token against when it resolves a field. The
+        catalog is what a client builds its scope picker from, so it never has to
+        carry its own copy of the enum — a copy that silently goes stale every
+        time a resource is added here.
+
+        Returned in enum declaration order, which groups related resources
+        together (all the calendar ones, all the availability-window ones, ...)
+        the way alphabetical order would not.
+
+        Must stay ``detail=False`` so the router registers it before the
+        ``{slug}`` detail route. ``scopes`` is therefore a reserved slug that a
+        concept doc may never use.
+        """
+        catalog = [
+            {
+                "value": member.value,
+                "label": member.label,
+                "provider_scoped": member.value in PROVIDER_SCOPED_RESOURCES,
+            }
+            for member in PublicAPIResources
+        ]
+        serializer = SystemUserScopeSerializer(catalog, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
