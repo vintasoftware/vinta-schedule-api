@@ -60,3 +60,6 @@ tmp_email/
 .terraform/
 *.tfstate
 *.tfstate.*
+
+# uv-managed Python interpreter downloaded during the Render build
+.uv-python/

@@ -114,10 +114,24 @@ services:
 envVarGroups:
   - name: python-services
     envVars:
+      # Must be a patch release Render's build image actually ships, otherwise
+      # Render silently falls back to the service's default interpreter and
+      # `uv sync` dies with "No interpreter found for Python 3.14 in search
+      # path". 3.14.3 is Render's current default. `.python-version` (3.14) is
+      # what local dev and CI resolve against; only the patch is pinned here.
       - key: PYTHON_VERSION
-        value: 3.14.5
+        value: 3.14.3
       - key: UV_VERSION
         value: 0.11.18
+      # Fallback for the case above: if the interpreter Render provides is not
+      # a 3.14, let uv fetch its own instead of failing the build. Costs
+      # nothing when Render's interpreter already matches -- uv checks the
+      # search path first. The install dir must live inside the project
+      # directory so the interpreter the venv points at survives into runtime.
+      - key: UV_PYTHON_DOWNLOADS
+        value: automatic
+      - key: UV_PYTHON_INSTALL_DIR
+        value: /opt/render/project/src/.uv-python
       - key: SECRET_KEY
         generateValue: true
       # Fernet at-rest encryption salt. generateValue is fine for a fresh deploy;
