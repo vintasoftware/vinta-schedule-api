@@ -56,3 +56,30 @@ class ConsentRequiredError(AccountError, ImmediateHttpResponse):
             {"status": int(HTTPStatus.FORBIDDEN), "errors": errors},
             status=HTTPStatus.FORBIDDEN,
         )
+
+
+class VerificationEmailUndeliverableError(AccountError):
+    """Raised by ``AccountAdapter.send_confirmation_mail`` when the address-confirmation
+    email could not be handed to a working channel.
+
+    Deliberately **not** an ``ImmediateHttpResponse``, unlike ``ConsentRequiredError``
+    above. ``allauth.headless.account.views.SignupView.post`` wraps ``complete_signup``
+    in ``except ImmediateHttpResponse: pass``, so an error raised as one from inside the
+    confirmation-mail send is swallowed there and answered with an envelope built from
+    ``resp = None`` -- which looks to the caller exactly like a delivered email. Raised
+    as a plain exception it propagates out of the view, where ``AtomicSignupView``
+    catches it, rolls the account back and answers 503.
+
+    ``code`` follows the shape allauth's own errors use, so a client's single allauth
+    error mapper handles it with no special case.
+    """
+
+    code = "verification_email_failed"
+    default_message = (
+        "We could not send your verification email, so the account was not created. "
+        "Please try again in a few minutes."
+    )
+
+    def __init__(self, message: str | None = None) -> None:
+        self.message = str(message or self.default_message)
+        super().__init__(self.message)

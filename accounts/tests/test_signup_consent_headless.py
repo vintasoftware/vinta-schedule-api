@@ -33,8 +33,7 @@ def _signup_payload(**overrides):
     data = {
         "email": "headless-signup@example.com",
         "phone": "+123456789",
-        "password1": "Sup3r-Secret-Passw0rd!",
-        "password2": "Sup3r-Secret-Passw0rd!",
+        "password": "Sup3r-Secret-Passw0rd!",
         "first_name": "Ada",
         "last_name": "Lovelace",
         "accepted_terms": True,

@@ -20,6 +20,7 @@ env:
   SITE_DOMAIN: 'example.com'
   API_DOMAIN: 'api.example.com'
   DEFAULT_BCC_EMAILS: 'hugo@example.com'
+  DEFAULT_FROM_EMAIL: 'noreply@example.com'
   AWS_STATIC_BUCKET_NAME: 'example-static'
   AWS_ACCESS_KEY_ID: 'test'
   AWS_SECRET_ACCESS_KEY: 'test'

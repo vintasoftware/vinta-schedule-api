@@ -1,11 +1,12 @@
 import datetime
 import logging
 from copy import deepcopy
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated, ClassVar
 
 from django.conf import settings
 from django.db import transaction
 from django.urls import reverse
+from django.utils.translation import gettext_lazy
 
 from allauth.account import app_settings as account_settings
 from allauth.account.adapter import DefaultAccountAdapter
@@ -20,10 +21,11 @@ from allauth.utils import build_absolute_uri
 from dependency_injector.wiring import Provide, inject
 from vinta_billing.exceptions import OverLimitError
 from vintasend.constants import NotificationTypes
+from vintasend.exceptions import NotificationError
 from vintasend.services.dataclasses import NotificationContextDict
 from vintasend.services.notification_service import NotificationService
 
-from accounts.exceptions import ConsentRequiredError
+from accounts.exceptions import ConsentRequiredError, VerificationEmailUndeliverableError
 from calendar_integration.constants import CalendarProvider
 from calendar_integration.tasks import import_account_calendars_task
 from common.organization_services import memberships
@@ -33,6 +35,12 @@ from organizations.models import OrganizationMembership
 from organizations.services import OrganizationService
 from users.models import Profile, User
 from users.tasks import download_social_profile_picture
+
+
+if TYPE_CHECKING:
+    # Stub-only alias (`str | _StrPromise`): `error_messages` holds lazily-translated
+    # strings, which are not `str` until rendered.
+    from django.utils.functional import _StrOrPromise
 
 
 logger = logging.getLogger(__name__)
@@ -350,6 +358,26 @@ class SocialAccountAdapter(DefaultSocialAccountAdapter):
 
 @inject
 class AccountAdapter(DefaultAccountAdapter):
+    #: One correction to allauth's own wording.
+    #:
+    #: ``too_many_login_attempts`` is not only raised after failed attempts. With
+    #: verification by code and mandatory email verification,
+    #: ``flows.login.is_login_rate_limited`` delegates to
+    #: ``is_verification_rate_limited``, which consults the ``confirm_email`` cooldown
+    #: (``1/10s`` per address) -- because completing this login would mean sending a new
+    #: code. So somebody who signs up and immediately tries to sign in, having typed
+    #: their password correctly the first time, is told "Too many **failed** login
+    #: attempts", which is false in every word that matters and sends them off to reset
+    #: a password that was never wrong.
+    #:
+    #: The replacement is true of both causes and says what to do.
+    error_messages: ClassVar[dict[str, "_StrOrPromise"]] = {
+        **DefaultAccountAdapter.error_messages,
+        "too_many_login_attempts": gettext_lazy(
+            "Too many sign-in attempts in a short time. Please wait a minute and try again."
+        ),
+    }
+
     def __init__(
         self,
         *args,
@@ -387,8 +415,29 @@ class AccountAdapter(DefaultAccountAdapter):
         )
 
     def send_confirmation_mail(self, request, emailconfirmation, signup):
-        """
-        Sends a confirmation email to the user.
+        """Send the address-confirmation email, and fail loudly if it cannot be sent.
+
+        This is the one notification in the product whose delivery the next step depends
+        on: ``ACCOUNT_EMAIL_VERIFICATION`` is mandatory, so the code in this message is
+        the only way the account it belongs to can ever be used.
+
+        ``NotificationService.send`` already raises ``NotificationSendError`` on a failed
+        send, so the failure is never silent. What it lacks is a shape the signup view
+        can act on: raised as-is it escapes ``allauth.headless.account.views.SignupView``
+        uncaught, which is an HTML 500 to a caller that parses JSON -- and by then the
+        user row is committed, leaving somebody an address they can neither verify nor
+        register again.
+
+        So it is re-raised as ``VerificationEmailUndeliverableError``, which
+        ``accounts.views.AtomicSignupView`` catches to roll the account back and answer
+        503 in allauth's own envelope.
+
+        The catch is the base ``NotificationError`` rather than ``NotificationSendError``
+        alone: an unroutable channel, an unrenderable template and a failed status write
+        are all different subclasses, and none of them leaves us able to promise the code
+        arrived. The one gap is ``NotificationContextGenerationError``, which
+        ``NotificationService.send`` swallows internally -- it marks the notification
+        failed and returns normally, so nothing reaches this handler.
         """
         ctx = {
             "user_id": emailconfirmation.email_address.user_id,
@@ -407,16 +456,24 @@ class AccountAdapter(DefaultAccountAdapter):
         else:
             email_template = "accounts/notifications/emails/confirmation"
 
-        self.notification_service.create_notification(
-            user_id=emailconfirmation.email_address.user_id,
-            notification_type=NotificationTypes.EMAIL.value,
-            title="Email Confirmation",
-            body_template=f"{email_template}.body.html",
-            subject_template=f"{email_template}.subject.txt",
-            preheader_template=f"{email_template}.pre_header.txt",
-            context_name="email_confirmation_context",
-            context_kwargs=NotificationContextDict(ctx),
-        )
+        try:
+            self.notification_service.create_notification(
+                user_id=emailconfirmation.email_address.user_id,
+                notification_type=NotificationTypes.EMAIL.value,
+                title="Email Confirmation",
+                body_template=f"{email_template}.body.html",
+                subject_template=f"{email_template}.subject.txt",
+                preheader_template=f"{email_template}.pre_header.txt",
+                context_name="email_confirmation_context",
+                context_kwargs=NotificationContextDict(ctx),
+            )
+        except NotificationError:
+            logger.exception(
+                "Could not send the email confirmation for user %s to %s.",
+                emailconfirmation.email_address.user_id,
+                emailconfirmation.email_address.email,
+            )
+            raise VerificationEmailUndeliverableError() from None
 
     def confirm_email(self, request, email_address: EmailAddress) -> bool:
         """Override to provision a tenant once the user's email is verified.

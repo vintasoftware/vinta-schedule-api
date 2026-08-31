@@ -514,6 +514,19 @@ SOCIALACCOUNT_ADAPTER = "accounts.account_adapters.SocialAccountAdapter"
 ACCOUNT_ADAPTER = "accounts.account_adapters.AccountAdapter"
 ACCOUNT_EMAIL_VERIFICATION = "mandatory"
 ACCOUNT_EMAIL_VERIFICATION_BY_CODE_ENABLED = True
+# Let somebody ask for another code.
+#
+# This defaults to False, which makes `EMAIL_VERIFICATION_MAX_RESEND_COUNT` 0, so
+# `EmailVerificationProcess.can_resend` is permanently False and every call to
+# `.../auth/email/verify/resend` is a bare `409` with no body. With verification
+# mandatory (above), that left anybody whose first code went missing with no way
+# forward at all.
+#
+# Three rather than allauth's `True` (which means two): enough to survive a transient
+# mail failure plus a mistake. It is not a sending vector -- the `confirm_email` rate
+# limit still allows one code per ten seconds per address, and the quota is per
+# verification process. Mirrors ACCOUNT_PHONE_VERIFICATION_SUPPORTS_RESEND below.
+ACCOUNT_EMAIL_VERIFICATION_SUPPORTS_RESEND = 3
 SOCIALACCOUNT_EMAIL_VERIFICATION = None
 HEADLESS_FRONTEND_URLS = {
     "account_confirm_email": "http://localhost:3000/account/verify-email/{key}",
@@ -930,6 +943,25 @@ BASE_URL_PROTOCOL = config("BASE_URL_PROTOCOL", "http")
 NOTIFICATION_DEFAULT_BASE_URL_DOMAIN = BASE_URL_DOMAIN
 NOTIFICATION_DEFAULT_BASE_URL_PROTOCOL = BASE_URL_PROTOCOL
 BASE_URL = f"{BASE_URL_PROTOCOL}://{BASE_URL_DOMAIN}"
+
+# Who every notification email is from.
+#
+# Neither of these was ever set, and vintasend's own default for
+# NOTIFICATION_DEFAULT_FROM_EMAIL is the placeholder `foo@examplo.com` (sic) -- so every
+# email this API sends through vintasend, signup verification codes included, went out
+# from a misspelt example address. It is also the From a recipient's spam filter judges,
+# which makes it the kind of default that fails quietly and everywhere at once.
+#
+# Django's own DEFAULT_FROM_EMAIL is the fallback rather than a second independent
+# value: allauth's password-reset mail goes out through `AccountAdapter.send_mail`
+# (Django's), while everything else goes through vintasend, and the two disagreeing
+# about the sender is not a distinction anybody wants to debug from an inbox.
+DEFAULT_FROM_EMAIL = config(
+    "DEFAULT_FROM_EMAIL", default="no-reply@notifications.schedule.vintasoftware.com"
+)
+NOTIFICATION_DEFAULT_FROM_EMAIL = config(
+    "NOTIFICATION_DEFAULT_FROM_EMAIL", default=DEFAULT_FROM_EMAIL
+)
 
 PUBLIC_API_REDIS_URL = config("PUBLIC_API_REDIS_URL", default=REDIS_URL)
 PUBLIC_API_REQUESTS_PER_SECOND_LIMIT = config("PUBLIC_API_REQUESTS_PER_SECOND_LIMIT", default=5)

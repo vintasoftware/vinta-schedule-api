@@ -43,6 +43,13 @@ STORAGES = {
 
 EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
 
+# Pinned so the From address a test asserts on does not depend on the developer's own
+# `.env`. `base.py` reads DEFAULT_FROM_EMAIL from the environment (and
+# NOTIFICATION_DEFAULT_FROM_EMAIL falls back to it), so without this a machine with a
+# real sender configured would run different assertions than CI.
+DEFAULT_FROM_EMAIL = "noreply@test-schedule.vinta.com.br"
+NOTIFICATION_DEFAULT_FROM_EMAIL = DEFAULT_FROM_EMAIL
+
 # Speed up password hashing
 PASSWORD_HASHERS = [
     "django.contrib.auth.hashers.MD5PasswordHasher",

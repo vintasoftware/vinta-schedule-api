@@ -201,6 +201,7 @@ Variables (no values shown; copy from the example file):
 ```
 DJANGO_SETTINGS_MODULE
 CELERY_BROKER_URL
+DEFAULT_FROM_EMAIL
 REDIS_URL
 DATABASE_URL
 FLOCI_ENDPOINT
@@ -228,6 +229,7 @@ STRIPE_PUBLISHABLE_KEY
 DEFAULT_PAYMENT_PROVIDER
 ```
 
+- `DEFAULT_FROM_EMAIL` (str, default `noreply@localhost`) — From address on every outbound email. `NOTIFICATION_DEFAULT_FROM_EMAIL` (what vintasend's adapters read) defaults to it, so one value covers both Django's own mail (allauth's password reset) and every vintasend notification. Left unset, vintasend falls back to its own `foo@examplo.com` placeholder. In a deployed environment it must be on a domain the SMTP provider is verified to send for.
 - `ACCOUNT_PHONE_VERIFICATION_ENABLED` (bool, default `False`) — per-environment rollout gate for SMS phone verification. Stays off until Twilio approves the messaging profile for that environment; an operator flips it in the environment (Render dashboard / `.env`) with no code change.
 - `MERCADOPAGO_ACCESS_TOKEN` (str, default `""`) — MercadoPago secret API key, used by `vinta_billing`'s `MercadoPagoPaymentAdapter`/`MercadoPagoSubscriptionAdapter` to authenticate every **outbound** call. This — not `MERCADOPAGO_PUBLIC_KEY` — is what `BasePaymentAdapter.is_configured` reports on, and therefore what decides whether a charge through MercadoPago is attempted or refused with `PaymentProviderNotConfiguredError` (HTTP 409).
 - `MERCADOPAGO_WEBHOOK_SECRET` (str, default `""`) — shared secret used to verify MercadoPago's `x-signature` webhook header (`vinta_billing.services.mercadopago_signature`). An empty secret makes signature verification fail closed rather than skip the check.

@@ -61,8 +61,7 @@ def _signup(client: APIClient, email: str, organization_name: str = "") -> str:
     payload = {
         "email": email,
         "phone": "+123456789",
-        "password1": SIGNUP_PASSWORD,
-        "password2": SIGNUP_PASSWORD,
+        "password": SIGNUP_PASSWORD,
         "first_name": "Ada",
         "last_name": "Lovelace",
         "accepted_terms": True,
@@ -161,8 +160,7 @@ class TestEmailSignupReachesTheOrganizationDestination:
             {
                 "email": "pending-signup@example.com",
                 "phone": "+123456789",
-                "password1": SIGNUP_PASSWORD,
-                "password2": SIGNUP_PASSWORD,
+                "password": SIGNUP_PASSWORD,
                 "first_name": "Ada",
                 "last_name": "Lovelace",
                 "accepted_terms": True,

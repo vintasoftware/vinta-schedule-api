@@ -1,14 +1,18 @@
 import json
 import logging
+from http import HTTPStatus
 
 from django.core.exceptions import PermissionDenied
+from django.db import transaction
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 
+from allauth.headless.account.views import SignupView as AllauthSignupView
 from allauth.headless.base.response import (
     AuthenticationResponse,
 )
 from allauth.headless.base.views import APIView as AllauthAPIView
+from allauth.headless.internal.restkit.response import APIResponse
 from allauth.headless.socialaccount.forms import RedirectToProviderForm
 from allauth.socialaccount.adapter import get_adapter as get_socialaccount_adapter
 from allauth.socialaccount.helpers import (
@@ -25,10 +29,53 @@ from allauth.socialaccount.providers.oauth2.provider import OAuth2Provider
 from requests.exceptions import RequestException
 from rest_framework import status
 
+from accounts.exceptions import VerificationEmailUndeliverableError
 from accounts.post_auth_destination import with_post_auth_destination
 
 
 logger = logging.getLogger(__name__)
+
+
+class AtomicSignupView(AllauthSignupView):
+    """allauth's headless signup, made all-or-nothing.
+
+    Two things go wrong without it, both invisible from the client.
+
+    **The account outlives its verification email.** ``SignupView.post`` creates the
+    user, then sends the confirmation as a later step. If that send fails, the user row
+    is already committed -- and since ``ACCOUNT_EMAIL_VERIFICATION`` is mandatory, the
+    account is unusable until a code from that email is typed back. The visitor is left
+    with an address they can neither verify nor register again: a second attempt is
+    answered by enumeration prevention, which starts a verification stage for the
+    existing account and sends no new code. Running the whole POST in one transaction
+    means a failure leaves no trace and trying again works.
+
+    **The failure has no shape.** ``VerificationEmailUndeliverableError`` out of the
+    adapter is not an ``ImmediateHttpResponse``, so nothing in allauth handles it and
+    Django answers with a 500 HTML page -- to a caller that parses JSON. This answers in
+    allauth's own envelope (``{"status": ..., "errors": [...]}``) so a client's existing
+    error mapper renders the sentence with no special case.
+
+    Registered ahead of ``allauth.headless.urls`` in ``accounts/urls.py``, the way the
+    two OAuth endpoints below already are.
+    """
+
+    def post(self, request: HttpRequest, *args, **kwargs) -> HttpResponse:
+        try:
+            with transaction.atomic():
+                return super().post(request, *args, **kwargs)
+        except VerificationEmailUndeliverableError as error:
+            # The `atomic` block has already rolled the account back by the time this
+            # runs -- the exception leaving it is what triggers the rollback.
+            logger.error(
+                "Refusing the signup: its verification email could not be sent. "
+                "The account was rolled back so the address stays available."
+            )
+            return APIResponse(
+                request,
+                errors=[{"code": error.code, "message": error.message}],
+                status=HTTPStatus.SERVICE_UNAVAILABLE,
+            )
 
 
 class ProviderRedirectAPIView(AllauthAPIView):
