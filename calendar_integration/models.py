@@ -41,6 +41,8 @@ from calendar_integration.managers import (
     CalendarGroupSlotQuotaRuleManager,
     CalendarManagementTokenManager,
     CalendarManager,
+    CalendarPoolManager,
+    CalendarPoolMembershipManager,
     CalendarSyncManager,
     ExternalEventChangeRequestManager,
 )
@@ -548,6 +550,75 @@ class CalendarGroupSlotQuotaRule(
         return (
             f"calendar={self.calendar_fk_id} slot={self.group_slot_fk_id} {self.period}<={self.cap}"
         )
+
+
+class CalendarPool(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel):
+    """
+    A named, reusable roster of calendars ("Nurses", "Consult Rooms") that can
+    be attached to the slots of any number of ``CalendarGroup``s, so one
+    roster edit propagates everywhere it's used.
+
+    Phase 0 of the Calendar Pools plan: this model and its roster exist in the
+    database and the admin, but nothing else in the system reads them yet --
+    no slot can be attached to a pool, and no availability or booking query
+    considers pool membership. See
+    ``ai-plans/2026-09-01-CALENDAR_POOLS_IMPLEMENTATION_PLAN.md``.
+    """
+
+    name = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+
+    calendars: "models.ManyToManyField[Calendar, CalendarPoolMembership]" = models.ManyToManyField(
+        Calendar,
+        through="CalendarPoolMembership",
+        through_fields=("pool", "calendar"),
+        related_name="pools",
+    )
+
+    objects: ClassVar[CalendarPoolManager] = CalendarPoolManager()
+
+    memberships: "RelatedManager[CalendarPoolMembership]"
+
+    class Meta:
+        constraints = (
+            models.UniqueConstraint(
+                fields=("organization", "name"),
+                name="calendarpool_unique_name_per_org",
+            ),
+        )
+
+    def __str__(self):
+        return self.name
+
+
+class CalendarPoolMembership(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel):
+    """
+    Through model linking a Calendar to a CalendarPool's roster.
+    """
+
+    pool = OrganizationSafeForeignKey(
+        CalendarPool,
+        on_delete=models.CASCADE,
+        related_name="memberships",
+    )
+    calendar = OrganizationSafeForeignKey(
+        Calendar,
+        on_delete=models.CASCADE,
+        related_name="pool_memberships",
+    )
+
+    objects: ClassVar[CalendarPoolMembershipManager] = CalendarPoolMembershipManager()
+
+    class Meta:
+        constraints = (
+            models.UniqueConstraint(
+                fields=("pool_fk", "calendar_fk"),
+                name="calendarpoolmembership_unique_pool_calendar",
+            ),
+        )
+
+    def __str__(self):
+        return f"{self.calendar_fk_id} in pool {self.pool_fk_id}"
 
 
 class ExternalAttendee(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel):

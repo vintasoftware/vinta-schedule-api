@@ -1086,6 +1086,30 @@ class CalendarGroupSlotMembershipQuerySet(OrganizationScopedQuerySet):
     """
 
 
+class CalendarPoolQuerySet(OrganizationScopedQuerySet):
+    """
+    Custom QuerySet for CalendarPool model to handle specific queries.
+    """
+
+    def only_member_of(self, membership_user_id: int) -> "CalendarPoolQuerySet":
+        """Pools where `membership_user_id` owns at least one roster calendar.
+
+        The pool analogue of ``CalendarGroupQuerySet.only_member_of``: "part of
+        a pool" == owns at least one ``CalendarOwnership`` row for a calendar
+        that is a member of the pool's roster. ``distinct()`` because a user
+        may own several calendars in the same pool.
+        """
+        return self.filter(
+            memberships__calendar_fk__ownerships__membership_user_id=membership_user_id
+        ).distinct()
+
+
+class CalendarPoolMembershipQuerySet(OrganizationScopedQuerySet):
+    """
+    Custom QuerySet for CalendarPoolMembership model to handle specific queries.
+    """
+
+
 class CalendarEventGroupSelectionQuerySet(OrganizationScopedQuerySet):
     """
     Custom QuerySet for CalendarEventGroupSelection model to handle specific queries.

@@ -9,6 +9,8 @@ from calendar_integration.models import (
     CalendarGroupSlotMembership,
     CalendarGroupSlotQuotaRule,
     CalendarOwnership,
+    CalendarPool,
+    CalendarPoolMembership,
     EventAttendance,
     EventExternalAttendance,
     EventRecurrenceException,
@@ -100,6 +102,21 @@ class CalendarGroupVirtualModel(OrganizationScopedVirtualModel):
 
     class Meta:
         model = CalendarGroup
+
+
+class CalendarPoolMembershipVirtualModel(OrganizationScopedVirtualModel):
+    calendar = CalendarVirtualModel()
+
+    class Meta:
+        model = CalendarPoolMembership
+
+
+class CalendarPoolVirtualModel(OrganizationScopedVirtualModel):
+    memberships = CalendarPoolMembershipVirtualModel(many=True)
+    calendars = CalendarVirtualModel(many=True)
+
+    class Meta:
+        model = CalendarPool
 
 
 class CalendarEventGroupSelectionVirtualModel(OrganizationScopedVirtualModel):

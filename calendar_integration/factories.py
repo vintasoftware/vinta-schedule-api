@@ -12,6 +12,8 @@ from .models import (
     CalendarEvent,
     CalendarGroupSlotQuotaRule,
     CalendarOwnership,
+    CalendarPool,
+    CalendarPoolMembership,
     EventAttendance,
     ExternalClientIdentifier,
     ExternalEventChangeRequest,
@@ -358,6 +360,52 @@ def create_group_slot_quota_rule(
         calendar=calendar,
         period=period,
         cap=cap,
+        **kwargs,
+    )
+
+
+def create_calendar_pool(
+    *,
+    organization,
+    name: str,
+    description: str = "",
+    calendars: list | None = None,
+    **kwargs,
+) -> CalendarPool:
+    """Create a ``CalendarPool`` and, optionally, seed its roster.
+
+    ``organization`` is required explicitly (no default) so tests that forget
+    to pass it fail loudly rather than silently cross-tenant. Pass
+    ``calendars`` to create one ``CalendarPoolMembership`` per calendar in the
+    same call.
+    """
+    pool = CalendarPool.objects.create(
+        organization=organization,
+        name=name,
+        description=description,
+        **kwargs,
+    )
+    for calendar in calendars or []:
+        create_calendar_pool_membership(organization=organization, pool=pool, calendar=calendar)
+    return pool
+
+
+def create_calendar_pool_membership(
+    *,
+    organization,
+    pool: CalendarPool,
+    calendar,
+    **kwargs,
+) -> CalendarPoolMembership:
+    """Create a ``CalendarPoolMembership`` linking *calendar* to *pool*'s roster.
+
+    ``organization`` is required explicitly (no default) so tests that forget
+    to pass it fail loudly rather than silently cross-tenant.
+    """
+    return CalendarPoolMembership.objects.create(
+        organization=organization,
+        pool=pool,
+        calendar=calendar,
         **kwargs,
     )
 

@@ -22,6 +22,8 @@ from calendar_integration.querysets import (
     CalendarGroupSlotQuerySet,
     CalendarGroupSlotQuotaRuleQuerySet,
     CalendarManagementTokenQuerySet,
+    CalendarPoolMembershipQuerySet,
+    CalendarPoolQuerySet,
     CalendarQuerySet,
     CalendarSyncQuerySet,
     ExternalEventChangeRequestQuerySet,
@@ -55,6 +57,10 @@ _CalendarGroupSlotMembershipManagerBase = OrganizationScopedManager.from_queryse
 )
 _CalendarGroupSlotQuotaRuleManagerBase = OrganizationScopedManager.from_queryset(
     CalendarGroupSlotQuotaRuleQuerySet
+)
+_CalendarPoolManagerBase = OrganizationScopedManager.from_queryset(CalendarPoolQuerySet)
+_CalendarPoolMembershipManagerBase = OrganizationScopedManager.from_queryset(
+    CalendarPoolMembershipQuerySet
 )
 _CalendarManagementTokenManagerBase = OrganizationScopedManager.from_queryset(
     CalendarManagementTokenQuerySet
@@ -388,6 +394,18 @@ class CalendarGroupSlotManager(_CalendarGroupSlotManagerBase):  # type: ignore[m
 
 class CalendarGroupSlotMembershipManager(_CalendarGroupSlotMembershipManagerBase):  # type: ignore[misc,valid-type]
     """Custom manager for CalendarGroupSlotMembership model to handle specific queries."""
+
+
+class CalendarPoolManager(_CalendarPoolManagerBase):  # type: ignore[misc,valid-type]
+    """Custom manager for CalendarPool model to handle specific queries."""
+
+    def only_member_of(self, membership_user_id: int) -> CalendarPoolQuerySet:
+        """Wraps :meth:`CalendarPoolQuerySet.only_member_of`."""
+        return self.get_queryset().only_member_of(membership_user_id)
+
+
+class CalendarPoolMembershipManager(_CalendarPoolMembershipManagerBase):  # type: ignore[misc,valid-type]
+    """Custom manager for CalendarPoolMembership model to handle specific queries."""
 
 
 class CalendarEventGroupSelectionManager(_CalendarEventGroupSelectionManagerBase):  # type: ignore[misc,valid-type]
