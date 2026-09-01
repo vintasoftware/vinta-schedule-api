@@ -323,12 +323,18 @@ class CalendarGroupValidationError(CalendarGroupError):
 
 
 class CalendarGroupSlotInUseError(CalendarGroupError):
-    """Raised when a slot/membership cannot be removed because it is used by
-    future bookings."""
+    """Raised when a `CalendarGroupSlot` cannot be removed outright because it is
+    referenced by a future-booked event.
 
-    default_message = (
-        "Cannot remove slot or calendar because it is referenced by future group bookings."
-    )
+    Removing one calendar from a slot's roster while the slot itself survives
+    never raises this -- that removal is unconditionally lenient (it deletes
+    only the `CalendarGroupSlotMembership` row; see
+    `CalendarGroupService._reconcile_slot`). This error is reserved for
+    deleting the whole slot, which would also drop every remaining calendar's
+    group-scoped windows, blocked time, and quota rules for it.
+    """
+
+    default_message = "Cannot remove slot because it is referenced by future group bookings."
 
 
 class CalendarGroupHasFutureEventsError(CalendarGroupError):

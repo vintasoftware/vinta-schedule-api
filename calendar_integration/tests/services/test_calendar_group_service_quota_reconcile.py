@@ -1,12 +1,13 @@
-"""Membership-removal cleanup for quota rules.
+"""Membership-removal survival for quota rules.
 
 ``CalendarGroupSlotQuotaRule.group_slot`` cascades (``on_delete=CASCADE``) when
 the slot or its group is deleted, but NOT when a calendar is simply removed
 from a slot's roster while the slot survives -- that's a
 ``CalendarGroupSlotMembership`` deletion, which the FK doesn't observe.
-``CalendarGroupService._reconcile_slot`` (mirroring the pattern already
-established for group-scoped windows and blocked time) explicitly deletes
-orphaned quota rules for removed calendars.
+``CalendarGroupService._reconcile_slot`` deletes only the membership row in
+that case (Calendar Pools Phase 1: roster removal is lenient and never
+destroys configuration) -- the departed calendar's quota rules for that slot
+are kept and keep enforcing.
 
 There is no write-service method for quota rules yet -- rules are created
 directly through the model/factory here, the same way group-scoped
@@ -106,7 +107,7 @@ def group_slot(
 
 
 @pytest.mark.django_db
-def test_removing_calendar_from_slot_removes_quota_rules(
+def test_removing_calendar_from_slot_keeps_quota_rules(
     service: CalendarGroupService,
     organization: Organization,
     calendar: Calendar,
@@ -115,10 +116,11 @@ def test_removing_calendar_from_slot_removes_quota_rules(
     group_slot: CalendarGroupSlot,
     django_capture_on_commit_callbacks,
 ) -> None:
-    """Removing one calendar from the slot's roster (via update_group ->
-    _reconcile_slot) deletes ONLY that calendar's quota rules; the second
-    calendar's rule for the same slot survives, and the deletion is audited.
-    """
+    """Contract change (Calendar Pools Phase 1): removing one calendar from the
+    slot's roster (via update_group -> _reconcile_slot) deletes ONLY the
+    CalendarGroupSlotMembership row. Both quota rules survive -- the departed
+    calendar's rule is kept (and no longer audited as a delete), and the other
+    calendar's rule for the same slot is untouched either way."""
     rule1 = create_group_slot_quota_rule(
         organization=organization,
         group_slot=group_slot,
@@ -161,19 +163,25 @@ def test_removing_calendar_from_slot_removes_quota_rules(
                 ),
             )
 
-    # calendar's rule is gone...
+    # Both rules survive the roster removal ...
     assert (
-        not CalendarGroupSlotQuotaRule.objects.filter_by_organization(organization.id)
+        CalendarGroupSlotQuotaRule.objects.filter_by_organization(organization.id)
         .filter(id=rule1.id)
         .exists()
     )
-    # ...other_calendar's rule for the same slot survives.
     assert (
         CalendarGroupSlotQuotaRule.objects.filter_by_organization(organization.id)
         .filter(id=rule2.id)
         .exists()
     )
+    # ... the calendar's membership is what actually got removed.
+    assert (
+        not CalendarGroupSlotMembership.objects.filter_by_organization(organization.id)
+        .filter(slot_fk=group_slot, calendar_fk_id=calendar.id)
+        .exists()
+    )
 
+    # No quota-rule DELETE is audited -- nothing was deleted.
     payloads = [call.args[0] for call in mock_task.delay.call_args_list]
     quota_rule_delete_payloads = [
         p
@@ -181,8 +189,7 @@ def test_removing_calendar_from_slot_removes_quota_rules(
         if p["action_key"] == AuditAction.DELETE
         and p["subject"]["subject_type"] == "calendar_integration.calendargroupslotquotarule"
     ]
-    assert len(quota_rule_delete_payloads) == 1
-    assert quota_rule_delete_payloads[0]["subject"]["subject_id"] == str(rule1.id)
+    assert quota_rule_delete_payloads == []
 
 
 @pytest.mark.django_db

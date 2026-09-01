@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Annotated, cast
 
 from django.core.exceptions import PermissionDenied
 from django.db import IntegrityError, transaction
-from django.db.models import Exists, Model, OuterRef, QuerySet
+from django.db.models import Exists, Model, OuterRef
 from django.utils import timezone
 
 from dependency_injector.wiring import Provide, inject
@@ -312,22 +312,6 @@ class CalendarGroupService:
                 )
         return slots, all_calendar_ids
 
-    def _ensure_no_future_selections(
-        self,
-        slot: CalendarGroupSlot,
-        calendar_ids: Iterable[int] | None = None,
-    ) -> None:
-        """Raise if a CalendarEventGroupSelection points at `slot` (optionally filtered
-        by `calendar_ids`) for an event that starts in the future."""
-        now = timezone.now()
-        qs = CalendarEventGroupSelection.objects.filter_by_organization(
-            self.organization_id
-        ).filter(slot_fk=slot, event_fk__start_time__gt=now)
-        if calendar_ids is not None:
-            qs = qs.filter(calendar_fk_id__in=list(calendar_ids))
-        if qs.exists():
-            raise CalendarGroupSlotInUseError()
-
     # ------------------------------------------------------------------
     # CRUD
     # ------------------------------------------------------------------
@@ -395,8 +379,13 @@ class CalendarGroupService:
     def update_group(self, group_id: int, data: CalendarGroupInputData) -> CalendarGroup:
         """Reconcile a CalendarGroup's slots and memberships with `data`.
 
-        Slots are matched by name. Removing a slot, or removing a calendar from an
-        existing slot's pool, is refused if any future-booked event references it.
+        Slots are matched by name. Removing a slot outright is refused if any
+        future-booked event references it -- deleting the slot would also drop
+        every remaining calendar's group-scoped configuration for it. Removing
+        one calendar from an existing slot's roster is not refused: it always
+        succeeds, existing bookings keep their selections, and that calendar's
+        group-scoped windows, blocked time, and quota rules survive (see
+        `_reconcile_slot`).
         """
         self._assert_initialized()
         self._check_not_restricted()
@@ -446,7 +435,18 @@ class CalendarGroupService:
 
         for name, slot in existing_slots.items():
             if name not in incoming_names:
-                self._ensure_no_future_selections(slot=slot)
+                # Whole-slot removal stays guarded: unlike removing one calendar
+                # from a roster (see `_reconcile_slot`), deleting the slot cascades
+                # to every remaining calendar's group-scoped windows, blocked
+                # time, and quota rules for it (on_delete=CASCADE), which would
+                # be destructive for a slot with future bookings.
+                has_future_selection = (
+                    CalendarEventGroupSelection.objects.filter_by_organization(self.organization_id)
+                    .filter(slot_fk=slot, event_fk__start_time__gt=timezone.now())
+                    .exists()
+                )
+                if has_future_selection:
+                    raise CalendarGroupSlotInUseError()
                 slot.delete()
 
         for slot_data in slots_data:
@@ -510,46 +510,6 @@ class CalendarGroupService:
                 ]
             )
 
-    def _delete_group_scoped_rows_for_removed_calendars(
-        self,
-        queryset: "QuerySet[AvailableTime] | QuerySet[BlockedTime] | QuerySet[CalendarGroupSlotQuotaRule]",
-    ) -> None:
-        """Audit-then-delete every row in ``queryset`` (already filtered to one
-        slot and a set of removed calendar ids).
-
-        Shared by ``_reconcile_slot`` for group-scoped windows
-        (``AvailableTime``), group-scoped blocked time (``BlockedTime``),
-        and quota rules (``CalendarGroupSlotQuotaRule``)
-        -- same cleanup shape, different model. No-op (still issues the
-        delete) when no ``audit_service`` is bound.
-        """
-        rows = list(queryset)
-        if rows and self.audit_service is not None and self.organization is not None:
-            user_or_token = getattr(self.calendar_service, "user_or_token", None)
-            permission_service = getattr(self.calendar_service, "calendar_permission_service", None)
-            # One actor snapshot for every row. ``user_or_token``, the
-            # organization and the permission service are all loop-invariant, and
-            # ``IdentitySnapshot`` is frozen, so the answer cannot differ between
-            # iterations -- but building it per row cost a membership lookup
-            # *plus* the permission query behind
-            # ``membership_role_label`` (which derives the published role name
-            # from the group catalog now that the ``role`` column is gone). That
-            # made a delete of N rows issue 2N round trips for one unchanging
-            # value; hoisting it also removes the pre-existing N+1 underneath.
-            actor = self.audit_service.actor_from_user_or_token(
-                user_or_token,
-                self.organization_id,
-                single_use_token=resolve_acting_single_use_token(user_or_token, permission_service),
-            )
-            for row in rows:
-                self.audit_service.record(
-                    action=AuditAction.DELETE,
-                    actor=actor,
-                    subject=self.audit_service.subject_from_instance(row),
-                    scope=self.audit_service.scope_from_organization_id(self.organization_id),
-                )
-        queryset.delete()
-
     def _reconcile_slot(
         self,
         slot: CalendarGroupSlot,
@@ -567,34 +527,15 @@ class CalendarGroupService:
         to_add = incoming_calendar_ids - existing_calendar_ids
 
         if to_remove:
-            self._ensure_no_future_selections(slot=slot, calendar_ids=to_remove)
-
-            # Delete group-scoped windows, blocked time, and quota rules for the
-            # removed calendars. The FK on AvailableTime.group_slot /
-            # BlockedTime.group_slot / CalendarGroupSlotQuotaRule.group_slot →
-            # CalendarGroupSlot cascades on SLOT deletion only, not on
-            # membership removal, so we must explicitly clean up the orphaned
-            # rows here. Each row deletion is audited individually because the
-            # group-update diff only captures name/description/
-            # accepts_public_scheduling, not membership or window/block/quota
-            # changes.
-            org_id = self.organization_id
-            self._delete_group_scoped_rows_for_removed_calendars(
-                AvailableTime.objects.unscoped()
-                .filter_by_organization(org_id)
-                .filter(group_slot_fk=slot, calendar_fk_id__in=to_remove)
-            )
-            self._delete_group_scoped_rows_for_removed_calendars(
-                BlockedTime.objects.unscoped()
-                .filter_by_organization(org_id)
-                .filter(group_slot_fk=slot, calendar_fk_id__in=to_remove)
-            )
-            self._delete_group_scoped_rows_for_removed_calendars(
-                CalendarGroupSlotQuotaRule.objects.filter_by_organization(org_id).filter(
-                    group_slot_fk=slot, calendar_fk_id__in=to_remove
-                )
-            )
-
+            # Removing a calendar from the roster only ever deletes its
+            # CalendarGroupSlotMembership row(s). It never fails because of
+            # existing bookings (no future-selection guard here -- that guard
+            # stayed on whole-slot removal in `update_group`, above) and it
+            # never touches the removed calendar's group-scoped AvailableTime,
+            # BlockedTime, or CalendarGroupSlotQuotaRule rows: those are kept
+            # and keep enforcing, so a reschedule of a grandfathered booking
+            # still respects that calendar's cap and its slot-scoped windows,
+            # and nothing is lost if the calendar rejoins the roster later.
             CalendarGroupSlotMembership.objects.filter_by_organization(self.organization_id).filter(
                 slot_fk=slot, calendar_fk_id__in=to_remove
             ).delete()
@@ -3019,7 +2960,24 @@ class CalendarGroupService:
         group: CalendarGroup,
         slots: list[CalendarGroupSlot],
         selections: Iterable[CalendarGroupSlotSelectionInputData],
+        event_id: int | None = None,
     ) -> dict[int, CalendarGroupSlotSelectionInputData]:
+        """Validate a set of (slot, calendars) picks against the group's slots.
+
+        :param event_id: When ``None`` (the default -- every current caller,
+            since this only runs on create today), every selected calendar must
+            be in its slot's current roster, unchanged from the original
+            behavior. When set, this is validating a change to an *existing*
+            event: a calendar already recorded on that event for that slot (a
+            persisted ``CalendarEventGroupSelection`` row) passes through even
+            if it has since left the roster -- only a calendar being newly
+            added must still be in the roster. The "already recorded" set is
+            derived here from the database, keyed on ``event_id`` and each
+            slot's id from ``slots`` (both already trusted -- ``slots`` comes
+            from the group, not from caller-supplied labels), so a caller
+            cannot claim a calendar was already on the event to smuggle in an
+            addition that was never actually selected.
+        """
         slot_by_id = {s.id: s for s in slots}
 
         seen_slot_ids: set[int] = set()
@@ -3044,9 +3002,26 @@ class CalendarGroupService:
                 )
             selections_by_slot_id[sel.slot_id] = sel
 
-        # Every slot must be covered with >= required_count picks, all from its pool.
-        # Named apart from the loop above deliberately: `.get()` is nullable and that
-        # one's `sel` is not.
+        # Calendars already recorded on this event, per slot -- the retained
+        # side of the added-vs-retained split. Empty when event_id is None
+        # (create: nothing is "already recorded", so every selected calendar is
+        # an addition and the check below is byte-for-byte identical to before
+        # this split existed).
+        retained_calendar_ids_by_slot: dict[int, set[int]] = {}
+        if event_id is not None:
+            existing_selection_rows = (
+                CalendarEventGroupSelection.objects.filter_by_organization(self.organization_id)
+                .filter(event_fk_id=event_id, slot_fk_id__in=slot_by_id.keys())
+                .values_list("slot_fk_id", "calendar_fk_id")
+            )
+            for slot_id, calendar_id in existing_selection_rows:
+                retained_calendar_ids_by_slot.setdefault(slot_id, set()).add(calendar_id)
+
+        # Every slot must be covered with >= required_count picks. Each pick
+        # must either already be in the slot's pool, or already be recorded on
+        # this event for this slot (grandfathered -- see docstring above).
+        # Named apart from the loop above deliberately: `.get()` is nullable and
+        # that one's `sel` is not.
         for slot in slots:
             slot_selection = selections_by_slot_id.get(slot.id)
             if slot_selection is None:
@@ -3057,7 +3032,8 @@ class CalendarGroupService:
                     f"got {len(slot_selection.calendar_ids)}."
                 )
             pool = set(slot.memberships.values_list("calendar_fk_id", flat=True))
-            outside_pool = set(slot_selection.calendar_ids) - pool
+            retained = retained_calendar_ids_by_slot.get(slot.id, set())
+            outside_pool = set(slot_selection.calendar_ids) - pool - retained
             if outside_pool:
                 raise CalendarGroupValidationError(
                     f"Calendars {sorted(outside_pool)} are not in the pool of slot {slot.name!r}."

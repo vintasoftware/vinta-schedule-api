@@ -271,9 +271,7 @@ def membership_role_label(membership: OrganizationMembership) -> str:
     ``actor_from_user_or_token``. Each writes a row per call, so the extra query
     is proportionate *per call*; what it is not proportionate to is a caller
     that builds one actor snapshot per row in a loop. Hoist the snapshot out of
-    the loop instead of reaching past this function --
-    ``CalendarGroupService._delete_group_scoped_rows_for_removed_calendars``
-    is the worked example.
+    the loop instead of reaching past this function.
     """
     if membership_holds_permission(membership, _MANAGE_MEMBERS):
         return MEMBERSHIP_ROLE_LABEL_ADMIN

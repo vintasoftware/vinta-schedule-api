@@ -497,11 +497,13 @@ class CalendarGroupSlotQuotaRule(
     constraint below.
 
     Cascade: `on_delete=CASCADE` on both FKs handles slot/group/calendar
-    deletion. It does NOT handle a calendar being removed from a slot's
-    roster while the slot itself survives (``CalendarGroupSlotMembership``
-    deletion) -- ``CalendarGroupService._reconcile_slot`` explicitly deletes
-    orphaned quota rules for removed calendars, the same way it already does
-    for group-scoped availability windows and blocked time.
+    deletion. A calendar being removed from a slot's roster while the slot
+    itself survives (a `CalendarGroupSlotMembership` deletion) does NOT cascade
+    here, and `CalendarGroupService._reconcile_slot` does not clean these rows
+    up either: a departed calendar's quota rules for this slot are kept and
+    keep enforcing. A reschedule of a grandfathered booking (one made before
+    the calendar left the roster) still respects the cap, and the rule is
+    still there, unchanged, if the calendar rejoins the roster later.
     """
 
     group_slot = OrganizationSafeForeignKey(
@@ -1673,9 +1675,11 @@ class BlockedTime(RecurringMixin):
     # NULL means a base row — today's behavior, visible on every read path. A
     # non-null value scopes the row to that one CalendarGroupSlot; it is invisible
     # to the default manager (`objects`) and only reachable through the explicit
-    # `for_group_slot` / `unscoped` accessors. `on_delete=CASCADE` so removing a
-    # calendar from a slot (or deleting the slot/group) deletes its group-scoped
-    # blocked time with it, matching the spec's cascade rule.
+    # `for_group_slot` / `unscoped` accessors. `on_delete=CASCADE` so deleting the
+    # slot (or its group) deletes its group-scoped blocked time with it. Removing
+    # one calendar from the slot's roster while the slot survives does NOT cascade
+    # here -- that row is kept and keeps enforcing, by design (Calendar Pools
+    # Phase 1: roster removal is lenient and never destroys configuration).
     group_slot = OrganizationSafeForeignKey(
         CalendarGroupSlot,
         on_delete=models.CASCADE,
@@ -1775,9 +1779,12 @@ class AvailableTime(RecurringMixin):
     # NULL means a base row — today's behavior, visible on every read path. A
     # non-null value scopes the row to that one CalendarGroupSlot; it is invisible
     # to the default manager (`objects`) and only reachable through the explicit
-    # `for_group_slot` / `unscoped` accessors. `on_delete=CASCADE` so removing a
-    # calendar from a slot (or deleting the slot/group) deletes its group-scoped
-    # availability windows with it, matching the spec's cascade rule.
+    # `for_group_slot` / `unscoped` accessors. `on_delete=CASCADE` so deleting the
+    # slot (or its group) deletes its group-scoped availability windows with it.
+    # Removing one calendar from the slot's roster while the slot survives does
+    # NOT cascade here -- that row is kept and keeps enforcing, by design
+    # (Calendar Pools Phase 1: roster removal is lenient and never destroys
+    # configuration).
     group_slot = OrganizationSafeForeignKey(
         CalendarGroupSlot,
         on_delete=models.CASCADE,

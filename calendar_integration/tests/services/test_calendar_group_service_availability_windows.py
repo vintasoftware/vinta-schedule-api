@@ -760,12 +760,12 @@ def test_deleting_slot_through_update_group_cascades_group_scoped_windows(
 
 
 # ---------------------------------------------------------------------------
-# FIX 1: Removing a calendar from a slot removes its group-scoped windows
+# Removing a calendar from a slot keeps its group-scoped windows
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.django_db
-def test_removing_calendar_from_slot_removes_group_scoped_windows(
+def test_removing_calendar_from_slot_keeps_group_scoped_windows(
     service: CalendarGroupService,
     admin_user: User,
     calendar: Calendar,
@@ -773,10 +773,10 @@ def test_removing_calendar_from_slot_removes_group_scoped_windows(
     group: CalendarGroup,
     django_capture_on_commit_callbacks,
 ) -> None:
-    """FIX 1 (BLOCKER): When removing a calendar from a slot's membership,
-    its group-scoped availability windows must be deleted (not orphaned).
-    A second calendar's windows in the same slot survive.
-    Each deleted window is audited with a DELETE action naming the actor.
+    """Contract change (Calendar Pools Phase 1): when removing a calendar from
+    a slot's membership, its group-scoped availability window is kept, not
+    deleted -- roster removal is lenient and never destroys configuration.
+    Both calendars' windows survive, and no window DELETE is audited.
     """
     # Create a slot with TWO calendars.
     slot = CalendarGroupSlot.objects.create(
@@ -831,9 +831,8 @@ def test_removing_calendar_from_slot_removes_group_scoped_windows(
                 ),
             )
 
-    # The first calendar's window must be deleted.
-    assert not AvailableTime.objects.unscoped().filter(id=window1_id).exists()
-    # The second calendar's window must survive.
+    # Both windows survive the roster removal.
+    assert AvailableTime.objects.unscoped().filter(id=window1_id).exists()
     assert AvailableTime.objects.unscoped().filter(id=window2_id).exists()
     # The first calendar's membership is gone.
     assert (
@@ -848,17 +847,15 @@ def test_removing_calendar_from_slot_removes_group_scoped_windows(
         .exists()
     )
 
-    # Verify that a DELETE audit record was emitted for the deleted window.
+    # No window DELETE is audited -- nothing was deleted.
     payloads = _payloads(mock_task)
     delete_payloads = [p for p in payloads if p["action_key"] == AuditAction.DELETE]
-    # Should have at least one DELETE for window1 (may also have UPDATE for group).
     window_delete_payloads = [
         p
         for p in delete_payloads
         if p["subject"]["subject_type"] == "calendar_integration.availabletime"
     ]
-    assert len(window_delete_payloads) == 1
-    assert window_delete_payloads[0]["subject"]["subject_id"] == str(window1_id)
+    assert window_delete_payloads == []
 
 
 # ---------------------------------------------------------------------------
