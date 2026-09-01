@@ -15,6 +15,7 @@ from calendar_integration.models import (
     CalendarEventGroupSelection,
     CalendarGroup,
     CalendarGroupSlot,
+    CalendarGroupSlotMembership,
     CalendarGroupSlotQuotaRule,
     CalendarOwnership,
     CalendarWebhookEvent,
@@ -133,6 +134,33 @@ def _scoped_calendar_list(
     if allowed_ids is None:
         return calendars
     return [c for c in calendars if c.id in allowed_ids]
+
+
+def _attach_current_roster_flags(
+    selections: "list[CalendarEventGroupSelection]",
+) -> None:
+    """Batch-compute ``is_in_current_roster`` for every selection in ``selections``.
+
+    Staleness definition (see the plan's Guiding Decisions): a selection is
+    stale when no ``CalendarGroupSlotMembership`` row exists for its ``(slot,
+    calendar)`` pair. One membership query covers every selection here,
+    keyed on the distinct slot ids already resolved by the caller
+    (``group_selections``), so the field stays constant-query with respect
+    to the number of selections instead of issuing one lookup per row.
+    """
+    slot_ids = {s.slot_fk_id for s in selections}  # type: ignore[attr-defined]
+    if not slot_ids:
+        return
+    current_pairs = set(
+        CalendarGroupSlotMembership.objects.filter(slot_fk_id__in=slot_ids).values_list(
+            "slot_fk_id", "calendar_fk_id"
+        )
+    )
+    for selection in selections:
+        selection._is_in_current_roster = (  # type: ignore[attr-defined]
+            selection.slot_fk_id,  # type: ignore[attr-defined]
+            selection.calendar_fk_id,  # type: ignore[attr-defined]
+        ) in current_pairs
 
 
 @strawberry.type
@@ -474,6 +502,7 @@ class CalendarEventGraphQLType:
             selections = [
                 s for s in selections if getattr(s, "calendar_fk_id", None) in allowed_ids
             ]
+        _attach_current_roster_flags(selections)
         return selections  # type: ignore
 
     @strawberry.field
@@ -902,6 +931,25 @@ class CalendarEventGroupSelectionGraphQLType:
     def calendar(self, info: strawberry.Info) -> "CalendarGraphQLType | None":
         """The selected calendar, suppressed when outside the owner's scope."""
         return _scoped_calendar_or_none(self.calendar, _owner_scoped_calendar_ids(info))  # type: ignore
+
+    @strawberry.field
+    def is_in_current_roster(self) -> bool:
+        """Whether this selection's calendar is still a member of its slot's roster.
+
+        Staleness definition (see the plan's Guiding Decisions): stale when no
+        ``CalendarGroupSlotMembership`` row exists for this selection's
+        ``(slot, calendar)`` pair. ``group_selections`` populates this via one
+        batched membership lookup per call rather than one per selection; a
+        selection reached any other way (e.g. built directly in a test) falls
+        back to a single-row query here.
+        """
+        cached = getattr(self, "_is_in_current_roster", None)
+        if cached is not None:
+            return cached
+        return CalendarGroupSlotMembership.objects.filter(
+            slot_fk_id=self.slot_fk_id,  # type: ignore[attr-defined]
+            calendar_fk_id=self.calendar_fk_id,  # type: ignore[attr-defined]
+        ).exists()
 
 
 @strawberry.type

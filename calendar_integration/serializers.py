@@ -3177,11 +3177,49 @@ class CalendarGroupSerializer(VirtualModelSerializer):
 class CalendarEventGroupSelectionSerializer(VirtualModelSerializer):
     slot = CalendarGroupSlotSerializer(read_only=True)
     calendar = CalendarSerializer(read_only=True)
+    is_in_current_roster = serializers.SerializerMethodField()
 
     class Meta:
         model = CalendarEventGroupSelection
         virtual_model = CalendarEventGroupSelectionVirtualModel
-        fields = ("id", "slot", "calendar")
+        fields = ("id", "slot", "calendar", "is_in_current_roster")
+
+    def get_is_in_current_roster(
+        self,
+        # `# type: ignore[valid-type]`: django-stubs' mypy plugin special-cases any
+        # `Annotated[...]` whose first argument is a Django `Model` subclass (its own
+        # generic-field handling), and chokes on `hints.Virtual(...)` as the second
+        # argument -- reproduced in isolation against a bare `Annotated[SomeModel, ...]`
+        # with no django-virtual-models involved. Runtime behavior is unaffected:
+        # `typing_extensions.get_type_hints(..., include_extras=True)` (what
+        # `LookupFinder` actually reads) resolves this annotation the same as any other.
+        obj: Annotated[  # type: ignore[valid-type]
+            "CalendarEventGroupSelection", v.hints.Virtual("slot__memberships__calendar_fk_id")
+        ],
+    ) -> bool:
+        """Whether ``obj``'s calendar is still a member of its slot's roster.
+
+        Staleness definition (see the plan's Guiding Decisions): stale when no
+        ``CalendarGroupSlotMembership`` row exists for the ``(slot, calendar)``
+        pair. ``slot.memberships`` is prefetched by
+        ``CalendarEventGroupSelectionVirtualModel`` (via the ``hints.Virtual``
+        hint above), so this reads from that prefetch cache instead of issuing
+        a query per selection.
+
+        The hint names the concrete ``calendar_fk_id`` column explicitly
+        rather than just ``slot__memberships``: an empty per-field lookup list
+        tells ``django-virtual-models`` to prefetch *every* declared field
+        under that branch, including ``CalendarGroupSlotMembershipVirtualModel
+        .calendar`` -- which cascades into ``CalendarVirtualModel
+        .calendar_ownerships``, a field name that does not match ``Calendar``'s
+        actual related accessor (``ownerships``) and raises. Naming the one
+        concrete column this field actually reads avoids that unrelated,
+        pre-existing mismatch instead of masking it.
+        """
+        return any(
+            membership.calendar_fk_id == obj.calendar_fk_id
+            for membership in obj.slot.memberships.all()
+        )
 
 
 class _CalendarGroupSlotSelectionInputSerializer(serializers.Serializer):
