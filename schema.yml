@@ -1652,12 +1652,16 @@ paths:
       - in: path
         name: id
         schema:
-          type: string
+          type: integer
+        description: 'The `Payment` this delivery correlates to -- the id embedded
+          in the `notification_url` handed to the provider when the payment was created.
+          A correlation aid only: nothing here is looked up or authenticated by it.'
         required: true
       - in: path
         name: provider
         schema:
           type: string
+        description: Slug of the payment provider posting the update, e.g. `stripe`.
         required: true
       tags:
       - billing
@@ -1698,12 +1702,16 @@ paths:
       - in: path
         name: id
         schema:
-          type: string
+          type: integer
+        description: 'The `Payment` this delivery correlates to -- the id embedded
+          in the `notification_url` handed to the provider when the payment was created.
+          A correlation aid only: nothing here is looked up or authenticated by it.'
         required: true
       - in: path
         name: provider
         schema:
           type: string
+        description: Slug of the payment provider posting the update, e.g. `stripe`.
         required: true
       tags:
       - billing
