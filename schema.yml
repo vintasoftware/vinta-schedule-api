@@ -14770,6 +14770,46 @@ paths:
               schema:
                 $ref: '#/components/schemas/SystemUserToken'
           description: ''
+  /public/booking/calendar-events/:
+    post:
+      operationId: public_booking_calendar_events_create
+      description: |-
+        Resolve the code, then create the event and consume the code atomically.
+
+        Create FIRST, then consume -- so on a race the loser's ``consume_code``
+        raises under the row lock and the whole transaction (including the
+        just-created event) rolls back, leaving exactly one event and the code
+        consumed once. See the plan's Phase 1 body for why this ordering matters.
+      summary: Book an event on a single calendar with a booking code
+      parameters:
+      - in: header
+        name: X-Booking-Code
+        schema:
+          type: string
+        description: Single-use booking code, minted with the CREATE permission and
+          scoped to a single calendar (not a group).
+        required: true
+      tags:
+      - Booking Codes
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BookingCodeEventCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BookingCodeEventCreate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BookingCodeEventCreate'
+        required: true
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarEvent'
+          description: ''
   /public/organizations/{organization_id}/events/:
     get:
       operationId: public_organizations_events_list
@@ -17293,6 +17333,37 @@ components:
       required:
       - end_time
       - start_time
+    BookingCodeEventCreate:
+      type: object
+      description: |-
+        Input for ``POST /public/booking/calendar-events/``.
+
+        Mirrors ``CreateEventWithCodeInput`` (GraphQL) minus its ``code`` field -- the
+        booking code travels as the ``X-Booking-Code`` header instead (see
+        ``calendar_integration.booking_auth``). ``calendar_id`` is never accepted here:
+        it comes strictly from the resolved token, never from client input.
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+          default: ''
+        start_time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+        timezone:
+          type: string
+        external_attendee:
+          $ref: '#/components/schemas/_BookingCodeExternalAttendee'
+      required:
+      - end_time
+      - external_attendee
+      - start_time
+      - timezone
+      - title
     BookingPolicy:
       type: object
       description: |-
@@ -21515,6 +21586,24 @@ components:
         * `pending` - Pending
         * `success` - Success
         * `failed` - Failed
+    _BookingCodeExternalAttendee:
+      type: object
+      description: |-
+        External attendee for the unauthenticated booking-code write endpoints.
+
+        Deliberately NOT ``ExternalAttendeeSerializer`` (a full ``VirtualModelSerializer``
+        exposing read-only model fields like ``id`` / ``created`` / ``modified``) -- this
+        is a plain two-field write input, mirroring ``ExternalAttendeeCodeInput`` (the
+        GraphQL input the code-gated mutations already use).
+      properties:
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+          default: ''
+      required:
+      - email
     _CalendarGroupSlotSelectionInput:
       type: object
       properties:

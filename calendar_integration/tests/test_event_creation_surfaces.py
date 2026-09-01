@@ -44,6 +44,7 @@ from vinta_billing.models import (
 )
 from vinta_billing.registry import entitlements
 
+from calendar_integration.booking_auth import BOOKING_CODE_HEADER
 from calendar_integration.constants import (
     CalendarProvider,
     CalendarType,
@@ -681,6 +682,88 @@ class TestBookingCodeEventSurface:
         assert "errors" not in data or not data.get("errors"), data
         result = data["data"]["createCalendarEventWithCode"]
         assert result["success"] is True
+
+
+# ----------------------------------------------------------------------------------
+# 4b. Booking-code REST -- calendar_integration/booking_views.py
+#     BookingCodeCalendarEventViewSet (POST /public/booking/calendar-events/)
+# ----------------------------------------------------------------------------------
+
+
+def _rest_booking_headers(code: str) -> dict:
+    return {BOOKING_CODE_HEADER: code}
+
+
+def _rest_booking_payload() -> dict:
+    start = datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=1)
+    return {
+        "title": "REST Booking Code Surface Event",
+        "description": "",
+        "start_time": start.isoformat(),
+        "end_time": (start + datetime.timedelta(hours=1)).isoformat(),
+        "timezone": "UTC",
+        "external_attendee": {"email": "patient@example.com", "name": "Pat"},
+    }
+
+
+@pytest.mark.django_db
+class TestBookingCodeRestEventSurface:
+    """The REST counterpart of ``TestBookingCodeEventSurface`` above --
+    ``POST /public/booking/calendar-events/`` reaches ``create_event`` through
+    the exact same ``CalendarService.create_event`` call, so it must meter and
+    gate identically. Guarding only the viewset layer (and missing this REST
+    entry point) is exactly the unmetered-surface gap this file exists to catch.
+    """
+
+    def test_blocked_at_the_allowance_returns_402(self):
+        organization, _subscription = _at_the_allowance_no_payment_method()
+        calendar = baker.make(
+            Calendar,
+            organization=organization,
+            provider=CalendarProvider.INTERNAL,
+            accepts_public_scheduling=False,
+            external_id=f"rest-code-cal-{organization.pk}",
+        )
+        token, code = _booking_code_for_calendar(organization, calendar)
+
+        client = APIClient()
+        response = client.post(
+            reverse("calendar_booking_api:booking-calendar-events-list"),
+            _rest_booking_payload(),
+            format="json",
+            headers=_rest_booking_headers(code),
+        )
+
+        assert response.status_code == status.HTTP_402_PAYMENT_REQUIRED
+        body = response.json()
+        assert body["resource"] == EVENT_OCCURRENCES
+        assert body["remedy"] == LimitRemedy.ADD_PAYMENT_METHOD
+        assert not CalendarEvent.original_manager.filter(calendar=calendar).exists()
+        # The code must not have been consumed by a rejected booking.
+        token.refresh_from_db()
+        assert token.used_at is None
+
+    def test_unlimited_plan_is_unchanged(self):
+        organization, subscription = _organization_with_postpaid_limit(None, BillingState.FREE)
+        _seed_metered_occurrences(organization, subscription, 1)
+        calendar = baker.make(
+            Calendar,
+            organization=organization,
+            provider=CalendarProvider.INTERNAL,
+            accepts_public_scheduling=False,
+            external_id=f"rest-code-cal-unlimited-{organization.pk}",
+        )
+        _token, code = _booking_code_for_calendar(organization, calendar)
+
+        client = APIClient()
+        response = client.post(
+            reverse("calendar_booking_api:booking-calendar-events-list"),
+            _rest_booking_payload(),
+            format="json",
+            headers=_rest_booking_headers(code),
+        )
+
+        assert response.status_code == status.HTTP_201_CREATED, response.content
 
 
 # ----------------------------------------------------------------------------------

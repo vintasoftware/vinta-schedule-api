@@ -3546,3 +3546,53 @@ class ExternalEventChangeRequestSerializer(VirtualModelSerializer):
     def get_resolved_by_user_id(self, obj: ExternalEventChangeRequest) -> int | None:
         """Return the resolver's user id, or ``None`` when unresolved."""
         return obj.resolved_by_user_id  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# Booking-code REST surface (public/booking/) -- Phase 1+
+# ---------------------------------------------------------------------------
+
+
+class _BookingCodeExternalAttendeeSerializer(serializers.Serializer):
+    """External attendee for the unauthenticated booking-code write endpoints.
+
+    Deliberately NOT ``ExternalAttendeeSerializer`` (a full ``VirtualModelSerializer``
+    exposing read-only model fields like ``id`` / ``created`` / ``modified``) -- this
+    is a plain two-field write input, mirroring ``ExternalAttendeeCodeInput`` (the
+    GraphQL input the code-gated mutations already use).
+    """
+
+    email = serializers.EmailField()
+    name = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+class BookingCodeEventCreateSerializer(serializers.Serializer):
+    """Input for ``POST /public/booking/calendar-events/``.
+
+    Mirrors ``CreateEventWithCodeInput`` (GraphQL) minus its ``code`` field -- the
+    booking code travels as the ``X-Booking-Code`` header instead (see
+    ``calendar_integration.booking_auth``). ``calendar_id`` is never accepted here:
+    it comes strictly from the resolved token, never from client input.
+    """
+
+    title = serializers.CharField()
+    description = serializers.CharField(allow_blank=True, required=False, default="")
+    start_time = serializers.DateTimeField()
+    end_time = serializers.DateTimeField()
+    timezone = serializers.CharField()
+    external_attendee = _BookingCodeExternalAttendeeSerializer()
+
+    def validate_end_time(self, end_time: datetime.datetime) -> datetime.datetime:
+        start_time = self.initial_data.get("start_time") if self.initial_data else None
+        if start_time:
+            try:
+                start_time_parsed = (
+                    datetime.datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+                    if isinstance(start_time, str)
+                    else start_time
+                )
+            except ValueError:
+                start_time_parsed = None
+            if start_time_parsed and end_time <= start_time_parsed:
+                raise serializers.ValidationError("end_time must be after start_time.")
+        return end_time
