@@ -37,8 +37,8 @@ The git-level provisioning was correct as reported: worktree, branch based at `o
 | # | Title | Status | Implementer | Branch |
 |---|---|---|---|---|
 | 0 | Add the CalendarPool model and its roster | ✅ done — [PR #302](https://github.com/vintasoftware/vinta-schedule-api/pull/302) | Tier 2 (sonnet) | `plan/calendar-pools/phase-0` |
-| 1 | Make roster removal non-destructive | ✅ done | Tier 3 (sonnet) | `plan/calendar-pools/phase-1` |
-| 2 | Surface stale calendar selections on events | 🔄 next | Tier 2 | — |
+| 1 | Make roster removal non-destructive | ✅ done — [PR #303](https://github.com/vintasoftware/vinta-schedule-api/pull/303) | Tier 3 (sonnet) | `plan/calendar-pools/phase-1` |
+| 2 | Surface stale calendar selections on events | 🔄 in progress | Tier 2 | `plan/calendar-pools/phase-2` |
 | 3 | Attach pools to slots and project the roster | ⬜ pending | Tier 4 | — |
 | 4 | Manage pools over internal REST | ⬜ pending | Tier 3 | — |
 | 5 | Expose pools on the public GraphQL API | ⬜ pending | Tier 3 | — |
@@ -66,6 +66,7 @@ The git-level provisioning was correct as reported: worktree, branch based at `o
 - **Models**: implementer Tier 3 (sonnet), reviewer **Tier 4** (opus, per the plan's phase override), fixer Tier 2 stepped up to sonnet (multi-file, non-mechanical).
 - **Landed**: `_ensure_no_future_selections` and `_delete_group_scoped_rows_for_removed_calendars` deleted outright (zero remaining references). `_reconcile_slot` now only deletes membership rows. `_validate_selections` gained an `event_id` parameter splitting validation into added-vs-retained. 12 files, 1422 insertions, 155 deletions.
 - **Gate, re-run independently by the conductor** after the fixes: ruff clean; `makemigrations --check` no changes; mypy success across 765 files; `pytest calendar_integration/tests/ public_api/tests/ payments/tests/ -n auto` **4003 passed**.
+- **PR**: [#303](https://github.com/vintasoftware/vinta-schedule-api/pull/303), base `plan/calendar-pools/phase-0` (stacked), 9 inline comments. Carries the client handoff and **must not merge before that handoff reaches the client teams**.
 
 **Two behavior regressions the plan did not anticipate, found by the Tier 4 reviewer.** Both follow from the **Scoped-row survival** decision and both weaken the no-flag waiver's premise that "no operation that succeeds today fails afterwards":
 
