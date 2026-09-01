@@ -38,8 +38,8 @@ The git-level provisioning was correct as reported: worktree, branch based at `o
 |---|---|---|---|---|
 | 0 | Add the CalendarPool model and its roster | ✅ done — [PR #302](https://github.com/vintasoftware/vinta-schedule-api/pull/302) | Tier 2 (sonnet) | `plan/calendar-pools/phase-0` |
 | 1 | Make roster removal non-destructive | ✅ done — [PR #303](https://github.com/vintasoftware/vinta-schedule-api/pull/303) | Tier 3 (sonnet) | `plan/calendar-pools/phase-1` |
-| 2 | Surface stale calendar selections on events | 🔄 in progress | Tier 2 | `plan/calendar-pools/phase-2` |
-| 3 | Attach pools to slots and project the roster | ⬜ pending | Tier 4 | — |
+| 2 | Surface stale calendar selections on events | ✅ done | Tier 2 (sonnet) | `plan/calendar-pools/phase-2` |
+| 3 | Attach pools to slots and project the roster | 🔄 next | Tier 4 | — |
 | 4 | Manage pools over internal REST | ⬜ pending | Tier 3 | — |
 | 5 | Expose pools on the public GraphQL API | ⬜ pending | Tier 3 | — |
 | 6 | Stale-selection sweep query | ⬜ pending | Tier 2 | — |
@@ -81,9 +81,26 @@ Neither corrupts data and both are narrow, but the waiver in **Guiding Decisions
 
 **Reviewer finding not applied.** The reviewer asked for a `django_assert_num_queries` guard proving the create path gained no query from the added-vs-retained split. It was dropped when composing the fixer prompt — an omission, not a decision — and left out rather than spending another fixer cycle, since it guards a hypothetical future regression rather than a present defect.
 
+### Phase 2 — Surface stale calendar selections on events
+
+- **Status**: complete. **Branch**: `plan/calendar-pools/phase-2`, base `plan/calendar-pools/phase-1`. **Commits**: `853f6d02` (feature), `c1007c31` (review fixes + REST wiring).
+- **Models**: implementer Tier 2 (sonnet), reviewer Tier 3 (sonnet), fixer Tier 2 stepped up to sonnet.
+- **Landed**: `isInCurrentRoster` on the GraphQL selection type via a batch helper, `is_in_current_roster` on `CalendarEventGroupSelectionSerializer`, and a nested read-only `group_selections` on `CalendarEventSerializer`. Staleness predicate is exactly the plan's: no `CalendarGroupSlotMembership` row for the `(slot, calendar)` pair, which stays correct once Phase 3 projects pool calendars into that table.
+- **Gate**: ruff clean; format clean; `makemigrations --check` no changes; mypy success across 766 files; `pytest calendar_integration/tests/ public_api/tests/ -n auto` **3176 passed** (= the full collected count), 0 errors.
+
+**Scope decision by the requester, mid-phase.** The REST field was initially unreachable: `CalendarEventGroupSelectionSerializer` was nested in nothing and mounted on no route, so the phase could not meet its own "on both REST and GraphQL" acceptance line. Options were to drop the REST half, wire it in, or ship it as documented scaffolding. The requester chose to **wire it in**, so `CalendarEventSerializer` now exposes a nested `group_selections` array and `schema.yml` was regenerated. This is an additive REST response-shape change the plan never scoped; it is documented in the client handoff.
+
+**Known cost of that decision.** The virtual-model prefetch runs unconditionally, so **every event REST fetch now costs one extra query** whether or not the client reads `group_selections`. That surfaced as a pinned-count update in `calendar_integration/tests/test_views.py` (ICS download, 26 → 28: one prefetch across that view's two `get_optimized_queryset` calls). The constant was updated with an explanation rather than the assertion loosened, matching the same file's precedent from the External Client Identifiers phase.
+
+**Pre-existing defect found, deliberately not fixed.** `CalendarVirtualModel.calendar_ownerships` (`calendar_integration/virtual_models.py:36`) names a field that is not `Calendar`'s accessor — `Calendar.ownerships` is, per `calendar_integration/models.py:269`; `calendar_ownerships` is `OrganizationMembership`'s related name. django-virtual-models' "empty lookup list means prefetch everything" fallback raises `AttributeError` when it walks that branch. It had never been exercised before this phase. Both the implementer and the fixer avoided it by terminating the lookup on a concrete column rather than patching the field, and `virtual_models.py` has zero diff lines across this phase. **Worth its own ticket** — the workaround is sound but the bug remains latent for the next caller.
+
+**Plan deviation, recorded per the reviewer's request.** The plan's Touch List lists `calendar_integration/virtual_models.py` as a Phase 2 edit. It was never touched: `CalendarGroupSlotVirtualModel.memberships` already existed from Phase 0 and was exactly what the prefetch hint needed, so no edit was warranted.
+
+**Test-infrastructure observation, not caused by this phase.** One scoped-suite run produced 16 errors on `test_request_calendar_sync_task_not_fired_on_rollback` and siblings; the test passes in isolation in 35.5s against `pytest.ini`'s 60s per-test timeout, and a clean re-run passed all 3176. Separately, two runs reported *more* passing tests (3201, 3209) than the 3176 that actually exist, which could not be reconciled — an xdist/timeout/coverage interaction worth investigating independently.
+
 ## Current phase
 
-**Phase 2 — Surface stale calendar selections on events.** Base: `plan/calendar-pools/phase-1`. Mitigates the state Phase 1 makes reachable, so it should stay adjacent to Phase 1 in the merge order.
+**Phase 3 — Attach pools to slots and project the roster.** Base: `plan/calendar-pools/phase-2`. The core of the feature and the riskiest phase: a unique-constraint swap with NULL semantics, the membership projection, and the `Count` fix. Implementer Tier 4, reviewer Tier 4, fixer Tier 3.
 
 ## Deferred phases
 
