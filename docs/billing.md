@@ -136,12 +136,12 @@ the package's to own, wherever it happens to live.
    changed, and diff it — an unexpected path or shape change is a signal to read
    the package's changelog more carefully before merging.
 
-## Package gaps found during the migration — all closed upstream
+## Package gaps found here — all closed upstream
 
-Six gaps were identified while migrating onto the package. None of them were
-worked around by subclassing or monkeypatching; all six are now fixed in
-`vinta-django-billing` itself, which is the standing process this project
-follows.
+Seven gaps have been identified against the package, six while migrating onto it
+and one after. None of them were worked around by subclassing or monkeypatching;
+all seven are now fixed in `vinta-django-billing` itself, which is the standing
+process this project follows.
 
 Released in **0.5.0**, and severe enough to be worth remembering:
 
@@ -190,7 +190,32 @@ Released in **0.6.0**, each with the host-side change the fix allowed:
    host's stand-in `payments/tests/services/test_dunning_retry_tolerance.py` was
    deleted with this bump.
 
-If you hit a seventh gap: report and fix it in the package (with a test and a
+Released in **0.7.0**, and the first one found after the migration rather than
+during it:
+
+7. **The two inbound provider webhooks left their path parameters untyped, which
+   failed this project's Render deploy.** `vinta_billing.routing.get_extra_patterns`
+   binds both routes with `re_path` and a bare `(?P<name>[^/.]+)` group —
+   deliberately, so neither router mode gets a route it cannot render — but that
+   left drf-spectacular nothing to infer a type from, and `PaymentsViewSet` is a
+   plain `ViewSet` with no queryset to reach a model through instead. It warned
+   twice per schema generation, and `drf_spectacular`'s `--deploy` check re-emits
+   every such warning as a `drf_spectacular.W001`, which
+   [render_build.sh](../render_build.sh)'s `check --deploy --fail-level WARNING`
+   turns into a failed build. The deploy broke on the 0.6.0 bump, on two warnings
+   this project did not cause. 0.7.0 declares both parameters on the annotations
+   those actions already carried, and adds a package test that fails on any
+   warning the generated schema raises. The host-side annotation written while
+   this was open (`payments/seams/openapi.py`, wired from `PaymentsConfig.ready()`)
+   was deleted with this bump — it was the monkeypatch the process above forbids,
+   and it only ever existed because the deploy was already broken.
+   `payments/tests/seams/test_openapi.py` stays: it runs the same `--deploy`
+   schema check in CI, so the next warning of any kind fails a test rather than a
+   deploy. **`schema.yml` changed with this bump**: `id` on both webhook paths is
+   now `integer` rather than `string`, which is what it always was — a `Payment`
+   id under the package's `BigAutoField` default.
+
+If you hit an eighth gap: report and fix it in the package (with a test and a
 `HISTORY.md` entry), release, then bump the pin here. Don't subclass or
 monkeypatch around it in `payments/` — that is exactly the duplication this
 migration was meant to end.

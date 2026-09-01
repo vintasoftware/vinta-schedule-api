@@ -72,7 +72,7 @@ dependencies = [
     # Development Status :: Alpha, and its migration onto the host is itself
     # a multi-phase plan (see ai-plans/). Widen only after re-reading the
     # upstream diff for the target minor.
-    "vinta-django-billing>=0.6,<0.7",
+    "vinta-django-billing>=0.7,<0.8",
     # The audit log, extracted from this project. Pinned to the minor for the
     # same reason as its two siblings above: it is pre-1.0, so a minor is where a
     # breaking change is allowed to live. `audit_integration` supplies the scope
