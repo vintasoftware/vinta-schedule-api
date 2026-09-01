@@ -10,11 +10,13 @@ create path (where every selection is an addition) is unchanged.
 """
 
 from datetime import timedelta
+from unittest.mock import patch
 
 from django.utils import timezone
 
 import pytest
 
+from audit_integration.constants import AuditAction
 from audit_integration.services import OrganizationAuditService
 from calendar_integration.constants import CalendarProvider, CalendarType, QuotaPeriod
 from calendar_integration.exceptions import (
@@ -29,9 +31,13 @@ from calendar_integration.models import (
     CalendarEventGroupSelection,
     CalendarGroupSlotMembership,
     CalendarGroupSlotQuotaRule,
+    CalendarManagementToken,
 )
 from calendar_integration.services.calendar_group_service import CalendarGroupService
-from calendar_integration.services.calendar_permission_service import CalendarPermissionService
+from calendar_integration.services.calendar_permission_service import (
+    DEFAULT_CALENDAR_OWNER_PERMISSIONS,
+    CalendarPermissionService,
+)
 from calendar_integration.services.calendar_service import CalendarService
 from calendar_integration.services.dataclasses import (
     CalendarGroupEventInputData,
@@ -282,6 +288,131 @@ def test_removed_calendar_scoped_rows_survive_and_readd_restores_config(
     assert rule.period == QuotaPeriod.DAY
 
 
+@pytest.mark.django_db
+def test_readd_then_create_same_period_quota_rule_fails(
+    service, admin_user, base_input, managed_calendars
+):
+    """Re-adding a calendar to a roster restores its previous quota rules --
+    they were never deleted on removal (see
+    `test_removed_calendar_scoped_rows_survive_and_readd_restores_config`).
+    So a second create for the same (calendar, slot, period) after a
+    remove/re-add round trip now fails on the pre-existing rule's uniqueness
+    constraint, where it would have succeeded under the old, destructive
+    removal behavior (which deleted the rule along with the membership)."""
+    group = service.create_group(base_input)
+    physicians = group.slots.get(name="Physicians")
+
+    service.create_group_scoped_quota_rule(
+        acting_user=admin_user,
+        group_slot_id=physicians.id,
+        calendar_id=managed_calendars["phys_a"].id,
+        period=QuotaPeriod.DAY,
+        cap=1,
+    )
+
+    # Remove phys_a from the roster, then re-add her "a week later".
+    base_input.slots[0].calendar_ids = [managed_calendars["phys_b"].id]
+    service.update_group(group.id, base_input)
+
+    base_input.slots[0].calendar_ids = [
+        managed_calendars["phys_a"].id,
+        managed_calendars["phys_b"].id,
+    ]
+    service.update_group(group.id, base_input)
+
+    with pytest.raises(CalendarGroupValidationError):
+        service.create_group_scoped_quota_rule(
+            acting_user=admin_user,
+            group_slot_id=physicians.id,
+            calendar_id=managed_calendars["phys_a"].id,
+            period=QuotaPeriod.DAY,
+            cap=1,
+        )
+
+
+@pytest.mark.django_db
+def test_removing_calendar_from_roster_does_not_free_availability_windows_capacity(
+    service, admin_user, base_input, managed_calendars
+):
+    """Billing / limits: the plan's Risk & Rollout Notes calls this out
+    explicitly -- scoped rows now outlive roster membership, so the
+    `availability_windows` metered counter (which reads through
+    `AvailableTime.objects.unscoped().only_user_authored()`, uncorrelated with
+    slot-roster membership) no longer drops when an admin removes a calendar
+    from a slot's roster the way it did when removal deleted those rows. This
+    must be asserted here rather than discovered on an invoice.
+    """
+    from vinta_billing.counting import UsageContext
+    from vinta_billing.registry import resources
+
+    import payments.seams.resources  # noqa: F401 -- ensure registration; see payments/tests/seams/test_resources.py
+    from payments.seams.resource_keys import AVAILABILITY_WINDOWS
+
+    group = service.create_group(base_input)
+    physicians = group.slots.get(name="Physicians")
+
+    for offset in range(3):
+        service.create_group_scoped_availability_window(
+            acting_user=admin_user,
+            group_slot_id=physicians.id,
+            calendar_id=managed_calendars["phys_a"].id,
+            start_time=timezone.now() + timedelta(days=3 + offset),
+            end_time=timezone.now() + timedelta(days=3 + offset, hours=1),
+            tz="UTC",
+        )
+
+    def usage_count() -> int:
+        breakdown = resources.counter_for(AVAILABILITY_WINDOWS)(
+            UsageContext(organization_ids=[service.organization_id])
+        )
+        return breakdown.get(service.organization_id, 0)
+
+    before = usage_count()
+
+    # Drop phys_a -- who authored the three group-scoped windows above --
+    # from the roster.
+    base_input.slots[0].calendar_ids = [managed_calendars["phys_b"].id]
+    service.update_group(group.id, base_input)
+
+    after = usage_count()
+
+    assert after == before
+
+
+@pytest.mark.django_db
+def test_roster_change_emits_update_audit_naming_the_calendar_diff(
+    service, base_input, managed_calendars, django_capture_on_commit_callbacks
+):
+    """`_reconcile_slot` must emit its own UPDATE audit row naming which
+    calendar(s) left/arrived for the slot. The group-level audit
+    `update_group` emits separately (via `_audit_group_write` on the group
+    itself) carries an empty diff for a pure roster edit -- this is the only
+    audit content that actually describes the roster change."""
+    group = service.create_group(base_input)
+    physicians = group.slots.get(name="Physicians")
+
+    base_input.slots[0].calendar_ids = [managed_calendars["phys_b"].id]
+
+    with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
+        with django_capture_on_commit_callbacks(execute=True):
+            service.update_group(group.id, base_input)
+
+    payloads = [call.args[0] for call in mock_task.delay.call_args_list]
+    slot_updates = [
+        p
+        for p in payloads
+        if p["action_key"] == AuditAction.UPDATE
+        and p["subject"]["subject_type"] == "calendar_integration.calendargroupslot"
+        and p["subject"]["subject_id"] == str(physicians.pk)
+    ]
+    assert len(slot_updates) == 1
+    diff = slot_updates[0]["diff"]
+    assert diff["calendar_ids"]["old"] == sorted(
+        [managed_calendars["phys_a"].id, managed_calendars["phys_b"].id]
+    )
+    assert diff["calendar_ids"]["new"] == [managed_calendars["phys_b"].id]
+
+
 # ---------------------------------------------------------------------------
 # Fixtures -- grouped booking (create_grouped_event / reschedule_grouped_event),
 # mirroring test_calendar_group_service.py's `grouped_service` + `clinic_group`.
@@ -315,6 +446,30 @@ def calendar_service(organization):
     cs = CalendarService()
     cs.initialize_without_provider(organization=organization)
     return cs
+
+
+def _authenticate_as_event_owner(calendar_service, event, user, organization):
+    """Grant `user` an event-scoped management token with RESCHEDULE (and the
+    other owner) permissions, then re-bind `calendar_service` to that user.
+
+    Used to make `reschedule_grouped_event`'s downstream
+    `CalendarService.update_event` permission check actually pass, instead of
+    failing on unrelated permission plumbing -- `update_event` requires a
+    `CalendarManagementToken` for `(event, user)` whenever `user_or_token` is
+    a `User` (see `CalendarPermissionService.initialize_with_user`); the
+    `calendar_service` fixture itself stays anonymous (`user_or_token=None`)
+    so `create_grouped_event`'s group-authorized bypass keeps working
+    unmodified for every other test in this module.
+    """
+    token = CalendarManagementToken.objects.create(
+        event_fk=event,
+        membership_user_id=user.id,
+        token_hash=f"lenient-removal-reschedule-{event.id}",
+        organization=organization,
+    )
+    for permission_str in DEFAULT_CALENDAR_OWNER_PERMISSIONS:
+        token.permissions.create(permission=permission_str, organization_id=organization.id)
+    calendar_service.initialize_without_provider(organization=organization, user_or_token=user)
 
 
 @pytest.fixture
@@ -631,28 +786,89 @@ def test_removed_calendar_scoped_window_still_enforced_on_reschedule(
             tz="UTC",
         )
 
-    # Rescheduling WITHIN the surviving window is NOT rejected by the window
-    # check -- the window check runs before any downstream permission check
-    # (see test_reschedule_grouped_event_with_non_primary_calendar_inside_windows
-    # in test_group_scoped_availability_windows_discovery.py for the same
-    # pattern), so any exception OTHER than
-    # CalendarGroupScopedRuleViolationError here means the window enforcement
-    # itself passed and something unrelated (permission plumbing, unset up
-    # for this bare calendar_service fixture) is what failed.
-    try:
+    # Rescheduling WITHIN the surviving window is NOT rejected. `admin_user`
+    # is granted an event-scoped management token and bound to
+    # `grouped_service.calendar_service` first, so the reschedule completes
+    # end-to-end (unlike a bare, unauthenticated calendar_service, which
+    # would raise PermissionDenied downstream and make this assertion
+    # vacuous) and the outcome is checked positively.
+    _authenticate_as_event_owner(
+        grouped_service.calendar_service, event, admin_user, grouped_service.organization
+    )
+    new_start = narrow_day.replace(hour=13)
+    new_end = narrow_day.replace(hour=14)
+    grouped_service.reschedule_grouped_event(
+        event_id=event.id,
+        start_time=new_start,
+        end_time=new_end,
+        tz="UTC",
+    )
+    event.refresh_from_db()
+    assert event.start_time == new_start
+    assert event.end_time == new_end
+
+
+@pytest.mark.django_db
+def test_removed_calendar_scoped_block_still_enforced_on_reschedule(
+    grouped_service, admin_user, clinic_group, internal_calendars
+):
+    """Clone of `test_removed_calendar_scoped_window_still_enforced_on_reschedule`
+    for BlockedTime: the plan's Phase 1 test list requires all three scoped
+    models proven still enforced, not merely still present."""
+    physicians_slot = clinic_group.slots.get(name="Physicians")
+    rooms_slot = clinic_group.slots.get(name="Rooms")
+
+    base_now = timezone.now().replace(microsecond=0, minute=0, second=0)
+    _make_window_available(internal_calendars.values(), base_now, base_now + timedelta(days=10))
+
+    blocked_day = base_now + timedelta(days=3)
+    grouped_service.create_group_scoped_blocked_time(
+        acting_user=admin_user,
+        group_slot_id=physicians_slot.id,
+        calendar_id=internal_calendars["phys_a"].id,
+        start_time=blocked_day.replace(hour=9),
+        end_time=blocked_day.replace(hour=17),
+        tz="UTC",
+    )
+
+    start = base_now + timedelta(days=1)
+    start = start.replace(hour=10)
+    end = start.replace(hour=11)
+    event = grouped_service.create_grouped_event(
+        CalendarGroupEventInputData(
+            title="Follow-up",
+            description="",
+            start_time=start,
+            end_time=end,
+            timezone="UTC",
+            group_id=clinic_group.id,
+            slot_selections=[
+                CalendarGroupSlotSelectionInputData(
+                    slot_id=physicians_slot.id, calendar_ids=[internal_calendars["phys_a"].id]
+                ),
+                CalendarGroupSlotSelectionInputData(
+                    slot_id=rooms_slot.id, calendar_ids=[internal_calendars["room_1"].id]
+                ),
+            ],
+        )
+    )
+
+    _remove_phys_a_from_roster(grouped_service, clinic_group, internal_calendars)
+    assert (
+        BlockedTime.objects.unscoped()
+        .filter(group_slot_fk=physicians_slot, calendar_fk=internal_calendars["phys_a"])
+        .exists()
+    )
+
+    # Rescheduling into the surviving group-scoped block's span is still
+    # rejected, even though phys_a has left the roster.
+    with pytest.raises(CalendarGroupScopedRuleViolationError):
         grouped_service.reschedule_grouped_event(
             event_id=event.id,
-            start_time=narrow_day.replace(hour=13),
-            end_time=narrow_day.replace(hour=14),
+            start_time=blocked_day.replace(hour=10),
+            end_time=blocked_day.replace(hour=11),
             tz="UTC",
         )
-    except CalendarGroupScopedRuleViolationError:
-        pytest.fail(
-            "Reschedule was rejected by the surviving group-scoped window even "
-            "though the new time is inside it."
-        )
-    except Exception:  # noqa: BLE001
-        pass
 
 
 @pytest.mark.django_db

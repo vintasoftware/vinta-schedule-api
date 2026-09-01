@@ -61,9 +61,15 @@ roster later.
 
 **Removing a whole slot** (a slot name absent from the submitted `slots[]`
 list, as opposed to a calendar being dropped from a slot that still exists)
-is **unchanged**: it is still refused with the same error, still with the
-same message, when the slot has a future-booked event. This distinction did
-not exist as a client-visible split before (both cases shared one error
+is **still refused** when the slot has a future-booked event, but the
+message text **changed**: it is now `"Cannot remove slot because it is
+referenced by future group bookings."`, narrowed from the previous
+`"Cannot remove slot or calendar because it is referenced by future group
+bookings."` (the "or calendar" half no longer applies, since calendar
+removal from a surviving slot is never refused). Any client doing an
+exact-string match on the old message — for slot removal, or for detecting
+this error generically — must update to the new string. This distinction
+did not exist as a client-visible split before (both cases shared one error
 path); it exists now only because slot removal cascades and drops the
 slot's own group-scoped configuration with it, which is a different action
 from removing one calendar from a surviving slot's roster.
@@ -225,6 +231,44 @@ mutation {
   code specifically asserts on the old rejection (e.g. integration tests
   against a fixture that has a future booking), that assertion needs to be
   updated to expect success.
+
+### Re-adding a calendar to a roster restores its previous quota rules — a second `POST` for the same period now fails
+
+Because a departed calendar's `CalendarGroupSlotQuotaRule` rows are no longer
+deleted on removal (see **Billing / limits** below for the availability-window
+equivalent), re-adding that calendar to the same slot brings its old quota
+rules back exactly as they were — cap and period included. This is new: a
+client that used to treat "remove calendar, re-add calendar" as returning the
+slot to a clean state, then `POST`ed a fresh quota rule for a period the
+calendar already had configured (e.g. one `DAY` rule per calendar is a common
+UI default), will now get a `400`/`CalendarGroupValidationError`
+(`"A quota rule for period 'day' already exists for this calendar and
+slot."`) instead of a `201` — the same uniqueness constraint that always
+existed on `(group_slot, calendar, period)`, just newly reachable because the
+old rule survives the round trip instead of being deleted with the
+membership. Any UI or integration flow that creates a default quota rule
+after adding a calendar back to a roster should check for an existing rule
+first (or use the update/`PATCH` path on the existing rule) rather than
+unconditionally `POST`ing a new one.
+
+## Billing / limits
+
+Removing a calendar from a slot's roster no longer frees `availability_windows`
+capacity. That calendar's group-scoped `AvailableTime` (and `BlockedTime`) rows
+are counted by the `availability_windows` metered resource regardless of
+whether the calendar is currently in a roster (see
+`payments/seams/resources.py`'s `_count_availability_windows`), and — per the
+behavior change above — those rows are no longer deleted when the calendar
+leaves a slot. Before this phase, removing a calendar from a roster deleted
+its group-scoped windows and the organization's metered count dropped with
+it; after this phase, the rows and the count both survive the removal
+unchanged. An organization operating at or near its `availability_windows`
+ceiling will **not** free capacity by editing a group's roster — it must
+explicitly delete the group-scoped windows/blocks it no longer needs (e.g. via
+`delete_group_scoped_availability_window` / `delete_group_scoped_blocked_time`)
+if it wants that capacity back. This is a behavior change worth flagging to
+any client-side "manage your plan" UI that told users removing a calendar
+would reduce their usage.
 
 ## Other contract changes
 

@@ -1115,6 +1115,14 @@ class CalendarEventGroupSelectionQuerySet(OrganizationScopedQuerySet):
     Custom QuerySet for CalendarEventGroupSelection model to handle specific queries.
     """
 
+    def future_selections_for_slot(
+        self, slot_id: int, now: datetime.datetime
+    ) -> "CalendarEventGroupSelectionQuerySet":
+        """Selections on ``slot_id`` whose event starts after ``now`` -- the
+        guard ``CalendarGroupService.update_group`` uses to decide whether a
+        whole slot can be deleted (a future-booked slot cannot)."""
+        return self.filter(slot_fk_id=slot_id, event_fk__start_time__gt=now)
+
 
 class CalendarGroupSlotQuotaRuleQuerySet(OrganizationScopedQuerySet):
     """Custom QuerySet for CalendarGroupSlotQuotaRule model to handle specific queries."""

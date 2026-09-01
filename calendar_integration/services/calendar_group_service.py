@@ -433,6 +433,10 @@ class CalendarGroupService:
         existing_slots = {s.name: s for s in group.slots.all()}
         incoming_names = {s.name for s in slots_data}
 
+        # Computed once, above the loop: two slots removed in the same call
+        # must be judged against the same instant, not one `timezone.now()`
+        # per slot that could straddle a second boundary.
+        now = timezone.now()
         for name, slot in existing_slots.items():
             if name not in incoming_names:
                 # Whole-slot removal stays guarded: unlike removing one calendar
@@ -442,7 +446,7 @@ class CalendarGroupService:
                 # be destructive for a slot with future bookings.
                 has_future_selection = (
                     CalendarEventGroupSelection.objects.filter_by_organization(self.organization_id)
-                    .filter(slot_fk=slot, event_fk__start_time__gt=timezone.now())
+                    .future_selections_for_slot(slot.id, now)
                     .exists()
                 )
                 if has_future_selection:
@@ -527,15 +531,11 @@ class CalendarGroupService:
         to_add = incoming_calendar_ids - existing_calendar_ids
 
         if to_remove:
-            # Removing a calendar from the roster only ever deletes its
-            # CalendarGroupSlotMembership row(s). It never fails because of
-            # existing bookings (no future-selection guard here -- that guard
-            # stayed on whole-slot removal in `update_group`, above) and it
-            # never touches the removed calendar's group-scoped AvailableTime,
-            # BlockedTime, or CalendarGroupSlotQuotaRule rows: those are kept
-            # and keep enforcing, so a reschedule of a grandfathered booking
-            # still respects that calendar's cap and its slot-scoped windows,
-            # and nothing is lost if the calendar rejoins the roster later.
+            # Removing a calendar from the roster only deletes its
+            # CalendarGroupSlotMembership row(s); it never fails on existing
+            # bookings and never touches the calendar's group-scoped rows --
+            # see Guiding Decisions -> Roster removal semantics / Scoped-row
+            # survival in the Phase 1 plan.
             CalendarGroupSlotMembership.objects.filter_by_organization(self.organization_id).filter(
                 slot_fk=slot, calendar_fk_id__in=to_remove
             ).delete()
@@ -550,6 +550,21 @@ class CalendarGroupService:
                     )
                     for cid in to_add
                 ]
+            )
+
+        if to_remove or to_add:
+            # The only audit content that describes a roster edit: which
+            # calendars left and which arrived, for this slot. The caller
+            # (`update_group`) separately audits the group-level field
+            # changes; this call is what keeps a roster change from landing
+            # as an empty-diff "group updated" row.
+            self._audit_group_write(
+                AuditAction.UPDATE,
+                slot,
+                diff=compute_diff(
+                    {"calendar_ids": sorted(existing_calendar_ids)},
+                    {"calendar_ids": sorted(incoming_calendar_ids)},
+                ),
             )
 
     # ------------------------------------------------------------------
@@ -3011,7 +3026,11 @@ class CalendarGroupService:
         if event_id is not None:
             existing_selection_rows = (
                 CalendarEventGroupSelection.objects.filter_by_organization(self.organization_id)
-                .filter(event_fk_id=event_id, slot_fk_id__in=slot_by_id.keys())
+                .filter(
+                    event_fk_id=event_id,
+                    event_fk__calendar_group_fk=group,
+                    slot_fk_id__in=slot_by_id.keys(),
+                )
                 .values_list("slot_fk_id", "calendar_fk_id")
             )
             for slot_id, calendar_id in existing_selection_rows:
