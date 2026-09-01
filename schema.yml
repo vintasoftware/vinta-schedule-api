@@ -18437,6 +18437,11 @@ components:
           description: Client-owned (system, identifier) pairs for this event. Omitted
             on a partial update leaves the stored set untouched; an explicit list
             (including []) replaces it.
+        group_selections:
+          type: array
+          items:
+            $ref: '#/components/schemas/CalendarEventGroupSelection'
+          readOnly: true
         recurrence_rule:
           allOf:
           - $ref: '#/components/schemas/RecurrenceRule'
@@ -18483,6 +18488,7 @@ components:
       - end_time
       - external_attendances
       - external_id
+      - group_selections
       - id
       - is_recurring
       - is_recurring_instance
@@ -18492,6 +18498,47 @@ components:
       - start_time
       - timezone
       - title
+    CalendarEventGroupSelection:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        slot:
+          allOf:
+          - $ref: '#/components/schemas/CalendarGroupSlot'
+          readOnly: true
+        calendar:
+          allOf:
+          - $ref: '#/components/schemas/Calendar'
+          readOnly: true
+        is_in_current_roster:
+          type: boolean
+          description: |-
+            Whether ``obj``'s calendar is still a member of its slot's roster.
+
+            Staleness definition (see the plan's Guiding Decisions): stale when no
+            ``CalendarGroupSlotMembership`` row exists for the ``(slot, calendar)``
+            pair. ``slot.memberships`` is prefetched by
+            ``CalendarEventGroupSelectionVirtualModel`` (via the ``hints.Virtual``
+            hint above), so this reads from that prefetch cache instead of issuing
+            a query per selection.
+
+            The hint names the concrete ``calendar_fk_id`` column explicitly
+            rather than just ``slot__memberships``: an empty per-field lookup list
+            tells ``django-virtual-models`` to prefetch *every* declared field
+            under that branch, including ``CalendarGroupSlotMembershipVirtualModel
+            .calendar`` -- which cascades into ``CalendarVirtualModel
+            .calendar_ownerships``, a field name that does not match ``Calendar``'s
+            actual related accessor (``ownerships``) and raises. Naming the one
+            concrete column this field actually reads avoids that unrelated,
+            pre-existing mismatch instead of masking it.
+          readOnly: true
+      required:
+      - calendar
+      - id
+      - is_in_current_roster
+      - slot
     CalendarEventTransfer:
       type: object
       properties:
@@ -21089,6 +21136,11 @@ components:
           description: Client-owned (system, identifier) pairs for this event. Omitted
             on a partial update leaves the stored set untouched; an explicit list
             (including []) replaces it.
+        group_selections:
+          type: array
+          items:
+            $ref: '#/components/schemas/CalendarEventGroupSelection'
+          readOnly: true
         recurrence_rule:
           allOf:
           - $ref: '#/components/schemas/RecurrenceRule'

@@ -1023,6 +1023,7 @@ class CalendarEventSerializer(VirtualModelSerializer):
             "attendances",
             "resource_allocations",
             "external_client_identifiers",
+            "group_selections",
             # Recurrence fields
             "recurrence_rule",
             "rrule_string",
@@ -1091,6 +1092,14 @@ class CalendarEventSerializer(VirtualModelSerializer):
         self.fields["attendances"] = EventAttendanceSerializer(many=True, context=self.context)
         self.fields["external_attendances"] = EventExternalAttendanceSerializer(
             many=True, context=self.context
+        )
+        # Read-only: group-selection roster picks are managed through
+        # CalendarGroupService, not through this serializer. Declared here rather
+        # than as a class attribute because CalendarEventGroupSelectionSerializer
+        # is defined later in this module (it nests CalendarGroupSlotSerializer,
+        # which itself is defined after CalendarEventSerializer).
+        self.fields["group_selections"] = CalendarEventGroupSelectionSerializer(
+            many=True, read_only=True, context=self.context
         )
 
         if self.instance:

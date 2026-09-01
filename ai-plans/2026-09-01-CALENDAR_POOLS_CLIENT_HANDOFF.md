@@ -285,3 +285,89 @@ took an explicit no-flag waiver: the change is strictly less destructive than
 today's behavior, so there is nothing to roll forward incrementally, and the
 rollback path is a plain code revert). No environment sequencing beyond the
 normal deploy pipeline.
+
+---
+
+# API changes: Calendar Pools Phase 2 — surface stale calendar selections on events
+
+- **Date:** 2026-09-01
+- **Scope:** `plan/calendar-pools/phase-2` vs `plan/calendar-pools/phase-1`
+- **Audience:** Web SPA (React), Partner integrations
+- **Breaking changes:** 0 (purely additive, read-only fields; no existing field, endpoint, or error changed shape)
+
+## Summary
+
+This phase is the client-visible half of the gap Phase 1 opened: since removing
+a calendar from a slot's roster no longer deletes the `CalendarEventGroupSelection`
+rows that referenced it, a selection can now point at a calendar that is no
+longer part of its slot's current roster ("stale"), with nothing in the event
+response saying so. This phase adds a computed, read-only flag that says so.
+
+- **REST:** every event response that goes through `CalendarEventSerializer`
+  (`GET /calendar-events/`, `GET /calendar-events/{id}/`, and any create/update
+  response that re-serializes the event) now carries a nested `group_selections`
+  array. Each entry:
+
+  ```json
+  {
+    "id": 501,
+    "slot": { "id": 101, "name": "Physicians", "...": "..." },
+    "calendar": { "id": 55, "name": "Dr. A", "...": "..." },
+    "is_in_current_roster": false
+  }
+  ```
+
+- **GraphQL:** the existing `groupSelections` field on `CalendarEvent` gains a
+  boolean `isInCurrentRoster`:
+
+  ```graphql
+  query {
+    calendarEvents(eventId: 501) {
+      id
+      groupSelections {
+        calendar { id }
+        isInCurrentRoster
+      }
+    }
+  }
+  ```
+
+## What the flag means
+
+`is_in_current_roster` / `isInCurrentRoster` is `false` exactly when no
+`CalendarGroupSlotMembership` row exists for that selection's `(slot, calendar)`
+pair — i.e. the calendar this booking selected for this slot has since been
+removed from the slot's roster (the state Phase 1 made reachable without
+touching the booking). It is `true` whenever the calendar is presently a
+member of that slot's roster, including a calendar that was removed and later
+re-added.
+
+**Client action:** the edit UI should warn on any selection where the flag is
+`false` ("this calendar is no longer part of this slot's roster") and must
+**not** offer that calendar as a re-addable / selectable option for the slot
+from this same read — it is not currently bookable through the slot until an
+admin re-attaches it to the roster (via the group's `PATCH`/`PUT` or, once
+pools land, the pool it belongs to). Do not hide or drop the stale selection
+from the UI on this basis alone — the booking itself is untouched and still
+real; only the roster membership backing it has changed.
+
+## Contract details
+
+- **Additive only.** No request shape changed. A client that does not request
+  `group_selections` (REST) or `groupSelections`/`isInCurrentRoster` (GraphQL)
+  sees an identical response to before this phase.
+- **Read-only.** `group_selections` cannot be used to create, update, or
+  reassign an event's group selections through `CalendarEventSerializer` —
+  selection management stays on the existing `CalendarGroupService`-backed
+  paths (booking creation, group roster edits).
+- **Query cost is constant**, not per-event or per-selection: both surfaces
+  batch the roster lookup (a single `slot_fk_id__in=...` query on GraphQL, a
+  prefetch hint on REST) so rendering a page of events costs the same number
+  of queries whether each event carries zero, one, or several selections
+  across one or several slots.
+
+## Rollout
+
+Live on deploy of `plan/calendar-pools/phase-2` — no feature flag (purely
+additive; nothing to roll forward incrementally, rollback is a plain code
+revert). No environment sequencing beyond the normal deploy pipeline.

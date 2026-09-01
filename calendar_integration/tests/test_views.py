@@ -6345,6 +6345,15 @@ class TestCalendarEventDownloadICS:
         # would scale with attendee count) trips this assertion. N reflects the
         # prefetched query set, not the number of attendees.
         #
+        # 28, not 26: Calendar Pools Phase 2 added ``group_selections`` to
+        # ``CalendarEventSerializer``/``CalendarEventVirtualModel``, so the
+        # virtual-model-optimized queryset ``download_ics`` builds (via
+        # ``get_object()`` and then its own explicit re-fetch) now also prefetches
+        # this event's group selections -- one extra query per fetch, for each of
+        # the two fetches: 1 relation x 2 fetches = 2 extra queries. (This event has
+        # no group selections, so the prefetch returns zero rows and no further
+        # nested queries fire for it.)
+        #
         # 26, not 22: the External Client Identifiers REST phase added
         # ``external_client_identifiers`` to ``CalendarEventVirtualModel`` and
         # ``ExternalAttendeeVirtualModel``, so the virtual-model-optimized queryset
@@ -6354,7 +6363,7 @@ class TestCalendarEventDownloadICS:
         # the two fetches: 2 models x 2 fetches = 4 extra queries. (The content-type
         # lookups those identifier queries depend on are warmed above, so they cost
         # nothing here; without the warm-up they would add 0-2 more, non-deterministically.)
-        with django_assert_num_queries(26):
+        with django_assert_num_queries(28):
             response = auth_client.get(url)
 
         assert_response_status_code(response, status.HTTP_200_OK)
