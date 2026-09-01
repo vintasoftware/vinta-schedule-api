@@ -36,8 +36,8 @@ The git-level provisioning was correct as reported: worktree, branch based at `o
 
 | # | Title | Status | Implementer | Branch |
 |---|---|---|---|---|
-| 0 | Add the CalendarPool model and its roster | ✅ done | Tier 2 (sonnet) | `plan/calendar-pools/phase-0` |
-| 1 | Make roster removal non-destructive | 🔄 next | Tier 3 | — |
+| 0 | Add the CalendarPool model and its roster | ✅ done — [PR #302](https://github.com/vintasoftware/vinta-schedule-api/pull/302) | Tier 2 (sonnet) | `plan/calendar-pools/phase-0` |
+| 1 | Make roster removal non-destructive | 🔄 in progress | Tier 3 | `plan/calendar-pools/phase-1` |
 | 2 | Surface stale calendar selections on events | ⬜ pending | Tier 2 | — |
 | 3 | Attach pools to slots and project the roster | ⬜ pending | Tier 4 | — |
 | 4 | Manage pools over internal REST | ⬜ pending | Tier 3 | — |
@@ -54,6 +54,7 @@ The git-level provisioning was correct as reported: worktree, branch based at `o
 - **Migration**: creates `calendar_integration_calendarpool` (unique `(organization, name)`) and `calendar_integration_calendarpoolmembership` (unique `(pool_fk, calendar_fk)`), plus the `calendars` m2m and `(organization, id)` indexes on both. All reversible built-in operations, dependency `0049`.
 - **Gate, re-run independently by the conductor** rather than taken from the implementer's report: `ruff check` clean; `makemigrations --check` no changes; `check --deploy` 0 errors (5 pre-existing local-settings warnings); `mypy` success across 761 files; `pytest calendar_integration/tests/ -n auto` **2148 passed**. Every claim matched.
 - **Review**: three layers clean. Zero BLOCKER, zero SHOULD-FIX, three NITs.
+- **PR**: [#302](https://github.com/vintasoftware/vinta-schedule-api/pull/302), base `main`, 8 inline comments. Context file: `.vinta-ai-workflows/prs-context/calendar-pools/phase-0.md` (`status: published`).
 
 **Accepted NIT, deliberately not fixed.** The two new factory creators lack precise parameter type hints, which AGENTS.md requires of every function. Every neighbouring creator in `calendar_integration/factories.py` has the identical gap and mypy passes clean, so fixing only these two would make the file less internally consistent, and a fixer pass mandates a full outer-gate re-run for four lines. Fold it into any future sweep that types that module. The other two NITs needed no action: a plan-text naming mismatch (plan corrected instead, below) and the `plan/*` branch name not matching AGENTS.md's `feature/*` convention, which is this workflow's own scheme.
 
