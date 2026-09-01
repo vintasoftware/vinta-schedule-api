@@ -127,7 +127,7 @@ Changes:
 1. [calendar_integration/models.py](calendar_integration/models.py): `CalendarPool` and `CalendarPoolMembership` per **Data Model Changes**, placed after the `CalendarGroupSlot` family.
 2. [calendar_integration/managers.py](calendar_integration/managers.py) and [calendar_integration/querysets.py](calendar_integration/querysets.py): `CalendarPoolManager` / `CalendarPoolQuerySet` with `only_member_of`, plus the membership manager.
 3. [calendar_integration/admin.py](calendar_integration/admin.py): register both, with the roster-count annotation pattern used for slots at [admin.py:396](calendar_integration/admin.py#L396).
-4. [calendar_integration/factories.py](calendar_integration/factories.py): `CalendarPoolFactory`, `CalendarPoolMembershipFactory`.
+4. [calendar_integration/factories.py](calendar_integration/factories.py): `create_calendar_pool`, `create_calendar_pool_membership`. Function-style creators, matching that file's prevailing convention (`create_group_slot_quota_rule`, `create_calendar_ownership`); this project does not use factory_boy classes.
 5. [calendar_integration/virtual_models.py](calendar_integration/virtual_models.py): `CalendarPoolVirtualModel`, `CalendarPoolMembershipVirtualModel`.
 6. One migration creating both tables and their constraints.
 
@@ -141,7 +141,7 @@ Tests:
 
 **Reusable skills**: `add-model`, `add-migration`.
 
-Acceptance: a `CalendarPool` with a roster can be created through the Django admin and through `CalendarPoolFactory`, is invisible to every existing query, and the full existing test suite passes unchanged.
+Acceptance: a `CalendarPool` with a roster can be created through the Django admin and through `create_calendar_pool`, is invisible to every existing query, and the full existing test suite passes unchanged.
 
 ---
 
