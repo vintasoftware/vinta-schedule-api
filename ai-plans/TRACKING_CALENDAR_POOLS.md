@@ -37,8 +37,8 @@ The git-level provisioning was correct as reported: worktree, branch based at `o
 | # | Title | Status | Implementer | Branch |
 |---|---|---|---|---|
 | 0 | Add the CalendarPool model and its roster | ✅ done — [PR #302](https://github.com/vintasoftware/vinta-schedule-api/pull/302) | Tier 2 (sonnet) | `plan/calendar-pools/phase-0` |
-| 1 | Make roster removal non-destructive | 🔄 in progress | Tier 3 | `plan/calendar-pools/phase-1` |
-| 2 | Surface stale calendar selections on events | ⬜ pending | Tier 2 | — |
+| 1 | Make roster removal non-destructive | ✅ done | Tier 3 (sonnet) | `plan/calendar-pools/phase-1` |
+| 2 | Surface stale calendar selections on events | 🔄 next | Tier 2 | — |
 | 3 | Attach pools to slots and project the roster | ⬜ pending | Tier 4 | — |
 | 4 | Manage pools over internal REST | ⬜ pending | Tier 3 | — |
 | 5 | Expose pools on the public GraphQL API | ⬜ pending | Tier 3 | — |
@@ -60,9 +60,29 @@ The git-level provisioning was correct as reported: worktree, branch based at `o
 
 **Plan corrected during this phase.** Phase 0's Changes item 4 and its Acceptance line named `CalendarPoolFactory` / `CalendarPoolMembershipFactory`. That file has no factory_boy classes — it uses `create_*` functions throughout. The implementer followed the file and flagged the divergence; the plan now names `create_calendar_pool` / `create_calendar_pool_membership` so later phases do not inherit a symbol that does not exist.
 
+### Phase 1 — Make roster removal non-destructive
+
+- **Status**: complete. **Branch**: `plan/calendar-pools/phase-1`, base `plan/calendar-pools/phase-0`. **Commits**: `36137453` (feature), `1f7b71ab` (client handoff), `8fe7d368` (review fixes).
+- **Models**: implementer Tier 3 (sonnet), reviewer **Tier 4** (opus, per the plan's phase override), fixer Tier 2 stepped up to sonnet (multi-file, non-mechanical).
+- **Landed**: `_ensure_no_future_selections` and `_delete_group_scoped_rows_for_removed_calendars` deleted outright (zero remaining references). `_reconcile_slot` now only deletes membership rows. `_validate_selections` gained an `event_id` parameter splitting validation into added-vs-retained. 12 files, 1422 insertions, 155 deletions.
+- **Gate, re-run independently by the conductor** after the fixes: ruff clean; `makemigrations --check` no changes; mypy success across 765 files; `pytest calendar_integration/tests/ public_api/tests/ payments/tests/ -n auto` **4003 passed**.
+
+**Two behavior regressions the plan did not anticipate, found by the Tier 4 reviewer.** Both follow from the **Scoped-row survival** decision and both weaken the no-flag waiver's premise that "no operation that succeeds today fails afterwards":
+
+1. `AvailableTime` rows are metered through `payments/seams/resources.py`. Removing a calendar from a roster used to delete its group-scoped windows and free `availability_windows` capacity; it no longer does. An org at its exact ceiling now gets `OverLimitError` where it got 201. Asserted by `test_removing_calendar_from_roster_does_not_free_availability_windows_capacity` and documented in the client handoff.
+2. `CalendarGroupSlotQuotaRule` has a unique constraint on `(slot, calendar, period)`. Remove-then-re-add now leaves the old rule in place, so creating a same-period rule 400s where it used to 201. Asserted by `test_readd_then_create_same_period_quota_rule_fails` and documented in the handoff.
+
+Neither corrupts data and both are narrow, but the waiver in **Guiding Decisions** overstates the safety case and should be read with these two exceptions attached.
+
+**Judgment calls accepted, both flagged by the implementer and endorsed by the reviewer.** Whole-slot removal keeps its future-booking guard (inlined in `update_group`) because deleting a slot cascades to every remaining calendar's scoped rows, which is categorically more destructive than one calendar leaving a roster; the plan's decisions were scoped to roster removal. Two stale inline comments on `AvailableTime.group_slot` / `BlockedTime.group_slot` were corrected beyond the one docstring the phase named, because they made the identical false cascade claim this phase exists to fix.
+
+**Open decision, deliberately deferred to the requester.** `_validate_selections`'s `event_id` parameter has **no production caller** — the only call site never passes it, and `reschedule_grouped_event` already grandfathers by reading persisted selections directly. The reviewer recommended deleting it as a structural simplification (it would remove a branch, a query and two tests). The conductor kept it, bounded by `event_fk__calendar_group_fk=group`, rather than unilaterally narrowing approved scope. Revisit before Phase 6.
+
+**Reviewer finding not applied.** The reviewer asked for a `django_assert_num_queries` guard proving the create path gained no query from the added-vs-retained split. It was dropped when composing the fixer prompt — an omission, not a decision — and left out rather than spending another fixer cycle, since it guards a hypothetical future regression rather than a present defect.
+
 ## Current phase
 
-**Phase 1 — Make roster removal non-destructive.** Base: `plan/calendar-pools/phase-0`. The one phase in this plan that changes production behavior; its PR must not merge before the client handoff it generates reaches the Web SPA and partner-integration owners.
+**Phase 2 — Surface stale calendar selections on events.** Base: `plan/calendar-pools/phase-1`. Mitigates the state Phase 1 makes reachable, so it should stay adjacent to Phase 1 in the merge order.
 
 ## Deferred phases
 
