@@ -14,10 +14,15 @@ that is all this needs.
 
 Safety properties, in the order they matter:
 
-* **Idempotent.** Every legacy row already carries the ``uid`` that is this
-  record's identity in every repository. A row whose uid is already in the new
-  table is skipped, so re-running after a partial failure resumes rather than
-  duplicates.
+* **Idempotent.** Every record is moved under a ``uid``, which is its identity
+  in every repository. A row whose uid is already in the new table is skipped,
+  so re-running after a partial failure resumes rather than duplicates.
+* **Uid-column tolerant.** The legacy ``uid`` column was added by
+  ``audit/migrations/0003``, which shipped in the same pull request that deleted
+  the ``audit`` app -- so any database that had not deployed in between never ran
+  it and has a legacy table without the column. Those rows get a uid derived
+  from their legacy primary key instead: deterministic, so the same legacy row
+  yields the same uid on every run and the idempotency above still holds.
 * **Batched.** Rows are walked by keyset on the legacy primary key, in batches,
   each batch its own set of statements. Nothing holds a lock across the whole
   table and nothing loads the whole table into memory.
@@ -30,6 +35,7 @@ still there, so a genuine rollback means pointing back at it.
 """
 
 import json
+import uuid
 
 from django.conf import settings
 from django.db import migrations
@@ -43,6 +49,11 @@ BATCH_SIZE = 500
 LEGACY_AUDIT_TABLE = "audit_audit"
 LEGACY_AFFECTED_TABLE = "audit_auditaffectedmembership"
 
+#: Namespace for uids derived from a legacy primary key, for the databases whose
+#: legacy table never got the ``uid`` column. Fixed for good: change it and a
+#: re-run would derive different uids and move every record a second time.
+LEGACY_UID_NAMESPACE = uuid.UUID("dea4b335-1e06-472d-9f5c-0e62d5d31deb")
+
 #: Legacy ``actor_type`` values map onto ``audit_integration`` identity types
 #: unchanged -- the vocabulary was carried over deliberately so the log reads the
 #: same on both sides of the move.
@@ -54,6 +65,33 @@ def _table_exists(cursor, table_name: str) -> bool:
     """Whether a table is present in the database this migration is running on."""
     cursor.execute("SELECT to_regclass(%s) IS NOT NULL", [table_name])
     return bool(cursor.fetchone()[0])
+
+
+def _column_exists(cursor, table_name: str, column_name: str) -> bool:
+    """Whether a column is present on a table in the database being migrated."""
+    cursor.execute(
+        "SELECT EXISTS ("
+        "  SELECT 1 FROM information_schema.columns"
+        "  WHERE table_name = %s AND column_name = %s"
+        ")",
+        [table_name, column_name],
+    )
+    return bool(cursor.fetchone()[0])
+
+
+def _derived_uid(legacy_id: int) -> uuid.UUID:
+    """The uid of a legacy row whose table has no ``uid`` column.
+
+    uuid5 rather than uuid7 because this has to be a *function of the row*, not
+    of the moment it ran: a re-run after a partial failure has to arrive at the
+    same uid it did the first time, or the skip check above would not recognize
+    what it already moved and every record would land twice.
+
+    These uids order records no worse than the generated ones would have. ``uid``
+    is only a tiebreak behind ``created_at``, and rows that predate the column
+    never carried a meaningful order between themselves anyway.
+    """
+    return uuid.uuid5(LEGACY_UID_NAMESPACE, f"{LEGACY_AUDIT_TABLE}:{legacy_id}")
 
 
 def _normalize_subject_type(subject_type: str) -> str:
@@ -168,6 +206,7 @@ def backfill(apps, schema_editor):
     with connection.cursor() as cursor:
         if not _table_exists(cursor, LEGACY_AUDIT_TABLE):
             return
+        has_uid = _column_exists(cursor, LEGACY_AUDIT_TABLE, "uid")
         has_affected = _table_exists(cursor, LEGACY_AFFECTED_TABLE)
 
     Audit = apps.get_model("vinta_audit_logs", "Audit")
@@ -229,7 +268,9 @@ def backfill(apps, schema_editor):
 
     columns = (
         "id",
-        "uid",
+        # Only where ``audit/migrations/0003`` actually ran. Everywhere else the
+        # uid is derived from ``id`` once the row has been read.
+        *(("uid",) if has_uid else ()),
         "organization_id",
         "created_at",
         "action",
@@ -256,6 +297,9 @@ def backfill(apps, schema_editor):
                 _decode_json_columns(dict(zip(columns, values, strict=True)))
                 for values in cursor.fetchall()
             ]
+        if not has_uid:
+            for row in rows:
+                row["uid"] = _derived_uid(row["id"])
         if not rows:
             return
         last_id = rows[-1]["id"]

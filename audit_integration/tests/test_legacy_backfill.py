@@ -65,6 +65,14 @@ CREATE TABLE audit_auditaffectedmembership (
 """
 
 
+#: The legacy table as it stands in a database that never ran
+#: ``audit/migrations/0003`` -- the migration that added ``uid`` and that shipped
+#: in the same pull request which deleted the ``audit`` app, so an environment
+#: without a deploy in between never applied it. This is the shape production
+#: actually has, and the backfill has to read it.
+LEGACY_AUDIT_DDL_WITHOUT_UID = LEGACY_AUDIT_DDL.replace("    uid UUID NOT NULL UNIQUE,\n", "")
+
+
 @pytest.fixture
 def organization() -> Organization:
     return Organization.objects.create(name="Legacy Org")
@@ -82,6 +90,41 @@ def legacy_tables():
     with connection.cursor() as cursor:
         cursor.execute("DROP TABLE IF EXISTS audit_auditaffectedmembership")
         cursor.execute("DROP TABLE IF EXISTS audit_audit")
+
+
+@pytest.fixture
+def legacy_tables_without_uid():
+    """The same tables, minus the column ``audit/migrations/0003`` never added."""
+    with connection.cursor() as cursor:
+        cursor.execute(LEGACY_AUDIT_DDL_WITHOUT_UID)
+        cursor.execute(LEGACY_AFFECTED_DDL)
+    yield
+    with connection.cursor() as cursor:
+        cursor.execute("DROP TABLE IF EXISTS audit_auditaffectedmembership")
+        cursor.execute("DROP TABLE IF EXISTS audit_audit")
+
+
+def _insert_legacy_without_uid(organization_id, **overrides) -> int:
+    """Write one row of the uid-less legacy table, returning its primary key."""
+    row = {
+        "organization_id": organization_id,
+        "created_at": datetime(2026, 2, 2, 10, 0, tzinfo=UTC),
+        "action": "create",
+        "actor_type": "membership",
+        "actor_id": 7,
+        "subject_type": "organizations.OrganizationMembership",
+        "subject_id": "7",
+    }
+    row.update(overrides)
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"""
+            INSERT INTO audit_audit ({", ".join(row)})
+            VALUES ({", ".join(["%s"] * len(row))}) RETURNING id
+            """,  # noqa: S608 - identifiers are this module's own literals
+            list(row.values()),
+        )
+        return cursor.fetchone()[0]
 
 
 def _insert_legacy(organization_id, **overrides) -> uuid.UUID:
@@ -299,3 +342,52 @@ def test_the_walk_crosses_batch_boundaries(legacy_tables, organization, monkeypa
     _run_backfill()
 
     assert Audit.objects.count() == 5
+
+
+def test_a_legacy_table_without_uid_still_moves(legacy_tables_without_uid, organization):
+    """The shape production is actually in: no ``uid`` column to read.
+
+    ``audit/migrations/0003`` added that column in the same pull request that
+    deleted the ``audit`` app, so it never ran anywhere that had not deployed in
+    between. Selecting ``uid`` there fails outright, which is what took the
+    deploy down.
+    """
+    legacy_id = _insert_legacy_without_uid(organization.id)
+
+    _run_backfill()
+
+    moved = Audit.objects.get()
+    assert moved.uid == backfill_module()._derived_uid(legacy_id)
+    assert moved.action_key == "create"
+    assert moved.scope_key == str(organization.id)
+    assert moved.actor_key == "7"
+
+
+def test_a_legacy_table_without_uid_runs_twice_safely(legacy_tables_without_uid, organization):
+    """Idempotency survives the missing column, because the uid is derived from
+    the legacy primary key rather than generated per run."""
+    for _ in range(3):
+        _insert_legacy_without_uid(organization.id)
+
+    _run_backfill()
+    _run_backfill()
+
+    assert Audit.objects.count() == 3
+    assert OrganizationAuditIdentity.objects.count() == 3
+
+
+def test_affected_memberships_move_without_a_uid_column(legacy_tables_without_uid, organization):
+    """The affected-party links hang off the legacy primary key, which is there
+    whether or not the uid column is."""
+    legacy_id = _insert_legacy_without_uid(organization.id)
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "INSERT INTO audit_auditaffectedmembership "
+            "(organization_id, audit_fk_id, membership_user_id) VALUES (%s, %s, %s)",
+            [organization.id, legacy_id, 11],
+        )
+
+    _run_backfill()
+
+    links = AuditAffectedIdentity.objects.all()
+    assert [link.identity_key for link in links] == ["11"]
