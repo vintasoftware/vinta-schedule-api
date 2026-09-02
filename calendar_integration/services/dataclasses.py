@@ -444,6 +444,25 @@ class BookableSlotProposal:
 
 
 @dataclass
+class StaleSelection:
+    """A `(event, slot, calendar)` triple whose calendar has left its slot's
+    roster since the selection was made.
+
+    Staleness definition (Calendar Pools plan, Guiding Decisions -> Staleness
+    definition): no ``CalendarGroupSlotMembership`` row exists for the
+    selection's ``(slot, calendar)`` pair, regardless of source -- inline or
+    projected from a ``CalendarPool``. Carries scalar ids only, matching the
+    plan's Data Model Changes -> Type plumbing, so ops-sweep consumers (REST,
+    GraphQL) do not have to load full ``CalendarEvent`` / ``CalendarGroupSlot``
+    / ``Calendar`` rows just to list the backlog.
+    """
+
+    event_id: int
+    slot_id: int
+    calendar_id: int
+
+
+@dataclass
 class GroupScopedAvailabilityWriteResult:
     """Result of a group-scoped availability window write (create/update/delete).
 

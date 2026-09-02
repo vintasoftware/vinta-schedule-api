@@ -1138,6 +1138,26 @@ class BookableSlotProposalGraphQLType:
     end_time: datetime.datetime
 
 
+@strawberry.type
+class StaleSelectionGraphQLType:
+    """A `(event, slot, calendar)` triple whose calendar has left its slot's
+    roster -- the ops-sweep counterpart to the per-selection
+    ``isInCurrentRoster`` flag on ``CalendarEventGroupSelectionGraphQLType``.
+
+    Scalar ids only, deliberately: exposing nested ``event`` / ``slot`` /
+    ``calendar`` objects here would need their own resource scoping --
+    ``OrganizationResourceAccess`` only runs on root fields, and a nested
+    object is exactly how ``slots { pools }`` leaked a sibling team's roster
+    in Phase 5 before that gap was closed. A caller that wants the full
+    objects already has ``calendarGroupEvents`` / ``calendarPool(s)``, each
+    gated by its own resource check.
+    """
+
+    event_id: int
+    slot_id: int
+    calendar_id: int
+
+
 # ---------------------------------------------------------------------------
 # Single-use booking-code types
 # ---------------------------------------------------------------------------

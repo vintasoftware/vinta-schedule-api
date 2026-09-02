@@ -40,6 +40,7 @@ from calendar_integration.graphql import (
     GroupScopedAvailabilityWindowGraphQLType,
     GroupScopedBlockedTimeGraphQLType,
     GroupScopedQuotaRuleGraphQLType,
+    StaleSelectionGraphQLType,
     UnavailableTimeWindowGraphQLType,
     WebhookSubscriptionStatusGraphQLType,
     group_scoped_availability_window_from_model,
@@ -1108,6 +1109,52 @@ class Query:
             group_id=group_id, start=start_datetime, end=end_datetime
         )
         return cast(list[CalendarEventGraphQLType], list(events))
+
+    @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def calendar_group_stale_selections(
+        self,
+        info: strawberry.Info,
+        group_id: int,
+        window_start: datetime.datetime | None = None,
+        window_end: datetime.datetime | None = None,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> list[StaleSelectionGraphQLType]:
+        """List every `(event, slot, calendar)` triple in a CalendarGroup whose
+        calendar has left its slot's roster -- the ops-sweep counterpart to
+        the per-selection `isInCurrentRoster` field.
+
+        Role-aware scope, matching ``calendar_group``: org-wide and
+        scoped-admin tokens may sweep any group in the org; a scoped-member
+        token only a group it participates in (owns a calendar in one of the
+        group's slots); a scoped token whose membership is missing/inactive
+        sees none (fail closed). Checked explicitly here against
+        ``scoped_calendar_group_queryset`` -- unlike ``calendar_group_events``
+        above, whose service call enforces only the organization boundary --
+        because this phase's acceptance is specifically that a scoped member
+        sees stale selections only for groups it participates in.
+        """
+        org = _get_org(info)
+        request: PublicApiHttpRequest = info.context.request
+        visible_groups = scoped_calendar_group_queryset(
+            request.public_api_system_user,
+            org,
+            CalendarGroup.objects.filter_by_organization(org.id),
+        )
+        if not visible_groups.filter(id=group_id).exists():
+            return []
+
+        deps = get_query_dependencies()
+        deps.calendar_group_service.initialize(organization=org)
+        stale = deps.calendar_group_service.find_stale_selections(
+            group_id=group_id, window_start=window_start, window_end=window_end
+        )
+        return [
+            StaleSelectionGraphQLType(
+                event_id=s.event_id, slot_id=s.slot_id, calendar_id=s.calendar_id
+            )
+            for s in stale[offset : offset + limit]
+        ]
 
     @strawberry.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def group_scoped_availability_windows(

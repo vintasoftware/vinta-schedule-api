@@ -44,6 +44,7 @@ class OrganizationResourceAccess(BasePermission):
         "updateCalendarGroup": PublicAPIResources.CALENDAR_GROUP,
         "deleteCalendarGroup": PublicAPIResources.CALENDAR_GROUP,
         "createCalendarGroupEvent": PublicAPIResources.CALENDAR_GROUP,
+        "calendarGroupStaleSelections": PublicAPIResources.CALENDAR_GROUP,
         "calendarPool": PublicAPIResources.CALENDAR_POOL,
         "calendarPools": PublicAPIResources.CALENDAR_POOL,
         "createCalendarPool": PublicAPIResources.CALENDAR_POOL,

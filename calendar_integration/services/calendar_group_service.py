@@ -72,6 +72,7 @@ from calendar_integration.services.dataclasses import (
     GroupScopedAvailabilityWriteResult,
     GroupScopedBlockWriteResult,
     ResourceAllocationInputData,
+    StaleSelection,
 )
 from calendar_integration.signals import reconcile_pools
 from organizations.models import Organization
@@ -2719,6 +2720,63 @@ class CalendarGroupService:
                 end_time__gt=start,
             )
         )
+
+    def find_stale_selections(
+        self,
+        group_id: int,
+        window_start: datetime.datetime | None = None,
+        window_end: datetime.datetime | None = None,
+    ) -> list[StaleSelection]:
+        """List every ``(event, slot, calendar)`` triple in this group whose
+        calendar has left its slot's roster since the selection was made.
+
+        Staleness definition (Guiding Decisions -> Staleness definition): a
+        selection is stale when no ``CalendarGroupSlotMembership`` row exists
+        for its ``(slot, calendar)`` pair, regardless of source. Because a
+        pool's roster is projected into that same table (Phase 3), this one
+        predicate covers a calendar that departed an inline roster AND one
+        that departed a pool -- no union logic of its own is needed.
+
+        Expressed as a single correlated ``Exists`` subquery annotated onto
+        ``CalendarEventGroupSelection``, so the whole sweep -- regardless of
+        how many selections exist or how many are stale -- costs exactly one
+        query, the same shape as ``_slot_pools_with_group_scoped_flags``'s
+        per-row ``EXISTS`` annotations above.
+
+        ``window_start`` / ``window_end`` optionally bound the sweep to
+        events overlapping ``[window_start, window_end)``, using the same
+        half-open overlap semantics as ``get_group_events``. Omitting both
+        (the default) returns every stale selection in the group regardless
+        of when its event falls.
+        """
+        self._assert_initialized()
+        group = self._get_group_by_id(group_id)
+
+        current_membership = CalendarGroupSlotMembership.objects.filter_by_organization(
+            self.organization_id
+        ).filter(
+            slot_fk_id=OuterRef("slot_fk_id"),
+            calendar_fk_id=OuterRef("calendar_fk_id"),
+        )
+
+        selections = (
+            CalendarEventGroupSelection.objects.filter_by_organization(self.organization_id)
+            .filter(event_fk__calendar_group_fk=group)
+            .annotate(has_current_membership=Exists(current_membership))
+            .filter(has_current_membership=False)
+        )
+        if window_start is not None:
+            selections = selections.filter(event_fk__end_time__gt=window_start)
+        if window_end is not None:
+            selections = selections.filter(event_fk__start_time__lt=window_end)
+
+        rows = selections.order_by("event_fk_id", "slot_fk_id", "calendar_fk_id").values_list(
+            "event_fk_id", "slot_fk_id", "calendar_fk_id"
+        )
+        return [
+            StaleSelection(event_id=event_id, slot_id=slot_id, calendar_id=calendar_id)
+            for event_id, slot_id, calendar_id in rows
+        ]
 
     def _slot_pools_with_group_scoped_flags(
         self, slots: Iterable[CalendarGroupSlot]

@@ -112,6 +112,7 @@ from calendar_integration.serializers import (
     GroupScopedQuotaRuleSerializer,
     GroupScopedQuotaRuleUpdateSerializer,
     ResourceCalendarCreateSerializer,
+    StaleSelectionSerializer,
     UnavailableTimeWindowSerializer,
 )
 from calendar_integration.services.booking_policy_service import BookingPolicyService
@@ -2514,6 +2515,75 @@ class CalendarGroupViewSet(VintaScheduleModelViewSet):
         return Response(
             CalendarEventSerializer(list(optimized_events), many=True, context=context).data
         )
+
+    @extend_schema(
+        summary="List stale calendar selections for this group",
+        description=(
+            "Every `(event, slot, calendar)` triple booked under this group whose "
+            "calendar has since left its slot's roster (removed inline, or via a "
+            "pool detaching or losing that calendar) -- the ops-sweep counterpart "
+            "to the per-selection `is_in_current_roster` flag. Optionally bounded "
+            "to events overlapping `[window_start, window_end)`; omitting both "
+            "returns every stale selection in the group regardless of when its "
+            "event falls."
+        ),
+        parameters=[
+            OpenApiParameter(
+                name="window_start",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                description="Only events ending after this instant (ISO 8601). Optional.",
+                required=False,
+            ),
+            OpenApiParameter(
+                name="window_end",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                description="Only events starting before this instant (ISO 8601). Optional.",
+                required=False,
+            ),
+        ],
+        responses={200: StaleSelectionSerializer(many=True)},
+    )
+    @action(
+        methods=["GET"],
+        detail=True,
+        url_path="stale-selections",
+        url_name="stale-selections",
+    )
+    @inject
+    def stale_selections(
+        self,
+        request,
+        pk,
+        calendar_group_service: Annotated[CalendarGroupService, Provide["calendar_group_service"]],
+    ):
+        group = self.get_object()
+        start_raw = request.query_params.get("window_start")
+        end_raw = request.query_params.get("window_end")
+        try:
+            window_start = (
+                datetime.datetime.fromisoformat(start_raw.replace("Z", "+00:00"))
+                if start_raw
+                else None
+            )
+            window_end = (
+                datetime.datetime.fromisoformat(end_raw.replace("Z", "+00:00")) if end_raw else None
+            )
+        except ValueError as e:
+            raise ValidationError(
+                {"non_field_errors": ["Invalid datetime format; use ISO 8601."]}
+            ) from e
+
+        calendar_group_service.initialize(organization=group.organization)
+        stale = calendar_group_service.find_stale_selections(
+            group_id=group.id, window_start=window_start, window_end=window_end
+        )
+        payload = [
+            {"event_id": s.event_id, "slot_id": s.slot_id, "calendar_id": s.calendar_id}
+            for s in stale
+        ]
+        return Response(StaleSelectionSerializer(payload, many=True).data)
 
     @extend_schema(
         summary="Per-slot availability for requested ranges",

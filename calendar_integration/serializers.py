@@ -3571,6 +3571,18 @@ class BookableSlotProposalSerializer(serializers.Serializer):
     end_time = serializers.DateTimeField()
 
 
+class StaleSelectionSerializer(serializers.Serializer):
+    """A `(event, slot, calendar)` triple whose calendar has left its slot's
+    roster -- see ``CalendarGroupService.find_stale_selections`` and the
+    Calendar Pools plan's Staleness definition. Scalar ids only, matching the
+    ``StaleSelection`` dataclass this wraps.
+    """
+
+    event_id = serializers.IntegerField()
+    slot_id = serializers.IntegerField()
+    calendar_id = serializers.IntegerField()
+
+
 class BookingPolicySerializer(serializers.ModelSerializer):
     """Serializer for ``BookingPolicy`` CRUD.
 
