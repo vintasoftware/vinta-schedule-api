@@ -307,15 +307,64 @@ Verification (container surface): full suite 5814 passed, 1 skipped; mypy clean 
 `makemigrations --check` clean (no migration this phase); `schema.yml` additive-only from the
 feature commit and unchanged by the fixes.
 
+### Phase 5 — Code-gated reads
+
+Branch `plan/rest-code-gated-scheduling/phase-5`, base `plan/rest-code-gated-scheduling/phase-4`.
+Commits: `261118f5` (implementation), `270e3ace` (reviewer findings — includes a BLOCKER fix).
+Models used: implementer tier 3 → sonnet; reviewer tier 3 (plan override) → sonnet; fixer tier 2 → sonnet.
+Review: **1 BLOCKER**, 2 SHOULD-FIX, 1 NIT, all fixed.
+
+What landed: the six code-gated reads in a new `calendar_integration/booking_read_views.py`
+(the module split decision 22 asked for — `booking_views.py` already held only the mixin plus the
+five write viewsets, so it took a zero-line diff). Every response serializer was reused; none written.
+
+**THE BLOCKER — fixed on BOTH surfaces, and it was live in production GraphQL.**
+`_resolve_calendar_scope_opaquely` read `token.calendar` and, when null, fell back to
+`token.event.calendar`. A GROUP reschedule/cancel code carries `calendar_group_id` + `event_id` and
+no `calendar_id`, while `create_grouped_event` always puts the underlying event on a real single
+primary calendar — so that fallback resolved to the specific staff calendar the group booking landed
+on. A patient holding a group reschedule code could call `available-times`, `availability-windows`,
+`unavailable-windows`, or `calendar-bookable-slots` and get **200 with that individual's full
+availability and blocked-time data** instead of the uniform 403. Verified before the fix by
+reverting and re-running: the response body contained real `start_time`/`end_time` rows and
+`"calendar":2`.
+
+That defeats the group-booking abstraction (a patient is never supposed to learn which calendar
+their appointment landed on) and contradicts the plan's own acceptance criterion. It was inherited
+verbatim from `public_api/queries.py`, so the same hole existed in the six deployed GraphQL
+`*WithCode` query fields. **Both surfaces are now guarded**: each resolver rejects immediately when
+the token carries the opposite scope column, before ever consulting the `event` fallback. This is a
+behavior fix, not a schema change, so the "no GraphQL schema change" non-goal still holds.
+
+**Decisions later phases must respect:**
+
+23. **Never resolve scope through `token.event` without first checking the token's own scope column.**
+    The `event` fallback is only valid when the token carries no scope of its own.
+24. **Read endpoints live in `calendar_integration/booking_read_views.py`**, writes stay in
+    `booking_views.py`, and `BookingCodeViewMixin` is shared from the latter.
+25. **`duration_seconds` is now required on both bookable-slots reads regardless of pin state.**
+    Presence is validated identically whether or not the code pins a duration; only the *value* is
+    overridden by a pin. This removes a status asymmetry that distinguished pinned from unpinned.
+26. **Timezone-naive datetimes are rejected with 400** on the five GET reads that take datetime
+    query params, matching GraphQL's scalar, rather than being silently interpreted in the default
+    timezone.
+
+The non-disclosure matrix now covers 8 failure kinds (invalid, expired, already-used, revoked,
+wrong-scope, wrong-scope-via-event-fallback, missing header, empty header) × 6 endpoints, asserting
+byte-identical bodies — 96 assertions.
+
+Verification (container surface): full suite 5851 passed, 1 skipped, no flakes; mypy clean
+(783 files); `public_api/tests/` 1043 passed (the GraphQL fix); `makemigrations --check` clean;
+`schema.yml` changed only for the `duration_seconds` parameter description and `required: true`.
+
 ## Current phase
 
-**Phase 5 — Code-gated reads** — not started.
+**Phase 6 — Booking-code minting and revocation** — not started.
 
 ## Remaining phases
 
 | Phase | Title | Impl tier | Reviewer tier |
 |---|---|---|---|
-| 5 | Code-gated reads | 2 | 3 (plan override) |
 | 6 | Booking-code minting and revocation | 3 | 4 (plan override) |
 
 ## Deferred phases
