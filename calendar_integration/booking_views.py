@@ -58,7 +58,6 @@ from calendar_integration.constants import EventManagementPermissions
 from calendar_integration.exceptions import (
     CalendarGroupError,
     CalendarServiceNotInjectedError,
-    PermissionServiceInitializationError,
 )
 from calendar_integration.models import CalendarEvent, CalendarGroup, CalendarManagementToken
 from calendar_integration.serializers import (
@@ -452,9 +451,18 @@ class BookingCodeGroupEventViewSet(BookingCodeViewMixin, GenericViewSet):
         # ``initialize_without_provider(organization=organization)`` call (no
         # ``user_or_token``). ``translate_booking_write_errors`` maps the
         # exception vocabulary shared with the single-calendar viewset onto the
-        # booking-code API exceptions; ``CalendarGroup.DoesNotExist``,
-        # ``CalendarGroupError``, and ``PermissionServiceInitializationError``
-        # are group-only and stay mapped here.
+        # booking-code API exceptions, including a private group's denial on the
+        # codeless branch: ``can_perform_group_scheduling`` returns ``False`` via
+        # its ``token is None`` short-circuit, ``create_grouped_event`` raises a
+        # plain ``django.core.exceptions.PermissionDenied``, and that context
+        # manager's own ``except DjangoPermissionDenied`` maps it to
+        # ``NotPermittedAPIException`` above -- do not add an
+        # ``except PermissionServiceInitializationError`` here for that case,
+        # that exception is only raised by ``has_permission``, which this path
+        # never reaches (``accepts_public_scheduling`` and the group-scope check
+        # both return before it, and ``create_event`` skips its own permission
+        # check via ``group_authorized=True``). ``CalendarGroup.DoesNotExist``
+        # and ``CalendarGroupError`` are group-only and stay mapped here.
         try:
             with translate_booking_write_errors(
                 permission_denied_message=permission_denied_message
@@ -472,18 +480,6 @@ class BookingCodeGroupEventViewSet(BookingCodeViewMixin, GenericViewSet):
                     # No code to consume on the codeless branch -- there is none.
                     if token is not None:
                         permission_service.consume_code(token, client_ip_from_request(request))
-        except PermissionServiceInitializationError as exc:
-            # Defensive: in practice the codeless group-level gate denies via a
-            # plain ``PermissionDenied`` (already mapped above), matching the
-            # GraphQL codeless mutation's own dominant failure mode. This stays
-            # mapped to the identical message for parity with GraphQL's own
-            # defensive ``except PermissionServiceInitializationError`` branch,
-            # in case a future change to the gate's internals raises this
-            # instead.
-            raise NotPermittedAPIException(
-                "This group does not accept public scheduling. "
-                "A token or scheduling code is required."
-            ) from exc
         except CalendarGroup.DoesNotExist as exc:
             if token is None:
                 # Codeless: group_id is the client's own path input, not a

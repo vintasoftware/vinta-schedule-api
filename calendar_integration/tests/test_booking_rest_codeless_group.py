@@ -440,3 +440,73 @@ class TestCodelessGroupEventCrossOrgIsolation:
             .filter(calendar_group_fk_id=other_group.id)
             .exists()
         )
+
+
+# ---------------------------------------------------------------------------
+# Scenario 6: ambiguous X-Booking-Code header values -- empty string vs.
+# whitespace-only. ``booking_code_header`` does ``return value or None``, so
+# these two must NOT be treated the same: an empty string is falsy (codeless),
+# a whitespace-only string is truthy (coded).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestAmbiguousHeaderValues:
+    def test_empty_header_value_is_treated_as_codeless(
+        self,
+        anon_client,
+        organization,
+        public_group,
+        private_group,
+        primary_calendar,
+        secondary_calendar,
+    ):
+        """``booking_code_header`` normalizes an empty-string header to
+        ``None`` (``value or None``), so an empty ``X-Booking-Code`` takes the
+        codeless branch exactly like an absent header -- proven here against
+        both a PUBLIC group (books) and a PRIVATE group (denied via the same
+        403 NOT_PERMITTED the fully-absent-header case gets), so the branch
+        choice is unambiguous either way."""
+        public_selections = _slot_selections(public_group, primary_calendar, secondary_calendar)
+        public_response = _post(
+            anon_client, public_group.id, "", _group_booking_payload(public_selections)
+        )
+        assert public_response.status_code == status.HTTP_201_CREATED, public_response.content
+
+        private_selections = _slot_selections(private_group, primary_calendar, secondary_calendar)
+        private_response = _post(
+            anon_client, private_group.id, "", _group_booking_payload(private_selections)
+        )
+        assert private_response.status_code == status.HTTP_403_FORBIDDEN
+        assert private_response.json()["error_code"] == "NOT_PERMITTED"
+
+    def test_whitespace_header_is_treated_as_a_code_not_codeless(
+        self,
+        anon_client,
+        organization,
+        public_group,
+        primary_calendar,
+        secondary_calendar,
+    ):
+        """A whitespace-only ``X-Booking-Code`` (``" "``) is truthy, so
+        ``booking_code_header`` returns it unchanged and the request takes the
+        CODED branch -- never the codeless one, even against a group that
+        itself accepts public scheduling. This matters: if a whitespace
+        header fell through to codeless, a caller could bypass every one of
+        the coded path's checks (resolve/authorize/scope/pin) just by sending
+        a blank-looking header instead of omitting it -- that would be a
+        bypass of the coded path's guarantees, not a convenience. Instead,
+        the coded branch tries to resolve `" "` as a code and fails.
+
+        Observed (not assumed): ``resolve_code`` cannot decode a whitespace
+        string into a valid ``token_id:token_str`` pair, so it raises
+        ``InvalidTokenError`` -> ``InvalidCodeAPIException`` -> ``404
+        INVALID_CODE``.
+        """
+        selections = _slot_selections(public_group, primary_calendar, secondary_calendar)
+
+        response = _post(anon_client, public_group.id, " ", _group_booking_payload(selections))
+
+        assert response.status_code == status.HTTP_404_NOT_FOUND, response.content
+        assert response.json()["error_code"] == "INVALID_CODE"
+        assert not CalendarEvent.objects.filter_by_organization(organization.id).exists()
