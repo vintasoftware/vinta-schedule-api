@@ -3949,6 +3949,176 @@ paths:
               schema:
                 $ref: '#/components/schemas/PaginatedBlockedTimeList'
           description: ''
+  /booking-codes/:
+    post:
+      operationId: booking_codes_create
+      description: Mint a single-use booking / reschedule / cancel code scoped to
+        a calendar or calendar group. Collapses GraphQL's six create*BookingCode mutations
+        into one endpoint. The plaintext code is returned exactly once in this response
+        and is never retrievable afterwards. Org admins may mint for any calendar
+        or group in the organization; other members may mint only for a calendar they
+        own or a group they participate in. A target in another organization is answered
+        404, never 403.
+      summary: Mint a single-use booking code
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      tags:
+      - Booking Codes
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BookingCodeCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BookingCodeCreate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BookingCodeCreate'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingCodeCreateResult'
+          description: ''
+  /booking-codes{format}:
+    post:
+      operationId: booking_codes_formatted_create
+      description: Mint a single-use booking / reschedule / cancel code scoped to
+        a calendar or calendar group. Collapses GraphQL's six create*BookingCode mutations
+        into one endpoint. The plaintext code is returned exactly once in this response
+        and is never retrievable afterwards. Org admins may mint for any calendar
+        or group in the organization; other members may mint only for a calendar they
+        own or a group they participate in. A target in another organization is answered
+        404, never 403.
+      summary: Mint a single-use booking code
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      tags:
+      - Booking Codes
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BookingCodeCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BookingCodeCreate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BookingCodeCreate'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingCodeCreateResult'
+          description: ''
+  /booking-codes/{id}/:
+    delete:
+      operationId: booking_codes_destroy
+      description: 'Revoke a booking code by its opaque id. Idempotent: revoking an
+        already-revoked code, or an id that does not exist within the caller''s organization
+        (including an id belonging to another organization), returns 204 without error
+        and without touching any row outside the caller''s organization.'
+      summary: Revoke a booking code
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - Booking Codes
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /booking-codes/{id}{format}:
+    delete:
+      operationId: booking_codes_formatted_destroy
+      description: 'Revoke a booking code by its opaque id. Idempotent: revoking an
+        already-revoked code, or an id that does not exist within the caller''s organization
+        (including an id belonging to another organization), returns 204 without error
+        and without touching any row outside the caller''s organization.'
+      summary: Revoke a booking code
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - Booking Codes
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
   /booking-policies/:
     get:
       operationId: booking_policies_list
@@ -17842,6 +18012,99 @@ components:
       required:
       - end_time
       - start_time
+    BookingCodeCreate:
+      type: object
+      description: |-
+        Input for ``POST /booking-codes/`` -- the authenticated minting endpoint.
+
+        Collapses GraphQL's six ``create*BookingCode`` mutations into one resource:
+        ``purpose`` x {``calendar``, ``calendar_group``} is the same cross product those
+        six mutations cover, no more and no less. ``purpose`` maps onto the permission(s)
+        the minted token carries:
+
+        - ``book`` -> ``[EventManagementPermissions.CREATE]``
+        - ``reschedule`` -> ``[EventManagementPermissions.RESCHEDULE]``
+        - ``cancel`` -> ``[EventManagementPermissions.CANCEL]``
+
+        ``calendar`` / ``calendar_group`` / ``event`` are plain integer ids, not
+        ``PrimaryKeyRelatedField`` -- object existence and org/authorization checks
+        happen in ``BookingCodeViewSet.create`` so a cross-organization target can be
+        answered ``404`` there rather than a serializer-level ``400``, keeping "target
+        exists but you can't see it" indistinguishable from "target does not exist".
+
+        ``duration_seconds`` is the only way to mint a code that pins the event
+        duration -- GraphQL's mint mutations are deliberately unchanged.
+      properties:
+        purpose:
+          $ref: '#/components/schemas/PurposeEnum'
+        calendar:
+          type: integer
+          nullable: true
+        calendar_group:
+          type: integer
+          nullable: true
+        event:
+          type: integer
+          nullable: true
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        duration_seconds:
+          type: integer
+          minimum: 1
+          nullable: true
+      required:
+      - purpose
+    BookingCodeCreateResult:
+      type: object
+      description: |-
+        One-time response for ``POST /booking-codes/``.
+
+        ``code`` carries the plaintext booking code -- it is generated fresh by
+        ``CalendarPermissionService.create_booking_token`` and never persisted or
+        re-derivable, so this is the only response that will ever expose it. Every
+        field here is read-only: this serializer only ever renders a response, it
+        is never used to validate input.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        code:
+          type: string
+          readOnly: true
+        purpose:
+          $ref: '#/components/schemas/PurposeEnum'
+        calendar:
+          type: integer
+          readOnly: true
+          nullable: true
+        calendar_group:
+          type: integer
+          readOnly: true
+          nullable: true
+        event:
+          type: integer
+          readOnly: true
+          nullable: true
+        expires_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        duration_seconds:
+          type: integer
+          readOnly: true
+          nullable: true
+      required:
+      - calendar
+      - calendar_group
+      - code
+      - duration_seconds
+      - event
+      - expires_at
+      - id
+      - purpose
     BookingCodeEventCreate:
       type: object
       description: |-
@@ -21339,6 +21602,16 @@ components:
         * `microsoft` - Microsoft Outlook Calendar
         * `apple` - Apple Calendar
         * `ics` - ICS
+    PurposeEnum:
+      enum:
+      - book
+      - reschedule
+      - cancel
+      type: string
+      description: |-
+        * `book` - book
+        * `reschedule` - reschedule
+        * `cancel` - cancel
     RSVPStatusEnum:
       enum:
       - accepted

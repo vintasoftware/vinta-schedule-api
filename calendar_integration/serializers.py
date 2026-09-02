@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Annotated, TypedDict, cast
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Q
+from django.utils import timezone
 
 import django_virtual_models as v
 from allauth.socialaccount.models import SocialAccount
@@ -3641,3 +3642,86 @@ class BookingCodeRescheduleSerializer(_EndTimeAfterStartTimeSerializerMixin):
     start_time = serializers.DateTimeField()
     end_time = serializers.DateTimeField()
     timezone = serializers.CharField()
+
+
+class BookingCodeCreateSerializer(serializers.Serializer):
+    """Input for ``POST /booking-codes/`` -- the authenticated minting endpoint.
+
+    Collapses GraphQL's six ``create*BookingCode`` mutations into one resource:
+    ``purpose`` x {``calendar``, ``calendar_group``} is the same cross product those
+    six mutations cover, no more and no less. ``purpose`` maps onto the permission(s)
+    the minted token carries:
+
+    - ``book`` -> ``[EventManagementPermissions.CREATE]``
+    - ``reschedule`` -> ``[EventManagementPermissions.RESCHEDULE]``
+    - ``cancel`` -> ``[EventManagementPermissions.CANCEL]``
+
+    ``calendar`` / ``calendar_group`` / ``event`` are plain integer ids, not
+    ``PrimaryKeyRelatedField`` -- object existence and org/authorization checks
+    happen in ``BookingCodeViewSet.create`` so a cross-organization target can be
+    answered ``404`` there rather than a serializer-level ``400``, keeping "target
+    exists but you can't see it" indistinguishable from "target does not exist".
+
+    ``duration_seconds`` is the only way to mint a code that pins the event
+    duration -- GraphQL's mint mutations are deliberately unchanged.
+    """
+
+    PURPOSE_BOOK = "book"
+    PURPOSE_RESCHEDULE = "reschedule"
+    PURPOSE_CANCEL = "cancel"
+    PURPOSE_CHOICES = (PURPOSE_BOOK, PURPOSE_RESCHEDULE, PURPOSE_CANCEL)
+
+    purpose = serializers.ChoiceField(choices=PURPOSE_CHOICES)
+    calendar = serializers.IntegerField(required=False, allow_null=True, default=None)
+    calendar_group = serializers.IntegerField(required=False, allow_null=True, default=None)
+    event = serializers.IntegerField(required=False, allow_null=True, default=None)
+    expires_at = serializers.DateTimeField(required=False, allow_null=True, default=None)
+    duration_seconds = serializers.IntegerField(
+        required=False, allow_null=True, default=None, min_value=1
+    )
+
+    def validate(self, attrs: dict) -> dict:
+        calendar = attrs.get("calendar")
+        calendar_group = attrs.get("calendar_group")
+        if (calendar is None) == (calendar_group is None):
+            raise serializers.ValidationError(
+                "Exactly one of 'calendar' or 'calendar_group' must be set."
+            )
+
+        purpose = attrs["purpose"]
+        event = attrs.get("event")
+        if purpose == self.PURPOSE_BOOK and event is not None:
+            raise serializers.ValidationError("'event' is forbidden for purpose='book'.")
+        if purpose in (self.PURPOSE_RESCHEDULE, self.PURPOSE_CANCEL) and event is None:
+            raise serializers.ValidationError(f"'event' is required for purpose='{purpose}'.")
+
+        expires_at = attrs.get("expires_at")
+        if expires_at is not None and expires_at <= timezone.now():
+            raise serializers.ValidationError("'expires_at' must be in the future.")
+
+        if purpose == self.PURPOSE_CANCEL and attrs.get("duration_seconds") is not None:
+            raise serializers.ValidationError(
+                "'duration_seconds' is forbidden for purpose='cancel'."
+            )
+
+        return attrs
+
+
+class BookingCodeCreateResultSerializer(serializers.Serializer):
+    """One-time response for ``POST /booking-codes/``.
+
+    ``code`` carries the plaintext booking code -- it is generated fresh by
+    ``CalendarPermissionService.create_booking_token`` and never persisted or
+    re-derivable, so this is the only response that will ever expose it. Every
+    field here is read-only: this serializer only ever renders a response, it
+    is never used to validate input.
+    """
+
+    id = serializers.IntegerField(read_only=True)
+    code = serializers.CharField(read_only=True)
+    purpose = serializers.ChoiceField(choices=BookingCodeCreateSerializer.PURPOSE_CHOICES)
+    calendar = serializers.IntegerField(read_only=True, allow_null=True)
+    calendar_group = serializers.IntegerField(read_only=True, allow_null=True)
+    event = serializers.IntegerField(read_only=True, allow_null=True)
+    expires_at = serializers.DateTimeField(read_only=True, allow_null=True)
+    duration_seconds = serializers.IntegerField(read_only=True, allow_null=True)

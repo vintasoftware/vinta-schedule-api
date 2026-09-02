@@ -419,3 +419,27 @@ class GroupScopedQuotaRulePermission(BasePermission):
 
         view.group_slot = group_slot
         return True
+
+
+class BookingCodePermission(BasePermission):
+    """Permission for ``BookingCodeViewSet`` (``POST`` / ``DELETE /booking-codes/``).
+
+    ``has_permission`` only requires an authenticated user with an active
+    organization membership. Unlike ``CalendarGroupPermission``, the finer
+    owner-or-org-admin decision does **not** live in ``has_object_permission``:
+    on ``create`` the target (``calendar`` or ``calendar_group``) arrives in the
+    request BODY, not as a URL-routed object DRF could resolve before this class
+    runs, and on ``destroy`` the target is the token being revoked, which is
+    idempotent by design (revoking a non-existent or foreign-org id is a
+    no-op ``204``, never a permission question). Both authorization decisions
+    happen in ``BookingCodeViewSet`` itself, where the target has actually been
+    resolved -- mirroring the split ``CalendarGroupPermission`` documents between
+    admin-only "manage" and owner-or-participant "view/book", applied here to
+    "mint a code for this calendar/group".
+    """
+
+    def has_permission(self, request, view) -> bool:
+        user = request.user
+        if not user.is_authenticated:
+            return False
+        return request.organization_membership is not None
