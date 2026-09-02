@@ -110,8 +110,9 @@ def test_resolve_booking_code_from_request_missing_header_raises_invalid():
 def test_resolve_booking_code_from_request_success_returns_token():
     sentinel = object()
     request = _request_with_code("some-code")
-    result = resolve_booking_code_from_request(request, _FakePermissionService(sentinel))
-    assert result is sentinel
+    token, code = resolve_booking_code_from_request(request, _FakePermissionService(sentinel))
+    assert token is sentinel
+    assert code == "some-code"
 
 
 @pytest.mark.parametrize(

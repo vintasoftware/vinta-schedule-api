@@ -553,6 +553,30 @@ class TestCreateCalendarEventWithCodePinnedDuration:
 @pytest.mark.django_db(transaction=True)
 class TestCreateCalendarEventWithCodeConcurrency:
     def test_two_concurrent_requests_create_exactly_one_event(self):
+        """Two concurrent bookings on one code: exactly one event, code consumed once.
+
+        The status-code / row-count assertions below (409+201, one ``CalendarEvent``)
+        do NOT, by themselves, prove the view's create-then-consume ordering matters:
+        both statements run inside the same outer ``transaction.atomic()`` in
+        ``booking_views.py``, so any exception raised by either one -- including
+        ``consume_code``'s ``TokenAlreadyUsedError`` on a lost race -- unwinds the
+        whole transaction. Swapping the two statements (consume-then-create)
+        produces byte-identical status codes and row counts.
+
+        What create-first actually changes, and what this test asserts on to make
+        an inversion fail, is provider-side work: with create-first BOTH racers
+        reach ``CalendarService.create_event`` and therefore call the write
+        adapter, so ``fake_adapter.create_event`` is called twice. With
+        consume-first, the loser blocks on ``consume_code``'s row lock, finds the
+        code already used, and never reaches the adapter at all -- one call, not
+        two.
+
+        Worth knowing (not fixed here, pre-existing in the GraphQL original, out
+        of scope): on a real provider-backed calendar, create-first means the
+        losing racer may already have created an event at the external provider
+        before the DB transaction rolls back. That provider-side event is an
+        orphan the rollback cannot undo -- it only reverts the local DB rows.
+        """
         organization = baker.make(Organization, name="Concurrency Test Org")
         calendar = baker.make(
             Calendar,
@@ -629,3 +653,7 @@ class TestCreateCalendarEventWithCodeConcurrency:
 
         assert sorted(results) == [status.HTTP_201_CREATED, status.HTTP_409_CONFLICT], results
         assert CalendarEvent.objects.filter_by_organization(organization.id).count() == 1
+        # The assertion that actually distinguishes create-first from consume-first
+        # (see the docstring above) -- both racers reach the write adapter under the
+        # shipped create-then-consume ordering.
+        assert fake_adapter.create_event.call_count == 2

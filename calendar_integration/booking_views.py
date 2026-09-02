@@ -43,7 +43,6 @@ if TYPE_CHECKING:
 
 from calendar_integration.booking_auth import (
     BOOKING_CODE_HEADER,
-    booking_code_header,
     client_ip_from_request,
     pinned_duration_error,
     resolve_booking_code_from_request,
@@ -164,10 +163,17 @@ class BookingCodeCalendarEventViewSet(BookingCodeViewMixin, GenericViewSet):
     def create(self, request: Request, *args, **kwargs) -> Response:
         """Resolve the code, then create the event and consume the code atomically.
 
-        Create FIRST, then consume -- so on a race the loser's ``consume_code``
-        raises under the row lock and the whole transaction (including the
-        just-created event) rolls back, leaving exactly one event and the code
-        consumed once. See the plan's Phase 1 body for why this ordering matters.
+        Create FIRST, then consume, matching the GraphQL original
+        (``create_calendar_event_with_code``). Both statements run inside the
+        same outer ``transaction.atomic()`` block (see step 8 below), so any
+        exception either one raises -- including ``consume_code``'s
+        ``TokenAlreadyUsedError`` on a lost race -- unwinds the whole
+        transaction: the DB outcome (one event, code consumed once) is the
+        same regardless of which statement runs first. What create-first
+        actually buys is that both racers do the provider-side write (the
+        adapter's ``create_event`` call) before either one's outcome is
+        decided, rather than the loser being turned away by the row lock
+        before ever reaching the provider.
         """
         permission_service = self.calendar_permission_service
         calendar_service = self.calendar_service
@@ -182,7 +188,7 @@ class BookingCodeCalendarEventViewSet(BookingCodeViewMixin, GenericViewSet):
         data = serializer.validated_data
 
         # --- Step 1: resolve and validate the code (discriminated errors) ---
-        token = resolve_booking_code_from_request(request, permission_service)
+        token, code = resolve_booking_code_from_request(request, permission_service)
 
         # --- Step 2: check permission ---
         token_permissions = {p.permission for p in token.permissions.all()}
@@ -229,14 +235,11 @@ class BookingCodeCalendarEventViewSet(BookingCodeViewMixin, GenericViewSet):
         )
 
         # --- Step 8: atomic create + consume ---
-        # Create FIRST, then consume -- so on a race the loser's consume_code raises
-        # under the row lock and the whole transaction (including the just-created
-        # event) rolls back, leaving exactly one event and the code consumed once.
-        code = booking_code_header(request)
-        if code is None:
-            # Unreachable in practice: resolve_booking_code_from_request above
-            # already raised InvalidCodeAPIException when the header is absent.
-            raise InvalidCodeAPIException()
+        # Create FIRST, then consume, matching the GraphQL original. Both statements
+        # share this one outer atomic() block, so the DB outcome is the same either
+        # order -- see the docstring above for what create-first actually changes
+        # (both racers reach the provider adapter, instead of the loser being turned
+        # away by consume_code's row lock first).
         try:
             with transaction.atomic():
                 calendar_service.initialize_without_provider(user_or_token=code, organization=org)

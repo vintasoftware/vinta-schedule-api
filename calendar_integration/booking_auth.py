@@ -76,19 +76,23 @@ def booking_code_header(request: HttpRequest | Request) -> str | None:
 
 def resolve_booking_code_from_request(
     request: HttpRequest | Request, permission_service: CalendarPermissionService
-) -> CalendarManagementToken:
+) -> tuple[CalendarManagementToken, str]:
     """Resolve ``X-Booking-Code`` for a write endpoint, with discriminated errors.
 
     Raises the matching :class:`~calendar_integration.booking_exceptions.BookingCodeAPIException`
     subclass -- a distinct HTTP status and ``error_code`` per failure kind, per
     the plan's "Error contract (writes)" Guiding Decision.
+
+    Returns the resolved token together with the plaintext code, so a caller
+    that also needs the raw code (e.g. to initialize a service context) does
+    not have to read the header a second time.
     """
     code = booking_code_header(request)
     if code is None:
         raise InvalidCodeAPIException("Missing X-Booking-Code header.")
 
     try:
-        return permission_service.resolve_code(code)
+        token = permission_service.resolve_code(code)
     except InvalidTokenError:
         raise InvalidCodeAPIException() from None
     except TokenExpiredError:
@@ -97,6 +101,7 @@ def resolve_booking_code_from_request(
         raise AlreadyUsedCodeAPIException() from None
     except TokenRevokedError:
         raise RevokedCodeAPIException() from None
+    return token, code
 
 
 def resolve_booking_code_opaquely(
