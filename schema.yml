@@ -14770,6 +14770,157 @@ paths:
               schema:
                 $ref: '#/components/schemas/SystemUserToken'
           description: ''
+  /public/booking/availability-windows/:
+    get:
+      operationId: public_booking_availability_windows_list
+      description: |-
+        Unauthenticated, code-gated read of a calendar's availability windows.
+
+        ``GET /public/booking/availability-windows/`` ports
+        ``public_api.queries.Query.availability_windows_with_code`` to REST. The
+        calendar comes from the resolved token (``token.calendar``, falling back
+        to ``token.event.calendar``); no calendar id is accepted from the client.
+      summary: Availability windows for the calendar bound to a booking code
+      parameters:
+      - in: header
+        name: X-Booking-Code
+        schema:
+          type: string
+        description: 'Single-use booking code. Every failure -- invalid, expired,
+          used, revoked, or wrong-scope -- returns the same 403 {"detail": "Invalid
+          or expired code."}; this endpoint never discloses which one occurred. Repeatable:
+          never consumed by a read.'
+        required: true
+      - in: query
+        name: end_datetime
+        schema:
+          type: string
+        description: End of the query window (ISO 8601).
+        required: true
+      - in: query
+        name: start_datetime
+        schema:
+          type: string
+        description: Start of the query window (ISO 8601).
+        required: true
+      tags:
+      - Booking Codes
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AvailableTimeWindow'
+          description: ''
+  /public/booking/available-times/:
+    get:
+      operationId: public_booking_available_times_list
+      description: |-
+        Unauthenticated, code-gated read of a calendar's available times.
+
+        ``GET /public/booking/available-times/`` ports
+        ``public_api.queries.Query.available_times_with_code`` to REST. The
+        calendar comes from the resolved token (``token.calendar``, falling back
+        to ``token.event.calendar``); no calendar id is accepted from the client.
+      summary: Available times for the calendar bound to a booking code
+      parameters:
+      - in: header
+        name: X-Booking-Code
+        schema:
+          type: string
+        description: 'Single-use booking code. Every failure -- invalid, expired,
+          used, revoked, or wrong-scope -- returns the same 403 {"detail": "Invalid
+          or expired code."}; this endpoint never discloses which one occurred. Repeatable:
+          never consumed by a read.'
+        required: true
+      - in: query
+        name: end_datetime
+        schema:
+          type: string
+        description: End of the query window (ISO 8601).
+        required: true
+      - in: query
+        name: start_datetime
+        schema:
+          type: string
+        description: Start of the query window (ISO 8601).
+        required: true
+      tags:
+      - Booking Codes
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AvailableTime'
+          description: ''
+  /public/booking/calendar-bookable-slots/:
+    get:
+      operationId: public_booking_calendar_bookable_slots_list
+      description: |-
+        Unauthenticated, code-gated read of bookable slots for a single calendar.
+
+        ``GET /public/booking/calendar-bookable-slots/`` ports
+        ``public_api.queries.Query.calendar_bookable_slots_with_code`` to REST.
+        The calendar comes from the resolved token (``token.calendar``, falling
+        back to ``token.event.calendar``); a group-scoped code is rejected via
+        the same uniform 403 (its ``calendar`` resolves to ``None``).
+
+        This is the FIRST REST surface for
+        ``BookableSlotsService.find_bookable_slots_for_calendar`` -- previously
+        reachable only from GraphQL.
+      summary: Bookable slot proposals for the calendar bound to a booking code
+      parameters:
+      - in: header
+        name: X-Booking-Code
+        schema:
+          type: string
+        description: 'Single-use booking code. Every failure -- invalid, expired,
+          used, revoked, or wrong-scope -- returns the same 403 {"detail": "Invalid
+          or expired code."}; this endpoint never discloses which one occurred. Repeatable:
+          never consumed by a read.'
+        required: true
+      - in: query
+        name: duration_seconds
+        schema:
+          type: integer
+        description: 'Desired event duration, in seconds. OPTIONAL when the resolved
+          booking code pins a duration: the pin silently overrides this parameter
+          in that case (a mismatched or omitted value produces the exact same response
+          as the pinned value, so this endpoint cannot be used to probe whether a
+          code is pinned or what the pin is). REQUIRED when the code pins no duration.'
+      - in: query
+        name: search_window_end
+        schema:
+          type: string
+        description: End of the search window (ISO 8601).
+        required: true
+      - in: query
+        name: search_window_start
+        schema:
+          type: string
+        description: Start of the search window (ISO 8601).
+        required: true
+      - in: query
+        name: slot_step_seconds
+        schema:
+          type: integer
+        description: Search step, in seconds (default 900 = 15min).
+      tags:
+      - Booking Codes
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BookableSlotProposal'
+          description: ''
   /public/booking/calendar-events/:
     post:
       operationId: public_booking_calendar_events_create
@@ -14816,6 +14967,124 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CalendarEvent'
+          description: ''
+  /public/booking/calendar-group-availability/:
+    post:
+      operationId: public_booking_calendar_group_availability_create
+      description: |-
+        Unauthenticated, code-gated per-range availability for a calendar group.
+
+        ``POST /public/booking/calendar-group-availability/`` ports
+        ``public_api.queries.Query.calendar_group_availability_with_code`` to
+        REST. A ``POST`` (not ``GET``) because it takes a list of ranges,
+        matching the existing authenticated ``CalendarGroupViewSet.availability``
+        action, which is also a ``POST`` for the same reason. The group comes
+        from the resolved token (``token.calendar_group``, falling back to
+        ``token.event.calendar_group``); a single-calendar code is rejected via
+        the same uniform 403.
+      summary: Per-range availability for the calendar group bound to a booking code
+      parameters:
+      - in: header
+        name: X-Booking-Code
+        schema:
+          type: string
+        description: 'Single-use booking code. Every failure -- invalid, expired,
+          used, revoked, or wrong-scope -- returns the same 403 {"detail": "Invalid
+          or expired code."}; this endpoint never discloses which one occurred. Repeatable:
+          never consumed by a read.'
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - Booking Codes
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarGroupAvailabilityQuery'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarGroupAvailabilityQuery'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarGroupAvailabilityQuery'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCalendarGroupRangeAvailabilityList'
+          description: ''
+  /public/booking/calendar-group-bookable-slots/:
+    get:
+      operationId: public_booking_calendar_group_bookable_slots_list
+      description: |-
+        Unauthenticated, code-gated read of bookable slots for a calendar group.
+
+        ``GET /public/booking/calendar-group-bookable-slots/`` ports
+        ``public_api.queries.Query.calendar_group_bookable_slots_with_code`` to
+        REST. The group comes from the resolved token (``token.calendar_group``,
+        falling back to ``token.event.calendar_group``); a single-calendar code
+        is rejected via the same uniform 403 (its ``calendar_group`` resolves to
+        ``None``).
+      summary: Bookable slot proposals for the calendar group bound to a booking code
+      parameters:
+      - in: header
+        name: X-Booking-Code
+        schema:
+          type: string
+        description: 'Single-use booking code. Every failure -- invalid, expired,
+          used, revoked, or wrong-scope -- returns the same 403 {"detail": "Invalid
+          or expired code."}; this endpoint never discloses which one occurred. Repeatable:
+          never consumed by a read.'
+        required: true
+      - in: query
+        name: duration_seconds
+        schema:
+          type: integer
+        description: 'Desired event duration, in seconds. OPTIONAL when the resolved
+          booking code pins a duration: the pin silently overrides this parameter
+          in that case (a mismatched or omitted value produces the exact same response
+          as the pinned value, so this endpoint cannot be used to probe whether a
+          code is pinned or what the pin is). REQUIRED when the code pins no duration.'
+      - in: query
+        name: search_window_end
+        schema:
+          type: string
+        description: End of the search window (ISO 8601).
+        required: true
+      - in: query
+        name: search_window_start
+        schema:
+          type: string
+        description: Start of the search window (ISO 8601).
+        required: true
+      - in: query
+        name: slot_step_seconds
+        schema:
+          type: integer
+        description: Search step, in seconds (default 900 = 15min).
+      tags:
+      - Booking Codes
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BookableSlotProposal'
           description: ''
   /public/booking/calendar-groups/{public_slug}/events/:
     post:
@@ -14991,6 +15260,50 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CalendarEvent'
+          description: ''
+  /public/booking/unavailable-windows/:
+    get:
+      operationId: public_booking_unavailable_windows_list
+      description: |-
+        Unauthenticated, code-gated read of a calendar's unavailable windows.
+
+        ``GET /public/booking/unavailable-windows/`` ports
+        ``public_api.queries.Query.unavailable_windows_with_code`` to REST. The
+        calendar comes from the resolved token (``token.calendar``, falling back
+        to ``token.event.calendar``); no calendar id is accepted from the client.
+      summary: Unavailable windows for the calendar bound to a booking code
+      parameters:
+      - in: header
+        name: X-Booking-Code
+        schema:
+          type: string
+        description: 'Single-use booking code. Every failure -- invalid, expired,
+          used, revoked, or wrong-scope -- returns the same 403 {"detail": "Invalid
+          or expired code."}; this endpoint never discloses which one occurred. Repeatable:
+          never consumed by a read.'
+        required: true
+      - in: query
+        name: end_datetime
+        schema:
+          type: string
+        description: End of the query window (ISO 8601).
+        required: true
+      - in: query
+        name: start_datetime
+        schema:
+          type: string
+        description: Start of the query window (ISO 8601).
+        required: true
+      tags:
+      - Booking Codes
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/UnavailableTimeWindow'
           description: ''
   /public/organizations/{organization_id}/events/:
     get:

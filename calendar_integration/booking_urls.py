@@ -33,12 +33,30 @@ router here is regex-based (``SimpleRouter``/``DefaultRouter`` embed the
 Django's ``path()`` ``<slug:public_slug>`` converter syntax is spelled as a
 named regex group, matching this file's existing style for ``group_id``
 before it.
+
+Phase 5 (code-gated reads): six read-only routes, each a ``GenericViewSet``
+implementing only ``list()`` (``GET``) or, for
+``calendar-group-availability`` (which takes a list of ranges), ``create()``
+(``POST``) -- no ``organization_id`` or calendar/group id in any of their
+paths either: scope comes strictly from the resolved token, exactly as the
+write routes above. Viewsets live in ``booking_read_views.py``, a sibling
+module to ``booking_views.py`` (which keeps only the five write viewsets),
+split out because a single ``booking_views.py`` covering all eleven
+viewsets would have grown past ~1600 lines -- see Phase 4's tracking note.
 """
 
 from django.urls import include, path
 
 from rest_framework.routers import DefaultRouter
 
+from calendar_integration.booking_read_views import (
+    BookingCodeAvailabilityWindowsViewSet,
+    BookingCodeAvailableTimesViewSet,
+    BookingCodeCalendarBookableSlotsViewSet,
+    BookingCodeCalendarGroupAvailabilityViewSet,
+    BookingCodeCalendarGroupBookableSlotsViewSet,
+    BookingCodeUnavailableWindowsViewSet,
+)
 from calendar_integration.booking_views import (
     BookingCodeCalendarEventViewSet,
     BookingCodeCancelEventViewSet,
@@ -75,6 +93,36 @@ router.register(
     r"events/cancel",
     BookingCodeCancelEventViewSet,
     basename="booking-events-cancel",
+)
+router.register(
+    r"available-times",
+    BookingCodeAvailableTimesViewSet,
+    basename="booking-available-times",
+)
+router.register(
+    r"availability-windows",
+    BookingCodeAvailabilityWindowsViewSet,
+    basename="booking-availability-windows",
+)
+router.register(
+    r"unavailable-windows",
+    BookingCodeUnavailableWindowsViewSet,
+    basename="booking-unavailable-windows",
+)
+router.register(
+    r"calendar-bookable-slots",
+    BookingCodeCalendarBookableSlotsViewSet,
+    basename="booking-calendar-bookable-slots",
+)
+router.register(
+    r"calendar-group-bookable-slots",
+    BookingCodeCalendarGroupBookableSlotsViewSet,
+    basename="booking-calendar-group-bookable-slots",
+)
+router.register(
+    r"calendar-group-availability",
+    BookingCodeCalendarGroupAvailabilityViewSet,
+    basename="booking-calendar-group-availability",
 )
 
 urlpatterns = [
