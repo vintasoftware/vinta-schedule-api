@@ -3181,7 +3181,34 @@ class _CalendarGroupSlotSelectionInputSerializer(serializers.Serializer):
     calendar_ids = serializers.ListField(child=serializers.IntegerField())
 
 
-class CalendarGroupEventCreateSerializer(serializers.Serializer):
+class _EndTimeAfterStartTimeSerializerMixin(serializers.Serializer):
+    """Shared ``validate_end_time`` rejecting an ``end_time`` at/before ``start_time``.
+
+    Parses a string ``start_time`` from ``initial_data`` -- at the point
+    ``validate_end_time`` runs, DRF has not yet validated/coerced sibling
+    fields, so ``start_time`` is read from the raw input instead of
+    ``validated_data``. Silently skips the check when ``start_time`` is
+    missing or unparsable -- the field-level validator for ``start_time``
+    surfaces that failure separately.
+    """
+
+    def validate_end_time(self, end_time: datetime.datetime) -> datetime.datetime:
+        start_time = self.initial_data.get("start_time") if self.initial_data else None
+        if start_time:
+            try:
+                start_time_parsed = (
+                    datetime.datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+                    if isinstance(start_time, str)
+                    else start_time
+                )
+            except ValueError:
+                start_time_parsed = None
+            if start_time_parsed and end_time <= start_time_parsed:
+                raise serializers.ValidationError("end_time must be after start_time.")
+        return end_time
+
+
+class CalendarGroupEventCreateSerializer(_EndTimeAfterStartTimeSerializerMixin):
     """Input for booking an event through a CalendarGroup.
 
     On `save()` this delegates to `CalendarGroupService.create_grouped_event`
@@ -3211,21 +3238,6 @@ class CalendarGroupEventCreateSerializer(serializers.Serializer):
     ):
         self.calendar_group_service = calendar_group_service
         super().__init__(*args, **kwargs)
-
-    def validate_end_time(self, end_time: datetime.datetime) -> datetime.datetime:
-        start_time = self.initial_data.get("start_time") if self.initial_data else None
-        if start_time:
-            try:
-                start_time_parsed = (
-                    datetime.datetime.fromisoformat(start_time.replace("Z", "+00:00"))
-                    if isinstance(start_time, str)
-                    else start_time
-                )
-            except ValueError:
-                start_time_parsed = None
-            if start_time_parsed and end_time <= start_time_parsed:
-                raise serializers.ValidationError("end_time must be after start_time.")
-        return end_time
 
     def save(self, **kwargs):
         if not self.calendar_group_service or not self.calendar_group_service.calendar_service:
@@ -3566,7 +3578,7 @@ class _BookingCodeExternalAttendeeSerializer(serializers.Serializer):
     name = serializers.CharField(required=False, allow_blank=True, default="")
 
 
-class BookingCodeEventCreateSerializer(serializers.Serializer):
+class BookingCodeEventCreateSerializer(_EndTimeAfterStartTimeSerializerMixin):
     """Input for ``POST /public/booking/calendar-events/``.
 
     Mirrors ``CreateEventWithCodeInput`` (GraphQL) minus its ``code`` field -- the
@@ -3582,23 +3594,8 @@ class BookingCodeEventCreateSerializer(serializers.Serializer):
     timezone = serializers.CharField()
     external_attendee = _BookingCodeExternalAttendeeSerializer()
 
-    def validate_end_time(self, end_time: datetime.datetime) -> datetime.datetime:
-        start_time = self.initial_data.get("start_time") if self.initial_data else None
-        if start_time:
-            try:
-                start_time_parsed = (
-                    datetime.datetime.fromisoformat(start_time.replace("Z", "+00:00"))
-                    if isinstance(start_time, str)
-                    else start_time
-                )
-            except ValueError:
-                start_time_parsed = None
-            if start_time_parsed and end_time <= start_time_parsed:
-                raise serializers.ValidationError("end_time must be after start_time.")
-        return end_time
 
-
-class BookingCodeGroupEventCreateSerializer(serializers.Serializer):
+class BookingCodeGroupEventCreateSerializer(_EndTimeAfterStartTimeSerializerMixin):
     """Input for ``POST /public/booking/calendar-groups/<group_id>/events/``.
 
     Mirrors ``CreateGroupEventWithCodeInput`` (GraphQL) minus its ``code`` field --
@@ -3617,18 +3614,3 @@ class BookingCodeGroupEventCreateSerializer(serializers.Serializer):
     timezone = serializers.CharField()
     slot_selections = _CalendarGroupSlotSelectionInputSerializer(many=True)
     external_attendee = _BookingCodeExternalAttendeeSerializer()
-
-    def validate_end_time(self, end_time: datetime.datetime) -> datetime.datetime:
-        start_time = self.initial_data.get("start_time") if self.initial_data else None
-        if start_time:
-            try:
-                start_time_parsed = (
-                    datetime.datetime.fromisoformat(start_time.replace("Z", "+00:00"))
-                    if isinstance(start_time, str)
-                    else start_time
-                )
-            except ValueError:
-                start_time_parsed = None
-            if start_time_parsed and end_time <= start_time_parsed:
-                raise serializers.ValidationError("end_time must be after start_time.")
-        return end_time

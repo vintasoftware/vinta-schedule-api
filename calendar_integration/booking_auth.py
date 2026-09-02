@@ -27,10 +27,21 @@ transport" Guiding Decision. This module owns:
   token; duration pinning now lives on ``CalendarGroup`` (see that field's
   help_text), so single-calendar codes carry no pin at all and this helper
   takes a group instead of a token.
+- ``resolve_and_authorize_write`` and ``translate_booking_write_errors``,
+  the resolve/authorize entry sequence and the exception-translation
+  vocabulary shared by every code-gated write viewset's ``create()``
+  (``booking_views.py``). Both live here rather than in ``booking_views.py``
+  so the write-side viewsets stay import-only consumers of this module --
+  ``booking_views.py`` already imports from here, and nothing here needs
+  anything from ``booking_views.py``, so keeping the direction one-way
+  avoids introducing a cycle.
 """
 
 import datetime
+from collections.abc import Iterator
+from contextlib import contextmanager
 
+from django.core.exceptions import PermissionDenied as DjangoPermissionDenied
 from django.http import HttpRequest
 
 from rest_framework.request import Request
@@ -43,15 +54,21 @@ from calendar_integration.booking_exceptions import (
     NotPermittedAPIException,
     OpaqueCodeError,
     RevokedCodeAPIException,
+    SlotUnavailableAPIException,
 )
+from calendar_integration.constants import EventManagementPermissions
 from calendar_integration.exceptions import (
+    BookingPolicyViolationError,
+    EventManagementError,
     InvalidTokenError,
+    NoAvailableTimeWindowsError,
     TokenAlreadyUsedError,
     TokenExpiredError,
     TokenRevokedError,
 )
 from calendar_integration.models import CalendarGroup, CalendarManagementToken
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
+from organizations.models import Organization
 
 
 BOOKING_CODE_HEADER = "X-Booking-Code"
@@ -193,3 +210,93 @@ def pinned_duration_error(
 
     pinned_seconds = int(pinned_total_seconds)
     return NotPermittedAPIException(f"This code is fixed to a {pinned_seconds} second booking.")
+
+
+def resolve_and_authorize_write(
+    request: HttpRequest | Request,
+    permission_service: CalendarPermissionService,
+    required_permission: EventManagementPermissions,
+) -> tuple[CalendarManagementToken, str, Organization]:
+    """Resolve the code, assert the permission, and resolve the organization.
+
+    Shared entry sequence for every code-gated write endpoint's ``create()``,
+    in this exact order:
+
+    1. Resolve the code from the ``X-Booking-Code`` header (discriminated
+       errors -- see ``resolve_booking_code_from_request``).
+    2. Assert the resolved token carries ``required_permission``, else raise
+       ``NotPermittedAPIException``.
+    3. Resolve the ``Organization`` from ``token.organization_id`` -- a
+       missing org raises ``InvalidCodeAPIException``, matching the
+       pre-refactor behaviour.
+
+    Returns ``(token, code, organization)``.
+
+    Deliberately does NOT perform the calendar-vs-group scope check (single
+    calendar vs. group differs per endpoint and stays in the caller) and does
+    NOT run the duration-pin check (``pinned_duration_error``) -- its call
+    site sits after the scope check in every caller today, so it stays there
+    too.
+    """
+    token, code = resolve_booking_code_from_request(request, permission_service)
+
+    token_permissions = {p.permission for p in token.permissions.all()}
+    if required_permission not in token_permissions:
+        raise NotPermittedAPIException("This code does not permit booking.")
+
+    try:
+        organization = Organization.objects.get(id=token.organization_id)
+    except Organization.DoesNotExist as exc:
+        raise InvalidCodeAPIException() from exc
+
+    return token, code, organization
+
+
+@contextmanager
+def translate_booking_write_errors(*, permission_denied_message: str) -> Iterator[None]:
+    """Translate the exception vocabulary shared by every code-gated write.
+
+    Wrap the ``transaction.atomic()`` create-then-consume block of a write
+    viewset's ``create()`` in this context manager to map:
+
+    - ``TokenAlreadyUsedError`` / ``TokenExpiredError`` / ``TokenRevokedError``
+      (a concurrent consumer won the race, or state changed between resolve
+      and consume) onto the matching discriminated
+      ``*CodeAPIException``.
+    - ``DjangoPermissionDenied`` onto ``NotPermittedAPIException``, with the
+      caller-supplied ``permission_denied_message`` (this differs per
+      endpoint, so it is not hardcoded here).
+    - ``BookingPolicyViolationError`` onto ``SlotUnavailableAPIException``
+      with its policy-specific message -- the code is NOT consumed (the
+      wrapped ``transaction.atomic()`` rolls back), so the caller may retry.
+    - ``NoAvailableTimeWindowsError`` / ``EventManagementError`` (slot taken,
+      invalid times, invalid selection) onto a bare
+      ``SlotUnavailableAPIException()`` -- also not consumed, also retryable.
+
+    ``OverLimitError`` (the organization's postpaid ``event_occurrences``
+    allowance) is deliberately NOT caught here -- it is not a booking-code-
+    specific outcome, so it must propagate uncaught to the shared
+    ``vinta_exception_handler``, which renders the shared 402 over-limit
+    contract.
+
+    Any exception type not listed above (e.g. ``CalendarGroupError``,
+    ``CalendarGroup.DoesNotExist``) is left to propagate unchanged -- callers
+    that need those map them in their own ``except`` clauses around this
+    context manager.
+    """
+    try:
+        yield
+    except (TokenAlreadyUsedError, TokenExpiredError, TokenRevokedError) as exc:
+        if isinstance(exc, TokenExpiredError):
+            raise ExpiredCodeAPIException() from exc
+        if isinstance(exc, TokenRevokedError):
+            raise RevokedCodeAPIException() from exc
+        raise AlreadyUsedCodeAPIException() from exc
+    except DjangoPermissionDenied as exc:
+        raise NotPermittedAPIException(permission_denied_message) from exc
+    except BookingPolicyViolationError as exc:
+        raise SlotUnavailableAPIException(
+            "The requested time slot is not available under the current booking policy."
+        ) from exc
+    except (NoAvailableTimeWindowsError, EventManagementError) as exc:
+        raise SlotUnavailableAPIException() from exc
