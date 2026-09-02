@@ -305,6 +305,84 @@ class TestCalendarPoolCrud:
 
 
 @pytest.mark.django_db
+class TestCalendarPoolPatch:
+    """`name`/`calendar_ids` have no "omitted means unchanged" sentinel, so a
+    PATCH that omits either must be rejected rather than corrupt the pool
+    (missing `name` would otherwise KeyError -> 500) or silently wipe the
+    roster (missing `calendar_ids` would otherwise reach `update_pool` as
+    `[]`, deleting every membership and cascading into every slot the pool
+    is attached to)."""
+
+    def test_patch_omitting_name_returns_400_not_500(
+        self, auth_client, owned_pool, internal_calendars, admin_user
+    ):
+        url = reverse("api:CalendarPools-detail", kwargs={"pk": owned_pool.id})
+        response = auth_client.patch(url, {"description": "x"}, format="json")
+        _assert_status(response, status.HTTP_400_BAD_REQUEST)
+        assert "name" in response.data
+        owned_pool.refresh_from_db()
+        assert owned_pool.name == "Nurses"
+
+    def test_patch_omitting_calendar_ids_does_not_wipe_roster(
+        self, auth_client, owned_pool, internal_calendars, admin_user, organization
+    ):
+        group = CalendarGroup.objects.create(organization=organization, name="Clinic")
+        slot = CalendarGroupSlot.objects.create(
+            organization=organization, group=group, name="Nurses"
+        )
+        CalendarGroupSlotPool.objects.create(organization=organization, slot=slot, pool=owned_pool)
+        for calendar in (internal_calendars["nurse_a"], internal_calendars["nurse_b"]):
+            CalendarGroupSlotMembership.objects.create(
+                organization=organization,
+                slot=slot,
+                calendar=calendar,
+                source_pool=owned_pool,
+            )
+
+        url = reverse("api:CalendarPools-detail", kwargs={"pk": owned_pool.id})
+        response = auth_client.patch(url, {"name": "Renamed"}, format="json")
+        _assert_status(response, status.HTTP_400_BAD_REQUEST)
+        assert "calendar_ids" in response.data
+
+        owned_pool.refresh_from_db()
+        assert owned_pool.name == "Nurses"
+        assert set(owned_pool.memberships.values_list("calendar_fk_id", flat=True)) == {
+            internal_calendars["nurse_a"].id,
+            internal_calendars["nurse_b"].id,
+        }
+        # The dangerous part: the cascade into the projected slot membership
+        # rows must not have happened either.
+        projected_calendar_ids = set(
+            CalendarGroupSlotMembership.objects.filter_by_organization(organization.id)
+            .projected()
+            .filter(slot_fk=slot, source_pool_fk=owned_pool)
+            .values_list("calendar_fk_id", flat=True)
+        )
+        assert projected_calendar_ids == {
+            internal_calendars["nurse_a"].id,
+            internal_calendars["nurse_b"].id,
+        }
+
+    def test_patch_supplying_every_key_behaves_like_put(
+        self, auth_client, owned_pool, internal_calendars, admin_user
+    ):
+        url = reverse("api:CalendarPools-detail", kwargs={"pk": owned_pool.id})
+        payload = {
+            "name": "Nurses Renamed",
+            "description": "Updated",
+            "calendar_ids": [internal_calendars["nurse_a"].id, internal_calendars["room_1"].id],
+        }
+        response = auth_client.patch(url, payload, format="json")
+        _assert_status(response, status.HTTP_200_OK)
+        owned_pool.refresh_from_db()
+        assert owned_pool.name == "Nurses Renamed"
+        assert set(owned_pool.memberships.values_list("calendar_fk_id", flat=True)) == {
+            internal_calendars["nurse_a"].id,
+            internal_calendars["room_1"].id,
+        }
+
+
+@pytest.mark.django_db
 class TestCalendarPoolFilterSet:
     def test_filter_by_member_calendar(
         self, auth_client, organization, owned_pool, internal_calendars, admin_user

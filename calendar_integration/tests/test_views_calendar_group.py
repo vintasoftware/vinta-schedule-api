@@ -543,6 +543,105 @@ class TestCalendarGroupCrud:
 
 
 @pytest.mark.django_db
+class TestCalendarGroupPatch:
+    """`slots` has no "omitted means unchanged" sentinel, so a PATCH that
+    omits it entirely must be rejected rather than silently delete every
+    existing slot (and every pool attachment with it) -- pre-existing on
+    `main` (`CalendarGroupSerializer._to_input_data`'s
+    `validated_data.get("slots", [])`), fixed here at the requester's
+    explicit request."""
+
+    @pytest.fixture
+    def pool(self, organization, internal_calendars):
+        return create_calendar_pool(
+            organization=organization,
+            name="Nurses",
+            calendars=[internal_calendars["phys_b"]],
+        )
+
+    def test_patch_omitting_slots_leaves_existing_slots_and_pool_attachments_intact(
+        self, auth_client, owned_group, internal_calendars, admin_user, organization, pool
+    ):
+        physicians = owned_group.slots.get(name="Physicians")
+        CalendarGroupSlotPool.objects.create(organization=organization, slot=physicians, pool=pool)
+
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        response = auth_client.patch(url, {"description": "x"}, format="json")
+        _assert_status(response, status.HTTP_400_BAD_REQUEST)
+        assert "slots" in response.data
+
+        # Existing slots survive, with their calendar rosters intact.
+        assert {s.name for s in owned_group.slots.all()} == {"Physicians", "Rooms"}
+        assert set(
+            CalendarGroupSlotMembership.objects.filter_by_organization(organization.id)
+            .filter(slot=physicians)
+            .values_list("calendar_fk_id", flat=True)
+        ) == {internal_calendars["phys_a"].id, internal_calendars["phys_b"].id}
+        # Pool attachment survives.
+        assert (
+            CalendarGroupSlotPool.objects.filter_by_organization(organization.id)
+            .filter(slot=physicians, pool=pool)
+            .exists()
+        )
+
+    def test_patch_slot_missing_calendar_ids_returns_400_not_500(
+        self, auth_client, owned_group, internal_calendars, admin_user
+    ):
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        payload = {
+            "name": owned_group.name,
+            "description": owned_group.description,
+            "slots": [
+                {
+                    "name": "Physicians",
+                    # calendar_ids omitted -- must not KeyError.
+                    "required_count": 1,
+                    "order": 0,
+                },
+                {
+                    "name": "Rooms",
+                    "calendar_ids": [internal_calendars["room_1"].id],
+                    "required_count": 1,
+                    "order": 1,
+                },
+            ],
+        }
+        response = auth_client.patch(url, payload, format="json")
+        _assert_status(response, status.HTTP_400_BAD_REQUEST)
+        assert "slots" in response.data
+
+    def test_patch_supplying_every_key_behaves_like_put(
+        self, auth_client, owned_group, internal_calendars, admin_user
+    ):
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        payload = {
+            "name": "Clinic Renamed",
+            "description": "New desc",
+            "slots": [
+                {
+                    "name": "Physicians",
+                    "calendar_ids": [internal_calendars["phys_a"].id],
+                    "required_count": 1,
+                    "order": 0,
+                },
+                {
+                    "name": "Rooms",
+                    "calendar_ids": [internal_calendars["room_1"].id],
+                    "required_count": 1,
+                    "order": 1,
+                },
+            ],
+        }
+        response = auth_client.patch(url, payload, format="json")
+        _assert_status(response, status.HTTP_200_OK)
+        owned_group.refresh_from_db()
+        assert owned_group.name == "Clinic Renamed"
+        assert set(
+            owned_group.slots.get(name="Physicians").calendars.values_list("external_id", flat=True)
+        ) == {"phys_a"}
+
+
+@pytest.mark.django_db
 class TestCalendarGroupEventActions:
     def _make_window_available(self, calendars, start, end):
         for cal in calendars:

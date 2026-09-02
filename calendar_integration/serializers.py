@@ -2746,6 +2746,31 @@ class CalendarPoolSerializer(VirtualModelSerializer):
             )
         return membership.organization
 
+    def validate(self, attrs: dict) -> dict:
+        # `name`/`calendar_ids` have no "omitted means unchanged" sentinel --
+        # a pool write always replaces the name/roster wholesale (see
+        # `CalendarPoolInputData`'s docstring). Under `partial=True` (PATCH),
+        # DRF silently drops an absent required field via `SkipField` instead
+        # of raising its normal "this field is required" error, so an absent
+        # `name` would otherwise reach `_to_input_data` and KeyError, and an
+        # absent `calendar_ids` would silently wipe the entire roster (and
+        # cascade that wipe into every slot the pool is attached to). Reject
+        # the ambiguous partial write instead of guessing.
+        if self.partial:
+            missing = [field for field in ("name", "calendar_ids") if field not in attrs]
+            if missing:
+                raise serializers.ValidationError(
+                    {
+                        field: (
+                            "This field cannot be omitted on a partial update: a pool "
+                            "write always replaces the full name/roster, so an absent "
+                            "value would corrupt or wipe the pool."
+                        )
+                        for field in missing
+                    }
+                )
+        return attrs
+
     def _to_input_data(self, validated_data: dict) -> CalendarPoolInputData:
         return CalendarPoolInputData(
             name=validated_data["name"],
@@ -3249,6 +3274,45 @@ class CalendarGroupSerializer(VirtualModelSerializer):
                 {"non_field_errors": ["User has no organization membership."]}
             )
         return membership.organization
+
+    def validate(self, attrs: dict) -> dict:
+        # `slots` has no "omitted means unchanged" sentinel -- a group write
+        # always replaces the full slot list wholesale. Under `partial=True`
+        # (PATCH), DRF silently drops an absent `slots` key via `SkipField`
+        # instead of raising its normal "this field is required" error, and
+        # `_to_input_data`'s `validated_data.get("slots", [])` would then read
+        # that absence as "no slots" -- deleting every existing slot (and
+        # every pool attachment with it) on a PATCH that never mentioned
+        # slots at all. The same `SkipField` behavior applies one level down:
+        # a `slots` entry present but missing `calendar_ids` reaches here
+        # silently instead of raising DRF's normal required-field error.
+        # Reject both ambiguous partial writes instead of guessing.
+        if self.partial:
+            if "slots" not in attrs:
+                raise serializers.ValidationError(
+                    {
+                        "slots": (
+                            "This field cannot be omitted on a partial update: a group "
+                            "write always replaces the full slot list, so an absent "
+                            "value would delete every existing slot."
+                        )
+                    }
+                )
+            for index, slot in enumerate(attrs["slots"]):
+                if "calendar_ids" not in slot:
+                    raise serializers.ValidationError(
+                        {
+                            "slots": {
+                                str(index): {
+                                    "calendar_ids": (
+                                        "This field cannot be omitted: every slot must "
+                                        "supply its full calendar roster."
+                                    )
+                                }
+                            }
+                        }
+                    )
+        return attrs
 
     def _to_input_data(self, validated_data: dict) -> CalendarGroupInputData:
         return CalendarGroupInputData(

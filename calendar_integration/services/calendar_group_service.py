@@ -644,13 +644,13 @@ class CalendarGroupService:
     def create_pool(self, data: CalendarPoolInputData) -> CalendarPool:
         """Create a CalendarPool with its roster.
 
-        Roster rows are written one ``CalendarPoolMembership.objects.create()``
-        call at a time -- not ``bulk_create`` -- so the ``post_save`` receivers in
-        ``calendar_integration.signals`` fire uniformly for every write to this
-        model (see that module's bulk-safety notes). A pool created here cannot
-        yet be attached to any slot, so each receiver's reconcile is a cheap
-        no-op; the point is not special-casing this call site out of the signal
-        path a future roster write would still expect to be live.
+        Roster rows are written via ``bulk_create`` plus a single explicit
+        ``reconcile_pools`` call -- mirroring ``update_pool``'s addition path
+        -- rather than one ``CalendarPoolMembership.objects.create()`` per
+        row. A pool created here cannot yet be attached to any slot, so a
+        freshly-created pool's per-row ``post_save`` reconcile would always be
+        a no-op; one explicit reconcile after the bulk write costs the same
+        no-op query exactly once instead of once per calendar.
         """
         self._assert_initialized()
         calendar_ids = list(dict.fromkeys(data.calendar_ids))
@@ -661,12 +661,20 @@ class CalendarGroupService:
             name=data.name,
             description=data.description,
         )
-        for calendar_id in calendar_ids:
-            CalendarPoolMembership.objects.create(
-                organization=self.organization,
-                pool_fk=pool,
-                calendar_fk_id=calendar_id,
+        if calendar_ids:
+            CalendarPoolMembership.objects.bulk_create(
+                [
+                    CalendarPoolMembership(
+                        organization=self.organization,
+                        pool_fk=pool,
+                        calendar_fk_id=calendar_id,
+                    )
+                    for calendar_id in calendar_ids
+                ]
             )
+            # bulk_create fires no post_save signal -- reconcile explicitly,
+            # matching `update_pool`'s addition path.
+            reconcile_pools({pool.id}, self.organization_id)
         self._audit_group_write(AuditAction.CREATE, pool)
         return pool
 
