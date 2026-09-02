@@ -20,7 +20,7 @@ Single Django project, multiple installed apps under the repo root:
 - `s3direct_overrides/` — overrides for `django-s3direct`.
 - `vintasend_django_sms_template_renderer/`, `vintasend_twilio/` — vintasend SMS/Twilio glue.
 
-Postgres is the only persistent store. Recurring-event occurrences are calculated dynamically by Postgres functions defined under `calendar_integration/migrations/sql/functions/`, exposed to the ORM via `calendar_integration/database_functions.py`. Celery (with `celery-redbeat`) handles async tasks. The broker differs by environment: **RabbitMQ** locally, **Amazon SQS** in the deployed environments; Redis (ElastiCache when deployed) is the result backend and redbeat store in both.
+Postgres is the only persistent store. Recurring-event occurrences are calculated dynamically by Postgres functions defined under `calendar_integration/migrations/sql/functions/`, exposed to the ORM via `calendar_integration/database_functions.py`. Celery (with `celery-redbeat`) handles async tasks and brokers over **Amazon SQS** everywhere -- real SQS when deployed, Floci's emulation locally. Redis (ElastiCache when deployed) is the result backend and redbeat store. Local tasks run eagerly in-process unless `CELERY_TASK_ALWAYS_EAGER=false`.
 
 ## Tech Stack
 
@@ -41,7 +41,7 @@ Postgres is the only persistent store. Recurring-event occurrences are calculate
 - **mypy** with `django-stubs` + `djangorestframework-stubs` — typing.
 - **pytest** + **pytest-django** + **pytest-xdist** + **pytest-cov** + **model-bakery** — testing.
 - **pre-commit** — local hooks (`.pre-commit-config.yaml`): ruff, django-upgrade (5.0 target), local eslint/tsc/missing-migrations/spectacular-schema-export.
-- **Docker Compose** (`docker-compose.yml`) — dev runtime: api, db (postgres:alpine), broker (rabbitmq:alpine), result (redis:alpine), floci (local AWS S3 emulator), mailpit.
+- **Docker Compose** (`docker-compose.yml`) — dev runtime: api, worker, db (postgres:alpine), result (redis:alpine), floci (local AWS emulator: S3 + SQS), mailpit. No RabbitMQ: the broker is Floci's SQS, matching the deployed environments.
 - **AWS ECS/Fargate** (`infrastructure/`) — deploy target: Django + Celery worker + beat on Fargate, SQS broker, RDS Postgres, ElastiCache, ALB, S3/CloudFront. Terraform modules applied through Terragrunt + Scalr; see `infrastructure/README.md`. Staging is provisioned; production files exist but are unapplied.
 - **Sentry** — error tracking (`sentry-sdk`); `SENTRY_DSN` env var.
 
@@ -244,13 +244,19 @@ Deployed-environment vars come from two places, and which one decides where you 
 - **ECS task definition `environment`** — non-secret config, built from Terraform inputs in `infrastructure/modules/app-platform/ecs.tf` (`local.container_environment`). Covers `ALLOWED_HOSTS`, `SITE_DOMAIN`, `API_DOMAIN`, `FRONTEND_BASE_URL`, `CORS_ALLOWED_ORIGINS`, `DEFAULT_FROM_EMAIL`, `DEFAULT_BCC_EMAILS`, the AWS bucket / region / CloudFront-domain settings, and the `CELERY_*` tuning knobs.
 - **One Secrets Manager secret per environment** — every credential, as a flat JSON object; ECS maps each key to its own env var. Covers `SECRET_KEY`, `SALT_KEY`, `DATABASE_URL`, `REDIS_URL`, `SENTRY_DSN`, `SMTP_*`, `GOOGLE_*`, `TWILIO_*`, `STRIPE_*`, `MERCADOPAGO_*`, `AWS_CLOUDFRONT_KEY`/`_ID`. The key list is `local.secret_keys` in `infrastructure/modules/app-platform/secrets.tf`; `extra_secret_keys` adds one without editing the module.
 
-Deployed-only vars the app reads: `CELERY_SQS_QUEUE_NAME`, `CELERY_SQS_QUEUE_URL`, `CELERY_SQS_VISIBILITY_TIMEOUT`, `CELERY_SQS_WAIT_TIME_SECONDS`, `CELERY_SQS_POLLING_INTERVAL`, `CELERY_TASK_DEFAULT_QUEUE`, `COMMIT_SHA` (set by the deploy, reported to Sentry), and `ECS_CONTAINER_METADATA_URI_V4` (set by ECS itself — `settings/production.py` reads the task's own IP from it and appends it to `ALLOWED_HOSTS`, which is what lets the load balancer health check succeed without `ALLOWED_HOSTS = "*"`).
+SQS broker vars, set in every environment including local (Floci): `CELERY_BROKER_URL`, `CELERY_TASK_DEFAULT_QUEUE`, `CELERY_SQS_QUEUE_URL`, `CELERY_SQS_IS_SECURE`, `CELERY_SQS_VISIBILITY_TIMEOUT`, `CELERY_SQS_WAIT_TIME_SECONDS`, `CELERY_SQS_POLLING_INTERVAL`. Local-only: `CELERY_TASK_ALWAYS_EAGER`. Deployed-only vars the app reads: `COMMIT_SHA` (set by the deploy, reported to Sentry), and `ECS_CONTAINER_METADATA_URI_V4` (set by ECS itself — `settings/production.py` reads the task's own IP from it and appends it to `ALLOWED_HOSTS`, which is what lets the load balancer health check succeed without `ALLOWED_HOSTS = "*"`).
 
 Adding a new env var requires updates to both example files plus either the Terraform `container_environment` map or the secret key list — see the `add-env-var` skill.
 
 ## Local Storage Emulation — Floci
 
-`docker-compose.yml` runs Floci (free open-source AWS S3 emulator) at `http://localhost:4566`. `make setup` initializes the dev bucket via `scripts/init_floci.py`. Default credentials: `test` / `test`. The `USE_FLOCI` setting (in `local.py`) switches between Floci (dev) and real AWS S3 (production).
+`docker-compose.yml` runs Floci (free open-source AWS emulator) at `http://localhost:4566`. `make setup` initializes the dev bucket **and the Celery SQS queues** via `scripts/init_floci.py`. Default credentials: `test` / `test`. The `USE_FLOCI` setting (in `local.py`) switches between Floci (dev) and real AWS S3 (production).
+
+Floci also backs the Celery broker, so local dev speaks the same transport as staging. `scripts/init_floci.py` gives the local queue the same visibility timeout and redrive policy Terraform gives the real one, and Floci enforces both -- messages really do go invisible, really are redelivered when the timeout lapses, and really land on the DLQ after `maxReceiveCount`.
+
+Tasks run eagerly in-process by default (`CELERY_TASK_ALWAYS_EAGER`, default `True`), so most work needs no broker at all. Setting it to `false` publishes for real and lets the `worker` container consume -- that is the mode for testing anything that depends on at-least-once delivery, retries or task timeouts.
+
+`common/celery_sqs.py` builds the transport options; `settings/base.py` applies them whenever `CELERY_BROKER_URL` starts with `sqs://`, which is what makes one code path serve Floci and real SQS. The only difference is `CELERY_SQS_IS_SECURE=false` locally, because Floci serves plain HTTP.
 
 ## Error Tracking — Sentry
 

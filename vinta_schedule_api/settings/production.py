@@ -72,56 +72,16 @@ SECURE_CONTENT_TYPE_NOSNIFF = True
 SECURE_BROWSER_XSS_FILTER = True
 X_FRAME_OPTIONS = "DENY"
 
-AWS_REGION = config("AWS_REGION", default="us-east-1")
-
 # Celery
 # Recommended settings for reliability: https://gist.github.com/fjsj/da41321ac96cf28a96235cb20e7236f6
-# Broker precedence: an explicit CELERY_BROKER_URL first -- on AWS that is the
-# bare `sqs://`, deliberately without credentials so kombu falls through to
-# boto3's default chain and picks up the ECS task role -- then RabbitMQ, then
-# Redis for setups that have neither.
-CELERY_BROKER_URL = (
-    config("CELERY_BROKER_URL", default="") or config("RABBITMQ_URL", default="") or REDIS_URL
-)
+# The SQS case is already configured in base.py, which reads CELERY_BROKER_URL and
+# recognises the scheme. This only adds the fallbacks for an environment that has
+# no SQS queue: RabbitMQ if it has one, otherwise Redis.
+CELERY_BROKER_URL = CELERY_BROKER_URL or config("RABBITMQ_URL", default="") or REDIS_URL
 # Redis result backend is optional; when REDIS_URL is unset, task results are
 # simply not stored (the broker still drives task execution).
 CELERY_RESULT_BACKEND = config("REDIS_URL", default="") or None
 CELERY_SEND_TASK_ERROR_EMAILS = True
-
-if CELERY_BROKER_URL.startswith("sqs://"):
-    # SQS is a queue service, not an AMQP broker, and three of celery's defaults
-    # assume things it cannot do.
-    CELERY_TASK_DEFAULT_QUEUE = config("CELERY_TASK_DEFAULT_QUEUE", default="celery")
-
-    # Replaces the base settings' `confirm_publish`, which is a Redis/RabbitMQ
-    # publisher option that means nothing here.
-    CELERY_BROKER_TRANSPORT_OPTIONS = {
-        "region": AWS_REGION,
-        # Has to match the queue's own visibility timeout. CELERY_TASK_ACKS_LATE is
-        # on, so a message is only deleted once its task finishes -- if the timeout
-        # expires first, SQS hands the same task to a second worker and it runs twice.
-        "visibility_timeout": config("CELERY_SQS_VISIBILITY_TIMEOUT", cast=int, default=900),
-        "polling_interval": config("CELERY_SQS_POLLING_INTERVAL", cast=float, default=1.0),
-        # Long polling: an idle worker waits for work inside one API call instead of
-        # billing a call per second to be told there is none.
-        "wait_time_seconds": config("CELERY_SQS_WAIT_TIME_SECONDS", cast=int, default=20),
-    }
-
-    _celery_sqs_queue_url = config("CELERY_SQS_QUEUE_URL", default="")
-    if _celery_sqs_queue_url:
-        # Naming the queue's URL up front is what lets the task role carry only the
-        # message actions on that one queue: without it kombu calls ListQueues and
-        # CreateQueue to discover the URL itself.
-        CELERY_BROKER_TRANSPORT_OPTIONS["predefined_queues"] = {
-            CELERY_TASK_DEFAULT_QUEUE: {"url": _celery_sqs_queue_url}
-        }
-
-    # SQS has no fanout exchange, so celery's control channel and event stream have
-    # nowhere to publish. Left enabled, the worker retries a broadcast queue it can
-    # never create; the cost of disabling them is that `celery inspect` and flower
-    # go quiet -- CloudWatch Logs is the replacement.
-    CELERY_WORKER_ENABLE_REMOTE_CONTROL = False
-    CELERY_WORKER_SEND_TASK_EVENTS = False
 
 # Redbeat — distributed beat scheduler. Holds a Redis lock so overlapping beat
 # instances (e.g. during a rolling deploy) never double-emit scheduled tasks.

@@ -13,6 +13,8 @@ from decouple import Csv, config  # type: ignore
 from dj_database_url import parse as db_url
 from vinta_billing.provider_slugs import MERCADOPAGO, PAYMENT_PROVIDER_SLUGS, STRIPE
 
+from common.celery_sqs import build_sqs_transport_options, is_sqs_broker
+
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -396,6 +398,41 @@ CELERY_WORKER_MAX_MEMORY_PER_CHILD = config(
 CELERY_WORKER_SEND_TASK_EVENTS = config("CELERY_WORKER_SEND_TASK_EVENTS", cast=bool, default=True)
 CELERY_EVENT_QUEUE_EXPIRES = config("CELERY_EVENT_QUEUE_EXPIRES", cast=float, default=60.0)
 CELERY_EVENT_QUEUE_TTL = config("CELERY_EVENT_QUEUE_TTL", cast=float, default=5.0)
+
+AWS_REGION = config("AWS_REGION", default="us-east-1")
+
+# Broker selection. The URL decides the shape of everything below it:
+#
+#   sqs://                      deployed -- no credentials, so kombu falls through
+#                               to boto3's chain and resolves the ECS task role
+#   sqs://test:test@floci:4566  local -- Floci, which emulates SQS over plain HTTP
+#   amqp:// or redis://         RabbitMQ or Redis, nothing else to configure
+#
+# Environments that fall back to another broker when this is unset do so on top of
+# this value -- see settings/production.py.
+CELERY_BROKER_URL = config("CELERY_BROKER_URL", default="")
+
+if is_sqs_broker(CELERY_BROKER_URL):
+    # The queue name is the broker's routing key, so it has to be the real queue's
+    # name, not celery's "celery" default, wherever the queue is named otherwise.
+    CELERY_TASK_DEFAULT_QUEUE = config("CELERY_TASK_DEFAULT_QUEUE", default="celery")
+
+    CELERY_BROKER_TRANSPORT_OPTIONS = build_sqs_transport_options(
+        region=AWS_REGION,
+        queue_name=CELERY_TASK_DEFAULT_QUEUE,
+        queue_url=config("CELERY_SQS_QUEUE_URL", default=""),
+        visibility_timeout=config("CELERY_SQS_VISIBILITY_TIMEOUT", cast=int, default=900),
+        polling_interval=config("CELERY_SQS_POLLING_INTERVAL", cast=float, default=1.0),
+        wait_time_seconds=config("CELERY_SQS_WAIT_TIME_SECONDS", cast=int, default=20),
+        is_secure=config("CELERY_SQS_IS_SECURE", cast=bool, default=True),
+    )
+
+    # SQS has no fanout exchange, so celery's control channel and event stream have
+    # nowhere to publish. Left enabled, the worker retries a broadcast queue it can
+    # never create; the cost of disabling them is that `celery inspect` and flower
+    # go quiet -- logs are the replacement.
+    CELERY_WORKER_ENABLE_REMOTE_CONTROL = False
+    CELERY_WORKER_SEND_TASK_EVENTS = False
 
 # Sentry
 SENTRY_DSN = config("SENTRY_DSN", default="")

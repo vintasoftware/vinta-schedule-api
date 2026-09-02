@@ -58,17 +58,17 @@ notification bridge, and the plan catalog. See
 [`docs/billing.md`](docs/billing.md) for the full picture, including how to
 upgrade the pin and a list of known package gaps.
 
-## Floci S3 Configuration
+## Floci — local S3 and SQS
 
-This project uses [Floci](https://github.com/floci-io/floci) to provide a local AWS S3-compatible service for development instead of MinIO. Floci is a free, open-source AWS emulator that needs no account, auth token, or feature gates, and starts in milliseconds.
+This project uses [Floci](https://github.com/floci-io/floci) to emulate AWS locally instead of MinIO. Floci is a free, open-source AWS emulator that needs no account, auth token, or feature gates, and starts in milliseconds. It backs two things here: **S3** for media and static files, and **SQS** as the Celery broker — the same transport the deployed environments use.
 
 ### Setup
 
-The docker-compose.yml is already configured to use Floci. After running `make up`, you need to initialize the S3 bucket:
+The docker-compose.yml is already configured to use Floci. After running `make up`, initialize the bucket and the queues:
 
 1. **Wait for Floci to be ready** (usually takes a few seconds after `make up`)
 
-2. **Initialize the S3 bucket** using one of these methods:
+2. **Initialize the S3 bucket and SQS queues** using one of these methods:
 
    **Option A: Using the provided script** (run by `make setup`)
    ```bash
@@ -101,12 +101,47 @@ The docker-compose.yml is already configured to use Floci. After running `make u
 - **Secret Key**: `test`
 - **Region**: `us-east-1`
 - **Bucket Name**: `vinta_schedule`
+- **Celery queue**: `vinta-schedule-local-celery` (plus `-dlq`)
 
 The configuration automatically switches between Floci (development) and AWS S3 (production) based on the `USE_FLOCI` setting in your local settings.
+
+### Celery over SQS locally
+
+`scripts/init_floci.py` creates the broker queue and its dead-letter queue with the
+same visibility timeout and redrive policy Terraform gives the real ones, so the
+queue behaves the same in both places.
+
+**Tasks still run in-process by default** (`CELERY_TASK_ALWAYS_EAGER=true`), which
+is what you want for most feature work — no broker, no worker, no queue involved.
+Set it to `false` in your `.env` to exercise the real path:
+
+```bash
+CELERY_TASK_ALWAYS_EAGER=false
+```
+
+Then `make up_with_workers` runs a worker that consumes from Floci over kombu's SQS
+transport. That is where SQS's own behaviour shows up, and it differs from RabbitMQ
+in ways worth seeing before staging does:
+
+- **At-least-once delivery.** A task can run twice; tasks have to tolerate it.
+- **The visibility timeout is the real task timeout.** Acks are late, so a message
+  is deleted only when its task finishes. If the timeout lapses first, SQS hands
+  the same task to another worker. `CELERY_SQS_VISIBILITY_TIMEOUT` is 60s locally
+  (the deployed queues use 900s) so redelivery is quick to observe; the same value
+  configures the queue, so re-run `make setup` after changing it.
+- **Repeated failures land on the dead-letter queue** after 5 deliveries rather
+  than looping forever. Inspect it with
+  `aws --endpoint-url=http://localhost:4566 sqs receive-message --queue-url http://localhost:4566/000000000000/vinta-schedule-local-celery-dlq`.
+- **No `celery inspect`, no flower.** SQS has no fanout exchange, so remote control
+  and task events are off. Logs are the replacement.
+
+RabbitMQ is no longer in `docker-compose.yml`. The settings still accept an
+`amqp://` or `redis://` broker if you point `CELERY_BROKER_URL` at one.
 
 ### Troubleshooting
 
 - **"NoSuchBucket" errors**: Make sure you've run the initialization script after starting the containers
+- **`UndefinedQueueException` from Celery**: the queue named by `CELERY_TASK_DEFAULT_QUEUE` does not exist yet. Run `make setup` (or `python scripts/init_floci.py`). The queue is pinned by URL rather than created on demand, which is deliberate — it is what keeps the deployed task role down to one queue.
 - **Connection errors**: Ensure the Floci container is running with `docker-compose ps`
 - **Access denied**: Floci uses `test`/`test` as default credentials in development
 

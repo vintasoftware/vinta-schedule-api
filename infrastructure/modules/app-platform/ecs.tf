@@ -73,9 +73,10 @@ locals {
       # Celery over SQS. `sqs://` carries no credentials on purpose -- kombu falls
       # through to boto3's default chain, which resolves the task role.
       CELERY_BROKER_URL         = "sqs://"
-      CELERY_SQS_QUEUE_NAME     = aws_sqs_queue.celery.name
       CELERY_SQS_QUEUE_URL      = aws_sqs_queue.celery.url
       CELERY_TASK_DEFAULT_QUEUE = aws_sqs_queue.celery.name
+      # CELERY_SQS_IS_SECURE is left at its default (true). Only local development
+      # sets it, because Floci serves plain HTTP.
 
       # Must stay at or below the queue's own visibility timeout: celery uses this
       # to decide when to extend a message it is still working on.
