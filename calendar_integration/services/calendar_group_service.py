@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Annotated, cast
 
 from django.core.exceptions import PermissionDenied
 from django.db import IntegrityError, transaction
-from django.db.models import Exists, Model, OuterRef, Q
+from django.db.models import Exists, Model, OuterRef
 from django.utils import timezone
 
 from dependency_injector.wiring import Provide, inject
@@ -260,41 +260,28 @@ class CalendarGroupService:
     def _resolve_effective_pool_ids(
         self,
         slots: list[CalendarGroupSlotInputData],
-        existing_slots: dict[str, CalendarGroupSlot] | None,
     ) -> dict[str, list[int]]:
-        """Map each incoming slot name to the pool ids it will end up attached to.
+        """Map each incoming slot name to the pool ids validation should judge it against.
 
-        ``pool_ids is None`` means "leave attachments unchanged", so the answer
-        for such a slot is whatever is attached to the existing slot of that
-        name today (nothing, for a slot being created). Resolving this up front
-        is what lets validation reason about the *effective* roster -- inline
-        calendars plus pool calendars -- rather than only the inline half.
+        Only pools the caller EXPLICITLY sends (``pool_ids is not None``) are in
+        scope. A slot whose ``pool_ids`` is omitted keeps whatever is attached
+        in the database unchanged (``_reconcile_slot`` / ``_create_slots``
+        handle that, not this method) -- but that unchanged attachment is not
+        re-validated here. Doing so used to judge an untouched slot against a
+        pool roster a third party can mutate at any time: a `required_count`
+        that fit the pool's roster at attach time, or two slots whose pools
+        never used to overlap, could start failing validation on an
+        `update_group` call that never touched `pool_ids` at all, with an
+        error naming a slot the caller never submitted. Restricting this to
+        explicit pools only ("validate what the caller submits") closes that
+        hole, and also means a payload with no `pool_ids` anywhere issues no
+        `CalendarGroupSlotPool` / `CalendarPool` query at all.
         """
-        effective: dict[str, list[int]] = {}
-        known_slots = existing_slots or {}
-        unchanged_slot_ids = [
-            known_slots[s.name].id for s in slots if s.pool_ids is None and s.name in known_slots
-        ]
-        attached_by_slot_id: dict[int, list[int]] = {}
-        if unchanged_slot_ids:
-            rows = (
-                CalendarGroupSlotPool.objects.filter_by_organization(self.organization_id)
-                .filter(slot_fk_id__in=unchanged_slot_ids)
-                .values_list("slot_fk_id", "pool_fk_id")
-            )
-            for slot_id, pool_id in rows:
-                attached_by_slot_id.setdefault(slot_id, []).append(pool_id)
-
-        for slot_data in slots:
-            if slot_data.pool_ids is not None:
-                effective[slot_data.name] = list(dict.fromkeys(slot_data.pool_ids))
-            elif slot_data.name in known_slots:
-                effective[slot_data.name] = attached_by_slot_id.get(
-                    known_slots[slot_data.name].id, []
-                )
-            else:
-                effective[slot_data.name] = []
-        return effective
+        return {
+            slot_data.name: list(dict.fromkeys(slot_data.pool_ids))
+            for slot_data in slots
+            if slot_data.pool_ids is not None
+        }
 
     def _pool_rosters(self, pool_ids: Iterable[int]) -> dict[int, set[int]]:
         """Map pool id -> the calendar ids on its roster, for pools in this org.
@@ -333,20 +320,30 @@ class CalendarGroupService:
         """Validate incoming slot definitions against the EFFECTIVE roster.
 
         The effective roster of a slot is the union of its inline
-        ``calendar_ids`` and the rosters of the pools it will be attached to
-        (see the Calendar Pools plan's Roster composition decision). Every
-        size-sensitive rule below -- non-empty, ``required_count`` ceiling,
-        one-slot-per-calendar -- is judged against that union, so a slot may be
-        made entirely of pool calendars and a ``required_count`` of 2 may be
-        satisfied by one inline calendar plus one from a pool.
+        ``calendar_ids`` and the rosters of the pools EXPLICITLY named in this
+        payload's ``pool_ids`` (see the Calendar Pools plan's Roster
+        composition decision, and ``_resolve_effective_pool_ids`` for why an
+        omitted ``pool_ids`` is out of scope here). Every size-sensitive rule
+        below -- non-empty, ``required_count`` ceiling -- is judged against
+        that union, so a slot may be made entirely of pool calendars and a
+        ``required_count`` of 2 may be satisfied by one inline calendar plus
+        one from a pool.
 
-        ``existing_slots`` (name -> slot) is how an update tells this method what
-        a slot with ``pool_ids=None`` is already attached to; a create passes
-        nothing and every such slot resolves to no pools.
+        ``existing_slots`` (name -> slot), when given, marks which slot names
+        already exist -- an update's set; a create passes nothing. A slot that
+        exists AND omits ``pool_ids`` keeps an unchanged, already-persisted
+        pool attachment this method deliberately does not resolve, so its
+        computed ``effective_calendar_ids`` can undercount the slot's real
+        roster; the non-empty and ``required_count`` checks below trust that
+        unchanged attachment rather than judge it insufficient. A slot with no
+        such precedent (a create, or a slot name new to this update) has
+        nothing to trust and is judged on ``calendar_ids`` plus any explicitly
+        submitted pools alone -- unchanged from before pools existed.
         """
         slots = list(slots)
+        known_slot_names = set(existing_slots or {})
 
-        effective_pool_ids_by_slot_name = self._resolve_effective_pool_ids(slots, existing_slots)
+        effective_pool_ids_by_slot_name = self._resolve_effective_pool_ids(slots)
         pool_rosters = self._pool_rosters(
             {pid for pids in effective_pool_ids_by_slot_name.values() for pid in pids}
         )
@@ -360,16 +357,20 @@ class CalendarGroupService:
             seen_slot_names.add(slot_data.name)
 
             effective_calendar_ids = set(slot_data.calendar_ids)
-            for pool_id in effective_pool_ids_by_slot_name[slot_data.name]:
+            for pool_id in effective_pool_ids_by_slot_name.get(slot_data.name, []):
                 effective_calendar_ids |= pool_rosters[pool_id]
             all_calendar_ids |= effective_calendar_ids
+            trusts_unchanged_attachment = (
+                slot_data.pool_ids is None and slot_data.name in known_slot_names
+            )
 
             # A calendar may belong to at most one slot per group. Availability and
             # bookable-slot computation count each slot's pool independently, so an
             # overlapping calendar would be double-counted and the group reported
-            # bookable when no valid disjoint assignment exists. Judged on the
-            # effective roster: attaching one pool to two slots of the same group
-            # produces exactly that double-count.
+            # bookable when no valid disjoint assignment exists. Judged on whatever
+            # was actually submitted (inline calendars plus explicit pools) --
+            # an unresolved, unchanged pool attachment contributes no calendar
+            # ids here, so it cannot manufacture a false collision either.
             for cid in sorted(effective_calendar_ids):
                 other_slot = calendar_to_slot_name.get(cid)
                 if other_slot is not None and other_slot != slot_data.name:
@@ -380,7 +381,7 @@ class CalendarGroupService:
                     )
                 calendar_to_slot_name[cid] = slot_data.name
 
-            if not effective_calendar_ids:
+            if not trusts_unchanged_attachment and not effective_calendar_ids:
                 raise CalendarGroupValidationError(
                     f"Slot {slot_data.name!r} must include at least one calendar."
                 )
@@ -392,7 +393,9 @@ class CalendarGroupService:
                 raise CalendarGroupValidationError(
                     f"Slot {slot_data.name!r} required_count must be >= 1."
                 )
-            if slot_data.required_count > len(effective_calendar_ids):
+            if not trusts_unchanged_attachment and slot_data.required_count > len(
+                effective_calendar_ids
+            ):
                 raise CalendarGroupValidationError(
                     f"Slot {slot_data.name!r} required_count ({slot_data.required_count}) "
                     f"exceeds pool size ({len(effective_calendar_ids)})."
@@ -492,9 +495,10 @@ class CalendarGroupService:
         self._assert_initialized()
         self._check_not_restricted()
         group = self._get_group_by_id(group_id)
-        # Resolved before validation: a slot whose ``pool_ids`` is omitted keeps
-        # the pools it already has, and validation has to judge required_count
-        # against that same effective roster.
+        # A slot whose ``pool_ids`` is omitted keeps the pools it already has --
+        # `_reconcile_slot` reads that below. Passed into validation too, so an
+        # existing slot's omitted attachment is trusted rather than re-resolved;
+        # see `_resolve_effective_pool_ids` / `_validate_slots_input`.
         existing_slots = {s.name: s for s in group.slots.all()}
         slots_data, _ = self._validate_slots_input(data.slots, existing_slots=existing_slots)
 
@@ -562,6 +566,21 @@ class CalendarGroupService:
             if slot_data.name in existing_slots:
                 self._reconcile_slot(existing_slots[slot_data.name], slot_data)
             else:
+                # Slots are matched by NAME (see the docstring), so a caller
+                # renaming a slot sends a name this method has never seen --
+                # indistinguishable here from a genuinely new slot. It is
+                # deleted above (old name no longer in `incoming_names`) and
+                # recreated here by `_create_slots`, which treats an omitted
+                # `pool_ids` as "no pools" for a brand-new slot, NOT "leave
+                # unchanged" the way every other `pool_ids=None` in this
+                # service does (see `_resolve_effective_pool_ids`). A rename
+                # that omits `pool_ids` therefore silently detaches whatever
+                # pools the slot had under its old name. Not fixed here --
+                # carrying attachments across a rename needs a way to express
+                # "this is slot X renamed," which the input shape does not
+                # have today -- but flagged so a future rename-aware payload
+                # (an explicit "renamed_from" field, say) knows to route
+                # through here instead of the create path.
                 self._create_slots(group, [slot_data])
 
         after = {
@@ -623,9 +642,18 @@ class CalendarGroupService:
                 ]
             )
             if slot_data.pool_ids is not None:
-                self._reconcile_slot_pools(slot, slot_data.pool_ids)
+                self._reconcile_slot_pools(
+                    slot, slot_data.pool_ids, audit=False, known_attached_pool_ids=set()
+                )
 
-    def _reconcile_slot_pools(self, slot: CalendarGroupSlot, pool_ids: Iterable[int]) -> None:
+    def _reconcile_slot_pools(
+        self,
+        slot: CalendarGroupSlot,
+        pool_ids: Iterable[int],
+        *,
+        audit: bool = True,
+        known_attached_pool_ids: set[int] | None = None,
+    ) -> None:
         """Make ``slot``'s attached pools exactly ``pool_ids`` and reproject them.
 
         The single entry point for every write that can change a slot's
@@ -633,6 +661,13 @@ class CalendarGroupService:
         from inside ``update_group`` / ``create_group``'s ``transaction.atomic()``,
         so an attachment and the membership rows it implies land together or not
         at all.
+
+        ``audit=False`` skips the UPDATE record below. ``_create_slots`` passes
+        it: attaching a pool to a slot that was itself created microseconds
+        earlier is not a change to audit on its own -- it's part of the single
+        CREATE the surrounding ``create_group`` call already records, and an
+        UPDATE entry nested inside that CREATE would mislead an audit reader
+        into thinking the slot's pools changed after the fact.
 
         Two rules make this safe to run repeatedly:
 
@@ -651,10 +686,17 @@ class CalendarGroupService:
         desired_pool_ids = set(pool_ids)
         rosters = self._pool_rosters(desired_pool_ids)
 
-        attached_pool_ids = set(
-            CalendarGroupSlotPool.objects.filter_by_organization(self.organization_id)
-            .filter(slot_fk=slot)
-            .values_list("pool_fk_id", flat=True)
+        # `_create_slots` passes `known_attached_pool_ids=set()`: a slot it just
+        # created cannot have any CalendarGroupSlotPool rows yet, so the query
+        # below would provably return nothing for it.
+        attached_pool_ids = (
+            known_attached_pool_ids
+            if known_attached_pool_ids is not None
+            else set(
+                CalendarGroupSlotPool.objects.filter_by_organization(self.organization_id)
+                .filter(slot_fk=slot)
+                .values_list("pool_fk_id", flat=True)
+            )
         )
         to_detach = attached_pool_ids - desired_pool_ids
         to_attach = desired_pool_ids - attached_pool_ids
@@ -680,21 +722,27 @@ class CalendarGroupService:
             for pool_id in desired_pool_ids
             for calendar_id in rosters[pool_id]
         }
-        existing_rows = set(
-            CalendarGroupSlotMembership.objects.filter_by_organization(self.organization_id)
-            .projected()
-            .filter(slot_fk=slot)
-            .values_list("source_pool_fk_id", "calendar_fk_id")
-        )
+        # Keyed by (pool_id, calendar_id) -> row id, not just the pair set, so a
+        # stale-row delete can target primary keys directly instead of building
+        # an OR-chain: detaching a pool with a few hundred calendars would
+        # otherwise emit one `Q(...)` term per stale row.
+        existing_row_ids_by_pair: dict[tuple[int | None, int], int] = {
+            (pool_id, calendar_id): row_id
+            for row_id, pool_id, calendar_id in (
+                CalendarGroupSlotMembership.objects.filter_by_organization(self.organization_id)
+                .projected()
+                .filter(slot_fk=slot)
+                .values_list("id", "source_pool_fk_id", "calendar_fk_id")
+            )
+        }
+        existing_rows = set(existing_row_ids_by_pair)
 
         stale_rows = existing_rows - desired_rows
         if stale_rows:
-            stale_filter = Q()
-            for pool_id, calendar_id in stale_rows:
-                stale_filter |= Q(source_pool_fk_id=pool_id, calendar_fk_id=calendar_id)
+            stale_ids = [existing_row_ids_by_pair[pair] for pair in stale_rows]
             CalendarGroupSlotMembership.objects.filter_by_organization(
                 self.organization_id
-            ).projected().filter(slot_fk=slot).filter(stale_filter).delete()
+            ).projected().filter(slot_fk=slot, id__in=stale_ids).delete()
 
         new_rows = desired_rows - existing_rows
         if new_rows:
@@ -710,7 +758,7 @@ class CalendarGroupService:
                 ]
             )
 
-        if to_detach or to_attach:
+        if audit and (to_detach or to_attach):
             self._audit_group_write(
                 AuditAction.UPDATE,
                 slot,

@@ -1139,7 +1139,40 @@ class CalendarPoolQuerySet(OrganizationScopedQuerySet):
 class CalendarPoolMembershipQuerySet(OrganizationScopedQuerySet):
     """
     Custom QuerySet for CalendarPoolMembership model to handle specific queries.
+
+    ``bulk_create`` is deliberately NOT overridden here: nothing in this
+    codebase calls it on this model today (the only multi-row writer,
+    ``factories.create_calendar_pool``, loops ``.create()`` per calendar,
+    which the per-row signal in ``calendar_integration.signals`` already
+    reconciles). A future caller that reaches for ``bulk_create`` bypasses
+    Django's ``post_save`` entirely -- for any model, not something fixable
+    here -- and must call ``calendar_integration.signals.reconcile_pools``
+    itself, in the same transaction, after the insert.
     """
+
+    def delete(self) -> tuple[int, dict[str, int]]:
+        """Bulk delete, reconciling each affected pool's slots once, not once per row.
+
+        ``calendar_integration.signals`` reprojects a pool's attached slots
+        on ``post_delete``, which is correct for a single-row delete (the
+        admin inline, or ``.delete()`` on one instance) but would reconcile
+        the same slot once per row for a queryset delete -- Django's deletion
+        collector still sends ``post_delete`` per instance even when the SQL
+        itself is one statement. Capture the distinct pools this queryset
+        touches before deleting, suppress the per-row signal for the delete
+        itself, then reconcile each pool exactly once.
+        """
+        from calendar_integration.signals import (
+            reconcile_pools,
+            suppress_pool_membership_reconcile,
+        )
+
+        affected = set(self.values_list("organization_id", "pool_fk_id"))
+        with suppress_pool_membership_reconcile():
+            result = super().delete()
+        for organization_id, pool_id in affected:
+            reconcile_pools({pool_id}, organization_id)
+        return result
 
 
 class CalendarEventGroupSelectionQuerySet(OrganizationScopedQuerySet):

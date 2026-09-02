@@ -435,9 +435,16 @@ class CalendarGroupSlot(SingleOrganizationModelMixin, SafeRelationNullInitMixin,
     #
     # Because that union deliberately keeps BOTH rows when a calendar is inline
     # and in an attached pool, ``calendars`` can yield the same ``Calendar``
-    # more than once; every read that presents it to a user calls ``distinct()``
-    # (``CalendarGroupSlotGraphQLType.calendars``,
-    # ``CalendarGroupSlotVirtualModel.calendars``).
+    # more than once. Four call sites collapse that duplication, three of them
+    # with ``.distinct()``:
+    # ``CalendarGroupSlotVirtualModel.calendars`` (``DistinctCalendarVirtualModel``
+    # in virtual_models.py), ``CalendarGroupFilterSet``'s ``calendar`` filter
+    # (filtersets.py, ``distinct=True``), and ``CalendarGroupSlotAdmin``'s
+    # ``calendar_count`` (admin.py). ``CalendarGroupSlotGraphQLType.calendars``
+    # (graphql.py) deliberately does NOT call ``.distinct()`` -- doing so on the
+    # related manager would bypass the multi-slot prefetch the group resolvers
+    # install and reintroduce an N+1, so it dedupes in Python instead (see
+    # ``_deduplicated_calendars`` in graphql.py).
     pools: "models.ManyToManyField[CalendarPool, CalendarGroupSlotPool]" = models.ManyToManyField(
         "CalendarPool",
         through="CalendarGroupSlotPool",

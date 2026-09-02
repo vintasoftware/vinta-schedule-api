@@ -13,13 +13,18 @@ It never reads and never writes inline rows. Every query it issues is filtered t
 ``source_pool IS NOT NULL``, so a slot with no pools attached is invisible to it
 and a hand-curated inline roster cannot be touched by a repair.
 
-``--dry-run`` is the default: running this with no flags reports and changes
-nothing. Pass ``--fix`` to apply. Per the plan's Risk & Rollout Notes, a reported
+Reporting-without-writing is the default: running this with no flags at all
+reports and changes nothing. Pass ``--fix`` to apply. ``--dry-run`` is also
+accepted explicitly, but only to be refused as a conflict when combined with
+``--fix`` -- passing both raises ``CommandError`` rather than silently taking
+``--fix``'s write, since a flag whose entire purpose is "this is safe" must not
+be overridable by accident. Per the plan's Risk & Rollout Notes, a reported
 difference should be treated as a bug in the reconcile path in
 ``CalendarGroupService._reconcile_slot_pools`` and investigated, not merely
 repaired.
 """
 
+import logging
 from typing import Any
 
 from django.core.management.base import BaseCommand, CommandError, CommandParser
@@ -32,6 +37,9 @@ from calendar_integration.models import (
 )
 from common.organization_context import organization_context
 from organizations.models import Organization
+
+
+logger = logging.getLogger(__name__)
 
 
 class Command(BaseCommand):
@@ -52,18 +60,29 @@ class Command(BaseCommand):
         parser.add_argument(
             "--dry-run",
             action="store_true",
-            default=True,
-            help="Report differences without writing. This is the default.",
+            default=False,
+            help=(
+                "Report differences without writing. This is already the default "
+                "behavior with no flags at all -- passing this explicitly only "
+                "matters together with --fix, which is then refused as a conflict "
+                "instead of silently taking --fix's write."
+            ),
         )
         parser.add_argument(
             "--fix",
             action="store_true",
             default=False,
-            help="Apply the recomputed projection. Overrides --dry-run.",
+            help="Apply the recomputed projection.",
         )
 
     def handle(self, *args: Any, **options: Any) -> None:
         apply_fix: bool = options["fix"]
+        dry_run: bool = options["dry_run"]
+        if dry_run and apply_fix:
+            raise CommandError(
+                "--dry-run and --fix are mutually exclusive: pass --fix alone to "
+                "write, or neither flag (the default) to only report."
+            )
         organization_id: int | None = options["organization_id"]
 
         organizations = Organization.objects.all().order_by("id")
@@ -158,6 +177,11 @@ class Command(BaseCommand):
             )
 
         if apply_fix and (missing or orphaned):
+            # Writes CalendarGroupSlotMembership directly -- the projection
+            # itself -- never CalendarPoolMembership (the pool roster). The
+            # post_save/post_delete receivers in calendar_integration.signals
+            # that reproject on a CalendarPoolMembership change are therefore
+            # not in this call chain and this repair cannot recurse into them.
             with transaction.atomic():
                 for slot_id, pool_id, calendar_id in orphaned:
                     CalendarGroupSlotMembership.objects.filter_by_organization(
@@ -178,5 +202,15 @@ class Command(BaseCommand):
                         for slot_id, pool_id, calendar_id in missing
                     ]
                 )
+            # A production repair inserts/deletes rows with no CalendarGroupService
+            # audit trail (that trail is for user-driven writes; this is an
+            # operator-run sweep) -- logged at INFO, in addition to stdout, so the
+            # repair is traceable after the fact from wherever logs are shipped.
+            logger.info(
+                "reconcile_calendar_pool_projections repaired org=%s: deleted=%s inserted=%s",
+                org_id,
+                orphaned,
+                missing,
+            )
 
         return missing, orphaned

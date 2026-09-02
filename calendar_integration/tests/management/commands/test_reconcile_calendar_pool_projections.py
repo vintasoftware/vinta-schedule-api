@@ -220,3 +220,102 @@ def test_unknown_organization_id_is_a_command_error(db):
 
     with pytest.raises(CommandError, match="does not exist"):
         _run(organization_id=999_999)
+
+
+@pytest.mark.django_db
+def test_fix_across_all_organizations_leaves_a_clean_organization_byte_identical(
+    group, organization, calendars, pool
+):
+    """The multi-organization loop: corrupting org A's projection and running
+    `--fix` with no `--organization-id` filter must repair only org A. Org B's
+    rows -- clean from the start -- must come out byte-identical."""
+    other_org = Organization.objects.create(name="Other Reconcile Org", should_sync_rooms=False)
+    other_calendars = {}
+    for name, external in (("Dr. X", "other_phys_x"), ("Dr. Y", "other_phys_y")):
+        other_calendars[external] = Calendar.objects.create(
+            organization=other_org,
+            name=name,
+            external_id=external,
+            provider=CalendarProvider.GOOGLE,
+            calendar_type=CalendarType.PERSONAL,
+            manage_available_windows=True,
+        )
+    other_pool = create_calendar_pool(
+        organization=other_org,
+        name="Other Nurses",
+        calendars=[other_calendars["other_phys_y"]],
+    )
+    other_service = CalendarGroupService()
+    other_service.initialize(organization=other_org)
+    other_group = other_service.create_group(
+        CalendarGroupInputData(
+            name="Other Clinic",
+            description="",
+            slots=[
+                CalendarGroupSlotInputData(
+                    name="Physicians",
+                    calendar_ids=[other_calendars["other_phys_x"].id],
+                    pool_ids=[other_pool.id],
+                    order=0,
+                ),
+            ],
+        )
+    )
+    other_physicians = other_group.slots.get(name="Physicians")
+    other_rows_before = list(
+        CalendarGroupSlotMembership.objects.filter_by_organization(other_org.id)
+        .filter(slot_fk=other_physicians)
+        .order_by("id")
+        .values("id", "calendar_fk_id", "source_pool_fk_id")
+    )
+    assert other_rows_before  # sanity: org B actually has rows to compare.
+
+    # Corrupt only org A's projection.
+    physicians = group.slots.get(name="Physicians")
+    CalendarGroupSlotMembership.objects.filter_by_organization(organization.id).projected().filter(
+        slot_fk=physicians, calendar_fk=calendars["phys_b"]
+    ).delete()
+
+    output = _run(fix=True)
+
+    assert f"org={organization.id}" in output
+    assert f"org={other_org.id}" not in output
+    # Org A repaired.
+    assert (
+        CalendarGroupSlotMembership.objects.filter_by_organization(organization.id)
+        .projected()
+        .filter(slot_fk=physicians, calendar_fk=calendars["phys_b"])
+        .count()
+        == 1
+    )
+    # Org B untouched -- byte-identical to what it was before the sweep.
+    other_rows_after = list(
+        CalendarGroupSlotMembership.objects.filter_by_organization(other_org.id)
+        .filter(slot_fk=other_physicians)
+        .order_by("id")
+        .values("id", "calendar_fk_id", "source_pool_fk_id")
+    )
+    assert other_rows_after == other_rows_before
+
+
+@pytest.mark.django_db
+def test_dry_run_and_fix_together_is_a_command_error(group, organization, calendars, pool):
+    """`--dry-run --fix` used to silently take --fix's write despite the flag
+    whose whole story is "this is safe to run." Passing both is refused."""
+    from django.core.management.base import CommandError
+
+    physicians = group.slots.get(name="Physicians")
+    CalendarGroupSlotMembership.objects.filter_by_organization(organization.id).projected().filter(
+        slot_fk=physicians, calendar_fk=calendars["phys_b"]
+    ).delete()
+
+    with pytest.raises(CommandError, match="mutually exclusive"):
+        _run(dry_run=True, fix=True)
+
+    # Refused before any write -- the corrupted projection is untouched.
+    assert (
+        not CalendarGroupSlotMembership.objects.filter_by_organization(organization.id)
+        .projected()
+        .filter(slot_fk=physicians, calendar_fk=calendars["phys_b"])
+        .exists()
+    )

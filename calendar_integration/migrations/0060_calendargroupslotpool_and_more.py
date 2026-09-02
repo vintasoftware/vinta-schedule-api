@@ -33,8 +33,22 @@ Three changes, one of them delicate:
    new inline index the moment ``source_pool_fk`` exists and is NULL, so adding
    first cannot fail on live data.
 
-Reversible in full: reversing re-adds the old two-column constraint before the
-partial pair is dropped, then drops the column and the through table.
+Reversible in full, but not for free. On its own, reversing this migration
+would re-add the old two-column ``UNIQUE(slot_fk, calendar_fk)`` constraint
+BEFORE dropping the partial pair -- and it would fail with a duplicate-key
+error doing it, on any slot where a calendar is present both inline and
+projected, or projected from two pools, which is the normal state this phase
+creates the moment a pool is attached anywhere. The no-op ``RunSQL`` below
+carries the fix as its ``reverse_sql``: it deletes every projected row
+(``source_pool_fk IS NOT NULL``) immediately before that constraint would be
+re-added. That is safe on its own terms -- those rows are wholly derived from
+``CalendarPoolMembership`` via ``CalendarGroupSlotPool``, never a primary
+record of anything -- and it changes nothing about what the rest of the
+reverse already does: ``CalendarGroupSlotPool`` (the attachments those rows
+were projected from) is dropped a few operations later in this same reverse,
+so the attachments themselves do not survive downgrading past this migration
+either way. A subsequent re-forward starts with no attachments, same as the
+day this migration first ran.
 """
 
 import django.db.models.deletion
@@ -145,6 +159,18 @@ class Migration(migrations.Migration):
         migrations.RemoveConstraint(
             model_name="calendargroupslotmembership",
             name="calendargroupslotmembership_unique_slot_calendar",
+        ),
+        # No-op forward. On REVERSE, this runs right before the old two-column
+        # constraint gets re-added (see the module docstring's "Reversible in
+        # full" note): it clears every projected row so that re-add cannot hit
+        # a duplicate-key error on a calendar reachable from more than one
+        # source.
+        migrations.RunSQL(
+            sql=migrations.RunSQL.noop,
+            reverse_sql=(
+                "DELETE FROM calendar_integration_calendargroupslotmembership "
+                "WHERE source_pool_fk_id IS NOT NULL;"
+            ),
         ),
         migrations.AddField(
             model_name="calendargroupslotpool",

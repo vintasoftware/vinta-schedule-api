@@ -16,3 +16,9 @@ class CalendarIntegrationConfig(AppConfig):
         # registry, which fails outright the moment a context reaches a model --
         # see `users/apps.py`, whose contexts module does.
         import calendar_integration.notification_contexts  # noqa: F401
+
+        # Same reasoning: importing this is what connects the CalendarPoolMembership
+        # post_save/post_delete receivers (see calendar_integration/signals.py) --
+        # importing at module scope would run while the app registry is still
+        # being populated.
+        import calendar_integration.signals  # noqa: F401
