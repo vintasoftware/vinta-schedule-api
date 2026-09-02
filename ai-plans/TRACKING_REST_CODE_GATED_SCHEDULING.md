@@ -264,15 +264,57 @@ to 0051, and re-applies twice; a raw INSERT omitting the column produces distinc
 (`22818c94...`, `39045781...`), proving the deploy-window hazard is closed; live schema confirms
 NOT NULL plus the DB default.
 
+### Phase 4 — Code-gated reschedule and cancel
+
+Branch `plan/rest-code-gated-scheduling/phase-4`, base `plan/rest-code-gated-scheduling/phase-3b`.
+Commits: `300bceec` (implementation), `f646c343` (reviewer findings).
+Models used: implementer tier 3 → sonnet; reviewer tier 3 → sonnet; fixer tier 2 → sonnet.
+6 files, +2018 / -1. Review: 0 BLOCKER, 4 SHOULD-FIX, 1 NIT, all applied.
+
+What landed: `POST /public/booking/events/reschedule/`, `POST /public/booking/group-events/reschedule/`,
+and `POST /public/booking/events/cancel/` (204). All code-required; no codeless branch here.
+
+**Decisions later phases must respect:**
+
+20. **Cancel consumes BEFORE deleting — the opposite of the create endpoints.**
+    `CalendarManagementToken.event` is `on_delete=CASCADE`, so deleting the event first would cascade
+    the token away and the subsequent `consume_code` would fail. Matches the GraphQL original. The
+    comments explain the difference; do not "harmonise" the two orderings.
+21. **`resolve_and_authorize_write` now takes a keyword-only `permission_denied_message`.**
+    Creates keep "This code does not permit booking."; reschedules pass "...rescheduling."; cancel
+    passes "...cancellation." — matching each GraphQL original. Phase 5 should pass an appropriate
+    message if it uses the helper.
+22. **`booking_views.py` is now 1003 lines with five viewsets.** The reviewer's structural note:
+    still coherent, but Phase 5 adds six more (read) viewsets — split into a write module and a read
+    module as part of Phase 5 rather than growing this file to ~1600 lines.
+
+**TRACKED FOLLOW-UP — pre-existing bug, NOT introduced by this plan, NOT fixed here.**
+`serialize_event_data_input_util` (`calendar_integration/services/calendar_service_utils.py:435-444`)
+builds its `resources=[...]` list by iterating a `Calendar` queryset under a loop variable named
+`resource_allocation`, then accesses `.calendar` and `.status` on each item — attributes a `Calendar`
+row does not have. Any reschedule of an event whose `ResourceAllocation` points at a calendar with
+`calendar_type=CalendarType.RESOURCE` raises `AttributeError`. The reviewer verified this
+independently. It predates this plan and is reachable through the GraphQL reschedule mutations
+today, but Phase 4 makes it reachable from an **unauthenticated** endpoint, where it surfaces as a
+500. Two separate test suites currently dodge it by not setting `calendar_type=RESOURCE`
+(`test_booking_rest_reschedule.py`'s `resource_calendar` fixture and
+`test_calendar_service.py::test_update_event_with_resource_allocations`), each with a docstring
+saying so. **This deserves its own focused change and review, not a tail-end fix inside an unrelated
+phase.** Suggested fix: iterate `ResourceAllocation` objects, or drop the misused join, so
+`.calendar` / `.status` resolve.
+
+Verification (container surface): full suite 5814 passed, 1 skipped; mypy clean (781 files);
+`makemigrations --check` clean (no migration this phase); `schema.yml` additive-only from the
+feature commit and unchanged by the fixes.
+
 ## Current phase
 
-**Phase 4 — Code-gated reschedule and cancel** — not started.
+**Phase 5 — Code-gated reads** — not started.
 
 ## Remaining phases
 
 | Phase | Title | Impl tier | Reviewer tier |
 |---|---|---|---|
-| 4 | Code-gated reschedule and cancel | 3 | default (3) |
 | 5 | Code-gated reads | 2 | 3 (plan override) |
 | 6 | Booking-code minting and revocation | 3 | 4 (plan override) |
 
