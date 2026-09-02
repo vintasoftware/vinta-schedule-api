@@ -51,18 +51,22 @@ from calendar_integration.booking_auth import (
     translate_booking_write_errors,
 )
 from calendar_integration.booking_exceptions import (
+    InvalidCodeAPIException,
     NotPermittedAPIException,
     SlotUnavailableAPIException,
 )
 from calendar_integration.constants import EventManagementPermissions
 from calendar_integration.exceptions import (
     CalendarGroupError,
+    CalendarGroupValidationError,
     CalendarServiceNotInjectedError,
+    InvalidTokenError,
 )
 from calendar_integration.models import CalendarEvent, CalendarGroup, CalendarManagementToken
 from calendar_integration.serializers import (
     BookingCodeEventCreateSerializer,
     BookingCodeGroupEventCreateSerializer,
+    BookingCodeRescheduleSerializer,
     CalendarEventSerializer,
 )
 from calendar_integration.services.bookable_slots_service import BookableSlotsService
@@ -73,8 +77,10 @@ from calendar_integration.services.dataclasses import (
     CalendarEventInputData,
     CalendarGroupEventInputData,
     CalendarGroupSlotSelectionInputData,
+    EventAttendanceInputData,
     EventExternalAttendanceInputData,
     ExternalAttendeeInputData,
+    ResourceAllocationInputData,
 )
 
 
@@ -553,3 +559,442 @@ class BookingCodeGroupEventViewSet(BookingCodeViewMixin, GenericViewSet):
             CalendarEventSerializer(optimized_event, context=context).data,
             status=status.HTTP_201_CREATED,
         )
+
+
+@extend_schema(tags=["Booking Codes"])
+class BookingCodeRescheduleEventViewSet(BookingCodeViewMixin, GenericViewSet):
+    """Unauthenticated, code-gated single-calendar reschedule.
+
+    ``POST /public/booking/events/reschedule/`` moves the event bound to the
+    presented ``X-Booking-Code`` to a new time. Ports
+    ``calendar_integration.mutations.reschedule_calendar_event_with_code`` to
+    REST -- see that mutation's docstring for the full flow this mirrors.
+
+    ``calendar_id`` and ``event_id`` come STRICTLY from the resolved token,
+    never from the request. Only ``start_time`` / ``end_time`` / ``timezone``
+    change: title, description, internal attendances, external attendances
+    (including the ``ExternalAttendee`` id, so ``serialize_event_data_input``
+    correlates status correctly), and resource allocations are snapshotted
+    from the existing event and replayed UNCHANGED, so that
+    ``_determine_required_update_permissions`` yields exactly ``{RESCHEDULE}``
+    -- a naive partial update would demand permissions this code does not
+    carry and fail with a misleading ``NOT_PERMITTED``.
+    """
+
+    serializer_class = BookingCodeRescheduleSerializer
+
+    @extend_schema(
+        request=BookingCodeRescheduleSerializer,
+        responses={201: CalendarEventSerializer},
+        parameters=[
+            OpenApiParameter(
+                name=BOOKING_CODE_HEADER,
+                type=str,
+                location=OpenApiParameter.HEADER,
+                required=True,
+                description="Single-use booking code, minted with the RESCHEDULE "
+                "permission and bound to a specific event on a single calendar "
+                "(not a group).",
+            ),
+        ],
+        summary="Reschedule an event on a single calendar with a booking code",
+    )
+    def create(self, request: Request, *args, **kwargs) -> Response:
+        """Snapshot the bound event's preserved details, then update + consume atomically.
+
+        Update FIRST, then consume, matching the GraphQL original and
+        ``BookingCodeCalendarEventViewSet.create``'s create-then-consume ordering.
+        Both statements share the one outer ``transaction.atomic()`` block below,
+        so the DB outcome (one update, code consumed once) is the same regardless
+        of which runs first -- see that method's docstring for what update-first
+        actually changes (both racers reach the write adapter rather than the
+        loser being turned away by ``consume_code``'s row lock first).
+        """
+        permission_service = self.calendar_permission_service
+        calendar_service = self.calendar_service
+        if permission_service is None or calendar_service is None:
+            raise CalendarServiceNotInjectedError(
+                "calendar_permission_service / calendar_service not configured; "
+                "check the DI container."
+            )
+
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        # --- resolve the code, check permission, and resolve org ---
+        token, code, org = resolve_and_authorize_write(
+            request, permission_service, EventManagementPermissions.RESCHEDULE
+        )
+
+        # --- scope check -- must be bound to a specific event, and single-calendar
+        # (not group) -- a group-scoped code routes to the group reschedule endpoint. ---
+        if token.event is None:
+            raise NotPermittedAPIException("This code is not bound to a specific event.")
+        if token.calendar_group is not None:
+            raise NotPermittedAPIException(
+                "This code is scoped to a calendar group. Use the group reschedule "
+                "endpoint for group-scoped codes."
+            )
+
+        # --- pinned-duration message, ahead of dispatch. A reschedule code's pin
+        # constrains the NEW span, not the event's current one -- refusing a move
+        # to a different span even when the event's current span already matches
+        # it. The guarantee itself is enforced independently inside
+        # can_perform_update; this exists purely so the response names the
+        # pinned duration. ---
+        duration_error = pinned_duration_error(token, data["start_time"], data["end_time"])
+        if duration_error is not None:
+            raise duration_error
+
+        source_ip = client_ip_from_request(request)
+
+        # calendar_id and event_id come strictly from the token -- not from client
+        # input -- so the code can only ever affect the exact event it was minted for.
+        event_id: int = token.event_fk_id  # type: ignore[assignment]
+        calendar_id: int = token.event.calendar_fk_id  # type: ignore[assignment]
+
+        # --- load the existing event to snapshot its current details (title,
+        # description, attendances, external_attendances, resource_allocations). ---
+        try:
+            existing_event = (
+                CalendarEvent.objects.filter_by_organization(org.id)
+                .select_related("calendar")
+                .prefetch_related("attendances", "resource_allocations")
+                .get(id=event_id, calendar_fk_id=calendar_id)
+            )
+        except CalendarEvent.DoesNotExist as exc:
+            raise InvalidCodeAPIException() from exc
+
+        # --- build the preserved-details event data: copy every preserved field
+        # and override ONLY the time fields, so that
+        # _determine_required_update_permissions yields exactly {RESCHEDULE}. ---
+        preserved_attendances = [
+            EventAttendanceInputData(user_id=attendance.membership_user_id)
+            for attendance in existing_event.attendances.all()
+            if attendance.membership_user_id is not None
+        ]
+        # Include the ExternalAttendee id so that serialize_event_data_input can
+        # correlate the status correctly and produce a CalendarEventData matching
+        # the old event's external_attendees by email, ensuring
+        # _check_attendances_update_necessary_permissions sees no change.
+        preserved_external_attendances = [
+            EventExternalAttendanceInputData(
+                external_attendee=ExternalAttendeeInputData(
+                    email=ea.external_attendee_fk.email,  # type: ignore[union-attr]
+                    name=ea.external_attendee_fk.name or "",  # type: ignore[union-attr]
+                    id=ea.external_attendee_fk_id,  # type: ignore[union-attr]
+                )
+            )
+            for ea in existing_event.external_attendances.select_related("external_attendee")
+        ]
+        # Skip any allocation with a null calendar_fk_id, mirroring the recurring-
+        # event transfer guard in calendar_event_service.py.
+        preserved_resource_allocations = [
+            ResourceAllocationInputData(resource_id=ra.calendar_fk_id)  # type: ignore[arg-type]
+            for ra in existing_event.resource_allocations.all()
+            if ra.calendar_fk_id
+        ]
+
+        event_data = CalendarEventInputData(
+            title=existing_event.title,
+            description=existing_event.description or "",
+            start_time=data["start_time"],
+            end_time=data["end_time"],
+            timezone=data["timezone"],
+            attendances=preserved_attendances,
+            external_attendances=preserved_external_attendances,
+            resource_allocations=preserved_resource_allocations,
+        )
+
+        # --- availability pre-check (code-path only), BEFORE the atomic block, so
+        # the code is never consumed on an out-of-window attempt. ---
+        if existing_event.calendar.manage_available_windows:
+            calendar_service.initialize_without_provider(organization=org)
+            available_windows = calendar_service.get_availability_windows_in_range(
+                existing_event.calendar, data["start_time"], data["end_time"]
+            )
+            if not available_windows:
+                raise SlotUnavailableAPIException()
+
+        # --- atomic update + consume ---
+        with translate_booking_write_errors(
+            permission_denied_message="This code does not permit rescheduling this event."
+        ):
+            with transaction.atomic():
+                calendar_service.initialize_without_provider(user_or_token=code, organization=org)
+                event = calendar_service.update_event(calendar_id, event_id, event_data)
+                permission_service.consume_code(token, source_ip)
+        # update_event does not create a new event and therefore does not reach
+        # the create-event postpaid metering guard -- there is no OverLimitError
+        # for this endpoint to leave unswallowed.
+
+        context = self.get_serializer_context()
+        optimized_event = (
+            CalendarEventSerializer(context=context)
+            .get_optimized_queryset(CalendarEvent.objects.filter_by_organization(org.id))
+            .get(id=event.id)
+        )
+        return Response(
+            CalendarEventSerializer(optimized_event, context=context).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+@extend_schema(tags=["Booking Codes"])
+class BookingCodeRescheduleGroupEventViewSet(BookingCodeViewMixin, GenericViewSet):
+    """Unauthenticated, code-gated group reschedule.
+
+    ``POST /public/booking/group-events/reschedule/`` moves the grouped event
+    bound to the presented ``X-Booking-Code`` to a new time. Ports
+    ``calendar_integration.mutations.reschedule_calendar_group_event_with_code``
+    to REST -- see that mutation's docstring for the full flow this mirrors.
+
+    ``event_id`` comes STRICTLY from the resolved token, never from the
+    request. Only the times change -- title, description, attendances,
+    resource allocations, and the group's calendar selections are preserved
+    by ``CalendarGroupService.reschedule_grouped_event`` (time-only v1; full
+    slot re-selection is deferred, per the plan's Non-goals).
+    """
+
+    serializer_class = BookingCodeRescheduleSerializer
+
+    @extend_schema(
+        request=BookingCodeRescheduleSerializer,
+        responses={201: CalendarEventSerializer},
+        parameters=[
+            OpenApiParameter(
+                name=BOOKING_CODE_HEADER,
+                type=str,
+                location=OpenApiParameter.HEADER,
+                required=True,
+                description="Single-use booking code, minted with the RESCHEDULE "
+                "permission and bound to a specific event on a calendar group "
+                "(not a single calendar).",
+            ),
+        ],
+        summary="Reschedule a grouped event through a calendar group with a booking code",
+    )
+    def create(self, request: Request, *args, **kwargs) -> Response:
+        """Reschedule the bound grouped event's times, then consume the code atomically.
+
+        Update FIRST, then consume -- see
+        ``BookingCodeRescheduleEventViewSet.create``'s docstring for what that
+        ordering does and does not guarantee.
+        """
+        permission_service = self.calendar_permission_service
+        calendar_service = self.calendar_service
+        calendar_group_service = self.calendar_group_service
+        if permission_service is None or calendar_service is None or calendar_group_service is None:
+            raise CalendarServiceNotInjectedError(
+                "calendar_permission_service / calendar_service / calendar_group_service "
+                "not configured; check the DI container."
+            )
+
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        # --- resolve the code, check permission, and resolve org ---
+        token, code, org = resolve_and_authorize_write(
+            request, permission_service, EventManagementPermissions.RESCHEDULE
+        )
+
+        # --- scope check -- must be bound to a specific event, and group-scoped
+        # (not single-calendar) -- a single-calendar code routes to the other
+        # reschedule endpoint. ---
+        if token.event is None:
+            raise NotPermittedAPIException("This code is not bound to a specific event.")
+        if token.calendar_group is None:
+            raise NotPermittedAPIException(
+                "This code is not scoped to a calendar group. Use the single-calendar "
+                "reschedule endpoint for calendar-scoped codes."
+            )
+
+        # --- pinned-duration message, ahead of dispatch -- see
+        # BookingCodeRescheduleEventViewSet.create's comment on the same check;
+        # the pin constrains the NEW span here too. ---
+        duration_error = pinned_duration_error(token, data["start_time"], data["end_time"])
+        if duration_error is not None:
+            raise duration_error
+
+        source_ip = client_ip_from_request(request)
+
+        # event_id comes strictly from the token, never from client input, so the
+        # code can only ever affect the exact grouped event it was minted for.
+        event_id: int = token.event_fk_id  # type: ignore[assignment]
+
+        # --- availability pre-check (code-path only) against the bound event's
+        # primary calendar, BEFORE the atomic block, so the code is never consumed
+        # on an out-of-window attempt. ---
+        try:
+            bound_event = (
+                CalendarEvent.objects.filter_by_organization(org.id)
+                .select_related("calendar")
+                .get(id=event_id)
+            )
+        except CalendarEvent.DoesNotExist as exc:
+            raise InvalidCodeAPIException() from exc
+
+        primary_calendar = bound_event.calendar
+        if primary_calendar is not None and primary_calendar.manage_available_windows:
+            calendar_service.initialize_without_provider(organization=org)
+            available_windows = calendar_service.get_availability_windows_in_range(
+                primary_calendar, data["start_time"], data["end_time"]
+            )
+            if not available_windows:
+                raise SlotUnavailableAPIException()
+
+        # --- atomic reschedule + consume. calendar_group_service is wired with the
+        # code-initialized calendar_service so both the primary-calendar update
+        # and the group-level authorization checks see the same auth context. ---
+        try:
+            with translate_booking_write_errors(
+                permission_denied_message="This code does not permit rescheduling this event."
+            ):
+                with transaction.atomic():
+                    calendar_service.initialize_without_provider(
+                        user_or_token=code, organization=org
+                    )
+                    calendar_group_service.calendar_service = calendar_service
+                    calendar_group_service.initialize(organization=org)
+                    event = calendar_group_service.reschedule_grouped_event(
+                        event_id=event_id,
+                        start_time=data["start_time"],
+                        end_time=data["end_time"],
+                        tz=data["timezone"],
+                    )
+                    permission_service.consume_code(token, source_ip)
+        except CalendarGroupError as exc:
+            # Slot outside a group-scoped availability window / quota rule, or an
+            # invalid selection -- nothing consumed (txn rolled back), patient may
+            # retry with a different slot. ``translate_booking_write_errors`` does
+            # not map this hierarchy (it is group-only); mapped here instead,
+            # matching ``BookingCodeGroupEventViewSet.create``'s own extra catch.
+            raise SlotUnavailableAPIException() from exc
+
+        context = self.get_serializer_context()
+        optimized_event = (
+            CalendarEventSerializer(context=context)
+            .get_optimized_queryset(CalendarEvent.objects.filter_by_organization(org.id))
+            .get(id=event.id)
+        )
+        return Response(
+            CalendarEventSerializer(optimized_event, context=context).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+@extend_schema(tags=["Booking Codes"])
+class BookingCodeCancelEventViewSet(BookingCodeViewMixin, GenericViewSet):
+    """Unauthenticated, code-gated cancellation -- single-calendar or group.
+
+    ``POST /public/booking/events/cancel/`` deletes the event bound to the
+    presented ``X-Booking-Code``. Ports
+    ``calendar_integration.mutations.cancel_event_with_code`` to REST -- see
+    that mutation's docstring for the full flow this mirrors, including why it
+    handles BOTH a calendar-bound and a group-bound cancel code via the SAME
+    endpoint, dispatching on whether ``token.calendar_group`` is set.
+
+    ``event_id`` comes STRICTLY from the resolved token, never from the
+    request. No body is accepted. Returns ``204 No Content`` on success.
+    """
+
+    @extend_schema(
+        request=None,
+        responses={204: None},
+        parameters=[
+            OpenApiParameter(
+                name=BOOKING_CODE_HEADER,
+                type=str,
+                location=OpenApiParameter.HEADER,
+                required=True,
+                description="Single-use booking code, minted with the CANCEL "
+                "permission and bound to a specific event.",
+            ),
+        ],
+        summary="Cancel an event, single-calendar or group-bound, with a booking code",
+    )
+    def create(self, request: Request, *args, **kwargs) -> Response:
+        """Consume FIRST, then delete, matching the GraphQL original.
+
+        The event FK on the token has ``on_delete=CASCADE``, so deleting the
+        event would cascade-delete the token -- making a post-delete consume
+        impossible. Consuming first (via ``SELECT FOR UPDATE``) keeps the row
+        alive long enough to lock it; the cascade then removes the
+        already-consumed token row when the event is deleted. Both statements
+        share the one outer ``transaction.atomic()`` block below, so if the
+        delete step raises unexpectedly, the whole block -- including the
+        consume -- rolls back, leaving the code available for retry.
+        """
+        permission_service = self.calendar_permission_service
+        calendar_service = self.calendar_service
+        calendar_group_service = self.calendar_group_service
+        if permission_service is None or calendar_service is None or calendar_group_service is None:
+            raise CalendarServiceNotInjectedError(
+                "calendar_permission_service / calendar_service / calendar_group_service "
+                "not configured; check the DI container."
+            )
+
+        # --- resolve the code, check permission, and resolve org ---
+        token, code, org = resolve_and_authorize_write(
+            request, permission_service, EventManagementPermissions.CANCEL
+        )
+
+        # --- scope check -- must be bound to a specific event. Dispatch below on
+        # whether the token is group-scoped -- both the single-calendar and the
+        # group path are handled by this same endpoint, exactly as the GraphQL
+        # original does. ---
+        if token.event is None:
+            raise NotPermittedAPIException("This code is not bound to a specific event.")
+
+        source_ip = client_ip_from_request(request)
+
+        # event_id and (single-calendar path only) calendar_id come strictly from
+        # the token, never from client input.
+        event_id: int = token.event_fk_id  # type: ignore[assignment]
+        single_calendar_id: int | None = (
+            None if token.calendar_group is not None else token.event.calendar_fk_id
+        )
+
+        try:
+            with translate_booking_write_errors(
+                permission_denied_message="This code does not permit cancellation of this event."
+            ):
+                with transaction.atomic():
+                    permission_service.consume_code(token, source_ip)
+                    calendar_service.initialize_without_provider(
+                        user_or_token=code, organization=org
+                    )
+                    if token.calendar_group is not None:
+                        calendar_group_service.calendar_service = calendar_service
+                        calendar_group_service.initialize(organization=org)
+                        calendar_group_service.cancel_grouped_event(
+                            event_id=event_id, delete_series=False
+                        )
+                    else:
+                        calendar_service.delete_event(
+                            calendar_id=single_calendar_id,  # type: ignore[arg-type]
+                            event_id=event_id,
+                            delete_series=False,
+                        )
+        except InvalidTokenError as exc:
+            # consume_code re-fetched under SELECT FOR UPDATE and found no row
+            # (e.g. the token was deleted between resolve and the lock). This is
+            # NOT a genuine authorization failure -- surface it as INVALID_CODE.
+            raise InvalidCodeAPIException() from exc
+        except CalendarEvent.DoesNotExist as exc:
+            # The event was concurrently deleted between resolve and the delete call.
+            raise InvalidCodeAPIException() from exc
+        except CalendarGroupValidationError as exc:
+            # Group path: the bound event is not actually a grouped event (scope
+            # mismatch), or a cancel_grouped_event precondition failed for a
+            # structural reason -- a permission/scope issue, not a slot-availability
+            # one. Caught ahead of the broader CalendarGroupError below.
+            raise NotPermittedAPIException(
+                "This code does not permit cancellation of this event."
+            ) from exc
+        except CalendarGroupError as exc:
+            raise SlotUnavailableAPIException("The event could not be cancelled.") from exc
+
+        return Response(status=status.HTTP_204_NO_CONTENT)

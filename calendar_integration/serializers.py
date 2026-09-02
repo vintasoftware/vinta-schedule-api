@@ -3624,3 +3624,20 @@ class BookingCodeGroupEventCreateSerializer(_EndTimeAfterStartTimeSerializerMixi
     timezone = serializers.CharField()
     slot_selections = _CalendarGroupSlotSelectionInputSerializer(many=True)
     external_attendee = _BookingCodeExternalAttendeeSerializer()
+
+
+class BookingCodeRescheduleSerializer(_EndTimeAfterStartTimeSerializerMixin):
+    """Input for ``POST /public/booking/events/reschedule/`` and
+    ``POST /public/booking/group-events/reschedule/``.
+
+    Mirrors ``RescheduleWithCodeInput`` / ``RescheduleGroupWithCodeInput`` (GraphQL)
+    minus their ``code`` field -- the booking code travels as the ``X-Booking-Code``
+    header instead. Only the new start/end/timezone are accepted: title, description,
+    attendees, and resource allocations are never client-settable here -- the view
+    snapshots them, unchanged, from the existing event so that only the RESCHEDULE
+    permission is required (see ``BookingCodeRescheduleEventViewSet.create``).
+    """
+
+    start_time = serializers.DateTimeField()
+    end_time = serializers.DateTimeField()
+    timezone = serializers.CharField()

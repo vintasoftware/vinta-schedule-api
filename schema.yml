@@ -14881,6 +14881,117 @@ paths:
               schema:
                 $ref: '#/components/schemas/CalendarEvent'
           description: ''
+  /public/booking/events/cancel/:
+    post:
+      operationId: public_booking_events_cancel_create
+      description: |-
+        Consume FIRST, then delete, matching the GraphQL original.
+
+        The event FK on the token has ``on_delete=CASCADE``, so deleting the
+        event would cascade-delete the token -- making a post-delete consume
+        impossible. Consuming first (via ``SELECT FOR UPDATE``) keeps the row
+        alive long enough to lock it; the cascade then removes the
+        already-consumed token row when the event is deleted. Both statements
+        share the one outer ``transaction.atomic()`` block below, so if the
+        delete step raises unexpectedly, the whole block -- including the
+        consume -- rolls back, leaving the code available for retry.
+      summary: Cancel an event, single-calendar or group-bound, with a booking code
+      parameters:
+      - in: header
+        name: X-Booking-Code
+        schema:
+          type: string
+        description: Single-use booking code, minted with the CANCEL permission and
+          bound to a specific event.
+        required: true
+      tags:
+      - Booking Codes
+      responses:
+        '204':
+          description: No response body
+  /public/booking/events/reschedule/:
+    post:
+      operationId: public_booking_events_reschedule_create
+      description: |-
+        Snapshot the bound event's preserved details, then update + consume atomically.
+
+        Update FIRST, then consume, matching the GraphQL original and
+        ``BookingCodeCalendarEventViewSet.create``'s create-then-consume ordering.
+        Both statements share the one outer ``transaction.atomic()`` block below,
+        so the DB outcome (one update, code consumed once) is the same regardless
+        of which runs first -- see that method's docstring for what update-first
+        actually changes (both racers reach the write adapter rather than the
+        loser being turned away by ``consume_code``'s row lock first).
+      summary: Reschedule an event on a single calendar with a booking code
+      parameters:
+      - in: header
+        name: X-Booking-Code
+        schema:
+          type: string
+        description: Single-use booking code, minted with the RESCHEDULE permission
+          and bound to a specific event on a single calendar (not a group).
+        required: true
+      tags:
+      - Booking Codes
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BookingCodeReschedule'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BookingCodeReschedule'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BookingCodeReschedule'
+        required: true
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarEvent'
+          description: ''
+  /public/booking/group-events/reschedule/:
+    post:
+      operationId: public_booking_group_events_reschedule_create
+      description: |-
+        Reschedule the bound grouped event's times, then consume the code atomically.
+
+        Update FIRST, then consume -- see
+        ``BookingCodeRescheduleEventViewSet.create``'s docstring for what that
+        ordering does and does not guarantee.
+      summary: Reschedule a grouped event through a calendar group with a booking
+        code
+      parameters:
+      - in: header
+        name: X-Booking-Code
+        schema:
+          type: string
+        description: Single-use booking code, minted with the RESCHEDULE permission
+          and bound to a specific event on a calendar group (not a single calendar).
+        required: true
+      tags:
+      - Booking Codes
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BookingCodeReschedule'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BookingCodeReschedule'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BookingCodeReschedule'
+        required: true
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarEvent'
+          description: ''
   /public/organizations/{organization_id}/events/:
     get:
       operationId: public_organizations_events_list
@@ -17478,6 +17589,31 @@ components:
       - start_time
       - timezone
       - title
+    BookingCodeReschedule:
+      type: object
+      description: |-
+        Input for ``POST /public/booking/events/reschedule/`` and
+        ``POST /public/booking/group-events/reschedule/``.
+
+        Mirrors ``RescheduleWithCodeInput`` / ``RescheduleGroupWithCodeInput`` (GraphQL)
+        minus their ``code`` field -- the booking code travels as the ``X-Booking-Code``
+        header instead. Only the new start/end/timezone are accepted: title, description,
+        attendees, and resource allocations are never client-settable here -- the view
+        snapshots them, unchanged, from the existing event so that only the RESCHEDULE
+        permission is required (see ``BookingCodeRescheduleEventViewSet.create``).
+      properties:
+        start_time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+        timezone:
+          type: string
+      required:
+      - end_time
+      - start_time
+      - timezone
     BookingPolicy:
       type: object
       description: |-

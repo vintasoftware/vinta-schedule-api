@@ -7,7 +7,14 @@ organization is always derived from the resolved code (or, for codeless
 group booking, from the ``CalendarGroup``), never from client input.
 
 Phase 0 registered no viewsets: the router was empty, so every sub-path
-404d. Phase 1 registers the first one; Phases 2-5 each register one more.
+404d. Phase 1 registers the first one; Phases 2-5 each register more.
+
+Phase 4 (reschedule / cancel): three POST-only routes, each a
+``GenericViewSet`` implementing only ``create()`` -- there is no natural
+list/retrieve/update/destroy mapping for "reschedule the event this code is
+bound to" or "cancel the event this code is bound to", so, as with Phases 1-2,
+the DRF ``create`` action (routed to ``POST .../`` by the router's list route)
+is the only one defined. A ``GET`` to any of these three paths 405s.
 
 Phase 3b (public group route): the group route addresses ``CalendarGroup``
 by its opaque ``public_booking_slug`` -- never by the integer primary key.
@@ -34,7 +41,10 @@ from rest_framework.routers import DefaultRouter
 
 from calendar_integration.booking_views import (
     BookingCodeCalendarEventViewSet,
+    BookingCodeCancelEventViewSet,
     BookingCodeGroupEventViewSet,
+    BookingCodeRescheduleEventViewSet,
+    BookingCodeRescheduleGroupEventViewSet,
 )
 
 
@@ -50,6 +60,21 @@ router.register(
     r"calendar-groups/(?P<public_slug>[-a-zA-Z0-9_]+)/events",
     BookingCodeGroupEventViewSet,
     basename="booking-calendar-group-events",
+)
+router.register(
+    r"events/reschedule",
+    BookingCodeRescheduleEventViewSet,
+    basename="booking-events-reschedule",
+)
+router.register(
+    r"group-events/reschedule",
+    BookingCodeRescheduleGroupEventViewSet,
+    basename="booking-group-events-reschedule",
+)
+router.register(
+    r"events/cancel",
+    BookingCodeCancelEventViewSet,
+    basename="booking-events-cancel",
 )
 
 urlpatterns = [
