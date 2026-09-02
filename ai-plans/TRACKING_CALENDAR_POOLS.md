@@ -38,8 +38,8 @@ The git-level provisioning was correct as reported: worktree, branch based at `o
 |---|---|---|---|---|
 | 0 | Add the CalendarPool model and its roster | ✅ done — [PR #302](https://github.com/vintasoftware/vinta-schedule-api/pull/302) | Tier 2 (sonnet) | `plan/calendar-pools/phase-0` |
 | 1 | Make roster removal non-destructive | ✅ done — [PR #303](https://github.com/vintasoftware/vinta-schedule-api/pull/303) | Tier 3 (sonnet) | `plan/calendar-pools/phase-1` |
-| 2 | Surface stale calendar selections on events | ✅ done | Tier 2 (sonnet) | `plan/calendar-pools/phase-2` |
-| 3 | Attach pools to slots and project the roster | 🔄 next | Tier 4 | — |
+| 2 | Surface stale calendar selections on events | ✅ done — [PR #305](https://github.com/vintasoftware/vinta-schedule-api/pull/305) | Tier 2 (sonnet) | `plan/calendar-pools/phase-2` |
+| 3 | Attach pools to slots and project the roster | 🔄 in progress | Tier 4 | `plan/calendar-pools/phase-3` |
 | 4 | Manage pools over internal REST | ⬜ pending | Tier 3 | — |
 | 5 | Expose pools on the public GraphQL API | ⬜ pending | Tier 3 | — |
 | 6 | Stale-selection sweep query | ⬜ pending | Tier 2 | — |
