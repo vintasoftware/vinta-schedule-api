@@ -307,7 +307,7 @@ Acceptance: `GET /public/booking/` resolves (empty router, 404 on any sub-path);
 Changes:
 
 1. `@calendar_integration/serializers.py`: add `BookingCodeEventCreateSerializer` (title, description, start_time, end_time, timezone, external_attendee) mirroring `CreateEventWithCodeInput`. Follow the existing `CalendarGroupEventCreateSerializer` shape, including its `validate_end_time` cross-field check.
-2. `@calendar_integration/booking_views.py`: `BookingCodeCalendarEventViewSet` with a single `create` action. Port the seven-step flow from [`create_calendar_event_with_code`](../calendar_integration/mutations.py#L1155-L1298) verbatim, including the ordering that matters: **create first, then consume**, inside one `transaction.atomic()`, so a losing racer's `consume_code` raises under the row lock and rolls back its own just-created event. Reject group-scoped codes with `403 NOT_PERMITTED`.
+2. `@calendar_integration/booking_views.py`: `BookingCodeCalendarEventViewSet` with a single `create` action. Port the seven-step flow from [`create_calendar_event_with_code`](../calendar_integration/mutations.py#L1155-L1298) verbatim, including the ordering **create first, then consume**, inside one `transaction.atomic()`. *(Corrected during implementation: the original rationale here was wrong. Inside one atomic block any exception unwinds everything, so the DB outcome is ordering-independent. What create-first actually changes is that both racers reach the write adapter — which is what the concurrency test asserts. Note the real cost: on a provider-backed calendar the losing racer may already have created an event at the external provider before the DB rolls back, leaving an orphan the rollback cannot undo. Pre-existing in the GraphQL original.)*. Reject group-scoped codes with `403 NOT_PERMITTED`.
 3. Map the domain exceptions exactly as the mutation does: `BookingPolicyViolationError` and `NoAvailableTimeWindowsError` / `EventManagementError` → `SLOT_UNAVAILABLE` (code **not** consumed, retryable), `PermissionDenied` → `NOT_PERMITTED`, and let `OverLimitError` propagate to the existing `402` handler untouched.
 4. Call Phase 0's `pinned_duration_error` before dispatching to the service, so a span mismatch returns a message naming the pinned duration rather than the generic permission failure the service would produce on its own.
 5. `@calendar_integration/booking_urls.py`: register `calendar-events`.
@@ -340,7 +340,7 @@ Changes:
 
 1. `@calendar_integration/serializers.py`: add `BookingCodeGroupEventCreateSerializer` — the Phase 1 serializer plus `slot_selections`, reusing the existing `_CalendarGroupSlotSelectionInputSerializer`.
 2. `@calendar_integration/booking_views.py`: `BookingCodeGroupEventViewSet.create`, porting [`create_calendar_group_event_with_code`](../calendar_integration/mutations.py#L1305-L1486). `group_id` comes strictly from `token.calendar_group`; the path `<group_id>` is validated against it and mismatch is `403 NOT_PERMITTED`, never `404`. Reject single-calendar-scoped codes with `403 NOT_PERMITTED`.
-3. Apply `pinned_duration_error` as in Phase 1. Phase 0 has already resolved whether the group service reaches `can_perform_scheduling`; if it needed the times-aware `can_perform_group_scheduling` overload, this viewset is what calls it.
+3. Apply `pinned_duration_error` as in Phase 1. *(Resolved during implementation: `create_grouped_event` does **not** reach `can_perform_scheduling` — `CalendarEventService.create_event` skips that gate entirely when `event_data.group_authorized=True`, and `CalendarGroupService` always sets the flag. The pin therefore lives in a times-aware `can_perform_group_scheduling(group, *, start_time, end_time)`, whose only caller is `calendar_group_service.py`. Do not assume the single-calendar gate covers group booking.)*
 4. `@calendar_integration/booking_urls.py`: register `calendar-groups/<int:group_id>/events`.
 5. drf-spectacular annotations; regenerate `schema.yml`.
 
@@ -546,6 +546,40 @@ If this is revisited, the remedy is small and follows a pattern already in the r
 **Deferred-constraint interaction with organization deletion.** [0026](../calendar_integration/migrations/0026_calendarownership_membership_protect_fk.py) documents at length why membership constraints in this app must be `DEFERRABLE INITIALLY DEFERRED`: Django's cascade collector cannot see `ForeignObject` dependencies and may delete an `OrganizationMembership` before the rows referencing it. The new constraint inherits that requirement. Phase 0's test asserting that whole-organization deletion still succeeds is not optional coverage — it is the regression test for this specific failure mode.
 
 **Rollback.** With no feature flag, rollback is per phase and clean because each phase only adds routes. Reverting a phase's route registration in `booking_urls.py` (or `routes.py` for Phase 6) removes the surface immediately; the viewsets and serializers can stay in the tree harmlessly. The one exception is Phase 0's migration: reverting it drops the constraint, the index, and the column. Codes minted through Phase 6 in the interim keep working in one respect and lose a guarantee in another: `minted_by_membership` is attribution metadata that nothing in the authorization path reads, so dropping it costs only audit detail — but dropping `duration` **silently unpins every code that had a duration**, turning a 30-minute code into an any-length code rather than breaking it. That is a security regression that fails open, so if Phase 0 is ever reverted after Phase 6 has minted pinned codes, revoke those codes first. Revert Phase 6 before Phase 0 regardless, so nothing is writing either column when they disappear.
+
+**Carried forward from implementation — read before extending this surface.**
+
+*Tracked follow-up, pre-existing, not fixed by this plan.* `serialize_event_data_input_util`
+(`calendar_integration/services/calendar_service_utils.py`) builds its `resources=[...]` list by
+iterating a `Calendar` queryset under a loop variable named `resource_allocation` and then accessing
+`.calendar` and `.status` on each item — attributes a `Calendar` row does not have. Rescheduling an
+event whose `ResourceAllocation` points at a `calendar_type=RESOURCE` calendar raises
+`AttributeError`. It predates this plan and is reachable through the GraphQL reschedule mutations
+today, but Phase 4 makes it reachable from an unauthenticated endpoint, where it surfaces as a 500.
+Two test suites currently avoid it by not setting that calendar type. It deserves its own focused
+change and review.
+
+*Fragility introduced by Phase 6.* The booking-code discriminator is
+`minted_by_membership_user_id IS NOT NULL OR minted_by_system_user_id IS NOT NULL`
+(`CalendarManagementTokenQuerySet.booking_codes()`), and `revoke_token` resolves through it so that
+revoking can never touch a calendar-owner or attendee token. It was verified sound against every
+`create_*_token` method. But a future mint path that passes neither actor would produce a booking
+code that is silently **un-revokable**. Twelve test files had to be updated for exactly this reason.
+If an actor-less mint is ever legitimately needed, replace the heuristic with an explicit kind
+column rather than widening the predicate.
+
+*Two slug generators coexist on purpose (Phase 3b).* New rows get
+`secrets.token_urlsafe(16)` from Python; the column also carries
+`DEFAULT replace(gen_random_uuid()::text, '-', '')`. The DB default exists only because Render runs
+`manage.py migrate` inside `buildCommand`, so old-code pods insert without the column while the
+migration is already applied — and a service rollback does not revert migrations. Both are
+unguessable. Do not unify them.
+
+*Security fixes that also landed on the deployed GraphQL surface.* Two holes found during review
+existed identically in already-deployed GraphQL code and were fixed there in the same commits:
+scope resolution falling through `token.event.calendar` let a group-scoped code read a specific
+calendar's availability (Phase 5), and `revoke_token` accepting any token kind let a caller revoke
+calendar-owner tokens, causing permanent lockout (Phase 6). Neither was a schema change.
 
 **Deploy ordering.** No cross-repo dependency. Phase 0 must deploy before any of Phases 1–6. Phases 1, 2, 4, 5, and 6 are independent of each other and can ship in any order once Phase 0 lands. Phase 3 depends on Phase 2 (it adds a branch to that endpoint).
 
