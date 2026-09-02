@@ -41,8 +41,8 @@ The git-level provisioning was correct as reported: worktree, branch based at `o
 | 2 | Surface stale calendar selections on events | ✅ done — [PR #305](https://github.com/vintasoftware/vinta-schedule-api/pull/305) | Tier 2 (sonnet) | `plan/calendar-pools/phase-2` |
 | 3 | Attach pools to slots and project the roster | ✅ done — [PR #307](https://github.com/vintasoftware/vinta-schedule-api/pull/307) | Tier 4 (opus) | `plan/calendar-pools/phase-3` |
 | 4 | Manage pools over internal REST | ✅ done — [PR #309](https://github.com/vintasoftware/vinta-schedule-api/pull/309) | Tier 3 (sonnet) | `plan/calendar-pools/phase-4` |
-| 5 | Expose pools on the public GraphQL API | ✅ done | Tier 3 (sonnet) | `plan/calendar-pools/phase-5` |
-| 6 | Stale-selection sweep query | 🔄 next | Tier 2 | — |
+| 5 | Expose pools on the public GraphQL API | ✅ done — [PR #315](https://github.com/vintasoftware/vinta-schedule-api/pull/315) | Tier 3 (sonnet) | `plan/calendar-pools/phase-5` |
+| 6 | Stale-selection sweep query | 🔄 in progress | Tier 2 | `plan/calendar-pools/phase-6` |
 
 ## Completed phases
 
