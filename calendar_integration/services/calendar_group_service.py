@@ -26,6 +26,8 @@ from calendar_integration.exceptions import (
     CalendarGroupSlotConfigNotFoundError,
     CalendarGroupSlotInUseError,
     CalendarGroupValidationError,
+    CalendarPoolInUseError,
+    CalendarPoolValidationError,
     CalendarServiceOrganizationNotSetError,
 )
 from calendar_integration.models import (
@@ -62,6 +64,7 @@ from calendar_integration.services.dataclasses import (
     CalendarGroupSlotAvailability,
     CalendarGroupSlotInputData,
     CalendarGroupSlotSelectionInputData,
+    CalendarPoolInputData,
     EffectivePolicy,
     EventAttendanceInputData,
     EventExternalAttendanceInputData,
@@ -70,6 +73,7 @@ from calendar_integration.services.dataclasses import (
     GroupScopedBlockWriteResult,
     ResourceAllocationInputData,
 )
+from calendar_integration.signals import reconcile_pools
 from organizations.models import Organization
 from payments.seams.resource_keys import AVAILABILITY_WINDOWS, CALENDAR_GROUPS
 from users.models import User
@@ -612,6 +616,173 @@ class CalendarGroupService:
         # Build the audit subject before the row is deleted (pk is needed).
         self._audit_group_write(AuditAction.DELETE, group)
         group.delete()
+
+    # ------------------------------------------------------------------
+    # CalendarPool CRUD
+    # ------------------------------------------------------------------
+    def _get_pool_by_id(self, pool_id: int) -> CalendarPool:
+        self._assert_initialized()
+        return CalendarPool.objects.filter_by_organization(self.organization_id).get(id=pool_id)
+
+    def _validate_pool_calendar_ids(self, calendar_ids: Iterable[int]) -> None:
+        """Raise ``CalendarPoolValidationError`` if any id is not this org's calendar."""
+        calendar_ids = set(calendar_ids)
+        if not calendar_ids:
+            return
+        org_calendar_ids = set(
+            Calendar.objects.filter_by_organization(self.organization_id)
+            .filter(id__in=calendar_ids)
+            .values_list("id", flat=True)
+        )
+        missing = calendar_ids - org_calendar_ids
+        if missing:
+            raise CalendarPoolValidationError(
+                f"Calendars {sorted(missing)} do not belong to this organization."
+            )
+
+    @transaction.atomic()
+    def create_pool(self, data: CalendarPoolInputData) -> CalendarPool:
+        """Create a CalendarPool with its roster.
+
+        Roster rows are written one ``CalendarPoolMembership.objects.create()``
+        call at a time -- not ``bulk_create`` -- so the ``post_save`` receivers in
+        ``calendar_integration.signals`` fire uniformly for every write to this
+        model (see that module's bulk-safety notes). A pool created here cannot
+        yet be attached to any slot, so each receiver's reconcile is a cheap
+        no-op; the point is not special-casing this call site out of the signal
+        path a future roster write would still expect to be live.
+        """
+        self._assert_initialized()
+        calendar_ids = list(dict.fromkeys(data.calendar_ids))
+        self._validate_pool_calendar_ids(calendar_ids)
+
+        pool = CalendarPool.objects.create(
+            organization=self.organization,
+            name=data.name,
+            description=data.description,
+        )
+        for calendar_id in calendar_ids:
+            CalendarPoolMembership.objects.create(
+                organization=self.organization,
+                pool_fk=pool,
+                calendar_fk_id=calendar_id,
+            )
+        self._audit_group_write(AuditAction.CREATE, pool)
+        return pool
+
+    @transaction.atomic()
+    def update_pool(self, pool_id: int, data: CalendarPoolInputData) -> CalendarPool:
+        """Reconcile a CalendarPool's name/description and roster with ``data``.
+
+        The roster write is diff-based against the pool's current
+        ``CalendarPoolMembership`` rows, and deliberately uses two different
+        primitives depending on direction:
+
+        - **Removals** go through ``CalendarPoolMembership.objects.filter(...).delete()``
+          -- ``CalendarPoolMembershipQuerySet.delete()`` (see ``querysets.py``)
+          captures the affected pool, suppresses the per-row ``post_delete``
+          signal for the duration of the bulk delete, and reconciles every slot
+          this pool is attached to exactly once afterwards, reflecting the
+          roster as it stands right after the removal.
+        - **Additions** go through ``bulk_create``, which fires no signal at
+          all (for any model) -- so this method calls
+          ``calendar_integration.signals.reconcile_pools`` itself immediately
+          after, reflecting the roster as it stands after the addition.
+
+        When a single call both removes and adds calendars, this issues two
+        reconcile passes over the pool's attached slots: one triggered by the
+        delete (correct for the roster at that instant, but not yet reflecting
+        the pending addition), and one explicit final pass after the
+        ``bulk_create`` (correct for the fully-updated roster). Both calls run
+        ``CalendarGroupService._reconcile_slot_pools``, which recomputes each
+        slot's desired projection from scratch rather than diffing against a
+        prior call -- so the first pass is not wrong, only superseded, and the
+        transaction never commits an intermediate, incorrect projection. The
+        cost is bounded (at most one extra reconcile pass per call, never one
+        per row) and the mechanism is exactly the one Phase 3 built for this;
+        no delete/create wrapping is invented here to avoid it.
+        """
+        self._assert_initialized()
+        self._check_not_restricted()
+        pool = self._get_pool_by_id(pool_id)
+
+        calendar_ids = list(dict.fromkeys(data.calendar_ids))
+        self._validate_pool_calendar_ids(calendar_ids)
+
+        before = {"name": pool.name, "description": pool.description}
+        pool.name = data.name
+        pool.description = data.description
+        pool.save(update_fields=["name", "description", "modified"])
+
+        existing_calendar_ids = set(pool.memberships.values_list("calendar_fk_id", flat=True))
+        incoming_calendar_ids = set(calendar_ids)
+        to_remove = existing_calendar_ids - incoming_calendar_ids
+        to_add = incoming_calendar_ids - existing_calendar_ids
+
+        if to_remove:
+            CalendarPoolMembership.objects.filter_by_organization(self.organization_id).filter(
+                pool_fk=pool, calendar_fk_id__in=to_remove
+            ).delete()
+
+        if to_add:
+            CalendarPoolMembership.objects.bulk_create(
+                [
+                    CalendarPoolMembership(
+                        organization=self.organization,
+                        pool_fk=pool,
+                        calendar_fk_id=calendar_id,
+                    )
+                    for calendar_id in sorted(to_add)
+                ]
+            )
+            # bulk_create fires no post_save signal -- reconcile explicitly so
+            # the pool's attached slots pick up the new roster before this
+            # transaction commits (see the docstring above).
+            reconcile_pools({pool.id}, self.organization_id)
+
+        after = {"name": pool.name, "description": pool.description}
+        self._audit_group_write(AuditAction.UPDATE, pool, diff=compute_diff(before, after))
+        if to_remove or to_add:
+            # Separate audit entry for the roster change, mirroring
+            # `_reconcile_slot`'s split between the group-level fields
+            # (audited by the caller) and the roster (audited here).
+            self._audit_group_write(
+                AuditAction.UPDATE,
+                pool,
+                diff=compute_diff(
+                    {"calendar_ids": sorted(existing_calendar_ids)},
+                    {"calendar_ids": sorted(incoming_calendar_ids)},
+                ),
+            )
+
+        return pool
+
+    @transaction.atomic()
+    def delete_pool(self, pool_id: int) -> None:
+        """Delete a CalendarPool. Refuses while any slot still references it,
+        naming the referencing groups (mirrors ``delete_group``'s
+        refuse-when-referenced posture -- see the plan's Pool deletion
+        decision). ``CalendarGroupSlotPool.pool`` also ``PROTECT``s the pool at
+        the schema level, so this check exists to give a structured,
+        group-naming error instead of a bare ``IntegrityError`` surfacing from
+        whatever path skipped it.
+        """
+        self._assert_initialized()
+        self._check_not_restricted()
+        pool = self._get_pool_by_id(pool_id)
+
+        group_names = list(
+            CalendarGroup.objects.filter_by_organization(self.organization_id)
+            .filter(slots__pool_attachments__pool=pool)
+            .values_list("name", flat=True)
+            .distinct()
+        )
+        if group_names:
+            raise CalendarPoolInUseError(group_names)
+
+        # Build the audit subject before the row is deleted (pk is needed).
+        self._audit_group_write(AuditAction.DELETE, pool)
+        pool.delete()
 
     def _create_slots(
         self,

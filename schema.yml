@@ -9178,6 +9178,508 @@ paths:
               schema:
                 $ref: '#/components/schemas/CalendarEvent'
           description: ''
+  /calendar-pools/:
+    get:
+      operationId: calendar_pools_list
+      description: ViewSet for CalendarPool CRUD.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - in: query
+        name: name
+        schema:
+          type: string
+        description: Filter by partial name match
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - Calendar Pools
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCalendarPoolList'
+          description: ''
+    post:
+      operationId: calendar_pools_create
+      description: ViewSet for CalendarPool CRUD.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      tags:
+      - Calendar Pools
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarPool'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarPool'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarPool'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarPool'
+          description: ''
+  /calendar-pools{format}:
+    get:
+      operationId: calendar_pools_formatted_list
+      description: ViewSet for CalendarPool CRUD.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - in: query
+        name: name
+        schema:
+          type: string
+        description: Filter by partial name match
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      tags:
+      - Calendar Pools
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCalendarPoolList'
+          description: ''
+    post:
+      operationId: calendar_pools_formatted_create
+      description: ViewSet for CalendarPool CRUD.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      tags:
+      - Calendar Pools
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarPool'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarPool'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarPool'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarPool'
+          description: ''
+  /calendar-pools/{id}/:
+    get:
+      operationId: calendar_pools_retrieve
+      description: ViewSet for CalendarPool CRUD.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - Calendar Pools
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarPool'
+          description: ''
+    put:
+      operationId: calendar_pools_update
+      description: ViewSet for CalendarPool CRUD.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - Calendar Pools
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarPool'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarPool'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarPool'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarPool'
+          description: ''
+    patch:
+      operationId: calendar_pools_partial_update
+      description: ViewSet for CalendarPool CRUD.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - Calendar Pools
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarPool'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarPool'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarPool'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarPool'
+          description: ''
+    delete:
+      operationId: calendar_pools_destroy
+      description: Delete a CalendarPool. Fails with 409 if the pool is still attached
+        to any calendar group slot, naming the referencing groups.
+      summary: Delete calendar pool
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - Calendar Pools
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+        '409':
+          description: Pool is still attached to a group slot.
+  /calendar-pools/{id}{format}:
+    get:
+      operationId: calendar_pools_formatted_retrieve
+      description: ViewSet for CalendarPool CRUD.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - Calendar Pools
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarPool'
+          description: ''
+    put:
+      operationId: calendar_pools_formatted_update
+      description: ViewSet for CalendarPool CRUD.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - Calendar Pools
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarPool'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarPool'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarPool'
+        required: true
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarPool'
+          description: ''
+    patch:
+      operationId: calendar_pools_formatted_partial_update
+      description: ViewSet for CalendarPool CRUD.
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - Calendar Pools
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarPool'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarPool'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedCalendarPool'
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarPool'
+          description: ''
+    delete:
+      operationId: calendar_pools_formatted_destroy
+      description: Delete a CalendarPool. Fails with 409 if the pool is still attached
+        to any calendar group slot, naming the referencing groups.
+      summary: Delete calendar pool
+      parameters:
+      - in: header
+        name: X-Organization-Id
+        schema:
+          type: string
+        description: Selects the active organization for this request. Optional for
+          callers that belong to exactly one active organization — the single membership
+          is resolved implicitly. **Required** when the caller has two or more active
+          memberships; omitting it in that case returns **400**. If the header names
+          an organization the caller is not an active member of, the server returns
+          **403**.
+      - in: path
+        name: format
+        schema:
+          type: string
+          enum:
+          - .json
+        required: true
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - Calendar Pools
+      security:
+      - jwtAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+        '409':
+          description: Pool is still attached to a group slot.
   /calendar/{id}/:
     get:
       operationId: calendar_retrieve
@@ -18664,6 +19166,14 @@ components:
         pool via `calendars` (the M2M). We deliberately keep slot writes to
         payload-time data only — persistence happens through
         `CalendarGroupSerializer` which delegates to `CalendarGroupService`.
+
+        `pool_ids` (write-only) attaches/detaches `CalendarPool`s -- **omitting**
+        it leaves the slot's current attachments unchanged; an explicit `[]`
+        detaches every pool. This mirrors `CalendarGroupSlotInputData.pool_ids`
+        exactly, and the distinction is resolved in
+        `CalendarGroupSerializer._to_input_data` by checking key presence in the
+        validated per-slot dict, not by inspecting the value. `pools` (read-only)
+        exposes the attached pools themselves.
       properties:
         id:
           type: integer
@@ -18694,11 +19204,22 @@ components:
           items:
             type: integer
           writeOnly: true
+        pools:
+          type: array
+          items:
+            $ref: '#/components/schemas/CalendarPool'
+          readOnly: true
+        pool_ids:
+          type: array
+          items:
+            type: integer
+          writeOnly: true
       required:
       - calendar_ids
       - calendars
       - id
       - name
+      - pools
     CalendarGroupSlotAvailability:
       type: object
       properties:
@@ -18718,6 +19239,50 @@ components:
       - is_bookable
       - required_count
       - slot_id
+    CalendarPool:
+      type: object
+      description: |-
+        CalendarPool CRUD representation.
+
+        On write, accepts `calendar_ids: list[int]` and replaces the roster
+        wholesale; on read exposes the roster via `calendars` -- mirrors
+        `CalendarGroupSlotSerializer`. Persistence delegates to
+        `CalendarGroupService.create_pool` / `update_pool`; this serializer never
+        writes `CalendarPool`/`CalendarPoolMembership` rows directly.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        name:
+          type: string
+          maxLength: 255
+        description:
+          type: string
+        calendars:
+          type: array
+          items:
+            $ref: '#/components/schemas/Calendar'
+          readOnly: true
+        calendar_ids:
+          type: array
+          items:
+            type: integer
+          writeOnly: true
+        created:
+          type: string
+          format: date-time
+          readOnly: true
+        modified:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - calendar_ids
+      - calendars
+      - created
+      - id
+      - modified
+      - name
     CalendarSync:
       type: object
       properties:
@@ -20478,6 +21043,29 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Calendar'
+    PaginatedCalendarPoolList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=400&limit=100
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?offset=200&limit=100
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/CalendarPool'
     PaginatedExternalEventChangeRequestList:
       type: object
       required:
@@ -21206,6 +21794,43 @@ components:
             identify exactly one group system-wide. Authorizes nothing by itself:
             accepts_public_scheduling still gates codeless booking, and a group later
             flipped to public already has its identifier.'
+        created:
+          type: string
+          format: date-time
+          readOnly: true
+        modified:
+          type: string
+          format: date-time
+          readOnly: true
+    PatchedCalendarPool:
+      type: object
+      description: |-
+        CalendarPool CRUD representation.
+
+        On write, accepts `calendar_ids: list[int]` and replaces the roster
+        wholesale; on read exposes the roster via `calendars` -- mirrors
+        `CalendarGroupSlotSerializer`. Persistence delegates to
+        `CalendarGroupService.create_pool` / `update_pool`; this serializer never
+        writes `CalendarPool`/`CalendarPoolMembership` rows directly.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        name:
+          type: string
+          maxLength: 255
+        description:
+          type: string
+        calendars:
+          type: array
+          items:
+            $ref: '#/components/schemas/Calendar'
+          readOnly: true
+        calendar_ids:
+          type: array
+          items:
+            type: integer
+          writeOnly: true
         created:
           type: string
           format: date-time

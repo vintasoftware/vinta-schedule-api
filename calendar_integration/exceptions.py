@@ -385,6 +385,39 @@ class CalendarGroupScopedRuleViolationError(CalendarGroupError):
         super().__init__(message)
 
 
+# Calendar Pool errors
+class CalendarPoolError(CalendarIntegrationError):
+    """Base class for CalendarPool-related errors."""
+
+    pass
+
+
+class CalendarPoolValidationError(CalendarPoolError):
+    """Raised when CalendarPool input data is invalid (e.g. a roster calendar
+    id that does not belong to this organization)."""
+
+    pass
+
+
+class CalendarPoolInUseError(CalendarPoolError):
+    """Raised when a `CalendarPool` cannot be deleted because it is still
+    attached to at least one `CalendarGroupSlot`.
+
+    Mirrors `CalendarGroupHasFutureEventsError`'s refuse-when-referenced
+    posture (see the plan's Pool deletion decision), but carries the distinct
+    names of every referencing group so the REST layer can name them in a 409
+    without a second query.
+    """
+
+    def __init__(self, group_names: list[str]) -> None:
+        self.group_names = group_names
+        names = ", ".join(sorted(group_names))
+        super().__init__(
+            f"Cannot delete CalendarPool because it is still attached to slots "
+            f"in these groups: {names}."
+        )
+
+
 # Bookable Slots errors
 class BookableSlotsValidationError(CalendarIntegrationError):
     """Raised when single-calendar / bundle bookable-slot input data is invalid."""

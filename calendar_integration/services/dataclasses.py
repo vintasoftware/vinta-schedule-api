@@ -370,6 +370,21 @@ class CalendarGroupInputData:
 
 
 @dataclass
+class CalendarPoolInputData:
+    """Input data for creating/updating a ``CalendarPool`` and its roster.
+
+    Unlike ``CalendarGroupSlotInputData.pool_ids``, ``calendar_ids`` here has
+    no "omitted means unchanged" sentinel -- a pool write always replaces the
+    roster wholesale (mirrors how ``CalendarGroupSlotSerializer.calendar_ids``
+    is required, not optional).
+    """
+
+    name: str
+    calendar_ids: list[int]
+    description: str = ""
+
+
+@dataclass
 class CalendarGroupSlotSelectionInputData:
     """Per-slot calendar picks for a grouped booking. `len(calendar_ids)` must be
     >= the slot's `required_count`."""

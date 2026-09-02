@@ -7,6 +7,7 @@ from .views import (
     BookingPolicyViewSet,
     CalendarEventViewSet,
     CalendarGroupViewSet,
+    CalendarPoolViewSet,
     CalendarViewSet,
     ExternalEventChangeRequestViewSet,
     GroupScopedAvailabilityWindowViewSet,
@@ -40,6 +41,11 @@ routes: list[RouteDict] = [
         "regex": r"calendar-groups/<int:group_id>/slots/<int:slot_id>/quota-rules",
         "viewset": GroupScopedQuotaRuleViewSet,
         "basename": "GroupScopedQuotaRules",
+    },
+    {
+        "regex": r"calendar-pools",
+        "viewset": CalendarPoolViewSet,
+        "basename": "CalendarPools",
     },
     {
         "regex": r"calendar",

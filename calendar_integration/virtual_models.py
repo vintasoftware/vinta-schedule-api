@@ -108,21 +108,6 @@ class DistinctCalendarVirtualModel(CalendarVirtualModel):
         return super().get_prefetch_queryset(user=user, **kwargs).distinct()
 
 
-class CalendarGroupSlotVirtualModel(OrganizationScopedVirtualModel):
-    memberships = CalendarGroupSlotMembershipVirtualModel(many=True)
-    calendars = DistinctCalendarVirtualModel(many=True)
-
-    class Meta:
-        model = CalendarGroupSlot
-
-
-class CalendarGroupVirtualModel(OrganizationScopedVirtualModel):
-    slots = CalendarGroupSlotVirtualModel(many=True)
-
-    class Meta:
-        model = CalendarGroup
-
-
 class CalendarPoolMembershipVirtualModel(OrganizationScopedVirtualModel):
     calendar = CalendarVirtualModel()
 
@@ -136,6 +121,28 @@ class CalendarPoolVirtualModel(OrganizationScopedVirtualModel):
 
     class Meta:
         model = CalendarPool
+
+
+class CalendarGroupSlotVirtualModel(OrganizationScopedVirtualModel):
+    memberships = CalendarGroupSlotMembershipVirtualModel(many=True)
+    calendars = DistinctCalendarVirtualModel(many=True)
+    # Added alongside `CalendarGroupSlotSerializer.pools` (Phase 4) -- Phase 3
+    # deliberately left this hint off, since an unconditional prefetch with no
+    # serializer field would cost a query on every group fetch for nothing.
+    # `CalendarGroupSlotPool` (the through table) is a plain M2M attachment --
+    # unique on (slot, pool) -- so no dedup is needed here the way
+    # `DistinctCalendarVirtualModel` is for `calendars`.
+    pools = CalendarPoolVirtualModel(many=True)
+
+    class Meta:
+        model = CalendarGroupSlot
+
+
+class CalendarGroupVirtualModel(OrganizationScopedVirtualModel):
+    slots = CalendarGroupSlotVirtualModel(many=True)
+
+    class Meta:
+        model = CalendarGroup
 
 
 class CalendarEventGroupSelectionVirtualModel(OrganizationScopedVirtualModel):

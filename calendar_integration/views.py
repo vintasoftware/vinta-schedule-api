@@ -32,6 +32,7 @@ from calendar_integration.exceptions import (
     CalendarGroupSlotConfigNotFoundError,
     CalendarGroupValidationError,
     CalendarIntegrationError,
+    CalendarPoolInUseError,
     ChangeRequestIneligibleError,
     ChangeRequestNotPendingError,
     InvalidTokenError,
@@ -42,6 +43,7 @@ from calendar_integration.filtersets import (
     CalendarEventFilterSet,
     CalendarFilterSet,
     CalendarGroupFilterSet,
+    CalendarPoolFilterSet,
     ExternalEventChangeRequestFilterSet,
 )
 from calendar_integration.models import (
@@ -54,6 +56,7 @@ from calendar_integration.models import (
     CalendarGroupSlotQuotaRule,
     CalendarManagementToken,
     CalendarOwnership,
+    CalendarPool,
     ExternalEventChangeRequest,
 )
 from calendar_integration.permissions import (
@@ -62,6 +65,7 @@ from calendar_integration.permissions import (
     CalendarAvailabilityPermission,
     CalendarEventPermission,
     CalendarGroupPermission,
+    CalendarPoolPermission,
     ExternalEventChangeRequestPermission,
     GroupScopedAvailabilityWindowPermission,
     GroupScopedBlockedTimePermission,
@@ -89,6 +93,7 @@ from calendar_integration.serializers import (
     CalendarGroupEventCreateSerializer,
     CalendarGroupRangeAvailabilitySerializer,
     CalendarGroupSerializer,
+    CalendarPoolSerializer,
     CalendarSerializer,
     CalendarSyncRequestSerializer,
     CalendarSyncSerializer,
@@ -2635,6 +2640,67 @@ class CalendarGroupViewSet(VintaScheduleModelViewSet):
 
         payload = [{"start_time": p.start_time, "end_time": p.end_time} for p in proposals]
         return Response(BookableSlotProposalSerializer(payload, many=True).data)
+
+
+@extend_schema(tags=["Calendar Pools"])
+class CalendarPoolViewSet(VintaScheduleModelViewSet):
+    """
+    ViewSet for CalendarPool CRUD.
+    """
+
+    permission_classes = (CalendarPoolPermission,)
+    # See ``CalendarViewSet.queryset``.
+    queryset = CalendarPool.objects.unscoped()
+    serializer_class = CalendarPoolSerializer
+    filterset_class = CalendarPoolFilterSet
+
+    def get_queryset(self):
+        """Org-scoped, then role-scoped: admins see every pool in the org;
+        non-admin members see only pools where they own a roster calendar
+        (`CalendarPoolQuerySet.only_member_of`) -- same visibility shape as
+        `CalendarGroupViewSet.get_queryset`, and what makes a pool a member
+        doesn't participate in 404 rather than 403 on retrieve.
+        """
+        user = self.request.user
+        if not user.is_authenticated:
+            return CalendarPool.original_manager.none()
+        membership = self.request.organization_membership
+        if not membership:
+            return CalendarPool.original_manager.none()
+        qs = super().get_queryset().filter_by_organization(membership.organization_id)
+        if user.is_organization_admin(membership.organization_id):
+            return qs
+        return qs.only_member_of(membership.user_id)
+
+    @extend_schema(
+        summary="Delete calendar pool",
+        description=(
+            "Delete a CalendarPool. Fails with 409 if the pool is still attached "
+            "to any calendar group slot, naming the referencing groups."
+        ),
+        responses={
+            204: None,
+            409: OpenApiResponse(description="Pool is still attached to a group slot."),
+        },
+    )
+    @inject
+    def destroy(
+        self,
+        request,
+        *args,
+        calendar_group_service: Annotated[CalendarGroupService, Provide["calendar_group_service"]],
+        **kwargs,
+    ):
+        instance = self.get_object()
+        calendar_group_service.initialize(organization=instance.organization)
+        try:
+            calendar_group_service.delete_pool(pool_id=instance.id)
+        except CalendarPoolInUseError as e:
+            return Response(
+                {"detail": str(e), "groups": e.group_names},
+                status=status.HTTP_409_CONFLICT,
+            )
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 @extend_schema(tags=["Booking Policies"])
