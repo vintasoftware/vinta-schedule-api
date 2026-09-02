@@ -14888,11 +14888,15 @@ paths:
         name: duration_seconds
         schema:
           type: integer
-        description: 'Desired event duration, in seconds. OPTIONAL when the resolved
-          booking code pins a duration: the pin silently overrides this parameter
-          in that case (a mismatched or omitted value produces the exact same response
-          as the pinned value, so this endpoint cannot be used to probe whether a
-          code is pinned or what the pin is). REQUIRED when the code pins no duration.'
+        description: 'Desired event duration, in seconds. ALWAYS REQUIRED to be present
+          (a request omitting it is a 400 whether or not the code pins a duration
+          -- presence alone must never disclose pin state). When the resolved booking
+          code pins a duration, the pin silently overrides this parameter''s VALUE:
+          a mismatched or malformed value produces the exact same response as the
+          pinned value, so this endpoint cannot be used to probe whether a code is
+          pinned or what the pin is. When the code pins no duration, the value must
+          also be a valid positive integer.'
+        required: true
       - in: query
         name: search_window_end
         schema:
@@ -15053,11 +15057,15 @@ paths:
         name: duration_seconds
         schema:
           type: integer
-        description: 'Desired event duration, in seconds. OPTIONAL when the resolved
-          booking code pins a duration: the pin silently overrides this parameter
-          in that case (a mismatched or omitted value produces the exact same response
-          as the pinned value, so this endpoint cannot be used to probe whether a
-          code is pinned or what the pin is). REQUIRED when the code pins no duration.'
+        description: 'Desired event duration, in seconds. ALWAYS REQUIRED to be present
+          (a request omitting it is a 400 whether or not the code pins a duration
+          -- presence alone must never disclose pin state). When the resolved booking
+          code pins a duration, the pin silently overrides this parameter''s VALUE:
+          a mismatched or malformed value produces the exact same response as the
+          pinned value, so this endpoint cannot be used to probe whether a code is
+          pinned or what the pin is. When the code pins no duration, the value must
+          also be a valid positive integer.'
+        required: true
       - in: query
         name: search_window_end
         schema:

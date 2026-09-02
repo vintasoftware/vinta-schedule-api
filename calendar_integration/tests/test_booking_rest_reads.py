@@ -235,6 +235,58 @@ def group_code(permission_service, organization, calendar_group):
     return token, code
 
 
+@pytest.fixture
+def grouped_event(organization, calendar, calendar_group):
+    """Simulates ``CalendarGroupService.create_grouped_event``'s persistence: the
+    actual ``CalendarEvent`` always lands on a real, single primary calendar
+    (``calendar``) even though it was booked through ``calendar_group`` -- so
+    ``event.calendar`` is always populated for a grouped booking, same as
+    ``event.calendar_group``.
+    """
+    return baker.make(
+        CalendarEvent,
+        organization=organization,
+        calendar=calendar,
+        calendar_group=calendar_group,
+        title="Grouped Booking",
+        timezone="UTC",
+        start_time_tz_unaware=datetime.datetime(2030, 6, 1, 10, 0),
+        end_time_tz_unaware=datetime.datetime(2030, 6, 1, 10, 30),
+        external_id="grouped-event-reads-rest",
+    )
+
+
+@pytest.fixture
+def group_reschedule_code(permission_service, organization, calendar_group, grouped_event):
+    """A RESCHEDULE code scoped to ``calendar_group`` + ``event_id`` -- no
+    ``calendar_id`` -- mirroring
+    ``create_calendar_group_reschedule_booking_code``'s mint shape
+    (``calendar_integration/mutations.py``).
+    """
+    token, code = permission_service.create_booking_token(
+        organization_id=organization.id,
+        permissions=[EventManagementPermissions.RESCHEDULE],
+        calendar_group_id=calendar_group.id,
+        event_id=grouped_event.id,
+    )
+    return token, code
+
+
+@pytest.fixture
+def calendar_reschedule_code(permission_service, organization, calendar, grouped_event):
+    """A RESCHEDULE code scoped to ``calendar`` + ``event_id`` -- no
+    ``calendar_group_id`` -- the symmetric single-calendar reschedule/cancel
+    code shape.
+    """
+    token, code = permission_service.create_booking_token(
+        organization_id=organization.id,
+        permissions=[EventManagementPermissions.RESCHEDULE],
+        calendar_id=calendar.id,
+        event_id=grouped_event.id,
+    )
+    return token, code
+
+
 # ---------------------------------------------------------------------------
 # Scenario 1: Available times (calendar-scoped)
 # ---------------------------------------------------------------------------
@@ -494,6 +546,100 @@ class TestCalendarGroupAvailabilityRead:
 
 
 # ---------------------------------------------------------------------------
+# A group reschedule/cancel code must never leak the specific calendar its
+# event landed on, and symmetrically a single-calendar reschedule/cancel code
+# must never leak group scope. Regression coverage for the fallback-to-
+# ``token.event.calendar`` / ``token.event.calendar_group`` disclosure bug:
+# ``CalendarGroupService.create_grouped_event`` always creates the underlying
+# event on a real single primary calendar, so ``token.event.calendar`` is
+# always populated for a grouped booking -- a naive fallback there would leak
+# that specific calendar's availability to a patient holding only a group
+# code (and the group abstraction exists precisely so they never learn that).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestGroupScopedCodeCannotLeakSpecificCalendar:
+    @pytest.mark.parametrize(
+        "url_name,params",
+        [
+            (
+                AVAILABLE_TIMES_URL,
+                {"start_datetime": "2030-06-01T00:00:00Z", "end_datetime": "2030-06-02T00:00:00Z"},
+            ),
+            (
+                AVAILABILITY_WINDOWS_URL,
+                {"start_datetime": "2030-06-01T00:00:00Z", "end_datetime": "2030-06-02T00:00:00Z"},
+            ),
+            (
+                UNAVAILABLE_WINDOWS_URL,
+                {"start_datetime": "2030-06-01T00:00:00Z", "end_datetime": "2030-06-02T00:00:00Z"},
+            ),
+            (
+                CALENDAR_BOOKABLE_SLOTS_URL,
+                {
+                    "search_window_start": "2030-06-01T09:00:00Z",
+                    "search_window_end": "2030-06-01T13:00:00Z",
+                    "duration_seconds": 1800,
+                },
+            ),
+        ],
+    )
+    def test_group_reschedule_code_rejected_on_calendar_scoped_reads(
+        self, anon_client, group_reschedule_code, available_window, blocking_event, url_name, params
+    ):
+        """A group-scoped RESCHEDULE code (``calendar_group_id`` + ``event_id``,
+        no ``calendar_id``) must get the uniform 403 on every calendar-scoped
+        read, even though ``token.event.calendar`` resolves to a real
+        calendar with real availability data.
+        """
+        _token, code = group_reschedule_code
+        response = _get(anon_client, url_name, code, params)
+        assert response.status_code == status.HTTP_403_FORBIDDEN, response.content
+        assert response.json() == OPAQUE_BODY
+
+    @pytest.mark.parametrize(
+        "url_name,method,params",
+        [
+            (
+                CALENDAR_GROUP_BOOKABLE_SLOTS_URL,
+                "get",
+                {
+                    "search_window_start": "2030-06-01T09:00:00Z",
+                    "search_window_end": "2030-06-01T11:00:00Z",
+                    "duration_seconds": 1800,
+                },
+            ),
+            (
+                CALENDAR_GROUP_AVAILABILITY_URL,
+                "post",
+                {
+                    "ranges": [
+                        {"start_time": "2030-06-01T09:00:00Z", "end_time": "2030-06-01T09:30:00Z"}
+                    ]
+                },
+            ),
+        ],
+    )
+    def test_single_calendar_reschedule_code_rejected_on_group_scoped_reads(
+        self, anon_client, calendar_reschedule_code, url_name, method, params
+    ):
+        """Symmetric case: a single-calendar RESCHEDULE code (``calendar_id`` +
+        ``event_id``, no ``calendar_group_id``) must get the uniform 403 on
+        every group-scoped read, even though ``token.event.calendar_group``
+        resolves to a real group.
+        """
+        _token, code = calendar_reschedule_code
+        response = (
+            _get(anon_client, url_name, code, params)
+            if method == "get"
+            else _post(anon_client, url_name, code, params)
+        )
+        assert response.status_code == status.HTTP_403_FORBIDDEN, response.content
+        assert response.json() == OPAQUE_BODY
+
+
+# ---------------------------------------------------------------------------
 # Non-disclosure matrix: byte-identical 403 across every failure kind, on
 # every one of the six endpoints. This is the property the whole phase exists
 # for -- see the module docstring.
@@ -509,11 +655,39 @@ class TestNonDisclosureMatrix:
         permission_service,
         calendar,
         calendar_group,
+        grouped_event,
     ):
         invalid_code = "dGhpc19pc19ub3RfYV9yZWFsX2NvZGU="  # garbage base64, no matching token
 
+        # A group reschedule/cancel code: `calendar_group_id` + `event_id`, no
+        # `calendar_id` -- `grouped_event.calendar` is a real single calendar
+        # (mirrors `CalendarGroupService.create_grouped_event`'s persistence),
+        # so this exercises the `token.event.calendar` fallback specifically,
+        # not just a scopeless CREATE code. See
+        # `TestGroupScopedCodeCannotLeakSpecificCalendar`.
+        _group_reschedule_token, group_reschedule_code = permission_service.create_booking_token(
+            organization_id=organization.id,
+            permissions=[EventManagementPermissions.RESCHEDULE],
+            calendar_group_id=calendar_group.id,
+            event_id=grouped_event.id,
+        )
+        # Symmetric: a single-calendar reschedule/cancel code -- `calendar_id`
+        # + `event_id`, no `calendar_group_id` -- exercising the
+        # `token.event.calendar_group` fallback.
+        (
+            _calendar_reschedule_token,
+            calendar_reschedule_code,
+        ) = permission_service.create_booking_token(
+            organization_id=organization.id,
+            permissions=[EventManagementPermissions.RESCHEDULE],
+            calendar_id=calendar.id,
+            event_id=grouped_event.id,
+        )
+
         calendar_failure_codes = {
             "invalid": invalid_code,
+            "missing_header": None,
+            "empty_header": "",
             "expired": _mint_expired_code(
                 permission_service, organization, calendar_id=calendar.id
             ),
@@ -527,9 +701,14 @@ class TestNonDisclosureMatrix:
             "wrong_scope": _mint_code(
                 permission_service, organization, calendar_group_id=calendar_group.id
             ),
+            # Wrong scope via the event fallback: a group reschedule/cancel code
+            # whose bound event sits on a real calendar.
+            "wrong_scope_via_event_fallback": group_reschedule_code,
         }
         group_failure_codes = {
             "invalid": invalid_code,
+            "missing_header": None,
+            "empty_header": "",
             "expired": _mint_expired_code(
                 permission_service, organization, calendar_group_id=calendar_group.id
             ),
@@ -541,6 +720,9 @@ class TestNonDisclosureMatrix:
             ),
             # Wrong scope: a calendar-bound code presented to a group-scoped read.
             "wrong_scope": _mint_code(permission_service, organization, calendar_id=calendar.id),
+            # Wrong scope via the event fallback: a single-calendar
+            # reschedule/cancel code whose bound event also sits on a group.
+            "wrong_scope_via_event_fallback": calendar_reschedule_code,
         }
 
         far_start = "2030-06-01T09:00:00Z"
@@ -620,9 +802,9 @@ class TestNonDisclosureMatrix:
                 assertion_count += 2
                 response_bodies.add(bytes(response.content))
 
-        # Byte-identical across ALL SIX endpoints and ALL FIVE failure kinds.
+        # Byte-identical across ALL SIX endpoints and ALL EIGHT failure kinds.
         assert len(response_bodies) == 1, response_bodies
-        assert assertion_count == 6 * 5 * 2  # 6 endpoints x 5 failure kinds x 2 assertions
+        assert assertion_count == 6 * 8 * 2  # 6 endpoints x 8 failure kinds x 2 assertions
 
 
 # ---------------------------------------------------------------------------
@@ -727,6 +909,59 @@ class TestRangeValidationPrecedesCodeResolution:
 
 
 # ---------------------------------------------------------------------------
+# Timezone-naive datetimes must be rejected, not silently interpreted in the
+# server's default timezone. Reachable with an invalid code (400 precedes
+# code resolution, same as the other range-validation cases).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestNaiveDatetimeRejected:
+    INVALID_CODE = "dGhpc19pc19ub3RfYV9yZWFsX2NvZGU="
+
+    @pytest.mark.parametrize(
+        "url_name,build_params",
+        [
+            (
+                AVAILABLE_TIMES_URL,
+                lambda naive: {"start_datetime": naive, "end_datetime": "2030-06-02T00:00:00Z"},
+            ),
+            (
+                AVAILABILITY_WINDOWS_URL,
+                lambda naive: {"start_datetime": naive, "end_datetime": "2030-06-02T00:00:00Z"},
+            ),
+            (
+                UNAVAILABLE_WINDOWS_URL,
+                lambda naive: {"start_datetime": naive, "end_datetime": "2030-06-02T00:00:00Z"},
+            ),
+            (
+                CALENDAR_BOOKABLE_SLOTS_URL,
+                lambda naive: {
+                    "search_window_start": naive,
+                    "search_window_end": "2030-06-02T00:00:00Z",
+                    "duration_seconds": 1800,
+                },
+            ),
+            (
+                CALENDAR_GROUP_BOOKABLE_SLOTS_URL,
+                lambda naive: {
+                    "search_window_start": naive,
+                    "search_window_end": "2030-06-02T00:00:00Z",
+                    "duration_seconds": 1800,
+                },
+            ),
+        ],
+    )
+    def test_naive_datetime_rejected_with_400(self, anon_client, url_name, build_params):
+        # No offset -- would otherwise be interpreted in the server's default
+        # timezone instead of being rejected.
+        params = build_params("2030-06-01T00:00:00")
+        response = _get(anon_client, url_name, self.INVALID_CODE, params)
+        assert response.status_code == status.HTTP_400_BAD_REQUEST, response.content
+        assert "must include a UTC offset" in str(response.json())
+
+
+# ---------------------------------------------------------------------------
 # Pinned duration: silent override, byte-identical across duration_seconds
 # variants, and every proposal returned is actually bookable.
 # ---------------------------------------------------------------------------
@@ -765,13 +1000,22 @@ class TestPinnedDurationSilentOverride:
             pinned_code,
             {**base_params, "duration_seconds": 1800},
         )
-        response_omitted = _get(anon_client, CALENDAR_BOOKABLE_SLOTS_URL, pinned_code, base_params)
+        # Malformed (non-numeric, but PRESENT) -- still silently overridden by
+        # the pin. Presence itself is still required regardless of pin state
+        # (see ``test_pinned_code_also_requires_duration_seconds_presence``);
+        # only the parsed VALUE is unconditionally ignored here.
+        response_malformed = _get(
+            anon_client,
+            CALENDAR_BOOKABLE_SLOTS_URL,
+            pinned_code,
+            {**base_params, "duration_seconds": "not-a-number"},
+        )
 
         assert response_wrong.status_code == status.HTTP_200_OK, response_wrong.content
         assert response_right.status_code == status.HTTP_200_OK, response_right.content
-        assert response_omitted.status_code == status.HTTP_200_OK, response_omitted.content
+        assert response_malformed.status_code == status.HTTP_200_OK, response_malformed.content
 
-        assert response_wrong.content == response_right.content == response_omitted.content
+        assert response_wrong.content == response_right.content == response_malformed.content
 
         proposals = response_right.json()
         assert len(proposals) > 0
@@ -821,6 +1065,30 @@ class TestPinnedDurationSilentOverride:
             anon_client,
             CALENDAR_BOOKABLE_SLOTS_URL,
             code,
+            {
+                "search_window_start": "2030-06-01T09:00:00Z",
+                "search_window_end": "2030-06-01T11:00:00Z",
+            },
+        )
+        assert response.status_code == status.HTTP_400_BAD_REQUEST, response.content
+
+    def test_pinned_code_also_requires_duration_seconds_presence(
+        self, anon_client, organization, permission_service, calendar, available_window
+    ):
+        """A missing ``duration_seconds`` must be a 400 for a PINNED code too --
+        the response status must never be the oracle that discloses pin state
+        (see FIX 2 / the "Duration pinning -- reads" Guiding Decision update).
+        """
+        _token, pinned_code = permission_service.create_booking_token(
+            organization_id=organization.id,
+            permissions=[EventManagementPermissions.CREATE],
+            calendar_id=calendar.id,
+            duration=datetime.timedelta(minutes=30),
+        )
+        response = _get(
+            anon_client,
+            CALENDAR_BOOKABLE_SLOTS_URL,
+            pinned_code,
             {
                 "search_window_start": "2030-06-01T09:00:00Z",
                 "search_window_end": "2030-06-01T11:00:00Z",

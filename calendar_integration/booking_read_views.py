@@ -19,23 +19,30 @@ Ports the six code-gated ``*WithCode`` GraphQL query fields
   ordering" Guiding Decision. Response status must never become a second
   oracle for probing code state.
 
-**Scope resolution** mirrors the GraphQL originals exactly: calendar-scoped
-reads take ``token.calendar``, falling back to ``token.event.calendar``;
+**Scope resolution** mirrors the GraphQL originals: calendar-scoped reads
+take ``token.calendar``, falling back to ``token.event.calendar``;
 group-scoped reads take ``token.calendar_group``, falling back to
 ``token.event.calendar_group``. A code resolving to neither raises the
 uniform ``OpaqueCodeError`` -- this is also what naturally rejects a
-group-scoped code on ``calendar-bookable-slots`` (its ``calendar`` resolves
-to ``None``) and a single-calendar code on the two group-scoped endpoints
-(their ``group`` resolves to ``None``), without any extra branch: on this
-model, ``calendar`` and ``calendar_group`` are mutually exclusive on any one
-token, per ``CalendarPermissionService.create_booking_token``'s own scope
-rules.
+single-calendar code on the two group-scoped endpoints (their ``group``
+resolves to ``None``). It is NOT enough, however, to reject a group-scoped
+code on the calendar-scoped reads: ``CalendarGroupService.create_grouped_event``
+always creates the underlying ``CalendarEvent`` on a real single calendar, so
+``token.event.calendar`` is populated even for a token that is itself scoped
+to a group -- naively falling through to it would leak that specific
+calendar's availability to a patient holding only a group code. So each
+resolver first checks the token's OWN scope column
+(``calendar_group_fk_id`` / ``calendar_fk_id``) and raises immediately if it
+belongs to the OTHER scope, before ever consulting the ``event`` fallback.
+See ``_resolve_calendar_scope_opaquely`` / ``_resolve_group_scope_opaquely``.
 
-**Pinned duration** (the two bookable-slots endpoints only): when the
-resolved token carries a ``duration``, it is used UNCONDITIONALLY and
-``duration_seconds`` is never even read -- so a wrong, missing, or malformed
-``duration_seconds`` on a pinned code produces the exact same response as the
-correct one. See ``_resolve_duration``.
+**Pinned duration** (the two bookable-slots endpoints only): ``duration_seconds``
+presence is required regardless of pin state -- a request that omits it
+entirely is a ``400`` whether or not the resolved token pins a duration, so
+that status alone cannot disclose pin state. Once present, a token that
+carries a ``duration`` uses it UNCONDITIONALLY: a wrong or malformed (but
+non-empty) ``duration_seconds`` on a pinned code still produces the exact
+same response as the correct one. See ``_resolve_duration``.
 """
 
 import datetime
@@ -94,7 +101,16 @@ def _resolve_calendar_scope_opaquely(token: CalendarManagementToken) -> Calendar
     This is also what rejects a group-scoped code on the calendar-scoped
     reads -- a token scoped to a group (never a calendar) resolves to
     ``None`` here, same as any other invalid scope.
+
+    Guard: a token that is itself scoped to a calendar GROUP (``calendar_group``
+    set on the token) must never fall through to ``token.event.calendar`` --
+    for a group booking, ``event.calendar`` is always the specific staff
+    member's underlying calendar the event landed on, and disclosing it here
+    would defeat the point of group scoping. That fallback is only for a
+    token that carries no group scope of its own.
     """
+    if token.calendar_group_fk_id is not None:
+        raise OpaqueCodeError()
     calendar = token.calendar
     if calendar is None and token.event is not None:
         calendar = token.event.calendar
@@ -110,7 +126,13 @@ def _resolve_group_scope_opaquely(token: CalendarManagementToken) -> CalendarGro
     This is also what rejects a single-calendar code on the group-scoped
     reads -- a token scoped to a single calendar (never a group) resolves to
     ``None`` here, same as any other invalid scope.
+
+    Guard: symmetric to ``_resolve_calendar_scope_opaquely`` -- a token that
+    is itself scoped to a single CALENDAR must never fall through to
+    ``token.event.calendar_group``.
     """
+    if token.calendar_fk_id is not None:
+        raise OpaqueCodeError()
     group = token.calendar_group
     if group is None and token.event is not None:
         group = token.event.calendar_group
@@ -124,27 +146,41 @@ def _parse_datetime_query_param(request: Request, name: str) -> datetime.datetim
     if not raw:
         raise ValidationError({"non_field_errors": [f"{name} is required."]})
     try:
-        return datetime.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        value = datetime.datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except ValueError as exc:
         raise ValidationError({"non_field_errors": [f"Invalid {name}; use ISO 8601."]}) from exc
+    if value.tzinfo is None:
+        # A naive value would otherwise be interpreted in the server's default
+        # timezone rather than rejected, silently comparing against the
+        # timezone-aware generated columns with an offset the client never
+        # specified. GraphQL's ``datetime`` scalar already requires one.
+        raise ValidationError(
+            {"non_field_errors": [f"{name} must include a UTC offset (ISO 8601)."]}
+        )
+    return value
 
 
 def _resolve_duration(token: CalendarManagementToken, request: Request) -> datetime.timedelta:
     """Resolve the search duration for a bookable-slots read.
 
-    When ``token.duration`` is set, it is returned UNCONDITIONALLY --
-    ``duration_seconds`` is never read in that branch, so a wrong, missing,
-    or malformed value produces byte-identical output to the correct one
-    (see the "Duration pinning -- reads" Guiding Decision). Only when the
-    token pins nothing does ``duration_seconds`` become required, exactly as
-    it always was.
+    ``duration_seconds`` presence is validated identically regardless of pin
+    state -- a request that omits it is always a ``400``, so that status
+    alone never discloses whether the resolved token pins a duration. Only
+    once presence is established does the pin take over: when
+    ``token.duration`` is set, it is returned UNCONDITIONALLY and the
+    parameter's parsed VALUE is never even inspected, so a wrong or
+    malformed (but non-empty) value on a pinned code still produces
+    byte-identical output to the correct one (see the "Duration pinning --
+    reads" Guiding Decision). Only when the token pins nothing does
+    ``duration_seconds`` also have to be a valid positive integer.
     """
-    if token.duration is not None:
-        return token.duration
-
     raw = request.query_params.get("duration_seconds")
     if not raw:
         raise ValidationError({"non_field_errors": ["duration_seconds is required."]})
+
+    if token.duration is not None:
+        return token.duration
+
     try:
         seconds = int(raw)
     except ValueError as exc:
@@ -218,12 +254,15 @@ _DURATION_SECONDS_PARAMETER = OpenApiParameter(
     name="duration_seconds",
     type=int,
     location=OpenApiParameter.QUERY,
-    required=False,
-    description="Desired event duration, in seconds. OPTIONAL when the resolved "
-    "booking code pins a duration: the pin silently overrides this parameter in "
-    "that case (a mismatched or omitted value produces the exact same response as "
-    "the pinned value, so this endpoint cannot be used to probe whether a code is "
-    "pinned or what the pin is). REQUIRED when the code pins no duration.",
+    required=True,
+    description="Desired event duration, in seconds. ALWAYS REQUIRED to be present "
+    "(a request omitting it is a 400 whether or not the code pins a duration -- "
+    "presence alone must never disclose pin state). When the resolved booking code "
+    "pins a duration, the pin silently overrides this parameter's VALUE: a "
+    "mismatched or malformed value produces the exact same response as the pinned "
+    "value, so this endpoint cannot be used to probe whether a code is pinned or "
+    "what the pin is. When the code pins no duration, the value must also be a "
+    "valid positive integer.",
 )
 
 _SLOT_STEP_SECONDS_PARAMETER = OpenApiParameter(
