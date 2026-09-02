@@ -138,15 +138,61 @@ organization state this unauthenticated endpoint does not have) plus `BookingCod
 Verification (container surface): full suite 5730 passed, 1 skipped; mypy clean (772 files);
 `makemigrations --check` clean (no migration this phase); 17 endpoint tests + 32 auth tests pass.
 
+### Phase 2 — Code-gated group booking
+
+Branch `plan/rest-code-gated-scheduling/phase-2`, base `plan/rest-code-gated-scheduling/phase-1`.
+Commits: `033bff06` (implementation), `12e4a5fc` (reviewer findings — refactor).
+Models used: implementer tier 2 → sonnet; reviewer tier 3 → sonnet; fixer tier 2 → sonnet.
+7 files, +1208 / -3, then a 3-file dedupe refactor. Review: 0 BLOCKER, 2 SHOULD-FIX, 1 NIT, all applied.
+
+What landed: `POST /public/booking/calendar-groups/<group_id>/events/`, code-gated only —
+the codeless branch is Phase 3 and is deliberately absent. Plus a dedupe pass across
+Phases 1 and 2 that the reviewer argued for on the grounds that Phase 3 forks this same
+method again and Phase 4 adds two more near-copies.
+
+**Decisions later phases must respect:**
+
+9. **Two shared helpers now live in `calendar_integration/booking_auth.py`** and both write
+   endpoints use them. Phases 3 and 4 must use them too rather than re-inlining:
+   - `resolve_and_authorize_write(request, permission_service, required_permission)`
+     → `tuple[token, code, Organization]`. Does code resolution, the permission assert, and
+     org resolution. Deliberately does NOT do the scope check or the duration-pin check —
+     those differ per endpoint and stay in the viewset.
+   - `translate_booking_write_errors(*, permission_denied_message)` — a context manager
+     mapping the six shared domain exceptions onto the API exception classes. `OverLimitError`
+     is deliberately absent from it so it still reaches `vinta_exception_handler`'s 402.
+10. **`_EndTimeAfterStartTimeSerializerMixin` in `serializers.py`** now carries the single
+    `validate_end_time`. `BookingCodeEventCreateSerializer`,
+    `BookingCodeGroupEventCreateSerializer`, and the pre-existing
+    `CalendarGroupEventCreateSerializer` all inherit it.
+11. **Path `<group_id>` vs token group mismatch returns 403, never 404.** The check is a pure
+    in-memory int comparison against `token.calendar_group_fk_id` that runs before any
+    `CalendarGroup` lookup, so a nonexistent id and a real-but-other-org id are
+    indistinguishable. Two tests hold this. Phase 3's codeless branch must not weaken it.
+12. **Small debt for Phase 3 to clear:** two docstrings in `booking_views.py` still say
+    "see step 8 below" / "see step 9 below", but the inline `# --- Step N` comments were
+    renumbered by the refactor. The fixer left them stale deliberately because those docstrings
+    feed the OpenAPI `description` and it was told to keep `schema.yml` byte-identical.
+    Phase 3 rewrites this method anyway — reword them to drop the step references entirely and
+    let `schema.yml` pick up the description change.
+
+Also note: the refactor moved the scope check to run after org resolution rather than between
+the permission check and org resolution. Behaviorally inert today (every token has an
+FK-backed organization, so org resolution cannot fail), and the full suite confirms it.
+
+Verification (container surface): full suite 5753 passed, 1 skipped; mypy clean (773 files);
+`makemigrations --check` clean (no migration this phase); `schema.yml` regenerated additive-only
+by the feature commit and unchanged by the refactor; 21 group-endpoint tests plus 17 Phase 1
+tests pass unmodified.
+
 ## Current phase
 
-**Phase 2 — Code-gated group booking** — not started.
+**Phase 3 — Codeless public group booking** — not started.
 
 ## Remaining phases
 
 | Phase | Title | Impl tier | Reviewer tier |
 |---|---|---|---|
-| 2 | Code-gated group booking | 2 | default (3) |
 | 3 | Codeless public group booking | 2 | 3 (plan override) |
 | 4 | Code-gated reschedule and cancel | 3 | default (3) |
 | 5 | Code-gated reads | 2 | 3 (plan override) |
