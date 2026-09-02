@@ -161,6 +161,16 @@ class TestCalendarPoolQueries:
                 headers={"authorization": f"Bearer {system_user.id}:{token}"},
             )
 
+    def _post_anon(self, query, variables):
+        """POST with no Authorization header -- drives the unauthenticated
+        path through the real middleware + strawberry permission_classes,
+        unlike a resolver-level call which bypasses both."""
+        return self.client.post(
+            "/graphql/",
+            data={"query": query, "variables": variables},
+            format="json",
+        )
+
     # ------------------------------------------------------------------
     # calendarPools -- list
     # ------------------------------------------------------------------
@@ -420,36 +430,127 @@ class TestCalendarPoolQueries:
         assert {int(c["id"]) for c in returned_pools[0]["calendars"]} == {calendar.id}
 
     # ------------------------------------------------------------------
-    # Query-count guards
+    # Security guard: anonymous + wrong-resource tokens must be refused
+    # (pins the gate that let the unauthenticated cross-tenant
+    # createCalendarGroup hole live undetected in this same file).
     # ------------------------------------------------------------------
 
-    def test_calendar_pools_query_count_independent_of_result_size(self, django_assert_num_queries):
+    def test_calendar_pools_unauthenticated_refused(self):
         org = self._org()
-        for i in range(5):
-            cal = self._make_calendar(org)
-            self._make_pool(org, name=f"Pool {i}", calendars=(cal,))
-        system_user, token, auth = self._org_wide_token(org, [PublicAPIResources.CALENDAR_POOL])
+        self._make_pool(org, name="Secret")
 
-        # Warm up (token/org resolution, DB connection) so the assertion below
-        # only measures the query the resolver itself issues.
-        self._post(CALENDAR_POOLS_QUERY, system_user, token, auth, {})
+        response = self._post_anon(CALENDAR_POOLS_QUERY, {})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["data"] is None
+        assert data["errors"][0]["message"] == "You must be authenticated to access this resource."
 
-        # 8 queries: system_user + org + subscription + entitlement + resource-access
-        # (5, shared auth/entitlement overhead every authenticated query pays) + pools
-        # + pools__calendars + pools__calendars__ownerships (3, the actual resolver
-        # work) -- independent of the number of pools/calendars, which is the property
-        # this guards.
-        with django_assert_num_queries(8):
+    def test_calendar_pools_wrong_resource_token_refused(self):
+        org = self._org()
+        self._make_pool(org, name="Secret")
+        system_user, token, auth = self._org_wide_token(org, [PublicAPIResources.CALENDAR_GROUP])
+
+        response = self._post(CALENDAR_POOLS_QUERY, system_user, token, auth, {})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["data"] is None
+        assert data["errors"][0]["message"] == "You don't have access to query this resource."
+
+    def test_calendar_pool_unauthenticated_refused(self):
+        org = self._org()
+        pool = self._make_pool(org, name="Secret")
+
+        response = self._post_anon(CALENDAR_POOL_QUERY, {"poolId": pool.id})
+        assert response.status_code == 200
+        data = response.json()
+        # `calendarPool` is a nullable field, so a resolver-level error nulls
+        # only that field, not the whole `data` object (unlike the
+        # non-null-list `calendarPools`).
+        assert data["data"] == {"calendarPool": None}
+        assert data["errors"][0]["message"] == "You must be authenticated to access this resource."
+
+    def test_calendar_pool_wrong_resource_token_refused(self):
+        org = self._org()
+        pool = self._make_pool(org, name="Secret")
+        system_user, token, auth = self._org_wide_token(org, [PublicAPIResources.CALENDAR_GROUP])
+
+        response = self._post(CALENDAR_POOL_QUERY, system_user, token, auth, {"poolId": pool.id})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["data"] == {"calendarPool": None}
+        assert data["errors"][0]["message"] == "You don't have access to query this resource."
+
+    # ------------------------------------------------------------------
+    # Nested `pools` resource gate (this phase's Scope item 4): a token
+    # holding CALENDAR_GROUP but explicitly denied CALENDAR_POOL must not
+    # read pool names/rosters through the nested `slots.pools` path --
+    # OrganizationResourceAccess only runs on root fields, so this has to be
+    # enforced inside the resolver itself (`_scoped_pool_list`).
+    # ------------------------------------------------------------------
+
+    def test_nested_pools_empty_for_token_without_calendar_pool_resource(self):
+        org = self._org()
+        group = CalendarGroup.objects.create(organization=org, name="Group")
+        slot = CalendarGroupSlot.objects.create(organization=org, group=group, name="Slot")
+        cal = self._make_calendar(org)
+        pool = self._make_pool(org, name="SecretRoster", calendars=(cal,))
+        CalendarGroupSlotPool.objects.create(organization=org, slot=slot, pool=pool)
+
+        # Org-wide token: unrestricted by owner-scope, holds CALENDAR_GROUP but
+        # deliberately NOT CALENDAR_POOL.
+        system_user, token, auth = self._org_wide_token(org, [PublicAPIResources.CALENDAR_GROUP])
+
+        response = self._post(
+            NESTED_TRAVERSAL_QUERY, system_user, token, auth, {"groupId": group.id}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data.get("errors", []) == []
+        returned_group = data["data"]["calendarGroup"]
+        assert returned_group is not None
+        assert returned_group["slots"][0]["pools"] == []
+
+    # ------------------------------------------------------------------
+    # Query-count guards -- invariance, not magic numbers: the same query is
+    # measured at two fixture sizes and the counts must be EQUAL, so an N+1
+    # introduced later produces a different pair of numbers instead of a
+    # single constant silently "fixed" by updating it.
+    # ------------------------------------------------------------------
+
+    def _pools_query_count(self, n, system_user, token, auth):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        with CaptureQueriesContext(connection) as ctx:
             response = self._post(CALENDAR_POOLS_QUERY, system_user, token, auth, {})
         assert response.status_code == 200
-        assert response.json().get("errors", []) == []
+        data = response.json()
+        assert data.get("errors", []) == []
+        assert len(data["data"]["calendarPools"]) == n
+        return len(ctx)
 
-    def test_calendar_groups_nested_pools_no_n_plus_one(self, django_assert_num_queries):
-        """Fetching several groups, each with a slot carrying a pool, must not
-        scale query count with the number of groups/slots/pools -- the
-        prefetch this phase adds (``slots__pools__calendars__...``) is what
-        keeps ``CalendarGroupSlotGraphQLType.pools`` constant-query."""
+    def test_calendar_pools_query_count_independent_of_result_size(self):
         org = self._org()
+        system_user, token, auth = self._org_wide_token(org, [PublicAPIResources.CALENDAR_POOL])
+
+        def make_pools(count):
+            for i in range(count):
+                cal = self._make_calendar(org)
+                self._make_pool(org, name=f"Pool {uuid.uuid4().hex[:8]}-{i}", calendars=(cal,))
+
+        # Warm up (token/org resolution, DB connection) so the measurements
+        # below only measure the resolver's own queries.
+        make_pools(1)
+        self._post(CALENDAR_POOLS_QUERY, system_user, token, auth, {})
+
+        small = self._pools_query_count(1, system_user, token, auth)
+
+        make_pools(5)
+        big = self._pools_query_count(6, system_user, token, auth)
+
+        assert small == big, f"N+1: {small} queries for 1 pool vs {big} queries for 6 pools"
+
+    def _nested_groups_query_count(self, n_groups, system_user, token, auth):
         query = """
         query CalendarGroups {
             calendarGroups {
@@ -464,30 +565,125 @@ class TestCalendarPoolQueries:
             }
         }
         """
-        for i in range(3):
-            group = CalendarGroup.objects.create(organization=org, name=f"Group {i}")
-            slot = CalendarGroupSlot.objects.create(organization=org, group=group, name="Slot")
-            cal = self._make_calendar(org)
-            pool = self._make_pool(org, name=f"Pool {i}", calendars=(cal,))
-            CalendarGroupSlotPool.objects.create(organization=org, slot=slot, pool=pool)
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
 
+        with CaptureQueriesContext(connection) as ctx:
+            response = self._post(query, system_user, token, auth, {})
+        assert response.status_code == 200
+        data = response.json()
+        assert data.get("errors", []) == []
+        assert len(data["data"]["calendarGroups"]) == n_groups
+        return len(ctx)
+
+    def test_calendar_groups_nested_pools_no_n_plus_one(self):
+        """Fetching several groups, each with a slot carrying a pool, must not
+        scale query count with the number of groups/slots/pools -- the
+        prefetch this phase adds (``slots__pools__calendars__...``) is what
+        keeps ``CalendarGroupSlotGraphQLType.pools`` constant-query."""
+        org = self._org()
         system_user, token, auth = self._org_wide_token(
             org, [PublicAPIResources.CALENDAR_GROUP, PublicAPIResources.CALENDAR_POOL]
         )
 
-        # Warm up.
-        self._post(query, system_user, token, auth, {})
+        def make_groups(count):
+            for _i in range(count):
+                unique = uuid.uuid4().hex[:8]
+                group = CalendarGroup.objects.create(organization=org, name=f"Group {unique}")
+                slot = CalendarGroupSlot.objects.create(organization=org, group=group, name="Slot")
+                cal = self._make_calendar(org)
+                pool = self._make_pool(org, name=f"Pool {unique}", calendars=(cal,))
+                CalendarGroupSlotPool.objects.create(organization=org, slot=slot, pool=pool)
 
-        # 11 queries: system_user + org + subscription + entitlement + resource-access
-        # (5, shared auth/entitlement overhead every authenticated query pays) + groups
-        # + slots + slots__calendars (union roster) + slots__pools + pools__calendars
-        # (via CalendarGroupSlotPool) + pools__calendars__ownerships (6, the actual
-        # resolver work) -- independent of the number of groups/slots/pools, which is
-        # the property this guards.
-        with django_assert_num_queries(11):
-            response = self._post(query, system_user, token, auth, {})
+        # Warm up.
+        make_groups(1)
+        self._post(
+            """
+            query CalendarGroups {
+                calendarGroups { id slots { id pools { id calendars { id } } } }
+            }
+            """,
+            system_user,
+            token,
+            auth,
+            {},
+        )
+
+        small = self._nested_groups_query_count(1, system_user, token, auth)
+
+        make_groups(2)
+        big = self._nested_groups_query_count(3, system_user, token, auth)
+
+        assert small == big, f"N+1: {small} queries for 1 group vs {big} queries for 3 groups"
+
+    def _singular_group_query_count(self, group_id, n_slots, system_user, token, auth):
+        query = """
+        query CalendarGroup($groupId: Int!) {
+            calendarGroup(groupId: $groupId) {
+                id
+                slots {
+                    id
+                    calendars { id }
+                    pools {
+                        id
+                        calendars { id }
+                    }
+                }
+            }
+        }
+        """
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        with CaptureQueriesContext(connection) as ctx:
+            response = self._post(query, system_user, token, auth, {"groupId": group_id})
         assert response.status_code == 200
-        assert response.json().get("errors", []) == []
+        data = response.json()
+        assert data.get("errors", []) == []
+        assert len(data["data"]["calendarGroup"]["slots"]) == n_slots
+        return len(ctx)
+
+    def test_calendar_group_singular_nested_pools_no_n_plus_one(self):
+        """The singular ``calendarGroup`` field must get the same
+        ``slots__pools__calendars__...`` prefetch the plural ``calendarGroups``
+        field does -- without it, one group with several slots each carrying a
+        pool N+1s on the pools hop, unbounded by tenant configuration."""
+        org = self._org()
+        system_user, token, auth = self._org_wide_token(
+            org, [PublicAPIResources.CALENDAR_GROUP, PublicAPIResources.CALENDAR_POOL]
+        )
+        group = CalendarGroup.objects.create(organization=org, name="Group")
+
+        def make_slots(count):
+            for _ in range(count):
+                unique = uuid.uuid4().hex[:8]
+                slot = CalendarGroupSlot.objects.create(
+                    organization=org, group=group, name=f"Slot {unique}"
+                )
+                cal = self._make_calendar(org)
+                pool = self._make_pool(org, name=f"Pool {unique}", calendars=(cal,))
+                CalendarGroupSlotPool.objects.create(organization=org, slot=slot, pool=pool)
+
+        # Warm up.
+        make_slots(1)
+        self._post(
+            """
+            query CalendarGroup($groupId: Int!) {
+                calendarGroup(groupId: $groupId) { id slots { id pools { id calendars { id } } } }
+            }
+            """,
+            system_user,
+            token,
+            auth,
+            {"groupId": group.id},
+        )
+
+        small = self._singular_group_query_count(group.id, 1, system_user, token, auth)
+
+        make_slots(3)
+        big = self._singular_group_query_count(group.id, 4, system_user, token, auth)
+
+        assert small == big, f"N+1: {small} queries for 1 slot vs {big} queries for 4 slots"
 
 
 class TestFieldToResourceMappingCompleteness:

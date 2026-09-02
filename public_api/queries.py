@@ -883,6 +883,13 @@ class Query:
             org,
             CalendarGroup.objects.filter_by_organization(org.id),
         )
+        # Same prefetch ``calendar_groups`` (plural) uses -- without it, a
+        # group with several slots each carrying a pool N+1s on
+        # ``slots.pools.calendars``, unbounded by tenant configuration.
+        qs = qs.prefetch_related(
+            "slots__calendars__ownerships__membership",
+            "slots__pools__calendars__ownerships__membership",
+        )
         return qs.filter(id=group_id).first()
 
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])

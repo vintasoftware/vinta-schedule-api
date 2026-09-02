@@ -257,6 +257,18 @@ class CalendarGroupService:
         constraint_name = "calendargroupslotquotarule_unique_slot_calendar_period"
         return constraint_name in str(e)
 
+    @staticmethod
+    def _is_pool_name_uniqueness_constraint_violation(e: IntegrityError) -> bool:
+        """Check if an IntegrityError is the (organization, name) unique
+        constraint violation on CalendarPool (``calendarpool_unique_name_per_org``).
+
+        Returns True if the error message contains the unique constraint name,
+        False otherwise. Non-uniqueness constraint violations should be
+        re-raised, not converted to a validation error.
+        """
+        constraint_name = "calendarpool_unique_name_per_org"
+        return constraint_name in str(e)
+
     def _get_group_by_id(self, group_id: int) -> CalendarGroup:
         self._assert_initialized()
         return CalendarGroup.objects.filter_by_organization(self.organization_id).get(id=group_id)
@@ -640,6 +652,30 @@ class CalendarGroupService:
                 f"Calendars {sorted(missing)} do not belong to this organization."
             )
 
+    def _validate_pool_name_unique(self, name: str, *, exclude_pool_id: int | None = None) -> None:
+        """Raise ``CalendarPoolValidationError`` if ``name`` is already used by
+        another pool in this organization.
+
+        Pre-write check against the ``(organization, name)`` uniqueness
+        constraint (``calendarpool_unique_name_per_org``). Without it, a
+        duplicate name reaches Postgres as a raw ``IntegrityError`` that
+        neither ``create_pool`` nor ``update_pool``'s ``except CalendarPoolError``
+        catches, so it would propagate to a GraphQL/REST caller as an
+        unhandled 500 disclosing the constraint name, its column tuple, and
+        the internal ``organization_id``. A concurrent create/rename can
+        still race past this check between it and the write below -- the
+        write itself is wrapped in a savepoint that converts the resulting
+        ``IntegrityError`` into this same domain error as a backstop (see
+        ``create_pool`` / ``update_pool``).
+        """
+        qs = CalendarPool.objects.filter_by_organization(self.organization_id).filter(name=name)
+        if exclude_pool_id is not None:
+            qs = qs.exclude(id=exclude_pool_id)
+        if qs.exists():
+            raise CalendarPoolValidationError(
+                f"A calendar pool named {name!r} already exists in this organization."
+            )
+
     @transaction.atomic()
     def create_pool(self, data: CalendarPoolInputData) -> CalendarPool:
         """Create a CalendarPool with its roster.
@@ -653,14 +689,31 @@ class CalendarGroupService:
         no-op query exactly once instead of once per calendar.
         """
         self._assert_initialized()
+        self._check_not_restricted()
         calendar_ids = list(dict.fromkeys(data.calendar_ids))
         self._validate_pool_calendar_ids(calendar_ids)
+        self._validate_pool_name_unique(data.name)
 
-        pool = CalendarPool.objects.create(
-            organization=self.organization,
-            name=data.name,
-            description=data.description,
-        )
+        try:
+            # Nested atomic (a savepoint, since this method already runs inside
+            # its own `transaction.atomic()`): a concurrent create can still
+            # race past the `_validate_pool_name_unique` check above and hit
+            # the `calendarpool_unique_name_per_org` constraint here. Scoping
+            # the savepoint to just this write lets the `IntegrityError` be
+            # caught and converted below without poisoning the rest of this
+            # method's transaction.
+            with transaction.atomic():
+                pool = CalendarPool.objects.create(
+                    organization=self.organization,
+                    name=data.name,
+                    description=data.description,
+                )
+        except IntegrityError as e:
+            if self._is_pool_name_uniqueness_constraint_violation(e):
+                raise CalendarPoolValidationError(
+                    f"A calendar pool named {data.name!r} already exists in this organization."
+                ) from e
+            raise
         if calendar_ids:
             CalendarPoolMembership.objects.bulk_create(
                 [
@@ -716,11 +769,24 @@ class CalendarGroupService:
 
         calendar_ids = list(dict.fromkeys(data.calendar_ids))
         self._validate_pool_calendar_ids(calendar_ids)
+        self._validate_pool_name_unique(data.name, exclude_pool_id=pool.id)
 
         before = {"name": pool.name, "description": pool.description}
         pool.name = data.name
         pool.description = data.description
-        pool.save(update_fields=["name", "description", "modified"])
+        try:
+            # Nested atomic (a savepoint): see `create_pool`'s identical
+            # backstop for why a concurrent rename can still race past the
+            # `_validate_pool_name_unique` check above, and why the savepoint
+            # is scoped to just this write.
+            with transaction.atomic():
+                pool.save(update_fields=["name", "description", "modified"])
+        except IntegrityError as e:
+            if self._is_pool_name_uniqueness_constraint_violation(e):
+                raise CalendarPoolValidationError(
+                    f"A calendar pool named {data.name!r} already exists in this organization."
+                ) from e
+            raise
 
         existing_calendar_ids = set(pool.memberships.values_list("calendar_fk_id", flat=True))
         incoming_calendar_ids = set(calendar_ids)

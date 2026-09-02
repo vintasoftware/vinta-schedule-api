@@ -17,6 +17,8 @@ import uuid
 import pytest
 from model_bakery import baker
 from rest_framework.test import APIClient
+from vinta_billing.constants import BillingState
+from vinta_billing.models import Subscription
 
 from calendar_integration.factories import create_calendar_pool
 from calendar_integration.models import (
@@ -141,6 +143,26 @@ class TestCalendarPoolMutations:
                 headers={"authorization": f"Bearer {system_user.id}:{token}"},
             )
 
+    def _post_anon(self, query, variables):
+        """POST with no Authorization header -- drives the unauthenticated
+        path through the real middleware + strawberry permission_classes,
+        unlike a resolver-level call which bypasses both."""
+        return self.client.post(
+            "/graphql/",
+            data={"query": query, "variables": variables},
+            format="json",
+        )
+
+    def _restrict_organization(self, organization: Organization) -> None:
+        """Flip ``organization``'s (auto-provisioned, unlimited) subscription to
+        RESTRICTED in place -- applied AFTER any setup (e.g. system-user-token
+        creation) that itself goes through a guarded, limit-checked path, so
+        that setup is not blocked by the very state under test. Mirrors
+        ``TestGroupScopedQuotaRules._restrict_organization``."""
+        Subscription.objects.filter(organization=organization).update(
+            billing_state=BillingState.RESTRICTED
+        )
+
     # ------------------------------------------------------------------
     # createCalendarPool
     # ------------------------------------------------------------------
@@ -239,6 +261,99 @@ class TestCalendarPoolMutations:
         assert result["pool"] is None
         assert str(foreign_calendar.id) in result["errorMessage"]
 
+    def test_create_calendar_pool_duplicate_name_rejected_as_data(self):
+        """BLOCKER regression pin: a duplicate ``(organization, name)`` must be
+        reported as ``success=False`` data (the ``CalendarPoolResult`` contract),
+        never leak the raw ``IntegrityError`` -- which would surface the
+        ``calendarpool_unique_name_per_org`` constraint name, its column tuple,
+        and the internal ``organization_id`` -- as an ``errors[]`` entry."""
+        org = self._org()
+        create_calendar_pool(organization=org, name="Nurses")
+        system_user, token, auth = self._org_wide_token(org, [PublicAPIResources.CALENDAR_POOL])
+
+        response = self._post(
+            CREATE_CALENDAR_POOL_MUTATION,
+            system_user,
+            token,
+            auth,
+            {"input": {"name": "Nurses", "calendarIds": []}},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        # Never surfaced as a GraphQL error, and never a raw constraint message.
+        assert data.get("errors", []) == []
+        result = data["data"]["createCalendarPool"]
+        assert result["success"] is False
+        assert result["pool"] is None
+        assert "calendarpool_unique_name_per_org" not in (result["errorMessage"] or "")
+        assert "organization_id" not in (result["errorMessage"] or "")
+        assert (
+            CalendarPool.objects.filter_by_organization(org.id).filter(name="Nurses").count() == 1
+        )
+
+    def test_create_calendar_pool_restricted_organization_rejected(self):
+        """A RESTRICTED billing root must block pool creation too --
+        ``create_pool`` used to be the only pool-service method that skipped
+        ``_check_not_restricted``, letting a suspended tenant keep creating
+        pools while it could no longer edit or delete them."""
+        org = self._org()
+        system_user, token, auth = self._org_wide_token(org, [PublicAPIResources.CALENDAR_POOL])
+        self._restrict_organization(org)
+
+        response = self._post(
+            CREATE_CALENDAR_POOL_MUTATION,
+            system_user,
+            token,
+            auth,
+            {"input": {"name": "Nurses", "calendarIds": []}},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["errors"]) == 1
+        extensions = data["errors"][0]["extensions"]
+        assert extensions["code"] == "limit_exceeded"
+        assert extensions["remedy"] == "resolve_billing"
+        assert (
+            not CalendarPool.objects.filter_by_organization(org.id).filter(name="Nurses").exists()
+        )
+
+    # ------------------------------------------------------------------
+    # Security guard: anonymous + wrong-resource tokens must be refused
+    # ------------------------------------------------------------------
+
+    def test_create_calendar_pool_unauthenticated_refused(self):
+        org = self._org()
+
+        response = self._post_anon(
+            CREATE_CALENDAR_POOL_MUTATION,
+            {"input": {"name": "PWNED", "calendarIds": []}},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["data"] is None
+        assert data["errors"][0]["message"] == "You must be authenticated to access this resource."
+        assert not CalendarPool.objects.filter_by_organization(org.id).filter(name="PWNED").exists()
+
+    def test_create_calendar_pool_wrong_resource_token_refused(self):
+        """A token missing CALENDAR_POOL entirely (holds an unrelated resource
+        instead) must be refused by OrganizationResourceAccess -- not reach
+        the mutation body at all."""
+        org = self._org()
+        system_user, token, auth = self._org_wide_token(org, [PublicAPIResources.CALENDAR_GROUP])
+
+        response = self._post(
+            CREATE_CALENDAR_POOL_MUTATION,
+            system_user,
+            token,
+            auth,
+            {"input": {"name": "PWNED", "calendarIds": []}},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["data"] is None
+        assert data["errors"][0]["message"] == "You don't have access to query this resource."
+        assert not CalendarPool.objects.filter_by_organization(org.id).filter(name="PWNED").exists()
+
     # ------------------------------------------------------------------
     # updateCalendarPool
     # ------------------------------------------------------------------
@@ -318,6 +433,64 @@ class TestCalendarPoolMutations:
         foreign_pool.refresh_from_db()
         assert foreign_pool.name == "OtherOrgPool"
 
+    def test_update_calendar_pool_rename_to_duplicate_name_rejected_as_data(self):
+        """BLOCKER regression pin (rename half): renaming a pool onto an
+        already-used name must be reported as ``success=False`` data, never a
+        raw ``IntegrityError`` reaching ``errors[]``."""
+        org = self._org()
+        create_calendar_pool(organization=org, name="Nurses")
+        other = create_calendar_pool(organization=org, name="Rooms")
+        system_user, token, auth = self._org_wide_token(org, [PublicAPIResources.CALENDAR_POOL])
+
+        response = self._post(
+            UPDATE_CALENDAR_POOL_MUTATION,
+            system_user,
+            token,
+            auth,
+            {"input": {"poolId": other.id, "name": "Nurses", "calendarIds": []}},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data.get("errors", []) == []
+        result = data["data"]["updateCalendarPool"]
+        assert result["success"] is False
+        other.refresh_from_db()
+        assert other.name == "Rooms"
+
+    def test_update_calendar_pool_unauthenticated_refused(self):
+        org = self._org()
+        pool = create_calendar_pool(organization=org, name="Nurses")
+
+        response = self._post_anon(
+            UPDATE_CALENDAR_POOL_MUTATION,
+            {"input": {"poolId": pool.id, "name": "PWNED", "calendarIds": []}},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["data"] is None
+        assert data["errors"][0]["message"] == "You must be authenticated to access this resource."
+        pool.refresh_from_db()
+        assert pool.name == "Nurses"
+
+    def test_update_calendar_pool_wrong_resource_token_refused(self):
+        org = self._org()
+        pool = create_calendar_pool(organization=org, name="Nurses")
+        system_user, token, auth = self._org_wide_token(org, [PublicAPIResources.CALENDAR_GROUP])
+
+        response = self._post(
+            UPDATE_CALENDAR_POOL_MUTATION,
+            system_user,
+            token,
+            auth,
+            {"input": {"poolId": pool.id, "name": "PWNED", "calendarIds": []}},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["data"] is None
+        assert data["errors"][0]["message"] == "You don't have access to query this resource."
+        pool.refresh_from_db()
+        assert pool.name == "Nurses"
+
     # ------------------------------------------------------------------
     # deleteCalendarPool
     # ------------------------------------------------------------------
@@ -345,7 +518,10 @@ class TestCalendarPoolMutations:
     def test_delete_calendar_pool_refused_when_attached_surfaces_as_data(self):
         """Refusal is data (success=False + referencingGroups), never a GraphQL
         errors[] entry -- matches how this API surfaces every other domain
-        failure (e.g. CalendarGroupMutations)."""
+        failure (e.g. CalendarGroupMutations). The token here holds
+        CALENDAR_GROUP in addition to CALENDAR_POOL, so it is entitled to see
+        the referencing group's name -- see the CALENDAR_POOL-only variant
+        below for the resource-boundary gate on that same field."""
         org = self._org()
         cal = self._make_calendar(org)
         pool = create_calendar_pool(organization=org, name="Nurses", calendars=[cal])
@@ -353,7 +529,9 @@ class TestCalendarPoolMutations:
         slot = CalendarGroupSlot.objects.create(organization=org, group=group, name="Slot")
         CalendarGroupSlotPool.objects.create(organization=org, slot=slot, pool=pool)
 
-        system_user, token, auth = self._org_wide_token(org, [PublicAPIResources.CALENDAR_POOL])
+        system_user, token, auth = self._org_wide_token(
+            org, [PublicAPIResources.CALENDAR_POOL, PublicAPIResources.CALENDAR_GROUP]
+        )
 
         response = self._post(
             DELETE_CALENDAR_POOL_MUTATION,
@@ -370,6 +548,67 @@ class TestCalendarPoolMutations:
         assert result["success"] is False
         assert "Appointments" in result["errorMessage"]
         assert result["referencingGroups"] == ["Appointments"]
+        assert CalendarPool.objects.filter_by_organization(org.id).filter(id=pool.id).exists()
+
+    def test_delete_calendar_pool_refused_without_group_resource_hides_group_names(self):
+        """Resource-boundary leak (this phase's Scope item 5): a token holding
+        only CALENDAR_POOL -- explicitly denied CALENDAR_GROUP -- must not learn
+        the names of the groups referencing the pool through this refusal.
+        ``referencingGroups`` is empty and the message carries only a count, so
+        the caller still learns *why* the delete failed without the names."""
+        org = self._org()
+        cal = self._make_calendar(org)
+        pool = create_calendar_pool(organization=org, name="Nurses", calendars=[cal])
+        group = CalendarGroup.objects.create(organization=org, name="Confidential Client Intake")
+        slot = CalendarGroupSlot.objects.create(organization=org, group=group, name="Slot")
+        CalendarGroupSlotPool.objects.create(organization=org, slot=slot, pool=pool)
+
+        system_user, token, auth = self._org_wide_token(org, [PublicAPIResources.CALENDAR_POOL])
+
+        response = self._post(
+            DELETE_CALENDAR_POOL_MUTATION,
+            system_user,
+            token,
+            auth,
+            {"input": {"poolId": pool.id}},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data.get("errors", []) == []
+        result = data["data"]["deleteCalendarPool"]
+        assert result["success"] is False
+        assert result["referencingGroups"] == []
+        assert "Confidential Client Intake" not in result["errorMessage"]
+        assert "1" in result["errorMessage"]
+        assert CalendarPool.objects.filter_by_organization(org.id).filter(id=pool.id).exists()
+
+    def test_delete_calendar_pool_unauthenticated_refused(self):
+        org = self._org()
+        pool = create_calendar_pool(organization=org, name="Nurses")
+
+        response = self._post_anon(DELETE_CALENDAR_POOL_MUTATION, {"input": {"poolId": pool.id}})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["data"] is None
+        assert data["errors"][0]["message"] == "You must be authenticated to access this resource."
+        assert CalendarPool.objects.filter_by_organization(org.id).filter(id=pool.id).exists()
+
+    def test_delete_calendar_pool_wrong_resource_token_refused(self):
+        org = self._org()
+        pool = create_calendar_pool(organization=org, name="Nurses")
+        system_user, token, auth = self._org_wide_token(org, [PublicAPIResources.CALENDAR_GROUP])
+
+        response = self._post(
+            DELETE_CALENDAR_POOL_MUTATION,
+            system_user,
+            token,
+            auth,
+            {"input": {"poolId": pool.id}},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["data"] is None
+        assert data["errors"][0]["message"] == "You don't have access to query this resource."
         assert CalendarPool.objects.filter_by_organization(org.id).filter(id=pool.id).exists()
 
     def test_delete_calendar_pool_scoped_member_forbidden(self):

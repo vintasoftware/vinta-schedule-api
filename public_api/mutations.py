@@ -4244,6 +4244,10 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         if error_message := _assert_can_write_calendar_pools(request, org):
             return CalendarPoolResult(success=False, error_message=error_message)
 
+        # create_pool raises OverLimitError when the organization's billing root
+        # is RESTRICTED (``_check_not_restricted``). Rendered identically to the
+        # REST 402 body via raise_over_limit_graphql_error, which also rolls back
+        # the request transaction -- see that function's docstring.
         try:
             pool = group_service.create_pool(
                 CalendarPoolInputData(
@@ -4252,6 +4256,8 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
                     calendar_ids=list(input.calendar_ids),
                 )
             )
+        except OverLimitError as exc:
+            raise_over_limit_graphql_error(exc)
         except CalendarPoolError as e:
             return CalendarPoolResult(success=False, error_message=str(e))
         return CalendarPoolResult(success=True, pool=pool)  # type: ignore[arg-type]
@@ -4274,6 +4280,10 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         if error_message := _assert_can_write_calendar_pools(request, org):
             return CalendarPoolResult(success=False, error_message=error_message)
 
+        # update_pool raises OverLimitError when the organization's billing root
+        # is RESTRICTED (``_check_not_restricted``). Rendered identically to the
+        # REST 402 body via raise_over_limit_graphql_error, which also rolls back
+        # the request transaction -- see that function's docstring.
         try:
             pool = group_service.update_pool(
                 pool_id=input.pool_id,
@@ -4285,6 +4295,8 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
             )
         except CalendarPool.DoesNotExist:
             return CalendarPoolResult(success=False, error_message="Pool not found.")
+        except OverLimitError as exc:
+            raise_over_limit_graphql_error(exc)
         except CalendarPoolError as e:
             return CalendarPoolResult(success=False, error_message=str(e))
         return CalendarPoolResult(success=True, pool=pool)  # type: ignore[arg-type]
@@ -4302,19 +4314,48 @@ class Mutation(ExternalEventChangeRequestMutations, CalendarGroupMutations):
         ``referencing_groups`` (mirrors the REST 409 payload), not a GraphQL
         error. Same write scoping as ``create_calendar_pool``. The token's
         OrganizationResourceAccess must include the CALENDAR_POOL resource.
+
+        ``referencing_groups`` names ``CalendarGroup`` rows, which is a
+        different resource (``CALENDAR_GROUP``) than the one this mutation is
+        gated on. A token holding only ``CALENDAR_POOL`` -- explicitly denied
+        ``CALENDAR_GROUP`` -- must not learn those names through this refusal;
+        ``referencing_groups`` is returned empty for it, with a count-only
+        ``error_message`` so the caller still learns why the delete failed.
+        A token that also holds ``CALENDAR_GROUP`` gets the full, named list.
         """
         group_service, org = _get_org_and_init_calendar_group_service(info)
         request: PublicApiHttpRequest = info.context.request
         if error_message := _assert_can_write_calendar_pools(request, org):
             return DeleteCalendarPoolResult(success=False, error_message=error_message)
 
+        # delete_pool raises OverLimitError when the organization's billing root
+        # is RESTRICTED (``_check_not_restricted``). Rendered identically to the
+        # REST 402 body via raise_over_limit_graphql_error, which also rolls back
+        # the request transaction -- see that function's docstring.
         try:
             group_service.delete_pool(pool_id=input.pool_id)
         except CalendarPool.DoesNotExist:
             return DeleteCalendarPoolResult(success=False, error_message="Pool not found.")
+        except OverLimitError as exc:
+            raise_over_limit_graphql_error(exc)
         except CalendarPoolInUseError as e:
+            system_user = request.public_api_system_user
+            can_see_group_names = system_user is not None and (
+                system_user.available_resources.filter(
+                    resource_name=PublicAPIResources.CALENDAR_GROUP
+                ).exists()
+            )
+            if can_see_group_names:
+                return DeleteCalendarPoolResult(
+                    success=False, error_message=str(e), referencing_groups=e.group_names
+                )
             return DeleteCalendarPoolResult(
-                success=False, error_message=str(e), referencing_groups=e.group_names
+                success=False,
+                error_message=(
+                    "Cannot delete CalendarPool because it is still attached to slots "
+                    f"in {len(e.group_names)} group(s)."
+                ),
+                referencing_groups=[],
             )
         except CalendarPoolError as e:
             return DeleteCalendarPoolResult(success=False, error_message=str(e))

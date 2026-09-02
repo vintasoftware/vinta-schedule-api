@@ -224,6 +224,34 @@ class TestCalendarPoolCrud:
             internal_calendars["nurse_b"].id,
         }
 
+    def test_create_pool_rejects_duplicate_name(
+        self, auth_client, organization, owned_pool, admin_user
+    ):
+        """A second pool named exactly like an existing one in the same
+        organization must be rejected as a clean 400, never surface the
+        ``calendarpool_unique_name_per_org`` constraint as a raw 500."""
+        url = reverse("api:CalendarPools-list")
+        payload = {"name": owned_pool.name, "calendar_ids": []}
+        response = auth_client.post(url, payload, format="json")
+        _assert_status(response, status.HTTP_400_BAD_REQUEST)
+        assert (
+            CalendarPool.objects.filter_by_organization(organization.id)
+            .filter(name=owned_pool.name)
+            .count()
+            == 1
+        )
+
+    def test_update_pool_rejects_rename_to_duplicate_name(
+        self, auth_client, organization, owned_pool, internal_calendars, admin_user
+    ):
+        other_pool = create_calendar_pool(organization=organization, name="Rooms")
+        url = reverse("api:CalendarPools-detail", kwargs={"pk": other_pool.id})
+        payload = {"name": owned_pool.name, "calendar_ids": []}
+        response = auth_client.put(url, payload, format="json")
+        _assert_status(response, status.HTTP_400_BAD_REQUEST)
+        other_pool.refresh_from_db()
+        assert other_pool.name == "Rooms"
+
     def test_create_pool_rejects_foreign_calendar(self, auth_client, organization, admin_user):
         other_org = baker.make(Organization)
         foreign_calendar = Calendar.objects.create(

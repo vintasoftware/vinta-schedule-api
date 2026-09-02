@@ -30,6 +30,7 @@ from calendar_integration.models import (
     RecurrenceRule,
     ResourceAllocation,
 )
+from public_api.constants import PublicAPIResources
 from public_api.scoping import scoped_calendar_ids
 from users.graphql import UserGraphQLType
 
@@ -137,8 +138,43 @@ def _scoped_calendar_list(
     return [c for c in calendars if c.id in allowed_ids]
 
 
+def _has_calendar_pool_resource(info: strawberry.Info) -> bool:
+    """Whether this request's public-API token holds the CALENDAR_POOL resource.
+
+    Returns ``True`` (no gating) for both internal / non-public-API requests
+    (the request carries no ``public_api_system_user``) and for a token that
+    genuinely holds a ``CALENDAR_POOL`` ``ResourceAccess`` row. Returns
+    ``False`` only for a public-API token explicitly missing that row --
+    e.g. a token provisioned with ``CALENDAR_GROUP`` but deliberately
+    withheld ``CALENDAR_POOL``. See ``_scoped_pool_list``, which uses this to
+    close the resource-gate bypass a nested ``pools`` traversal would
+    otherwise allow (``OrganizationResourceAccess`` only runs on root
+    fields).
+
+    Result is cached on the request object, keyed by system-user id: this is
+    called once per ``CalendarGroupSlot`` in the response (every ``pools``
+    field resolution), and a query per slot would turn a single-digit-slot
+    group into an N+1 all its own.
+    """
+    request = getattr(info.context, "request", None)
+    if request is None:
+        return True
+    system_user = getattr(request, "public_api_system_user", None)
+    if system_user is None:
+        return True
+    cache = getattr(request, "_calendar_pool_resource_access_cache", None)
+    if cache is None:
+        cache = {}
+        request._calendar_pool_resource_access_cache = cache
+    if system_user.id not in cache:
+        cache[system_user.id] = system_user.available_resources.filter(
+            resource_name=PublicAPIResources.CALENDAR_POOL
+        ).exists()
+    return cache[system_user.id]
+
+
 def _scoped_pool_list(
-    pools: "list[CalendarPool]", allowed_ids: set[int] | None
+    pools: "list[CalendarPool]", allowed_ids: set[int] | None, info: strawberry.Info
 ) -> "list[CalendarPool]":
     """Filter a list of pools to those where the owner owns at least one roster calendar.
 
@@ -151,7 +187,17 @@ def _scoped_pool_list(
     token owns at least one of ITS roster calendars. Evaluated in Python
     against the already-prefetched pool/calendar lists rather than a second
     query, mirroring ``_scoped_calendar_list`` / ``_deduplicated_calendars``.
+
+    Also closes a second, resource-boundary gap: ``OrganizationResourceAccess``
+    only runs on the root field (``calendarGroups`` / ``calendarGroup``), not
+    on this nested ``pools`` field, so a token holding ``CALENDAR_GROUP`` but
+    deliberately withheld ``CALENDAR_POOL`` could otherwise read every pool
+    name and roster in the org through this one nested path. Returns ``[]``
+    outright when ``_has_calendar_pool_resource`` says the token lacks that
+    resource -- fails closed before the owner-scope filter even runs.
     """
+    if not _has_calendar_pool_resource(info):
+        return []
     if allowed_ids is None:
         return pools
     return [
@@ -965,6 +1011,7 @@ class CalendarGroupSlotGraphQLType:
         return _scoped_pool_list(  # type: ignore[return-value]
             list(self.pools.all()),  # type: ignore[attr-defined]
             _owner_scoped_calendar_ids(info),
+            info,
         )
 
 

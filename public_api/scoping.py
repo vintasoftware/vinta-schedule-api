@@ -119,12 +119,61 @@ def scoped_calendar_ids(system_user: SystemUser, organization: Organization) -> 
     )
 
 
+def _scoped_only_member_of_queryset[QuerySetT: (CalendarGroupQuerySet, CalendarPoolQuerySet)](
+    system_user: SystemUser | None,
+    organization: Organization,
+    base_qs: QuerySetT,
+) -> QuerySetT:
+    """Apply role-aware, "does the token own a participating row" visibility
+    scoping to `base_qs`.
+
+    Shared by ``scoped_calendar_group_queryset`` and
+    ``scoped_calendar_pool_queryset`` -- the two are the same security
+    predicate over different querysets (``CalendarGroupQuerySet.only_member_of``
+    / ``CalendarPoolQuerySet.only_member_of``, both keyed on a membership's
+    ``user_id``), extracted here so the two call sites cannot drift apart the
+    way a byte-identical copy eventually does. PEP 695 type parameter syntax
+    (not a module-level ``TypeVar``) -- ruff's UP047.
+
+    - ``system_user`` is ``None`` (non-public-API / internal path): no-op,
+      returns `base_qs` unchanged.
+    - ``org_wide`` / ``scoped_admin``: no-op, returns `base_qs` unchanged --
+      unrestricted, sees every row in the organization.
+    - ``scoped_member`` with an active resolved membership: filtered to the
+      rows that membership participates in (``base_qs.only_member_of``).
+    - ``scoped_member`` whose membership is missing/inactive: empty (fail
+      closed) -- a revoked/deactivated scoped token must not fall back to
+      seeing every row in the org.
+
+    Args:
+        system_user: The SystemUser (token) making the request, or None.
+        organization: The organization context.
+        base_qs: An already organization-filtered queryset exposing
+            ``only_member_of(user_id)``.
+
+    Returns:
+        The (possibly further-filtered) queryset, same type as `base_qs`.
+    """
+    if system_user is None:
+        return base_qs
+    scope, membership = _resolve_scope_and_membership(system_user, organization)
+    if scope != "scoped_member":
+        return base_qs
+    if membership is None:
+        return base_qs.none()
+    return base_qs.only_member_of(membership.user_id)
+
+
 def scoped_calendar_group_queryset(
     system_user: SystemUser | None,
     organization: Organization,
     base_qs: CalendarGroupQuerySet,
 ) -> CalendarGroupQuerySet:
     """Apply role-aware ``CalendarGroup`` visibility scoping to `base_qs`.
+
+    Delegates to ``_scoped_only_member_of_queryset`` -- see that function's
+    docstring for the full reasoning, repeated here only for the
+    ``CalendarGroup`` specifics:
 
     - ``system_user`` is ``None`` (non-public-API / internal path): no-op,
       returns `base_qs` unchanged.
@@ -145,14 +194,7 @@ def scoped_calendar_group_queryset(
     Returns:
         The (possibly further-filtered) ``CalendarGroupQuerySet``.
     """
-    if system_user is None:
-        return base_qs
-    scope, membership = _resolve_scope_and_membership(system_user, organization)
-    if scope != "scoped_member":
-        return base_qs
-    if membership is None:
-        return base_qs.none()
-    return base_qs.only_member_of(membership.user_id)
+    return _scoped_only_member_of_queryset(system_user, organization, base_qs)
 
 
 def scoped_calendar_pool_queryset(
@@ -162,9 +204,9 @@ def scoped_calendar_pool_queryset(
 ) -> CalendarPoolQuerySet:
     """Apply role-aware ``CalendarPool`` visibility scoping to `base_qs`.
 
-    Structurally identical to ``scoped_calendar_group_queryset`` -- see that
-    function's docstring for the full reasoning, repeated here only for the
-    ``CalendarPool`` specifics:
+    Delegates to ``_scoped_only_member_of_queryset`` -- see
+    ``scoped_calendar_group_queryset``'s docstring for the full reasoning,
+    repeated here only for the ``CalendarPool`` specifics:
 
     - ``system_user`` is ``None`` (non-public-API / internal path): no-op,
       returns `base_qs` unchanged.
@@ -185,14 +227,7 @@ def scoped_calendar_pool_queryset(
     Returns:
         The (possibly further-filtered) ``CalendarPoolQuerySet``.
     """
-    if system_user is None:
-        return base_qs
-    scope, membership = _resolve_scope_and_membership(system_user, organization)
-    if scope != "scoped_member":
-        return base_qs
-    if membership is None:
-        return base_qs.none()
-    return base_qs.only_member_of(membership.user_id)
+    return _scoped_only_member_of_queryset(system_user, organization, base_qs)
 
 
 def assert_calendar_in_owner_scope(
