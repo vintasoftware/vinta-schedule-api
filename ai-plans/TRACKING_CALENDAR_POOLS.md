@@ -41,8 +41,8 @@ The git-level provisioning was correct as reported: worktree, branch based at `o
 | 2 | Surface stale calendar selections on events | ✅ done — [PR #305](https://github.com/vintasoftware/vinta-schedule-api/pull/305) | Tier 2 (sonnet) | `plan/calendar-pools/phase-2` |
 | 3 | Attach pools to slots and project the roster | ✅ done — [PR #307](https://github.com/vintasoftware/vinta-schedule-api/pull/307) | Tier 4 (opus) | `plan/calendar-pools/phase-3` |
 | 4 | Manage pools over internal REST | ✅ done — [PR #309](https://github.com/vintasoftware/vinta-schedule-api/pull/309) | Tier 3 (sonnet) | `plan/calendar-pools/phase-4` |
-| 5 | Expose pools on the public GraphQL API | 🔄 in progress | Tier 3 | `plan/calendar-pools/phase-5` |
-| 6 | Stale-selection sweep query | ⬜ pending | Tier 2 | — |
+| 5 | Expose pools on the public GraphQL API | ✅ done | Tier 3 (sonnet) | `plan/calendar-pools/phase-5` |
+| 6 | Stale-selection sweep query | 🔄 next | Tier 2 | — |
 
 ## Completed phases
 
@@ -141,9 +141,29 @@ Both fixed by **rejecting the ambiguous partial write** rather than making the s
 
 **Same defect class audited elsewhere, none vulnerable.** `CalendarBundleUpdateSerializer` is wired to a PATCH action but instantiated without `partial=True`. The three group-scoped update serializers use `partial=True` deliberately with all-optional fields. `CalendarEventSerializer.update` already reconstructs absent collections from `instance` rather than defaulting to `[]` — the pattern the rest should follow if this is ever generalized.
 
+### Phase 5 — Expose pools on the public GraphQL API
+
+- **Status**: complete. **Branch**: `plan/calendar-pools/phase-5`, base `plan/calendar-pools/phase-4`. **Commits**: `8785289a` (feature), `71468775` (review fixes).
+- **Models**: implementer Tier 3 (sonnet), reviewer **Tier 4** (opus, per the plan's override), fixer Tier 2 stepped up to sonnet.
+- **Gate, re-run solo by the conductor**: **3327 collected, 3327 passed**, 0 errors; ruff clean; `makemigrations --check` no changes; mypy success across 775 files.
+
+**A confirmed production vulnerability was found during this phase and fixed separately.** While verifying this phase's report, the conductor traced and then proved — with an end-to-end HTTP probe — that `createCalendarGroup` / `updateCalendarGroup` / `deleteCalendarGroup` accepted **unauthenticated cross-tenant writes**: no `permission_classes`, organization taken from client input. Fixed on `hotfix/public-api-group-mutation-auth` off `main` and **merged as [PR #313](https://github.com/vintasoftware/vinta-schedule-api/pull/313)**, independent of this stack. `createCalendarGroupEvent` was gated too — it was unexploitable only because a DI double-instantiation bug breaks it for everyone, which is a coincidence rather than a control.
+
+This phase did **not** extend the hole: its implementer was told to mirror sibling mutations, looked at `CalendarGroupMutations`, and refused to copy the pattern — building the pool mutations with `permission_classes` and token-derived organization from the start. The Tier 4 reviewer's probe confirmed every new pool field rejects anonymous and wrong-resource requests, against a positive control that still reproduced the (then-unfixed-on-this-branch) group vulnerability.
+
+**BLOCKER found and fixed: duplicate pool name leaked database schema.** `CalendarPool` has `UniqueConstraint(organization, name)` but neither `create_pool` nor `update_pool` validated it, and `IntegrityError` is not a `CalendarPoolError`, so a duplicate name escaped as a raw Postgres message in `errors[]` — disclosing the constraint name, its column tuple and a raw `organization_id` to a partner token, with `data: null` so clients following the documented data-not-errors contract had no `success` field to read. Fixed with pre-write validation plus a **savepoint-scoped `IntegrityError` backstop**, so the concurrent-create race cannot leak the raw message either.
+
+**Seven SHOULD-FIX items, all applied.** The most consequential: (1) the new suite had **no unauthenticated tests** — the gate was correct but unpinned, which is exactly the gap that let the group vulnerability survive review; behavioral tests now assert refusal *and* unchanged database state for all five fields. (2) The nested `slots { pools }` field bypassed the resource gate, letting a token holding only `CALENDAR_GROUP` read every pool name and roster in the org; now returns `[]` without `CALENDAR_POOL`. (3) `create_pool` never called `_check_not_restricted()`, so a suspended tenant could create pools but not edit them. (4) `OverLimitError` was uncaught in two mutations, bypassing the structured error contract. (5) An N+1 on the singular `calendarGroup` path (35 queries at 4 slots × 4 pools). (6) Query guards were magic numbers rather than invariance assertions — now compare two fixture sizes. (7) `referencingGroups` disclosed group names to a token denied `CALENDAR_GROUP`.
+
+**The invariance guards paid for themselves immediately.** The fixer's first implementation of the resource check queried per-slot, and the newly-rewritten two-size guards caught the N+1 it introduced. A magic-number guard would have been "fixed" by updating the constant.
+
+**Noted, not fixed.** `CalendarGroupSlotGraphQLType.calendars` leaks `Calendar` data to a token without the matching resource by the same mechanism the nested `pools` field did — pre-existing, out of scope, worth a ticket. `scoped_calendar_pool_queryset` was a byte-identical copy of `scoped_calendar_group_queryset`; both now delegate to a shared generic helper, since a security predicate duplicated verbatim is how two copies drift apart.
+
+**Test-infrastructure note, corrected.** Intermittent `-n auto` errors seen across several phases are `psycopg.errors.ObjectInUse` on xdist worker databases, caused by **two pytest runs executing concurrently against the same worker DB names** — not the 60s per-test timeout this tracking file previously blamed. A solo run of this phase was clean at 3327/3327.
+
 ## Current phase
 
-**Phase 5 — Expose pools on the public GraphQL API.** Base: `plan/calendar-pools/phase-4`. Reviewer Tier 4 per the plan's override — this phase decides what a partner token can read, and the nested-traversal roster leak is the class of bug the existing scoped resolvers exist to prevent.
+**Phase 6 — Stale-selection sweep query.** Base: `plan/calendar-pools/phase-5`. The final phase: a read-only service method plus REST and GraphQL surfaces listing stale `(event, slot, calendar)` triples.
 
 ## Deferred phases
 
