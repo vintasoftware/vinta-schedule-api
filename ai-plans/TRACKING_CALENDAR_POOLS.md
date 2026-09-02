@@ -39,8 +39,8 @@ The git-level provisioning was correct as reported: worktree, branch based at `o
 | 0 | Add the CalendarPool model and its roster | ✅ done — [PR #302](https://github.com/vintasoftware/vinta-schedule-api/pull/302) | Tier 2 (sonnet) | `plan/calendar-pools/phase-0` |
 | 1 | Make roster removal non-destructive | ✅ done — [PR #303](https://github.com/vintasoftware/vinta-schedule-api/pull/303) | Tier 3 (sonnet) | `plan/calendar-pools/phase-1` |
 | 2 | Surface stale calendar selections on events | ✅ done — [PR #305](https://github.com/vintasoftware/vinta-schedule-api/pull/305) | Tier 2 (sonnet) | `plan/calendar-pools/phase-2` |
-| 3 | Attach pools to slots and project the roster | 🔄 in progress | Tier 4 | `plan/calendar-pools/phase-3` |
-| 4 | Manage pools over internal REST | ⬜ pending | Tier 3 | — |
+| 3 | Attach pools to slots and project the roster | ✅ done | Tier 4 (opus) | `plan/calendar-pools/phase-3` |
+| 4 | Manage pools over internal REST | 🔄 next | Tier 3 | — |
 | 5 | Expose pools on the public GraphQL API | ⬜ pending | Tier 3 | — |
 | 6 | Stale-selection sweep query | ⬜ pending | Tier 2 | — |
 
@@ -98,9 +98,31 @@ Neither corrupts data and both are narrow, but the waiver in **Guiding Decisions
 
 **Test-infrastructure observation, not caused by this phase.** One scoped-suite run produced 16 errors on `test_request_calendar_sync_task_not_fired_on_rollback` and siblings; the test passes in isolation in 35.5s against `pytest.ini`'s 60s per-test timeout, and a clean re-run passed all 3176. Separately, two runs reported *more* passing tests (3201, 3209) than the 3176 that actually exist, which could not be reconciled — an xdist/timeout/coverage interaction worth investigating independently.
 
+### Phase 3 — Attach pools to slots and project the roster
+
+- **Status**: complete. **Branch**: `plan/calendar-pools/phase-3`, base `plan/calendar-pools/phase-2`. **Commits**: `82dfd871` (feature), `1890c7a0` (review fixes).
+- **Models**: implementer Tier 4 (opus), reviewer Tier 4 (opus), fixer Tier 3 (sonnet).
+- **Gate, re-run by the conductor in the worktree**: ruff clean; `makemigrations --check` no changes; mypy success across 772 files; **3254 tests collected, 3254 passed**. Migration verified forward → reverse → forward against a deliberately constructed inline-plus-projected row.
+
+**Constraint form — the plan was wrong and is now corrected.** `NULLS NOT DISTINCT` requires Postgres 15+. Local development runs **14.23**, CI runs `postgres:15`, docker-compose runs `postgres:alpine` (unpinned, currently 18). The original instruction would have passed CI and failed locally. What shipped is a pair of partial unique indexes, verified by the reviewer as provably equivalent by case analysis over all four NULL combinations. **The three-way Postgres version skew is a standing project risk unrelated to this feature** — pinning `postgres:alpine` is the cheap first step.
+
+**BLOCKER found and fixed: pool roster edits did not reproject.** Phase 0 registered `CalendarPoolAdmin` with an editable membership inline. Once Phase 3 projected from that roster, removing a calendar from a pool in the admin left the projected `CalendarGroupSlotMembership` row in place, so `_validate_selections` still saw it and would **accept a brand-new booking against a calendar the organization had just removed** — the same failure class Phase 1 was written to prevent, and a direct violation of the **Drift mitigation** decision. Closed with `post_save`/`post_delete` receivers in `calendar_integration/signals.py` that reproject into every attached slot inside the caller's transaction, plus a `CalendarPoolMembershipQuerySet.delete()` override so a bulk delete reconciles once per pool rather than once per row. `bulk_create` fires no signal and nothing calls it on that model today; that is documented in the signals module as a landmine for future callers.
+
+**Two API lockouts found and fixed.** Validation ran against pool attachments the caller had not submitted, so a third party editing an unrelated pool could make a group permanently uneditable — failing with an error naming a slot the caller never touched. Validation now considers only explicitly-submitted `pool_ids`, which also removed an extra query on every `update_group` for groups with no pools. That acceptance is now pinned by a query-count test.
+
+**Other plan errors found by the implementer.** (1) `_resolve_group_scoped_membership` used `.get()` on `(slot, calendar)`, which becomes non-unique under projection — a `MultipleObjectsReturned` 500 across six group-scoped write paths; now `.order_by("id").first()`. (2) `_validate_slots_input` required at least one *inline* calendar, which would have made a pool-only slot — the feature's motivating case — unbuildable. (3) Duplicate calendars leaked into four read surfaces including duplicate *groups* in a filtered list; all deduplicated. (4) `pool_ids` typing contradicted the omit-means-unchanged rule.
+
+**Verified, not assumed.** The two versioned quota Postgres functions take row ids and never reference the roster table, so the plan's claim held and no version bump was needed. The whole `migrations/sql/` tree has zero references to `calendargroupslotmembership`.
+
+**Deferred to Phase 4 by the implementer, with reasoning.** `CalendarGroupSlotVirtualModel` does not gain `pools` in this phase — `CalendarGroupSlotSerializer` has no `pools` field until Phase 4, and adding an unconditional prefetch now would cost one extra query on every group fetch and jeopardise this phase's no-extra-queries acceptance. Phase 4 should add the hint together with its serializer field.
+
+**Carried into Phase 4.** A slot **renamed** in an `update_group` payload is deleted and recreated by name, and the recreated slot gets `pool_ids=None` → no pools, silently detaching. Documented with a comment; carrying attachments across a rename needs an input-shape change the current dataclass cannot express.
+
+**Noted, not fixed.** `calendar_integration/signals.py` calls the private `CalendarGroupService._reconcile_slot_pools` with a `# noqa: SLF001`. Pragmatic and documented, but worth promoting to a public service method if Phase 4 touches that code.
+
 ## Current phase
 
-**Phase 3 — Attach pools to slots and project the roster.** Base: `plan/calendar-pools/phase-2`. The core of the feature and the riskiest phase: a unique-constraint swap with NULL semantics, the membership projection, and the `Count` fix. Implementer Tier 4, reviewer Tier 4, fixer Tier 3.
+**Phase 4 — Manage pools over internal REST.** Base: `plan/calendar-pools/phase-3`. Note the two carry-ins above: `update_pool` must reconcile attached slots (or rely on the new signals), and the virtual-model `pools` hint belongs with the serializer field.
 
 ## Deferred phases
 
