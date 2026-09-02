@@ -14817,6 +14817,59 @@ paths:
               schema:
                 $ref: '#/components/schemas/CalendarEvent'
           description: ''
+  /public/booking/calendar-groups/{group_id}/events/:
+    post:
+      operationId: public_booking_calendar_groups_events_create
+      description: |-
+        Resolve the code, then create the grouped event and consume the code atomically.
+
+        Create FIRST, then consume, matching the GraphQL original
+        (``create_calendar_group_event_with_code``) and Phase 1's single-calendar
+        endpoint. Both statements run inside the same outer ``transaction.atomic()``
+        block (see step 9 below), so any exception either one raises -- including
+        ``consume_code``'s ``TokenAlreadyUsedError`` on a lost race -- unwinds the
+        whole transaction: the DB outcome (one event, code consumed once) is the
+        same regardless of which statement runs first. What create-first actually
+        buys is that both racers do the provider-side write (the adapter's
+        ``create_event`` call) before either one's outcome is decided, rather than
+        the loser being turned away by the row lock before ever reaching the
+        provider.
+      summary: Book a grouped event through a calendar group with a booking code
+      parameters:
+      - in: header
+        name: X-Booking-Code
+        schema:
+          type: string
+        description: Single-use booking code, minted with the CREATE permission and
+          scoped to a calendar group (not a single calendar).
+        required: true
+      - in: path
+        name: group_id
+        schema:
+          type: string
+          pattern: ^\d+$
+        required: true
+      tags:
+      - Booking Codes
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BookingCodeGroupEventCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BookingCodeGroupEventCreate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BookingCodeGroupEventCreate'
+        required: true
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarEvent'
+          description: ''
   /public/organizations/{organization_id}/events/:
     get:
       operationId: public_organizations_events_list
@@ -17368,6 +17421,45 @@ components:
       required:
       - end_time
       - external_attendee
+      - start_time
+      - timezone
+      - title
+    BookingCodeGroupEventCreate:
+      type: object
+      description: |-
+        Input for ``POST /public/booking/calendar-groups/<group_id>/events/``.
+
+        Mirrors ``CreateGroupEventWithCodeInput`` (GraphQL) minus its ``code`` field --
+        the booking code travels as the ``X-Booking-Code`` header instead (see
+        ``calendar_integration.booking_auth``). ``group_id`` is never accepted here: it
+        comes strictly from the resolved token's ``calendar_group``, never from client
+        input or the path. Reuses ``_CalendarGroupSlotSelectionInputSerializer``, the
+        same slot-selection shape ``CalendarGroupEventCreateSerializer`` already uses
+        for the authenticated group-booking endpoint.
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+          default: ''
+        start_time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+        timezone:
+          type: string
+        slot_selections:
+          type: array
+          items:
+            $ref: '#/components/schemas/_CalendarGroupSlotSelectionInput'
+        external_attendee:
+          $ref: '#/components/schemas/_BookingCodeExternalAttendee'
+      required:
+      - end_time
+      - external_attendee
+      - slot_selections
       - start_time
       - timezone
       - title

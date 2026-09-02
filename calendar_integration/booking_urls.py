@@ -14,7 +14,10 @@ from django.urls import include, path
 
 from rest_framework.routers import DefaultRouter
 
-from calendar_integration.booking_views import BookingCodeCalendarEventViewSet
+from calendar_integration.booking_views import (
+    BookingCodeCalendarEventViewSet,
+    BookingCodeGroupEventViewSet,
+)
 
 
 app_name = "calendar_booking_api"
@@ -24,6 +27,11 @@ router.register(
     r"calendar-events",
     BookingCodeCalendarEventViewSet,
     basename="booking-calendar-events",
+)
+router.register(
+    r"calendar-groups/(?P<group_id>\d+)/events",
+    BookingCodeGroupEventViewSet,
+    basename="booking-calendar-group-events",
 )
 
 urlpatterns = [

@@ -39,7 +39,10 @@ GUARDED_SURFACES: dict[str, tuple[str, ...]] = {
         "TestBookingCodeEventSurface",
         "TestBookingCodeGroupEventSurface",
     ),
-    "calendar_integration/booking_views.py": ("TestBookingCodeRestEventSurface",),
+    "calendar_integration/booking_views.py": (
+        "TestBookingCodeRestEventSurface",
+        "TestBookingCodeRestGroupEventSurface",
+    ),
     "public_api/mutations.py": ("TestPublicApiScheduleEventSurface",),
     "calendar_integration/services/calendar_group_service.py": (
         "TestBookingCodeGroupEventSurface",

@@ -3596,3 +3596,39 @@ class BookingCodeEventCreateSerializer(serializers.Serializer):
             if start_time_parsed and end_time <= start_time_parsed:
                 raise serializers.ValidationError("end_time must be after start_time.")
         return end_time
+
+
+class BookingCodeGroupEventCreateSerializer(serializers.Serializer):
+    """Input for ``POST /public/booking/calendar-groups/<group_id>/events/``.
+
+    Mirrors ``CreateGroupEventWithCodeInput`` (GraphQL) minus its ``code`` field --
+    the booking code travels as the ``X-Booking-Code`` header instead (see
+    ``calendar_integration.booking_auth``). ``group_id`` is never accepted here: it
+    comes strictly from the resolved token's ``calendar_group``, never from client
+    input or the path. Reuses ``_CalendarGroupSlotSelectionInputSerializer``, the
+    same slot-selection shape ``CalendarGroupEventCreateSerializer`` already uses
+    for the authenticated group-booking endpoint.
+    """
+
+    title = serializers.CharField()
+    description = serializers.CharField(allow_blank=True, required=False, default="")
+    start_time = serializers.DateTimeField()
+    end_time = serializers.DateTimeField()
+    timezone = serializers.CharField()
+    slot_selections = _CalendarGroupSlotSelectionInputSerializer(many=True)
+    external_attendee = _BookingCodeExternalAttendeeSerializer()
+
+    def validate_end_time(self, end_time: datetime.datetime) -> datetime.datetime:
+        start_time = self.initial_data.get("start_time") if self.initial_data else None
+        if start_time:
+            try:
+                start_time_parsed = (
+                    datetime.datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+                    if isinstance(start_time, str)
+                    else start_time
+                )
+            except ValueError:
+                start_time_parsed = None
+            if start_time_parsed and end_time <= start_time_parsed:
+                raise serializers.ValidationError("end_time must be after start_time.")
+        return end_time

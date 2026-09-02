@@ -888,6 +888,78 @@ class TestBookingCodeGroupEventSurface:
 
 
 # ----------------------------------------------------------------------------------
+# 5b. Booking-code REST group -- calendar_integration/booking_views.py
+#     BookingCodeGroupEventViewSet
+#     (POST /public/booking/calendar-groups/<group_id>/events/)
+# ----------------------------------------------------------------------------------
+
+
+def _rest_group_booking_payload(slot, calendar: Calendar) -> dict:
+    start = datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=1)
+    return {
+        "title": "REST Group Booking Code Surface Event",
+        "description": "",
+        "start_time": start.isoformat(),
+        "end_time": (start + datetime.timedelta(hours=1)).isoformat(),
+        "timezone": "UTC",
+        "slot_selections": [{"slot_id": slot.id, "calendar_ids": [calendar.id]}],
+        "external_attendee": {"email": "patient@example.com", "name": "Pat"},
+    }
+
+
+@pytest.mark.django_db
+class TestBookingCodeRestGroupEventSurface:
+    """The REST counterpart of ``TestBookingCodeGroupEventSurface`` above --
+    ``POST /public/booking/calendar-groups/<group_id>/events/`` reaches
+    ``create_event`` through ``CalendarGroupService.create_grouped_event`` ->
+    ``CalendarService.create_event``, so it must meter and gate identically.
+    """
+
+    def test_blocked_at_the_allowance_returns_402(self):
+        organization, _subscription = _at_the_allowance_no_payment_method()
+        group, slot, calendar = _group_with_one_slot(organization)
+        token, code = _group_booking_code(organization, group)
+
+        client = APIClient()
+        response = client.post(
+            reverse(
+                "calendar_booking_api:booking-calendar-group-events-list",
+                kwargs={"group_id": group.id},
+            ),
+            _rest_group_booking_payload(slot, calendar),
+            format="json",
+            headers=_rest_booking_headers(code),
+        )
+
+        assert response.status_code == status.HTTP_402_PAYMENT_REQUIRED
+        body = response.json()
+        assert body["resource"] == EVENT_OCCURRENCES
+        assert body["remedy"] == LimitRemedy.ADD_PAYMENT_METHOD
+        assert not CalendarEvent.original_manager.filter(calendar=calendar).exists()
+        token.refresh_from_db()
+        assert token.used_at is None
+
+    def test_unlimited_plan_is_unchanged(self):
+        organization, subscription = _organization_with_postpaid_limit(None, BillingState.FREE)
+        _seed_metered_occurrences(organization, subscription, 1)
+        group, slot, calendar = _group_with_one_slot(organization)
+        _token, code = _group_booking_code(organization, group)
+
+        client = APIClient()
+        response = client.post(
+            reverse(
+                "calendar_booking_api:booking-calendar-group-events-list",
+                kwargs={"group_id": group.id},
+            ),
+            _rest_group_booking_payload(slot, calendar),
+            format="json",
+            headers=_rest_booking_headers(code),
+        )
+
+        assert response.status_code == status.HTTP_201_CREATED, response.content
+
+
+# ----------------------------------------------------------------------------------
 # 6. Bulk sync writer -- calendar_integration/services/calendar_sync_service.py
 # ----------------------------------------------------------------------------------
 
