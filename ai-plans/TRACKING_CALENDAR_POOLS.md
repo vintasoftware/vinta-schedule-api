@@ -40,8 +40,8 @@ The git-level provisioning was correct as reported: worktree, branch based at `o
 | 1 | Make roster removal non-destructive | ✅ done — [PR #303](https://github.com/vintasoftware/vinta-schedule-api/pull/303) | Tier 3 (sonnet) | `plan/calendar-pools/phase-1` |
 | 2 | Surface stale calendar selections on events | ✅ done — [PR #305](https://github.com/vintasoftware/vinta-schedule-api/pull/305) | Tier 2 (sonnet) | `plan/calendar-pools/phase-2` |
 | 3 | Attach pools to slots and project the roster | ✅ done — [PR #307](https://github.com/vintasoftware/vinta-schedule-api/pull/307) | Tier 4 (opus) | `plan/calendar-pools/phase-3` |
-| 4 | Manage pools over internal REST | 🔄 in progress | Tier 3 | `plan/calendar-pools/phase-4` |
-| 5 | Expose pools on the public GraphQL API | ⬜ pending | Tier 3 | — |
+| 4 | Manage pools over internal REST | ✅ done | Tier 3 (sonnet) | `plan/calendar-pools/phase-4` |
+| 5 | Expose pools on the public GraphQL API | 🔄 next | Tier 3 | — |
 | 6 | Stale-selection sweep query | ⬜ pending | Tier 2 | — |
 
 ## Completed phases
@@ -120,9 +120,30 @@ Neither corrupts data and both are narrow, but the waiver in **Guiding Decisions
 
 **Noted, not fixed.** `calendar_integration/signals.py` calls the private `CalendarGroupService._reconcile_slot_pools` with a `# noqa: SLF001`. Pragmatic and documented, but worth promoting to a public service method if Phase 4 touches that code.
 
+### Phase 4 — Manage pools over internal REST
+
+- **Status**: complete. **Branch**: `plan/calendar-pools/phase-4`, base `plan/calendar-pools/phase-3`. **Commits**: `a2fa6e7d` (feature), `8f035d24` (PATCH data-loss fixes).
+- **Models**: implementer Tier 3 (sonnet), reviewer Tier 3 (sonnet), fixer Tier 2 stepped up to sonnet.
+- **Landed**: `CalendarPoolViewSet` + serializer + permission + filterset + routes, `create_pool`/`update_pool`/`delete_pool` on the service, `pool_ids`/`pools` on the slot serializer, the deferred `CalendarGroupSlotVirtualModel.pools` prefetch with a query-count guard, and `schema.yml` regenerated (+625 lines).
+- **Gate, re-run by the conductor in the worktree**: **3284 collected, 3284 passed**; ruff clean; mypy success across 773 files; no schema drift.
+
+**BLOCKER found and fixed: PATCH was destroying data.** `CalendarPoolViewSet` has no `http_method_names` override, so `PATCH /calendar-pools/{id}/` was live. Under DRF partial-update semantics an absent field never reaches `validated_data`, so `PATCH {"description": "x"}` raised `KeyError` → 500, and `PATCH {"name": "Renamed"}` read `calendar_ids` as `[]` → **wiped the entire pool roster and cascaded that wipe into every attached slot**. The new test file had zero PATCH coverage; every test used PUT.
+
+**The same defect already existed on `main` and was fixed here at the requester's direction.** `CalendarGroupSerializer._to_input_data` uses `validated_data.get("slots", [])`, so `PATCH /calendar-groups/{id}/` omitting `slots` — a routine rename — deleted every slot in the group, or 409'd if a slot had a future booking. Confirmed present on `origin/main`, so it predates this plan entirely. It was findable only because the new `pool_ids` handling next to it was *correct*, which prompted the reviewer to ask why the adjacent `slots` handling was not.
+
+Both fixed by **rejecting the ambiguous partial write** rather than making the service delete less aggressively — replace-semantics are correct for PUT and other code relies on them; the defect was an absent key being read as an empty value. PUT behavior is byte-identical and no pre-existing test was modified (0 deleted lines in the existing group test file). PATCH stays enabled because `schema.yml` documents it.
+
+**Fifth plan error, found by the implementer.** The **Visibility scoping** decision specifies REST permissions using Public-API *token scope* vocabulary (`org_wide` / `scoped_admin` / `scoped_member`, `scoped_calendar_group_queryset`) that belongs to Phase 5's GraphQL surface. REST has no token scope; the axis is organization-admin vs member. The implementer mirrored `CalendarGroupPermission` rather than inventing a REST reading of GraphQL names. Consequence: "fail closed" on REST is a **403 from `has_permission`**, not the 200-with-empty-list the plan's wording implies. The implementer wrote its test to the plan's literal wording, got 403, and corrected the test rather than weakening the permission class.
+
+**Verified by the reviewer, for the record.** The 409-on-in-use-delete does not leak group names to unauthorized callers — the admin gate in `has_permission` runs before `get_object()` and `delete_pool`, and the referencing-group query is itself organization-scoped. The two-pass `update_pool` reconcile is contained in one `transaction.atomic()` with no externally observable intermediate state. The group-list query guard asserts invariance against a measured baseline rather than a magic number.
+
+**Noted, not fixed.** `calendar_integration/signals.py`'s docstring says "nothing in this codebase calls `CalendarPoolMembership.objects.bulk_create` today". That was already stale when Phase 4's `update_pool` shipped and is doubly stale now that `create_pool` uses it too. Both callers reconcile explicitly, so the behavior is correct — but the comment is a safety note that is now wrong and should be corrected.
+
+**Same defect class audited elsewhere, none vulnerable.** `CalendarBundleUpdateSerializer` is wired to a PATCH action but instantiated without `partial=True`. The three group-scoped update serializers use `partial=True` deliberately with all-optional fields. `CalendarEventSerializer.update` already reconstructs absent collections from `instance` rather than defaulting to `[]` — the pattern the rest should follow if this is ever generalized.
+
 ## Current phase
 
-**Phase 4 — Manage pools over internal REST.** Base: `plan/calendar-pools/phase-3`. Note the two carry-ins above: `update_pool` must reconcile attached slots (or rely on the new signals), and the virtual-model `pools` hint belongs with the serializer field.
+**Phase 5 — Expose pools on the public GraphQL API.** Base: `plan/calendar-pools/phase-4`. Reviewer Tier 4 per the plan's override — this phase decides what a partner token can read, and the nested-traversal roster leak is the class of bug the existing scoped resolvers exist to prevent.
 
 ## Deferred phases
 
