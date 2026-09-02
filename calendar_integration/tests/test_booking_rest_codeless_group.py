@@ -1,5 +1,5 @@
 """Integration tests for the codeless branch of
-``POST /public/booking/calendar-groups/<group_id>/events/``.
+``POST /public/booking/calendar-groups/<public_slug>/events/``.
 
 Phase 3 adds a second authorization path to the Phase 2 endpoint: when
 ``X-Booking-Code`` is absent, the request is authorized entirely by the path
@@ -9,6 +9,15 @@ group's own ``accepts_public_scheduling`` flag, mirroring GraphQL's codeless
 complements -- the two files together cover the endpoint's full contract.
 
 All requests here are unauthenticated (no session/JWT, no header at all).
+
+Phase 3b: the path segment addresses ``CalendarGroup.public_booking_slug`` --
+an opaque, unguessable, globally-unique identifier -- rather than the integer
+primary key Phase 3 originally used. Phase 3's integer-keyed route was a
+cross-tenant enumeration oracle: with no ``organization_id`` anywhere in this
+surface's paths, an anonymous caller could walk ``group_id`` 1..N and learn,
+from the 404/403/201 split, which groups exist in ANY organization and which
+accept public scheduling. ``TestIntegerKeyedRouteNoLongerResolves`` below
+proves that oracle is gone, not merely harder to exploit.
 """
 
 import datetime
@@ -40,8 +49,8 @@ BOOKING_START = datetime.datetime(2030, 7, 1, 10, 0, tzinfo=datetime.UTC)
 BOOKING_END = datetime.datetime(2030, 7, 1, 11, 0, tzinfo=datetime.UTC)
 
 
-def _booking_url(group_id: int) -> str:
-    return f"/public/booking/calendar-groups/{group_id}/events/"
+def _booking_url(public_slug: str) -> str:
+    return f"/public/booking/calendar-groups/{public_slug}/events/"
 
 
 # ---------------------------------------------------------------------------
@@ -199,9 +208,9 @@ def _group_booking_payload(slot_selections: list[dict], **overrides) -> dict:
     return base
 
 
-def _post(client: APIClient, group_id: int, code: str | None, payload: dict):
+def _post(client: APIClient, public_slug: str, code: str | None, payload: dict):
     headers = {BOOKING_CODE_HEADER: code} if code is not None else None
-    return client.post(_booking_url(group_id), payload, format="json", headers=headers)
+    return client.post(_booking_url(public_slug), payload, format="json", headers=headers)
 
 
 # ---------------------------------------------------------------------------
@@ -221,7 +230,9 @@ class TestCodelessGroupEventHappyPath:
     ):
         selections = _slot_selections(public_group, primary_calendar, secondary_calendar)
 
-        response = _post(anon_client, public_group.id, None, _group_booking_payload(selections))
+        response = _post(
+            anon_client, public_group.public_booking_slug, None, _group_booking_payload(selections)
+        )
 
         assert response.status_code == status.HTTP_201_CREATED, response.content
         body = response.json()
@@ -254,7 +265,9 @@ class TestCodelessGroupEventHappyPath:
         )
 
         selections = _slot_selections(public_group, primary_calendar, secondary_calendar)
-        response = _post(anon_client, public_group.id, None, _group_booking_payload(selections))
+        response = _post(
+            anon_client, public_group.public_booking_slug, None, _group_booking_payload(selections)
+        )
 
         assert response.status_code == status.HTTP_201_CREATED, response.content
 
@@ -303,7 +316,9 @@ class TestCodelessGroupEventHappyPath:
         assert len(before) == 2
 
         selections = _slot_selections(public_group, primary_calendar, secondary_calendar)
-        response = _post(anon_client, public_group.id, None, _group_booking_payload(selections))
+        response = _post(
+            anon_client, public_group.public_booking_slug, None, _group_booking_payload(selections)
+        )
         assert response.status_code == status.HTTP_201_CREATED, response.content
 
         after = {
@@ -337,7 +352,9 @@ class TestCodelessGroupEventPrivateGroupDenied:
     ):
         selections = _slot_selections(private_group, primary_calendar, secondary_calendar)
 
-        response = _post(anon_client, private_group.id, None, _group_booking_payload(selections))
+        response = _post(
+            anon_client, private_group.public_booking_slug, None, _group_booking_payload(selections)
+        )
 
         assert response.status_code == status.HTTP_403_FORBIDDEN
         body = response.json()
@@ -354,23 +371,52 @@ class TestCodelessGroupEventPrivateGroupDenied:
     ):
         selections = _slot_selections(private_group, primary_calendar, secondary_calendar)
 
-        response = _post(anon_client, private_group.id, None, _group_booking_payload(selections))
+        response = _post(
+            anon_client, private_group.public_booking_slug, None, _group_booking_payload(selections)
+        )
 
         assert response.status_code == status.HTTP_403_FORBIDDEN
         assert not CalendarEvent.objects.filter_by_organization(organization.id).exists()
 
 
 # ---------------------------------------------------------------------------
-# Scenario 3: Missing group returns 404 (not a secret on this path)
+# Scenario 3: Missing group returns 404 (not a secret on this path).
+# Phase 3b: the identifier is now an unguessable slug, so a bare 404 for one
+# that resolves to no group discloses nothing exploitable -- unlike the old
+# integer id, which let a 404/403/201 split enumerate real groups.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.django_db
 class TestCodelessGroupEventMissingGroup:
-    def test_nonexistent_group_id_returns_404(self, anon_client):
-        response = _post(anon_client, 999_999_999, None, _group_booking_payload([]))
+    def test_well_formed_but_nonexistent_slug_returns_404(self, anon_client):
+        response = _post(
+            anon_client, "well-formed-but-nonexistent-slug", None, _group_booking_payload([])
+        )
 
         assert response.status_code == status.HTTP_404_NOT_FOUND
+
+    def test_malformed_slug_is_indistinguishable_from_a_nonexistent_one(self, anon_client):
+        """A path segment outside the slug charset (``[-a-zA-Z0-9_]+`` -- here
+        one containing dots) never even reaches the view; the router itself
+        has no matching pattern. The response is still a plain 404, exactly
+        like a well-formed slug that simply resolves to no group -- neither
+        case discloses anything about whether any group, anywhere, uses a
+        similar identifier."""
+        malformed_response = anon_client.post(
+            "/public/booking/calendar-groups/not.a.valid.slug/events/",
+            _group_booking_payload([]),
+            format="json",
+        )
+        wellformed_response = _post(
+            anon_client,
+            "another-well-formed-but-nonexistent-slug",
+            None,
+            _group_booking_payload([]),
+        )
+
+        assert malformed_response.status_code == status.HTTP_404_NOT_FOUND
+        assert wellformed_response.status_code == status.HTTP_404_NOT_FOUND
 
 
 # ---------------------------------------------------------------------------
@@ -396,7 +442,9 @@ class TestCodedBranchWinsOverCodeless:
         token, code = public_group_booking_code
         selections = _slot_selections(public_group, primary_calendar, secondary_calendar)
 
-        response = _post(anon_client, public_group.id, code, _group_booking_payload(selections))
+        response = _post(
+            anon_client, public_group.public_booking_slug, code, _group_booking_payload(selections)
+        )
 
         assert response.status_code == status.HTTP_201_CREATED, response.content
         token.refresh_from_db()
@@ -435,7 +483,9 @@ class TestCodelessGroupEventCrossOrgIsolation:
         )
 
         selections = _slot_selections(public_group, primary_calendar, secondary_calendar)
-        response = _post(anon_client, public_group.id, None, _group_booking_payload(selections))
+        response = _post(
+            anon_client, public_group.public_booking_slug, None, _group_booking_payload(selections)
+        )
 
         assert response.status_code == status.HTTP_201_CREATED, response.content
         body = response.json()
@@ -479,13 +529,19 @@ class TestAmbiguousHeaderValues:
         choice is unambiguous either way."""
         public_selections = _slot_selections(public_group, primary_calendar, secondary_calendar)
         public_response = _post(
-            anon_client, public_group.id, "", _group_booking_payload(public_selections)
+            anon_client,
+            public_group.public_booking_slug,
+            "",
+            _group_booking_payload(public_selections),
         )
         assert public_response.status_code == status.HTTP_201_CREATED, public_response.content
 
         private_selections = _slot_selections(private_group, primary_calendar, secondary_calendar)
         private_response = _post(
-            anon_client, private_group.id, "", _group_booking_payload(private_selections)
+            anon_client,
+            private_group.public_booking_slug,
+            "",
+            _group_booking_payload(private_selections),
         )
         assert private_response.status_code == status.HTTP_403_FORBIDDEN
         assert private_response.json()["error_code"] == "NOT_PERMITTED"
@@ -515,7 +571,9 @@ class TestAmbiguousHeaderValues:
         """
         selections = _slot_selections(public_group, primary_calendar, secondary_calendar)
 
-        response = _post(anon_client, public_group.id, " ", _group_booking_payload(selections))
+        response = _post(
+            anon_client, public_group.public_booking_slug, " ", _group_booking_payload(selections)
+        )
 
         assert response.status_code == status.HTTP_404_NOT_FOUND, response.content
         assert response.json()["error_code"] == "INVALID_CODE"
@@ -545,7 +603,7 @@ class TestCodelessGroupEventPinnedDuration:
             selections, end_time=(BOOKING_START + datetime.timedelta(minutes=30)).isoformat()
         )
 
-        response = _post(anon_client, public_group.id, None, payload)
+        response = _post(anon_client, public_group.public_booking_slug, None, payload)
 
         assert response.status_code == status.HTTP_201_CREATED, response.content
 
@@ -572,7 +630,7 @@ class TestCodelessGroupEventPinnedDuration:
             selections, end_time=(BOOKING_START + datetime.timedelta(minutes=45)).isoformat()
         )
 
-        response = _post(anon_client, public_group.id, None, payload)
+        response = _post(anon_client, public_group.public_booking_slug, None, payload)
 
         assert response.status_code == status.HTTP_403_FORBIDDEN
         body = response.json()
@@ -580,3 +638,55 @@ class TestCodelessGroupEventPinnedDuration:
         assert "30 minute" in body["detail"]
 
         assert not CalendarEvent.objects.filter_by_organization(organization.id).exists()
+
+
+# ---------------------------------------------------------------------------
+# Scenario 8: the integer-keyed path no longer routes at all -- the
+# cross-tenant enumeration oracle Phase 3b exists to close is GONE, not
+# merely harder to exploit. Probing by a real, existing group's OWN integer
+# primary key -- the exact identifier Phase 3 used to expose -- must never
+# again resolve that group, on either branch, and must be indistinguishable
+# whether the group is public, private, or the id doesn't exist at all.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestIntegerKeyedRouteNoLongerResolves:
+    def test_probing_a_real_public_groups_own_id_codeless_returns_404(
+        self, anon_client, public_group
+    ):
+        """The exact integer id that used to book `public_group` codelessly
+        pre-Phase-3b now resolves nothing: `public_booking_slug` is looked up,
+        not `id`, and no group's slug is ever a bare decimal integer."""
+        response = _post(anon_client, str(public_group.id), None, _group_booking_payload([]))
+
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+
+    def test_probing_a_real_private_groups_own_id_codeless_returns_404(
+        self, anon_client, private_group
+    ):
+        """Same proof against a PRIVATE group's own id -- previously this
+        would have differed from the public case (403 NOT_PERMITTED, since
+        the group exists but ``accepts_public_scheduling`` is False). Now
+        both are the identical 404: the id no longer identifies any group at
+        all, public or private, so there is nothing left for the 404/403
+        split to distinguish."""
+        response = _post(anon_client, str(private_group.id), None, _group_booking_payload([]))
+
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+
+    def test_probing_a_real_groups_own_id_coded_returns_403_not_404(
+        self, anon_client, public_group_booking_code, public_group
+    ):
+        """A code minted for `public_group`, presented against that SAME
+        group's own integer id in the path, is still just a mismatch: digits
+        are valid slug characters, so the route matches syntactically, but no
+        group's slug equals its own numeric id, so the token's own resolved
+        slug never matches the path -- 403 NOT_PERMITTED, never 404, exactly
+        like any other wrong slug on the coded branch."""
+        _token, code = public_group_booking_code
+
+        response = _post(anon_client, str(public_group.id), code, _group_booking_payload([]))
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+        assert response.json()["error_code"] == "NOT_PERMITTED"

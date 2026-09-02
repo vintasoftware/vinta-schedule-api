@@ -1,4 +1,5 @@
 import datetime
+import secrets
 import zoneinfo
 from typing import TYPE_CHECKING, Any, ClassVar, Self
 
@@ -304,6 +305,24 @@ class CalendarOwnership(SingleOrganizationModelMixin, SafeRelationNullInitMixin,
         return f"{self.calendar} owned by membership {self.membership_user_id}"
 
 
+def generate_public_booking_slug() -> str:
+    """Generate an opaque, unguessable identifier for a publicly addressed group.
+
+    ``secrets.token_urlsafe(16)`` yields ~128 bits of entropy encoded as ~22
+    URL-safe characters -- long enough that walking the identifier space is
+    infeasible, short enough to sit comfortably in a URL path segment.
+
+    Used as ``CalendarGroup.public_booking_slug``'s default so every group,
+    public or private, gets one at creation time. The slug authorizes
+    nothing by itself -- ``accepts_public_scheduling`` still gates codeless
+    booking -- it only replaces the integer primary key as the identifier the
+    unauthenticated codeless route addresses, closing the cross-tenant
+    enumeration oracle a sequential id would otherwise be (see Phase 3b of
+    the REST_CODE_GATED_SCHEDULING plan).
+    """
+    return secrets.token_urlsafe(16)
+
+
 class CalendarGroup(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel):
     """
     Aggregates calendars into named slots so a single booking can be made by
@@ -339,6 +358,21 @@ class CalendarGroup(SingleOrganizationModelMixin, SafeRelationNullInitMixin, Bas
             "rest and refused at booking time instead, fail-closed, by "
             "CalendarPermissionService). Null is otherwise unpinned, matching every "
             "restricted group and every group created before this field existed."
+        ),
+    )
+    public_booking_slug = models.CharField(
+        max_length=32,
+        unique=True,
+        db_index=True,
+        default=generate_public_booking_slug,
+        help_text=(
+            "Opaque, unguessable identifier used to address this group on the "
+            "unauthenticated codeless booking route, instead of the integer primary "
+            "key. Uniqueness is GLOBAL (not scoped to organization) because that "
+            "route carries no organization in its path -- the slug alone must "
+            "identify exactly one group system-wide. Authorizes nothing by itself: "
+            "accepts_public_scheduling still gates codeless booking, and a group "
+            "later flipped to public already has its identifier."
         ),
     )
 

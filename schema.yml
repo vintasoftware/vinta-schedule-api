@@ -14817,7 +14817,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/CalendarEvent'
           description: ''
-  /public/booking/calendar-groups/{group_id}/events/:
+  /public/booking/calendar-groups/{public_slug}/events/:
     post:
       operationId: public_booking_calendar_groups_events_create
       description: |-
@@ -14855,10 +14855,10 @@ paths:
           wins -- a public group handed a valid group code still books through it
           and consumes it.'
       - in: path
-        name: group_id
+        name: public_slug
         schema:
           type: string
-          pattern: ^\d+$
+          pattern: ^[-a-zA-Z0-9_]+$
         required: true
       tags:
       - Booking Codes
@@ -17438,15 +17438,19 @@ components:
     BookingCodeGroupEventCreate:
       type: object
       description: |-
-        Input for ``POST /public/booking/calendar-groups/<group_id>/events/``.
+        Input for ``POST /public/booking/calendar-groups/<public_slug>/events/``.
 
         Mirrors ``CreateGroupEventWithCodeInput`` (GraphQL) minus its ``code`` field --
         the booking code travels as the ``X-Booking-Code`` header instead (see
-        ``calendar_integration.booking_auth``). ``group_id`` is never accepted here: it
-        comes strictly from the resolved token's ``calendar_group``, never from client
-        input or the path. Reuses ``_CalendarGroupSlotSelectionInputSerializer``, the
-        same slot-selection shape ``CalendarGroupEventCreateSerializer`` already uses
-        for the authenticated group-booking endpoint.
+        ``calendar_integration.booking_auth``). The group is never accepted here: on
+        the coded branch it comes strictly from the resolved token's
+        ``calendar_group``, never from client input or the path (Phase 3b: the path
+        carries only ``CalendarGroup.public_booking_slug``, an opaque identifier, and
+        even that is only a routing convenience -- see
+        ``BookingCodeGroupEventViewSet.create``). Reuses
+        ``_CalendarGroupSlotSelectionInputSerializer``, the same slot-selection shape
+        ``CalendarGroupEventCreateSerializer`` already uses for the authenticated
+        group-booking endpoint.
       properties:
         title:
           type: string
@@ -17780,6 +17784,16 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/CalendarGroupSlot'
+        public_booking_slug:
+          type: string
+          readOnly: true
+          description: 'Opaque, unguessable identifier used to address this group
+            on the unauthenticated codeless booking route, instead of the integer
+            primary key. Uniqueness is GLOBAL (not scoped to organization) because
+            that route carries no organization in its path -- the slug alone must
+            identify exactly one group system-wide. Authorizes nothing by itself:
+            accepts_public_scheduling still gates codeless booking, and a group later
+            flipped to public already has its identifier.'
         created:
           type: string
           format: date-time
@@ -17793,6 +17807,7 @@ components:
       - id
       - modified
       - name
+      - public_booking_slug
       - slots
     CalendarGroupAvailabilityQuery:
       type: object
@@ -20399,6 +20414,16 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/CalendarGroupSlot'
+        public_booking_slug:
+          type: string
+          readOnly: true
+          description: 'Opaque, unguessable identifier used to address this group
+            on the unauthenticated codeless booking route, instead of the integer
+            primary key. Uniqueness is GLOBAL (not scoped to organization) because
+            that route carries no organization in its path -- the slug alone must
+            identify exactly one group system-wide. Authorizes nothing by itself:
+            accepts_public_scheduling still gates codeless booking, and a group later
+            flipped to public already has its identifier.'
         created:
           type: string
           format: date-time

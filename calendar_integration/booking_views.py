@@ -251,31 +251,47 @@ class BookingCodeCalendarEventViewSet(BookingCodeViewMixin, GenericViewSet):
 class BookingCodeGroupEventViewSet(BookingCodeViewMixin, GenericViewSet):
     """Unauthenticated group booking, code-gated or codeless.
 
-    ``POST /public/booking/calendar-groups/<group_id>/events/`` books a grouped
-    event through the ``CalendarGroup`` named by the path. Ports both
+    ``POST /public/booking/calendar-groups/<public_slug>/events/`` books a
+    grouped event through the ``CalendarGroup`` named by the path. Ports both
     ``calendar_integration.mutations.create_calendar_group_event_with_code`` (when
     ``X-Booking-Code`` is present) and the codeless
     ``calendar_integration.mutations.create_calendar_group_event`` (when it is
     absent) to REST -- see those mutations' docstrings for the flows this mirrors.
 
-    **Coded** (header present): ``group_id`` comes STRICTLY from the resolved
-    token, never from the path or the request body. The path segment is a
-    routing convenience only, checked against ``token.calendar_group`` and
-    rejected (``403 NOT_PERMITTED``, never a ``404``) on any mismatch -- a
-    ``404`` would confirm the code's real group to someone probing a different
-    id, which is an enumeration oracle this endpoint must not offer.
+    The path segment addresses ``CalendarGroup.public_booking_slug`` -- an
+    opaque, unguessable, globally-unique identifier (Phase 3b) -- never the
+    integer primary key. Phase 3 shipped this route keyed by the integer id,
+    which, with no ``organization_id`` anywhere in this surface's paths and
+    throttling declined, made the codeless branch a cross-tenant enumeration
+    oracle: an anonymous caller could walk ``group_id`` 1..N and learn, from
+    the 404/403/201 split, which groups exist in ANY organization and which
+    accept public scheduling. The slug alone authorizes nothing -- every
+    group has one, public or private -- ``accepts_public_scheduling`` still
+    gates codeless booking exactly as before.
+
+    **Coded** (header present): the addressed group comes STRICTLY from the
+    resolved token, never from the path or the request body. The path
+    segment is a routing convenience only, compared against the TOKEN'S OWN
+    ``calendar_group.public_booking_slug`` (never resolved by looking a group
+    up BY the path's slug -- see the ordering note on that comparison below)
+    and rejected (``403 NOT_PERMITTED``, never a ``404``) on any mismatch -- a
+    ``404`` would confirm the code's real group to someone probing a
+    different slug, which is an enumeration oracle this endpoint must not
+    offer, exactly as it must not for the integer id Phase 3 replaced.
 
     **Codeless** (header absent): no code is resolved or consumed -- there is
-    none. ``group_id`` comes from the path, exactly as the client sent it: it
-    is the client's own input here, not a secret, so a ``404`` for a
-    nonexistent id discloses nothing the client did not already know -- the
-    mirror image of the coded rule above. Authorization is delegated entirely
-    to ``CalendarGroupService.create_grouped_event``, which allows the booking
-    only when the group's own ``accepts_public_scheduling`` is ``True``
-    (``403 NOT_PERMITTED`` otherwise). The group's pinned duration, if any,
-    still applies on this branch: the pin lives on the ``CalendarGroup``, not
-    on the code, so a codeless booking is constrained by it exactly like a
-    coded one.
+    none. The group comes from the path's slug, exactly as the client sent
+    it: it is the client's own input here, not a secret (unlike the coded
+    branch's token-bound group), so a ``404`` for a slug that resolves to no
+    group discloses nothing the client did not already know -- the mirror
+    image of the coded rule above, and now safe precisely because the
+    identifier is unguessable rather than sequential. Authorization is
+    delegated entirely to ``CalendarGroupService.create_grouped_event``,
+    which allows the booking only when the group's own
+    ``accepts_public_scheduling`` is ``True`` (``403 NOT_PERMITTED``
+    otherwise). The group's pinned duration, if any, still applies on this
+    branch: the pin lives on the ``CalendarGroup``, not on the code, so a
+    codeless booking is constrained by it exactly like a coded one.
 
     The coded path always wins when the header is present -- a group that
     accepts public scheduling but is handed a valid group code still books
@@ -339,17 +355,20 @@ class BookingCodeGroupEventViewSet(BookingCodeViewMixin, GenericViewSet):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
-        path_group_id = int(kwargs["group_id"])
+        path_public_slug = kwargs["public_slug"]
         code = booking_code_header(request)
         token: CalendarManagementToken | None = None
 
         if code is None:
-            # --- Codeless branch: skip code resolution entirely. The group id
-            # is the client's OWN input here (not a secret the way a coded
-            # token's group is), so a 404 for a nonexistent one discloses
-            # nothing the client did not already know. Do NOT "fix" this to a
-            # 403 to mirror the coded branch's mismatch check below -- the two
-            # differ on purpose; see that check's comment.
+            # --- Codeless branch: skip code resolution entirely. The slug is
+            # the client's OWN input here (not a secret the way a coded
+            # token's group is), so a 404 for a slug that resolves to no
+            # group discloses nothing the client did not already know -- and
+            # is now SAFE to disclose, because the slug is unguessable
+            # (Phase 3b) rather than a sequential integer someone could walk.
+            # Do NOT "fix" this to a 403 to mirror the coded branch's
+            # mismatch check below -- the two differ on purpose; see that
+            # check's comment.
             try:
                 # unscoped(): the organization is not yet known -- this lookup
                 # is what determines it, so filter_by_organization cannot run
@@ -359,11 +378,12 @@ class BookingCodeGroupEventViewSet(BookingCodeViewMixin, GenericViewSet):
                 group = (
                     CalendarGroup.objects.unscoped()
                     .select_related("organization")
-                    .get(id=path_group_id)
+                    .get(public_booking_slug=path_public_slug)
                 )
             except CalendarGroup.DoesNotExist as exc:
                 raise NotFound("Calendar group not found.") from exc
             org = group.organization
+            resolved_group_id = group.id
         else:
             # --- resolve the code, check permission, and resolve org ---
             token, code, org = resolve_and_authorize_write(
@@ -377,15 +397,28 @@ class BookingCodeGroupEventViewSet(BookingCodeViewMixin, GenericViewSet):
                     "Use the single-calendar booking endpoint for calendar-scoped codes."
                 )
 
-            # --- path/token scope assertion -- the path <group_id> is a routing
-            # convenience only. A mismatch is 403 NOT_PERMITTED, never a 404: a
-            # 404 would confirm the code's real group to a caller probing a
-            # different id. This is the mirror image of the codeless branch
-            # above, where the path <group_id> IS the client's own input and a
-            # 404 is the correct, non-disclosing response for a nonexistent
-            # one -- do NOT "fix" one of these two to match the other.
-            if path_group_id != token.calendar_group_fk_id:
+            # --- path/token scope assertion -- the path <public_slug> is a
+            # routing convenience only. Compare it against the TOKEN'S OWN
+            # resolved group's slug (``token.calendar_group`` was already
+            # fetched by the scope check above, keyed strictly by the
+            # token's own ``calendar_group_fk_id`` -- never by the path
+            # value) rather than resolving a group BY the path's slug and
+            # comparing ids. That ordering matters: a lookup keyed on the
+            # untrusted path slug would perform a distinguishable "does a
+            # group with this slug exist" query, reintroducing exactly the
+            # enumeration oracle this phase closes, even if the eventual
+            # HTTP status stayed 403. Comparing two already-known strings in
+            # memory (the token's own slug vs. the path's) means the coded
+            # branch never queries the DB by the path's slug at all -- a
+            # mismatch is 403 NOT_PERMITTED, never a 404: a 404 would confirm
+            # the code's real group to a caller probing a different slug.
+            # This is the mirror image of the codeless branch above, where
+            # the path <public_slug> IS the client's own input and a 404 is
+            # the correct, non-disclosing response for one that resolves to
+            # no group -- do NOT "fix" one of these two to match the other.
+            if path_public_slug != token.calendar_group.public_booking_slug:
                 raise NotPermittedAPIException("This code is not scoped to this calendar group.")
+            resolved_group_id = token.calendar_group.id
 
             group = token.calendar_group
 
@@ -401,12 +434,14 @@ class BookingCodeGroupEventViewSet(BookingCodeViewMixin, GenericViewSet):
         if duration_error is not None:
             raise duration_error
 
-        # --- build group event data -- group_id comes from the token when one
-        # was resolved (to enforce scope), otherwise from the path (the
-        # codeless branch has no token to read it from). ---
+        # --- build group event data -- resolved_group_id comes from the
+        # token's own resolved group when one was resolved (to enforce
+        # scope), otherwise from the group already resolved by slug on the
+        # codeless branch above (the codeless branch has no token to read it
+        # from, and the path carries only the slug, never the integer id). ---
         external_attendee = data["external_attendee"]
         group_event_data = CalendarGroupEventInputData(
-            group_id=token.calendar_group.id if token is not None else path_group_id,
+            group_id=resolved_group_id,
             title=data["title"],
             description=data.get("description", ""),
             start_time=data["start_time"],
@@ -482,17 +517,18 @@ class BookingCodeGroupEventViewSet(BookingCodeViewMixin, GenericViewSet):
                         permission_service.consume_code(token, client_ip_from_request(request))
         except CalendarGroup.DoesNotExist as exc:
             if token is None:
-                # Codeless: group_id is the client's own path input, not a
+                # Codeless: public_slug is the client's own path input, not a
                 # secret -- see the branch comment above. Do not map this to
                 # 403 to mirror the coded branch below.
                 raise NotFound("Calendar group not found.") from exc
             # Coded: per the path/token scope rule above, never disclose
-            # whether a group id exists via a bare 404. This is effectively
-            # unreachable in practice -- the token's calendar_group FK is ON
-            # DELETE CASCADE, so a deleted group takes the token with it and
-            # code resolution above would already have failed as
-            # INVALID_CODE -- but the mapping stays defensive rather than
-            # leaking existence if that invariant ever changes.
+            # whether a group with this slug exists via a bare 404. This is
+            # effectively unreachable in practice -- the token's
+            # calendar_group FK is ON DELETE CASCADE, so a deleted group
+            # takes the token with it and code resolution above would
+            # already have failed as INVALID_CODE -- but the mapping stays
+            # defensive rather than leaking existence if that invariant ever
+            # changes.
             raise NotPermittedAPIException(
                 "This code is not scoped to a valid calendar group."
             ) from exc

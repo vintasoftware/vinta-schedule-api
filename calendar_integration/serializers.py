@@ -3093,10 +3093,16 @@ class CalendarGroupSerializer(VirtualModelSerializer):
             "name",
             "description",
             "slots",
+            "public_booking_slug",
             "created",
             "modified",
         )
-        read_only_fields = ("id", "created", "modified")
+        # public_booking_slug: read-only so an organization admin can read it
+        # to build a codeless public booking link
+        # (public/booking/calendar-groups/<public_booking_slug>/events/), but
+        # it is never client-settable -- it is generated once, at model
+        # creation, by CalendarGroup's own field default (Phase 3b).
+        read_only_fields = ("id", "created", "modified", "public_booking_slug")
 
     @inject
     def __init__(
@@ -3596,15 +3602,19 @@ class BookingCodeEventCreateSerializer(_EndTimeAfterStartTimeSerializerMixin):
 
 
 class BookingCodeGroupEventCreateSerializer(_EndTimeAfterStartTimeSerializerMixin):
-    """Input for ``POST /public/booking/calendar-groups/<group_id>/events/``.
+    """Input for ``POST /public/booking/calendar-groups/<public_slug>/events/``.
 
     Mirrors ``CreateGroupEventWithCodeInput`` (GraphQL) minus its ``code`` field --
     the booking code travels as the ``X-Booking-Code`` header instead (see
-    ``calendar_integration.booking_auth``). ``group_id`` is never accepted here: it
-    comes strictly from the resolved token's ``calendar_group``, never from client
-    input or the path. Reuses ``_CalendarGroupSlotSelectionInputSerializer``, the
-    same slot-selection shape ``CalendarGroupEventCreateSerializer`` already uses
-    for the authenticated group-booking endpoint.
+    ``calendar_integration.booking_auth``). The group is never accepted here: on
+    the coded branch it comes strictly from the resolved token's
+    ``calendar_group``, never from client input or the path (Phase 3b: the path
+    carries only ``CalendarGroup.public_booking_slug``, an opaque identifier, and
+    even that is only a routing convenience -- see
+    ``BookingCodeGroupEventViewSet.create``). Reuses
+    ``_CalendarGroupSlotSelectionInputSerializer``, the same slot-selection shape
+    ``CalendarGroupEventCreateSerializer`` already uses for the authenticated
+    group-booking endpoint.
     """
 
     title = serializers.CharField()

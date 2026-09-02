@@ -1,4 +1,4 @@
-"""Integration tests for ``POST /public/booking/calendar-groups/<group_id>/events/``.
+"""Integration tests for ``POST /public/booking/calendar-groups/<public_slug>/events/``.
 
 Ports the scenarios in ``public_api/tests/test_book_group_with_code.py`` (the
 GraphQL ``createCalendarGroupEventWithCode`` equivalent) to the REST surface,
@@ -7,8 +7,15 @@ rejection, and pinned-duration cases the plan's Phase 2 body calls for.
 
 All requests are unauthenticated (no session/JWT). The booking code -- carried
 in the ``X-Booking-Code`` header -- provides the org scope, group scope, and
-CREATE permission. ``group_id`` in the path is a routing convenience only; the
-real scope comes from the resolved token.
+CREATE permission. ``public_slug`` in the path is a routing convenience only;
+the real scope comes from the resolved token.
+
+Phase 3b: the path segment addresses ``CalendarGroup.public_booking_slug`` --
+an opaque, unguessable, globally-unique identifier -- rather than the integer
+primary key. ``TestCreateGroupEventWithCodePathGroupMismatch`` below is this
+file's re-expression of tracking decision 11 (path/token mismatch is always
+403, never 404) against slugs; see that class's docstrings for why the
+ordering matters.
 """
 
 import datetime
@@ -38,8 +45,8 @@ BOOKING_START = datetime.datetime(2030, 6, 1, 10, 0, tzinfo=datetime.UTC)
 BOOKING_END = datetime.datetime(2030, 6, 1, 11, 0, tzinfo=datetime.UTC)
 
 
-def _booking_url(group_id: int) -> str:
-    return f"/public/booking/calendar-groups/{group_id}/events/"
+def _booking_url(public_slug: str) -> str:
+    return f"/public/booking/calendar-groups/{public_slug}/events/"
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +128,7 @@ def group(organization, primary_calendar, secondary_calendar):
 @pytest.fixture
 def other_group(other_organization):
     """A CalendarGroup in a DIFFERENT organization -- used to prove the path
-    <group_id> does not leak the code's real group across a mismatch."""
+    <public_slug> does not leak the code's real group across a mismatch."""
     return baker.make(CalendarGroup, organization=other_organization, name="Other Org Group")
 
 
@@ -219,9 +226,9 @@ def _group_booking_payload(slot_selections: list[dict], **overrides) -> dict:
     return base
 
 
-def _post(client: APIClient, group_id: int, code: str | None, payload: dict):
+def _post(client: APIClient, public_slug: str, code: str | None, payload: dict):
     headers = {BOOKING_CODE_HEADER: code} if code is not None else None
-    return client.post(_booking_url(group_id), payload, format="json", headers=headers)
+    return client.post(_booking_url(public_slug), payload, format="json", headers=headers)
 
 
 # ---------------------------------------------------------------------------
@@ -250,7 +257,9 @@ class TestCreateGroupEventWithCodeHappyPath:
         token, code = group_booking_code
         selections = _slot_selections(group, primary_calendar, secondary_calendar)
 
-        response = _post(anon_client, group.id, code, _group_booking_payload(selections))
+        response = _post(
+            anon_client, group.public_booking_slug, code, _group_booking_payload(selections)
+        )
 
         assert response.status_code == status.HTTP_201_CREATED, response.content
         body = response.json()
@@ -278,7 +287,9 @@ class TestCreateGroupEventWithCodeHappyPath:
         _token, code = group_booking_code
         selections = _slot_selections(group, primary_calendar, secondary_calendar)
 
-        response = _post(anon_client, group.id, code, _group_booking_payload(selections))
+        response = _post(
+            anon_client, group.public_booking_slug, code, _group_booking_payload(selections)
+        )
 
         assert response.status_code == status.HTTP_201_CREATED, response.content
         body = response.json()
@@ -310,10 +321,10 @@ class TestCreateGroupEventWithCodeReplay:
         selections = _slot_selections(group, primary_calendar, secondary_calendar)
         payload = _group_booking_payload(selections)
 
-        first = _post(anon_client, group.id, code, payload)
+        first = _post(anon_client, group.public_booking_slug, code, payload)
         assert first.status_code == status.HTTP_201_CREATED, first.content
 
-        second = _post(anon_client, group.id, code, payload)
+        second = _post(anon_client, group.public_booking_slug, code, payload)
         assert second.status_code == status.HTTP_409_CONFLICT
         assert second.json()["error_code"] == "ALREADY_USED"
 
@@ -345,7 +356,7 @@ class TestCreateGroupEventWithCodeFailedWriteDoesNotConsume:
             end_time=datetime.datetime(2030, 6, 1, 23, 0, tzinfo=datetime.UTC).isoformat(),
         )
 
-        response = _post(anon_client, group.id, code, out_of_window_payload)
+        response = _post(anon_client, group.public_booking_slug, code, out_of_window_payload)
 
         assert response.status_code == status.HTTP_409_CONFLICT
         assert response.json()["error_code"] == "SLOT_UNAVAILABLE"
@@ -371,13 +382,15 @@ class TestCreateGroupEventWithCodeFailedWriteDoesNotConsume:
             start_time=datetime.datetime(2030, 6, 1, 22, 0, tzinfo=datetime.UTC).isoformat(),
             end_time=datetime.datetime(2030, 6, 1, 23, 0, tzinfo=datetime.UTC).isoformat(),
         )
-        fail_response = _post(anon_client, group.id, code, out_of_window_payload)
+        fail_response = _post(anon_client, group.public_booking_slug, code, out_of_window_payload)
         assert fail_response.status_code == status.HTTP_409_CONFLICT
 
         token.refresh_from_db()
         assert token.used_at is None, "Code must remain active after failed write"
 
-        success_response = _post(anon_client, group.id, code, _group_booking_payload(selections))
+        success_response = _post(
+            anon_client, group.public_booking_slug, code, _group_booking_payload(selections)
+        )
         assert success_response.status_code == status.HTTP_201_CREATED, success_response.content
 
         token.refresh_from_db()
@@ -396,7 +409,9 @@ class TestCreateGroupEventWithCodeFailedWriteDoesNotConsume:
         token, code = group_booking_code
         bad_selections = [{"slot_id": 999999, "calendar_ids": [primary_calendar.id]}]
 
-        response = _post(anon_client, group.id, code, _group_booking_payload(bad_selections))
+        response = _post(
+            anon_client, group.public_booking_slug, code, _group_booking_payload(bad_selections)
+        )
 
         assert response.status_code == status.HTTP_409_CONFLICT
         assert response.json()["error_code"] == "SLOT_UNAVAILABLE"
@@ -425,7 +440,9 @@ class TestCreateGroupEventWithCodeWrongScope:
         _token, code = calendar_scoped_code
         selections = _slot_selections(group, primary_calendar, secondary_calendar)
 
-        response = _post(anon_client, group.id, code, _group_booking_payload(selections))
+        response = _post(
+            anon_client, group.public_booking_slug, code, _group_booking_payload(selections)
+        )
 
         assert response.status_code == status.HTTP_403_FORBIDDEN
         assert response.json()["error_code"] == "NOT_PERMITTED"
@@ -451,7 +468,9 @@ class TestCreateGroupEventWithCodeMissingPermission:
         _token, code = reschedule_group_code
         selections = _slot_selections(group, primary_calendar, secondary_calendar)
 
-        response = _post(anon_client, group.id, code, _group_booking_payload(selections))
+        response = _post(
+            anon_client, group.public_booking_slug, code, _group_booking_payload(selections)
+        )
 
         assert response.status_code == status.HTTP_403_FORBIDDEN
         assert response.json()["error_code"] == "NOT_PERMITTED"
@@ -483,7 +502,9 @@ class TestCreateGroupEventWithCodeLifecycleRejections:
         )
         selections = _slot_selections(group, primary_calendar, secondary_calendar)
 
-        response = _post(anon_client, group.id, code, _group_booking_payload(selections))
+        response = _post(
+            anon_client, group.public_booking_slug, code, _group_booking_payload(selections)
+        )
 
         assert response.status_code == status.HTTP_410_GONE
         assert response.json()["error_code"] == "EXPIRED"
@@ -505,7 +526,9 @@ class TestCreateGroupEventWithCodeLifecycleRejections:
         permission_service.revoke_token(organization_id=organization.id, token_id=token.id)
         selections = _slot_selections(group, primary_calendar, secondary_calendar)
 
-        response = _post(anon_client, group.id, code, _group_booking_payload(selections))
+        response = _post(
+            anon_client, group.public_booking_slug, code, _group_booking_payload(selections)
+        )
 
         assert response.status_code == status.HTTP_403_FORBIDDEN
         assert response.json()["error_code"] == "REVOKED"
@@ -513,7 +536,7 @@ class TestCreateGroupEventWithCodeLifecycleRejections:
     def test_invalid_code_returns_invalid_code(self, anon_client, group):
         response = _post(
             anon_client,
-            group.id,
+            group.public_booking_slug,
             "aW52YWxpZGJvb2tpbmdjb2Rl",
             _group_booking_payload([]),
         )
@@ -528,7 +551,7 @@ class TestCreateGroupEventWithCodeLifecycleRejections:
         the fixture's default), that branch is denied by the group-level gate, not
         by code resolution -- see ``test_booking_rest_codeless_group.py`` for the
         codeless-branch coverage proper."""
-        response = _post(anon_client, group.id, None, _group_booking_payload([]))
+        response = _post(anon_client, group.public_booking_slug, None, _group_booking_payload([]))
 
         assert response.status_code == status.HTTP_403_FORBIDDEN
         assert response.json()["error_code"] == "NOT_PERMITTED"
@@ -552,7 +575,9 @@ class TestCreateGroupEventWithCodeLifecycleRejections:
         )
         selections = _slot_selections(group, primary_calendar, secondary_calendar)
 
-        response = _post(anon_client, group.id, code, _group_booking_payload(selections))
+        response = _post(
+            anon_client, group.public_booking_slug, code, _group_booking_payload(selections)
+        )
 
         assert response.status_code == status.HTTP_409_CONFLICT
         assert response.json()["error_code"] == "ALREADY_USED"
@@ -579,7 +604,9 @@ class TestCreateGroupEventWithCodeCrossOrg:
         token, code = group_booking_code
         selections = _slot_selections(group, primary_calendar, secondary_calendar)
 
-        response = _post(anon_client, group.id, code, _group_booking_payload(selections))
+        response = _post(
+            anon_client, group.public_booking_slug, code, _group_booking_payload(selections)
+        )
 
         assert response.status_code == status.HTTP_201_CREATED, response.content
         body = response.json()
@@ -617,7 +644,9 @@ class TestCreateGroupEventWithCodeCrossOrg:
         slot_a = group.slots.get(name="Physicians")
         bad_selections = [{"slot_id": slot_a.id, "calendar_ids": [foreign_calendar.id]}]
 
-        response = _post(anon_client, group.id, code, _group_booking_payload(bad_selections))
+        response = _post(
+            anon_client, group.public_booking_slug, code, _group_booking_payload(bad_selections)
+        )
 
         assert response.status_code == status.HTTP_409_CONFLICT
         assert response.json()["error_code"] == "SLOT_UNAVAILABLE"
@@ -629,13 +658,14 @@ class TestCreateGroupEventWithCodeCrossOrg:
 
 
 # ---------------------------------------------------------------------------
-# Path <group_id> vs token scope: no enumeration oracle
+# Path <public_slug> vs token scope: no enumeration oracle (Phase 3b
+# re-expression of tracking decision 11 against slugs)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.django_db
 class TestCreateGroupEventWithCodePathGroupMismatch:
-    def test_path_group_mismatch_returns_403_not_404(
+    def test_nonexistent_slug_returns_403_not_404(
         self,
         anon_client,
         group_booking_code,
@@ -645,20 +675,26 @@ class TestCreateGroupEventWithCodePathGroupMismatch:
         secondary_calendar,
         availability_windows,  # noqa: ARG002
     ):
-        """A code for `group` presented against a DIFFERENT group id in the path
-        must return 403 NOT_PERMITTED, never 404 -- a 404 would confirm the
-        code's real group to whoever is probing."""
+        """A code for `group` presented against a path slug that resolves to
+        NO group at all must still return 403 NOT_PERMITTED, never 404. This
+        is the case that matters most for ordering: the coded branch never
+        looks a group up BY the path's slug (see
+        ``BookingCodeGroupEventViewSet.create``'s comment on this exact
+        comparison) -- it compares the path string against the TOKEN's own
+        resolved group's slug -- so whether the path slug is well-formed,
+        malformed, or belongs to a real group elsewhere makes no difference
+        to the response: it is always 403, never a distinguishing 404."""
         _token, code = group_booking_code
         selections = _slot_selections(group, primary_calendar, secondary_calendar)
-        wrong_group_id = group.id + 999999
+        nonexistent_slug = "this-slug-does-not-exist-anywhere"
 
-        response = _post(anon_client, wrong_group_id, code, _group_booking_payload(selections))
+        response = _post(anon_client, nonexistent_slug, code, _group_booking_payload(selections))
 
         assert response.status_code == status.HTTP_403_FORBIDDEN
         assert response.json()["error_code"] == "NOT_PERMITTED"
         assert not CalendarEvent.objects.filter_by_organization(organization.id).exists()
 
-    def test_path_group_mismatch_books_nothing_in_either_group(
+    def test_slug_belonging_to_a_different_group_returns_403_not_404(
         self,
         anon_client,
         group_booking_code,
@@ -671,13 +707,18 @@ class TestCreateGroupEventWithCodePathGroupMismatch:
         availability_windows,  # noqa: ARG002
     ):
         """A code for org-A's `group` presented against a real but DIFFERENT
-        group (belonging to another organization entirely) neither books in the
-        token's real group nor discloses/uses the path group -- it is rejected
-        before any group is touched."""
+        group's slug (belonging to another organization entirely) neither
+        books in the token's real group nor discloses/uses the path group --
+        it is rejected before any group is touched. This is the phase's
+        headline acceptance case: 'a coded request addressing a slug outside
+        its token's group must still get 403, and must not reveal whether
+        that slug exists.'"""
         token, code = group_booking_code
         selections = _slot_selections(group, primary_calendar, secondary_calendar)
 
-        response = _post(anon_client, other_group.id, code, _group_booking_payload(selections))
+        response = _post(
+            anon_client, other_group.public_booking_slug, code, _group_booking_payload(selections)
+        )
 
         assert response.status_code == status.HTTP_403_FORBIDDEN
         assert response.json()["error_code"] == "NOT_PERMITTED"
@@ -687,7 +728,7 @@ class TestCreateGroupEventWithCodePathGroupMismatch:
         assert not CalendarEvent.objects.filter_by_organization(organization.id).exists()
         assert not CalendarEvent.objects.filter_by_organization(other_organization.id).exists()
 
-    def test_matching_path_group_id_still_succeeds(
+    def test_matching_path_slug_still_succeeds(
         self,
         anon_client,
         group_booking_code,
@@ -698,11 +739,13 @@ class TestCreateGroupEventWithCodePathGroupMismatch:
         availability_windows,  # noqa: ARG002
     ):
         """Sanity check: the mismatch guard does not accidentally reject the
-        legitimate, matching path id."""
+        legitimate, matching path slug."""
         _token, code = group_booking_code
         selections = _slot_selections(group, primary_calendar, secondary_calendar)
 
-        response = _post(anon_client, group.id, code, _group_booking_payload(selections))
+        response = _post(
+            anon_client, group.public_booking_slug, code, _group_booking_payload(selections)
+        )
 
         assert response.status_code == status.HTTP_201_CREATED, response.content
 
@@ -736,7 +779,7 @@ class TestCreateGroupEventWithCodePinnedDuration:
             selections, end_time=(BOOKING_START + datetime.timedelta(minutes=30)).isoformat()
         )
 
-        response = _post(anon_client, group.id, code, payload)
+        response = _post(anon_client, group.public_booking_slug, code, payload)
 
         assert response.status_code == status.HTTP_201_CREATED, response.content
 
@@ -766,7 +809,7 @@ class TestCreateGroupEventWithCodePinnedDuration:
             selections, end_time=(BOOKING_START + datetime.timedelta(minutes=45)).isoformat()
         )
 
-        response = _post(anon_client, group.id, code, payload)
+        response = _post(anon_client, group.public_booking_slug, code, payload)
 
         assert response.status_code == status.HTTP_403_FORBIDDEN
         body = response.json()
@@ -792,6 +835,6 @@ class TestCreateGroupEventWithCodePinnedDuration:
             selections, end_time=(BOOKING_START + datetime.timedelta(minutes=45)).isoformat()
         )
 
-        response = _post(anon_client, group.id, code, payload)
+        response = _post(anon_client, group.public_booking_slug, code, payload)
 
         assert response.status_code == status.HTTP_201_CREATED, response.content

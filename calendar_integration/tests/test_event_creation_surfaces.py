@@ -903,7 +903,7 @@ class TestBookingCodeGroupEventSurface:
 # ----------------------------------------------------------------------------------
 # 5b. Booking-code REST group -- calendar_integration/booking_views.py
 #     BookingCodeGroupEventViewSet
-#     (POST /public/booking/calendar-groups/<group_id>/events/)
+#     (POST /public/booking/calendar-groups/<public_slug>/events/)
 # ----------------------------------------------------------------------------------
 
 
@@ -923,7 +923,7 @@ def _rest_group_booking_payload(slot, calendar: Calendar) -> dict:
 @pytest.mark.django_db
 class TestBookingCodeRestGroupEventSurface:
     """The REST counterpart of ``TestBookingCodeGroupEventSurface`` above --
-    ``POST /public/booking/calendar-groups/<group_id>/events/`` reaches
+    ``POST /public/booking/calendar-groups/<public_slug>/events/`` reaches
     ``create_event`` through ``CalendarGroupService.create_grouped_event`` ->
     ``CalendarService.create_event``, so it must meter and gate identically.
     """
@@ -937,7 +937,7 @@ class TestBookingCodeRestGroupEventSurface:
         response = client.post(
             reverse(
                 "calendar_booking_api:booking-calendar-group-events-list",
-                kwargs={"group_id": group.id},
+                kwargs={"public_slug": group.public_booking_slug},
             ),
             _rest_group_booking_payload(slot, calendar),
             format="json",
@@ -962,7 +962,7 @@ class TestBookingCodeRestGroupEventSurface:
         response = client.post(
             reverse(
                 "calendar_booking_api:booking-calendar-group-events-list",
-                kwargs={"group_id": group.id},
+                kwargs={"public_slug": group.public_booking_slug},
             ),
             _rest_group_booking_payload(slot, calendar),
             format="json",
@@ -985,7 +985,7 @@ class TestBookingCodeRestGroupEventSurface:
         response = client.post(
             reverse(
                 "calendar_booking_api:booking-calendar-group-events-list",
-                kwargs={"group_id": group.id},
+                kwargs={"public_slug": group.public_booking_slug},
             ),
             _rest_group_booking_payload(slot, calendar),
             format="json",
@@ -1006,7 +1006,7 @@ class TestBookingCodeRestGroupEventSurface:
         response = client.post(
             reverse(
                 "calendar_booking_api:booking-calendar-group-events-list",
-                kwargs={"group_id": group.id},
+                kwargs={"public_slug": group.public_booking_slug},
             ),
             _rest_group_booking_payload(slot, calendar),
             format="json",
