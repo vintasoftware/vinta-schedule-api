@@ -429,13 +429,22 @@ class BookingCodePermission(BasePermission):
     owner-or-org-admin decision does **not** live in ``has_object_permission``:
     on ``create`` the target (``calendar`` or ``calendar_group``) arrives in the
     request BODY, not as a URL-routed object DRF could resolve before this class
-    runs, and on ``destroy`` the target is the token being revoked, which is
-    idempotent by design (revoking a non-existent or foreign-org id is a
-    no-op ``204``, never a permission question). Both authorization decisions
-    happen in ``BookingCodeViewSet`` itself, where the target has actually been
-    resolved -- mirroring the split ``CalendarGroupPermission`` documents between
-    admin-only "manage" and owner-or-participant "view/book", applied here to
-    "mint a code for this calendar/group".
+    runs, and on ``destroy`` the target (the token being revoked) is only
+    resolvable by id, which DRF's generic ``has_object_permission`` hook cannot
+    do here either (it is never handed the object -- ``get_object`` is not
+    called on a ``destroy`` this view overrides outright). Both authorization
+    decisions happen in ``BookingCodeViewSet`` itself, where the target has
+    actually been resolved -- mirroring the split ``CalendarGroupPermission``
+    documents between admin-only "manage" and owner-or-participant
+    "view/book", applied here to "mint or revoke a code for this
+    calendar/group".
+
+    ``destroy`` IS a permission question, same owner-or-org-admin split as
+    ``create`` -- idempotence (revoking an already-revoked, nonexistent, or
+    foreign-org id is a no-op ``204``) is a *separate* property, about not
+    leaking which id exists. Revoking a token that exists but is not the
+    caller's is refused exactly as silently: also ``204``, but with
+    ``revoked_at`` left untouched. See ``BookingCodeViewSet.destroy``.
     """
 
     def has_permission(self, request, view) -> bool:

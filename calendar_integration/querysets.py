@@ -63,6 +63,27 @@ class CalendarManagementTokenQuerySet(OrganizationScopedQuerySet):
             revoked_at__isnull=True,
         ).filter(Q(expires_at__isnull=True) | Q(expires_at__gt=now))
 
+    def booking_codes(self) -> "CalendarManagementTokenQuerySet":
+        """Return only tokens minted through a booking-code mint surface.
+
+        A booking code always records who minted it, via exactly one of
+        ``minted_by_membership`` (the authenticated REST mint endpoint) or
+        ``minted_by_system_user`` (the six GraphQL ``create*BookingCode``
+        mutations -- both gated by permission classes that require
+        ``request.public_api_system_user`` to already be set, so the field is
+        never left null there either). Every other ``CalendarManagementToken``
+        row -- owner tokens (``create_calendar_owner_token``), attendee tokens
+        (``create_attendee_token``), and external-attendee tokens
+        (``create_external_attendee_update_token`` /
+        ``create_external_attendee_schedule_token``) -- never sets either
+        field, so this discriminates cleanly between "a booking code" and
+        "some other management token".
+        """
+        return self.filter(
+            Q(minted_by_membership_user_id__isnull=False)
+            | Q(minted_by_system_user_id__isnull=False)
+        )
+
 
 if TYPE_CHECKING:
     # Type-checking-only base so mypy resolves `self.filter(...)` below — at

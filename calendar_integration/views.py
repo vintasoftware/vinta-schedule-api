@@ -25,7 +25,6 @@ from calendar_integration.constants import (
     CalendarSyncTriggerSource,
     CalendarType,
     CalendarVisibility,
-    EventManagementPermissions,
     ExternalEventChangeRequestStatus,
 )
 from calendar_integration.exceptions import (
@@ -53,6 +52,7 @@ from calendar_integration.models import (
     CalendarEvent,
     CalendarGroup,
     CalendarGroupSlotQuotaRule,
+    CalendarManagementToken,
     CalendarOwnership,
     ExternalEventChangeRequest,
 )
@@ -3043,13 +3043,6 @@ class ExternalEventChangeRequestViewSet(ReadOnlyVintaScheduleModelViewSet):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
-_BOOKING_CODE_PURPOSE_PERMISSIONS: dict[str, list[EventManagementPermissions]] = {
-    BookingCodeCreateSerializer.PURPOSE_BOOK: [EventManagementPermissions.CREATE],
-    BookingCodeCreateSerializer.PURPOSE_RESCHEDULE: [EventManagementPermissions.RESCHEDULE],
-    BookingCodeCreateSerializer.PURPOSE_CANCEL: [EventManagementPermissions.CANCEL],
-}
-
-
 @extend_schema(tags=["Booking Codes"])
 class BookingCodeViewSet(TenantScopedViewMixin, GenericViewSet):
     """Authenticated booking-code minting and revocation.
@@ -3069,36 +3062,42 @@ class BookingCodeViewSet(TenantScopedViewMixin, GenericViewSet):
 
     Authenticated (session/JWT) + active organization membership
     (``BookingCodePermission.has_permission``). The finer owner-or-org-admin
-    authorization against the specific target happens here, in ``create``,
-    because the target arrives in the request body rather than as a
-    URL-routed object ``has_object_permission`` could inspect.
+    authorization against the specific target happens here, in ``create`` AND
+    ``destroy``, because the target arrives in the request body (``create``)
+    or is only resolvable by id (``destroy``) rather than as a URL-routed
+    object ``has_object_permission`` could inspect. ``destroy`` additionally
+    requires the id to name a token minted through a booking-code mint
+    surface (see ``CalendarManagementToken.objects.booking_codes_for_organization``)
+    -- calendar-owner / attendee / external-attendee tokens are not
+    reachable through this endpoint at all, mint or revoke.
     """
 
     permission_classes = (BookingCodePermission,)
     serializer_class = BookingCodeCreateSerializer
     http_method_names = ("post", "delete", "options", "head")
 
-    def _authorize_calendar_target(self, request, organization_id: int, calendar_id: int) -> None:
+    def _authorize_calendar_target(
+        self,
+        request,
+        calendar_permission_service: "CalendarPermissionService",
+        organization_id: int,
+        calendar_id: int,
+    ) -> None:
         """Resolve + authorize a ``calendar`` mint target.
 
         A calendar outside the caller's organization is answered 404 -- never
         403 -- so the endpoint cannot be used to learn that a given id exists
-        in some other tenant.
+        in some other tenant. Delegates the owner-or-admin decision to
+        ``CalendarPermissionService.can_view_calendar`` -- the same split
+        ``_authorize_calendar_group_target`` draws for a calendar group, kept
+        in one place on the service rather than re-implemented per target type.
         """
         try:
-            Calendar.objects.filter_by_organization(organization_id).get(id=calendar_id)
+            calendar = Calendar.objects.filter_by_organization(organization_id).get(id=calendar_id)
         except Calendar.DoesNotExist:
             raise NotFound() from None
 
-        if request.user.is_organization_admin(organization_id):
-            return
-
-        owns_calendar = (
-            CalendarOwnership.objects.filter_by_organization(organization_id)
-            .filter(membership_user_id=request.user.id, calendar_fk_id=calendar_id)
-            .exists()
-        )
-        if not owns_calendar:
+        if not calendar_permission_service.can_view_calendar(user=request.user, calendar=calendar):
             raise PermissionDenied(
                 "You do not have permission to mint a booking code for this calendar."
             )
@@ -3201,7 +3200,9 @@ class BookingCodeViewSet(TenantScopedViewMixin, GenericViewSet):
         event_id = data.get("event")
 
         if calendar_id is not None:
-            self._authorize_calendar_target(request, organization_id, calendar_id)
+            self._authorize_calendar_target(
+                request, calendar_permission_service, organization_id, calendar_id
+            )
         else:
             self._authorize_calendar_group_target(
                 request, calendar_permission_service, organization_id, calendar_group_id
@@ -3222,7 +3223,7 @@ class BookingCodeViewSet(TenantScopedViewMixin, GenericViewSet):
 
         token, plaintext_code = calendar_permission_service.create_booking_token(
             organization_id=organization_id,
-            permissions=_BOOKING_CODE_PURPOSE_PERMISSIONS[data["purpose"]],
+            permissions=BookingCodeCreateSerializer.PURPOSE_PERMISSIONS[data["purpose"]],
             expires_at=data.get("expires_at"),
             minted_by_user=request.user,
             duration=duration,
@@ -3249,11 +3250,16 @@ class BookingCodeViewSet(TenantScopedViewMixin, GenericViewSet):
         responses={204: None},
         summary="Revoke a booking code",
         description=(
-            "Revoke a booking code by its opaque id. Idempotent: revoking an "
-            "already-revoked code, or an id that does not exist within the "
-            "caller's organization (including an id belonging to another "
-            "organization), returns 204 without error and without touching "
-            "any row outside the caller's organization."
+            "Revoke a booking code by its opaque id. Org admins may revoke any "
+            "booking code in the organization; other members may revoke only a "
+            "code scoped to a calendar they own or a group they participate in "
+            "-- the same owner-or-org-admin rule POST applies at mint time. "
+            "Non-oracle: revoking an already-revoked code, an id that does not "
+            "exist within the caller's organization (including an id belonging "
+            "to another organization or to a non-booking-code token), and an id "
+            "the caller is not authorized to revoke, all return 204 without "
+            "error and without touching the row -- a caller cannot distinguish "
+            "'does not exist' from 'not yours' from 'already revoked'."
         ),
     )
     @inject
@@ -3282,14 +3288,52 @@ class BookingCodeViewSet(TenantScopedViewMixin, GenericViewSet):
             # for a well-formed but nonexistent / foreign-org id.
             return Response(status=status.HTTP_204_NO_CONTENT)
 
+        organization_id = membership.organization_id
+
+        # Resolve the token org-scoped AND restricted to rows minted through a
+        # booking-code mint surface (CalendarManagementTokenQuerySet.booking_codes)
+        # -- this endpoint must never be usable to revoke a calendar-owner /
+        # attendee / external-attendee token, none of which are reachable
+        # through it at mint time either. A foreign-org id, a nonexistent id,
+        # and a non-booking-code id are all indistinguishable from here on:
+        # idempotent no-op, 204.
         try:
-            calendar_permission_service.revoke_token(
-                organization_id=membership.organization_id, token_id=token_id
+            token = (
+                CalendarManagementToken.objects.booking_codes_for_organization(organization_id)
+                .select_related("calendar", "calendar_group")
+                .get(id=token_id)
             )
-        except InvalidTokenError:
-            # Nonexistent id, or an id scoped to another organization -- the
-            # revoke_token lookup is itself organization-scoped, so a foreign
-            # org's token row is never touched. Idempotent no-op either way.
-            pass
+        except CalendarManagementToken.DoesNotExist:
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        # Same owner-or-org-admin split `create` applies at mint time, against
+        # whichever scope the token actually carries. A booking code always
+        # carries exactly one (create_booking_token requires calendar_id or
+        # calendar_group_id) -- fail closed if somehow neither is set, rather
+        # than silently allowing the revoke.
+        if token.calendar_fk_id is not None:
+            authorized = calendar_permission_service.can_view_calendar(
+                user=request.user, calendar=token.calendar
+            )
+        elif token.calendar_group_fk_id is not None:
+            authorized = calendar_permission_service.can_view_calendar_group(
+                user=request.user, group=token.calendar_group
+            )
+        else:
+            authorized = False
+
+        # Unauthorized is answered exactly like "not found": 204, row
+        # untouched. Only an authorized revoke actually writes `revoked_at`.
+        if authorized:
+            try:
+                calendar_permission_service.revoke_token(
+                    organization_id=organization_id,
+                    token_id=token_id,
+                    actor_user=request.user,
+                )
+            except InvalidTokenError:
+                # Raced with something that removed the row between the
+                # lookup above and here -- idempotent no-op either way.
+                pass
 
         return Response(status=status.HTTP_204_NO_CONTENT)

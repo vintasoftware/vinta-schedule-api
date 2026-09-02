@@ -417,6 +417,20 @@ class CalendarManagementTokenManager(_CalendarManagementTokenManagerBase):  # ty
         """Return tokens that are not used, not revoked, and not expired."""
         return self.get_queryset().active()
 
+    def booking_codes_for_organization(
+        self, organization_id: int
+    ) -> CalendarManagementTokenQuerySet:
+        """Booking codes only, scoped to *organization_id*.
+
+        Starts from the unscoped queryset and narrows explicitly by
+        organization (the ``filter_by_organization`` call-site convention):
+        callers here (``BookingCodeViewSet.destroy``) resolve the organization
+        from ``request.organization_membership`` rather than an ambient bound
+        context. See ``CalendarManagementTokenQuerySet.booking_codes`` for the
+        discriminator.
+        """
+        return self.filter_by_organization(organization_id).booking_codes()
+
     def consume(self, token: "CalendarManagementToken", source_ip: str) -> None:
         """Atomically consume *token* by setting used_at + consumed_source_ip.
 

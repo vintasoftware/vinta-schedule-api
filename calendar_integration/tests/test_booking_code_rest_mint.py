@@ -48,6 +48,7 @@ from calendar_integration.models import (
     CalendarGroupSlotMembership,
     CalendarManagementToken,
 )
+from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN, GROUP_ORGANIZATION_MEMBER
 from organizations.tests.helpers import grant_membership_groups
@@ -616,6 +617,29 @@ class TestAuthorizationMatrix:
         response = _mint(client, {"purpose": "book", "calendar_group": group.id})
         assert response.status_code == status.HTTP_403_FORBIDDEN, response.content
 
+    def test_member_refused_for_different_group_despite_owning_calendar_in_another_group(
+        self, organization, calendar, group
+    ):
+        """A member who owns a calendar inside group `group` (G1)'s slot pools
+        must still be refused for a DIFFERENT group G2 in the same org.
+
+        ``test_member_refused_for_non_participated_group`` above uses a member
+        with no ownership at all, so it would pass even if
+        ``can_view_calendar_group`` degenerated to "owns any calendar
+        anywhere" -- this test would catch that regression.
+        """
+        member = _make_member(organization)
+        create_calendar_ownership(calendar=calendar, user=member.user)
+        client = _auth_client(member)
+
+        other_group = baker.make(CalendarGroup, organization=organization, name="Other Group")
+        CalendarGroupSlot.objects.create(
+            organization=organization, group=other_group, name="Slot", order=0, required_count=1
+        )
+
+        response = _mint(client, {"purpose": "book", "calendar_group": other_group.id})
+        assert response.status_code == status.HTTP_403_FORBIDDEN, response.content
+
     def test_cross_org_calendar_target_is_404_not_403(self, admin_client, other_organization):
         other_calendar = baker.make(Calendar, organization=other_organization)
         response = _mint(admin_client, {"purpose": "book", "calendar": other_calendar.id})
@@ -624,6 +648,65 @@ class TestAuthorizationMatrix:
     def test_cross_org_group_target_is_404_not_403(self, admin_client, other_organization):
         other_group = baker.make(CalendarGroup, organization=other_organization)
         response = _mint(admin_client, {"purpose": "book", "calendar_group": other_group.id})
+        assert response.status_code == status.HTTP_404_NOT_FOUND, response.content
+
+
+# ---------------------------------------------------------------------------
+# _resolve_event_target's three 404 branches (mismatch is always 404, never
+# 403 -- the event id is as sensitive as the calendar/group id it belongs to).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestResolveEventTarget404s:
+    def test_cross_org_event_target_is_404(
+        self, admin_client, organization, calendar, other_organization
+    ):
+        other_calendar = baker.make(Calendar, organization=other_organization)
+        other_event = baker.make(
+            CalendarEvent,
+            organization=other_organization,
+            calendar=other_calendar,
+            timezone="UTC",
+        )
+
+        response = _mint(
+            admin_client,
+            {"purpose": "reschedule", "calendar": calendar.id, "event": other_event.id},
+        )
+        assert response.status_code == status.HTTP_404_NOT_FOUND, response.content
+
+    def test_event_on_different_calendar_same_org_is_404(
+        self, admin_client, organization, calendar, secondary_calendar
+    ):
+        event = baker.make(
+            CalendarEvent,
+            organization=organization,
+            calendar=secondary_calendar,
+            timezone="UTC",
+        )
+
+        response = _mint(
+            admin_client,
+            {"purpose": "reschedule", "calendar": calendar.id, "event": event.id},
+        )
+        assert response.status_code == status.HTTP_404_NOT_FOUND, response.content
+
+    def test_grouped_event_addressed_with_calendar_instead_of_group_is_404(
+        self, admin_client, organization, calendar, secondary_calendar, group
+    ):
+        event = baker.make(
+            CalendarEvent,
+            organization=organization,
+            calendar=calendar,
+            calendar_group=group,
+            timezone="UTC",
+        )
+
+        response = _mint(
+            admin_client,
+            {"purpose": "reschedule", "calendar": calendar.id, "event": event.id},
+        )
         assert response.status_code == status.HTTP_404_NOT_FOUND, response.content
 
 
@@ -793,6 +876,136 @@ class TestRevoke:
 
 
 # ---------------------------------------------------------------------------
+# Revoke authorization -- a plain member must not be able to revoke a token
+# that isn't theirs, whether it's a booking code or an owner/attendee token
+# minted through a completely different surface (create_calendar_owner_token /
+# create_attendee_token). Phase 6 reviewer BLOCKER: DELETE previously applied
+# no authorization at all, beyond organization scoping.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestRevokeAuthorization:
+    def test_member_cannot_revoke_another_users_calendar_owner_token(self, organization, calendar):
+        """A calendar-owner token (create_calendar_owner_token) is not a booking
+        code -- it is not reachable through the mint endpoint at all -- and a
+        plain member with no stake in it must not be able to revoke it via
+        DELETE /booking-codes/<id>/. Before the fix, `destroy` applied no
+        authorization check beyond organization scoping, so this call
+        succeeded and permanently locked the owner out (create_calendar_owner_token
+        re-mints via get_or_create with no revoked_at in the lookup, so the
+        owner's existing revoked row is returned forever).
+        """
+        owner_membership = _make_member(organization)
+        create_calendar_ownership(calendar=calendar, user=owner_membership.user)
+
+        service = CalendarPermissionService()
+        owner_token = service.create_calendar_owner_token(
+            organization_id=organization.id,
+            user=owner_membership.user,
+            calendar_id=calendar.id,
+        )
+
+        member = _make_member(organization)
+        client = _auth_client(member)
+
+        response = _revoke(client, owner_token.id)
+        assert response.status_code == status.HTTP_204_NO_CONTENT
+
+        owner_token.refresh_from_db()
+        assert owner_token.revoked_at is None
+
+        # The owner can still act on their own calendar afterwards.
+        service.initialize_with_user(
+            owner_membership.user,
+            organization_id=organization.id,
+            calendar_id=calendar.id,
+        )
+        assert service.token is not None
+        assert service.token.id == owner_token.id
+
+    def test_member_cannot_revoke_booking_code_for_calendar_they_do_not_own(
+        self, organization, calendar
+    ):
+        owner_membership = _make_member(organization)
+        create_calendar_ownership(calendar=calendar, user=owner_membership.user)
+        owner_client = _auth_client(owner_membership)
+
+        mint = _mint(owner_client, {"purpose": "book", "calendar": calendar.id})
+        assert mint.status_code == status.HTTP_201_CREATED, mint.content
+        token_id = mint.json()["id"]
+
+        other_member = _make_member(organization)
+        other_client = _auth_client(other_member)
+
+        response = _revoke(other_client, token_id)
+        assert response.status_code == status.HTTP_204_NO_CONTENT
+
+        token = CalendarManagementToken.objects.filter_by_organization(organization.id).get(
+            id=token_id
+        )
+        assert token.revoked_at is None
+
+    def test_owner_can_revoke_own_calendars_booking_code(self, organization, calendar):
+        owner_membership = _make_member(organization)
+        create_calendar_ownership(calendar=calendar, user=owner_membership.user)
+        owner_client = _auth_client(owner_membership)
+
+        mint = _mint(owner_client, {"purpose": "book", "calendar": calendar.id})
+        assert mint.status_code == status.HTTP_201_CREATED, mint.content
+        token_id = mint.json()["id"]
+
+        response = _revoke(owner_client, token_id)
+        assert response.status_code == status.HTTP_204_NO_CONTENT
+
+        token = CalendarManagementToken.objects.filter_by_organization(organization.id).get(
+            id=token_id
+        )
+        assert token.revoked_at is not None
+
+    def test_admin_can_revoke_any_booking_code_in_org(self, admin_client, organization, calendar):
+        owner_membership = _make_member(organization)
+        create_calendar_ownership(calendar=calendar, user=owner_membership.user)
+        owner_client = _auth_client(owner_membership)
+
+        mint = _mint(owner_client, {"purpose": "book", "calendar": calendar.id})
+        assert mint.status_code == status.HTTP_201_CREATED, mint.content
+        token_id = mint.json()["id"]
+
+        response = _revoke(admin_client, token_id)
+        assert response.status_code == status.HTTP_204_NO_CONTENT
+
+        token = CalendarManagementToken.objects.filter_by_organization(organization.id).get(
+            id=token_id
+        )
+        assert token.revoked_at is not None
+
+    def test_audit_entry_names_the_revoking_user(
+        self, admin_client, admin_membership, calendar, django_capture_on_commit_callbacks
+    ):
+        mint = _mint(admin_client, {"purpose": "book", "calendar": calendar.id})
+        token_id = mint.json()["id"]
+
+        with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
+            with django_capture_on_commit_callbacks(execute=True):
+                response = _revoke(admin_client, token_id)
+
+        assert response.status_code == status.HTTP_204_NO_CONTENT
+
+        payloads = [call.args[0] for call in mock_task.delay.call_args_list]
+        token_payloads = [
+            p
+            for p in payloads
+            if p["subject"]["subject_type"] == "calendar_integration.calendarmanagementtoken"
+        ]
+        assert len(token_payloads) == 1
+        payload = token_payloads[0]
+        assert payload["action_key"] == "update"
+        assert payload["actor"]["identity_type"] == "membership"
+        assert payload["actor"]["identity_key"] == str(admin_membership.user_id)
+
+
+# ---------------------------------------------------------------------------
 # The plaintext code is one-time-only
 # ---------------------------------------------------------------------------
 
@@ -822,3 +1035,13 @@ class TestPlaintextCodeOneTimeOnly:
 
         retrieve_response = admin_client.get(_revoke_url(token_id))
         assert retrieve_response.status_code == status.HTTP_405_METHOD_NOT_ALLOWED
+
+        put_response = admin_client.put(_revoke_url(token_id), {}, format="json")
+        assert put_response.status_code == status.HTTP_405_METHOD_NOT_ALLOWED
+
+        patch_response = admin_client.patch(_revoke_url(token_id), {}, format="json")
+        assert patch_response.status_code == status.HTTP_405_METHOD_NOT_ALLOWED
+
+    def test_unauthenticated_mint_is_401(self, anon_client, calendar):
+        response = _mint(anon_client, {"purpose": "book", "calendar": calendar.id})
+        assert response.status_code == status.HTTP_401_UNAUTHORIZED, response.content

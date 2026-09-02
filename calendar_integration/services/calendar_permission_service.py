@@ -622,6 +622,27 @@ class CalendarPermissionService:
             .exists()
         )
 
+    def can_view_calendar(self, user: User, calendar: Calendar) -> bool:
+        """Return True if `user` may see/act on `calendar` as its owner (or an
+        org admin) -- e.g. mint or revoke a booking code scoped to it.
+
+        Rules, in order:
+          1. Org admins in the calendar's organization can always act on it.
+          2. Otherwise, the user must directly own `calendar` (a
+             ``CalendarOwnership`` row) -- owning some *other* calendar in the
+             organization is not enough.
+
+        Mirrors ``can_view_calendar_group``'s admin-or-participant split, one
+        level down (a single calendar rather than a group).
+        """
+        if user.is_organization_admin(calendar.organization_id):
+            return True
+        return (
+            CalendarOwnership.objects.filter_by_organization(calendar.organization_id)
+            .filter(membership_user_id=user.id, calendar_fk=calendar)
+            .exists()
+        )
+
     def can_view_calendar_group(self, user: User, group: CalendarGroup) -> bool:
         """Return True if `user` may see that `group` exists (list/retrieve,
         and act as a participant against it -- e.g. book a group event,
@@ -1055,16 +1076,27 @@ class CalendarPermissionService:
         """
         CalendarManagementToken.objects.consume(token, source_ip)
 
-    def revoke_token(self, organization_id: int, token_id: int) -> bool:
+    def revoke_token(
+        self, organization_id: int, token_id: int, *, actor_user: User | None = None
+    ) -> bool:
         """Revoke a booking code by its opaque id (idempotent).
 
         Fetch the token scoped to the organization, set ``revoked_at`` to
         the current time if not already set, and save. If the token is already
         revoked, return True without changing the timestamp (idempotent).
 
+        This method performs NO authorization -- callers (the REST
+        ``BookingCodeViewSet.destroy`` view, the ``revokeBookingCode`` GraphQL
+        mutation) are responsible for deciding whether the caller may revoke
+        the specific token before calling this.
+
         Args:
             organization_id: Tenant scope.
             token_id: The id of the token to revoke.
+            actor_user: The internal ``User`` performing the revoke, for audit
+                attribution (e.g. the authenticated REST caller). ``None``
+                (the default) audits as the system actor, matching every
+                pre-existing caller of this method.
 
         Returns:
             True on success (revoked or already-revoked).
@@ -1085,11 +1117,16 @@ class CalendarPermissionService:
             token.save(update_fields=["revoked_at"])
 
             if self.audit_service is not None:
+                actor = (
+                    self.audit_service.actor_from_user_or_token(actor_user, organization_id)
+                    if actor_user is not None
+                    else self.audit_service.system_actor()
+                )
                 self._audit_token_write(
                     AuditAction.UPDATE,
                     token,
                     organization_id,
-                    self.audit_service.system_actor(),
+                    actor,
                     diff={"revoked_at": {"old": None, "new": token.revoked_at.isoformat()}},
                 )
 

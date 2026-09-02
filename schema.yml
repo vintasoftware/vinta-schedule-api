@@ -4051,10 +4051,15 @@ paths:
   /booking-codes/{id}/:
     delete:
       operationId: booking_codes_destroy
-      description: 'Revoke a booking code by its opaque id. Idempotent: revoking an
-        already-revoked code, or an id that does not exist within the caller''s organization
-        (including an id belonging to another organization), returns 204 without error
-        and without touching any row outside the caller''s organization.'
+      description: 'Revoke a booking code by its opaque id. Org admins may revoke
+        any booking code in the organization; other members may revoke only a code
+        scoped to a calendar they own or a group they participate in -- the same owner-or-org-admin
+        rule POST applies at mint time. Non-oracle: revoking an already-revoked code,
+        an id that does not exist within the caller''s organization (including an
+        id belonging to another organization or to a non-booking-code token), and
+        an id the caller is not authorized to revoke, all return 204 without error
+        and without touching the row -- a caller cannot distinguish ''does not exist''
+        from ''not yours'' from ''already revoked''.'
       summary: Revoke a booking code
       parameters:
       - in: header
@@ -4083,10 +4088,15 @@ paths:
   /booking-codes/{id}{format}:
     delete:
       operationId: booking_codes_formatted_destroy
-      description: 'Revoke a booking code by its opaque id. Idempotent: revoking an
-        already-revoked code, or an id that does not exist within the caller''s organization
-        (including an id belonging to another organization), returns 204 without error
-        and without touching any row outside the caller''s organization.'
+      description: 'Revoke a booking code by its opaque id. Org admins may revoke
+        any booking code in the organization; other members may revoke only a code
+        scoped to a calendar they own or a group they participate in -- the same owner-or-org-admin
+        rule POST applies at mint time. Non-oracle: revoking an already-revoked code,
+        an id that does not exist within the caller''s organization (including an
+        id belonging to another organization or to a non-booking-code token), and
+        an id the caller is not authorized to revoke, all return 204 without error
+        and without touching the row -- a caller cannot distinguish ''does not exist''
+        from ''not yours'' from ''already revoked''.'
       summary: Revoke a booking code
       parameters:
       - in: header

@@ -2,7 +2,7 @@ import datetime
 import logging
 import zoneinfo
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, Annotated, TypedDict, cast
+from typing import TYPE_CHECKING, Annotated, ClassVar, TypedDict, cast
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Q
@@ -18,6 +18,7 @@ from calendar_integration.constants import (
     CalendarSyncTriggerSource,
     CalendarType,
     CalendarVisibility,
+    EventManagementPermissions,
     QuotaPeriod,
 )
 from calendar_integration.exceptions import (
@@ -3670,6 +3671,15 @@ class BookingCodeCreateSerializer(serializers.Serializer):
     PURPOSE_RESCHEDULE = "reschedule"
     PURPOSE_CANCEL = "cancel"
     PURPOSE_CHOICES = (PURPOSE_BOOK, PURPOSE_RESCHEDULE, PURPOSE_CANCEL)
+
+    #: Kept next to ``PURPOSE_CHOICES`` on purpose -- this is the enum the
+    #: permission it grants, in one place, so the two cannot drift apart the
+    #: way they could when the mapping lived separately in ``views.py``.
+    PURPOSE_PERMISSIONS: ClassVar[dict[str, list[EventManagementPermissions]]] = {
+        PURPOSE_BOOK: [EventManagementPermissions.CREATE],
+        PURPOSE_RESCHEDULE: [EventManagementPermissions.RESCHEDULE],
+        PURPOSE_CANCEL: [EventManagementPermissions.CANCEL],
+    }
 
     purpose = serializers.ChoiceField(choices=PURPOSE_CHOICES)
     calendar = serializers.IntegerField(required=False, allow_null=True, default=None)
