@@ -18,6 +18,7 @@ from calendar_integration.models import (
     CalendarGroupSlotMembership,
     CalendarGroupSlotQuotaRule,
     CalendarOwnership,
+    CalendarPool,
     CalendarWebhookEvent,
     CalendarWebhookSubscription,
     EventAttendance,
@@ -134,6 +135,30 @@ def _scoped_calendar_list(
     if allowed_ids is None:
         return calendars
     return [c for c in calendars if c.id in allowed_ids]
+
+
+def _scoped_pool_list(
+    pools: "list[CalendarPool]", allowed_ids: set[int] | None
+) -> "list[CalendarPool]":
+    """Filter a list of pools to those where the owner owns at least one roster calendar.
+
+    Closes the THIRD-hop leak (plan's Open Question 4, "no -- fail closed"):
+    without this, ``calendarGroup -> slots -> pools`` would reveal the *names*
+    of pools a scoped-member token does not participate in, even when reached
+    through a slot the token CAN see for an unrelated reason (an inline
+    calendar, or a different attached pool). Applies the same rule as
+    ``CalendarPoolQuerySet.only_member_of``: a pool is visible only if the
+    token owns at least one of ITS roster calendars. Evaluated in Python
+    against the already-prefetched pool/calendar lists rather than a second
+    query, mirroring ``_scoped_calendar_list`` / ``_deduplicated_calendars``.
+    """
+    if allowed_ids is None:
+        return pools
+    return [
+        pool
+        for pool in pools
+        if any(calendar.id in allowed_ids for calendar in pool.calendars.all())
+    ]
 
 
 def _deduplicated_calendars(calendars: "list[Calendar]") -> "list[Calendar]":
@@ -858,6 +883,41 @@ class WebhookSubscriptionStatusGraphQLType:
 
 
 # ---------------------------------------------------------------------------
+# CalendarPool types
+# ---------------------------------------------------------------------------
+@strawberry_django.type(CalendarPool)
+class CalendarPoolGraphQLType:
+    """GraphQL type for a CalendarPool -- a named, reusable roster of calendars.
+
+    ``calendars`` applies the same owner-scoping the slot's own candidate pool
+    uses (see ``CalendarGroupSlotGraphQLType.calendars``), so a scoped token
+    reaching a pool through any path -- the top-level ``calendarPool(s)``
+    queries, or nested through ``calendarGroup.slots.pools`` -- never sees a
+    roster calendar it does not own.
+    """
+
+    id: strawberry.auto  # noqa: A003
+    name: strawberry.auto
+    description: strawberry.auto
+    created: datetime.datetime
+    modified: datetime.datetime
+
+    @strawberry.field
+    def calendars(self, info: strawberry.Info) -> list["CalendarGraphQLType"]:
+        """The pool's roster, filtered to the owner's set for scoped tokens.
+
+        A pool's own roster has no projected-union duplication (that is a
+        ``CalendarGroupSlotMembership`` concern, not a ``CalendarPool`` one),
+        so no ``_deduplicated_calendars`` pass is needed here -- only the
+        owner-scope filter.
+        """
+        return _scoped_calendar_list(  # type: ignore[return-value]
+            list(self.calendars.all()),  # type: ignore[attr-defined]
+            _owner_scoped_calendar_ids(info),
+        )
+
+
+# ---------------------------------------------------------------------------
 # CalendarGroup types
 # ---------------------------------------------------------------------------
 @strawberry_django.type(CalendarGroupSlot)
@@ -884,6 +944,26 @@ class CalendarGroupSlotGraphQLType:
         through ``.distinct()``."""
         return _scoped_calendar_list(  # type: ignore[return-value]
             _deduplicated_calendars(list(self.calendars.all())),  # type: ignore[attr-defined]
+            _owner_scoped_calendar_ids(info),
+        )
+
+    @strawberry.field
+    def pools(self, info: strawberry.Info) -> list["CalendarPoolGraphQLType"]:
+        """The pools attached to this slot, filtered to the owner's set for scoped tokens.
+
+        This is the THIRD-hop leak the plan's Open Question 4 calls out: a
+        scoped token could otherwise learn the *names* of pools it does not
+        participate in by reaching them through a slot it CAN see for an
+        unrelated reason (an inline calendar, or a different attached pool).
+        Per that question's recommended default (fail closed), a pool is
+        visible here only if the token owns at least one of ITS roster
+        calendars -- see ``_scoped_pool_list``. Each visible pool's own
+        ``calendars`` resolver applies the owner-scope filter again as
+        defence in depth, matching the pool's behaviour when reached
+        directly through the top-level ``calendarPool(s)`` queries.
+        """
+        return _scoped_pool_list(  # type: ignore[return-value]
+            list(self.pools.all()),  # type: ignore[attr-defined]
             _owner_scoped_calendar_ids(info),
         )
 
@@ -1174,6 +1254,75 @@ class DeleteBookingPolicyResult:
     """Result type for the deleteBookingPolicy mutation."""
 
     success: bool
+
+
+# ---------------------------------------------------------------------------
+# CalendarPool mutation input / result types
+# ---------------------------------------------------------------------------
+
+
+@strawberry.input
+class CreateCalendarPoolInput:
+    """Input for creating a CalendarPool.
+
+    The organization is resolved from the authenticated token (mirrors
+    ``CreateBookingPolicyInput``), never from client input.
+    """
+
+    name: str
+    description: str = ""
+    calendar_ids: list[int] = strawberry.field(default_factory=list)
+
+
+@strawberry.input
+class UpdateCalendarPoolInput:
+    """Input for updating a CalendarPool.
+
+    ``calendar_ids`` always replaces the roster wholesale -- no
+    omit-means-unchanged sentinel here, mirroring ``CalendarPoolInputData``
+    and the REST ``CalendarPoolSerializer``.
+    """
+
+    pool_id: int
+    name: str
+    description: str = ""
+    calendar_ids: list[int] = strawberry.field(default_factory=list)
+
+
+@strawberry.input
+class DeleteCalendarPoolInput:
+    """Input for deleting a CalendarPool."""
+
+    pool_id: int
+
+
+@strawberry.type
+class CalendarPoolResult:
+    """Result type for CalendarPool write mutations.
+
+    Domain failures (validation, not-found, permission) are reported as data
+    (``success=False`` + ``error_message``), never raised as a GraphQL
+    ``errors[]`` entry -- matching how ``CalendarGroupMutations`` reports
+    failures on this API.
+    """
+
+    success: bool
+    pool: CalendarPoolGraphQLType | None = None
+    error_message: str | None = None
+
+
+@strawberry.type
+class DeleteCalendarPoolResult:
+    """Result type for the deleteCalendarPool mutation.
+
+    ``referencing_groups`` is populated only when the delete is refused
+    because the pool is still attached to a slot -- mirrors the REST 409
+    payload's ``groups`` key (see ``CalendarPoolViewSet.destroy``).
+    """
+
+    success: bool
+    error_message: str | None = None
+    referencing_groups: list[str] = strawberry.field(default_factory=list)
 
 
 @strawberry.type

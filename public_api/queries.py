@@ -33,6 +33,7 @@ from calendar_integration.graphql import (
     CalendarGroupGraphQLType,
     CalendarGroupRangeAvailabilityGraphQLType,
     CalendarGroupSlotAvailabilityGraphQLType,
+    CalendarPoolGraphQLType,
     CalendarWebhookEventGraphQLType,
     CalendarWebhookSubscriptionGraphQLType,
     ExternalEventChangeRequestGraphQLType,
@@ -53,6 +54,7 @@ from calendar_integration.models import (
     CalendarGroup,
     CalendarGroupSlotQuotaRule,
     CalendarManagementToken,
+    CalendarPool,
     CalendarWebhookEvent,
     ExternalEventChangeRequest,
 )
@@ -68,7 +70,11 @@ from public_api.permissions import (
     IsAuthenticated,
     OrganizationResourceAccess,
 )
-from public_api.scoping import scoped_calendar_group_queryset, scoped_calendar_ids
+from public_api.scoping import (
+    scoped_calendar_group_queryset,
+    scoped_calendar_ids,
+    scoped_calendar_pool_queryset,
+)
 from public_api.types import (
     ChildOrganizationMetrics,
     PublicApiHttpRequest,
@@ -899,8 +905,56 @@ class Query:
             org,
             CalendarGroup.objects.filter_by_organization(org.id),
         )
-        qs = qs.prefetch_related("slots__calendars__ownerships__membership").order_by("pk")
+        qs = qs.prefetch_related(
+            "slots__calendars__ownerships__membership",
+            "slots__pools__calendars__ownerships__membership",
+        ).order_by("pk")
         return cast(list[CalendarGroupGraphQLType], list(_slice_qs(qs, offset, limit)))
+
+    # ------------------------------------------------------------------
+    # CalendarPool queries
+    # ------------------------------------------------------------------
+    @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def calendar_pool(self, info: strawberry.Info, pool_id: int) -> CalendarPoolGraphQLType | None:
+        """Fetch a single CalendarPool scoped to the caller's organization.
+
+        Role-aware scope, matching ``calendar_group``: org-wide and
+        scoped-admin tokens may fetch any pool in the org; a scoped-member
+        token only a pool it participates in (owns a roster calendar); a
+        scoped token whose membership is missing/inactive sees none (fail
+        closed) -- see ``public_api.scoping.scoped_calendar_pool_queryset``.
+        """
+        org = _get_org(info)
+        request: PublicApiHttpRequest = info.context.request
+        qs = scoped_calendar_pool_queryset(
+            request.public_api_system_user,
+            org,
+            CalendarPool.objects.filter_by_organization(org.id),
+        )
+        return qs.filter(id=pool_id).first()
+
+    @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
+    def calendar_pools(
+        self,
+        info: strawberry.Info,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> list[CalendarPoolGraphQLType]:
+        """List CalendarPools for the caller's organization.
+
+        Role-aware scope: see ``calendar_pool`` above -- org-wide/scoped-admin
+        see every pool, scoped-member sees only pools it participates in,
+        missing/inactive scoped membership sees none.
+        """
+        org = _get_org(info)
+        request: PublicApiHttpRequest = info.context.request
+        qs = scoped_calendar_pool_queryset(
+            request.public_api_system_user,
+            org,
+            CalendarPool.objects.filter_by_organization(org.id),
+        )
+        qs = qs.prefetch_related("calendars__ownerships__membership").order_by("pk")
+        return cast(list[CalendarPoolGraphQLType], list(_slice_qs(qs, offset, limit)))
 
     @strawberry_django.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def calendar_bundles(

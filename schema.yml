@@ -17688,6 +17688,7 @@ components:
       - unavailable_windows
       - organization
       - calendar_group
+      - calendar_pool
       - system_user
       - membership
       - invitation
@@ -17740,6 +17741,7 @@ components:
         * `unavailable_windows` - Unavailable Windows
         * `organization` - Organization
         * `calendar_group` - Calendar Group
+        * `calendar_pool` - Calendar Pool
         * `system_user` - System User
         * `membership` - Membership
         * `invitation` - Invitation
