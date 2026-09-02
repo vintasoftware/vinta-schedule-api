@@ -521,11 +521,17 @@ class TestCreateGroupEventWithCodeLifecycleRejections:
         assert response.status_code == status.HTTP_404_NOT_FOUND
         assert response.json()["error_code"] == "INVALID_CODE"
 
-    def test_missing_code_returns_invalid_code(self, anon_client, group):
+    def test_missing_code_against_private_group_returns_not_permitted(self, anon_client, group):
+        """A missing ``X-Booking-Code`` no longer means ``INVALID_CODE`` -- Phase 3
+        adds a codeless branch that skips code resolution entirely when the header
+        is absent. Against `group` (private: ``accepts_public_scheduling=False``,
+        the fixture's default), that branch is denied by the group-level gate, not
+        by code resolution -- see ``test_booking_rest_codeless_group.py`` for the
+        codeless-branch coverage proper."""
         response = _post(anon_client, group.id, None, _group_booking_payload([]))
 
-        assert response.status_code == status.HTTP_404_NOT_FOUND
-        assert response.json()["error_code"] == "INVALID_CODE"
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+        assert response.json()["error_code"] == "NOT_PERMITTED"
 
     def test_used_code_returns_already_used(
         self,

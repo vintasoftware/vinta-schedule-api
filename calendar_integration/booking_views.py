@@ -28,6 +28,7 @@ from dependency_injector.wiring import Provide, inject
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import status
 from rest_framework.authentication import BaseAuthentication
+from rest_framework.exceptions import NotFound
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.viewsets import GenericViewSet
@@ -43,6 +44,7 @@ if TYPE_CHECKING:
 
 from calendar_integration.booking_auth import (
     BOOKING_CODE_HEADER,
+    booking_code_header,
     client_ip_from_request,
     pinned_duration_error,
     resolve_and_authorize_write,
@@ -56,8 +58,9 @@ from calendar_integration.constants import EventManagementPermissions
 from calendar_integration.exceptions import (
     CalendarGroupError,
     CalendarServiceNotInjectedError,
+    PermissionServiceInitializationError,
 )
-from calendar_integration.models import CalendarEvent, CalendarGroup
+from calendar_integration.models import CalendarEvent, CalendarGroup, CalendarManagementToken
 from calendar_integration.serializers import (
     BookingCodeEventCreateSerializer,
     BookingCodeGroupEventCreateSerializer,
@@ -247,19 +250,37 @@ class BookingCodeCalendarEventViewSet(BookingCodeViewMixin, GenericViewSet):
 
 @extend_schema(tags=["Booking Codes"])
 class BookingCodeGroupEventViewSet(BookingCodeViewMixin, GenericViewSet):
-    """Unauthenticated, code-gated group booking.
+    """Unauthenticated group booking, code-gated or codeless.
 
     ``POST /public/booking/calendar-groups/<group_id>/events/`` books a grouped
-    event through the ``CalendarGroup`` bound to the presented ``X-Booking-Code``.
-    Ports ``calendar_integration.mutations.create_calendar_group_event_with_code``
-    to REST -- see that mutation's docstring for the full flow this mirrors.
+    event through the ``CalendarGroup`` named by the path. Ports both
+    ``calendar_integration.mutations.create_calendar_group_event_with_code`` (when
+    ``X-Booking-Code`` is present) and the codeless
+    ``calendar_integration.mutations.create_calendar_group_event`` (when it is
+    absent) to REST -- see those mutations' docstrings for the flows this mirrors.
 
-    ``group_id`` comes STRICTLY from the resolved token, never from the path or
-    the request body: the path segment is a routing convenience only, checked
-    against ``token.calendar_group`` and rejected (``403 NOT_PERMITTED``, never a
-    ``404``) on any mismatch -- a ``404`` would confirm the code's real group to
-    someone probing a different id, which is an enumeration oracle this endpoint
-    must not offer.
+    **Coded** (header present): ``group_id`` comes STRICTLY from the resolved
+    token, never from the path or the request body. The path segment is a
+    routing convenience only, checked against ``token.calendar_group`` and
+    rejected (``403 NOT_PERMITTED``, never a ``404``) on any mismatch -- a
+    ``404`` would confirm the code's real group to someone probing a different
+    id, which is an enumeration oracle this endpoint must not offer.
+
+    **Codeless** (header absent): no code is resolved or consumed -- there is
+    none. ``group_id`` comes from the path, exactly as the client sent it: it
+    is the client's own input here, not a secret, so a ``404`` for a
+    nonexistent id discloses nothing the client did not already know -- the
+    mirror image of the coded rule above. Authorization is delegated entirely
+    to ``CalendarGroupService.create_grouped_event``, which allows the booking
+    only when the group's own ``accepts_public_scheduling`` is ``True``
+    (``403 NOT_PERMITTED`` otherwise). The group's pinned duration, if any,
+    still applies on this branch: the pin lives on the ``CalendarGroup``, not
+    on the code, so a codeless booking is constrained by it exactly like a
+    coded one.
+
+    The coded path always wins when the header is present -- a group that
+    accepts public scheduling but is handed a valid group code still books
+    through the code and consumes it.
     """
 
     serializer_class = BookingCodeGroupEventCreateSerializer
@@ -272,20 +293,26 @@ class BookingCodeGroupEventViewSet(BookingCodeViewMixin, GenericViewSet):
                 name=BOOKING_CODE_HEADER,
                 type=str,
                 location=OpenApiParameter.HEADER,
-                required=True,
+                required=False,
                 description="Single-use booking code, minted with the CREATE "
-                "permission and scoped to a calendar group (not a single calendar).",
+                "permission and scoped to a calendar group (not a single calendar). "
+                "OPTIONAL on this endpoint only: when omitted, the booking is "
+                "authorized instead by the path group's own "
+                "accepts_public_scheduling flag (codeless public group booking, "
+                "GraphQL parity with createCalendarGroupEvent). When present, the "
+                "coded path always wins -- a public group handed a valid group "
+                "code still books through it and consumes it.",
             ),
         ],
-        summary="Book a grouped event through a calendar group with a booking code",
+        summary="Book a grouped event through a calendar group, with or without a booking code",
     )
     def create(self, request: Request, *args, **kwargs) -> Response:
-        """Resolve the code, then create the grouped event and consume the code atomically.
+        """Create the grouped event, resolving and consuming a code only when one is presented.
 
-        Create FIRST, then consume, matching the GraphQL original
+        **Coded**: create FIRST, then consume, matching the GraphQL original
         (``create_calendar_group_event_with_code``) and Phase 1's single-calendar
         endpoint. Both statements run inside the same outer ``transaction.atomic()``
-        block (see step 9 below), so any exception either one raises -- including
+        block below, so any exception either one raises -- including
         ``consume_code``'s ``TokenAlreadyUsedError`` on a lost race -- unwinds the
         whole transaction: the DB outcome (one event, code consumed once) is the
         same regardless of which statement runs first. What create-first actually
@@ -293,6 +320,12 @@ class BookingCodeGroupEventViewSet(BookingCodeViewMixin, GenericViewSet):
         ``create_event`` call) before either one's outcome is decided, rather than
         the loser being turned away by the row lock before ever reaching the
         provider.
+
+        **Codeless**: no code exists to create-then-consume around, so only the
+        create runs. Organization is derived from the path group itself (there is
+        no token to read it from), and the group-level
+        ``accepts_public_scheduling`` gate inside ``create_grouped_event`` is the
+        entire authorization decision -- it is not restated here.
         """
         permission_service = self.calendar_permission_service
         calendar_service = self.calendar_service
@@ -307,43 +340,74 @@ class BookingCodeGroupEventViewSet(BookingCodeViewMixin, GenericViewSet):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
-        # --- Step 1: resolve the code, check permission, and resolve org ---
-        token, code, org = resolve_and_authorize_write(
-            request, permission_service, EventManagementPermissions.CREATE
-        )
+        path_group_id = int(kwargs["group_id"])
+        code = booking_code_header(request)
+        token: CalendarManagementToken | None = None
 
-        # --- Step 2: scope check -- must be group-scoped (not single-calendar) ---
-        if token.calendar_group is None:
-            raise NotPermittedAPIException(
-                "This code is not scoped to a calendar group. "
-                "Use the single-calendar booking endpoint for calendar-scoped codes."
+        if code is None:
+            # --- Codeless branch: skip code resolution entirely. The group id
+            # is the client's OWN input here (not a secret the way a coded
+            # token's group is), so a 404 for a nonexistent one discloses
+            # nothing the client did not already know. Do NOT "fix" this to a
+            # 403 to mirror the coded branch's mismatch check below -- the two
+            # differ on purpose; see that check's comment.
+            try:
+                # unscoped(): the organization is not yet known -- this lookup
+                # is what determines it, so filter_by_organization cannot run
+                # yet. This is the codeless counterpart of resolving the
+                # organization from the token's organization_id on the coded
+                # branch.
+                group = (
+                    CalendarGroup.objects.unscoped()
+                    .select_related("organization")
+                    .get(id=path_group_id)
+                )
+            except CalendarGroup.DoesNotExist as exc:
+                raise NotFound("Calendar group not found.") from exc
+            org = group.organization
+        else:
+            # --- resolve the code, check permission, and resolve org ---
+            token, code, org = resolve_and_authorize_write(
+                request, permission_service, EventManagementPermissions.CREATE
             )
 
-        # --- Step 3: path/token scope assertion -- the path <group_id> is a routing
-        # convenience only. A mismatch is 403 NOT_PERMITTED, never a 404: a 404 would
-        # confirm the code's real group to a caller probing a different id.
-        path_group_id = kwargs["group_id"]
-        if int(path_group_id) != token.calendar_group_fk_id:
-            raise NotPermittedAPIException("This code is not scoped to this calendar group.")
+            # --- scope check -- must be group-scoped (not single-calendar) ---
+            if token.calendar_group is None:
+                raise NotPermittedAPIException(
+                    "This code is not scoped to a calendar group. "
+                    "Use the single-calendar booking endpoint for calendar-scoped codes."
+                )
 
-        # --- Step 4: pinned-duration message, ahead of dispatch. The guarantee
-        # itself is enforced independently inside can_perform_group_scheduling --
-        # this exists purely so the response names the pinned duration instead of
-        # the generic permission-denied message. ---
-        duration_error = pinned_duration_error(
-            token.calendar_group, data["start_time"], data["end_time"]
-        )
+            # --- path/token scope assertion -- the path <group_id> is a routing
+            # convenience only. A mismatch is 403 NOT_PERMITTED, never a 404: a
+            # 404 would confirm the code's real group to a caller probing a
+            # different id. This is the mirror image of the codeless branch
+            # above, where the path <group_id> IS the client's own input and a
+            # 404 is the correct, non-disclosing response for a nonexistent
+            # one -- do NOT "fix" one of these two to match the other.
+            if path_group_id != token.calendar_group_fk_id:
+                raise NotPermittedAPIException("This code is not scoped to this calendar group.")
+
+            group = token.calendar_group
+
+        # --- pinned-duration message, ahead of dispatch. The guarantee itself
+        # is enforced independently inside can_perform_group_scheduling -- this
+        # exists purely so the response names the pinned duration instead of
+        # the generic permission-denied message. Applies on BOTH branches: the
+        # pin lives on the CalendarGroup, not on the code, so a codeless
+        # booking is constrained by it exactly like a coded one -- a codeless
+        # booking presents no credential to carry a pin, but the group's own
+        # duration is not a property of the code. ---
+        duration_error = pinned_duration_error(group, data["start_time"], data["end_time"])
         if duration_error is not None:
             raise duration_error
 
-        # --- Step 5: extract client IP for audit ---
-        source_ip = client_ip_from_request(request)
-
-        # --- Step 6: build group event data -- group_id comes from the token, not
-        # from client input, to enforce scope. ---
+        # --- build group event data -- group_id comes from the token when one
+        # was resolved (to enforce scope), otherwise from the path (the
+        # codeless branch has no token to read it from). ---
         external_attendee = data["external_attendee"]
         group_event_data = CalendarGroupEventInputData(
-            group_id=token.calendar_group.id,
+            group_id=token.calendar_group.id if token is not None else path_group_id,
             title=data["title"],
             description=data.get("description", ""),
             start_time=data["start_time"],
@@ -366,22 +430,34 @@ class BookingCodeGroupEventViewSet(BookingCodeViewMixin, GenericViewSet):
             ],
         )
 
-        # --- Step 7: atomic create + consume ---
+        permission_denied_message = (
+            "This code does not permit booking on this calendar group."
+            if token is not None
+            else (
+                "This group does not accept public scheduling. "
+                "A token or scheduling code is required."
+            )
+        )
+
         # ``calendar_group_service`` is the DI container's own Factory-provided
         # instance, wired with its own (uninitialized) ``CalendarService`` and
         # ``CalendarPermissionService``. Explicitly wire in the code-initialized
         # ``calendar_service`` (and its ``calendar_permission_service``, which
-        # carries the resolved token) so the primary-calendar create and the
-        # group-level ``can_perform_group_scheduling`` gate both see the booking
-        # code -- without this the group service would authorize against an
-        # uninitialized permission service and deny every private-group booking.
-        # ``translate_booking_write_errors`` maps the exception vocabulary shared
-        # with the single-calendar viewset onto the booking-code API exceptions;
-        # ``CalendarGroup.DoesNotExist`` and ``CalendarGroupError`` are group-only
-        # and stay mapped here.
+        # carries the resolved token, when there is one) so the primary-calendar
+        # create and the group-level ``can_perform_group_scheduling`` gate both
+        # see the same auth context -- without this the group service would
+        # authorize against an uninitialized permission service and deny every
+        # private-group booking. On the codeless branch ``code`` stays ``None``,
+        # matching the GraphQL codeless mutation's own
+        # ``initialize_without_provider(organization=organization)`` call (no
+        # ``user_or_token``). ``translate_booking_write_errors`` maps the
+        # exception vocabulary shared with the single-calendar viewset onto the
+        # booking-code API exceptions; ``CalendarGroup.DoesNotExist``,
+        # ``CalendarGroupError``, and ``PermissionServiceInitializationError``
+        # are group-only and stay mapped here.
         try:
             with translate_booking_write_errors(
-                permission_denied_message="This code does not permit booking on this calendar group."
+                permission_denied_message=permission_denied_message
             ):
                 with transaction.atomic():
                     calendar_service.initialize_without_provider(
@@ -393,20 +469,39 @@ class BookingCodeGroupEventViewSet(BookingCodeViewMixin, GenericViewSet):
                     )
                     calendar_group_service.initialize(organization=org)
                     event = calendar_group_service.create_grouped_event(group_event_data)
-                    permission_service.consume_code(token, source_ip)
+                    # No code to consume on the codeless branch -- there is none.
+                    if token is not None:
+                        permission_service.consume_code(token, client_ip_from_request(request))
+        except PermissionServiceInitializationError as exc:
+            # Defensive: in practice the codeless group-level gate denies via a
+            # plain ``PermissionDenied`` (already mapped above), matching the
+            # GraphQL codeless mutation's own dominant failure mode. This stays
+            # mapped to the identical message for parity with GraphQL's own
+            # defensive ``except PermissionServiceInitializationError`` branch,
+            # in case a future change to the gate's internals raises this
+            # instead.
+            raise NotPermittedAPIException(
+                "This group does not accept public scheduling. "
+                "A token or scheduling code is required."
+            ) from exc
         except CalendarGroup.DoesNotExist as exc:
-            # Per the path/token scope rule above: never disclose whether a group
-            # id exists via a bare 404. This is effectively unreachable in
-            # practice -- the token's calendar_group FK is ON DELETE CASCADE, so a
-            # deleted group takes the token with it and code resolution above
-            # would already have failed as INVALID_CODE -- but the mapping stays
-            # defensive rather than leaking existence if that invariant ever
-            # changes.
+            if token is None:
+                # Codeless: group_id is the client's own path input, not a
+                # secret -- see the branch comment above. Do not map this to
+                # 403 to mirror the coded branch below.
+                raise NotFound("Calendar group not found.") from exc
+            # Coded: per the path/token scope rule above, never disclose
+            # whether a group id exists via a bare 404. This is effectively
+            # unreachable in practice -- the token's calendar_group FK is ON
+            # DELETE CASCADE, so a deleted group takes the token with it and
+            # code resolution above would already have failed as
+            # INVALID_CODE -- but the mapping stays defensive rather than
+            # leaking existence if that invariant ever changes.
             raise NotPermittedAPIException(
                 "This code is not scoped to a valid calendar group."
             ) from exc
         except CalendarGroupError as exc:
-            # Slot taken / invalid selection -- code NOT consumed (txn rolled
+            # Slot taken / invalid selection -- nothing consumed (txn rolled
             # back), patient may retry with a different slot.
             raise SlotUnavailableAPIException() from exc
         # create_grouped_event raises OverLimitError at the organization's postpaid

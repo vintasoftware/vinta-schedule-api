@@ -782,7 +782,9 @@ mutation CreateCalendarGroupEventWithCode($input: CreateGroupEventWithCodeInput!
 """
 
 
-def _group_with_one_slot(organization: Organization) -> tuple[object, object, Calendar]:
+def _group_with_one_slot(
+    organization: Organization, accepts_public_scheduling: bool = False
+) -> tuple[object, object, Calendar]:
     calendar = baker.make(
         Calendar,
         organization=organization,
@@ -790,7 +792,11 @@ def _group_with_one_slot(organization: Organization) -> tuple[object, object, Ca
         accepts_public_scheduling=False,
         external_id=f"group-code-cal-{organization.pk}",
     )
-    group = baker.make(CalendarGroup, organization=organization)
+    group = baker.make(
+        CalendarGroup,
+        organization=organization,
+        accepts_public_scheduling=accepts_public_scheduling,
+    )
     slot = CalendarGroupSlot.objects.create(
         organization=organization, group=group, name="Providers", order=0, required_count=1
     )
@@ -954,6 +960,49 @@ class TestBookingCodeRestGroupEventSurface:
             _rest_group_booking_payload(slot, calendar),
             format="json",
             headers=_rest_booking_headers(code),
+        )
+
+        assert response.status_code == status.HTTP_201_CREATED, response.content
+
+    # --------------------------------------------------------------------------
+    # Codeless (Phase 3): no X-Booking-Code header, authorized instead by the
+    # group's own accepts_public_scheduling flag. Reaches the exact same
+    # create_grouped_event -> create_event path, so it must meter identically.
+    # --------------------------------------------------------------------------
+
+    def test_codeless_blocked_at_the_allowance_returns_402(self):
+        organization, _subscription = _at_the_allowance_no_payment_method()
+        group, slot, calendar = _group_with_one_slot(organization, accepts_public_scheduling=True)
+
+        client = APIClient()
+        response = client.post(
+            reverse(
+                "calendar_booking_api:booking-calendar-group-events-list",
+                kwargs={"group_id": group.id},
+            ),
+            _rest_group_booking_payload(slot, calendar),
+            format="json",
+        )
+
+        assert response.status_code == status.HTTP_402_PAYMENT_REQUIRED
+        body = response.json()
+        assert body["resource"] == EVENT_OCCURRENCES
+        assert body["remedy"] == LimitRemedy.ADD_PAYMENT_METHOD
+        assert not CalendarEvent.original_manager.filter(calendar=calendar).exists()
+
+    def test_codeless_unlimited_plan_is_unchanged(self):
+        organization, subscription = _organization_with_postpaid_limit(None, BillingState.FREE)
+        _seed_metered_occurrences(organization, subscription, 1)
+        group, slot, calendar = _group_with_one_slot(organization, accepts_public_scheduling=True)
+
+        client = APIClient()
+        response = client.post(
+            reverse(
+                "calendar_booking_api:booking-calendar-group-events-list",
+                kwargs={"group_id": group.id},
+            ),
+            _rest_group_booking_payload(slot, calendar),
+            format="json",
         )
 
         assert response.status_code == status.HTTP_201_CREATED, response.content
