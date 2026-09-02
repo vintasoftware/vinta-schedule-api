@@ -476,3 +476,33 @@ class TestCancelEventWithCodeAtomicity:
         assert CalendarEvent.original_manager.filter(id=existing_event.id).exists(), (
             "Event was deleted despite the delete failure rolling back"
         )
+
+
+# ---------------------------------------------------------------------------
+# Scenario 7: "Not bound to a specific event" -- the 403 branch that no
+# wrong-permission fixture reaches (both existing wrong-permission fixtures
+# fail earlier, at the permission check inside resolve_and_authorize_write).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestCancelEventWithCodeNotBoundToEvent:
+    def test_code_without_event_binding_returns_not_permitted(
+        self, anon_client, permission_service, organization, calendar, existing_event
+    ):
+        """A code that carries CANCEL and a calendar_id, but no event_id,
+        passes the permission check inside ``resolve_and_authorize_write`` and
+        only then trips ``if token.event is None`` (booking_views.py ~L960)."""
+        _token, code = permission_service.create_booking_token(
+            organization_id=organization.id,
+            permissions=[EventManagementPermissions.CANCEL],
+            calendar_id=calendar.id,
+        )
+
+        response = _post(anon_client, code)
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+        body = response.json()
+        assert body["error_code"] == "NOT_PERMITTED"
+        assert body["detail"] == "This code is not bound to a specific event."
+        assert CalendarEvent.original_manager.filter(id=existing_event.id).exists()

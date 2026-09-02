@@ -726,7 +726,14 @@ def group_availability_windows(organization, primary_calendar, secondary_calenda
 
 
 @pytest.fixture
-def grouped_event(organization, group, primary_calendar, secondary_calendar):
+def grouped_event(
+    organization,
+    group,
+    primary_calendar,
+    secondary_calendar,
+    attendee_membership,
+    resource_calendar,
+):
     event = baker.make(
         CalendarEvent,
         organization=organization,
@@ -756,6 +763,18 @@ def grouped_event(organization, group, primary_calendar, secondary_calendar):
         organization=organization,
         event=event,
         external_attendee=external_attendee,
+    )
+    EventAttendance.objects.create(
+        organization=organization,
+        event=event,
+        membership_user_id=attendee_membership.id,
+    )
+    # See ``resource_calendar``'s own docstring for why it deliberately does
+    # NOT set ``calendar_type=CalendarType.RESOURCE``.
+    ResourceAllocation.objects.create(
+        organization=organization,
+        event_fk=event,
+        calendar_fk=resource_calendar,
     )
     return event
 
@@ -822,14 +841,21 @@ class TestRescheduleCalendarGroupEventWithCodeHappyPath:
             tzinfo=None
         )
 
-    def test_title_description_and_attendees_preserved(
+    def test_title_description_attendees_and_resource_allocations_preserved(
         self,
         anon_client,
         group_reschedule_own_code,
         organization,
         grouped_event,
+        attendee_membership,
+        resource_calendar,
         group_availability_windows,  # noqa: ARG002
     ):
+        """Group-endpoint counterpart of
+        ``TestRescheduleCalendarEventWithCodePreservedDetails``'s same-named
+        test -- also asserts internal ``EventAttendance`` and
+        ``ResourceAllocation`` survive byte-identical, not just title /
+        description / external attendee."""
         _token, code = group_reschedule_own_code
 
         response = _post(anon_client, GROUP_RESCHEDULE_URL_NAME, code, _reschedule_payload())
@@ -840,6 +866,14 @@ class TestRescheduleCalendarGroupEventWithCodeHappyPath:
         assert grouped_event.title == "Original Group Title"
         assert grouped_event.description == "Original group description."
 
+        attendances = list(
+            EventAttendance.objects.filter_by_organization(organization.id).filter(
+                event=grouped_event
+            )
+        )
+        assert len(attendances) == 1
+        assert attendances[0].membership_user_id == attendee_membership.id
+
         external_attendances = list(
             EventExternalAttendance.objects.filter_by_organization(organization.id)
             .select_related("external_attendee")
@@ -847,6 +881,14 @@ class TestRescheduleCalendarGroupEventWithCodeHappyPath:
         )
         assert len(external_attendances) == 1
         assert external_attendances[0].external_attendee.email == "patient@example.com"
+
+        resource_allocations = list(
+            ResourceAllocation.objects.filter_by_organization(organization.id).filter(
+                event=grouped_event
+            )
+        )
+        assert len(resource_allocations) == 1
+        assert resource_allocations[0].calendar_fk_id == resource_calendar.id
 
 
 @pytest.mark.django_db
@@ -914,3 +956,163 @@ class TestRescheduleCalendarGroupEventWithCodeLifecycleRejections:
 
         assert response.status_code == status.HTTP_410_GONE
         assert response.json()["error_code"] == "EXPIRED"
+
+
+# ---------------------------------------------------------------------------
+# "Not bound to a specific event" -- the 403 branch that no wrong-permission
+# fixture reaches (both existing wrong-permission fixtures fail earlier, at
+# the permission check inside resolve_and_authorize_write).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestRescheduleCalendarEventWithCodeNotBoundToEvent:
+    def test_code_without_event_binding_returns_not_permitted(
+        self,
+        anon_client,
+        permission_service,
+        organization,
+        calendar,
+        existing_event,
+    ):
+        """A code that carries RESCHEDULE and a calendar_id, but no event_id,
+        passes the permission check inside ``resolve_and_authorize_write`` and
+        only then trips ``if token.event is None`` (booking_views.py ~L636)."""
+        _token, code = permission_service.create_booking_token(
+            organization_id=organization.id,
+            permissions=[EventManagementPermissions.RESCHEDULE],
+            calendar_id=calendar.id,
+        )
+
+        response = _post(anon_client, RESCHEDULE_URL_NAME, code, _reschedule_payload())
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+        body = response.json()
+        assert body["error_code"] == "NOT_PERMITTED"
+        assert body["detail"] == "This code is not bound to a specific event."
+
+        existing_event.refresh_from_db()
+        assert existing_event.start_time_tz_unaware.replace(tzinfo=None) == ORIGINAL_START.replace(
+            tzinfo=None
+        )
+
+
+@pytest.mark.django_db
+class TestRescheduleCalendarGroupEventWithCodeNotBoundToEvent:
+    def test_code_without_event_binding_returns_not_permitted(
+        self,
+        anon_client,
+        permission_service,
+        organization,
+        group,
+        grouped_event,
+    ):
+        """Group-endpoint counterpart -- a code that carries RESCHEDULE and a
+        calendar_group_id, but no event_id, passes the permission check and
+        only then trips ``if token.event is None`` (booking_views.py ~L810)."""
+        _token, code = permission_service.create_booking_token(
+            organization_id=organization.id,
+            permissions=[EventManagementPermissions.RESCHEDULE],
+            calendar_group_id=group.id,
+        )
+
+        response = _post(anon_client, GROUP_RESCHEDULE_URL_NAME, code, _reschedule_payload())
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+        body = response.json()
+        assert body["error_code"] == "NOT_PERMITTED"
+        assert body["detail"] == "This code is not bound to a specific event."
+
+        grouped_event.refresh_from_db()
+        assert grouped_event.start_time_tz_unaware.replace(tzinfo=None) == ORIGINAL_START.replace(
+            tzinfo=None
+        )
+
+
+# ---------------------------------------------------------------------------
+# Pinned duration -- group endpoint. Ports
+# TestRescheduleCalendarEventWithCodePinnedDuration to the group path:
+# pinned_duration_error is called there too (booking_views.py ~L820).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestRescheduleCalendarGroupEventWithCodePinnedDuration:
+    def test_pin_refuses_wrong_span_even_when_event_currently_matches_it(
+        self,
+        anon_client,
+        permission_service,
+        organization,
+        group,
+        primary_calendar,
+    ):
+        """A 30-minute-pinned group code refuses a move to a 45-minute span,
+        EVEN THOUGH the event being moved is currently 45 minutes long -- the
+        pin constrains the target span, not the event's present one. The
+        refusal must not consume the code."""
+        event = baker.make(
+            CalendarEvent,
+            organization=organization,
+            calendar=primary_calendar,
+            calendar_group=group,
+            title="Currently 45 Minutes (Group)",
+            timezone="UTC",
+            start_time_tz_unaware=datetime.datetime(2030, 6, 1, 10, 0),
+            end_time_tz_unaware=datetime.datetime(2030, 6, 1, 10, 45),
+            external_id="",
+        )
+        token, code = permission_service.create_booking_token(
+            organization_id=organization.id,
+            permissions=[EventManagementPermissions.RESCHEDULE],
+            calendar_group_id=group.id,
+            event_id=event.id,
+            duration=datetime.timedelta(minutes=30),
+        )
+
+        # Move to a NEW 45-minute span -- same duration as the event's CURRENT
+        # span, but not the code's pinned 30 minutes.
+        payload = _reschedule_payload(
+            start_time=NEW_START.isoformat(),
+            end_time=(NEW_START + datetime.timedelta(minutes=45)).isoformat(),
+        )
+
+        response = _post(anon_client, GROUP_RESCHEDULE_URL_NAME, code, payload)
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+        body = response.json()
+        assert body["error_code"] == "NOT_PERMITTED"
+        assert "30 minute" in body["detail"]
+
+        token.refresh_from_db()
+        assert token.used_at is None
+
+        event.refresh_from_db()
+        assert event.start_time_tz_unaware.replace(tzinfo=None) == datetime.datetime(
+            2030, 6, 1, 10, 0
+        )
+
+    def test_pin_accepts_exact_span_move(
+        self,
+        anon_client,
+        permission_service,
+        organization,
+        group,
+        grouped_event,
+        group_availability_windows,  # noqa: ARG002
+    ):
+        token, code = permission_service.create_booking_token(
+            organization_id=organization.id,
+            permissions=[EventManagementPermissions.RESCHEDULE],
+            calendar_group_id=group.id,
+            event_id=grouped_event.id,
+            duration=datetime.timedelta(minutes=30),
+        )
+        payload = _reschedule_payload(
+            end_time=(NEW_START + datetime.timedelta(minutes=30)).isoformat()
+        )
+
+        response = _post(anon_client, GROUP_RESCHEDULE_URL_NAME, code, payload)
+
+        assert response.status_code == status.HTTP_201_CREATED, response.content
+        token.refresh_from_db()
+        assert token.used_at is not None

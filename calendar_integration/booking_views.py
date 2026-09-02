@@ -624,7 +624,10 @@ class BookingCodeRescheduleEventViewSet(BookingCodeViewMixin, GenericViewSet):
 
         # --- resolve the code, check permission, and resolve org ---
         token, code, org = resolve_and_authorize_write(
-            request, permission_service, EventManagementPermissions.RESCHEDULE
+            request,
+            permission_service,
+            EventManagementPermissions.RESCHEDULE,
+            permission_denied_message="This code does not permit rescheduling.",
         )
 
         # --- scope check -- must be bound to a specific event, and single-calendar
@@ -797,7 +800,10 @@ class BookingCodeRescheduleGroupEventViewSet(BookingCodeViewMixin, GenericViewSe
 
         # --- resolve the code, check permission, and resolve org ---
         token, code, org = resolve_and_authorize_write(
-            request, permission_service, EventManagementPermissions.RESCHEDULE
+            request,
+            permission_service,
+            EventManagementPermissions.RESCHEDULE,
+            permission_denied_message="This code does not permit rescheduling.",
         )
 
         # --- scope check -- must be bound to a specific event, and group-scoped
@@ -938,7 +944,10 @@ class BookingCodeCancelEventViewSet(BookingCodeViewMixin, GenericViewSet):
 
         # --- resolve the code, check permission, and resolve org ---
         token, code, org = resolve_and_authorize_write(
-            request, permission_service, EventManagementPermissions.CANCEL
+            request,
+            permission_service,
+            EventManagementPermissions.CANCEL,
+            permission_denied_message="This code does not permit cancellation.",
         )
 
         # --- scope check -- must be bound to a specific event. Dispatch below on

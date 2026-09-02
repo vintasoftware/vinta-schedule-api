@@ -216,6 +216,8 @@ def resolve_and_authorize_write(
     request: HttpRequest | Request,
     permission_service: CalendarPermissionService,
     required_permission: EventManagementPermissions,
+    *,
+    permission_denied_message: str = "This code does not permit booking.",
 ) -> tuple[CalendarManagementToken, str, Organization]:
     """Resolve the code, assert the permission, and resolve the organization.
 
@@ -225,7 +227,11 @@ def resolve_and_authorize_write(
     1. Resolve the code from the ``X-Booking-Code`` header (discriminated
        errors -- see ``resolve_booking_code_from_request``).
     2. Assert the resolved token carries ``required_permission``, else raise
-       ``NotPermittedAPIException``.
+       ``NotPermittedAPIException`` with ``permission_denied_message`` --
+       this differs per endpoint (create/reschedule/cancel), matching the
+       GraphQL originals' own per-mutation wording, so it is not hardcoded
+       here; see ``translate_booking_write_errors``'s own
+       ``permission_denied_message`` parameter for the same pattern.
     3. Resolve the ``Organization`` from ``token.organization_id`` -- a
        missing org raises ``InvalidCodeAPIException``, matching the
        pre-refactor behaviour.
@@ -242,7 +248,7 @@ def resolve_and_authorize_write(
 
     token_permissions = {p.permission for p in token.permissions.all()}
     if required_permission not in token_permissions:
-        raise NotPermittedAPIException("This code does not permit booking.")
+        raise NotPermittedAPIException(permission_denied_message)
 
     try:
         organization = Organization.objects.get(id=token.organization_id)
