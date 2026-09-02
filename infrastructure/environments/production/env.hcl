@@ -2,8 +2,12 @@
 locals {
   environment = "production"
 
-  # Scalr workspace backing this environment's state.
-  scalr_workspace = "VintaScheduleProduction"
+  # One Scalr workspace per stack folder -- state does not cross workspaces, so
+  # `storage` and `app` cannot share one. root.hcl looks the folder name up here.
+  scalr_workspaces = {
+    storage = "VintaScheduleProduction"
+    app     = "VintaScheduleProductionApp"
+  }
 
   aws_region = "us-east-1"
 
@@ -12,4 +16,7 @@ locals {
 
   # Role in the DNS account that Terraform assumes to write Route 53 records.
   dns_role_arn = "arn:aws:iam::310361226925:role/vinta-schedule-dns-deployer"
+
+  # Repository whose workflow runs may assume the ECS deploy role.
+  github_repository = "vintasoftware/vinta-schedule-api"
 }

@@ -9,6 +9,9 @@ requires-python = ">=3.14,<3.15"
 dependencies = [
     "Django>=6.0,<7",
     "celery>=5.5.2,<6",
+    # Celery's transport layer, pinned here only for the `sqs` extra: the deployed
+    # environments broker over Amazon SQS, which kombu reaches through boto3.
+    "kombu[sqs]>=5.5.0,<6",
     "celery-redbeat>=2.3.2,<3",
     "django-model-utils>=5.0.0,<6",
     "django-import-export>=4.3.7,<5",

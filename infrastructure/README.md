@@ -1,15 +1,11 @@
-# Infrastructure — S3 + CloudFront (Terragrunt + Scalr)
+# Infrastructure — AWS via Terragrunt + Scalr
 
-Provisions the storage layer the Django app needs in production:
+Two stacks per environment, each backed by its own Scalr workspace:
 
-- **media bucket** — private S3 bucket, served only through a CloudFront
-  distribution that **requires signed URLs** (django-storages signs them).
-- **static bucket** — private S3 bucket, served through a public CloudFront
-  distribution (no signing).
-- **IAM user + access key** — long-lived credentials the app uses to upload
-  objects (Render is not on AWS, so no instance role).
-- **CloudFront signing key pair** — RSA key; the private key goes into Render as
-  `AWS_CLOUDFRONT_KEY`, the public key id as `AWS_CLOUDFRONT_KEY_ID`.
+| Stack | Module | What it owns |
+|---|---|---|
+| `storage` | `modules/s3-cloudfront` | Media + static S3 buckets, their CloudFront distributions, the signed-URL key pair, and a long-lived IAM user (a leftover from the Render deploy — see [Storage IAM user](#storage-iam-user)). |
+| `app` | `modules/app-platform` | Everything the API itself runs on: VPC, ALB, ECS/Fargate services, RDS, ElastiCache, SQS, Secrets Manager, ECR, and the GitHub Actions deploy role. |
 
 State and runs are backed by [Scalr](https://scalr.io) via the Terraform
 Cloud/Enterprise-compatible `remote` backend.
@@ -18,55 +14,112 @@ Cloud/Enterprise-compatible `remote` backend.
 
 ```
 infrastructure/
-  root.hcl                             # root config: Scalr backend + AWS provider
-  modules/s3-cloudfront/               # the reusable module
+  root.hcl                             # Scalr backend + AWS providers (default + aws.dns)
+  modules/
+    s3-cloudfront/                     # buckets + CDN
+    app-platform/                      # the runtime platform
   environments/
     staging/
-      env.hcl                          # region + environment slug
-      storage/terragrunt.hcl           # staging storage stack
+      env.hcl                          # region, DNS role, workspace names
+      storage/terragrunt.hcl
+      app/terragrunt.hcl
     production/
-      env.hcl                          # region + environment slug
-      storage/terragrunt.hcl           # production storage stack (not applied yet)
+      env.hcl
+      storage/terragrunt.hcl           # not applied yet
+      app/terragrunt.hcl               # not applied yet
 ```
 
-> Only **staging** is applied for now. The production env files exist but are
-> left unapplied until production goes live.
+> Only **staging** is applied. The production files exist and are complete, but
+> read [Before applying production](#before-applying-production) first — one input
+> has to be filled in by hand.
+
+## Architecture
+
+```
+                       Route 53 (DNS account, cross-account role)
+                                    |
+                    api.schedule-staging.vintasoftware.com
+                                    |
+   internet ──▶ ALB (public subnets, ACM cert, 80 ⇒ 301 ⇒ 443)
+                                    |
+   ┌────────────────────── private subnets ──────────────────────┐
+   │  ECS Fargate                                                │
+   │    web      gunicorn, behind the ALB          (FARGATE)     │
+   │    worker   celery worker                     (FARGATE_SPOT)│
+   │    beat     celery beat / redbeat             (FARGATE_SPOT)│
+   │    release  migrate + collectstatic, run once per deploy    │
+   │                                                             │
+   │  RDS Postgres        ElastiCache (TLS + AUTH)               │
+   └──────────────────────────┬──────────────────────────────────┘
+                              │
+                     NAT gateway ──▶ Google / Microsoft / Stripe /
+                                     MercadoPago / Twilio / SES-SMTP
+```
+
+Nothing but the ALB has a public address. The ECS tasks reach the internet — and
+the AWS APIs they do not have a VPC endpoint for — through the NAT gateway. S3 has
+a free gateway endpoint, which matters more than it sounds: ECR keeps image layers
+in S3, so without it every task start would pull the whole image through NAT at
+per-GB rates.
+
+### Why SQS is the broker and ElastiCache is not
+
+Celery brokers over **SQS**; ElastiCache is only the result backend, redbeat's
+schedule store, and django-defender's throttle counter. Three consequences worth
+knowing, all handled in `settings/production.py`:
+
+- **`visibility_timeout` is the real task timeout.** `CELERY_TASK_ACKS_LATE` is on,
+  so a message is deleted only when its task finishes. If the timeout expires
+  first, SQS hands the same task to a second worker and it runs twice. The
+  Terraform variable `sqs_visibility_timeout_seconds` and the container's
+  `CELERY_SQS_VISIBILITY_TIMEOUT` are set from the same value for this reason.
+- **No remote control, no events.** SQS has no fanout exchange, so
+  `celery inspect`, `celery control` and flower have nothing to talk to. Both are
+  disabled explicitly; CloudWatch Logs is where you look instead.
+- **A poison task lands in the DLQ.** After `sqs_max_receive_count` deliveries the
+  message moves to `<name>-celery-dlq` rather than looping. Anything sitting there
+  is a task that failed repeatedly.
 
 ## One-time Scalr setup
 
 1. Create a Scalr **environment** (the value for `SCALR_ENVIRONMENT`).
-2. Create one Scalr workspace per environment. The name is read from each
-   `environments/<env>/env.hcl` (`scalr_workspace`), so it matches whatever you
-   named it in Scalr — current values:
-   - staging → `VintaScheduleStaging`
-   - production → `VintaScheduleProduction`
+2. Create one Scalr workspace **per stack**, not per environment — state does not
+   cross workspaces. The names are read from `environments/<env>/env.hcl`
+   (`scalr_workspaces`), so they match whatever you named them in Scalr:
+
+   | Environment | Stack | Workspace |
+   |---|---|---|
+   | staging | storage | `VintaScheduleStaging` |
+   | staging | app | `VintaScheduleStagingApp` |
+   | production | storage | `VintaScheduleProduction` |
+   | production | app | `VintaScheduleProductionApp` |
 
    Backend type **CLI / Terragrunt**.
-3. Set each workspace's **Working Directory** to the stack folder (the one with
-   a `terragrunt.hcl`), NOT the env folder (which only holds `env.hcl`):
-   - staging → `infrastructure/environments/staging/storage`
-   - production → `infrastructure/environments/production/storage`
+3. Set each workspace's **Working Directory** to its stack folder (the one with a
+   `terragrunt.hcl`), NOT the env folder (which only holds `env.hcl`):
+   - `infrastructure/environments/staging/storage`
+   - `infrastructure/environments/staging/app`
+   - …and the production pair.
 4. Configure variables (next section).
 
 ## Variables to configure in Scalr
 
-The module inputs (`project_name`, `environment`, `aws_region`,
-`cors_allowed_origins`, ...) come from the Terragrunt `inputs` block and are
-injected as `TF_VAR_*` — so there are **no Terraform variables to set in
-Scalr**. Scalr only needs **AWS credentials**, set as **shell (environment)
-variables** on the workspace (or environment):
+Module inputs come from the Terragrunt `inputs` block and are injected as
+`TF_VAR_*`, so there are **no Terraform variables to set in Scalr**. Scalr only
+needs **AWS credentials**, as **shell (environment) variables** on the workspace
+(or environment):
 
 | Variable | Value | Sensitive |
 |---|---|---|
 | `AWS_ACCESS_KEY_ID` | deployer access key | yes |
 | `AWS_SECRET_ACCESS_KEY` | deployer secret | yes |
-| `AWS_DEFAULT_REGION` | `us-east-1` (optional; provider already sets region) | no |
+| `AWS_DEFAULT_REGION` | `us-east-1` (optional; the provider already sets region) | no |
 
-- The **deployer** is an admin/CI IAM principal — **not** the app IAM user this
-  stack creates. Its policy must allow `s3:*`, `cloudfront:*`, and the `iam:`
-  actions to create a user + access key + inline policy
-  (`CreateUser`, `CreateAccessKey`, `PutUserPolicy`, plus their Get/Delete/List
-  counterparts).
+- The **deployer** is an admin/CI IAM principal. The `app` stack needs a wide
+  policy: `ec2:*` (VPC, subnets, NAT, security groups), `ecs:*`, `elasticloadbalancing:*`,
+  `rds:*`, `elasticache:*`, `sqs:*`, `secretsmanager:*`, `ecr:*`, `logs:*`,
+  `ssm:*`, `acm:*`, and the `iam:` actions to create roles, policies and an OIDC
+  provider.
 - **Preferred over static keys:** attach a Scalr **Provider Configuration** for
   AWS (OIDC / role delegation) to the environment — no long-lived keys stored.
 
@@ -85,10 +138,10 @@ shell / CI, never committed):
 
 ## Cross-account DNS (Route 53)
 
-`vintasoftware.com` lives in a **different AWS account** than the buckets /
-CloudFront. The ACM cert + CloudFront are created in the deploy account; the
-Route 53 records (ACM validation + the alias records) are written via an
-**aliased `aws.dns` provider that assumes a role in the DNS account**
+`vintasoftware.com` lives in a **different AWS account** than the buckets,
+CloudFront and the ALB. ACM certs and load balancers are created in the deploy
+account; the Route 53 records (ACM validation + the alias records) are written via
+an **aliased `aws.dns` provider that assumes a role in the DNS account**
 (`dns_role_arn` in each `env.hcl`).
 
 Set up once:
@@ -98,7 +151,7 @@ Set up once:
 
    ```bash
 DNS_ROLE=vinta-schedule-dns-deployer
-DEPLOY_ACCOUNT_ID=261390480437   # account with the buckets/CloudFront + deployer
+DEPLOY_ACCOUNT_ID=261390480437   # account with the buckets/CloudFront/ALB + deployer
 ZONE_ID=Z2BH7RSHN2OFNV           # vintasoftware.com zone, in DNS account 310361226925
 
 aws iam create-role --role-name "$DNS_ROLE" \
@@ -146,11 +199,17 @@ export SCALR_HOSTNAME=example.scalr.io
 export SCALR_ENVIRONMENT=<your-scalr-environment>
 terraform login "$SCALR_HOSTNAME"        # stores the API token
 
-cd infrastructure/environments/staging/storage
+cd infrastructure/environments/staging/app
 terragrunt init
 terragrunt plan
 terragrunt apply
 ```
+
+Apply `storage` before `app` the first time. The two stacks share no Terraform
+state, but the `app` stack's task role grants S3 access to bucket names it derives
+the same way `storage` builds them (`<project>-<env>-media` / `-static`), so a
+`storage` stack applied with non-default bucket names needs
+`media_bucket_name` / `static_bucket_name` passed to `app` as well.
 
 ### Provider lock files must cover every platform
 
@@ -164,7 +223,7 @@ After any provider version change, re-lock for all platforms and commit the
 result:
 
 ```bash
-cd infrastructure/environments/staging/storage
+cd infrastructure/environments/staging/app
 # `run --` passes the flags through; terragrunt would otherwise reject -platform.
 terragrunt run -- providers lock \
   -platform=linux_amd64 \
@@ -172,30 +231,153 @@ terragrunt run -- providers lock \
   -platform=darwin_amd64
 ```
 
-## Wire outputs into Render
+## After the first apply
 
-The `aws-storage` env var group in `render.yaml` has these as `sync: false`
-(set manually in the Render dashboard). Pull each value:
+> **The services will be unhealthy until the first deploy, and that is expected.**
+> The task definitions point at `<ecr-repo>:latest`, and the repository is empty
+> until GitHub Actions pushes an image. ECS will keep failing to pull, the
+> deployment circuit breaker will keep rolling back, and the first successful
+> deploy fixes it. Do steps 1 and 2 below, then push to `main`.
+
+### 1. Fill in the app secret
+
+The stack creates **one** Secrets Manager secret holding every credential the
+containers read, as a flat JSON object. Terraform seeds it once — it knows
+`DATABASE_URL` and `REDIS_URL`, and generates `SECRET_KEY` and `SALT_KEY` — then
+stops managing the value (`ignore_changes`), so operators own it from then on.
+
+Everything else is seeded **empty** and has to be filled in before the app is
+usable. Keys awaiting a value:
+
+`SENTRY_DSN`, `SMTP_HOST`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `GOOGLE_CLIENT_ID`,
+`GOOGLE_CLIENT_SECRET`, `TWILIO_ACCOUNT_SID`, `TWILIO_API_KEY_SID`,
+`TWILIO_API_KEY_SECRET`, `TWILIO_AUTH_TOKEN`, `TWILIO_NUMBER`,
+`TWILIO_DEFAULT_BROADCAST_NUMBERS`, `MERCADOPAGO_ACCESS_TOKEN`,
+`MERCADOPAGO_WEBHOOK_SECRET`, `MERCADOPAGO_PUBLIC_KEY`, `STRIPE_SECRET_KEY`,
+`STRIPE_WEBHOOK_SECRET`, `STRIPE_PUBLISHABLE_KEY`, `AWS_CLOUDFRONT_KEY_ID`,
+`AWS_CLOUDFRONT_KEY`.
+
+The last two come from the `storage` stack:
 
 ```bash
-terragrunt output media_bucket_name        # -> AWS_MEDIA_BUCKET_NAME
-terragrunt output static_bucket_name       # -> AWS_STATIC_BUCKET_NAME
-terragrunt output media_custom_domain      # -> AWS_MEDIA_S3_CUSTOM_DOMAIN
-terragrunt output static_custom_domain     # -> AWS_STATIC_S3_CUSTOM_DOMAIN
-terragrunt output cloudfront_key_id        # -> AWS_CLOUDFRONT_KEY_ID
-terragrunt output aws_access_key_id        # -> AWS_ACCESS_KEY_ID
-
-terragrunt output -raw cloudfront_private_key  # -> AWS_CLOUDFRONT_KEY (full PEM)
-terragrunt output -raw aws_secret_access_key   # -> AWS_SECRET_ACCESS_KEY
+cd infrastructure/environments/staging/storage
+terragrunt output cloudfront_key_id             # -> AWS_CLOUDFRONT_KEY_ID
+terragrunt output -raw cloudfront_private_key   # -> AWS_CLOUDFRONT_KEY (full PEM)
 ```
 
-`AWS_MEDIA_S3_ENDPOINT_URL` and the `AWS_*_REGION` vars are already set to
-`us-east-1` in `render.yaml`; change them there if you move the region.
+Edit the secret in the console (Secrets Manager → the secret named by
+`terragrunt output app_secret_name` → *Retrieve/Edit*), or from the CLI:
+
+```bash
+aws secretsmanager get-secret-value --secret-id vinta-schedule-staging/app \
+  --query SecretString --output text > /tmp/app-secret.json
+# edit /tmp/app-secret.json, then:
+aws secretsmanager put-secret-value --secret-id vinta-schedule-staging/app \
+  --secret-string file:///tmp/app-secret.json
+```
+
+ECS reads the secret when a task **starts**, so a changed value reaches the app
+only on the next deploy or `aws ecs update-service --force-new-deployment`.
+
+> **`DATABASE_URL` and `REDIS_URL` do not auto-update.** Because Terraform stops
+> managing the value, a restored database or rebuilt cache means pasting the new
+> URL in by hand — `terragrunt output database_url` / `redis_url` print them.
+
+### 2. Point GitHub Actions at the deploy role
+
+```bash
+terragrunt output github_deploy_role_arn
+```
+
+Set it as the repository **variable** (not secret) `AWS_DEPLOY_ROLE_ARN_STAGING`
+under Settings → Secrets and variables → Actions → Variables. The workflow's
+`deploy-staging` job assumes it over OIDC — no access keys anywhere.
+
+The role's trust policy pins `repo:<owner>/<repo>:ref:refs/heads/main`, so a
+workflow run from a fork or a feature branch cannot assume it. Nothing else is
+needed: cluster names, service names, subnets and security groups all come from
+the SSM parameter the stack writes.
+
+### 3. Verify
+
+```bash
+curl -i https://api.schedule-staging.vintasoftware.com/healthz/
+```
+
+## Day-to-day operations
+
+**A shell in a running task** (the only way into the private subnets without a
+bastion — `enable_execute_command` is on for every service):
+
+```bash
+aws ecs execute-command --cluster vinta-schedule-staging \
+  --task "$(aws ecs list-tasks --cluster vinta-schedule-staging \
+             --service-name vinta-schedule-staging-web \
+             --query 'taskArns[0]' --output text)" \
+  --container web --interactive --command "/bin/bash"
+# then: python manage.py shell   /   python manage.py dbshell
+```
+
+**Logs:** `/ecs/vinta-schedule-staging/{web,worker,beat,release}` in CloudWatch.
+
+**Roll back to a previous image:** re-run the deploy workflow on the older commit,
+or point the services at an earlier task-definition revision:
+
+```bash
+aws ecs update-service --cluster vinta-schedule-staging \
+  --service vinta-schedule-staging-web --task-definition vinta-schedule-staging-web:42
+```
+
+**Inspect the dead-letter queue:** `terragrunt output celery_dlq_url`, then
+`aws sqs receive-message --queue-url <url>`.
+
+## Before applying production
+
+1. **`github_oidc_provider_arn` must be filled in.** An AWS account holds exactly
+   one GitHub OIDC provider, and staging already creates it. Copy
+   `terragrunt output github_oidc_provider_arn` from the staging `app` stack into
+   `environments/production/app/terragrunt.hcl`, or the apply fails on a duplicate.
+2. Apply `environments/production/storage` first (it has never been applied).
+3. Add a `deploy-production` job to `.github/workflows/main.yml`, pointed at
+   `/vinta-schedule/production/deploy` and a `AWS_DEPLOY_ROLE_ARN_PRODUCTION`
+   variable. It is deliberately absent today: pushing to `main` should not deploy
+   production without a gate (a GitHub environment with required reviewers, or a
+   tag trigger) that is a decision for whoever turns production on.
+4. Fill in the production app secret, as in step 1 above.
+
+## Cost notes
+
+The knobs that actually move the bill, roughly largest first:
+
+| Thing | Lever | Note |
+|---|---|---|
+| NAT gateway | `single_nat_gateway` | ~$32/mo + data. One is the default; the second would only buy AZ redundancy for *outbound* traffic. |
+| RDS | `db_instance_class`, `db_multi_az` | `db.t4g.micro`, single-AZ on staging. Multi-AZ doubles it. |
+| Fargate | `*_cpu` / `*_memory` / `*_desired_count` | Worker and beat run on `FARGATE_SPOT` (`use_fargate_spot_for_workers`, ~30% cheaper); web stays on-demand. |
+| ElastiCache | `cache_node_type`, `cache_node_count` | `cache.t4g.micro`, one node. `cache_engine` defaults to `valkey`, which AWS prices below Redis OSS. |
+| ALB | — | Fixed hourly charge; unavoidable for a public HTTPS endpoint. |
+| CloudWatch Logs | `log_retention_days` | 14 days. |
+| SQS | — | Effectively free at this volume; long polling (`receive_wait_time_seconds = 20`) keeps idle workers from billing a request per second. |
+
+Interface VPC endpoints for ECR/Logs/SQS/Secrets Manager are deliberately *not*
+created: at ~$7/month each per AZ they cost more than the NAT data they'd save at
+this traffic level.
+
+## Storage IAM user
+
+`modules/s3-cloudfront` still creates an IAM user and access key. It exists
+because Render was not on AWS and needed static credentials. **The ECS tasks do
+not use it** — they get S3 access from their task role, and no
+`AWS_ACCESS_KEY_ID` is set anywhere in the task definitions precisely so boto3
+resolves that role instead. The user can be removed from the storage module once
+nothing else depends on those keys.
 
 ## Notes
 
-- The signing key pair lives in Terraform state — keep the Scalr state secured.
-  Rotating it means re-issuing `AWS_CLOUDFRONT_KEY` / `AWS_CLOUDFRONT_KEY_ID`.
-- `cors_allowed_origins` defaults to the production frontend; widen it only if
-  another origin needs direct uploads.
-- Reuse the module for staging: add `environments/staging/{env.hcl,storage/}`.
+- The CloudFront signing key pair, the database password, the cache AUTH token and
+  the generated `SECRET_KEY` / `SALT_KEY` all live in Terraform state — keep the
+  Scalr state secured. Rotating `SALT_KEY` makes every already-encrypted field
+  unreadable.
+- `cors_allowed_origins` on the storage stack governs direct browser uploads;
+  `cors_allowed_origins` on the app stack governs the API's own CORS headers.
+  They are separate inputs on purpose.

@@ -359,7 +359,13 @@ CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TASK_ACKS_LATE = True
 CELERY_TIMEZONE = TIME_ZONE
-CELERY_BROKER_TRANSPORT_OPTIONS = {"confirm_publish": True, "confirm_timeout": 5.0}
+# `dict[str, Any]`, not an inferred type: each broker takes a different set of
+# options with unrelated value types -- the deployed environments replace these
+# two entirely with the SQS ones (see settings/production.py).
+CELERY_BROKER_TRANSPORT_OPTIONS: dict[str, Any] = {
+    "confirm_publish": True,
+    "confirm_timeout": 5.0,
+}
 CELERY_BROKER_POOL_LIMIT = config("CELERY_BROKER_POOL_LIMIT", cast=int, default=1)
 CELERY_BROKER_CONNECTION_TIMEOUT = config(
     "CELERY_BROKER_CONNECTION_TIMEOUT", cast=float, default=30.0
@@ -380,13 +386,23 @@ CELERY_WORKER_CONCURRENCY = config(
 CELERY_WORKER_MAX_TASKS_PER_CHILD = config(
     "CELERY_WORKER_MAX_TASKS_PER_CHILD", cast=int, default=1000
 )
+# KB; 0 disables the check. Retires a prefork child once it grows past this, which
+# is what keeps a slow leak from taking the whole container down with it -- on
+# Fargate an out-of-memory task is killed and restarted, losing every sibling
+# child's in-flight work, whereas retiring one child costs nothing.
+CELERY_WORKER_MAX_MEMORY_PER_CHILD = config(
+    "CELERY_WORKER_MAX_MEMORY_PER_CHILD", cast=int, default=0
+)
 CELERY_WORKER_SEND_TASK_EVENTS = config("CELERY_WORKER_SEND_TASK_EVENTS", cast=bool, default=True)
 CELERY_EVENT_QUEUE_EXPIRES = config("CELERY_EVENT_QUEUE_EXPIRES", cast=float, default=60.0)
 CELERY_EVENT_QUEUE_TTL = config("CELERY_EVENT_QUEUE_TTL", cast=float, default=5.0)
 
 # Sentry
 SENTRY_DSN = config("SENTRY_DSN", default="")
-COMMIT_SHA = config("RENDER_GIT_COMMIT", default="")
+# Release identifier reported to Sentry, so a stack trace names the deploy it
+# came from. The deploy sets it to the commit SHA the image was built from --
+# the same value that tags the image in ECR.
+COMMIT_SHA = config("COMMIT_SHA", default="")
 
 # Fix for Safari 12 compatibility issues, please check:
 # https://github.com/vintasoftware/safari-samesite-cookie-issue

@@ -230,27 +230,73 @@ jobs:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
   deploy-staging:
-    name: Deploy staging (Render)
+    name: Deploy staging (ECS)
     needs: [checks, test]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    # `id-token` is what lets this job exchange a GitHub OIDC token for the AWS
+    # deploy role -- no access keys are stored anywhere in the repository. The role
+    # itself only trusts this repo on this ref (see modules/app-platform/iam.tf).
+    permissions:
+      id-token: write
+      contents: read
+    concurrency:
+      # Two deploys rolling the same services at once leaves ECS arbitrating
+      # between revisions. Queue them instead, and never cancel one mid-migration.
+      group: deploy-staging
+      cancel-in-progress: false
+    env:
+      AWS_REGION: us-east-1
+      # Written by the app-platform Terraform stack; holds the cluster, service
+      # names, task-definition families, subnets and security groups.
+      DEPLOY_PARAMETER: /vinta-schedule/staging/deploy
     steps:
-      - name: Trigger Render deploy hooks
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN_STAGING }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # The repository URL comes from the same SSM parameter the deploy script
+      # reads, so the image location has exactly one source of truth: Terraform.
+      - name: Resolve deploy target
+        id: target
         run: |
-          deploy() {
-            local name="$1" url="$2"
-            if [ -z "$url" ]; then
-              echo "::error::$name secret is not set"; return 1
-            fi
-            echo "Triggering $name"
-            curl -fsSL -X POST "$url"
-          }
-          rc=0
-          deploy "RENDER_DEPLOY_HOOK_URL (web)" "$RENDER_DEPLOY_HOOK_URL" || rc=1
-          deploy "RENDER_DEPLOY_HOOK_URL_WORKER" "$RENDER_DEPLOY_HOOK_URL_WORKER" || rc=1
-          deploy "RENDER_DEPLOY_HOOK_URL_BEAT" "$RENDER_DEPLOY_HOOK_URL_BEAT" || rc=1
-          exit $rc
-        env:
-          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
-          RENDER_DEPLOY_HOOK_URL_WORKER: ${{ secrets.RENDER_DEPLOY_HOOK_URL_WORKER }}
-          RENDER_DEPLOY_HOOK_URL_BEAT: ${{ secrets.RENDER_DEPLOY_HOOK_URL_BEAT }}
+          repo=$(aws ssm get-parameter --name "$DEPLOY_PARAMETER" \
+            --query 'Parameter.Value' --output text | jq -r '.ecr_repository_url')
+          echo "image=${repo}:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          echo "latest=${repo}:latest" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          # Two tags for one image: the SHA is what the deploy pins and what a
+          # rollback names, `latest` is what a hand-run `ecs run-task` picks up.
+          tags: |
+            ${{ steps.target.outputs.image }}
+            ${{ steps.target.outputs.latest }}
+          # GitHub's own layer cache. The expensive layer is `uv sync`, which only
+          # changes when uv.lock does, so most deploys reuse it.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # Without this, buildx pushes an OCI image index with an attestation
+          # manifest attached -- which ECS Fargate cannot pull.
+          provenance: false
+
+      - name: Migrate and roll out
+        run: |
+          ./scripts/deploy/ecs_deploy.sh \
+            "$DEPLOY_PARAMETER" \
+            "${{ steps.target.outputs.image }}" \
+            "${{ github.sha }}"

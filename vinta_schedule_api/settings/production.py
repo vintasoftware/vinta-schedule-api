@@ -1,3 +1,7 @@
+import json
+import logging
+import urllib.request
+
 import sentry_sdk
 from decouple import Csv, config  # type: ignore
 from django_guid.integrations import SentryIntegration as DjangoGUIDSentryIntegration
@@ -13,6 +17,29 @@ SECRET_KEY = config("SECRET_KEY")
 DATABASES["default"]["ATOMIC_REQUESTS"] = True
 
 ALLOWED_HOSTS = config("ALLOWED_HOSTS", cast=Csv())
+
+# On ECS the load balancer health-checks a task by its private IP, so that IP
+# arrives as the Host header -- and Django answers 400 for a host it does not
+# know, which means the target never turns healthy and the service rolls back.
+# Each container therefore adds the address ECS assigned it, read from the task
+# metadata endpoint. This keeps ALLOWED_HOSTS as the real domains instead of the
+# "*" that would otherwise be the only way to make health checks pass.
+_ecs_metadata_uri = config("ECS_CONTAINER_METADATA_URI_V4", default="")
+if _ecs_metadata_uri:
+    try:
+        with urllib.request.urlopen(_ecs_metadata_uri, timeout=2) as _metadata_response:  # noqa: S310
+            _container_metadata = json.load(_metadata_response)
+    except Exception:  # noqa: BLE001 -- a metadata hiccup must not stop the container booting
+        logging.getLogger(__name__).warning(
+            "ECS task metadata unreachable; ALLOWED_HOSTS left as configured. "
+            "Load balancer health checks will fail until it responds."
+        )
+    else:
+        ALLOWED_HOSTS += [
+            address
+            for network in _container_metadata.get("Networks", [])
+            for address in network.get("IPv4Addresses", [])
+        ]
 
 STATIC_ROOT = base_dir_join("staticfiles")
 STATIC_URL = "/static/"
@@ -32,6 +59,10 @@ EMAIL_USE_TLS = True
 SECURE_HSTS_PRELOAD = True
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 SECURE_SSL_REDIRECT = True
+# The load balancer health-checks over plain HTTP, and a 301 counts as unhealthy.
+# Exempting the one infrastructure path costs nothing: it returns a constant and
+# reads no cookie or credential.
+SECURE_REDIRECT_EXEMPT = [r"^healthz/$"]
 SESSION_COOKIE_SECURE = True
 CSRF_COOKIE_SECURE = True
 SECURE_HSTS_SECONDS = config("SECURE_HSTS_SECONDS", default=3600, cast=int)
@@ -41,15 +72,56 @@ SECURE_CONTENT_TYPE_NOSNIFF = True
 SECURE_BROWSER_XSS_FILTER = True
 X_FRAME_OPTIONS = "DENY"
 
+AWS_REGION = config("AWS_REGION", default="us-east-1")
+
 # Celery
 # Recommended settings for reliability: https://gist.github.com/fjsj/da41321ac96cf28a96235cb20e7236f6
-# Broker: prefer RABBITMQ_URL when provided; otherwise fall back to Redis as the
-# broker (Render has no managed RabbitMQ, and Redis is already provisioned).
-CELERY_BROKER_URL = config("RABBITMQ_URL", default="") or REDIS_URL
+# Broker precedence: an explicit CELERY_BROKER_URL first -- on AWS that is the
+# bare `sqs://`, deliberately without credentials so kombu falls through to
+# boto3's default chain and picks up the ECS task role -- then RabbitMQ, then
+# Redis for setups that have neither.
+CELERY_BROKER_URL = (
+    config("CELERY_BROKER_URL", default="") or config("RABBITMQ_URL", default="") or REDIS_URL
+)
 # Redis result backend is optional; when REDIS_URL is unset, task results are
 # simply not stored (the broker still drives task execution).
 CELERY_RESULT_BACKEND = config("REDIS_URL", default="") or None
 CELERY_SEND_TASK_ERROR_EMAILS = True
+
+if CELERY_BROKER_URL.startswith("sqs://"):
+    # SQS is a queue service, not an AMQP broker, and three of celery's defaults
+    # assume things it cannot do.
+    CELERY_TASK_DEFAULT_QUEUE = config("CELERY_TASK_DEFAULT_QUEUE", default="celery")
+
+    # Replaces the base settings' `confirm_publish`, which is a Redis/RabbitMQ
+    # publisher option that means nothing here.
+    CELERY_BROKER_TRANSPORT_OPTIONS = {
+        "region": AWS_REGION,
+        # Has to match the queue's own visibility timeout. CELERY_TASK_ACKS_LATE is
+        # on, so a message is only deleted once its task finishes -- if the timeout
+        # expires first, SQS hands the same task to a second worker and it runs twice.
+        "visibility_timeout": config("CELERY_SQS_VISIBILITY_TIMEOUT", cast=int, default=900),
+        "polling_interval": config("CELERY_SQS_POLLING_INTERVAL", cast=float, default=1.0),
+        # Long polling: an idle worker waits for work inside one API call instead of
+        # billing a call per second to be told there is none.
+        "wait_time_seconds": config("CELERY_SQS_WAIT_TIME_SECONDS", cast=int, default=20),
+    }
+
+    _celery_sqs_queue_url = config("CELERY_SQS_QUEUE_URL", default="")
+    if _celery_sqs_queue_url:
+        # Naming the queue's URL up front is what lets the task role carry only the
+        # message actions on that one queue: without it kombu calls ListQueues and
+        # CreateQueue to discover the URL itself.
+        CELERY_BROKER_TRANSPORT_OPTIONS["predefined_queues"] = {
+            CELERY_TASK_DEFAULT_QUEUE: {"url": _celery_sqs_queue_url}
+        }
+
+    # SQS has no fanout exchange, so celery's control channel and event stream have
+    # nowhere to publish. Left enabled, the worker retries a broadcast queue it can
+    # never create; the cost of disabling them is that `celery inspect` and flower
+    # go quiet -- CloudWatch Logs is the replacement.
+    CELERY_WORKER_ENABLE_REMOTE_CONTROL = False
+    CELERY_WORKER_SEND_TASK_EVENTS = False
 
 # Redbeat — distributed beat scheduler. Holds a Redis lock so overlapping beat
 # instances (e.g. during a rolling deploy) never double-emit scheduled tasks.
@@ -64,8 +136,6 @@ if REDBEAT_REDIS_URL:
     CELERY_BEAT_SCHEDULER = "redbeat.RedBeatScheduler"
     CELERY_REDBEAT_REDIS_URL = REDBEAT_REDIS_URL
 
-
-AWS_REGION = config("AWS_REGION", default="us-east-1")
 
 # Static storage
 AWS_STATIC_BUCKET_NAME = config("AWS_STATIC_BUCKET_NAME")

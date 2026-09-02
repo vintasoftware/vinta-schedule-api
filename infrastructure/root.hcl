@@ -14,9 +14,13 @@ locals {
   scalr_hostname    = get_env("SCALR_HOSTNAME", "vinta.scalr.io")
   scalr_environment = get_env("SCALR_ENVIRONMENT", "VintaSchedule")
 
-  # Workspace name is taken from the including environment's env.hcl, so it can
-  # match whatever you named the workspace in Scalr.
   env = read_terragrunt_config(find_in_parent_folders("env.hcl"))
+
+  # State is per workspace, so each stack folder needs its own. The folder name
+  # (`storage`, `app`) is the key; `env.hcl` maps it to whatever the workspace was
+  # actually named in Scalr, since the names predate this lookup.
+  stack           = basename(get_terragrunt_dir())
+  scalr_workspace = local.env.locals.scalr_workspaces[local.stack]
 }
 
 # The `remote` backend needs `workspaces` as a BLOCK, not an argument —
@@ -32,7 +36,7 @@ generate "backend" {
         organization = "${local.scalr_environment}"
 
         workspaces {
-          name = "${local.env.locals.scalr_workspace}"
+          name = "${local.scalr_workspace}"
         }
       }
     }
@@ -49,8 +53,9 @@ generate "provider" {
 
       default_tags {
         tags = {
-          Project   = "${local.project}"
-          ManagedBy = "terragrunt"
+          Project     = "${local.project}"
+          Environment = "${local.env.locals.environment}"
+          ManagedBy   = "terragrunt"
         }
       }
     }
