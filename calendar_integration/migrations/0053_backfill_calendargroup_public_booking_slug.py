@@ -37,29 +37,29 @@ helper module's own docstring for the full detail.
 
 Reverse
 -------
-Clears every ``public_booking_slug`` back to ``NULL``. Safe at this point in
-the chain because the column is still nullable (0054, which makes it
-``NOT NULL``, has not applied yet when this migration's reverse runs -- and
-if it has, that migration is reversed first by the normal migration-graph
-order before this one's reverse ever runs).
+``RunPython.noop`` -- deliberately NOT "clear every slug back to NULL".
+``public_booking_slug`` is handed out in public, unauthenticated booking
+links; NULLing every row here would permanently invalidate every link
+already distributed to a patient, and a subsequent forward re-apply of this
+migration mints *brand-new*, unrelated slugs rather than restoring the old
+ones -- the data loss would be unrecoverable. It also buys nothing: a full
+reverse past this point continues on to ``0052``'s ``RemoveField``, which
+drops the ``public_booking_slug`` column outright regardless of what value
+this step leaves behind. See
+``calendar_integration/migrations/_0053_backfill_helpers.py``'s "No reverse
+helper" section for the fuller version of this reasoning.
 """
 
 from django.db import migrations
 
 from calendar_integration.migrations._0053_backfill_helpers import (
     backfill_public_booking_slugs,
-    reverse_backfill_public_booking_slugs,
 )
 
 
 def apply_backfill(apps, schema_editor) -> None:
     """Delegate to the importable, test-covered helper. See module docstring."""
     backfill_public_booking_slugs()
-
-
-def reverse_apply_backfill(apps, schema_editor) -> None:
-    """Clear every slug back to NULL. See module docstring's Reverse section."""
-    reverse_backfill_public_booking_slugs()
 
 
 class Migration(migrations.Migration):
@@ -74,6 +74,6 @@ class Migration(migrations.Migration):
     operations = [
         migrations.RunPython(
             apply_backfill,
-            reverse_code=reverse_apply_backfill,
+            reverse_code=migrations.RunPython.noop,
         ),
     ]

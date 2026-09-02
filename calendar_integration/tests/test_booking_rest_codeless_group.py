@@ -16,8 +16,11 @@ primary key Phase 3 originally used. Phase 3's integer-keyed route was a
 cross-tenant enumeration oracle: with no ``organization_id`` anywhere in this
 surface's paths, an anonymous caller could walk ``group_id`` 1..N and learn,
 from the 404/403/201 split, which groups exist in ANY organization and which
-accept public scheduling. ``TestIntegerKeyedRouteNoLongerResolves`` below
-proves that oracle is gone, not merely harder to exploit.
+accept public scheduling. ``TestIntegerKeyedRouteNoLongerResolvesAGroup``
+below proves that oracle is gone, not merely harder to exploit -- an integer
+path segment still matches the route (digits are inside the slug charset
+``[-a-zA-Z0-9_]+``) and reaches the view, it just never resolves to a group
+anymore.
 """
 
 import datetime
@@ -396,13 +399,20 @@ class TestCodelessGroupEventMissingGroup:
 
         assert response.status_code == status.HTTP_404_NOT_FOUND
 
-    def test_malformed_slug_is_indistinguishable_from_a_nonexistent_one(self, anon_client):
+    def test_malformed_slug_and_nonexistent_slug_both_404_with_different_bodies(self, anon_client):
         """A path segment outside the slug charset (``[-a-zA-Z0-9_]+`` -- here
         one containing dots) never even reaches the view; the router itself
-        has no matching pattern. The response is still a plain 404, exactly
-        like a well-formed slug that simply resolves to no group -- neither
-        case discloses anything about whether any group, anywhere, uses a
-        similar identifier."""
+        has no matching pattern, so Django's own URL resolver produces the
+        404 (an HTML body here, since ``DEBUG=True`` in tests). A well-formed
+        slug that simply resolves to no group instead reaches
+        ``BookingCodeGroupEventViewSet``, which raises DRF's ``NotFound`` --
+        a JSON body. The two responses are NOT byte-identical, unlike the
+        docstring on this test previously claimed -- but the difference is
+        harmless: a malformed segment can never be a real
+        ``public_booking_slug`` in the first place (the charset excludes it),
+        so which of the two 404 shapes comes back leaks nothing about
+        whether any *real* slug exists. Both branches simply agree on the
+        status code."""
         malformed_response = anon_client.post(
             "/public/booking/calendar-groups/not.a.valid.slug/events/",
             _group_booking_payload([]),
@@ -417,6 +427,12 @@ class TestCodelessGroupEventMissingGroup:
 
         assert malformed_response.status_code == status.HTTP_404_NOT_FOUND
         assert wellformed_response.status_code == status.HTTP_404_NOT_FOUND
+
+        # Bodies deliberately differ: Django's un-routed-URL 404 (HTML) vs.
+        # DRF's `NotFound` (JSON `{"detail": ...}`) -- see the docstring above
+        # for why that difference discloses nothing.
+        assert wellformed_response.json() == {"detail": "Calendar group not found."}
+        assert malformed_response["Content-Type"] != wellformed_response["Content-Type"]
 
 
 # ---------------------------------------------------------------------------
@@ -641,17 +657,19 @@ class TestCodelessGroupEventPinnedDuration:
 
 
 # ---------------------------------------------------------------------------
-# Scenario 8: the integer-keyed path no longer routes at all -- the
-# cross-tenant enumeration oracle Phase 3b exists to close is GONE, not
-# merely harder to exploit. Probing by a real, existing group's OWN integer
-# primary key -- the exact identifier Phase 3 used to expose -- must never
-# again resolve that group, on either branch, and must be indistinguishable
-# whether the group is public, private, or the id doesn't exist at all.
+# Scenario 8: an integer path segment still MATCHES the route -- digits are
+# inside the slug charset `[-a-zA-Z0-9_]+` -- but it never again RESOLVES to
+# a group. The cross-tenant enumeration oracle Phase 3b exists to close is
+# GONE, not merely harder to exploit: probing by a real, existing group's
+# OWN integer primary key -- the exact identifier Phase 3 used to expose --
+# must never again identify that group, on either branch, and must be
+# indistinguishable whether the group is public, private, or the id doesn't
+# exist at all.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.django_db
-class TestIntegerKeyedRouteNoLongerResolves:
+class TestIntegerKeyedRouteNoLongerResolvesAGroup:
     def test_probing_a_real_public_groups_own_id_codeless_returns_404(
         self, anon_client, public_group
     ):

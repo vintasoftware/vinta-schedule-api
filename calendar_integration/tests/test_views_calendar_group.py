@@ -437,6 +437,46 @@ class TestCalendarGroupCrud:
         assert owned_group.public_booking_slug == original_slug
         assert response.data["public_booking_slug"] == original_slug
 
+    def test_partial_update_rejects_client_supplied_public_booking_slug(
+        self, auth_client, owned_group, internal_calendars, admin_user
+    ):
+        """Same guarantee as ``test_update_rejects_client_supplied_public_booking_slug``,
+        exercised through PATCH rather than PUT -- a client-supplied
+        ``public_booking_slug`` must not be able to overwrite the existing
+        slug via a partial update either. ``name``/``slots`` are still
+        included in the payload -- unrelated to the read-only check this test
+        targets, but required because ``CalendarGroupSerializer.update()``
+        reconstructs the full group input regardless of HTTP method (PATCH
+        is not a true partial update on this endpoint), so a payload missing
+        them would 500/wipe slots for reasons this test isn't about."""
+        original_slug = owned_group.public_booking_slug
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        payload = {
+            "name": owned_group.name,
+            "public_booking_slug": "attacker-chosen-slug",
+            "slots": [
+                {
+                    "name": "Physicians",
+                    "calendar_ids": [internal_calendars["phys_a"].id],
+                    "required_count": 1,
+                    "order": 0,
+                },
+                {
+                    "name": "Rooms",
+                    "calendar_ids": [internal_calendars["room_1"].id],
+                    "required_count": 1,
+                    "order": 1,
+                },
+            ],
+        }
+
+        response = auth_client.patch(url, payload, format="json")
+
+        _assert_status(response, status.HTTP_200_OK)
+        owned_group.refresh_from_db()
+        assert owned_group.public_booking_slug == original_slug
+        assert response.data["public_booking_slug"] == original_slug
+
     def test_destroy(self, auth_client, owned_group, admin_user):
         url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
         response = auth_client.delete(url)

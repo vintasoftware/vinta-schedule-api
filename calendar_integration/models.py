@@ -363,7 +363,6 @@ class CalendarGroup(SingleOrganizationModelMixin, SafeRelationNullInitMixin, Bas
     public_booking_slug = models.CharField(
         max_length=32,
         unique=True,
-        db_index=True,
         default=generate_public_booking_slug,
         help_text=(
             "Opaque, unguessable identifier used to address this group on the "
