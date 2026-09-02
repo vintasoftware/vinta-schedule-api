@@ -35,6 +35,7 @@ from calendar_integration.models import (
 )
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from organizations.models import Organization
+from public_api.models import SystemUser
 
 
 CANCEL_URL_NAME = "calendar_booking_api:booking-events-cancel-list"
@@ -404,11 +405,13 @@ class TestCancelEventWithCodeLifecycleRejections:
     def test_revoked_code_returns_revoked(
         self, anon_client, permission_service, organization, calendar, existing_event
     ):
+        minter = baker.make(SystemUser, organization=organization, is_active=True)
         token, code = permission_service.create_booking_token(
             organization_id=organization.id,
             permissions=[EventManagementPermissions.CANCEL],
             calendar_id=calendar.id,
             event_id=existing_event.id,
+            minted_by=minter,
         )
         permission_service.revoke_token(organization_id=organization.id, token_id=token.id)
 

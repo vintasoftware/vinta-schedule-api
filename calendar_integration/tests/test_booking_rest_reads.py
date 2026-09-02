@@ -39,6 +39,7 @@ from calendar_integration.models import (
 )
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from organizations.models import Organization
+from public_api.models import SystemUser
 
 
 AVAILABLE_TIMES_URL = "calendar_booking_api:booking-available-times-list"
@@ -115,9 +116,11 @@ def _mint_used_code(
 def _mint_revoked_code(
     permission_service: CalendarPermissionService, organization: Organization, **kwargs
 ):
+    minter = baker.make(SystemUser, organization=organization, is_active=True)
     token, code = permission_service.create_booking_token(
         organization_id=organization.id,
         permissions=[EventManagementPermissions.CREATE],
+        minted_by=minter,
         **kwargs,
     )
     permission_service.revoke_token(organization_id=organization.id, token_id=token.id)

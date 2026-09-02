@@ -31,6 +31,7 @@ from calendar_integration.models import (
 )
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from organizations.models import Organization
+from public_api.models import SystemUser
 
 
 # ---------------------------------------------------------------------------
@@ -502,10 +503,12 @@ class TestCreateCalendarEventWithCodeLifecycleRejections:
         calendar,
     ):
         mock_rate_limiter.return_value = iter([None])
+        minter = baker.make(SystemUser, organization=organization, is_active=True)
         token, code = permission_service.create_booking_token(
             organization_id=organization.id,
             permissions=[EventManagementPermissions.CREATE],
             calendar_id=calendar.id,
+            minted_by=minter,
         )
         permission_service.revoke_token(organization_id=organization.id, token_id=token.id)
 

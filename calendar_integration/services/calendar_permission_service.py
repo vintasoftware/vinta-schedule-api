@@ -1077,38 +1077,55 @@ class CalendarPermissionService:
         CalendarManagementToken.objects.consume(token, source_ip)
 
     def revoke_token(
-        self, organization_id: int, token_id: int, *, actor_user: User | None = None
+        self,
+        organization_id: int,
+        token_id: int,
+        *,
+        actor_user: User | None = None,
+        actor_system_user: "SystemUser | None" = None,
     ) -> bool:
         """Revoke a booking code by its opaque id (idempotent).
 
-        Fetch the token scoped to the organization, set ``revoked_at`` to
-        the current time if not already set, and save. If the token is already
-        revoked, return True without changing the timestamp (idempotent).
+        Fetch the token scoped to the organization AND restricted to rows
+        minted through a booking-code mint surface
+        (``CalendarManagementTokenManager.booking_codes_for_organization`` /
+        ``CalendarManagementTokenQuerySet.booking_codes``), set ``revoked_at``
+        to the current time if not already set, and save. If the token is
+        already revoked, return True without changing the timestamp
+        (idempotent). A calendar-owner, attendee, or external-attendee token
+        id is indistinguishable from a nonexistent one here -- both raise
+        ``InvalidTokenError`` -- so this method can never be used to revoke
+        anything but a booking code, regardless of what its callers do or
+        fail to check.
 
-        This method performs NO authorization -- callers (the REST
-        ``BookingCodeViewSet.destroy`` view, the ``revokeBookingCode`` GraphQL
-        mutation) are responsible for deciding whether the caller may revoke
-        the specific token before calling this.
+        Beyond that kind restriction, this method performs NO authorization
+        -- callers (the REST ``BookingCodeViewSet.destroy`` view, the
+        ``revokeBookingCode`` GraphQL mutation) are responsible for deciding
+        whether the caller may revoke the specific token before calling this.
 
         Args:
             organization_id: Tenant scope.
             token_id: The id of the token to revoke.
             actor_user: The internal ``User`` performing the revoke, for audit
-                attribution (e.g. the authenticated REST caller). ``None``
-                (the default) audits as the system actor, matching every
-                pre-existing caller of this method.
+                attribution (e.g. the authenticated REST caller). Mutually
+                exclusive with ``actor_system_user``.
+            actor_system_user: The ``SystemUser`` (API token) performing the
+                revoke, for audit attribution (e.g. the authenticated GraphQL
+                caller). Mutually exclusive with ``actor_user``. When neither
+                is supplied (the default), audits as the system actor,
+                matching every pre-existing caller of this method.
 
         Returns:
             True on success (revoked or already-revoked).
 
         Raises:
-            InvalidTokenError: If no token with the given id exists in the
-                organization.
+            InvalidTokenError: If no booking code with the given id exists in
+                the organization.
         """
         try:
-            token = CalendarManagementToken.objects.filter_by_organization(organization_id).get(
-                id=token_id
-            )
+            token = CalendarManagementToken.objects.booking_codes_for_organization(
+                organization_id
+            ).get(id=token_id)
         except CalendarManagementToken.DoesNotExist as e:
             raise InvalidTokenError("Token not found") from e
 
@@ -1117,9 +1134,10 @@ class CalendarPermissionService:
             token.save(update_fields=["revoked_at"])
 
             if self.audit_service is not None:
+                actor_source = actor_user if actor_user is not None else actor_system_user
                 actor = (
-                    self.audit_service.actor_from_user_or_token(actor_user, organization_id)
-                    if actor_user is not None
+                    self.audit_service.actor_from_user_or_token(actor_source, organization_id)
+                    if actor_source is not None
                     else self.audit_service.system_actor()
                 )
                 self._audit_token_write(
