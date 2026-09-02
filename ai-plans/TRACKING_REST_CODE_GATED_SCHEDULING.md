@@ -357,15 +357,63 @@ Verification (container surface): full suite 5851 passed, 1 skipped, no flakes; 
 (783 files); `public_api/tests/` 1043 passed (the GraphQL fix); `makemigrations --check` clean;
 `schema.yml` changed only for the `duration_seconds` parameter description and `required: true`.
 
+### Phase 6 — Booking-code minting and revocation
+
+Branch `plan/rest-code-gated-scheduling/phase-6`, base `plan/rest-code-gated-scheduling/phase-5`.
+Commits: `c42d250e` (implementation), `228d47a1` (BLOCKER fix), `68f0ba9b` (same hole on GraphQL).
+Models used: implementer tier 3 -> sonnet; reviewer tier 4 (plan override) -> opus; fixer tier 2 -> sonnet.
+Review: **1 BLOCKER**, 5 SHOULD-FIX, 4 NIT, all fixed.
+
+What landed: `POST /booking-codes/` and `DELETE /booking-codes/<id>/`, authenticated with
+session/JWT + active org membership, registered in `routes.py` (NOT the public namespace). One
+endpoint collapses the six GraphQL mint mutations via `purpose` x target. No `list`, no `retrieve`.
+
+**THE BLOCKER — privilege escalation with permanent, untraceable effect.**
+`DELETE /booking-codes/<id>/` had no authorization beyond "has an active membership", and
+`revoke_token` did not filter by token *kind*. Any org member could walk ids and revoke EVERY
+`CalendarManagementToken` in the organization — including other users' calendar-owner and attendee
+tokens. Demonstrated before the fix: a plain member revoked another user's calendar-owner token, and
+that user's `initialize_with_user` then raised `PermissionServiceInitializationError` — locked out of
+their own calendar. It never healed, because `create_calendar_owner_token`'s `get_or_create` has no
+`revoked_at` in its lookup and returns the revoked row forever. And it audited as `system_actor()`,
+so nothing recorded who did it.
+
+Fixed in two layers, and on BOTH surfaces:
+
+- `228d47a1` — the REST `destroy` now applies the same owner-or-admin check `create` applies, and
+  returns `204` for BOTH "not found" and "not authorized", so the non-oracle contract survives.
+- `68f0ba9b` — `revoke_token` ITSELF now resolves through
+  `CalendarManagementToken.objects.booking_codes_for_organization(...)`, so it can only ever touch a
+  booking code. That closes the identical hole on the **already-deployed** GraphQL
+  `revokeBookingCode` mutation, which called the service directly. Revoke is now attributable on
+  both surfaces rather than auditing as `system`.
+
+**Decisions to carry forward:**
+
+27. **The booking-code discriminator is `minted_by_membership_user_id IS NOT NULL OR
+    minted_by_system_user_id IS NOT NULL`** (`CalendarManagementTokenQuerySet.booking_codes()`).
+    Verified sound against every `create_*_token` method: owner, attendee, and external-attendee
+    tokens always leave both null, and every booking-code mint path sets exactly one.
+    **Known fragility:** a future mint path that passes neither actor would produce a booking code
+    that is silently UN-REVOKABLE. Twelve test files had to be updated for exactly this reason —
+    their fixtures minted unattributed tokens. If a legitimate actor-less mint path is ever needed,
+    replace this heuristic with an explicit kind column rather than widening the predicate.
+28. **`CalendarPermissionService.can_view_calendar(user, calendar)`** now exists next to
+    `can_view_calendar_group`, and both halves of the owner-or-admin split go through the service
+    rather than a hand-rolled query in the view.
+
+Verification (container surface): full suite 5895 passed, 1 skipped; mypy clean (784 files);
+`public_api/tests/` 1046 passed, covering the GraphQL revoke fix; `makemigrations --check` clean
+(Phase 0 already added the columns); `schema.yml` additive only.
+
 ## Current phase
 
-**Phase 6 — Booking-code minting and revocation** — not started.
+_none — all phases complete._
 
 ## Remaining phases
 
 | Phase | Title | Impl tier | Reviewer tier |
 |---|---|---|---|
-| 6 | Booking-code minting and revocation | 3 | 4 (plan override) |
 
 ## Deferred phases
 
