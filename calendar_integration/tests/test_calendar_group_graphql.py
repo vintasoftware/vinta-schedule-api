@@ -270,7 +270,9 @@ def test_create_calendar_group_mutation(organization, internal_calendars):
         "calendar_integration.mutations.get_calendar_group_mutation_dependencies",
         return_value=deps,
     ):
-        result = mutations.create_calendar_group(input=input_data)
+        result = mutations.create_calendar_group(
+            info=_mock_info_with_org(organization), input=input_data
+        )
     assert result.success is True
     assert result.group is not None
     assert result.group.name == "Clinic"
@@ -301,7 +303,9 @@ def test_create_calendar_group_mutation_defaults_is_private_true(organization, i
         "calendar_integration.mutations.get_calendar_group_mutation_dependencies",
         return_value=deps,
     ):
-        result = mutations.create_calendar_group(input=input_data)
+        result = mutations.create_calendar_group(
+            info=_mock_info_with_org(organization), input=input_data
+        )
     assert result.success is True
     assert result.group is not None
     group = CalendarGroup.objects.filter_by_organization(organization.id).get(name="Private Group")
@@ -333,7 +337,9 @@ def test_create_calendar_group_mutation_with_is_private_false(organization, inte
         "calendar_integration.mutations.get_calendar_group_mutation_dependencies",
         return_value=deps,
     ):
-        result = mutations.create_calendar_group(input=input_data)
+        result = mutations.create_calendar_group(
+            info=_mock_info_with_org(organization), input=input_data
+        )
     assert result.success is True
     assert result.group is not None
     group = CalendarGroup.objects.filter_by_organization(organization.id).get(name="Public Group")
@@ -362,7 +368,9 @@ def test_create_calendar_group_mutation_with_is_private_true(organization, inter
         "calendar_integration.mutations.get_calendar_group_mutation_dependencies",
         return_value=deps,
     ):
-        result = mutations.create_calendar_group(input=input_data)
+        result = mutations.create_calendar_group(
+            info=_mock_info_with_org(organization), input=input_data
+        )
     assert result.success is True
     assert result.group is not None
     group = CalendarGroup.objects.filter_by_organization(organization.id).get(
@@ -373,12 +381,36 @@ def test_create_calendar_group_mutation_with_is_private_true(organization, inter
 
 
 @pytest.mark.django_db
-def test_create_calendar_group_mutation_rejects_unknown_org():
+def test_create_calendar_group_mutation_rejects_missing_request_organization():
+    """The organization is now resolved from the authenticated request context
+    (``info.context.request.public_api_organization``), not from
+    ``input.organization_id`` -- see the security fix in
+    ``calendar_integration/mutations.py``'s ``create_calendar_group``. A
+    request with no bound organization (e.g. an unauthenticated caller) is
+    rejected regardless of what ``organization_id`` the client supplies.
+    """
     mutations = CalendarGroupMutations()
     input_data = CalendarGroupInput(organization_id=99_999, name="Lost", slots=[])
-    result = mutations.create_calendar_group(input=input_data)
+    info = _mock_info_with_org(None)
+    result = mutations.create_calendar_group(info=info, input=input_data)
     assert result.success is False
     assert "Organization not found" in (result.error_message or "")
+
+
+@pytest.mark.django_db
+def test_create_calendar_group_mutation_rejects_organization_id_mismatch(organization):
+    """A request authenticated for ``organization`` but whose input targets a
+    different ``organization_id`` is rejected -- the input field is validated
+    against the token's organization rather than trusted on its own.
+    """
+    other_org = Organization.objects.create(name="Other Org", should_sync_rooms=False)
+    mutations = CalendarGroupMutations()
+    input_data = CalendarGroupInput(organization_id=other_org.id, name="Lost", slots=[])
+    info = _mock_info_with_org(organization)
+    result = mutations.create_calendar_group(info=info, input=input_data)
+    assert result.success is False
+    assert "Organization not found" in (result.error_message or "")
+    assert not CalendarGroup.objects.filter_by_organization(other_org.id).exists()
 
 
 @pytest.mark.django_db
@@ -403,7 +435,9 @@ def test_create_calendar_group_mutation_surfaces_validation_error(organization, 
         "calendar_integration.mutations.get_calendar_group_mutation_dependencies",
         return_value=deps,
     ):
-        result = mutations.create_calendar_group(input=input_data)
+        result = mutations.create_calendar_group(
+            info=_mock_info_with_org(organization), input=input_data
+        )
     assert result.success is False
     assert "duplicate" in (result.error_message or "").lower()
 
@@ -434,7 +468,9 @@ def test_update_calendar_group_mutation(organization, clinic_group, internal_cal
         "calendar_integration.mutations.get_calendar_group_mutation_dependencies",
         return_value=deps,
     ):
-        result = mutations.update_calendar_group(input=input_data)
+        result = mutations.update_calendar_group(
+            info=_mock_info_with_org(organization), input=input_data
+        )
     assert result.success is True
     clinic_group.refresh_from_db()
     assert clinic_group.name == "Clinic renamed"
@@ -478,7 +514,9 @@ def test_update_calendar_group_mutation_toggle_is_private_true_to_false(
         "calendar_integration.mutations.get_calendar_group_mutation_dependencies",
         return_value=deps,
     ):
-        result = mutations.update_calendar_group(input=input_data)
+        result = mutations.update_calendar_group(
+            info=_mock_info_with_org(organization), input=input_data
+        )
     assert result.success is True
     group.refresh_from_db()
     # is_private=False means accepts_public_scheduling=True
@@ -521,7 +559,9 @@ def test_update_calendar_group_mutation_toggle_is_private_false_to_true(
         "calendar_integration.mutations.get_calendar_group_mutation_dependencies",
         return_value=deps,
     ):
-        result = mutations.update_calendar_group(input=input_data)
+        result = mutations.update_calendar_group(
+            info=_mock_info_with_org(organization), input=input_data
+        )
     assert result.success is True
     group.refresh_from_db()
     # is_private=True means accepts_public_scheduling=False
@@ -564,7 +604,9 @@ def test_update_calendar_group_mutation_omitting_is_private_leaves_unchanged(
         "calendar_integration.mutations.get_calendar_group_mutation_dependencies",
         return_value=deps,
     ):
-        result = mutations.update_calendar_group(input=input_data)
+        result = mutations.update_calendar_group(
+            info=_mock_info_with_org(organization), input=input_data
+        )
     assert result.success is True
     group.refresh_from_db()
     # accepts_public_scheduling should remain True (unchanged)
@@ -587,7 +629,9 @@ def test_update_calendar_group_mutation_missing_group(organization):
         "calendar_integration.mutations.get_calendar_group_mutation_dependencies",
         return_value=deps,
     ):
-        result = mutations.update_calendar_group(input=input_data)
+        result = mutations.update_calendar_group(
+            info=_mock_info_with_org(organization), input=input_data
+        )
     assert result.success is False
     assert "not found" in (result.error_message or "").lower()
 
@@ -601,7 +645,9 @@ def test_delete_calendar_group_mutation(organization, clinic_group):
         "calendar_integration.mutations.get_calendar_group_mutation_dependencies",
         return_value=deps,
     ):
-        result = mutations.delete_calendar_group(input=input_data)
+        result = mutations.delete_calendar_group(
+            info=_mock_info_with_org(organization), input=input_data
+        )
     assert result.success is True
     assert (
         not CalendarGroup.objects.filter_by_organization(organization.id)
@@ -649,7 +695,9 @@ def test_create_calendar_group_event_mutation(organization, clinic_group, intern
         "calendar_integration.mutations.get_calendar_group_mutation_dependencies",
         return_value=deps,
     ):
-        result = mutations.create_calendar_group_event(input=input_data)
+        result = mutations.create_calendar_group_event(
+            info=_mock_info_with_org(organization), input=input_data
+        )
     assert result.success is True
     assert result.event is not None
     assert result.event.calendar_fk_id == internal_calendars["phys_a"].id
@@ -690,7 +738,9 @@ def test_create_calendar_group_event_mutation_surfaces_validation_error(
         "calendar_integration.mutations.get_calendar_group_mutation_dependencies",
         return_value=deps,
     ):
-        result = mutations.create_calendar_group_event(input=input_data)
+        result = mutations.create_calendar_group_event(
+            info=_mock_info_with_org(organization), input=input_data
+        )
     assert result.success is False
     assert "not available" in (result.error_message or "").lower()
 
@@ -770,7 +820,9 @@ def test_create_calendar_group_event_private_group_no_permission_service_returns
         "calendar_integration.mutations.get_calendar_group_mutation_dependencies",
         return_value=deps,
     ):
-        result = mutations.create_calendar_group_event(input=input_data)
+        result = mutations.create_calendar_group_event(
+            info=_mock_info_with_org(organization), input=input_data
+        )
 
     assert result.success is False
     assert result.event is None

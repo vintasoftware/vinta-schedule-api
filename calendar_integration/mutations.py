@@ -415,13 +415,6 @@ def _to_slot_input_data(slots: list[CalendarGroupSlotInput]) -> list[CalendarGro
     ]
 
 
-def _load_organization(organization_id: int) -> Organization | None:
-    try:
-        return Organization.objects.get(id=organization_id)
-    except Organization.DoesNotExist:
-        return None
-
-
 def _client_ip_from_request(request: object) -> str:
     """Extract the client IP address from a Django request for audit logging.
 
@@ -634,13 +627,16 @@ class CancelWithCodeInput:
 class CalendarGroupMutations:
     """GraphQL mutations for CalendarGroup CRUD and grouped event booking."""
 
-    @strawberry.mutation
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def create_calendar_group(
         self,
+        info: strawberry.Info,
         input: CalendarGroupInput,  # noqa: A002
     ) -> CalendarGroupResult:
-        organization = _load_organization(input.organization_id)
+        organization = info.context.request.public_api_organization
         if organization is None:
+            return CalendarGroupResult(success=False, error_message="Organization not found")
+        if input.organization_id != organization.id:
             return CalendarGroupResult(success=False, error_message="Organization not found")
         deps = get_calendar_group_mutation_dependencies()
         deps.calendar_group_service.initialize(organization=organization)
@@ -663,13 +659,16 @@ class CalendarGroupMutations:
             return CalendarGroupResult(success=False, error_message=str(e))
         return CalendarGroupResult(success=True, group=group)  # type: ignore[arg-type]
 
-    @strawberry.mutation
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def update_calendar_group(
         self,
+        info: strawberry.Info,
         input: UpdateCalendarGroupInput,  # noqa: A002
     ) -> CalendarGroupResult:
-        organization = _load_organization(input.organization_id)
+        organization = info.context.request.public_api_organization
         if organization is None:
+            return CalendarGroupResult(success=False, error_message="Organization not found")
+        if input.organization_id != organization.id:
             return CalendarGroupResult(success=False, error_message="Organization not found")
         deps = get_calendar_group_mutation_dependencies()
         deps.calendar_group_service.initialize(organization=organization)
@@ -690,13 +689,16 @@ class CalendarGroupMutations:
             return CalendarGroupResult(success=False, error_message=str(e))
         return CalendarGroupResult(success=True, group=group)  # type: ignore[arg-type]
 
-    @strawberry.mutation
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def delete_calendar_group(
         self,
+        info: strawberry.Info,
         input: DeleteCalendarGroupInput,  # noqa: A002
     ) -> DeleteCalendarGroupResult:
-        organization = _load_organization(input.organization_id)
+        organization = info.context.request.public_api_organization
         if organization is None:
+            return DeleteCalendarGroupResult(success=False, error_message="Organization not found")
+        if input.organization_id != organization.id:
             return DeleteCalendarGroupResult(success=False, error_message="Organization not found")
         deps = get_calendar_group_mutation_dependencies()
         deps.calendar_group_service.initialize(organization=organization)
@@ -708,13 +710,16 @@ class CalendarGroupMutations:
             return DeleteCalendarGroupResult(success=False, error_message=str(e))
         return DeleteCalendarGroupResult(success=True)
 
-    @strawberry.mutation
+    @strawberry.mutation(permission_classes=[IsAuthenticated, OrganizationResourceAccess])
     def create_calendar_group_event(
         self,
+        info: strawberry.Info,
         input: CalendarGroupEventInput,  # noqa: A002
     ) -> CalendarGroupEventResult:
-        organization = _load_organization(input.organization_id)
+        organization = info.context.request.public_api_organization
         if organization is None:
+            return CalendarGroupEventResult(success=False, error_message="Organization not found")
+        if input.organization_id != organization.id:
             return CalendarGroupEventResult(success=False, error_message="Organization not found")
         deps = get_calendar_group_mutation_dependencies()
         deps.calendar_service.initialize_without_provider(organization=organization)
