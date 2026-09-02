@@ -44,6 +44,7 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from calendar_integration.constants import CalendarProvider, CalendarType
+from calendar_integration.exceptions import CalendarGroupValidationError
 from calendar_integration.factories import create_calendar_ownership, create_calendar_pool
 from calendar_integration.models import (
     Calendar,
@@ -203,6 +204,57 @@ class TestFindStaleSelectionsService:
         unbounded_results = service.find_stale_selections(group_id=group.id)
         assert {r.event_id for r in unbounded_results} == {early_event.id, late_event.id}
 
+    def test_boundary_event_ending_exactly_at_window_start_is_excluded(self):
+        """Half-open exclusivity on the left edge (`event_fk__end_time__gt`,
+        not `__gte`): an event that ends exactly when the window starts does
+        not overlap it and must not be reported."""
+        org = _make_org()
+        cal = _make_calendar(org, "Dr A")
+        service, group, slot = _make_group_with_service(org, calendar_ids=[cal.id])
+
+        window_start = datetime.datetime(2026, 6, 1, 10, 0, tzinfo=datetime.UTC)
+        window_end = datetime.datetime(2026, 6, 1, 12, 0, tzinfo=datetime.UTC)
+
+        # 30-minute event starting 9:30, ending exactly at window_start.
+        boundary_event = _make_event(org, cal, group, datetime.datetime(2026, 6, 1, 9, 30))
+        _select(org, boundary_event, slot, cal)
+
+        # Genuinely inside the window -- control, proves the query still runs.
+        inside_event = _make_event(org, cal, group, datetime.datetime(2026, 6, 1, 10, 30))
+        _select(org, inside_event, slot, cal)
+
+        _drop_membership(org, slot, cal)
+
+        results = service.find_stale_selections(
+            group_id=group.id, window_start=window_start, window_end=window_end
+        )
+        assert [r.event_id for r in results] == [inside_event.id]
+
+    def test_boundary_event_starting_exactly_at_window_end_is_excluded(self):
+        """Half-open exclusivity on the right edge (`event_fk__start_time__lt`,
+        not `__lte`): an event that starts exactly when the window ends does
+        not overlap it and must not be reported."""
+        org = _make_org()
+        cal = _make_calendar(org, "Dr A")
+        service, group, slot = _make_group_with_service(org, calendar_ids=[cal.id])
+
+        window_start = datetime.datetime(2026, 6, 1, 10, 0, tzinfo=datetime.UTC)
+        window_end = datetime.datetime(2026, 6, 1, 12, 0, tzinfo=datetime.UTC)
+
+        # Starts exactly at window_end.
+        boundary_event = _make_event(org, cal, group, datetime.datetime(2026, 6, 1, 12, 0))
+        _select(org, boundary_event, slot, cal)
+
+        inside_event = _make_event(org, cal, group, datetime.datetime(2026, 6, 1, 10, 30))
+        _select(org, inside_event, slot, cal)
+
+        _drop_membership(org, slot, cal)
+
+        results = service.find_stale_selections(
+            group_id=group.id, window_start=window_start, window_end=window_end
+        )
+        assert [r.event_id for r in results] == [inside_event.id]
+
     def test_returns_nothing_for_a_group_whose_rosters_never_changed(self):
         org = _make_org()
         phys_a = _make_calendar(org, "Dr A")
@@ -301,6 +353,84 @@ class TestFindStaleSelectionsQueryCount:
         big_count = len(big_ctx.captured_queries)
         assert small_count == big_count, (
             f"N+1: {small_count} queries for 1 stale selection vs {big_count} for 20"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Service: pagination
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestFindStaleSelectionsPagination:
+    def _make_group_with_n_stale(
+        self, org: Organization, n: int
+    ) -> tuple[CalendarGroupService, CalendarGroup]:
+        calendars = [_make_calendar(org, f"Dr {uuid.uuid4().hex[:6]}") for _ in range(n)]
+        service, group, slot = _make_group_with_service(org, calendar_ids=[c.id for c in calendars])
+        for cal in calendars:
+            event = _make_event(org, cal, group)
+            _select(org, event, slot, cal)
+            _drop_membership(org, slot, cal)
+        return service, group
+
+    def test_limit_pages_the_result_set(self):
+        org = _make_org()
+        service, group = self._make_group_with_n_stale(org, 5)
+
+        page = service.find_stale_selections(group_id=group.id, limit=2)
+        assert len(page) == 2
+
+    def test_offset_skips_rows_in_a_stable_order(self):
+        org = _make_org()
+        service, group = self._make_group_with_n_stale(org, 5)
+
+        full = service.find_stale_selections(group_id=group.id, limit=100)
+        assert len(full) == 5
+
+        second_page = service.find_stale_selections(group_id=group.id, offset=2, limit=2)
+        assert [r.event_id for r in second_page] == [r.event_id for r in full[2:4]]
+
+    def test_negative_offset_rejected(self):
+        org = _make_org()
+        service, group = self._make_group_with_n_stale(org, 1)
+        with pytest.raises(CalendarGroupValidationError, match="Offset must be non-negative"):
+            service.find_stale_selections(group_id=group.id, offset=-1)
+
+    def test_zero_limit_rejected(self):
+        org = _make_org()
+        service, group = self._make_group_with_n_stale(org, 1)
+        with pytest.raises(CalendarGroupValidationError, match="Limit must be between 1 and 100"):
+            service.find_stale_selections(group_id=group.id, limit=0)
+
+    def test_over_cap_limit_rejected(self):
+        org = _make_org()
+        service, group = self._make_group_with_n_stale(org, 1)
+        with pytest.raises(CalendarGroupValidationError, match="Limit must be between 1 and 100"):
+            service.find_stale_selections(group_id=group.id, limit=101)
+
+    def test_large_stale_set_is_not_fully_materialized_for_a_small_page(self):
+        """The bound is applied at the queryset level (``LIMIT``/``OFFSET`` in
+        SQL) before ``values_list()`` evaluates it -- not a Python-side slice
+        of a fully-fetched list. Proven by inspecting the captured SQL for
+        the LIMIT clause the small page requested: a Python-side slice of a
+        fully materialized list would still return 3 rows here, but the SQL
+        sent to the database would show no LIMIT at all."""
+        org = _make_org()
+        service, group = self._make_group_with_n_stale(org, 20)
+
+        with CaptureQueriesContext(connection) as ctx:
+            page = service.find_stale_selections(group_id=group.id, limit=3)
+        assert len(page) == 3
+
+        selection_queries = [
+            q["sql"]
+            for q in ctx.captured_queries
+            if "calendar_integration_calendareventgroupselection" in q["sql"]
+        ]
+        assert selection_queries, "expected the stale-selection query to run"
+        assert "LIMIT 3" in selection_queries[0], (
+            f"expected the DB itself to bound the result set: {selection_queries[0]}"
         )
 
 
@@ -478,6 +608,41 @@ class TestStaleSelectionsRest:
             }
         ]
 
+    def test_limit_and_offset_page_the_results(self, auth_client, admin_user, organization):
+        calendars = [_make_calendar(organization, f"Dr {uuid.uuid4().hex[:6]}") for _ in range(3)]
+        _service, group, slot = _make_group_with_service(
+            organization, calendar_ids=[c.id for c in calendars]
+        )
+        for cal in calendars:
+            event = _make_event(organization, cal, group)
+            _select(organization, event, slot, cal)
+            _drop_membership(organization, slot, cal)
+
+        url = reverse("api:CalendarGroups-stale-selections", kwargs={"pk": group.id})
+        response = auth_client.get(url, {"limit": 2})
+        _assert_status(response, status.HTTP_200_OK)
+        assert len(response.data) == 2
+
+    def test_invalid_offset_returns_400(
+        self, auth_client, admin_user, organization, rest_calendars
+    ):
+        _service, group, _slot = _make_group_with_service(
+            organization, calendar_ids=[rest_calendars["phys_a"].id]
+        )
+        url = reverse("api:CalendarGroups-stale-selections", kwargs={"pk": group.id})
+        response = auth_client.get(url, {"offset": -1})
+        _assert_status(response, status.HTTP_400_BAD_REQUEST)
+
+    def test_over_cap_limit_returns_400(
+        self, auth_client, admin_user, organization, rest_calendars
+    ):
+        _service, group, _slot = _make_group_with_service(
+            organization, calendar_ids=[rest_calendars["phys_a"].id]
+        )
+        url = reverse("api:CalendarGroups-stale-selections", kwargs={"pk": group.id})
+        response = auth_client.get(url, {"limit": 101})
+        _assert_status(response, status.HTTP_400_BAD_REQUEST)
+
 
 # ---------------------------------------------------------------------------
 # GraphQL: calendarGroupStaleSelections
@@ -499,6 +664,14 @@ query StaleSelections($groupId: Int!, $windowStart: DateTime, $windowEnd: DateTi
     calendarGroupStaleSelections(
         groupId: $groupId, windowStart: $windowStart, windowEnd: $windowEnd
     ) {
+        eventId
+    }
+}
+"""
+
+STALE_SELECTIONS_PAGED_QUERY = """
+query StaleSelections($groupId: Int!, $offset: Int!, $limit: Int!) {
+    calendarGroupStaleSelections(groupId: $groupId, offset: $offset, limit: $limit) {
         eventId
     }
 }
@@ -750,6 +923,67 @@ class TestCalendarGroupStaleSelectionsGraphQL:
         big = self._query_count(org, big_group.id, 20, system_user, token, auth)
 
         assert small == big, f"N+1: {small} queries for 1 stale selection vs {big} for 20"
+
+    def test_limit_and_offset_page_the_results(self):
+        org = self._org()
+        calendars = [_make_calendar(org, f"Dr {uuid.uuid4().hex[:6]}") for _ in range(3)]
+        _service, group, slot = _make_group_with_service(
+            org, calendar_ids=[c.id for c in calendars]
+        )
+        for cal in calendars:
+            event = _make_event(org, cal, group)
+            _select(org, event, slot, cal)
+            _drop_membership(org, slot, cal)
+
+        system_user, token, auth = _org_wide_token(org, [PublicAPIResources.CALENDAR_GROUP])
+        response = _post(
+            self.client,
+            STALE_SELECTIONS_PAGED_QUERY,
+            system_user,
+            token,
+            auth,
+            {"groupId": group.id, "offset": 0, "limit": 2},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data.get("errors", []) == []
+        assert len(data["data"]["calendarGroupStaleSelections"]) == 2
+
+    def test_invalid_offset_returns_a_graphql_error(self):
+        org = self._org()
+        group, _slot, _event, _calendar = self._make_group_with_stale_selection(org)
+        system_user, token, auth = _org_wide_token(org, [PublicAPIResources.CALENDAR_GROUP])
+
+        response = _post(
+            self.client,
+            STALE_SELECTIONS_PAGED_QUERY,
+            system_user,
+            token,
+            auth,
+            {"groupId": group.id, "offset": -1, "limit": 10},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["data"] is None
+        assert "Offset must be non-negative" in data["errors"][0]["message"]
+
+    def test_over_cap_limit_returns_a_graphql_error(self):
+        org = self._org()
+        group, _slot, _event, _calendar = self._make_group_with_stale_selection(org)
+        system_user, token, auth = _org_wide_token(org, [PublicAPIResources.CALENDAR_GROUP])
+
+        response = _post(
+            self.client,
+            STALE_SELECTIONS_PAGED_QUERY,
+            system_user,
+            token,
+            auth,
+            {"groupId": group.id, "offset": 0, "limit": 101},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["data"] is None
+        assert "Limit must be between 1 and 100" in data["errors"][0]["message"]
 
 
 class TestStaleSelectionsFieldMapped:

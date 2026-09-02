@@ -15,6 +15,7 @@ from graphql import GraphQLError
 from calendar_integration.booking_auth import MAX_CODE_GATED_RANGE
 from calendar_integration.constants import CalendarType, ExternalEventChangeRequestStatus
 from calendar_integration.exceptions import (
+    CalendarGroupValidationError,
     InvalidTokenError,
     TokenAlreadyUsedError,
     TokenExpiredError,
@@ -1146,14 +1147,25 @@ class Query:
 
         deps = get_query_dependencies()
         deps.calendar_group_service.initialize(organization=org)
-        stale = deps.calendar_group_service.find_stale_selections(
-            group_id=group_id, window_start=window_start, window_end=window_end
-        )
+        try:
+            stale = deps.calendar_group_service.find_stale_selections(
+                group_id=group_id,
+                window_start=window_start,
+                window_end=window_end,
+                offset=offset,
+                limit=limit,
+            )
+        except CalendarGroupValidationError as exc:
+            # Same error shape every other paginated field in this file raises
+            # via `_slice_qs` -- bounds are validated inside
+            # `find_stale_selections` itself now (also the REST caller's
+            # bound), so this just translates the shared exception.
+            raise GraphQLError(str(exc)) from exc
         return [
             StaleSelectionGraphQLType(
                 event_id=s.event_id, slot_id=s.slot_id, calendar_id=s.calendar_id
             )
-            for s in stale[offset : offset + limit]
+            for s in stale
         ]
 
     @strawberry.field(permission_classes=[IsAuthenticated, OrganizationResourceAccess])

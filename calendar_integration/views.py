@@ -2525,7 +2525,9 @@ class CalendarGroupViewSet(VintaScheduleModelViewSet):
             "to the per-selection `is_in_current_roster` flag. Optionally bounded "
             "to events overlapping `[window_start, window_end)`; omitting both "
             "returns every stale selection in the group regardless of when its "
-            "event falls."
+            "event falls. Returns a bare array, page-bounded by `offset`/`limit` "
+            "-- this exists specifically to expose a potentially large backlog, "
+            "so the result set is never fetched or materialized unbounded."
         ),
         parameters=[
             OpenApiParameter(
@@ -2542,6 +2544,20 @@ class CalendarGroupViewSet(VintaScheduleModelViewSet):
                 description="Only events starting before this instant (ISO 8601). Optional.",
                 required=False,
             ),
+            OpenApiParameter(
+                name="offset",
+                type=int,
+                location=OpenApiParameter.QUERY,
+                description="Number of rows to skip. Defaults to 0.",
+                required=False,
+            ),
+            OpenApiParameter(
+                name="limit",
+                type=int,
+                location=OpenApiParameter.QUERY,
+                description="Max rows to return, 1-100. Defaults to 100.",
+                required=False,
+            ),
         ],
         responses={200: StaleSelectionSerializer(many=True)},
     )
@@ -2550,6 +2566,14 @@ class CalendarGroupViewSet(VintaScheduleModelViewSet):
         detail=True,
         url_path="stale-selections",
         url_name="stale-selections",
+        # Returns a bare array, page-bounded by explicit offset/limit query
+        # params the service validates -- not a DRF Page. pagination_class=None
+        # and filter_backends=[] so drf-spectacular stops advertising the
+        # count/next/previous/results envelope and CalendarGroupFilterSet's
+        # `name` param, neither of which this action implements (reviewer
+        # finding, Phase 6).
+        pagination_class=None,
+        filter_backends=[],
     )
     @inject
     def stale_selections(
@@ -2575,10 +2599,25 @@ class CalendarGroupViewSet(VintaScheduleModelViewSet):
                 {"non_field_errors": ["Invalid datetime format; use ISO 8601."]}
             ) from e
 
+        try:
+            offset = int(request.query_params.get("offset", 0))
+            limit = int(request.query_params.get("limit", 100))
+        except ValueError as e:
+            raise ValidationError(
+                {"non_field_errors": ["offset and limit must be integers."]}
+            ) from e
+
         calendar_group_service.initialize(organization=group.organization)
-        stale = calendar_group_service.find_stale_selections(
-            group_id=group.id, window_start=window_start, window_end=window_end
-        )
+        try:
+            stale = calendar_group_service.find_stale_selections(
+                group_id=group.id,
+                window_start=window_start,
+                window_end=window_end,
+                offset=offset,
+                limit=limit,
+            )
+        except CalendarGroupValidationError as e:
+            raise ValidationError({"non_field_errors": [str(e)]}) from e
         payload = [
             {"event_id": s.event_id, "slot_id": s.slot_id, "calendar_id": s.calendar_id}
             for s in stale

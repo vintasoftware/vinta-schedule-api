@@ -9186,7 +9186,9 @@ paths:
         pool detaching or losing that calendar) -- the ops-sweep counterpart to the
         per-selection `is_in_current_roster` flag. Optionally bounded to events overlapping
         `[window_start, window_end)`; omitting both returns every stale selection
-        in the group regardless of when its event falls.
+        in the group regardless of when its event falls. Returns a bare array, page-bounded
+        by `offset`/`limit` -- this exists specifically to expose a potentially large
+        backlog, so the result set is never fetched or materialized unbounded.
       summary: List stale calendar selections for this group
       parameters:
       - in: header
@@ -9204,23 +9206,16 @@ paths:
         schema:
           type: string
         required: true
-      - name: limit
-        required: false
-        in: query
-        description: Number of results to return per page.
-        schema:
-          type: integer
       - in: query
-        name: name
-        schema:
-          type: string
-        description: Filter by partial name match
-      - name: offset
-        required: false
-        in: query
-        description: The initial index from which to return the results.
+        name: limit
         schema:
           type: integer
+        description: Max rows to return, 1-100. Defaults to 100.
+      - in: query
+        name: offset
+        schema:
+          type: integer
+        description: Number of rows to skip. Defaults to 0.
       - in: query
         name: window_end
         schema:
@@ -9241,7 +9236,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PaginatedStaleSelectionList'
+                type: array
+                items:
+                  $ref: '#/components/schemas/StaleSelection'
           description: ''
   /calendar-groups/{id}/stale-selections{format}:
     get:
@@ -9251,7 +9248,9 @@ paths:
         pool detaching or losing that calendar) -- the ops-sweep counterpart to the
         per-selection `is_in_current_roster` flag. Optionally bounded to events overlapping
         `[window_start, window_end)`; omitting both returns every stale selection
-        in the group regardless of when its event falls.
+        in the group regardless of when its event falls. Returns a bare array, page-bounded
+        by `offset`/`limit` -- this exists specifically to expose a potentially large
+        backlog, so the result set is never fetched or materialized unbounded.
       summary: List stale calendar selections for this group
       parameters:
       - in: header
@@ -9276,23 +9275,16 @@ paths:
         schema:
           type: string
         required: true
-      - name: limit
-        required: false
-        in: query
-        description: Number of results to return per page.
-        schema:
-          type: integer
       - in: query
-        name: name
-        schema:
-          type: string
-        description: Filter by partial name match
-      - name: offset
-        required: false
-        in: query
-        description: The initial index from which to return the results.
+        name: limit
         schema:
           type: integer
+        description: Max rows to return, 1-100. Defaults to 100.
+      - in: query
+        name: offset
+        schema:
+          type: integer
+        description: Number of rows to skip. Defaults to 0.
       - in: query
         name: window_end
         schema:
@@ -9313,7 +9305,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PaginatedStaleSelectionList'
+                type: array
+                items:
+                  $ref: '#/components/schemas/StaleSelection'
           description: ''
   /calendar-pools/:
     get:
@@ -21412,29 +21406,6 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ServiceAccountRead'
-    PaginatedStaleSelectionList:
-      type: object
-      required:
-      - count
-      - results
-      properties:
-        count:
-          type: integer
-          example: 123
-        next:
-          type: string
-          nullable: true
-          format: uri
-          example: http://api.example.org/accounts/?offset=400&limit=100
-        previous:
-          type: string
-          nullable: true
-          format: uri
-          example: http://api.example.org/accounts/?offset=200&limit=100
-        results:
-          type: array
-          items:
-            $ref: '#/components/schemas/StaleSelection'
     PaginatedSystemUserTokenList:
       type: object
       required:

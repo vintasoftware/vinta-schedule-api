@@ -2726,6 +2726,8 @@ class CalendarGroupService:
         group_id: int,
         window_start: datetime.datetime | None = None,
         window_end: datetime.datetime | None = None,
+        offset: int = 0,
+        limit: int = 100,
     ) -> list[StaleSelection]:
         """List every ``(event, slot, calendar)`` triple in this group whose
         calendar has left its slot's roster since the selection was made.
@@ -2748,9 +2750,27 @@ class CalendarGroupService:
         half-open overlap semantics as ``get_group_events``. Omitting both
         (the default) returns every stale selection in the group regardless
         of when its event falls.
+
+        ``offset`` / ``limit`` bound the page fetched, applied at the
+        queryset level (LIMIT/OFFSET in SQL) *before* ``values_list()``
+        evaluates it -- this endpoint exists specifically to expose a
+        potentially large backlog, so a caller must never be able to force
+        the whole result set to materialize in Python. Both REST and GraphQL
+        route through here rather than reimplementing bounds-checking or
+        slicing themselves; validated the same way ``public_api.queries
+        ._slice_qs`` validates its own offset/limit, so every surface raises
+        the same error shape.
+
+        :raises CalendarGroupValidationError: ``offset`` is negative, or
+            ``limit`` is not between 1 and 100 inclusive.
         """
         self._assert_initialized()
         group = self._get_group_by_id(group_id)
+
+        if offset < 0:
+            raise CalendarGroupValidationError("Offset must be non-negative")
+        if limit <= 0 or limit > 100:
+            raise CalendarGroupValidationError("Limit must be between 1 and 100")
 
         current_membership = CalendarGroupSlotMembership.objects.filter_by_organization(
             self.organization_id
@@ -2772,7 +2792,7 @@ class CalendarGroupService:
 
         rows = selections.order_by("event_fk_id", "slot_fk_id", "calendar_fk_id").values_list(
             "event_fk_id", "slot_fk_id", "calendar_fk_id"
-        )
+        )[offset : offset + limit]
         return [
             StaleSelection(event_id=event_id, slot_id=slot_id, calendar_id=calendar_id)
             for event_id, slot_id, calendar_id in rows
@@ -3558,23 +3578,14 @@ class CalendarGroupService:
         group: CalendarGroup,
         slots: list[CalendarGroupSlot],
         selections: Iterable[CalendarGroupSlotSelectionInputData],
-        event_id: int | None = None,
     ) -> dict[int, CalendarGroupSlotSelectionInputData]:
         """Validate a set of (slot, calendars) picks against the group's slots.
 
-        :param event_id: When ``None`` (the default -- every current caller,
-            since this only runs on create today), every selected calendar must
-            be in its slot's current roster, unchanged from the original
-            behavior. When set, this is validating a change to an *existing*
-            event: a calendar already recorded on that event for that slot (a
-            persisted ``CalendarEventGroupSelection`` row) passes through even
-            if it has since left the roster -- only a calendar being newly
-            added must still be in the roster. The "already recorded" set is
-            derived here from the database, keyed on ``event_id`` and each
-            slot's id from ``slots`` (both already trusted -- ``slots`` comes
-            from the group, not from caller-supplied labels), so a caller
-            cannot claim a calendar was already on the event to smuggle in an
-            addition that was never actually selected.
+        Every selected calendar must be in its slot's current roster -- this
+        only runs on create, so there is no "already recorded on this event"
+        set to grandfather against. (``reschedule_grouped_event`` re-checks
+        group-scoped windows/blocks/quota for an existing event's persisted
+        selections directly, without going through this method.)
         """
         slot_by_id = {s.id: s for s in slots}
 
@@ -3600,30 +3611,9 @@ class CalendarGroupService:
                 )
             selections_by_slot_id[sel.slot_id] = sel
 
-        # Calendars already recorded on this event, per slot -- the retained
-        # side of the added-vs-retained split. Empty when event_id is None
-        # (create: nothing is "already recorded", so every selected calendar is
-        # an addition and the check below is byte-for-byte identical to before
-        # this split existed).
-        retained_calendar_ids_by_slot: dict[int, set[int]] = {}
-        if event_id is not None:
-            existing_selection_rows = (
-                CalendarEventGroupSelection.objects.filter_by_organization(self.organization_id)
-                .filter(
-                    event_fk_id=event_id,
-                    event_fk__calendar_group_fk=group,
-                    slot_fk_id__in=slot_by_id.keys(),
-                )
-                .values_list("slot_fk_id", "calendar_fk_id")
-            )
-            for slot_id, calendar_id in existing_selection_rows:
-                retained_calendar_ids_by_slot.setdefault(slot_id, set()).add(calendar_id)
-
-        # Every slot must be covered with >= required_count picks. Each pick
-        # must either already be in the slot's pool, or already be recorded on
-        # this event for this slot (grandfathered -- see docstring above).
-        # Named apart from the loop above deliberately: `.get()` is nullable and
-        # that one's `sel` is not.
+        # Every slot must be covered with >= required_count picks, and each
+        # pick must already be in the slot's pool. Named apart from the loop
+        # above deliberately: `.get()` is nullable and that one's `sel` is not.
         for slot in slots:
             slot_selection = selections_by_slot_id.get(slot.id)
             if slot_selection is None:
@@ -3634,8 +3624,7 @@ class CalendarGroupService:
                     f"got {len(slot_selection.calendar_ids)}."
                 )
             pool = set(slot.memberships.values_list("calendar_fk_id", flat=True))
-            retained = retained_calendar_ids_by_slot.get(slot.id, set())
-            outside_pool = set(slot_selection.calendar_ids) - pool - retained
+            outside_pool = set(slot_selection.calendar_ids) - pool
             if outside_pool:
                 raise CalendarGroupValidationError(
                     f"Calendars {sorted(outside_pool)} are not in the pool of slot {slot.name!r}."
