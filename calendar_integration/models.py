@@ -38,6 +38,7 @@ from calendar_integration.managers import (
     CalendarGroupManager,
     CalendarGroupSlotManager,
     CalendarGroupSlotMembershipManager,
+    CalendarGroupSlotPoolManager,
     CalendarGroupSlotQuotaRuleManager,
     CalendarManagementTokenManager,
     CalendarManager,
@@ -426,10 +427,28 @@ class CalendarGroupSlot(SingleOrganizationModelMixin, SafeRelationNullInitMixin,
             related_name="group_slots",
         )
     )
+    # Attached pools. Their rosters are PROJECTED into ``memberships`` (one row
+    # per pool calendar, with ``source_pool`` set) rather than resolved on read
+    # -- see the Calendar Pools plan's Guiding Decisions -> Roster resolution.
+    # A slot's bookable roster is therefore the union of its inline memberships
+    # and its projected ones, which ``memberships`` already carries whole.
+    #
+    # Because that union deliberately keeps BOTH rows when a calendar is inline
+    # and in an attached pool, ``calendars`` can yield the same ``Calendar``
+    # more than once; every read that presents it to a user calls ``distinct()``
+    # (``CalendarGroupSlotGraphQLType.calendars``,
+    # ``CalendarGroupSlotVirtualModel.calendars``).
+    pools: "models.ManyToManyField[CalendarPool, CalendarGroupSlotPool]" = models.ManyToManyField(
+        "CalendarPool",
+        through="CalendarGroupSlotPool",
+        through_fields=("slot", "pool"),
+        related_name="group_slots",
+    )
 
     objects: ClassVar[CalendarGroupSlotManager] = CalendarGroupSlotManager()
 
     memberships: "RelatedManager[CalendarGroupSlotMembership]"
+    pool_attachments: "RelatedManager[CalendarGroupSlotPool]"
 
     class Meta:
         ordering = ("order", "id")
@@ -449,6 +468,13 @@ class CalendarGroupSlotMembership(
 ):
     """
     Through model linking a Calendar to a CalendarGroupSlot's pool.
+
+    One row per (slot, calendar, source). ``source_pool`` names where the row
+    came from: NULL for a calendar put on the slot directly ("inline" -- every
+    row that existed before Calendar Pools shipped), and a ``CalendarPool``
+    when the row was projected from a pool attached to the slot. The slot's
+    bookable roster is the union of both, so a calendar that is inline AND in
+    two attached pools holds three rows and survives losing any two of them.
     """
 
     slot = OrganizationSafeForeignKey(
@@ -461,19 +487,65 @@ class CalendarGroupSlotMembership(
         on_delete=models.CASCADE,
         related_name="group_slot_memberships",
     )
+    source_pool = OrganizationSafeForeignKey(
+        "CalendarPool",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="projected_slot_memberships",
+        help_text=(
+            "The pool this roster row was projected from, or NULL when the "
+            "calendar was added to the slot directly. Only "
+            "CalendarGroupService._reconcile_slot_pools writes non-NULL rows, "
+            "and only it deletes them; the inline path never reads or writes "
+            "them. CASCADE is safe here because CalendarGroupSlotPool.pool "
+            "PROTECTs the pool for as long as any slot references it, so a "
+            "pool with projected rows cannot reach this cascade."
+        ),
+    )
 
     objects: ClassVar[CalendarGroupSlotMembershipManager] = CalendarGroupSlotMembershipManager()
 
     class Meta:
+        # Two PARTIAL unique indexes, not one three-column constraint.
+        #
+        # ``UNIQUE(slot_fk, calendar_fk, source_pool_fk)`` as a plain constraint
+        # is silently wrong: Postgres treats NULLs as distinct, so two INLINE
+        # rows for the same (slot, calendar) would both be accepted and a slot's
+        # roster satisfaction count would double-count one calendar. Postgres 15
+        # added ``NULLS NOT DISTINCT`` (Django's ``UniqueConstraint(
+        # nulls_distinct=False)``), but this project still runs against
+        # Postgres 14 in local development, so the portable form -- a pair of
+        # partial unique indexes covering the NULL and NOT NULL halves -- is
+        # what ships. Together they are exactly "unique on (slot, calendar,
+        # source_pool) with NULL treated as a value".
         constraints = (
             models.UniqueConstraint(
                 fields=("slot_fk", "calendar_fk"),
-                name="calendargroupslotmembership_unique_slot_calendar",
+                condition=models.Q(source_pool_fk__isnull=True),
+                name="calendargroupslotmembership_uniq_inline",
+            ),
+            models.UniqueConstraint(
+                fields=("slot_fk", "calendar_fk", "source_pool_fk"),
+                condition=models.Q(source_pool_fk__isnull=False),
+                name="calendargroupslotmembership_uniq_projected",
+            ),
+        )
+        indexes = (
+            # Serves the detach path, which deletes by (slot, source_pool), and
+            # the reconcile command, which sweeps by source_pool.
+            models.Index(
+                fields=["organization", "source_pool_fk"],
+                name="cgsmembership_org_srcpool_idx",
             ),
         )
 
     def __str__(self):
-        return f"{self.calendar_fk_id} in slot {self.slot_fk_id}"
+        if self.source_pool_fk_id is None:
+            return f"{self.calendar_fk_id} in slot {self.slot_fk_id}"
+        return (
+            f"{self.calendar_fk_id} in slot {self.slot_fk_id} (from pool {self.source_pool_fk_id})"
+        )
 
 
 class CalendarGroupSlotQuotaRule(
@@ -621,6 +693,50 @@ class CalendarPoolMembership(SingleOrganizationModelMixin, SafeRelationNullInitM
 
     def __str__(self):
         return f"{self.calendar_fk_id} in pool {self.pool_fk_id}"
+
+
+class CalendarGroupSlotPool(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel):
+    """
+    Through model attaching a ``CalendarPool`` to a ``CalendarGroupSlot``.
+
+    Attaching projects one ``CalendarGroupSlotMembership`` per pool calendar
+    (with ``source_pool`` set to that pool); detaching deletes exactly those
+    rows and nothing else. ``CalendarGroupService._reconcile_slot_pools`` is
+    the only writer of both sides.
+
+    Deletion asymmetry is deliberate:
+
+    - ``slot`` CASCADEs -- deleting a slot drops its attachments, and the
+      projected membership rows go with the slot's own CASCADE.
+    - ``pool`` PROTECTs -- this FK is what enforces the plan's
+      refuse-when-referenced rule at the schema level rather than in
+      application code, so a pool attached anywhere cannot be deleted even by
+      a path that never consulted the service.
+    """
+
+    slot = OrganizationSafeForeignKey(
+        CalendarGroupSlot,
+        on_delete=models.CASCADE,
+        related_name="pool_attachments",
+    )
+    pool = OrganizationSafeForeignKey(
+        CalendarPool,
+        on_delete=models.PROTECT,
+        related_name="slot_attachments",
+    )
+
+    objects: ClassVar[CalendarGroupSlotPoolManager] = CalendarGroupSlotPoolManager()
+
+    class Meta:
+        constraints = (
+            models.UniqueConstraint(
+                fields=("slot_fk", "pool_fk"),
+                name="calendargroupslotpool_unique_slot_pool",
+            ),
+        )
+
+    def __str__(self):
+        return f"pool {self.pool_fk_id} attached to slot {self.slot_fk_id}"
 
 
 class ExternalAttendee(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel):

@@ -196,6 +196,45 @@ class TestCalendarGroupCrud:
         assert response.data["public_booking_slug"] == owned_group.public_booking_slug
         assert response.data["public_booking_slug"]
 
+    def test_retrieve_lists_a_doubly_sourced_calendar_once(
+        self, auth_client, organization, internal_calendars, owned_group
+    ):
+        """A calendar reachable both inline and through an attached pool is one
+        entry in ``slots[].calendars``, not two.
+
+        Since Calendar Pools projected pool rosters into
+        ``CalendarGroupSlotMembership``, the slot's M2M can yield the same
+        ``Calendar`` once per source row. ``CalendarGroupSlotVirtualModel``
+        deduplicates the prefetch; without that this response would repeat the
+        calendar.
+        """
+        from calendar_integration.factories import create_calendar_pool
+        from calendar_integration.models import CalendarGroupSlotPool
+
+        physicians = owned_group.slots.get(name="Physicians")
+        pool = create_calendar_pool(
+            organization=organization,
+            name="Nurses",
+            calendars=[internal_calendars["phys_a"]],
+        )
+        CalendarGroupSlotPool.objects.create(organization=organization, slot=physicians, pool=pool)
+        CalendarGroupSlotMembership.objects.create(
+            organization=organization,
+            slot=physicians,
+            calendar=internal_calendars["phys_a"],
+            source_pool=pool,
+        )
+
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        response = auth_client.get(url)
+
+        _assert_status(response, status.HTTP_200_OK)
+        slot_payload = next(s for s in response.data["slots"] if s["name"] == "Physicians")
+        calendar_ids = [c["id"] for c in slot_payload["calendars"]]
+        assert sorted(calendar_ids) == sorted(
+            [internal_calendars["phys_a"].id, internal_calendars["phys_b"].id]
+        )
+
     def test_retrieve_not_found_if_user_does_not_own_any_pool_calendar(
         self, auth_client, organization, internal_calendars
     ):

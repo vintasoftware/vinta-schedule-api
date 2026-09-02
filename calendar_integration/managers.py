@@ -19,6 +19,7 @@ from calendar_integration.querysets import (
     CalendarEventQuerySet,
     CalendarGroupQuerySet,
     CalendarGroupSlotMembershipQuerySet,
+    CalendarGroupSlotPoolQuerySet,
     CalendarGroupSlotQuerySet,
     CalendarGroupSlotQuotaRuleQuerySet,
     CalendarManagementTokenQuerySet,
@@ -54,6 +55,9 @@ _CalendarGroupManagerBase = OrganizationScopedManager.from_queryset(CalendarGrou
 _CalendarGroupSlotManagerBase = OrganizationScopedManager.from_queryset(CalendarGroupSlotQuerySet)
 _CalendarGroupSlotMembershipManagerBase = OrganizationScopedManager.from_queryset(
     CalendarGroupSlotMembershipQuerySet
+)
+_CalendarGroupSlotPoolManagerBase = OrganizationScopedManager.from_queryset(
+    CalendarGroupSlotPoolQuerySet
 )
 _CalendarGroupSlotQuotaRuleManagerBase = OrganizationScopedManager.from_queryset(
     CalendarGroupSlotQuotaRuleQuerySet
@@ -394,6 +398,18 @@ class CalendarGroupSlotManager(_CalendarGroupSlotManagerBase):  # type: ignore[m
 
 class CalendarGroupSlotMembershipManager(_CalendarGroupSlotMembershipManagerBase):  # type: ignore[misc,valid-type]
     """Custom manager for CalendarGroupSlotMembership model to handle specific queries."""
+
+    def inline(self) -> CalendarGroupSlotMembershipQuerySet:
+        """Wraps :meth:`CalendarGroupSlotMembershipQuerySet.inline`."""
+        return self.get_queryset().inline()
+
+    def projected(self) -> CalendarGroupSlotMembershipQuerySet:
+        """Wraps :meth:`CalendarGroupSlotMembershipQuerySet.projected`."""
+        return self.get_queryset().projected()
+
+
+class CalendarGroupSlotPoolManager(_CalendarGroupSlotPoolManagerBase):  # type: ignore[misc,valid-type]
+    """Custom manager for CalendarGroupSlotPool model to handle specific queries."""
 
 
 class CalendarPoolManager(_CalendarPoolManagerBase):  # type: ignore[misc,valid-type]

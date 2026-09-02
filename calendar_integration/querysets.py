@@ -935,8 +935,16 @@ class CalendarGroupQuerySet(OrganizationScopedQuerySet):
                 # from availability results.
                 .filter(group_fk_id=OuterRef("id"), organization_id=OuterRef("organization_id"))
                 .annotate(
+                    # Counts distinct CALENDARS, not distinct membership rows.
+                    # Once a calendar can reach a slot from more than one source
+                    # (inline plus one or more pools, per the Calendar Pools
+                    # plan's Roster composition decision), it holds several
+                    # ``CalendarGroupSlotMembership`` rows for the same slot, and
+                    # ``Count("memberships", distinct=True)`` would count each of
+                    # them -- reporting a slot needing two calendars as satisfied
+                    # by one calendar present twice.
                     available_in_slot=Count(
-                        "memberships",
+                        "memberships__calendar_fk_id",
                         filter=Q(memberships__calendar_fk_id__in=Subquery(available_calendar_ids)),
                         distinct=True,
                     ),
@@ -1083,6 +1091,30 @@ class CalendarGroupSlotQuerySet(OrganizationScopedQuerySet):
 class CalendarGroupSlotMembershipQuerySet(OrganizationScopedQuerySet):
     """
     Custom QuerySet for CalendarGroupSlotMembership model to handle specific queries.
+    """
+
+    def inline(self) -> "CalendarGroupSlotMembershipQuerySet":
+        """Only the rows a user put on the slot directly (``source_pool IS NULL``).
+
+        The inline half of the projected union (see the Calendar Pools plan's
+        Guiding Decisions -> Roster resolution). Every roster row that existed
+        before pools shipped is inline, and the pool projection must neither
+        read nor write these.
+        """
+        return self.filter(source_pool_fk__isnull=True)
+
+    def projected(self) -> "CalendarGroupSlotMembershipQuerySet":
+        """Only the rows projected from an attached pool (``source_pool IS NOT NULL``).
+
+        The complement of :meth:`inline`. This is the only set
+        ``CalendarGroupService._reconcile_slot_pools`` may delete.
+        """
+        return self.filter(source_pool_fk__isnull=False)
+
+
+class CalendarGroupSlotPoolQuerySet(OrganizationScopedQuerySet):
+    """
+    Custom QuerySet for CalendarGroupSlotPool model to handle specific queries.
     """
 
 

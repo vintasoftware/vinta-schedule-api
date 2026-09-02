@@ -219,6 +219,11 @@ class CalendarGroupFilterSet(filters.FilterSet):
         self.filters["calendar"] = filters.ModelChoiceFilter(
             field_name="slots__memberships__calendar_fk_id",
             label="Filter to groups whose slot pools include this calendar",
+            # A calendar can hold several CalendarGroupSlotMembership rows for one
+            # slot since Calendar Pools projected pool rosters into that table
+            # (inline plus one per attached pool listing it), and this join would
+            # otherwise return the group once per row.
+            distinct=True,
             queryset=(
                 Calendar.objects.filter_by_organization(membership.organization_id)
                 if membership

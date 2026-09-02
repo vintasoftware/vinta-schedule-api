@@ -334,6 +334,15 @@ class CalendarGroupSlotInputData:
     required_count: int = 1
     description: str = ""
     order: int = 0
+    #: Ids of the ``CalendarPool``s attached to this slot, whose rosters are
+    #: projected into the slot's memberships alongside ``calendar_ids``.
+    #:
+    #: ``None`` (the default, and what every pre-pools caller sends) means
+    #: "leave the slot's pool attachments exactly as they are" -- NOT "detach
+    #: everything". An empty list is the explicit detach-all. The distinction
+    #: matters because a client that never learned about pools must not silently
+    #: strip them from a group it round-trips.
+    pool_ids: list[int] | None = None
 
 
 @dataclass

@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Annotated, cast
 
 from django.core.exceptions import PermissionDenied
 from django.db import IntegrityError, transaction
-from django.db.models import Exists, Model, OuterRef
+from django.db.models import Exists, Model, OuterRef, Q
 from django.utils import timezone
 
 from dependency_injector.wiring import Provide, inject
@@ -37,8 +37,11 @@ from calendar_integration.models import (
     CalendarGroup,
     CalendarGroupSlot,
     CalendarGroupSlotMembership,
+    CalendarGroupSlotPool,
     CalendarGroupSlotQuotaRule,
     CalendarOwnership,
+    CalendarPool,
+    CalendarPoolMembership,
     RecurrenceRule,
 )
 from calendar_integration.querysets import CalendarEventQuerySet
@@ -254,23 +257,120 @@ class CalendarGroupService:
         self._assert_initialized()
         return CalendarGroup.objects.filter_by_organization(self.organization_id).get(id=group_id)
 
+    def _resolve_effective_pool_ids(
+        self,
+        slots: list[CalendarGroupSlotInputData],
+        existing_slots: dict[str, CalendarGroupSlot] | None,
+    ) -> dict[str, list[int]]:
+        """Map each incoming slot name to the pool ids it will end up attached to.
+
+        ``pool_ids is None`` means "leave attachments unchanged", so the answer
+        for such a slot is whatever is attached to the existing slot of that
+        name today (nothing, for a slot being created). Resolving this up front
+        is what lets validation reason about the *effective* roster -- inline
+        calendars plus pool calendars -- rather than only the inline half.
+        """
+        effective: dict[str, list[int]] = {}
+        known_slots = existing_slots or {}
+        unchanged_slot_ids = [
+            known_slots[s.name].id for s in slots if s.pool_ids is None and s.name in known_slots
+        ]
+        attached_by_slot_id: dict[int, list[int]] = {}
+        if unchanged_slot_ids:
+            rows = (
+                CalendarGroupSlotPool.objects.filter_by_organization(self.organization_id)
+                .filter(slot_fk_id__in=unchanged_slot_ids)
+                .values_list("slot_fk_id", "pool_fk_id")
+            )
+            for slot_id, pool_id in rows:
+                attached_by_slot_id.setdefault(slot_id, []).append(pool_id)
+
+        for slot_data in slots:
+            if slot_data.pool_ids is not None:
+                effective[slot_data.name] = list(dict.fromkeys(slot_data.pool_ids))
+            elif slot_data.name in known_slots:
+                effective[slot_data.name] = attached_by_slot_id.get(
+                    known_slots[slot_data.name].id, []
+                )
+            else:
+                effective[slot_data.name] = []
+        return effective
+
+    def _pool_rosters(self, pool_ids: Iterable[int]) -> dict[int, set[int]]:
+        """Map pool id -> the calendar ids on its roster, for pools in this org.
+
+        Raises when a referenced pool is not this organization's, so a
+        cross-tenant pool id cannot be projected into a slot.
+        """
+        pool_ids = set(pool_ids)
+        if not pool_ids:
+            return {}
+        known_pool_ids = set(
+            CalendarPool.objects.filter_by_organization(self.organization_id)
+            .filter(id__in=pool_ids)
+            .values_list("id", flat=True)
+        )
+        missing = pool_ids - known_pool_ids
+        if missing:
+            raise CalendarGroupValidationError(
+                f"Calendar pools {sorted(missing)} do not belong to this organization."
+            )
+        rosters: dict[int, set[int]] = {pool_id: set() for pool_id in pool_ids}
+        rows = (
+            CalendarPoolMembership.objects.filter_by_organization(self.organization_id)
+            .filter(pool_fk_id__in=pool_ids)
+            .values_list("pool_fk_id", "calendar_fk_id")
+        )
+        for pool_id, calendar_id in rows:
+            rosters[pool_id].add(calendar_id)
+        return rosters
+
     def _validate_slots_input(
-        self, slots: Iterable[CalendarGroupSlotInputData]
+        self,
+        slots: Iterable[CalendarGroupSlotInputData],
+        existing_slots: dict[str, CalendarGroupSlot] | None = None,
     ) -> tuple[list[CalendarGroupSlotInputData], set[int]]:
+        """Validate incoming slot definitions against the EFFECTIVE roster.
+
+        The effective roster of a slot is the union of its inline
+        ``calendar_ids`` and the rosters of the pools it will be attached to
+        (see the Calendar Pools plan's Roster composition decision). Every
+        size-sensitive rule below -- non-empty, ``required_count`` ceiling,
+        one-slot-per-calendar -- is judged against that union, so a slot may be
+        made entirely of pool calendars and a ``required_count`` of 2 may be
+        satisfied by one inline calendar plus one from a pool.
+
+        ``existing_slots`` (name -> slot) is how an update tells this method what
+        a slot with ``pool_ids=None`` is already attached to; a create passes
+        nothing and every such slot resolves to no pools.
+        """
         slots = list(slots)
+
+        effective_pool_ids_by_slot_name = self._resolve_effective_pool_ids(slots, existing_slots)
+        pool_rosters = self._pool_rosters(
+            {pid for pids in effective_pool_ids_by_slot_name.values() for pid in pids}
+        )
 
         seen_slot_names: set[str] = set()
         calendar_to_slot_name: dict[int, str] = {}
+        all_calendar_ids: set[int] = set()
         for slot_data in slots:
             if slot_data.name in seen_slot_names:
                 raise CalendarGroupValidationError(f"Duplicate slot name: {slot_data.name!r}.")
             seen_slot_names.add(slot_data.name)
 
+            effective_calendar_ids = set(slot_data.calendar_ids)
+            for pool_id in effective_pool_ids_by_slot_name[slot_data.name]:
+                effective_calendar_ids |= pool_rosters[pool_id]
+            all_calendar_ids |= effective_calendar_ids
+
             # A calendar may belong to at most one slot per group. Availability and
             # bookable-slot computation count each slot's pool independently, so an
             # overlapping calendar would be double-counted and the group reported
-            # bookable when no valid disjoint assignment exists.
-            for cid in slot_data.calendar_ids:
+            # bookable when no valid disjoint assignment exists. Judged on the
+            # effective roster: attaching one pool to two slots of the same group
+            # produces exactly that double-count.
+            for cid in sorted(effective_calendar_ids):
                 other_slot = calendar_to_slot_name.get(cid)
                 if other_slot is not None and other_slot != slot_data.name:
                     raise CalendarGroupValidationError(
@@ -280,7 +380,7 @@ class CalendarGroupService:
                     )
                 calendar_to_slot_name[cid] = slot_data.name
 
-            if not slot_data.calendar_ids:
+            if not effective_calendar_ids:
                 raise CalendarGroupValidationError(
                     f"Slot {slot_data.name!r} must include at least one calendar."
                 )
@@ -292,20 +392,22 @@ class CalendarGroupService:
                 raise CalendarGroupValidationError(
                     f"Slot {slot_data.name!r} required_count must be >= 1."
                 )
-            if slot_data.required_count > len(slot_data.calendar_ids):
+            if slot_data.required_count > len(effective_calendar_ids):
                 raise CalendarGroupValidationError(
                     f"Slot {slot_data.name!r} required_count ({slot_data.required_count}) "
-                    f"exceeds pool size ({len(slot_data.calendar_ids)})."
+                    f"exceeds pool size ({len(effective_calendar_ids)})."
                 )
 
-        all_calendar_ids = {cid for slot in slots for cid in slot.calendar_ids}
-        if all_calendar_ids:
+        # Pool calendars were validated as belonging to this organization when
+        # their pool was, so only the inline ids need the membership check.
+        inline_calendar_ids = {cid for slot in slots for cid in slot.calendar_ids}
+        if inline_calendar_ids:
             org_calendar_ids = set(
                 Calendar.objects.filter_by_organization(self.organization_id)
-                .filter(id__in=all_calendar_ids)
+                .filter(id__in=inline_calendar_ids)
                 .values_list("id", flat=True)
             )
-            missing = all_calendar_ids - org_calendar_ids
+            missing = inline_calendar_ids - org_calendar_ids
             if missing:
                 raise CalendarGroupValidationError(
                     f"Calendars {sorted(missing)} do not belong to this organization."
@@ -390,7 +492,11 @@ class CalendarGroupService:
         self._assert_initialized()
         self._check_not_restricted()
         group = self._get_group_by_id(group_id)
-        slots_data, _ = self._validate_slots_input(data.slots)
+        # Resolved before validation: a slot whose ``pool_ids`` is omitted keeps
+        # the pools it already has, and validation has to judge required_count
+        # against that same effective roster.
+        existing_slots = {s.name: s for s in group.slots.all()}
+        slots_data, _ = self._validate_slots_input(data.slots, existing_slots=existing_slots)
 
         before = {
             "name": group.name,
@@ -430,7 +536,6 @@ class CalendarGroupService:
 
         group.save(update_fields=update_fields)
 
-        existing_slots = {s.name: s for s in group.slots.all()}
         incoming_names = {s.name for s in slots_data}
 
         # Computed once, above the loop: two slots removed in the same call
@@ -509,9 +614,110 @@ class CalendarGroupService:
                         organization=self.organization,
                         slot_fk=slot,
                         calendar_fk_id=cid,
+                        # Explicit: rows written by the inline path carry no
+                        # source pool. See `_reconcile_slot_pools` for the other
+                        # half of the union.
+                        source_pool_fk=None,
                     )
                     for cid in slot_data.calendar_ids
                 ]
+            )
+            if slot_data.pool_ids is not None:
+                self._reconcile_slot_pools(slot, slot_data.pool_ids)
+
+    def _reconcile_slot_pools(self, slot: CalendarGroupSlot, pool_ids: Iterable[int]) -> None:
+        """Make ``slot``'s attached pools exactly ``pool_ids`` and reproject them.
+
+        The single entry point for every write that can change a slot's
+        projected roster (the plan's Drift mitigation decision). Always called
+        from inside ``update_group`` / ``create_group``'s ``transaction.atomic()``,
+        so an attachment and the membership rows it implies land together or not
+        at all.
+
+        Two rules make this safe to run repeatedly:
+
+        - **Inline rows are invisible to it.** Both the read of what is currently
+          projected and every delete it issues are filtered to
+          ``source_pool_fk__isnull=False``. A calendar that is inline *and* in an
+          attached pool holds two rows; detaching the pool removes the projected
+          one and leaves the inline one, which is exactly the union semantics the
+          plan asks for.
+        - **It is idempotent and self-correcting.** The desired projection is
+          recomputed from the pools' current rosters rather than diffed against
+          what was attached before, so re-running it repairs drift instead of
+          compounding it. ``reconcile_calendar_pool_projections`` reuses it for
+          that reason.
+        """
+        desired_pool_ids = set(pool_ids)
+        rosters = self._pool_rosters(desired_pool_ids)
+
+        attached_pool_ids = set(
+            CalendarGroupSlotPool.objects.filter_by_organization(self.organization_id)
+            .filter(slot_fk=slot)
+            .values_list("pool_fk_id", flat=True)
+        )
+        to_detach = attached_pool_ids - desired_pool_ids
+        to_attach = desired_pool_ids - attached_pool_ids
+
+        if to_detach:
+            CalendarGroupSlotPool.objects.filter_by_organization(self.organization_id).filter(
+                slot_fk=slot, pool_fk_id__in=to_detach
+            ).delete()
+        if to_attach:
+            CalendarGroupSlotPool.objects.bulk_create(
+                [
+                    CalendarGroupSlotPool(
+                        organization=self.organization,
+                        slot_fk=slot,
+                        pool_fk_id=pool_id,
+                    )
+                    for pool_id in sorted(to_attach)
+                ]
+            )
+
+        desired_rows = {
+            (pool_id, calendar_id)
+            for pool_id in desired_pool_ids
+            for calendar_id in rosters[pool_id]
+        }
+        existing_rows = set(
+            CalendarGroupSlotMembership.objects.filter_by_organization(self.organization_id)
+            .projected()
+            .filter(slot_fk=slot)
+            .values_list("source_pool_fk_id", "calendar_fk_id")
+        )
+
+        stale_rows = existing_rows - desired_rows
+        if stale_rows:
+            stale_filter = Q()
+            for pool_id, calendar_id in stale_rows:
+                stale_filter |= Q(source_pool_fk_id=pool_id, calendar_fk_id=calendar_id)
+            CalendarGroupSlotMembership.objects.filter_by_organization(
+                self.organization_id
+            ).projected().filter(slot_fk=slot).filter(stale_filter).delete()
+
+        new_rows = desired_rows - existing_rows
+        if new_rows:
+            CalendarGroupSlotMembership.objects.bulk_create(
+                [
+                    CalendarGroupSlotMembership(
+                        organization=self.organization,
+                        slot_fk=slot,
+                        calendar_fk_id=calendar_id,
+                        source_pool_fk_id=pool_id,
+                    )
+                    for pool_id, calendar_id in sorted(new_rows)
+                ]
+            )
+
+        if to_detach or to_attach:
+            self._audit_group_write(
+                AuditAction.UPDATE,
+                slot,
+                diff=compute_diff(
+                    {"pool_ids": sorted(attached_pool_ids)},
+                    {"pool_ids": sorted(desired_pool_ids)},
+                ),
             )
 
     def _reconcile_slot(
@@ -524,7 +730,15 @@ class CalendarGroupService:
         slot.required_count = slot_data.required_count
         slot.save(update_fields=["description", "order", "required_count", "modified"])
 
-        existing_calendar_ids = set(slot.memberships.values_list("calendar_fk_id", flat=True))
+        # INLINE ONLY. Reading the whole `memberships` relation here would let a
+        # calendar that is only in the slot because a pool projects it look like
+        # an inline row the caller just dropped, and the delete below would
+        # remove the projected row the pool still owns.
+        existing_calendar_ids = set(
+            slot.memberships.filter(source_pool_fk__isnull=True).values_list(
+                "calendar_fk_id", flat=True
+            )
+        )
         incoming_calendar_ids = set(slot_data.calendar_ids)
 
         to_remove = existing_calendar_ids - incoming_calendar_ids
@@ -536,9 +750,9 @@ class CalendarGroupService:
             # bookings and never touches the calendar's group-scoped rows --
             # see Guiding Decisions -> Roster removal semantics / Scoped-row
             # survival in the Phase 1 plan.
-            CalendarGroupSlotMembership.objects.filter_by_organization(self.organization_id).filter(
-                slot_fk=slot, calendar_fk_id__in=to_remove
-            ).delete()
+            CalendarGroupSlotMembership.objects.filter_by_organization(
+                self.organization_id
+            ).inline().filter(slot_fk=slot, calendar_fk_id__in=to_remove).delete()
 
         if to_add:
             CalendarGroupSlotMembership.objects.bulk_create(
@@ -547,6 +761,7 @@ class CalendarGroupService:
                         organization=self.organization,
                         slot_fk=slot,
                         calendar_fk_id=cid,
+                        source_pool_fk=None,
                     )
                     for cid in to_add
                 ]
@@ -567,6 +782,12 @@ class CalendarGroupService:
                 ),
             )
 
+        # An omitted `pool_ids` means "leave attachments unchanged", so nothing
+        # happens here for a client that never learned about pools, and a group
+        # with no pools resolves through the exact path it did before.
+        if slot_data.pool_ids is not None:
+            self._reconcile_slot_pools(slot, slot_data.pool_ids)
+
     # ------------------------------------------------------------------
     # Group-scoped availability windows (writes)
     # ------------------------------------------------------------------
@@ -581,16 +802,27 @@ class CalendarGroupService:
         whether the slot doesn't exist, the calendar doesn't exist, or the
         calendar simply isn't a member of that slot -- callers must not be able
         to tell which case applies from the error alone.
+
+        ``first()``, not ``get()``: since Calendar Pools projected pool rosters
+        into this table, a calendar can hold several membership rows for one
+        slot (inline plus one per attached pool that lists it), and ``get()``
+        would raise ``MultipleObjectsReturned`` -- a 500 -- the first time a
+        group-scoped window, block, or quota rule was written for such a
+        calendar. Every caller uses the row only to hydrate ``.calendar`` and
+        ``.slot``, which are identical across the duplicates; ``order_by("id")``
+        makes the pick deterministic rather than dependent on the plan.
         """
         org_id = self.organization_id
-        try:
-            return (
-                CalendarGroupSlotMembership.objects.filter_by_organization(org_id)
-                .select_related("slot", "calendar")
-                .get(slot_fk_id=group_slot_id, calendar_fk_id=calendar_id)
-            )
-        except CalendarGroupSlotMembership.DoesNotExist:
-            raise CalendarGroupSlotConfigNotFoundError() from None
+        membership = (
+            CalendarGroupSlotMembership.objects.filter_by_organization(org_id)
+            .select_related("slot", "calendar")
+            .filter(slot_fk_id=group_slot_id, calendar_fk_id=calendar_id)
+            .order_by("id")
+            .first()
+        )
+        if membership is None:
+            raise CalendarGroupSlotConfigNotFoundError()
+        return membership
 
     def _get_group_scoped_window(self, window_id: int) -> AvailableTime:
         """Fetch a group-scoped ``AvailableTime`` row by id, scoped to this org.

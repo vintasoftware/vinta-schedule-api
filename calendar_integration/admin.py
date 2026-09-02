@@ -397,12 +397,15 @@ class CalendarGroupSlotAdmin(admin.ModelAdmin):
             super()
             .get_queryset(request)
             .select_related("organization", "group_fk")
-            .annotate(_calendar_count=Count("memberships"))
+            # Distinct CALENDARS, not membership rows: a calendar reachable both
+            # inline and through an attached CalendarPool holds one row per
+            # source, and counting rows would overstate the roster.
+            .annotate(_calendar_count=Count("memberships__calendar_fk_id", distinct=True))
         )
 
     @admin.display(description="Calendars", ordering="_calendar_count")
     def calendar_count(self, obj: CalendarGroupSlot) -> int:
-        return getattr(obj, "_calendar_count", obj.memberships.count())
+        return getattr(obj, "_calendar_count", obj.calendars.distinct().count())
 
 
 @admin.register(CalendarEventGroupSelection)

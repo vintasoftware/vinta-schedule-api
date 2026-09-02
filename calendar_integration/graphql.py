@@ -136,6 +136,27 @@ def _scoped_calendar_list(
     return [c for c in calendars if c.id in allowed_ids]
 
 
+def _deduplicated_calendars(calendars: "list[Calendar]") -> "list[Calendar]":
+    """Collapse repeated calendars, keeping first-seen order.
+
+    ``CalendarGroupSlot.calendars`` resolves a projected UNION: a calendar that
+    is both inline on the slot and in an attached ``CalendarPool`` holds one
+    ``CalendarGroupSlotMembership`` row per source, so the M2M yields it once per
+    row. Deduplicating in Python rather than with ``.distinct()`` is deliberate --
+    ``.distinct()`` on the related manager would bypass the
+    ``slots__calendars__ownerships__...`` prefetch the group resolvers install and
+    reintroduce an N+1 over slots.
+    """
+    seen: set[int] = set()
+    unique: list[Calendar] = []
+    for calendar in calendars:
+        if calendar.id in seen:
+            continue
+        seen.add(calendar.id)
+        unique.append(calendar)
+    return unique
+
+
 def _attach_current_roster_flags(
     selections: "list[CalendarEventGroupSelection]",
 ) -> None:
@@ -856,8 +877,15 @@ class CalendarGroupSlotGraphQLType:
         This is the SECOND-HOP leak: a scoped token cannot reach a slot via the
         suppressed ``calendar_group``, but it can still reach one through the sibling
         path ``calendarEvent.groupSelections.slot.calendars``. Filtering the pool here
-        closes that path; the entire cross-provider candidate pool is otherwise exposed."""
-        return _scoped_calendar_list(list(self.calendars.all()), _owner_scoped_calendar_ids(info))  # type: ignore
+        closes that path; the entire cross-provider candidate pool is otherwise exposed.
+
+        Deduplicated because the roster is a projected UNION -- see
+        ``_deduplicated_calendars`` for why that happens in Python rather than
+        through ``.distinct()``."""
+        return _scoped_calendar_list(  # type: ignore[return-value]
+            _deduplicated_calendars(list(self.calendars.all())),  # type: ignore[attr-defined]
+            _owner_scoped_calendar_ids(info),
+        )
 
 
 @strawberry_django.type(CalendarGroup)
