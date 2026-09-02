@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import datetime
 import uuid
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from unittest.mock import patch as _patch
 
 import pytest
@@ -131,7 +131,15 @@ def _invoke_mutation(
     calendar: Calendar,
     deps: CalendarGroupMutationDependencies,
 ) -> object:
-    """Invoke the createCalendarGroupEvent mutation directly (no HTTP)."""
+    """Invoke the createCalendarGroupEvent mutation directly (no HTTP).
+
+    The resolver now resolves its organization from the authenticated
+    token via ``info.context.request.public_api_organization`` (see
+    ``calendar_integration/mutations.py``'s ``create_calendar_group_event``),
+    rather than from ``input.organization_id`` -- so a direct-call test must
+    fake that request context. ``input.organization_id`` is still supplied
+    and must match ``org`` for the resolver's own-org check to pass.
+    """
     mutations = CalendarGroupMutations()
     input_data = CalendarGroupEventInput(
         organization_id=org.id,
@@ -145,12 +153,14 @@ def _invoke_mutation(
             CalendarGroupSlotSelectionInput(slot_id=slot.id, calendar_ids=[calendar.id])
         ],
     )
+    mock_info = Mock()
+    mock_info.context.request.public_api_organization = org
     # Patch the dependency factory so our real-deps (with policy) are used.
     with patch(
         "calendar_integration.mutations.get_calendar_group_mutation_dependencies",
         return_value=deps,
     ):
-        return mutations.create_calendar_group_event(input_data)  # type: ignore[arg-type]
+        return mutations.create_calendar_group_event(mock_info, input_data)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------

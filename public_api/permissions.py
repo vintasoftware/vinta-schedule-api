@@ -40,6 +40,10 @@ class OrganizationResourceAccess(BasePermission):
         "calendarGroupAvailability": PublicAPIResources.CALENDAR_GROUP,
         "calendarGroupBookableSlots": PublicAPIResources.CALENDAR_GROUP,
         "calendarGroupEvents": PublicAPIResources.CALENDAR_GROUP,
+        "createCalendarGroup": PublicAPIResources.CALENDAR_GROUP,
+        "updateCalendarGroup": PublicAPIResources.CALENDAR_GROUP,
+        "deleteCalendarGroup": PublicAPIResources.CALENDAR_GROUP,
+        "createCalendarGroupEvent": PublicAPIResources.CALENDAR_GROUP,
         "deleteSystemUser": PublicAPIResources.SYSTEM_USER,
         "createOrganization": PublicAPIResources.ORGANIZATION,
         # createInvitation requires INVITATION scope. MEMBERSHIP is conceptually also implied
