@@ -18,11 +18,39 @@
 | `worktree_path` | `/Users/hugobessa/Workspaces/vinta/vinta-schedule-api/.claude/worktrees/plan-rest-code-gated-scheduling` |
 | `worktree_branch` | `plan-rest-code-gated-scheduling` (base `f8a36e14`) |
 | `worktree_summary` | `.vinta-ai-workflows/worktrees/plan-rest-code-gated-scheduling.yaml` |
-| `sandbox_tier` | `enforced` (`sandbox-exec`) |
+| `sandbox_tier` | `enforced` on paper, but INERT for this session's in-process subagents (Claude Code reads the guard at session start, and this session is rooted in the main checkout). The active protection is the review-phase stray-write backstop, run after every implementer and fixer. |
+| command surface | **container only** -- see below |
 
 **Agent models** (from `.vinta-ai-workflows.yaml` `agent_models`): reviewer T3, fixer T2, worktree_prep T1, integrate T1. Per-phase reviewer overrides from the plan: Phase 0 → T4, Phase 3 → T3, Phase 5 → T3, Phase 6 → T4.
 
-**Worktree resources** — dev DB `vinta_schedule_api_wt_plan-rest-code-gated-scheduling`, test DB `test_vinta_schedule_api_wt_plan-rest-code-gated-scheduling`, `.venv` + `node_modules` symlinked to the main checkout, `.env` / `.env.docker` copied with forked DB URLs. No compose override (the plan adds no services).
+### Command surface — read before running anything
+
+Every lint / test / type / migrate command runs through the container:
+
+```
+docker compose -p vinta-schedule-api run --rm --no-deps api uv run <command>
+```
+
+`-p vinta-schedule-api` reuses the already-running `db` / `broker` / `result` containers
+instead of spawning a second set. `--no-deps` avoids a `mailpit` host-port conflict with an
+unrelated `vinta-people-manager` project on this machine.
+
+**Do not use bare `uv run` on the host here.** It reads `.env` → `localhost:5432`, where a
+Homebrew PostgreSQL 14 shadows the docker PostgreSQL 18 container, and this plan's migration
+`0051` uses PG15+ `ON DELETE SET NULL (column_list)` syntax that is a hard parse error on 14.
+The container reaches PG18 as host `db` and is unaffected. CI runs `postgres:15`; Render runs 18.
+
+Phase 0 and the first half of Phase 1 were verified on the host surface before this was
+corrected; both were re-verified through the container afterwards. `WORKTREE.md` carries the
+same guidance.
+
+**Worktree resources** — dev DB `vinta_schedule_api_wt_plan-rest-code-gated-scheduling` and
+test DBs `test_..._wt_plan-rest-code-gated-scheduling[_gwN]`, all inside the shared
+`vinta-schedule-api-db-1` container (Postgres 18). `.venv` + `node_modules` symlinked to the main
+checkout. Both `.env` (host surface) and `.env.docker` (container surface) now point at the forked
+dev DB — note `prepare-worktree` forked only `.env` and copied `.env.docker` verbatim, so the
+container surface pointed at the SHARED `vinta_schedule_api` database until this was corrected
+during Phase 1. No compose override; the plan adds no services.
 
 ## Completed phases
 
@@ -77,15 +105,47 @@ Verification: full suite 5712 passed; mypy clean (771 files); `makemigrations --
 clean; migration applies/reverses/reapplies on PG18; constraint confirmed
 `convalidated` / `condeferrable` / `condeferred` with `SET NULL` scoped to the single column.
 
+### Phase 1 -- Code-gated single-calendar booking
+
+Branch `plan/rest-code-gated-scheduling/phase-1`, base `plan/rest-code-gated-scheduling/phase-0`.
+Commits: `3fa6883d` (implementation), `15ac5518` (reviewer findings).
+Models used: implementer tier 3 -> sonnet; reviewer tier 3 -> sonnet; fixer tier 2 -> sonnet.
+8 files, +1075 / -5 before fixes. Review: 0 BLOCKER, 1 SHOULD-FIX, 1 NIT, both applied.
+
+What landed: `POST /public/booking/calendar-events/` -- the first reachable endpoint on the
+booking surface. `BookingCodeCalendarEventViewSet` (a bare `viewsets.GenericViewSet`, since the
+project's `*VintaScheduleModelViewSet` bases mix in `TenantScopedViewMixin`, which needs request-bound
+organization state this unauthenticated endpoint does not have) plus `BookingCodeEventCreateSerializer`.
+`schema.yml` regenerated, additive only.
+
+**Decisions later phases must respect:**
+
+5. **`resolve_booking_code_from_request` now returns `tuple[token, code]`**, not just the token.
+   Phases 2 and 4 must unpack it.
+6. **create-then-consume ordering is NOT a DB-integrity guarantee.** Both statements sit inside one
+   outer `transaction.atomic()`, so any exception unwinds everything and the DB outcome is
+   ordering-independent -- the plan's stated rationale for the ordering was wrong. What create-first
+   actually changes is that both racers reach the write adapter. The concurrency test now asserts
+   `create_event.call_count == 2`, which is what makes an inversion fail. Phases 2 and 4 should copy
+   the ordering for GraphQL parity, not for the reason the plan gave.
+7. **Known pre-existing risk, out of scope:** on a provider-backed calendar, create-first means a
+   losing racer may already have created an event at the external provider before the DB rolls back.
+   That orphan is not undone by the rollback. Identical in the GraphQL original; recorded, not fixed.
+8. **New surfaces reaching `create_event` must be registered in**
+   `calendar_integration/management/commands/check_event_guarded_surfaces.py` -- a pre-commit gate
+   blocks the commit otherwise. Phases 2 and 3 add such surfaces.
+
+Verification (container surface): full suite 5730 passed, 1 skipped; mypy clean (772 files);
+`makemigrations --check` clean (no migration this phase); 17 endpoint tests + 32 auth tests pass.
+
 ## Current phase
 
-**Phase 1 — Code-gated single-calendar booking** — not started.
+**Phase 2 — Code-gated group booking** — not started.
 
 ## Remaining phases
 
 | Phase | Title | Impl tier | Reviewer tier |
 |---|---|---|---|
-| 1 | Code-gated single-calendar booking | 3 | default (3) |
 | 2 | Code-gated group booking | 2 | default (3) |
 | 3 | Codeless public group booking | 2 | 3 (plan override) |
 | 4 | Code-gated reschedule and cancel | 3 | default (3) |
