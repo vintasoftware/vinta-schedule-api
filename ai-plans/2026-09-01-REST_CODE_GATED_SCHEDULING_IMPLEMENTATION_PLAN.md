@@ -34,6 +34,8 @@
 | **Duration pinning — enforcement site** | `CalendarPermissionService.can_perform_scheduling` and `can_perform_update`. Both already receive the proposed start/end times and hold `self.token`, and both already return a bool that upstream turns into `PermissionDenied` → `NOT_PERMITTED`. Enforcing here means REST, GraphQL, and the legacy `public/organizations/<id>/events/` management-token surface all inherit the pin from one check, with the same error code, and no mutation edits. Enforcing in the REST views alone would leave the pin bypassable by replaying the same code against GraphQL. |
 | **Duration pinning — writes** | `end_time` stays required, and a request whose `start_time`/`end_time` span differs from the pinned duration is rejected with `403 NOT_PERMITTED`. The server never derives or silently rewrites `end_time`; a booking is only ever created at times the client actually asked for. The views pre-check the span purely so the message can name the pinned duration — the service check behind it is the guarantee. |
 | **Duration pinning — reads** | On the two code-gated bookable-slots endpoints, a pinned duration **silently overrides** the client's `duration_seconds`. A `400` naming the mismatch would turn those endpoints into an oracle for whether a code pins a duration and what it is, which the read design avoids everywhere else. Silent override also keeps a patient from browsing slots at a length they cannot actually book. The returned proposals' own spans are how a client legitimately discovers the pinned duration. |
+| **Public group addressing** | Codeless booking addresses a `CalendarGroup` by an opaque, non-sequential `public_booking_slug`, never by its integer primary key. Added in Phase 3b after review found that the integer-keyed route was a cross-tenant enumeration oracle: with no `organization_id` anywhere in the path, an anonymous caller could walk `group_id` 1..N and learn from the 404/403/201 split which groups exist in *any* organization and which accept public scheduling. GraphQL's `createCalendarGroupEvent` requires both `organization_id` and `group_id`, so the integer-keyed REST route was a strictly larger probing surface than its own parity target. Throttling was considered and declined; an unguessable identifier removes the oracle outright rather than rate-limiting it. |
+| **Slug covers both branches** | The slug replaces the integer id for coded *and* codeless requests on that route, so the integer PK leaves the public surface entirely. The coded branch still validates the addressed group against the token's group and still answers `403`, never `404`, on a mismatch — that guarantee predates the slug and must survive it. |
 | **Mint endpoint shape** | One `POST /booking-codes/` taking `purpose` (`book` / `reschedule` / `cancel`) plus exactly one of `calendar` / `calendar_group`, plus `event` for the reschedule and cancel purposes. This collapses GraphQL's six `create*BookingCode` mutations into one resource without changing what can be minted — the six combinations are the cross product of two fields. |
 | **Reschedule endpoint decomposition** | Two endpoints (single and group), mirroring GraphQL's two mutations, rather than one that dispatches on token scope. The cross-routing `NOT_PERMITTED` responses ("this code is scoped to a calendar group; use the group endpoint") are part of the GraphQL contract clients already handle. See **Open Questions** for the collapse alternative. |
 | **No feature flag — purely additive surface** | Every endpoint lives at a brand-new path served by brand-new viewsets. No existing route, serializer, permission class, or query path changes behavior; the one schema change is a new nullable column no existing code reads or writes. The repo has no feature-flag mechanism today, and standing one up to gate a surface nothing currently depends on would be larger than the feature. Rollback is reverting the route registration — see **Risk & Rollout Notes**. |
@@ -389,6 +391,40 @@ Acceptance: `POST /public/booking/calendar-groups/<id>/events/` with no `X-Booki
 
 ---
 
+### Phase 3b — Opaque public slug for codeless group booking
+
+**Goal**: Remove the cross-tenant enumeration oracle Phase 3 introduced, by addressing publicly bookable groups with an unguessable identifier instead of a sequential integer.
+
+**Feature flag**: none — this changes a route added earlier in this same unmerged stack; no deployed caller exists.
+
+Changes:
+
+1. `@calendar_integration/models.py`: add `public_booking_slug` to `CalendarGroup` — a `CharField(max_length=32, unique=True, db_index=True)` whose default is a callable returning `secrets.token_urlsafe(16)` (≈128 bits, 22 URL-safe characters). Uniqueness is **global**, not organization-scoped, because the route carries no organization. Every group gets one, including private groups: the slug alone authorizes nothing, the `accepts_public_scheduling` gate still decides, and a group flipped to public later already has its identifier.
+2. Migration, in three operations so no step takes a long lock: add the column nullable with no default; backfill every existing row with a distinct generated slug (idempotent — only fills `NULL`s, so a re-run after a partial failure completes rather than rewriting); then `AlterField` to non-null with the unique constraint, creating the index `CONCURRENTLY` (`atomic = False`). The generator must be collision-checked against existing values rather than assuming uniqueness.
+3. [booking_urls.py](../calendar_integration/booking_urls.py): change the group route from `calendar-groups/<int:group_id>/events` to `calendar-groups/<slug:public_slug>/events`.
+4. [booking_views.py](../calendar_integration/booking_views.py): resolve the group by `public_booking_slug` on both branches. Codeless still resolves the organization from the resolved group (the `unscoped()` lookup stays, now keyed by an unguessable value). Coded still compares the addressed group against `token.calendar_group_fk_id` and still returns `403 NOT_PERMITTED` on a mismatch, never `404`.
+5. [serializers.py](../calendar_integration/serializers.py): expose `public_booking_slug` as a read-only field on `CalendarGroupSerializer`, so an organization admin can read it to build booking links. Read-only — it is never client-settable.
+6. Regenerate `schema.yml`.
+
+Spec use-case: hardening of the codeless booking use-case — no new user-facing capability.
+
+Tests:
+
+- **Integration**: `@calendar_integration/tests/test_booking_rest_codeless_group.py` — every existing case re-pointed at the slug route; an unknown slug returns `404`; a well-formed but nonexistent slug is indistinguishable from a malformed one.
+- **Integration**: an enumeration-resistance test asserting the old integer-keyed path no longer routes at all, so the oracle is gone rather than merely harder.
+- **Integration**: the coded branch still returns `403` (never `404`) when the addressed slug belongs to a group the token was not minted for — the Phase 2 guarantee, re-expressed against slugs.
+- **Unit**: slug generation produces distinct values across many calls, and the backfill is idempotent — running it twice leaves the first run's slugs untouched.
+- **Integration**: `public_booking_slug` is readable by an org admin through `CalendarGroupSerializer` and is rejected as input on write.
+
+**Suggested AI model**: Tier 3 (IDs in [resources/ai-models.yaml](../.claude/skills/plan-feature/resources/ai-models.yaml)). A three-step migration with a backfill and a concurrent unique index, plus a route change that must preserve an existing security guarantee.
+
+**Review models**: reviewer Tier 4 — this phase exists to close a security hole, and the route change touches the one endpoint reachable with no credential. A reviewer must confirm the oracle is actually gone and that the coded branch's 403-not-404 guarantee survived the rewrite. Fixer left on the project default.
+
+**Reusable skills**: `add-migration` (couples with the `migration-author` sub-agent for the backfill and the concurrent unique index).
+
+Acceptance: `POST /public/booking/calendar-groups/<slug>/events/` books a public group codelessly; the integer-keyed path no longer resolves; every `CalendarGroup` row has a distinct `public_booking_slug`; and a coded request addressing a slug outside its token's group returns `403`, not `404`.
+
+
 ### Phase 4 — Code-gated reschedule and cancel
 
 **Goal**: A holder of a `RESCHEDULE` or `CANCEL` code can move or cancel the exact event it was minted for, over REST, unauthenticated.
@@ -503,6 +539,8 @@ If this is revisited, the remedy is small and follows a pattern already in the r
 
 **Duration pinning changes a shared authorization method — Phase 0's real blast radius.** `can_perform_scheduling` and `can_perform_update` are called by every booking surface in the codebase: the REST endpoints this plan adds, all five GraphQL `*WithCode` mutations, the legacy `public/organizations/<id>/events/` management-token viewset, and the internal authenticated flows. That breadth is the point — it is what makes the pin unbypassable — but it also means a mistake there is not scoped to the new surface. Two specific hazards. First, **placement relative to the `accepts_public_scheduling` short-circuit**: that clause returns `True` before reading the token at all, so a pin checked after it is silently unenforced on precisely the calendars most likely to be publicly bookable. Phase 0's ordering test is the regression test for this and must not be dropped. Second, **the null path must be inert**: every code in production has `duration=NULL` until Phase 6 ships, so if the null case is not a clean no-op, this phase breaks every existing booking flow at once, on every surface, with no feature flag to turn it off. Phase 0's "byte-identical to today" assertions carry that guarantee; treat them as the phase's acceptance criterion rather than incidental coverage.
 
+**The codeless route's identifier is security-relevant (Phase 3b).** Phase 3 shipped the codeless branch keyed by `CalendarGroup`'s integer primary key, which — combined with this plan's decision to keep `organization_id` out of every path, and with throttling declined — let an anonymous caller enumerate group ids across every tenant and learn which ones accept public scheduling. Phase 3b replaces that identifier with an unguessable slug. **Phase 3 must not be deployed without Phase 3b.** Merging the stack in order is fine; deploying the codeless surface keyed by an integer is not. If Phase 3b is ever dropped from the plan, throttling stops being optional.
+
 **Migration safety (Phase 0).** The migration adds two nullable columns in one `ALTER TABLE`. Adding a nullable `BigIntegerField` or `interval` with no default is a metadata-only operation in Postgres and takes no table rewrite. The composite index should be created `CONCURRENTLY` if `calendar_integration_calendarmanagementtoken` is large in production — which requires `atomic = False` (already needed for the `NOT VALID` / `VALIDATE` split). The FK constraint is added `NOT VALID` and validated separately, so it takes only a `SHARE UPDATE EXCLUSIVE` lock during validation rather than blocking writes. The `ON DELETE SET NULL (column_list)` syntax requires Postgres 15+; the project runs 18 both locally (`postgres:alpine`, `/var/lib/postgresql/18/`) and on Render — **verify the Render database's actual major version before this migration ships**, because the syntax is a hard parse error on 14 and below, not a degradation.
 
 **Deferred-constraint interaction with organization deletion.** [0026](../calendar_integration/migrations/0026_calendarownership_membership_protect_fk.py) documents at length why membership constraints in this app must be `DEFERRABLE INITIALLY DEFERRED`: Django's cascade collector cannot see `ForeignObject` dependencies and may delete an `OrganizationMembership` before the rows referencing it. The new constraint inherits that requirement. Phase 0's test asserting that whole-organization deletion still succeeds is not optional coverage — it is the regression test for this specific failure mode.
@@ -566,6 +604,16 @@ If this is revisited, the remedy is small and follows a pattern already in the r
 - `schema.yml` (regenerated)
 - `@calendar_integration/tests/test_booking_rest_codeless_group.py` (new)
 - [test_event_creation_surfaces.py](../calendar_integration/tests/test_event_creation_surfaces.py) — codeless surface
+
+**Phase 3b — opaque public slug**
+
+- [models.py](../calendar_integration/models.py) — `CalendarGroup.public_booking_slug`
+- `@calendar_integration/migrations/00XX_calendargroup_public_booking_slug.py` (new)
+- [booking_urls.py](../calendar_integration/booking_urls.py) — slug route
+- [booking_views.py](../calendar_integration/booking_views.py) — resolve by slug on both branches
+- [serializers.py](../calendar_integration/serializers.py) — read-only slug on `CalendarGroupSerializer`
+- [test_booking_rest_codeless_group.py](../calendar_integration/tests/test_booking_rest_codeless_group.py) — re-pointed + enumeration-resistance
+- `schema.yml` (regenerated)
 
 **Phase 4 — code-gated reschedule and cancel**
 
