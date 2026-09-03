@@ -14889,13 +14889,16 @@ paths:
         schema:
           type: integer
         description: 'Desired event duration, in seconds. ALWAYS REQUIRED to be present
-          (a request omitting it is a 400 whether or not the code pins a duration
-          -- presence alone must never disclose pin state). When the resolved booking
-          code pins a duration, the pin silently overrides this parameter''s VALUE:
-          a mismatched or malformed value produces the exact same response as the
-          pinned value, so this endpoint cannot be used to probe whether a code is
-          pinned or what the pin is. When the code pins no duration, the value must
-          also be a valid positive integer.'
+          (a request omitting it is a 400 whether or not the resolved code''s group
+          pins a duration -- presence alone must never disclose pin state). Duration
+          pinning lives on the CalendarGroup, not on the code: on the calendar-scoped
+          endpoint this value always stands as given -- a calendar-scoped code carries
+          no duration constraint at all. On the group-scoped endpoint, when the resolved
+          code''s group pins a duration, the pin silently overrides this parameter''s
+          VALUE: a mismatched or malformed value produces the exact same response
+          as the pinned value, so this endpoint cannot be used to probe whether a
+          group is pinned or what the pin is. When the group pins no duration, the
+          value must also be a valid positive integer.'
         required: true
       - in: query
         name: search_window_end
@@ -15058,13 +15061,16 @@ paths:
         schema:
           type: integer
         description: 'Desired event duration, in seconds. ALWAYS REQUIRED to be present
-          (a request omitting it is a 400 whether or not the code pins a duration
-          -- presence alone must never disclose pin state). When the resolved booking
-          code pins a duration, the pin silently overrides this parameter''s VALUE:
-          a mismatched or malformed value produces the exact same response as the
-          pinned value, so this endpoint cannot be used to probe whether a code is
-          pinned or what the pin is. When the code pins no duration, the value must
-          also be a valid positive integer.'
+          (a request omitting it is a 400 whether or not the resolved code''s group
+          pins a duration -- presence alone must never disclose pin state). Duration
+          pinning lives on the CalendarGroup, not on the code: on the calendar-scoped
+          endpoint this value always stands as given -- a calendar-scoped code carries
+          no duration constraint at all. On the group-scoped endpoint, when the resolved
+          code''s group pins a duration, the pin silently overrides this parameter''s
+          VALUE: a mismatched or malformed value produces the exact same response
+          as the pinned value, so this endpoint cannot be used to probe whether a
+          group is pinned or what the pin is. When the group pins no duration, the
+          value must also be a valid positive integer.'
         required: true
       - in: query
         name: search_window_end

@@ -36,10 +36,14 @@ resolver first checks the token's OWN scope column
 belongs to the OTHER scope, before ever consulting the ``event`` fallback.
 See ``_resolve_calendar_scope_opaquely`` / ``_resolve_group_scope_opaquely``.
 
-**Pinned duration** (the two bookable-slots endpoints only): ``duration_seconds``
-presence is required regardless of pin state -- a request that omits it
-entirely is a ``400`` whether or not the resolved token pins a duration, so
-that status alone cannot disclose pin state. Once present, a token that
+**Pinned duration** (the two bookable-slots endpoints only): duration pinning
+lives on ``CalendarGroup.duration``, not on the token -- a calendar-scoped
+code carries no duration constraint at all (no ``Calendar.duration`` exists),
+so its ``duration_seconds`` always stands as given. ``duration_seconds``
+presence is still required regardless of pin state on EITHER endpoint -- a
+request that omits it entirely is a ``400`` whether or not the resolved
+group-scoped code's group pins a duration, so that status alone cannot
+disclose pin state. Once present, on the group-scoped endpoint a group that
 carries a ``duration`` uses it UNCONDITIONALLY: a wrong or malformed (but
 non-empty) ``duration_seconds`` on a pinned code still produces the exact
 same response as the correct one. See ``_resolve_duration``.
@@ -160,26 +164,33 @@ def _parse_datetime_query_param(request: Request, name: str) -> datetime.datetim
     return value
 
 
-def _resolve_duration(token: CalendarManagementToken, request: Request) -> datetime.timedelta:
+def _resolve_duration(group: CalendarGroup | None, request: Request) -> datetime.timedelta:
     """Resolve the search duration for a bookable-slots read.
+
+    ``group`` is the token's own resolved ``CalendarGroup`` on the
+    group-scoped endpoint, or ``None`` on the calendar-scoped endpoint --
+    duration pinning lives on ``CalendarGroup.duration``, not on the token,
+    and a calendar-scoped code carries no duration constraint at all (no
+    ``Calendar.duration`` exists), so its ``duration_seconds`` always stands.
 
     ``duration_seconds`` presence is validated identically regardless of pin
     state -- a request that omits it is always a ``400``, so that status
-    alone never discloses whether the resolved token pins a duration. Only
-    once presence is established does the pin take over: when
-    ``token.duration`` is set, it is returned UNCONDITIONALLY and the
+    alone never discloses whether a resolved group pins a duration. Only
+    once presence is established does the pin take over: when ``group`` is
+    set and ``group.duration`` is set, it is returned UNCONDITIONALLY and the
     parameter's parsed VALUE is never even inspected, so a wrong or
     malformed (but non-empty) value on a pinned code still produces
     byte-identical output to the correct one (see the "Duration pinning --
-    reads" Guiding Decision). Only when the token pins nothing does
-    ``duration_seconds`` also have to be a valid positive integer.
+    reads" Guiding Decision). Only when there is no pin (no group, or a group
+    with no duration) does ``duration_seconds`` also have to be a valid
+    positive integer.
     """
     raw = request.query_params.get("duration_seconds")
     if not raw:
         raise ValidationError({"non_field_errors": ["duration_seconds is required."]})
 
-    if token.duration is not None:
-        return token.duration
+    if group is not None and group.duration is not None:
+        return group.duration
 
     try:
         seconds = int(raw)
@@ -256,13 +267,16 @@ _DURATION_SECONDS_PARAMETER = OpenApiParameter(
     location=OpenApiParameter.QUERY,
     required=True,
     description="Desired event duration, in seconds. ALWAYS REQUIRED to be present "
-    "(a request omitting it is a 400 whether or not the code pins a duration -- "
-    "presence alone must never disclose pin state). When the resolved booking code "
-    "pins a duration, the pin silently overrides this parameter's VALUE: a "
-    "mismatched or malformed value produces the exact same response as the pinned "
-    "value, so this endpoint cannot be used to probe whether a code is pinned or "
-    "what the pin is. When the code pins no duration, the value must also be a "
-    "valid positive integer.",
+    "(a request omitting it is a 400 whether or not the resolved code's group pins "
+    "a duration -- presence alone must never disclose pin state). Duration pinning "
+    "lives on the CalendarGroup, not on the code: on the calendar-scoped endpoint "
+    "this value always stands as given -- a calendar-scoped code carries no "
+    "duration constraint at all. On the group-scoped endpoint, when the resolved "
+    "code's group pins a duration, the pin silently overrides this parameter's "
+    "VALUE: a mismatched or malformed value produces the exact same response as "
+    "the pinned value, so this endpoint cannot be used to probe whether a group is "
+    "pinned or what the pin is. When the group pins no duration, the value must "
+    "also be a valid positive integer.",
 )
 
 _SLOT_STEP_SECONDS_PARAMETER = OpenApiParameter(
@@ -488,8 +502,9 @@ class BookingCodeCalendarBookableSlotsViewSet(BookingCodeViewMixin, GenericViewS
         calendar = _resolve_calendar_scope_opaquely(token)
         org = _resolve_org_opaquely(token)
 
-        # --- pinned-duration silent override -- see module docstring / _resolve_duration. ---
-        duration = _resolve_duration(token, request)
+        # --- no duration constraint on a calendar-scoped code -- see module
+        # docstring / _resolve_duration. ---
+        duration = _resolve_duration(None, request)
         slot_step = _resolve_slot_step(request)
 
         bookable_slots_service.initialize(organization=org)
@@ -559,7 +574,7 @@ class BookingCodeCalendarGroupBookableSlotsViewSet(BookingCodeViewMixin, Generic
         org = _resolve_org_opaquely(token)
 
         # --- pinned-duration silent override -- see module docstring / _resolve_duration. ---
-        duration = _resolve_duration(token, request)
+        duration = _resolve_duration(group, request)
         slot_step = _resolve_slot_step(request)
 
         calendar_group_service.initialize(organization=org)

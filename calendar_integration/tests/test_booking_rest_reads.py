@@ -964,20 +964,28 @@ class TestNaiveDatetimeRejected:
 # ---------------------------------------------------------------------------
 # Pinned duration: silent override, byte-identical across duration_seconds
 # variants, and every proposal returned is actually bookable.
+#
+# Duration pinning lives on ``CalendarGroup.duration``, not on the token --
+# a calendar-scoped code carries no duration constraint at all (no
+# ``Calendar.duration`` exists), so the pin/silent-override scenarios below
+# exercise the GROUP-scoped bookable-slots read against a group with
+# ``duration`` set. ``test_calendar_scoped_code_carries_no_duration_constraint``
+# covers the calendar-scoped read's contrasting, unconstrained behavior.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.django_db
 class TestPinnedDurationSilentOverride:
     def test_byte_identical_across_duration_seconds_variants_and_every_slot_bookable(
-        self, anon_client, organization, permission_service, calendar, available_window
+        self, anon_client, organization, permission_service, calendar_group, group_calendar
     ):
-        # A CREATE code pinned to a 30-minute duration.
+        # A CREATE code scoped to a group pinned to a 30-minute duration.
+        calendar_group.duration = datetime.timedelta(minutes=30)
+        calendar_group.save()
         _pinned_token, pinned_code = permission_service.create_booking_token(
             organization_id=organization.id,
             permissions=[EventManagementPermissions.CREATE],
-            calendar_id=calendar.id,
-            duration=datetime.timedelta(minutes=30),
+            calendar_group_id=calendar_group.id,
         )
 
         base_params = {
@@ -990,13 +998,13 @@ class TestPinnedDurationSilentOverride:
 
         response_wrong = _get(
             anon_client,
-            CALENDAR_BOOKABLE_SLOTS_URL,
+            CALENDAR_GROUP_BOOKABLE_SLOTS_URL,
             pinned_code,
             {**base_params, "duration_seconds": 3600},
         )
         response_right = _get(
             anon_client,
-            CALENDAR_BOOKABLE_SLOTS_URL,
+            CALENDAR_GROUP_BOOKABLE_SLOTS_URL,
             pinned_code,
             {**base_params, "duration_seconds": 1800},
         )
@@ -1006,7 +1014,7 @@ class TestPinnedDurationSilentOverride:
         # only the parsed VALUE is unconditionally ignored here.
         response_malformed = _get(
             anon_client,
-            CALENDAR_BOOKABLE_SLOTS_URL,
+            CALENDAR_GROUP_BOOKABLE_SLOTS_URL,
             pinned_code,
             {**base_params, "duration_seconds": "not-a-number"},
         )
@@ -1021,24 +1029,30 @@ class TestPinnedDurationSilentOverride:
         assert len(proposals) > 0
 
         # Every proposal returned by the pinned read must actually be bookable
-        # through the Phase 1 endpoint -- a fresh code per proposal, since a
-        # booking code is single-use.
+        # through the Phase 2/3b group booking endpoint -- a fresh code per
+        # proposal, since a booking code is single-use.
+        slot = calendar_group.slots.get(name="Physicians")
         for proposal in proposals:
             _token, booking_code = permission_service.create_booking_token(
                 organization_id=organization.id,
                 permissions=[EventManagementPermissions.CREATE],
-                calendar_id=calendar.id,
-                duration=datetime.timedelta(minutes=30),
+                calendar_group_id=calendar_group.id,
             )
             payload = {
-                "title": "Pinned Slot Booking",
+                "title": "Pinned Group Slot Booking",
                 "description": "",
                 "start_time": proposal["start_time"],
                 "end_time": proposal["end_time"],
                 "timezone": "UTC",
+                "slot_selections": [{"slot_id": slot.id, "calendar_ids": [group_calendar.id]}],
                 "external_attendee": {"email": "patient@example.com", "name": "Pat Patient"},
             }
-            booking_response = _post(anon_client, CALENDAR_EVENTS_URL, booking_code, payload)
+            booking_response = anon_client.post(
+                f"/public/booking/calendar-groups/{calendar_group.public_booking_slug}/events/",
+                payload,
+                format="json",
+                headers={BOOKING_CODE_HEADER: booking_code},
+            )
             assert booking_response.status_code == status.HTTP_201_CREATED, (
                 proposal,
                 booking_response.content,
@@ -1054,16 +1068,16 @@ class TestPinnedDurationSilentOverride:
             ).delete()
 
     def test_unpinned_code_still_requires_duration_seconds(
-        self, anon_client, organization, permission_service, calendar, available_window
+        self, anon_client, organization, permission_service, calendar_group
     ):
         _token, code = permission_service.create_booking_token(
             organization_id=organization.id,
             permissions=[EventManagementPermissions.CREATE],
-            calendar_id=calendar.id,
+            calendar_group_id=calendar_group.id,
         )
         response = _get(
             anon_client,
-            CALENDAR_BOOKABLE_SLOTS_URL,
+            CALENDAR_GROUP_BOOKABLE_SLOTS_URL,
             code,
             {
                 "search_window_start": "2030-06-01T09:00:00Z",
@@ -1073,21 +1087,22 @@ class TestPinnedDurationSilentOverride:
         assert response.status_code == status.HTTP_400_BAD_REQUEST, response.content
 
     def test_pinned_code_also_requires_duration_seconds_presence(
-        self, anon_client, organization, permission_service, calendar, available_window
+        self, anon_client, organization, permission_service, calendar_group
     ):
         """A missing ``duration_seconds`` must be a 400 for a PINNED code too --
         the response status must never be the oracle that discloses pin state
         (see FIX 2 / the "Duration pinning -- reads" Guiding Decision update).
         """
+        calendar_group.duration = datetime.timedelta(minutes=30)
+        calendar_group.save()
         _token, pinned_code = permission_service.create_booking_token(
             organization_id=organization.id,
             permissions=[EventManagementPermissions.CREATE],
-            calendar_id=calendar.id,
-            duration=datetime.timedelta(minutes=30),
+            calendar_group_id=calendar_group.id,
         )
         response = _get(
             anon_client,
-            CALENDAR_BOOKABLE_SLOTS_URL,
+            CALENDAR_GROUP_BOOKABLE_SLOTS_URL,
             pinned_code,
             {
                 "search_window_start": "2030-06-01T09:00:00Z",
@@ -1095,3 +1110,38 @@ class TestPinnedDurationSilentOverride:
             },
         )
         assert response.status_code == status.HTTP_400_BAD_REQUEST, response.content
+
+    def test_calendar_scoped_code_carries_no_duration_constraint(
+        self, anon_client, organization, permission_service, calendar, available_window
+    ):
+        """A calendar-scoped code has no ``CalendarGroup`` to pin a duration on
+        at all -- unlike the group-scoped cases above, the client's own
+        ``duration_seconds`` always stands, and genuinely different values
+        produce genuinely different proposals."""
+        _token, code = permission_service.create_booking_token(
+            organization_id=organization.id,
+            permissions=[EventManagementPermissions.CREATE],
+            calendar_id=calendar.id,
+        )
+        base_params = {
+            "search_window_start": "2030-06-01T09:00:00Z",
+            "search_window_end": "2030-06-01T11:00:00Z",
+            "slot_step_seconds": 1800,
+        }
+
+        response_1800 = _get(
+            anon_client,
+            CALENDAR_BOOKABLE_SLOTS_URL,
+            code,
+            {**base_params, "duration_seconds": 1800},
+        )
+        response_3600 = _get(
+            anon_client,
+            CALENDAR_BOOKABLE_SLOTS_URL,
+            code,
+            {**base_params, "duration_seconds": 3600},
+        )
+
+        assert response_1800.status_code == status.HTTP_200_OK, response_1800.content
+        assert response_3600.status_code == status.HTTP_200_OK, response_3600.content
+        assert response_1800.content != response_3600.content
