@@ -21,7 +21,11 @@ from calendar_integration.constants import (
     CalendarVisibility,
     RecurrenceFrequency,
 )
-from calendar_integration.exceptions import InvalidCalendarTokenError, NoAvailableTimeWindowsError
+from calendar_integration.exceptions import (
+    CalendarIntegrationError,
+    InvalidCalendarTokenError,
+    NoAvailableTimeWindowsError,
+)
 from calendar_integration.models import (
     AvailableTime,
     BlockedTime,
@@ -6371,3 +6375,264 @@ class TestCalendarEventDownloadICS:
         attendee_values = {str(att).lower() for att in attendees}
         assert "mailto:attendee@example.com" in attendee_values
         assert "mailto:external@example.com" in attendee_values
+
+
+@pytest.mark.django_db
+class TestCalendarUpdateGating:
+    """Object-type-aware permission checks on PATCH/PUT /calendar/{id}/.
+
+    BUNDLE     → admin-only; 403 for non-admins.
+    Non-bundle → owner or admin; 403 for non-owner non-admins.
+
+    Mirrors ``TestCalendarDisableGating``, which covers the same rules on DELETE.
+    """
+
+    @staticmethod
+    def _make_admin(organization):
+        """Create an admin user+membership; return (user, APIClient)."""
+        admin = baker.make(User)
+        make_membership(
+            user=admin,
+            organization=organization,
+            groups=[GROUP_ORGANIZATION_ADMIN],
+        )
+        client = APIClient()
+        client.force_authenticate(user=admin)
+        return admin, client
+
+    @staticmethod
+    def _make_member(organization):
+        """Create a regular member; return (user, APIClient)."""
+        member = baker.make(User)
+        baker.make(
+            OrganizationMembership,
+            user=member,
+            organization=organization,
+        )
+        client = APIClient()
+        client.force_authenticate(user=member)
+        return member, client
+
+    def test_owner_can_update(self, auth_client, calendar, user):
+        """The calendar's owner PATCHes it → 200."""
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+
+        url = reverse("api:Calendars-detail", kwargs={"pk": calendar.id})
+        response = auth_client.patch(url, {"name": "Renamed"}, format="json")
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        calendar.refresh_from_db()
+        assert calendar.name == "Renamed"
+
+    def test_non_owner_member_forbidden(self, organization, calendar):
+        """A member who neither owns the calendar nor is an admin gets 403."""
+        _, member_client = self._make_member(organization)
+
+        url = reverse("api:Calendars-detail", kwargs={"pk": calendar.id})
+        response = member_client.patch(url, {"name": "Hijacked"}, format="json")
+
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+        calendar.refresh_from_db()
+        assert calendar.name != "Hijacked"
+
+    def test_admin_can_update_another_members_calendar(self, organization, calendar, user):
+        """An org admin may PATCH a calendar owned by someone else → 200."""
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+        _, admin_client = self._make_admin(organization)
+
+        url = reverse("api:Calendars-detail", kwargs={"pk": calendar.id})
+        response = admin_client.patch(url, {"name": "Admin renamed"}, format="json")
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        calendar.refresh_from_db()
+        assert calendar.name == "Admin renamed"
+
+    def test_bundle_update_by_owning_member_forbidden(self, organization, user, auth_client):
+        """Bundles are admin-only: owning one is not enough to PATCH it."""
+        bundle = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            name="Test Bundle",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.BUNDLE,
+        )
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, bundle)
+
+        url = reverse("api:Calendars-detail", kwargs={"pk": bundle.id})
+        response = auth_client.patch(url, {"name": "Renamed bundle"}, format="json")
+
+        assert_response_status_code(response, status.HTTP_403_FORBIDDEN)
+
+    def test_bundle_update_by_admin_ok(self, organization):
+        """An org admin may PATCH a bundle calendar → 200."""
+        bundle = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            name="Test Bundle",
+            provider=CalendarProvider.INTERNAL,
+            calendar_type=CalendarType.BUNDLE,
+        )
+        _, admin_client = self._make_admin(organization)
+
+        url = reverse("api:Calendars-detail", kwargs={"pk": bundle.id})
+        response = admin_client.patch(url, {"name": "Renamed bundle"}, format="json")
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        bundle.refresh_from_db()
+        assert bundle.name == "Renamed bundle"
+
+
+@pytest.mark.django_db
+class TestCalendarActivationSync:
+    """Switching ``sync_enabled`` on through PATCH requests the calendar's first sync.
+
+    Non-default calendars are imported unlisted and empty, so activating one has to
+    pull its events; see ``CalendarSerializer.update``.
+    """
+
+    @staticmethod
+    def _unlisted_calendar(organization, user, provider=CalendarProvider.GOOGLE):
+        """An imported-but-not-activated calendar owned by ``user``."""
+        calendar = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            name="Holidays",
+            provider=provider,
+            sync_enabled=False,
+        )
+        calendar.visibility = CalendarVisibility.UNLISTED
+        calendar.save(update_fields=["visibility"])
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, calendar)
+        return calendar
+
+    def test_enabling_sync_requests_a_sync(self, auth_client, organization, user):
+        """PATCH sync_enabled=true → the calendar is activated and a sync is requested."""
+        from di_core.containers import container
+
+        target = self._unlisted_calendar(organization, user)
+        baker.make(SocialAccount, user=user, provider=CalendarProvider.GOOGLE)
+
+        mock_service = Mock()
+        url = reverse("api:Calendars-detail", kwargs={"pk": target.id})
+
+        with container.calendar_service.override(mock_service):
+            response = auth_client.patch(
+                url,
+                {"sync_enabled": True, "visibility": CalendarVisibility.ACTIVE},
+                format="json",
+            )
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        target.refresh_from_db()
+        assert target.sync_enabled is True
+        assert target.visibility == CalendarVisibility.ACTIVE
+
+        mock_service.authenticate.assert_called_once()
+        mock_service.request_calendar_sync.assert_called_once()
+        assert mock_service.request_calendar_sync.call_args.kwargs["calendar"] == target
+
+    def test_unrelated_update_requests_no_sync(self, auth_client, organization, user):
+        """A PATCH that leaves sync_enabled alone requests nothing."""
+        from di_core.containers import container
+
+        target = self._unlisted_calendar(organization, user)
+        baker.make(SocialAccount, user=user, provider=CalendarProvider.GOOGLE)
+
+        mock_service = Mock()
+        url = reverse("api:Calendars-detail", kwargs={"pk": target.id})
+
+        with container.calendar_service.override(mock_service):
+            response = auth_client.patch(url, {"name": "Renamed"}, format="json")
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        mock_service.request_calendar_sync.assert_not_called()
+
+    def test_already_syncing_calendar_requests_no_sync(self, auth_client, organization, user):
+        """Re-sending sync_enabled=true on an already-syncing calendar is not a flip."""
+        from di_core.containers import container
+
+        target = CalendarIntegrationTestFactory.create_calendar(
+            organization=organization,
+            provider=CalendarProvider.GOOGLE,
+            sync_enabled=True,
+        )
+        CalendarIntegrationTestFactory.create_calendar_ownership(user, target)
+        baker.make(SocialAccount, user=user, provider=CalendarProvider.GOOGLE)
+
+        mock_service = Mock()
+        url = reverse("api:Calendars-detail", kwargs={"pk": target.id})
+
+        with container.calendar_service.override(mock_service):
+            response = auth_client.patch(url, {"sync_enabled": True}, format="json")
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        mock_service.request_calendar_sync.assert_not_called()
+
+    def test_internal_calendar_requests_no_sync(self, auth_client, organization, user):
+        """Internal (virtual) calendars have no provider to pull from."""
+        from di_core.containers import container
+
+        target = self._unlisted_calendar(organization, user, provider=CalendarProvider.INTERNAL)
+
+        mock_service = Mock()
+        url = reverse("api:Calendars-detail", kwargs={"pk": target.id})
+
+        with container.calendar_service.override(mock_service):
+            response = auth_client.patch(url, {"sync_enabled": True}, format="json")
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        mock_service.request_calendar_sync.assert_not_called()
+
+    def test_owner_without_linked_account_still_activates(self, auth_client, organization, user):
+        """No linked account for the provider: the flag still flips, no sync is requested."""
+        from di_core.containers import container
+
+        target = self._unlisted_calendar(organization, user)
+
+        mock_service = Mock()
+        url = reverse("api:Calendars-detail", kwargs={"pk": target.id})
+
+        with container.calendar_service.override(mock_service):
+            response = auth_client.patch(url, {"sync_enabled": True}, format="json")
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        target.refresh_from_db()
+        assert target.sync_enabled is True
+        mock_service.request_calendar_sync.assert_not_called()
+
+    def test_sync_failure_does_not_fail_the_patch(self, auth_client, organization, user):
+        """A provider error while syncing must not roll the user's activation back."""
+        from di_core.containers import container
+
+        target = self._unlisted_calendar(organization, user)
+        baker.make(SocialAccount, user=user, provider=CalendarProvider.GOOGLE)
+
+        mock_service = Mock()
+        mock_service.request_calendar_sync.side_effect = CalendarIntegrationError("boom")
+        url = reverse("api:Calendars-detail", kwargs={"pk": target.id})
+
+        with container.calendar_service.override(mock_service):
+            response = auth_client.patch(url, {"sync_enabled": True}, format="json")
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        target.refresh_from_db()
+        assert target.sync_enabled is True
+
+    def test_admin_activation_uses_the_owners_account(self, organization, user):
+        """An admin activating a member's calendar syncs with the *owner's* account."""
+        from di_core.containers import container
+
+        target = self._unlisted_calendar(organization, user)
+        owner_account = baker.make(SocialAccount, user=user, provider=CalendarProvider.GOOGLE)
+
+        admin = baker.make(User)
+        make_membership(user=admin, organization=organization, groups=[GROUP_ORGANIZATION_ADMIN])
+        admin_client = APIClient()
+        admin_client.force_authenticate(user=admin)
+
+        mock_service = Mock()
+        url = reverse("api:Calendars-detail", kwargs={"pk": target.id})
+
+        with container.calendar_service.override(mock_service):
+            response = admin_client.patch(url, {"sync_enabled": True}, format="json")
+
+        assert_response_status_code(response, status.HTTP_200_OK)
+        mock_service.authenticate.assert_called_once()
+        assert mock_service.authenticate.call_args.kwargs["account"] == owner_account

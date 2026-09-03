@@ -1,4 +1,5 @@
 import datetime
+import logging
 import zoneinfo
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Annotated, TypedDict, cast
@@ -13,6 +14,7 @@ from rest_framework import serializers
 
 from calendar_integration.constants import (
     CalendarProvider,
+    CalendarSyncTriggerSource,
     CalendarType,
     CalendarVisibility,
     QuotaPeriod,
@@ -93,6 +95,15 @@ from users.models import User
 if TYPE_CHECKING:
     from calendar_integration.services.calendar_group_service import CalendarGroupService
     from calendar_integration.services.calendar_service import CalendarService
+
+
+logger = logging.getLogger(__name__)
+
+# Window a calendar activated through PATCH is first synced over. Matches the
+# window `CalendarSyncService.import_account_calendars` uses for the calendars it
+# imports live, so an activated calendar ends up holding the same stretch of
+# events an imported one does.
+ACTIVATION_SYNC_LOOKAHEAD = datetime.timedelta(days=365)
 
 
 def _localize_times_in_representation(
@@ -236,6 +247,87 @@ class CalendarSerializer(VirtualModelSerializer):
                     {"capacity": "Only org admins can change a resource calendar's capacity."}
                 )
         return attrs
+
+    def update(self, instance, validated_data):
+        """Apply the edit, then request a first sync when sync is switched on.
+
+        Every imported calendar except the account's default one lands with
+        ``sync_enabled=False`` and no events (see
+        ``CalendarSyncService.import_account_calendars``), so flipping the flag on
+        is the moment the calendar starts mattering for scheduling -- and it is
+        still empty. Requesting the sync here makes one PATCH both activate and
+        backfill the calendar, instead of every client having to follow up with
+        ``POST /calendar/{id}/request-sync/``.
+        """
+        was_sync_enabled = instance.sync_enabled
+        calendar = super().update(instance, validated_data)
+
+        if not was_sync_enabled and calendar.sync_enabled:
+            self._request_activation_sync(calendar)
+
+        return calendar
+
+    def _request_activation_sync(self, calendar: Calendar) -> None:
+        """Enqueue the first sync for a calendar whose ``sync_enabled`` just flipped on.
+
+        Best-effort by design: the activation is already committed by the time this
+        runs, so a missing owner, a missing linked account, or a provider error is
+        logged and left for an explicit ``request-sync`` call rather than failing
+        the PATCH and rolling the user's activation back.
+        """
+        if calendar.provider == CalendarProvider.INTERNAL:
+            # Virtual/internal calendars have no external provider to pull from.
+            return
+
+        # Sync against the *owner's* account rather than the caller's: an org admin
+        # activating a member's calendar holds no token for it. Same owner
+        # resolution as `CalendarViewSet.admin_sync` -- membership-backed rows only
+        # (an orphan ownership resolves no account), default owner first.
+        ownership = (
+            CalendarOwnership.objects.filter_by_organization(calendar.organization_id)
+            .filter(
+                calendar=calendar,
+                membership_user_id__isnull=False,
+            )
+            .order_by("-is_default", "id")
+            .first()
+        )
+        if ownership is None:
+            logger.info(
+                "Calendar %s activated but has no membership-backed owner; skipping initial sync.",
+                calendar.id,
+            )
+            return
+
+        social_account = SocialAccount.objects.filter(
+            user_id=ownership.membership_user_id, provider=calendar.provider
+        ).first()
+        if social_account is None:
+            logger.info(
+                "Calendar %s activated but its owner has no linked %s account; "
+                "skipping initial sync.",
+                calendar.id,
+                calendar.provider,
+            )
+            return
+
+        now = datetime.datetime.now(datetime.UTC)
+        try:
+            self.calendar_service.authenticate(
+                account=social_account,
+                organization=calendar.organization,
+            )
+            self.calendar_service.request_calendar_sync(
+                calendar=calendar,
+                start_datetime=now,
+                end_datetime=now + ACTIVATION_SYNC_LOOKAHEAD,
+                should_update_events=True,
+                trigger_source=CalendarSyncTriggerSource.MANUAL,
+            )
+        except (ValueError, CalendarIntegrationError, NotImplementedError):
+            logger.exception(
+                "Failed to request the initial sync for activated calendar %s.", calendar.id
+            )
 
     def create(self, validated_data):
         membership = self.context["request"].organization_membership

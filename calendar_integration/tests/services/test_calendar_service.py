@@ -726,12 +726,19 @@ def test_import_account_calendars(social_account, social_token, mock_google_adap
     assert primary_calendar.provider == CalendarProvider.GOOGLE
     assert primary_calendar.calendar_type == CalendarType.PERSONAL
 
+    # The account's default calendar is the only one imported live.
+    assert primary_calendar.visibility == CalendarVisibility.ACTIVE
+    assert primary_calendar.sync_enabled is True
+
     work_calendar = Calendar.objects.filter_by_organization(organization).get(
         external_id="cal_456",
     )
     assert work_calendar.name == "Work Calendar"
     assert work_calendar.description == "Work events"
     assert work_calendar.email == "work@example.com"
+    # Every non-default calendar arrives unlisted and not syncing.
+    assert work_calendar.visibility == CalendarVisibility.UNLISTED
+    assert work_calendar.sync_enabled is False
 
     # Verify CalendarOwnership was created
     primary_ownership = (
@@ -831,16 +838,26 @@ def test_import_with_nonmember_owner_and_preexisting_orphans_does_not_raise(
 
 
 @pytest.mark.django_db
-def test_import_seeds_sync_enabled_from_access_role(
+def test_import_activates_only_the_default_calendar(
     social_account, social_token, mock_google_adapter, organization
 ):
-    """Owner/writer calendars import sync-enabled; reader-only ones import disabled."""
+    """Only the account's default calendar imports active + syncing; the rest are unlisted."""
     mock_google_adapter.get_account_calendars.return_value = [
         CalendarResourceData(
-            external_id="own_cal",
+            external_id="primary_cal",
             name="Mine",
             description="",
             email="user@example.com",
+            is_default=True,
+            access_role="owner",
+            provider="google",
+        ),
+        CalendarResourceData(
+            external_id="own_cal",
+            name="Side project",
+            description="",
+            email="user@example.com",
+            is_default=False,
             access_role="owner",
             provider="google",
         ),
@@ -849,15 +866,8 @@ def test_import_seeds_sync_enabled_from_access_role(
             name="Holidays",
             description="",
             email="holidays@example.com",
+            is_default=False,
             access_role="reader",
-            provider="google",
-        ),
-        CalendarResourceData(
-            external_id="unknown_cal",
-            name="Legacy",
-            description="",
-            email="legacy@example.com",
-            access_role=None,
             provider="google",
         ),
     ]
@@ -866,28 +876,58 @@ def test_import_seeds_sync_enabled_from_access_role(
     service.authenticate(account=social_account.user, organization=organization)
     service.import_account_calendars(sync_after_import=False)
 
-    assert (
-        Calendar.objects.filter_by_organization(organization)
-        .get(
-            external_id="own_cal",
-        )
-        .sync_enabled
+    primary = Calendar.objects.filter_by_organization(organization).get(
+        external_id="primary_cal",
     )
-    assert (
-        not Calendar.objects.filter_by_organization(organization)
-        .get(
-            external_id="shared_cal",
+    assert primary.visibility == CalendarVisibility.ACTIVE
+    assert primary.sync_enabled is True
+
+    # A second owner-role calendar is still not the default -- access role no
+    # longer decides anything.
+    for external_id in ("own_cal", "shared_cal"):
+        calendar = Calendar.objects.filter_by_organization(organization).get(
+            external_id=external_id,
         )
-        .sync_enabled
+        assert calendar.visibility == CalendarVisibility.UNLISTED
+        assert calendar.sync_enabled is False
+
+
+@pytest.mark.django_db
+def test_import_activates_nothing_when_no_calendar_is_default(
+    social_account, social_token, mock_google_adapter, organization
+):
+    """A batch with no default calendar activates nothing -- there is no default to sync."""
+    mock_google_adapter.get_account_calendars.return_value = [
+        CalendarResourceData(
+            external_id="cal_a",
+            name="A",
+            description="",
+            email="a@example.com",
+            is_default=False,
+            access_role="owner",
+            provider="google",
+        ),
+        CalendarResourceData(
+            external_id="cal_b",
+            name="B",
+            description="",
+            email="b@example.com",
+            is_default=False,
+            access_role="writer",
+            provider="google",
+        ),
+    ]
+
+    service = CalendarService()
+    service.authenticate(account=social_account.user, organization=organization)
+    service.import_account_calendars(sync_after_import=False)
+
+    calendars = Calendar.objects.filter_by_organization(organization).filter(
+        external_id__in=["cal_a", "cal_b"],
     )
-    # Unknown access role preserves prior behavior (enabled).
-    assert (
-        Calendar.objects.filter_by_organization(organization)
-        .get(
-            external_id="unknown_cal",
-        )
-        .sync_enabled
-    )
+    assert calendars.count() == 2
+    assert not calendars.filter(visibility=CalendarVisibility.ACTIVE).exists()
+    assert not calendars.filter(sync_enabled=True).exists()
 
 
 @pytest.mark.django_db
@@ -901,6 +941,7 @@ def test_import_preserves_sync_enabled_on_reimport(
             name="Holidays",
             description="",
             email="holidays@example.com",
+            is_default=False,
             access_role="reader",
             provider="google",
         ),
@@ -918,7 +959,7 @@ def test_import_preserves_sync_enabled_on_reimport(
     cal.sync_enabled = True
     cal.save(update_fields=["sync_enabled"])
 
-    # Re-import must not reset the opt-in back to the access-role default.
+    # Re-import must not reset the opt-in back to the non-default seed.
     service.import_account_calendars(sync_after_import=False)
     cal.refresh_from_db()
     assert cal.sync_enabled is True
@@ -935,6 +976,7 @@ def test_import_sync_after_import_flag(
             name="Mine",
             description="",
             email="user@example.com",
+            is_default=True,
             access_role="owner",
             provider="google",
         ),

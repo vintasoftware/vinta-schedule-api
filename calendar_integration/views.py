@@ -1,6 +1,6 @@
 import datetime
 from collections.abc import Callable
-from typing import Annotated, Any, cast
+from typing import TYPE_CHECKING, Annotated, Any, cast
 
 from django.db.models import Case, IntegerField, Value, When
 from django.http import Http404, HttpResponse
@@ -114,6 +114,10 @@ from common.utils.view_utils import ReadOnlyVintaScheduleModelViewSet, VintaSche
 from organizations.permissions import IsOrganizationAdmin
 
 
+if TYPE_CHECKING:
+    from users.models import User
+
+
 def _parse_bool(value, *, default: bool = True) -> bool:
     """Coerce a JSON/query value to bool, tolerating string forms ("true"/"false")."""
     if isinstance(value, bool):
@@ -123,6 +127,21 @@ def _parse_bool(value, *, default: bool = True) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in ("true", "1", "yes", "on")
     return bool(value)
+
+
+_CALENDAR_UPDATE_DESCRIPTION = (
+    "Updates a calendar's editable fields.\n\n"
+    "**Authorization rules (enforced after org-scoping):**\n"
+    "- BUNDLE calendar: caller must be an org admin. Non-admin members receive 403.\n"
+    "- Non-bundle calendar (PERSONAL/RESOURCE/VIRTUAL): caller must own the calendar "
+    "(CalendarOwnership) or be an org admin. Non-owner non-admins receive 403.\n"
+    "\n\n"
+    "**Activation:** imported calendars other than the account's default one arrive "
+    "unlisted with sync_enabled=false. Setting sync_enabled=true here also requests the "
+    "calendar's first sync (over a one-year window, using the owner's linked account), so "
+    "no follow-up call to /calendar/{id}/request-sync/ is needed. Set visibility=active in "
+    "the same request to list it for booking."
+)
 
 
 @extend_schema_view(
@@ -297,6 +316,52 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         serializer = self.get_serializer(ownership.calendar)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
+    def _assert_can_manage_calendar(self, calendar: Calendar, user: "User", verb: str) -> None:
+        """Gate a mutating action on a calendar, by calendar type.
+
+        - BUNDLE: admin-only. Bundles are management resources, not anyone's
+          personal calendar, so there is no owner to fall back on.
+        - Everything else (PERSONAL/RESOURCE/VIRTUAL): the caller must hold a
+          ``CalendarOwnership`` row for it, or be an org admin.
+
+        ``user`` is the acting (authenticated) user and ``verb`` is the action
+        named in the 403 message ("disable", "update"). Org scoping is already
+        drawn by ``get_queryset()``; this is the who-inside-the-org layer on top
+        of it.
+        """
+        if calendar.calendar_type == CalendarType.BUNDLE:
+            if not user.is_organization_admin(calendar.organization_id):
+                raise PermissionDenied(f"Only org admins can {verb} a bundle calendar.")
+            return
+
+        is_owner = (
+            CalendarOwnership.objects.filter_by_organization(calendar.organization_id)
+            .filter(
+                calendar=calendar,
+                membership_user_id=user.id,
+            )
+            .exists()
+        )
+        if not (is_owner or user.is_organization_admin(calendar.organization_id)):
+            raise PermissionDenied(f"You must own this calendar or be an org admin to {verb} it.")
+
+    @extend_schema(
+        summary="Update a calendar",
+        description=_CALENDAR_UPDATE_DESCRIPTION,
+    )
+    def update(self, request, *args, **kwargs):
+        """Update a calendar. Owner-or-admin gated; admin-only for bundles."""
+        self._assert_can_manage_calendar(self.get_object(), request.user, "update")
+        return super().update(request, *args, **kwargs)
+
+    @extend_schema(
+        summary="Partially update a calendar",
+        description=_CALENDAR_UPDATE_DESCRIPTION,
+    )
+    def partial_update(self, request, *args, **kwargs):
+        """PATCH a calendar. Same gating as ``update``, which DRF delegates to."""
+        return super().partial_update(request, *args, **kwargs)
+
     @extend_schema(
         summary="Soft-disable a calendar",
         description=(
@@ -323,28 +388,10 @@ class CalendarViewSet(VintaScheduleModelViewSet):
         """
         calendar = self.get_object()
 
-        if calendar.calendar_type == CalendarType.BUNDLE:
-            # Bundle calendars are management resources — admin-only disable.
-            # Only the bundle wrapper is hidden; child calendars, bundle events, and
-            # their representation BlockedTimes/events are left intact. Event
-            # cancellation is out of scope: leave the events, hide the bundle.
-            if not request.user.is_organization_admin(calendar.organization_id):
-                raise PermissionDenied("Only org admins can disable a bundle calendar.")
-        else:
-            # Non-bundle calendars (PERSONAL/RESOURCE/VIRTUAL): owner or admin.
-            is_owner = (
-                CalendarOwnership.objects.filter_by_organization(calendar.organization_id)
-                .filter(
-                    calendar=calendar,
-                    membership_user_id=request.user.id,
-                )
-                .exists()
-            )
-            is_admin = request.user.is_organization_admin(calendar.organization_id)
-            if not (is_owner or is_admin):
-                raise PermissionDenied(
-                    "You must own this calendar or be an org admin to disable it."
-                )
+        # Disabling a bundle hides only the bundle wrapper; child calendars, bundle
+        # events, and their representation BlockedTimes/events are left intact.
+        # Event cancellation is out of scope: leave the events, hide the bundle.
+        self._assert_can_manage_calendar(calendar, request.user, "disable")
 
         calendar.visibility = CalendarVisibility.INACTIVE
         calendar.save(update_fields=["visibility"])
