@@ -35,10 +35,11 @@
 | **Minting auth** | Session/JWT + active organization membership, in an authenticated viewset registered in [routes.py](../calendar_integration/routes.py) alongside the other internal viewsets. |
 | **Minting authorization** | Owner-or-org-admin. An org admin may mint for any calendar or group in the organization; a non-admin member may mint only for a calendar they own (`CalendarOwnership`) or a group they participate in. This is the same split [`CalendarGroupPermission`](../calendar_integration/permissions.py#L157-L232) already draws between "manage" (admin) and "view / book" (participating member). |
 | **Mint attribution** | New nullable `minted_by_membership` `OrganizationMembershipForeignKey` on `CalendarManagementToken`. [`create_booking_token`](../calendar_integration/services/calendar_permission_service.py#L707-L786) writes `minted_by` into the `minted_by_system_user` FK, which only accepts a `SystemUser`; a REST caller is a `User`. A dedicated column makes REST mints queryable rather than only reconstructible from the audit log. |
-| **Duration pinning — storage** | New nullable `duration` `DurationField` on `CalendarManagementToken`. A Postgres `interval` maps straight onto the `datetime.timedelta` every service in this area already speaks (`find_bookable_slots(duration=...)`), so nothing converts at a boundary. Null means unpinned — the behavior every existing code keeps. |
-| **Duration pinning — enforcement site** | `CalendarPermissionService.can_perform_scheduling` and `can_perform_update`. Both already receive the proposed start/end times and hold `self.token`, and both already return a bool that upstream turns into `PermissionDenied` → `NOT_PERMITTED`. Enforcing here means REST, GraphQL, and the legacy `public/organizations/<id>/events/` management-token surface all inherit the pin from one check, with the same error code, and no mutation edits. Enforcing in the REST views alone would leave the pin bypassable by replaying the same code against GraphQL. |
-| **Duration pinning — writes** | `end_time` stays required, and a request whose `start_time`/`end_time` span differs from the pinned duration is rejected with `403 NOT_PERMITTED`. The server never derives or silently rewrites `end_time`; a booking is only ever created at times the client actually asked for. The views pre-check the span purely so the message can name the pinned duration — the service check behind it is the guarantee. |
-| **Duration pinning — reads** | On the two code-gated bookable-slots endpoints, a pinned duration **silently overrides** the client's `duration_seconds`. A `400` naming the mismatch would turn those endpoints into an oracle for whether a code pins a duration and what it is, which the read design avoids everywhere else. Silent override also keeps a patient from browsing slots at a length they cannot actually book. The returned proposals' own spans are how a client legitimately discovers the pinned duration. |
+| **Duration lives on the bookable resource** | `CalendarGroup.duration`, a nullable `DurationField`. **Amended 2026-09-03** — it was originally `CalendarManagementToken.duration`, a per-code pin. That was wrong in one decisive way: a codeless public-group booking presents no code, so it inherited no pin and could be booked at any length — the one path with no credential at all was also the one path with no length constraint. Duration is a property of the thing being booked, not of the invitation to book it, so it moves to the group and the token column is removed. |
+| **Duration — enforcement site** | `CalendarPermissionService.can_perform_group_scheduling`, which already receives both the group and the proposed start/end times, plus `can_perform_update` for reschedules. Same reasoning as before: enforcing in the service means REST, GraphQL (including the deployed codeless `createCalendarGroupEvent`), and the legacy management-token surface all inherit it from one check with the same error code, and enforcing in the REST views alone would leave it bypassable by replaying against GraphQL. |
+| **Public implies length-constrained** | `duration` is nullable, but a write that sets `accepts_public_scheduling=True` is rejected unless a duration is set. Validated in the service layer so the existing GraphQL `is_private` writes inherit it, not just the new REST field. No DB CHECK constraint: pre-existing public groups with a null duration would fail the migration, so they are grandfathered at rest and refused at booking time instead. |
+| **Duration — writes** | `end_time` stays required, and a request whose span differs from the group's duration is rejected `403 NOT_PERMITTED`. The server never derives or rewrites `end_time`; a booking is only ever created at times the client actually asked for. **A public group whose `duration` is null refuses bookings outright rather than allowing any length** — fail closed, so a misconfiguration surfaces immediately instead of silently reopening the hole this change exists to close. See **Risk & Rollout Notes** for the pre-deploy audit that implies. |
+| **Duration — reads** | The codeless public-group discovery reads derive their search duration from the group, so `duration_seconds` is not a client input there at all and the slots shown are exactly the slots bookable. The code-gated reads' silent-override behavior goes away with the token column. |
 | **Public group addressing** | Codeless booking addresses a `CalendarGroup` by an opaque, non-sequential `public_booking_slug`, never by its integer primary key. Added in Phase 3b after review found that the integer-keyed route was a cross-tenant enumeration oracle: with no `organization_id` anywhere in the path, an anonymous caller could walk `group_id` 1..N and learn from the 404/403/201 split which groups exist in *any* organization and which accept public scheduling. GraphQL's `createCalendarGroupEvent` requires both `organization_id` and `group_id`, so the integer-keyed REST route was a strictly larger probing surface than its own parity target. Throttling was considered and declined; an unguessable identifier removes the oracle outright rather than rate-limiting it. |
 | **Slug covers both branches** | The slug replaces the integer id for coded *and* codeless requests on that route, so the integer PK leaves the public surface entirely. The coded branch still validates the addressed group against the token's group and still answers `403`, never `404`, on a mismatch — that guarantee predates the slug and must survive it. |
 | **Patient management codes** | A successful booking mints a `RESCHEDULE` and a `CANCEL` code bound to the new event and returns both plaintexts **once**, in the create response. A successful reschedule re-issues a fresh pair for the same event, so the chain continues; a cancel ends it. This is what makes the feature usable: without it a patient can book and then never change anything, because minting is owner-or-org-admin and nothing else issues codes. Note the pre-existing external-attendee token (`[UPDATE_SELF_RSVP, RESCHEDULE, CANCEL]`, minted inside `create_event`) is **not** this mechanism — its plaintext is discarded at mint, so that row has never been usable by anyone. |
@@ -92,29 +93,45 @@ ALTER TABLE calendar_integration_calendarmanagementtoken
 
 Added `NOT VALID` then `VALIDATE CONSTRAINT` in a second operation with `atomic = False`, exactly as `0026` does. `DEFERRABLE INITIALLY DEFERRED` for the same reason `0026` documents: Django's cascade collector is blind to `ForeignObject` dependencies during organization deletion, so a non-deferrable constraint would abort org deletion depending on collector ordering.
 
-### 3.2 `CalendarManagementToken.duration`
+### 3.2 `CalendarGroup.duration`
 
-In [@calendar_integration/models.py](../calendar_integration/models.py#L2004-L2008), alongside `expires_at`:
+**Amended 2026-09-03.** This subsection originally specified `CalendarManagementToken.duration`.
+That column ships in migration `0051` and is removed again in Phase 8 — see the
+**Duration lives on the bookable resource** row in **Guiding Decisions** for why, and
+**Risk & Rollout Notes** for why the removal is a forward migration rather than a rewrite of `0051`.
+
+In [@calendar_integration/models.py](../calendar_integration/models.py), on `CalendarGroup`:
 
 ```python
 duration = models.DurationField(
     null=True,
     blank=True,
     help_text=(
-        "When set, the event booked or rescheduled with this code must span "
+        "When set, every event booked or rescheduled through this group must span "
         "exactly this duration. Enforced by CalendarPermissionService, so every "
-        "surface that honours booking codes inherits it. Null means unpinned."
+        "surface that books through a group inherits it -- including the codeless "
+        "public path, which presents no code and so could not inherit a per-code "
+        "pin. A group with accepts_public_scheduling=True must have this set."
     ),
 )
 ```
 
-A plain nullable column with no default and no index — nothing filters on it, every read that needs it already has the token row in hand. No composite FK, no `NOT VALID` dance; it rides along in the same migration as `minted_by_membership` because it lands on the same table and adding two nullable columns in one `ALTER TABLE` is one metadata-only operation instead of two.
+A Postgres `interval` maps straight onto the `datetime.timedelta` every service here already speaks
+(`find_bookable_slots(duration=...)`), so nothing converts at a boundary.
+
+**Single-calendar bookings are deliberately unconstrained.** Duration does not go on `Calendar`.
+A single-calendar booking code has no group to inherit from, so Phase 1's and Phase 4's per-code
+pinning is dropped rather than relocated — an explicit capability decision, not an oversight. If
+single-calendar length constraints are wanted later, the mechanism is `Calendar.duration` following
+this same shape, or a booking policy.
 
 **Enforcement**, per **Guiding Decisions**:
 
-- [`can_perform_scheduling`](../calendar_integration/services/calendar_permission_service.py#L400-L442) — the pin must be checked **before** the `accepts_public_scheduling` short-circuit at the top of that method. That clause returns `True` without touching the token, so a pinned code presented against a publicly-schedulable calendar would otherwise skip the check entirely. The rule is: when a token is present and pins a duration, a span mismatch is `False` regardless of anything else; only then does the existing authorization logic run.
-- [`can_perform_update`](../calendar_integration/services/calendar_permission_service.py#L379-L397) — same check against `new_event`'s span, skipped when `new_event is None` (cancellation has no duration).
-- **The group booking path needs verification.** `CalendarGroupService.create_grouped_event` is expected to reach `can_perform_scheduling` per member calendar, which would give group booking the pin for free. If it does not, add a times-aware overload of [`can_perform_group_scheduling`](../calendar_integration/services/calendar_permission_service.py#L444-L474) — that method currently takes only the group and so cannot see a duration. Confirm before implementing Phase 2; do not assume.
+- `can_perform_group_scheduling(group, *, start_time, end_time)` — already receives everything it
+  needs. Effective rule: when `group.duration` is set, a span mismatch is refused; when the group
+  accepts public scheduling and `duration` is null, refuse outright (fail closed).
+- `can_perform_update` — the same check against the new span on a reschedule, skipped for
+  cancellation.
 
 ### 3.3 `create_booking_token` signature
 
@@ -379,7 +396,7 @@ Changes:
 
 1. `@calendar_integration/booking_views.py`: in `BookingCodeGroupEventViewSet.create`, branch on the presence of `X-Booking-Code`. Absent → skip code resolution entirely, take the group from the path, and delegate to `CalendarGroupService.create_grouped_event`, which already routes through [`can_perform_group_scheduling`](../calendar_integration/services/calendar_permission_service.py#L444-L474) — that method's first clause is the `accepts_public_scheduling` short-circuit, so the authorization decision stays in the service and is not restated in the view.
 2. Map `PermissionServiceInitializationError` → `403 NOT_PERMITTED` with the same message [`create_calendar_group_event`](../calendar_integration/mutations.py#L750-L759) uses ("This group does not accept public scheduling. A token or scheduling code is required."), and `CalendarGroup.DoesNotExist` → `404`.
-3. No code is consumed on this path — there is none. Assert this explicitly. For the same reason there is **no pinned duration** on the codeless branch: the pin lives on a code, so a codeless booking is unconstrained in length by design. If a group needs its bookings length-constrained, the mechanism is a booking policy, not `accepts_public_scheduling`.
+3. No code is consumed on this path — there is none. Assert this explicitly. *(**Amended 2026-09-03.** This item originally said a codeless booking is "unconstrained in length by design" because the pin lived on a code. That was the defect: the one path reachable with no credential was also the one path with no length constraint. Duration moved to `CalendarGroup` in Phase 8, and this branch now inherits it through `can_perform_group_scheduling` with no change to this viewset.)*
 4. Update the drf-spectacular annotation to document `X-Booking-Code` as optional on this one endpoint; regenerate `schema.yml`.
 
 Spec use-case: codeless public group booking (GraphQL parity with `createCalendarGroupEvent`).
@@ -542,7 +559,7 @@ Acceptance: `POST /booking-codes/` as an org admin or calendar owner returns `20
 
 ### Phase 7 — Explicit booking-code kind discriminator
 
-**Goal**: Replace Phase 6's `minted_by_* IS NOT NULL` heuristic with an explicit column, so a code minted with no actor is still a revokable booking code. Ship value: none user-visible on its own; it unblocks Phase 8, which mints codes during codeless bookings.
+**Goal**: Replace Phase 6's `minted_by_* IS NOT NULL` heuristic with an explicit column, so a code minted with no actor is still a revokable booking code. Ship value: none user-visible on its own; it unblocks Phase 9, which mints codes during codeless bookings.
 
 **Feature flag**: none — a new column plus a swap of one queryset predicate; no reachable behavior changes for existing rows.
 
@@ -554,7 +571,7 @@ Changes:
 4. [calendar_permission_service.py](../calendar_integration/services/calendar_permission_service.py): `create_booking_token` sets `kind=BOOKING_CODE`; every other `create_*_token` sets `MANAGEMENT_TOKEN` explicitly rather than relying on the default.
 5. Revert the twelve test fixtures Phase 6 had to amend: they exist only to satisfy the heuristic and should mint with the explicit kind instead.
 
-Spec use-case: shared scaffolding for Phase 8.
+Spec use-case: shared scaffolding for Phase 9.
 
 Tests:
 
@@ -573,7 +590,44 @@ Acceptance: `booking_codes()` filters on `kind`; an actor-less mint is revokable
 
 ---
 
-### Phase 8 — Patient self-service management codes
+### Phase 8 — Move the duration constraint to `CalendarGroup`
+
+**Goal**: Make codeless public-group bookings length-constrained, by moving the duration from the booking code to the group and removing the token column.
+
+**Feature flag**: none — the enforcement seam already exists and the column being removed has no production data (it ships in this same unmerged stack).
+
+Changes:
+
+1. `@calendar_integration/models.py`: add `CalendarGroup.duration` per **Data Model Changes**.
+2. Migration adding it, nullable. No backfill — null is a valid state for a private group.
+3. `@calendar_integration/services/calendar_permission_service.py`: enforce in `can_perform_group_scheduling` (which already receives the group and the times) and in `can_perform_update` for reschedules. **Fail closed:** a group with `accepts_public_scheduling=True` and a null `duration` refuses bookings rather than allowing any length.
+4. Enforce the invariant in the service layer: a write setting `accepts_public_scheduling=True` is rejected unless a duration is set. Service-level so the existing GraphQL `create_calendar_group` / `update_calendar_group` mutations inherit it, not just Phase 10's new REST field. **This is a behavior change on a deployed surface** — call it out in the PR.
+5. **Remove `CalendarManagementToken.duration`**, forward: a migration dropping the column, plus deletion of every read of it — `_duration_pin_satisfied` in `calendar_permission_service.py`, `pinned_duration_error` in `booking_auth.py`, `_resolve_duration`'s override in `booking_read_views.py`, and the `duration_seconds` field on Phase 6's mint endpoint and its serializer. Delete the tests that exercised per-code pinning; keep and re-point the ones that exercise group-level constraint.
+6. Regenerate `schema.yml` — the mint endpoint loses `duration_seconds` and the two code-gated slot reads lose the override, so this is a **contract change**, not additive. Say so in the PR.
+
+Spec use-case: hardening of the codeless booking use-case; no new user-facing capability.
+
+Tests:
+
+- **Integration**: a group with `duration=30min` refuses a 45-minute codeless booking and accepts a 30-minute one — the hole this phase closes. Assert through the codeless endpoint, with no credential.
+- **Integration**: the same constraint applies to a *coded* group booking and to a group reschedule, so all three paths agree.
+- **Integration**: a public group with a null `duration` refuses bookings (fail closed) rather than accepting any length.
+- **Integration**: setting `accepts_public_scheduling=True` without a duration is rejected, through the existing GraphQL mutation as well as directly at the service.
+- **Integration**: a private group with a null duration is unaffected — bookings through a code still work at any span, since single-calendar and private-group pinning is deliberately gone.
+- **Integration**: `CalendarManagementToken` no longer has a `duration` attribute, and the mint endpoint rejects `duration_seconds` as an unknown field.
+- **Unit**: the drop migration applies, reverses, and re-applies.
+
+**Suggested AI model**: Tier 3 (IDs in [resources/ai-models.yaml](../.claude/skills/plan-feature/resources/ai-models.yaml)). Two migrations, an enforcement change every booking surface inherits, and a removal that touches five modules and their tests.
+
+**Review models**: reviewer Tier 4 — this changes the authorization result for every group booking on every surface including deployed GraphQL, and it removes a constraint mechanism while adding another. A reviewer must confirm no path is left unconstrained and that the fail-closed rule cannot be bypassed. Fixer left on the project default.
+
+**Reusable skills**: `add-migration`.
+
+Acceptance: a codeless booking through a group with a duration is refused at any other span; a public group with no duration refuses bookings; flipping a group public without a duration is rejected on both surfaces; `CalendarManagementToken.duration` no longer exists; and `schema.yml` reflects the removed `duration_seconds`.
+
+---
+
+### Phase 9 — Patient self-service management codes
 
 **Goal**: A patient who books can reschedule or cancel their own appointment without anyone minting a code for them by hand.
 
@@ -583,7 +637,7 @@ Changes:
 
 1. [booking_views.py](../calendar_integration/booking_views.py): on a successful create — single-calendar (Phase 1), group coded (Phase 2), and group codeless (Phase 3) — mint a `RESCHEDULE` and a `CANCEL` booking code bound to the new event, scoped to the same calendar or group the booking used, and return both plaintexts in a `management` object on the `201`. Mint inside the existing `transaction.atomic()` so a failed booking issues nothing.
 2. Same on a successful reschedule (single and group): re-issue a fresh pair for the event and return them, so the patient can manage it again. Cancel returns `204` and issues nothing — the chain ends.
-3. Inherit the booking's pinned duration onto the re-issued reschedule code, so a 30-minute appointment cannot be rescheduled into a 60-minute one by using the code the system itself handed out.
+3. No duration is carried on the issued codes — after Phase 8 the constraint lives on the group, so a re-issued reschedule code inherits it automatically through `can_perform_group_scheduling` / `can_perform_update`. A 30-minute group appointment therefore cannot be rescheduled into a 60-minute one even though the code itself pins nothing.
 4. Carry `expires_at` from the event rather than leaving it null: a management code for a past appointment is dead weight. Default to the event's end time unless the plan's **Open Questions** resolves otherwise.
 5. [serializers.py](../calendar_integration/serializers.py): a small `BookingManagementCodesSerializer` for the `management` object. Write-only in the sense that it is never echoed on a read — these endpoints have no read.
 6. Regenerate `schema.yml`.
@@ -596,7 +650,7 @@ Tests:
 - **Integration**: book, then use the returned `cancel_code` against `POST /public/booking/events/cancel/` and confirm `204` and deletion.
 - **Integration**: the same for a group booking and for a **codeless** group booking — the codeless case is what forces Phase 7's explicit kind, so assert the issued codes are revokable.
 - **Integration**: a failed booking (slot unavailable) issues no codes and leaves no token rows.
-- **Integration**: a pinned booking's re-issued reschedule code carries the same pin, and refuses a different span.
+- **Integration**: a re-issued reschedule code for a group with a duration refuses a different span, proving the constraint survives re-issue without living on the code.
 - **Integration**: the issued codes are scoped to that event only — they cannot touch a second event on the same calendar.
 
 **Suggested AI model**: Tier 3 (IDs in [resources/ai-models.yaml](../.claude/skills/plan-feature/resources/ai-models.yaml)). Touches five endpoints' success paths inside their transactions, and the re-issue chain has to preserve scope and pin.
@@ -609,7 +663,7 @@ Acceptance: booking returns working reschedule and cancel codes; rescheduling wi
 
 ---
 
-### Phase 9 — Public-group flag and codeless discovery reads
+### Phase 10 — Public-group flag and codeless discovery reads
 
 **Goal**: An organization can read and set `accepts_public_scheduling` over REST, and anyone can discover a public group's availability without a code — so a codeless booking UI can show real slots instead of guessing.
 
@@ -623,7 +677,8 @@ Changes:
    - `POST /public/booking/calendar-groups/<slug>/availability/` (ranges in the body)
    - `GET /public/booking/calendar-groups/<slug>/availability-windows/` and `.../unavailable-windows/` — **aggregated across the group, never per-calendar** (see the "Codeless discovery is group-aggregated" Guiding Decision). If no coherent non-attributing aggregate exists for a window read, ship the other two and say so rather than leaking a per-calendar breakdown.
 3. These are codeless-only and slug-addressed; the Phase 5 code-gated reads stay token-addressed. Do not conflate the two addressing schemes.
-4. Regenerate `schema.yml`.
+4. **The slot search takes its duration from `group.duration`, not from the client.** After Phase 8 that is the only length a codeless booking can have, so `duration_seconds` is not a query parameter on these endpoints at all — accepting one would let a caller browse slots at a length the write side would then refuse. A group with a null `duration` cannot accept public scheduling (Phase 8's invariant), so these reads return `403` for it rather than guessing a length.
+5. Regenerate `schema.yml`.
 
 Spec use-case: codeless public-group slot discovery, plus REST management of the flag that enables it.
 
@@ -659,6 +714,23 @@ If this is revisited, the remedy is small and follows a pattern already in the r
 **Deferred-constraint interaction with organization deletion.** [0026](../calendar_integration/migrations/0026_calendarownership_membership_protect_fk.py) documents at length why membership constraints in this app must be `DEFERRABLE INITIALLY DEFERRED`: Django's cascade collector cannot see `ForeignObject` dependencies and may delete an `OrganizationMembership` before the rows referencing it. The new constraint inherits that requirement. Phase 0's test asserting that whole-organization deletion still succeeds is not optional coverage — it is the regression test for this specific failure mode.
 
 **Rollback.** With no feature flag, rollback is per phase and clean because each phase only adds routes. Reverting a phase's route registration in `booking_urls.py` (or `routes.py` for Phase 6) removes the surface immediately; the viewsets and serializers can stay in the tree harmlessly. The one exception is Phase 0's migration: reverting it drops the constraint, the index, and the column. Codes minted through Phase 6 in the interim keep working in one respect and lose a guarantee in another: `minted_by_membership` is attribution metadata that nothing in the authorization path reads, so dropping it costs only audit detail — but dropping `duration` **silently unpins every code that had a duration**, turning a 30-minute code into an any-length code rather than breaking it. That is a security regression that fails open, so if Phase 0 is ever reverted after Phase 6 has minted pinned codes, revoke those codes first. Revert Phase 6 before Phase 0 regardless, so nothing is writing either column when they disappear.
+
+**Pre-deploy audit required by Phase 8's fail-closed rule.** A `CalendarGroup` with
+`accepts_public_scheduling=True` and a null `duration` refuses bookings after Phase 8. That is the
+intended failure direction — a misconfigured public group should surface immediately rather than
+quietly accept any length — but it means **existing public groups must be given a duration before
+this deploys**, or their bookings break. Audit them first:
+`CalendarGroup.objects.filter(accepts_public_scheduling=True, duration__isnull=True)`. The invariant
+is enforced on write only, with no DB CHECK constraint, precisely so the migration itself cannot fail
+on such rows.
+
+**Why removing `CalendarManagementToken.duration` is a forward migration, not a rewrite of `0051`.**
+The column is added in `0051` and dropped in Phase 8, inside the same unmerged stack — visibly
+add-then-drop. Rewriting `0051` instead would have meant force-pushing six of the eight phase
+branches, re-anchoring 52 inline review comments, and re-reviewing all eight PRs; the plan's own
+amendment guidance treats that blast radius as a restart-level cost. The forward path keeps every PR
+and its review intact, and the history is at least honest about what happened. No production data is
+lost, because the column has never shipped.
 
 **Carried forward from implementation — read before extending this surface.**
 
@@ -786,3 +858,18 @@ calendar-owner tokens, causing permanent lockout (Phase 6). Neither was a schema
 - [routes.py](../calendar_integration/routes.py) — `booking-codes`
 - `schema.yml` (regenerated)
 - `@calendar_integration/tests/test_booking_code_rest_mint.py` (new)
+
+## Amendments
+
+- **2026-09-03** — Moved the event-duration constraint from `CalendarManagementToken.duration` to
+  `CalendarGroup.duration` and removed the token column. The per-code pin left the codeless
+  public-group path — the only path reachable with no credential — with no length constraint at all,
+  because it presents no code to carry a pin. Duration is a property of the thing being booked, not
+  of the invitation. Single-calendar pinning is dropped rather than relocated (explicit decision; no
+  `Calendar.duration`). Inserted as new **Phase 8**; the previously-planned Phase 7 (booking-code
+  kind discriminator) keeps its number because it was already being implemented, and the
+  previously-planned phases 8 and 9 renumbered to 9 and 10. Corrected Phase 3's claim that a codeless booking is "unconstrained in length by
+  design", the four duration rows in **Guiding Decisions**, and **Data Model Changes** subsection 3.2.
+  Affected phases: 3 (text), 5 (read override removed), 6 (mint field removed), 8 (new), 9 (no longer
+  inherits a per-code pin), 10 (derives search duration from the group). Branches force-pushed: none —
+  resolved forward, so all eight open PRs keep their review context.
