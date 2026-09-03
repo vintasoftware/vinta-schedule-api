@@ -3663,8 +3663,11 @@ class BookingCodeCreateSerializer(serializers.Serializer):
     answered ``404`` there rather than a serializer-level ``400``, keeping "target
     exists but you can't see it" indistinguishable from "target does not exist".
 
-    ``duration_seconds`` is the only way to mint a code that pins the event
-    duration -- GraphQL's mint mutations are deliberately unchanged.
+    No ``duration_seconds`` field: duration pinning lives on
+    ``CalendarGroup.duration``, not on the minted token -- there is no
+    per-code duration to set at mint time. A calendar-scoped code carries no
+    duration constraint at all; a calendar-group-scoped code inherits
+    whatever duration (if any) is already set on that group.
     """
 
     PURPOSE_BOOK = "book"
@@ -3686,9 +3689,6 @@ class BookingCodeCreateSerializer(serializers.Serializer):
     calendar_group = serializers.IntegerField(required=False, allow_null=True, default=None)
     event = serializers.IntegerField(required=False, allow_null=True, default=None)
     expires_at = serializers.DateTimeField(required=False, allow_null=True, default=None)
-    duration_seconds = serializers.IntegerField(
-        required=False, allow_null=True, default=None, min_value=1
-    )
 
     def validate(self, attrs: dict) -> dict:
         calendar = attrs.get("calendar")
@@ -3708,11 +3708,6 @@ class BookingCodeCreateSerializer(serializers.Serializer):
         expires_at = attrs.get("expires_at")
         if expires_at is not None and expires_at <= timezone.now():
             raise serializers.ValidationError("'expires_at' must be in the future.")
-
-        if purpose == self.PURPOSE_CANCEL and attrs.get("duration_seconds") is not None:
-            raise serializers.ValidationError(
-                "'duration_seconds' is forbidden for purpose='cancel'."
-            )
 
         return attrs
 
@@ -3734,4 +3729,3 @@ class BookingCodeCreateResultSerializer(serializers.Serializer):
     calendar_group = serializers.IntegerField(read_only=True, allow_null=True)
     event = serializers.IntegerField(read_only=True, allow_null=True)
     expires_at = serializers.DateTimeField(read_only=True, allow_null=True)
-    duration_seconds = serializers.IntegerField(read_only=True, allow_null=True)

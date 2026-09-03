@@ -18042,8 +18042,11 @@ components:
         answered ``404`` there rather than a serializer-level ``400``, keeping "target
         exists but you can't see it" indistinguishable from "target does not exist".
 
-        ``duration_seconds`` is the only way to mint a code that pins the event
-        duration -- GraphQL's mint mutations are deliberately unchanged.
+        No ``duration_seconds`` field: duration pinning lives on
+        ``CalendarGroup.duration``, not on the minted token -- there is no
+        per-code duration to set at mint time. A calendar-scoped code carries no
+        duration constraint at all; a calendar-group-scoped code inherits
+        whatever duration (if any) is already set on that group.
       properties:
         purpose:
           $ref: '#/components/schemas/PurposeEnum'
@@ -18059,10 +18062,6 @@ components:
         expires_at:
           type: string
           format: date-time
-          nullable: true
-        duration_seconds:
-          type: integer
-          minimum: 1
           nullable: true
       required:
       - purpose
@@ -18102,15 +18101,10 @@ components:
           format: date-time
           readOnly: true
           nullable: true
-        duration_seconds:
-          type: integer
-          readOnly: true
-          nullable: true
       required:
       - calendar
       - calendar_group
       - code
-      - duration_seconds
       - event
       - expires_at
       - id

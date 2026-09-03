@@ -9,9 +9,12 @@ Phase 1-5 endpoint to prove it is indistinguishable from a GraphQL-minted one.
 Covers:
 - The six ``purpose`` x target combinations, each minted here and then USED
   against the matching Phase 1-4 write endpoint (the real parity assertion).
-- End-to-end duration pinning: mint with ``duration_seconds``, prove the pin is
-  enforced on write and silently overrides the client's ``duration_seconds`` on
-  the Phase 5 bookable-slots read.
+- End-to-end duration pinning: this endpoint mints no ``duration_seconds`` of
+  its own -- duration pinning lives on ``CalendarGroup.duration``, not on the
+  token. A code minted for a group that already carries a duration is
+  enforced on write and silently overrides the client's ``duration_seconds``
+  on the Phase 5 group-scoped bookable-slots read; a code minted for a
+  calendar carries no duration constraint at all.
 - Authorization matrix: admin mints for any target; a member mints for an owned
   calendar / a participated group; a member is refused for a non-owned calendar
   / non-participated group; a cross-organization target is 404, never 403.
@@ -63,6 +66,7 @@ BOOKING_RESCHEDULE_URL = "calendar_booking_api:booking-events-reschedule-list"
 BOOKING_GROUP_RESCHEDULE_URL = "calendar_booking_api:booking-group-events-reschedule-list"
 BOOKING_CANCEL_URL = "calendar_booking_api:booking-events-cancel-list"
 BOOKING_BOOKABLE_SLOTS_URL = "calendar_booking_api:booking-calendar-bookable-slots-list"
+BOOKING_GROUP_BOOKABLE_SLOTS_URL = "calendar_booking_api:booking-calendar-group-bookable-slots-list"
 
 BOOKING_START = datetime.datetime(2030, 6, 1, 10, 0, tzinfo=datetime.UTC)
 BOOKING_END = datetime.datetime(2030, 6, 1, 10, 30, tzinfo=datetime.UTC)
@@ -492,25 +496,45 @@ class TestSixPurposeTargetCombinations:
 
 @pytest.mark.django_db
 class TestDurationPinEndToEnd:
-    def test_pinned_code_enforced_on_write_and_silently_overrides_read(
-        self, admin_client, anon_client, organization, calendar, available_window
+    """Duration pinning lives on ``CalendarGroup.duration``, not on the
+    minted token: the mint endpoint accepts no ``duration_seconds`` of its
+    own, so these tests set the pin on the GROUP target directly, before
+    minting a code for it -- unlike GraphQL's mint mutations, which are
+    deliberately unchanged.
+
+    A calendar-scoped code carries no duration constraint at all (no
+    ``Calendar.duration`` exists) -- see
+    ``test_calendar_scoped_code_accepts_any_span`` below.
+    """
+
+    def test_pinned_group_code_enforced_on_write_and_silently_overrides_read(
+        self,
+        admin_client,
+        anon_client,
+        organization,
+        calendar,
+        secondary_calendar,
+        group,
+        group_availability_windows,  # noqa: ARG002 -- seeds DB rows consumed by create_event
     ):
-        mint = _mint(
-            admin_client,
-            {"purpose": "book", "calendar": calendar.id, "duration_seconds": 1800},
-        )
+        group.duration = datetime.timedelta(minutes=30)
+        group.save()
+
+        mint = _mint(admin_client, {"purpose": "book", "calendar_group": group.id})
         assert mint.status_code == status.HTTP_201_CREATED, mint.content
         body = mint.json()
         code = body["code"]
-        assert body["duration_seconds"] == 1800
+
+        slot_selections = _slot_selections(group, calendar, secondary_calendar)
 
         # Wrong span (45 min instead of the pinned 30) is refused and does NOT
         # consume the code -- the pin check runs before create/consume.
         wrong_payload = _book_payload(
-            end_time=(BOOKING_START + datetime.timedelta(minutes=45)).isoformat()
+            end_time=(BOOKING_START + datetime.timedelta(minutes=45)).isoformat(),
+            slot_selections=slot_selections,
         )
         wrong_response = anon_client.post(
-            reverse(BOOKING_CALENDAR_EVENTS_URL),
+            _group_booking_url(group.public_booking_slug),
             wrong_payload,
             format="json",
             headers={BOOKING_CODE_HEADER: code},
@@ -519,9 +543,10 @@ class TestDurationPinEndToEnd:
         assert wrong_response.json()["error_code"] == "NOT_PERMITTED"
 
         # Phase 5 read: the client asks for a DIFFERENT duration_seconds: the
-        # pin silently overrides it, so every proposal spans exactly 30 minutes.
+        # group's pin silently overrides it, so every proposal spans exactly
+        # 30 minutes.
         read_response = anon_client.get(
-            reverse(BOOKING_BOOKABLE_SLOTS_URL),
+            reverse(BOOKING_GROUP_BOOKABLE_SLOTS_URL),
             {
                 "search_window_start": "2030-06-01T09:00:00Z",
                 "search_window_end": "2030-06-01T11:00:00Z",
@@ -539,9 +564,10 @@ class TestDurationPinEndToEnd:
             assert end - start == datetime.timedelta(minutes=30)
 
         # Correct span (30 min, matching the pin) succeeds and consumes the code.
+        right_payload = _book_payload(slot_selections=slot_selections)
         right_response = anon_client.post(
-            reverse(BOOKING_CALENDAR_EVENTS_URL),
-            _book_payload(),
+            _group_booking_url(group.public_booking_slug),
+            right_payload,
             format="json",
             headers={BOOKING_CODE_HEADER: code},
         )
@@ -552,13 +578,41 @@ class TestDurationPinEndToEnd:
         )
         assert token.used_at is not None
 
-    def test_unpinned_code_accepts_any_span(
+    def test_unpinned_group_code_accepts_any_span(
+        self,
+        admin_client,
+        anon_client,
+        organization,
+        calendar,
+        secondary_calendar,
+        group,
+        group_availability_windows,  # noqa: ARG002 -- seeds DB rows consumed by create_event
+    ):
+        mint = _mint(admin_client, {"purpose": "book", "calendar_group": group.id})
+        assert mint.status_code == status.HTTP_201_CREATED, mint.content
+        code = mint.json()["code"]
+
+        payload = _book_payload(
+            end_time=(BOOKING_START + datetime.timedelta(minutes=45)).isoformat(),
+            slot_selections=_slot_selections(group, calendar, secondary_calendar),
+        )
+        response = anon_client.post(
+            _group_booking_url(group.public_booking_slug),
+            payload,
+            format="json",
+            headers={BOOKING_CODE_HEADER: code},
+        )
+        assert response.status_code == status.HTTP_201_CREATED, response.content
+
+    def test_calendar_scoped_code_accepts_any_span(
         self, admin_client, anon_client, organization, calendar, available_window
     ):
+        """A calendar-scoped code has no ``CalendarGroup`` to pin a duration
+        on at all -- unlike the group-scoped cases above, any span is
+        accepted."""
         mint = _mint(admin_client, {"purpose": "book", "calendar": calendar.id})
         assert mint.status_code == status.HTTP_201_CREATED, mint.content
         code = mint.json()["code"]
-        assert mint.json()["duration_seconds"] is None
 
         payload = _book_payload(
             end_time=(BOOKING_START + datetime.timedelta(minutes=45)).isoformat()
@@ -745,35 +799,6 @@ class TestValidationMatrix:
         past = (datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=1)).isoformat()
         response = _mint(
             admin_client, {"purpose": "book", "calendar": calendar.id, "expires_at": past}
-        )
-        assert response.status_code == status.HTTP_400_BAD_REQUEST
-
-    def test_duration_seconds_zero(self, admin_client, calendar):
-        response = _mint(
-            admin_client, {"purpose": "book", "calendar": calendar.id, "duration_seconds": 0}
-        )
-        assert response.status_code == status.HTTP_400_BAD_REQUEST
-
-    def test_duration_seconds_negative(self, admin_client, calendar):
-        response = _mint(
-            admin_client, {"purpose": "book", "calendar": calendar.id, "duration_seconds": -100}
-        )
-        assert response.status_code == status.HTTP_400_BAD_REQUEST
-
-    def test_duration_seconds_forbidden_for_purpose_cancel(
-        self, admin_client, organization, calendar
-    ):
-        event = baker.make(
-            CalendarEvent, organization=organization, calendar=calendar, timezone="UTC"
-        )
-        response = _mint(
-            admin_client,
-            {
-                "purpose": "cancel",
-                "calendar": calendar.id,
-                "event": event.id,
-                "duration_seconds": 600,
-            },
         )
         assert response.status_code == status.HTTP_400_BAD_REQUEST
 

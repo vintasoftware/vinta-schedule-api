@@ -3216,17 +3216,11 @@ class BookingCodeViewSet(TenantScopedViewMixin, GenericViewSet):
                 calendar_group_id=calendar_group_id,
             )
 
-        duration_seconds = data.get("duration_seconds")
-        duration = (
-            datetime.timedelta(seconds=duration_seconds) if duration_seconds is not None else None
-        )
-
         token, plaintext_code = calendar_permission_service.create_booking_token(
             organization_id=organization_id,
             permissions=BookingCodeCreateSerializer.PURPOSE_PERMISSIONS[data["purpose"]],
             expires_at=data.get("expires_at"),
             minted_by_user=request.user,
-            duration=duration,
             calendar_id=calendar_id,
             calendar_group_id=calendar_group_id,
             event_id=event_id,
@@ -3241,7 +3235,6 @@ class BookingCodeViewSet(TenantScopedViewMixin, GenericViewSet):
                 "calendar_group": calendar_group_id,
                 "event": event_id,
                 "expires_at": data.get("expires_at"),
-                "duration_seconds": duration_seconds,
             }
         )
         return Response(result_serializer.data, status=status.HTTP_201_CREATED)
