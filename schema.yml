@@ -9032,7 +9032,16 @@ paths:
           description: ''
     put:
       operationId: calendar_update
-      description: ViewSet for managing calendars.
+      description: |-
+        Updates a calendar's editable fields.
+
+        **Authorization rules (enforced after org-scoping):**
+        - BUNDLE calendar: caller must be an org admin. Non-admin members receive 403.
+        - Non-bundle calendar (PERSONAL/RESOURCE/VIRTUAL): caller must own the calendar (CalendarOwnership) or be an org admin. Non-owner non-admins receive 403.
+
+
+        **Activation:** imported calendars other than the account's default one arrive unlisted with sync_enabled=false. Setting sync_enabled=true here also requests the calendar's first sync (over a one-year window, using the owner's linked account), so no follow-up call to /calendar/{id}/request-sync/ is needed. Set visibility=active in the same request to list it for booking.
+      summary: Update a calendar
       parameters:
       - in: header
         name: X-Organization-Id
@@ -9075,7 +9084,16 @@ paths:
           description: ''
     patch:
       operationId: calendar_partial_update
-      description: ViewSet for managing calendars.
+      description: |-
+        Updates a calendar's editable fields.
+
+        **Authorization rules (enforced after org-scoping):**
+        - BUNDLE calendar: caller must be an org admin. Non-admin members receive 403.
+        - Non-bundle calendar (PERSONAL/RESOURCE/VIRTUAL): caller must own the calendar (CalendarOwnership) or be an org admin. Non-owner non-admins receive 403.
+
+
+        **Activation:** imported calendars other than the account's default one arrive unlisted with sync_enabled=false. Setting sync_enabled=true here also requests the calendar's first sync (over a one-year window, using the owner's linked account), so no follow-up call to /calendar/{id}/request-sync/ is needed. Set visibility=active in the same request to list it for booking.
+      summary: Partially update a calendar
       parameters:
       - in: header
         name: X-Organization-Id
@@ -9192,7 +9210,16 @@ paths:
           description: ''
     put:
       operationId: calendar_formatted_update
-      description: ViewSet for managing calendars.
+      description: |-
+        Updates a calendar's editable fields.
+
+        **Authorization rules (enforced after org-scoping):**
+        - BUNDLE calendar: caller must be an org admin. Non-admin members receive 403.
+        - Non-bundle calendar (PERSONAL/RESOURCE/VIRTUAL): caller must own the calendar (CalendarOwnership) or be an org admin. Non-owner non-admins receive 403.
+
+
+        **Activation:** imported calendars other than the account's default one arrive unlisted with sync_enabled=false. Setting sync_enabled=true here also requests the calendar's first sync (over a one-year window, using the owner's linked account), so no follow-up call to /calendar/{id}/request-sync/ is needed. Set visibility=active in the same request to list it for booking.
+      summary: Update a calendar
       parameters:
       - in: header
         name: X-Organization-Id
@@ -9242,7 +9269,16 @@ paths:
           description: ''
     patch:
       operationId: calendar_formatted_partial_update
-      description: ViewSet for managing calendars.
+      description: |-
+        Updates a calendar's editable fields.
+
+        **Authorization rules (enforced after org-scoping):**
+        - BUNDLE calendar: caller must be an org admin. Non-admin members receive 403.
+        - Non-bundle calendar (PERSONAL/RESOURCE/VIRTUAL): caller must own the calendar (CalendarOwnership) or be an org admin. Non-owner non-admins receive 403.
+
+
+        **Activation:** imported calendars other than the account's default one arrive unlisted with sync_enabled=false. Setting sync_enabled=true here also requests the calendar's first sync (over a one-year window, using the owner's linked account), so no follow-up call to /calendar/{id}/request-sync/ is needed. Set visibility=active in the same request to list it for booking.
+      summary: Partially update a calendar
       parameters:
       - in: header
         name: X-Organization-Id

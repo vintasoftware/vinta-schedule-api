@@ -538,21 +538,6 @@ class CalendarSyncService:
             )
         )
 
-    @staticmethod
-    def _sync_enabled_default_for_access_role(access_role: str | None) -> bool:
-        """Decide whether a freshly imported calendar should sync by default.
-
-        Calendars the account owns or can write to (the user's own calendars) sync.
-        Subscribed read-only calendars — holidays, birthdays, shared org-wide
-        calendars — default to disabled: their events typically duplicate events
-        already on the user's own calendars, and they aren't useful for scheduling.
-        Unknown access role (e.g. a provider that doesn't report one) defaults to
-        enabled to preserve prior behavior.
-        """
-        if access_role is None:
-            return True
-        return access_role.lower() in ("owner", "writer")
-
     @transaction.atomic()
     def import_account_calendars(self, sync_after_import: bool = True):
         """
@@ -618,10 +603,24 @@ class CalendarSyncService:
                         "latest_original_payload": calendar_data.original_payload or {},
                     },
                     "calendar_type": CalendarType.PERSONAL,
-                    "sync_enabled": self._sync_enabled_default_for_access_role(
-                        calendar_data.access_role
+                    # Only the account's default calendar (Google's `primary`,
+                    # Outlook's `isDefaultCalendar`) is imported live. Accounts
+                    # routinely carry a dozen calendars nobody schedules against —
+                    # holidays, birthdays, subscribed team calendars — and syncing
+                    # them all is expensive for events that never get booked. The
+                    # rest land UNLISTED with sync off; the owner or an org admin
+                    # activates one through PATCH /calendar/{id}/, which enqueues
+                    # its first sync (see `CalendarSerializer.update`).
+                    # When the provider reports no default at all, nothing is
+                    # activated — matching the ownership side, which writes no
+                    # `is_default` row either, so there is no default calendar to
+                    # sync in the first place.
+                    "sync_enabled": calendar_data.is_default,
+                    "visibility": (
+                        CalendarVisibility.ACTIVE
+                        if calendar_data.is_default
+                        else CalendarVisibility.UNLISTED
                     ),
-                    "visibility": CalendarVisibility.ACTIVE,
                     # Imported calendars manage their own availability windows by
                     # default. Seeded on create only (create_defaults), so a later
                     # user toggle via PATCH /calendars/{id}/ is never clobbered on
@@ -707,7 +706,11 @@ class CalendarSyncService:
             # Grant permissions to calendar owners
             self._host._grant_calendar_owner_permissions(calendar)
 
-            if sync_after_import:
+            # `and calendar.sync_enabled`: most calendars now import with sync off,
+            # and `request_calendar_sync` would only log a skip for each of them.
+            # The flag is read off the row, not off `calendar_data`, so a calendar
+            # the user activated earlier still resyncs on every re-import.
+            if sync_after_import and calendar.sync_enabled:
                 self._host.request_calendar_sync(
                     calendar=calendar,
                     start_datetime=datetime.datetime.now(datetime.UTC),
