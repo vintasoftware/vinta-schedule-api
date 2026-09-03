@@ -2060,15 +2060,19 @@ class CalendarManagementToken(SingleOrganizationModelMixin, SafeRelationNullInit
         help_text=(
             "Explicit discriminator: BOOKING_CODE tokens are single-use booking "
             "codes, selected by CalendarManagementTokenQuerySet.booking_codes and "
-            "therefore revokable via CalendarPermissionService.revoke_token / "
-            "DELETE /booking-codes/<id>/. Everything else (owner, attendee, "
-            "external-attendee tokens) is MANAGEMENT_TOKEN and never revokable "
-            "through those surfaces. Defaults to MANAGEMENT_TOKEN deliberately: a "
-            "mint path that forgets to set this produces an un-revokable token "
-            "rather than a wrongly-revokable one -- it fails closed. Set "
-            "explicitly by every create_*_token method on "
-            "CalendarPermissionService; the default exists only as a safety net, "
-            "never leaned on by a known call site."
+            "therefore eligible for revocation via CalendarPermissionService.revoke_token "
+            "/ DELETE /booking-codes/<id>/ (the REST surface additionally requires "
+            "owner-or-org-admin). Everything else (owner, attendee, external-attendee "
+            "tokens) is MANAGEMENT_TOKEN and never revokable through those surfaces. "
+            "Defaults to MANAGEMENT_TOKEN deliberately: a mint path that forgets to "
+            "set this produces an un-revokable token rather than a wrongly-revokable "
+            "one -- it fails closed. Set explicitly on creation by every "
+            "create_*_token method on CalendarPermissionService (via "
+            "get_or_create(defaults=...), so only on the CREATE branch -- a "
+            "get_or_create hit on an existing row trusts that row's own kind "
+            "rather than re-asserting it); the column default exists only as a "
+            "safety net for a row inserted with kind omitted entirely, never "
+            "leaned on by a known call site."
         ),
     )
     expires_at = models.DateTimeField(

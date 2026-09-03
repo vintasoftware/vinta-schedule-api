@@ -143,9 +143,12 @@ class CalendarManagementTokenKind(TextChoices):
     ``BOOKING_CODE`` -- a single-use booking code, minted through
     ``CalendarPermissionService.create_booking_token`` (REST
     ``BookingCodeViewSet`` or one of the six GraphQL ``create*BookingCode``
-    mutations). Selected by ``CalendarManagementTokenQuerySet.booking_codes``
-    and therefore revokable via ``revoke_token`` / ``DELETE
-    /booking-codes/<id>/``.
+    mutations). Selected by ``CalendarManagementTokenQuerySet.booking_codes``,
+    which is what makes it eligible for revocation via ``revoke_token`` /
+    ``DELETE /booking-codes/<id>/`` -- ``kind`` alone is necessary but not
+    sufficient for the REST surface: ``BookingCodeViewSet.destroy`` also
+    requires the caller to be the owner-or-org-admin of the token's target
+    before it actually revokes anything.
 
     ``MANAGEMENT_TOKEN`` -- everything else: calendar-owner tokens
     (``create_calendar_owner_token``), attendee tokens

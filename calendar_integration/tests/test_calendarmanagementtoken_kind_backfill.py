@@ -9,9 +9,16 @@ migration-chain test):
   (``calendar_integration.migrations._0056_backfill_helpers.
   backfill_calendar_management_token_kind``), driven directly against a real
   database via ``MigrationExecutor`` stepped back to the pre-``kind`` schema,
-  so the idempotent-rerun and drain-loop guarantees are actually exercised;
-* the ``0055``/``0056``/``0057`` migration chain end to end: forward, reverse,
-  re-apply, plus a raw ``INSERT`` proving the deploy-window default works.
+  so the idempotent-rerun guarantee (single-batch test) and the drain-loop
+  guarantees -- multi-batch progression and concurrent-insert pickup, forced
+  by patching ``BATCH_SIZE`` down in a dedicated test -- are actually
+  exercised, along with the 0057 straggler-catch regression test (a NULL
+  ``kind`` row with an actor column set, inserted between 0056 and 0057,
+  must land ``BOOKING_CODE`` and stay revokable -- the BLOCKER a blanket
+  straggler flatten would have reintroduced);
+* the ``0055``/``0056``/``0057`` migration chain end to end: forward, reverse
+  all the way back to 0054 (not just to 0056), re-apply, twice, plus a raw
+  ``INSERT`` proving the deploy-window default works.
 
 Classification fixture set
 ---------------------------
@@ -268,12 +275,224 @@ class TestBackfillHelperClassification:
             executor.migrate([(APP_LABEL, AFTER_NOT_NULL)])
             executor.loader.build_graph()
             assert self._kinds_for(list(row_ids.values())) == second_pass
+
+            # --- Full chain replay, reviewer FIX 6 (second half): the plan's
+            # Tests list asks that "the migration applies, reverses, and
+            # re-applies", and reversing only as far as 0056 (above) does not
+            # exercise 0055's own reverse (``RemoveField`` -- drops the
+            # ``kind`` column outright). Go all the way back to BEFORE 0055
+            # ever added the column, then forward through the whole chain
+            # again, twice, to prove the chain survives repeat round-trips
+            # and not just a single reverse/reapply cycle. ---
+            executor = MigrationExecutor(connection)
+            executor.migrate([(APP_LABEL, BEFORE_ADD_FIELD)])
+            executor.loader.build_graph()
+
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    f"WHERE table_name = '{TABLE}' AND column_name = 'kind'"  # noqa: S608
+                )
+                assert cursor.fetchone() is None, (
+                    "reversing all the way to 0054 must drop the kind column "
+                    "entirely (0055's RemoveField reverse) -- no orphan"
+                )
+
+            for _ in range(2):
+                executor = MigrationExecutor(connection)
+                executor.migrate([(APP_LABEL, AFTER_NOT_NULL)])
+                executor.loader.build_graph()
+
+                # Round-tripping through 0054 drops and recreates the `kind`
+                # column, but never touches the underlying actor columns
+                # (`membership_user_id`, `minted_by_*`, `external_attendee_fk_id`)
+                # the CASE expression classifies on -- so 0056's backfill,
+                # re-run from a clean slate, must reproduce the exact same
+                # classification every time.
+                assert self._kinds_for(list(row_ids.values())) == second_pass
+
+                executor = MigrationExecutor(connection)
+                executor.migrate([(APP_LABEL, BEFORE_ADD_FIELD)])
+                executor.loader.build_graph()
+
+            # Leave the chain forward again for the ``finally`` restore below.
+            executor = MigrationExecutor(connection)
+            executor.migrate([(APP_LABEL, AFTER_NOT_NULL)])
+            executor.loader.build_graph()
+            assert self._kinds_for(list(row_ids.values())) == second_pass
         finally:
             with connection.cursor() as cursor:
                 cursor.execute(f"DELETE FROM {TABLE} WHERE id = ANY(%s)", [list(row_ids.values())])  # noqa: S608
             # `uninterruptible`: see `common.testing.migration_replay`. The
             # alarm landing inside this restore leaves the worker's database
             # mid-graph and fails every test scheduled after it.
+            with uninterruptible():
+                executor = MigrationExecutor(connection)
+                executor.migrate(executor.loader.graph.leaf_nodes())
+                executor.loader.build_graph()
+
+    @migration_replay
+    @pytest.mark.django_db(transaction=True)
+    def test_backfill_drains_multiple_batches_and_picks_up_concurrent_insert(
+        self, organization, another_user_membership, monkeypatch
+    ):
+        """The single-batch test above (7 rows, ``BATCH_SIZE=500``) never
+        forces a second iteration of the drain loop, so it cannot exercise
+        either property ``_0056_backfill_helpers.py``'s "Drain loop" section
+        spends 16 lines defending: draining more than one batch, and picking
+        up a row inserted concurrently, mid-backfill, by an old pod (exactly
+        the Phase 3b bug this module cites). ``BATCH_SIZE`` is patched down
+        to 2 so 6 rows force at least 3 iterations, and a fresh NULL-``kind``
+        row is inserted between the first and second iteration -- simulating
+        an old pod's ``INSERT`` landing in the middle of the drain -- to
+        prove it is picked up by a later iteration rather than left behind.
+        """
+        from calendar_integration.migrations import _0056_backfill_helpers as helpers
+
+        monkeypatch.setattr(helpers, "BATCH_SIZE", 2)
+
+        memberships = [another_user_membership() for _ in range(6)]
+        late_membership = memberships[5]
+
+        executor = MigrationExecutor(connection)
+        row_ids: list[int] = []
+        late_row_id: dict[str, int] = {}
+        try:
+            executor.migrate([(APP_LABEL, BEFORE_ADD_FIELD)])
+            executor.loader.build_graph()
+
+            for membership in memberships[:5]:
+                row_ids.append(
+                    self._insert_row(
+                        organization_id=organization.id,
+                        membership_user_id=membership.user_id,
+                    )
+                )
+
+            executor = MigrationExecutor(connection)
+            executor.migrate([(APP_LABEL, AFTER_ADD_FIELD)])
+            executor.loader.build_graph()
+
+            real_cursor = connection.cursor
+            call_count = {"n": 0}
+
+            def _patched_cursor(*args, **kwargs):
+                call_count["n"] += 1
+                if call_count["n"] == 2 and "id" not in late_row_id:
+                    # Simulate an old pod's concurrent INSERT landing mid-drain,
+                    # between the first and second batch -- exactly the race
+                    # the module docstring's "Drain loop" section defends
+                    # against. Uses ``real_cursor`` directly (not the patched
+                    # ``connection.cursor``) to avoid recursing back into this
+                    # wrapper.
+                    with real_cursor() as c:
+                        c.execute(
+                            f"""
+                            INSERT INTO {TABLE}
+                                (created, modified, meta, organization_id, token_hash,
+                                 membership_user_id)
+                            VALUES (NOW(), NOW(), '{{}}', %s, %s, %s)
+                            RETURNING id
+                            """,  # noqa: S608
+                            [organization.id, "concurrent-insert-hash", late_membership.user_id],
+                        )
+                        late_row_id["id"] = c.fetchone()[0]
+                return real_cursor(*args, **kwargs)
+
+            monkeypatch.setattr(connection, "cursor", _patched_cursor)
+
+            helpers.backfill_calendar_management_token_kind()
+
+            # Proves multiple batches actually ran: 6 rows (5 pre-existing +
+            # 1 inserted mid-drain) at BATCH_SIZE=2 cannot drain in one
+            # iteration, and the loop's own termination check (an iteration
+            # that updates 0 rows) requires one more call beyond that.
+            assert call_count["n"] >= 3
+
+            assert "id" in late_row_id, (
+                "the concurrent insert never landed -- test setup is broken, not the backfill"
+            )
+            all_ids = [*row_ids, late_row_id["id"]]
+            kinds = self._kinds_for(all_ids)
+            assert all(kind == "management_token" for kind in kinds.values()), kinds
+            assert late_row_id["id"] in kinds, (
+                "the row inserted mid-drain was left NULL -- the drain loop "
+                "missed a concurrent insert"
+            )
+        finally:
+            cleanup_ids = [*row_ids, *late_row_id.values()]
+            with connection.cursor() as cursor:
+                cursor.execute(f"DELETE FROM {TABLE} WHERE id = ANY(%s)", [cleanup_ids])  # noqa: S608
+            with uninterruptible():
+                executor = MigrationExecutor(connection)
+                executor.migrate(executor.loader.graph.leaf_nodes())
+                executor.loader.build_graph()
+
+    @migration_replay
+    @pytest.mark.django_db(transaction=True)
+    def test_straggler_with_actor_column_is_classified_booking_code_not_flattened(
+        self, organization, another_user_membership
+    ):
+        """FIX 1 regression test (reviewer BLOCKER).
+
+        Reproduces the Render deploy-window race the finding describes: an
+        old pod, still serving while ``manage.py migrate`` runs 0056 then
+        0057 in the same build step, INSERTs a genuine booking code with
+        ``kind`` NULL (its compiled code predates the column) in the gap
+        between 0056's drain loop finishing and 0057 starting. That row
+        carries ``minted_by_system_user_id`` -- exactly as classifiable as
+        every row 0056 already processed. 0057's straggler catch must
+        classify it ``BOOKING_CODE`` via the same CASE expression 0056 uses
+        (imported from ``_0056_backfill_helpers.SET_KIND_CASE_SQL``, not a
+        second hand-rolled copy), and the resulting row must be genuinely
+        revokable through ``CalendarPermissionService.revoke_token`` --
+        not just correctly labeled in the database. Before the fix, 0057's
+        straggler catch was a blanket
+        ``SET kind = 'management_token' WHERE kind IS NULL``, which would
+        have flattened this exact row and made it permanently un-revokable.
+        """
+        from model_bakery import baker
+
+        from calendar_integration.services.calendar_permission_service import (
+            CalendarPermissionService,
+        )
+        from public_api.models import SystemUser
+
+        system_user = baker.make(SystemUser, organization=organization, is_active=True)
+
+        executor = MigrationExecutor(connection)
+        row_id: int | None = None
+        try:
+            executor.migrate([(APP_LABEL, AFTER_BACKFILL)])
+            executor.loader.build_graph()
+
+            row_id = self._insert_row(
+                organization_id=organization.id,
+                minted_by_system_user_id=system_user.id,
+            )
+            # Confirm the straggler shape this fix targets: genuinely NULL
+            # going into 0057, carrying a real actor column.
+            assert self._kinds_for([row_id])[row_id] is None
+
+            executor = MigrationExecutor(connection)
+            executor.migrate([(APP_LABEL, AFTER_NOT_NULL)])
+            executor.loader.build_graph()
+
+            assert self._kinds_for([row_id])[row_id] == "booking_code"
+
+            result = CalendarPermissionService().revoke_token(
+                organization_id=organization.id, token_id=row_id
+            )
+            assert result is True
+
+            with connection.cursor() as cursor:
+                cursor.execute(f"SELECT revoked_at FROM {TABLE} WHERE id = %s", [row_id])  # noqa: S608
+                (revoked_at,) = cursor.fetchone()
+            assert revoked_at is not None
+        finally:
+            if row_id is not None:
+                with connection.cursor() as cursor:
+                    cursor.execute(f"DELETE FROM {TABLE} WHERE id = %s", [row_id])  # noqa: S608
             with uninterruptible():
                 executor = MigrationExecutor(connection)
                 executor.migrate(executor.loader.graph.leaf_nodes())

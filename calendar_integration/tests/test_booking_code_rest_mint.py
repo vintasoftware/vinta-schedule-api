@@ -50,6 +50,7 @@ from calendar_integration.models import (
     CalendarGroupSlot,
     CalendarGroupSlotMembership,
     CalendarManagementToken,
+    ExternalAttendee,
 )
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from organizations.models import Organization, OrganizationMembership
@@ -948,6 +949,68 @@ class TestRevokeAuthorization:
         )
         assert service.token is not None
         assert service.token.id == owner_token.id
+
+    def test_admin_cannot_revoke_calendar_owner_token(self, admin_client, organization, calendar):
+        """Unlike the test above, the caller here IS authorized (an org admin
+        passes ``BookingCodeViewSet``'s owner-or-org-admin check unconditionally),
+        so this is the test that actually pins the ``kind`` filter rather than
+        being satisfiable by the authorization check alone -- the reviewer's
+        finding that the previous plain-member test was vacuous: both the
+        ``booking_codes_for_organization`` miss and an authorization miss return
+        an identical 204, so a plain member (who also fails authorization)
+        cannot distinguish the two. An admin can only be refused by ``kind``.
+        """
+        owner_membership = _make_member(organization)
+        create_calendar_ownership(calendar=calendar, user=owner_membership.user)
+
+        service = CalendarPermissionService()
+        owner_token = service.create_calendar_owner_token(
+            organization_id=organization.id,
+            user=owner_membership.user,
+            calendar_id=calendar.id,
+        )
+
+        response = _revoke(admin_client, owner_token.id)
+        assert response.status_code == status.HTTP_204_NO_CONTENT
+
+        owner_token.refresh_from_db()
+        assert owner_token.revoked_at is None
+
+    def test_admin_cannot_revoke_external_attendee_token(
+        self, admin_client, organization, calendar
+    ):
+        """Same pin as above, against an external-attendee token
+        (``create_external_attendee_update_token``) instead of an owner token --
+        another ``kind=MANAGEMENT_TOKEN`` row an org admin must not be able to
+        revoke through the booking-code surface."""
+        event = baker.make(
+            CalendarEvent,
+            organization=organization,
+            calendar=calendar,
+            title="Existing Event",
+            timezone="UTC",
+            start_time_tz_unaware=BOOKING_START.replace(tzinfo=None),
+            end_time_tz_unaware=BOOKING_END.replace(tzinfo=None),
+            external_id="",
+        )
+        external_attendee = ExternalAttendee.objects.create(
+            email="external@example.com",
+            name="External User",
+            organization=organization,
+        )
+
+        service = CalendarPermissionService()
+        external_token = service.create_external_attendee_update_token(
+            organization_id=organization.id,
+            event_id=event.id,
+            external_attendee_id=external_attendee.id,
+        )
+
+        response = _revoke(admin_client, external_token.id)
+        assert response.status_code == status.HTTP_204_NO_CONTENT
+
+        external_token.refresh_from_db()
+        assert external_token.revoked_at is None
 
     def test_member_cannot_revoke_booking_code_for_calendar_they_do_not_own(
         self, organization, calendar

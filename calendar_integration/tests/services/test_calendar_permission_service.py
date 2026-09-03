@@ -981,6 +981,43 @@ class TestCalendarManagementTokenKindDiscriminator:
         token.refresh_from_db()
         assert token.revoked_at is None
 
+    def test_kind_alone_gates_revocation_regardless_of_actor_columns(self, organization, calendar):
+        """Pins ``kind`` -- not the pre-Phase-7 ``minted_by_*`` actor columns --
+        as the thing ``revoke_token`` actually reads. Every other negative
+        case in this class has both actor columns NULL, so reverting
+        ``CalendarManagementTokenQuerySet.booking_codes`` to the old
+        ``Q(minted_by_membership_user_id__isnull=False) |
+        Q(minted_by_system_user_id__isnull=False)`` heuristic would refuse
+        them too, for the wrong reason, and this suite would stay green. A
+        row with ``minted_by_system_user`` set (the actor column the old
+        heuristic keyed on) but ``kind=MANAGEMENT_TOKEN`` (set explicitly, as
+        every non-booking-code ``create_*_token`` method does) makes that
+        reversion fail: the old heuristic would treat this row as a booking
+        code and revoke it; the ``kind`` discriminator must refuse it exactly
+        like a nonexistent id.
+        """
+        from model_bakery import baker
+
+        from public_api.models import SystemUser
+
+        system_user = baker.make(SystemUser, organization=organization, is_active=True)
+        token = CalendarManagementToken.objects.create(
+            organization=organization,
+            calendar_fk=calendar,
+            minted_by_system_user=system_user,
+            token_hash=hash_long_lived_token(generate_long_lived_token()),
+            kind=CalendarManagementTokenKind.MANAGEMENT_TOKEN,
+        )
+
+        assert token.minted_by_system_user_id is not None
+        with pytest.raises(InvalidTokenError):
+            CalendarPermissionService().revoke_token(
+                organization_id=organization.id, token_id=token.id
+            )
+
+        token.refresh_from_db()
+        assert token.revoked_at is None
+
 
 class TestCalendarPermissionServiceConstants:
     """Tests for permission constants."""

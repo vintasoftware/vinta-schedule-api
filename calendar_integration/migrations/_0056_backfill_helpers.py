@@ -74,18 +74,29 @@ from django.db import connection
 
 BATCH_SIZE = 500
 
-# Table name is a literal in the statement below (not interpolated from a
-# variable) so ruff's S608 SQL-injection heuristic does not flag it -- there
-# is no untrusted input in this statement, only the ``%s``-parameterized
-# batch size. Matches the convention in ``_0053_backfill_helpers.py``.
-_UPDATE_BATCH = """
-    UPDATE calendar_integration_calendarmanagementtoken
-    SET kind = CASE
+# The single source of truth for "how does a NULL/unclassifiable ``kind`` row
+# get classified". Exported so 0057's straggler catch (``CATCH_STRAGGLERS``)
+# imports this exact fragment instead of hand-rolling a second copy that could
+# drift -- see 0057's module docstring for why a blanket
+# ``SET kind = 'management_token'`` there was a BLOCKER: those straggler rows
+# are exactly as classifiable as every other pre-existing row (the same two
+# actor columns are already populated), so flattening them to
+# ``MANAGEMENT_TOKEN`` can silently make a real, in-flight booking code
+# permanently un-revokable.
+SET_KIND_CASE_SQL = """CASE
         WHEN minted_by_membership_user_id IS NOT NULL
              OR minted_by_system_user_id IS NOT NULL
         THEN 'booking_code'
         ELSE 'management_token'
-    END
+    END"""
+
+# Table name is a literal in the statement below (not interpolated from a
+# variable) so ruff's S608 SQL-injection heuristic does not flag it -- there
+# is no untrusted input in this statement, only the ``%s``-parameterized
+# batch size. Matches the convention in ``_0053_backfill_helpers.py``.
+_UPDATE_BATCH = f"""
+    UPDATE calendar_integration_calendarmanagementtoken
+    SET kind = {SET_KIND_CASE_SQL}
     WHERE kind IS NULL
       AND id IN (
         SELECT id FROM calendar_integration_calendarmanagementtoken

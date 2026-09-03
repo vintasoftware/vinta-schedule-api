@@ -74,8 +74,16 @@ class CalendarManagementTokenQuerySet(OrganizationScopedQuerySet):
         (``create_calendar_owner_token``), attendee tokens
         (``create_attendee_token``), and external-attendee tokens
         (``create_external_attendee_update_token`` /
-        ``create_external_attendee_schedule_token``) -- sets
-        ``CalendarManagementTokenKind.MANAGEMENT_TOKEN`` explicitly, so this
+        ``create_external_attendee_schedule_token``) -- has
+        ``CalendarManagementTokenKind.MANAGEMENT_TOKEN`` set explicitly on
+        creation. Each of those four methods uses ``get_or_create(defaults=
+        {"kind": MANAGEMENT_TOKEN, ...})``, so ``defaults`` (and therefore
+        this explicit set) only applies on the CREATE branch -- a call that
+        matches an existing row trusts whatever ``kind`` that row already
+        carries rather than re-asserting it. That existing row was itself
+        created through one of these same four methods (or backfilled with
+        the equivalent classification), so it is already
+        ``MANAGEMENT_TOKEN`` in every reachable case today; this still
         discriminates cleanly between "a booking code" and "some other
         management token" regardless of who minted it or whether any actor
         field is set.
