@@ -572,93 +572,6 @@ class TestRescheduleCalendarEventWithCodeLifecycleRejections:
 
 
 # ---------------------------------------------------------------------------
-# Pinned duration: constrains the NEW span, not the event's current one
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.django_db
-class TestRescheduleCalendarEventWithCodePinnedDuration:
-    def test_pin_refuses_wrong_span_even_when_event_currently_matches_it(
-        self,
-        anon_client,
-        permission_service,
-        organization,
-        calendar,
-        attendee_membership,  # noqa: ARG002
-        available_window,  # noqa: ARG002
-    ):
-        """A 30-minute-pinned code refuses a move to a 45-minute span, EVEN
-        THOUGH the event being moved is currently 45 minutes long -- the pin
-        constrains the target span, not the event's present one. The refusal
-        must not consume the code."""
-        event = baker.make(
-            CalendarEvent,
-            organization=organization,
-            calendar=calendar,
-            title="Currently 45 Minutes",
-            timezone="UTC",
-            start_time_tz_unaware=datetime.datetime(2030, 6, 1, 10, 0),
-            end_time_tz_unaware=datetime.datetime(2030, 6, 1, 10, 45),
-            external_id="",
-        )
-        token, code = permission_service.create_booking_token(
-            organization_id=organization.id,
-            permissions=[EventManagementPermissions.RESCHEDULE],
-            calendar_id=calendar.id,
-            event_id=event.id,
-            duration=datetime.timedelta(minutes=30),
-        )
-
-        # Move to a NEW 45-minute span -- same duration as the event's CURRENT
-        # span, but not the code's pinned 30 minutes.
-        payload = _reschedule_payload(
-            start_time=NEW_START.isoformat(),
-            end_time=(NEW_START + datetime.timedelta(minutes=45)).isoformat(),
-        )
-
-        response = _post(anon_client, RESCHEDULE_URL_NAME, code, payload)
-
-        assert response.status_code == status.HTTP_403_FORBIDDEN
-        body = response.json()
-        assert body["error_code"] == "NOT_PERMITTED"
-        assert "30 minute" in body["detail"]
-
-        token.refresh_from_db()
-        assert token.used_at is None
-
-        event.refresh_from_db()
-        assert event.start_time_tz_unaware.replace(tzinfo=None) == datetime.datetime(
-            2030, 6, 1, 10, 0
-        )
-
-    def test_pin_accepts_exact_span_move(
-        self,
-        anon_client,
-        permission_service,
-        organization,
-        calendar,
-        existing_event,
-        available_window,  # noqa: ARG002
-    ):
-        token, code = permission_service.create_booking_token(
-            organization_id=organization.id,
-            permissions=[EventManagementPermissions.RESCHEDULE],
-            calendar_id=calendar.id,
-            event_id=existing_event.id,
-            duration=datetime.timedelta(minutes=30),
-        )
-        payload = _reschedule_payload(
-            end_time=(NEW_START + datetime.timedelta(minutes=30)).isoformat()
-        )
-
-        response = _post(anon_client, RESCHEDULE_URL_NAME, code, payload)
-
-        assert response.status_code == status.HTTP_201_CREATED, response.content
-        token.refresh_from_db()
-        assert token.used_at is not None
-
-
-# ---------------------------------------------------------------------------
 # Group reschedule
 # ---------------------------------------------------------------------------
 
@@ -1030,9 +943,10 @@ class TestRescheduleCalendarGroupEventWithCodeNotBoundToEvent:
 
 
 # ---------------------------------------------------------------------------
-# Pinned duration -- group endpoint. Ports
-# TestRescheduleCalendarEventWithCodePinnedDuration to the group path:
-# pinned_duration_error is called there too (booking_views.py ~L820).
+# Pinned duration -- group endpoint. The pin lives on CalendarGroup.duration,
+# not on the code (single-calendar reschedule codes carry no duration
+# constraint at all -- see Phase 0's rewrite) -- pinned_duration_error is
+# called with the token's resolved group in booking_views.py.
 # ---------------------------------------------------------------------------
 
 
@@ -1046,10 +960,12 @@ class TestRescheduleCalendarGroupEventWithCodePinnedDuration:
         group,
         primary_calendar,
     ):
-        """A 30-minute-pinned group code refuses a move to a 45-minute span,
+        """A group pinned to 30 minutes refuses a move to a 45-minute span,
         EVEN THOUGH the event being moved is currently 45 minutes long -- the
         pin constrains the target span, not the event's present one. The
         refusal must not consume the code."""
+        group.duration = datetime.timedelta(minutes=30)
+        group.save()
         event = baker.make(
             CalendarEvent,
             organization=organization,
@@ -1066,11 +982,10 @@ class TestRescheduleCalendarGroupEventWithCodePinnedDuration:
             permissions=[EventManagementPermissions.RESCHEDULE],
             calendar_group_id=group.id,
             event_id=event.id,
-            duration=datetime.timedelta(minutes=30),
         )
 
         # Move to a NEW 45-minute span -- same duration as the event's CURRENT
-        # span, but not the code's pinned 30 minutes.
+        # span, but not the group's pinned 30 minutes.
         payload = _reschedule_payload(
             start_time=NEW_START.isoformat(),
             end_time=(NEW_START + datetime.timedelta(minutes=45)).isoformat(),
@@ -1100,12 +1015,13 @@ class TestRescheduleCalendarGroupEventWithCodePinnedDuration:
         grouped_event,
         group_availability_windows,  # noqa: ARG002
     ):
+        group.duration = datetime.timedelta(minutes=30)
+        group.save()
         token, code = permission_service.create_booking_token(
             organization_id=organization.id,
             permissions=[EventManagementPermissions.RESCHEDULE],
             calendar_group_id=group.id,
             event_id=grouped_event.id,
-            duration=datetime.timedelta(minutes=30),
         )
         payload = _reschedule_payload(
             end_time=(NEW_START + datetime.timedelta(minutes=30)).isoformat()

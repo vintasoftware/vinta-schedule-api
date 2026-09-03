@@ -640,16 +640,6 @@ class BookingCodeRescheduleEventViewSet(BookingCodeViewMixin, GenericViewSet):
                 "endpoint for group-scoped codes."
             )
 
-        # --- pinned-duration message, ahead of dispatch. A reschedule code's pin
-        # constrains the NEW span, not the event's current one -- refusing a move
-        # to a different span even when the event's current span already matches
-        # it. The guarantee itself is enforced independently inside
-        # can_perform_update; this exists purely so the response names the
-        # pinned duration. ---
-        duration_error = pinned_duration_error(token, data["start_time"], data["end_time"])
-        if duration_error is not None:
-            raise duration_error
-
         source_ip = client_ip_from_request(request)
 
         # calendar_id and event_id come strictly from the token -- not from client
@@ -817,10 +807,16 @@ class BookingCodeRescheduleGroupEventViewSet(BookingCodeViewMixin, GenericViewSe
                 "reschedule endpoint for calendar-scoped codes."
             )
 
-        # --- pinned-duration message, ahead of dispatch -- see
-        # BookingCodeRescheduleEventViewSet.create's comment on the same check;
-        # the pin constrains the NEW span here too. ---
-        duration_error = pinned_duration_error(token, data["start_time"], data["end_time"])
+        # --- pinned-duration message, ahead of dispatch. The pin lives on the
+        # CalendarGroup (``token.calendar_group`` is guaranteed non-None by the
+        # scope check above), not on the code, and constrains the NEW span, not
+        # the event's current one -- refusing a move to a different span even
+        # when the event's current span already matches it. The guarantee
+        # itself is enforced independently inside can_perform_update; this
+        # exists purely so the response names the pinned duration. ---
+        duration_error = pinned_duration_error(
+            token.calendar_group, data["start_time"], data["end_time"]
+        )
         if duration_error is not None:
             raise duration_error
 
