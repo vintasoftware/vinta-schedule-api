@@ -59,7 +59,10 @@ class Migration(migrations.Migration):
     """Add CalendarGroup.public_booking_slug, nullable, no default (1/3)."""
 
     dependencies = [
-        ("calendar_integration", "0050_calendarmanagementtoken_minted_by_membership_and_duration"),
+        (
+            "calendar_integration",
+            "0051_calendarmanagementtoken_minted_by_membership_and_calendargroup_duration",
+        ),
     ]
 
     operations = [

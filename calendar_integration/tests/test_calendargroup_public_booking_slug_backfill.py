@@ -30,7 +30,7 @@ from organizations.models import Organization
 
 
 APP_LABEL = "calendar_integration"
-BEFORE_ADD_FIELD = "0050_calendarmanagementtoken_minted_by_membership_and_duration"
+BEFORE_ADD_FIELD = "0051_calendarmanagementtoken_minted_by_membership_and_calendargroup_duration"
 AFTER_BACKFILL = "0053_backfill_calendargroup_public_booking_slug"
 AFTER_UNIQUE = "0054_calendargroup_public_booking_slug_unique"
 
