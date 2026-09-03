@@ -2,7 +2,9 @@
 
 Ports the seven scenarios in ``public_api/tests/test_book_with_code.py`` (the
 GraphQL ``createCalendarEventWithCode`` equivalent) to the REST surface, plus
-the pinned-duration and concurrency cases the plan's Phase 1 body calls for.
+the concurrency cases the plan's Phase 1 body calls for. Single-calendar
+booking codes carry no duration constraint -- that pin now lives only on
+``CalendarGroup``, for group-scoped booking codes.
 
 All requests are unauthenticated (no session/JWT). The booking code -- carried
 in the ``X-Booking-Code`` header -- provides the org scope, calendar scope,
@@ -471,65 +473,13 @@ class TestCreateCalendarEventWithCodeCrossOrg:
 
 
 # ---------------------------------------------------------------------------
-# Pinned duration
+# No duration constraint (single-calendar booking codes are not pinned)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.django_db
-class TestCreateCalendarEventWithCodePinnedDuration:
-    def test_pinned_duration_books_at_exact_span(
-        self,
-        anon_client,
-        permission_service,
-        organization,
-        calendar,
-        available_window,  # noqa: ARG002
-    ):
-        _token, code = permission_service.create_booking_token(
-            organization_id=organization.id,
-            permissions=[EventManagementPermissions.CREATE],
-            calendar_id=calendar.id,
-            duration=datetime.timedelta(minutes=30),
-        )
-        payload = _booking_payload(
-            end_time=(BOOKING_START + datetime.timedelta(minutes=30)).isoformat()
-        )
-
-        response = _post(anon_client, code, payload)
-
-        assert response.status_code == status.HTTP_201_CREATED, response.content
-
-    def test_pinned_duration_refuses_a_different_span_without_consuming(
-        self,
-        anon_client,
-        permission_service,
-        organization,
-        calendar,
-        available_window,  # noqa: ARG002
-    ):
-        token, code = permission_service.create_booking_token(
-            organization_id=organization.id,
-            permissions=[EventManagementPermissions.CREATE],
-            calendar_id=calendar.id,
-            duration=datetime.timedelta(minutes=30),
-        )
-        # 45-minute span -- does not match the 30-minute pin.
-        payload = _booking_payload(
-            end_time=(BOOKING_START + datetime.timedelta(minutes=45)).isoformat()
-        )
-
-        response = _post(anon_client, code, payload)
-
-        assert response.status_code == status.HTTP_403_FORBIDDEN
-        body = response.json()
-        assert body["error_code"] == "NOT_PERMITTED"
-        assert "30 minute" in body["detail"]
-
-        token.refresh_from_db()
-        assert token.used_at is None
-        assert not CalendarEvent.objects.filter_by_organization(organization.id).exists()
-
-    def test_unpinned_code_accepts_any_span(
+class TestCreateCalendarEventWithCodeNoDurationConstraint:
+    def test_code_accepts_any_span(
         self,
         anon_client,
         booking_code,

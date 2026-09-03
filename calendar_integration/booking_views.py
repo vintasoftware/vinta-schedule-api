@@ -44,7 +44,6 @@ if TYPE_CHECKING:
 from calendar_integration.booking_auth import (
     BOOKING_CODE_HEADER,
     client_ip_from_request,
-    pinned_duration_error,
     resolve_booking_code_from_request,
 )
 from calendar_integration.booking_exceptions import (
@@ -165,7 +164,7 @@ class BookingCodeCalendarEventViewSet(BookingCodeViewMixin, GenericViewSet):
 
         Create FIRST, then consume, matching the GraphQL original
         (``create_calendar_event_with_code``). Both statements run inside the
-        same outer ``transaction.atomic()`` block (see step 8 below), so any
+        same outer ``transaction.atomic()`` block (see step 7 below), so any
         exception either one raises -- including ``consume_code``'s
         ``TokenAlreadyUsedError`` on a lost race -- unwinds the whole
         transaction: the DB outcome (one event, code consumed once) is the
@@ -205,18 +204,10 @@ class BookingCodeCalendarEventViewSet(BookingCodeViewMixin, GenericViewSet):
         except Organization.DoesNotExist as exc:
             raise InvalidCodeAPIException() from exc
 
-        # --- Step 5: pinned-duration message, ahead of dispatch. The guarantee
-        # itself is enforced independently inside can_perform_scheduling -- this
-        # exists purely so the response names the pinned duration instead of the
-        # generic permission-denied message. ---
-        duration_error = pinned_duration_error(token, data["start_time"], data["end_time"])
-        if duration_error is not None:
-            raise duration_error
-
-        # --- Step 6: extract client IP for audit ---
+        # --- Step 5: extract client IP for audit ---
         source_ip = client_ip_from_request(request)
 
-        # --- Step 7: build event data ---
+        # --- Step 6: build event data ---
         external_attendee = data["external_attendee"]
         event_data = CalendarEventInputData(
             title=data["title"],
@@ -234,7 +225,7 @@ class BookingCodeCalendarEventViewSet(BookingCodeViewMixin, GenericViewSet):
             ],
         )
 
-        # --- Step 8: atomic create + consume ---
+        # --- Step 7: atomic create + consume ---
         # Create FIRST, then consume, matching the GraphQL original. Both statements
         # share this one outer atomic() block, so the DB outcome is the same either
         # order -- see the docstring above for what create-first actually changes
