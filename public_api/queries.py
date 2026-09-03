@@ -12,6 +12,7 @@ from dependency_injector.wiring import Provide, inject
 from django_virtual_models import QuerySet
 from graphql import GraphQLError
 
+from calendar_integration.booking_auth import MAX_CODE_GATED_RANGE
 from calendar_integration.constants import CalendarType, ExternalEventChangeRequestStatus
 from calendar_integration.exceptions import (
     InvalidTokenError,
@@ -92,10 +93,6 @@ if TYPE_CHECKING:
 # Uniform error message for all code-gated read failures.  Never disclose whether the
 # code exists, is expired, used, revoked, or bound to the wrong scope.
 _CODE_GATED_ERROR_MESSAGE = "Invalid or expired code."
-
-# Maximum client-controlled datetime range for unauthenticated (code-gated) reads.
-# Prevents amplification / DoS via unbounded recurrence expansion.
-MAX_CODE_GATED_RANGE = datetime.timedelta(days=366)
 
 
 @dataclass

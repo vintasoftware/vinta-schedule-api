@@ -338,12 +338,26 @@ class CalendarGroupSlotInputData:
 
 @dataclass
 class CalendarGroupInputData:
-    """Input data for creating/updating a CalendarGroup with its slots."""
+    """Input data for creating/updating a CalendarGroup with its slots.
+
+    ``duration`` and ``accepts_public_scheduling`` are both tri-state:
+    ``None`` means "omitted, leave unchanged" on update (and "not set" on
+    create). Neither the GraphQL ``CalendarGroupInput`` /
+    ``UpdateCalendarGroupInput`` input types nor the REST
+    ``CalendarGroupSerializer`` expose ``duration`` today -- it can only be
+    set by a caller building this dataclass directly (internal callers,
+    tests, and a future minting/admin surface). That means a group can no
+    longer become publicly schedulable through either of today's mutation
+    surfaces without also being given a duration through some other path
+    first -- see ``CalendarGroupService.create_group`` / ``update_group``
+    for the invariant this enforces and why.
+    """
 
     name: str
     description: str = ""
     slots: list[CalendarGroupSlotInputData] = dataclass_field(default_factory=list)
     accepts_public_scheduling: bool | None = None
+    duration: datetime.timedelta | None = None
 
 
 @dataclass

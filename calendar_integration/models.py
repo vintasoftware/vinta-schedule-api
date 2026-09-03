@@ -324,6 +324,23 @@ class CalendarGroup(SingleOrganizationModelMixin, SafeRelationNullInitMixin, Bas
             "booking requires a token or a single-use scheduling code."
         ),
     )
+    duration = models.DurationField(
+        null=True,
+        blank=True,
+        help_text=(
+            "When set, an event booked or rescheduled through this group must span exactly "
+            "this duration. Enforced by CalendarPermissionService. Duration pinning lives "
+            "here rather than on CalendarManagementToken because a codeless public-group "
+            "booking (accepts_public_scheduling=True) presents no code, so it inherits no "
+            "per-code pin -- the group being booked is the only place a length constraint "
+            "can live for that path. A group that accepts public scheduling MUST have this "
+            "set (enforced by CalendarGroupService.create_group / update_group, not a DB "
+            "constraint -- pre-existing public groups with no duration are grandfathered at "
+            "rest and refused at booking time instead, fail-closed, by "
+            "CalendarPermissionService). Null is otherwise unpinned, matching every "
+            "restricted group and every group created before this field existed."
+        ),
+    )
 
     objects: ClassVar[CalendarGroupManager] = CalendarGroupManager()
 
@@ -2014,6 +2031,21 @@ class CalendarManagementToken(SingleOrganizationModelMixin, SafeRelationNullInit
         related_name="minted_management_tokens",
         help_text="The SystemUser (org token) that minted this booking code, if any.",
     )
+    minted_by_membership = OrganizationMembershipForeignKey(
+        on_delete=models.SET_NULL,
+        related_name="minted_booking_codes",
+        null=True,
+        blank=True,
+        help_text=(
+            "The organization member who minted this booking code through the "
+            "authenticated REST surface, if any. Null for codes minted by a "
+            "SystemUser (see minted_by_system_user) or by internal flows."
+        ),
+    )
+    if TYPE_CHECKING:
+        # Contributed at runtime by ``OrganizationMembershipForeignKey.contribute_to_class``
+        # as a concrete ``BigIntegerField``; declared here so type checkers see it too.
+        minted_by_membership_user_id: int | None
     consumed_source_ip = models.GenericIPAddressField(
         null=True,
         blank=True,
@@ -2050,6 +2082,10 @@ class CalendarManagementToken(SingleOrganizationModelMixin, SafeRelationNullInit
             models.Index(
                 fields=["organization", "membership_user_id"],
                 name="calmgmttoken_org_member_idx",
+            ),
+            models.Index(
+                fields=["organization", "minted_by_membership_user_id"],
+                name="calmgmttoken_org_minter_idx",
             ),
         ]
 

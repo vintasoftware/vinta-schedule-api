@@ -361,11 +361,31 @@ class CalendarGroupService:
             data.accepts_public_scheduling if data.accepts_public_scheduling is not None else False
         )
 
+        # Invariant, enforced HERE (not only in a serializer) so every caller --
+        # REST and the existing GraphQL ``create_calendar_group`` mutation alike --
+        # inherits it: a group that accepts public scheduling must have a
+        # duration. A codeless public-group booking presents no code, so it
+        # inherits no per-code pin; the group is the only place a length
+        # constraint can live for that path (see CalendarGroup.duration's
+        # help_text). Neither of today's mutation surfaces exposes a way to set
+        # ``duration`` yet, so this is a deliberate behavior change on an
+        # already-deployed surface: ``create_calendar_group`` with
+        # ``is_private=False`` used to succeed and now raises here. That is
+        # intentional -- see the plan's Guiding Decisions.
+        if accepts_public_scheduling and data.duration is None:
+            raise CalendarGroupValidationError(
+                "A CalendarGroup that accepts public scheduling must have a duration set. "
+                "Duration cannot currently be set through the create_calendar_group GraphQL "
+                "mutation or the REST CalendarGroupSerializer -- set it by calling "
+                "CalendarGroupService.create_group directly, or leave the group private."
+            )
+
         group = CalendarGroup.objects.create(
             organization=self.organization,
             name=data.name,
             description=data.description,
             accepts_public_scheduling=accepts_public_scheduling,
+            duration=data.duration,
         )
         self._create_slots(group, slots_data)
         self._audit_group_write(AuditAction.CREATE, group)
@@ -390,14 +410,34 @@ class CalendarGroupService:
         }
         group.name = data.name
         group.description = data.description
-        # Only update accepts_public_scheduling if it is provided (not None).
+        # Only update accepts_public_scheduling / duration if provided (not None) --
+        # both are tri-state: ``None`` means "omitted, leave unchanged".
         if data.accepts_public_scheduling is not None:
             group.accepts_public_scheduling = data.accepts_public_scheduling
+        if data.duration is not None:
+            group.duration = data.duration
 
-        # Build update_fields dynamically to avoid writing privacy when not provided.
+        # Same invariant as create_group, evaluated against the RESULTING state
+        # (the incoming values where provided, the persisted ones otherwise) --
+        # not just what this call happens to touch. A group already public with
+        # a duration cannot be updated into a public group with no duration
+        # (impossible via this dataclass's tri-state semantics: ``duration`` can
+        # only be set here, never cleared), but a private group with no duration
+        # being flipped public in the same call must still be caught.
+        if group.accepts_public_scheduling and group.duration is None:
+            raise CalendarGroupValidationError(
+                "A CalendarGroup that accepts public scheduling must have a duration set. "
+                "Duration cannot currently be set through the update_calendar_group GraphQL "
+                "mutation or the REST CalendarGroupSerializer -- set it by calling "
+                "CalendarGroupService.update_group directly, or leave the group private."
+            )
+
+        # Build update_fields dynamically to avoid writing privacy/duration when not provided.
         update_fields = ["name", "description", "modified"]
         if data.accepts_public_scheduling is not None:
             update_fields.append("accepts_public_scheduling")
+        if data.duration is not None:
+            update_fields.append("duration")
 
         group.save(update_fields=update_fields)
 
@@ -2630,10 +2670,19 @@ class CalendarGroupService:
         caller_is_authenticated_user = isinstance(calendar_service_user, User)
 
         if not caller_is_authenticated_user:
+            # ``start_time`` / ``end_time`` are passed here (not just ``group``) so a
+            # group-scoped booking code that pins a duration is enforced at this
+            # gate. ``create_event`` below is called with ``group_authorized=True``,
+            # which SKIPS its own ``can_perform_scheduling`` call for the primary
+            # calendar entirely (see that method's docstring) -- this is the only
+            # gate a group booking passes through, so the pin has to live here or
+            # group booking would never inherit it.
             if (
                 self.calendar_permission_service is None
                 or not self.calendar_permission_service.can_perform_group_scheduling(
                     group=group,
+                    start_time=data.start_time,
+                    end_time=data.end_time,
                 )
             ):
                 raise PermissionDenied(

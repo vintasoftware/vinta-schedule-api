@@ -100,16 +100,28 @@ def _make_available(calendar: Calendar, start, end) -> None:
     )
 
 
-def _make_group(organization, calendars, accepts_public_scheduling: bool) -> CalendarGroup:
+def _make_group(
+    organization,
+    calendars,
+    accepts_public_scheduling: bool,
+    duration: timedelta | None = None,
+) -> CalendarGroup:
     """Create a CalendarGroup with one slot covering all ``calendars``.
 
     Constructs the group directly (not via service) to avoid the service gate
-    firing during setup.
+    firing during setup. ``duration`` is required (non-None) by callers that
+    both request ``accepts_public_scheduling=True`` AND drive an actual
+    booking through ``create_grouped_event`` with real times -- a public
+    group with ``duration=None`` fails closed in
+    ``CalendarPermissionService.can_perform_group_scheduling`` (see that
+    method's docstring), which would otherwise break these tests for a
+    reason unrelated to what they're actually testing.
     """
     group = CalendarGroup.objects.create(
         organization=organization,
         name="Test Group",
         accepts_public_scheduling=accepts_public_scheduling,
+        duration=duration,
     )
     slot = CalendarGroupSlot.objects.create(
         organization=organization,
@@ -190,7 +202,12 @@ def test_public_group_with_private_member_calendars_codeless_booking_succeeds(
     This is the key regression check: the group-level authorization
     (group_authorized=True) must bypass each member calendar's own private check.
     """
-    group = _make_group(organization, internal_calendars, accepts_public_scheduling=True)
+    group = _make_group(
+        organization,
+        internal_calendars,
+        accepts_public_scheduling=True,
+        duration=timedelta(hours=1),
+    )
 
     now = timezone.now().replace(microsecond=0)
     start = now + timedelta(hours=1)
@@ -667,10 +684,14 @@ def test_bundle_calendar_in_group_slot_is_rejected_by_create_grouped_event(
     )
 
     # Build a group with two slots: primary (phys_a) + bundle slot.
+    # duration=1h matches the booking span below -- a public group with no
+    # duration fails closed in can_perform_group_scheduling before this test
+    # ever reaches the bundle-calendar validation it's actually exercising.
     group = CalendarGroup.objects.create(
         organization=organization,
         name="Bundle Slot Group",
         accepts_public_scheduling=True,
+        duration=timedelta(hours=1),
     )
     physician_slot = CalendarGroupSlot.objects.create(
         organization=organization, group=group, name="Physicians", required_count=1, order=0
