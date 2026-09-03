@@ -77,12 +77,22 @@ def _make_group_with_two_slots(
     primary_calendar: Calendar,
     secondary_calendar: Calendar,
     name: str = "Test Group",
+    duration: datetime.timedelta | None = None,
 ) -> CalendarGroup:
+    # A publicly schedulable group must carry a duration --
+    # ``can_perform_group_scheduling`` fails closed (403) for a public group
+    # with ``duration=None``, treating it as misconfigured rather than
+    # unbounded-length. ``BOOKING_START``/``BOOKING_END`` below span exactly
+    # one hour, so that is the default here -- tests that need a different
+    # pin override ``group.duration`` explicitly afterwards.
+    if duration is None and accepts_public_scheduling:
+        duration = datetime.timedelta(hours=1)
     grp = baker.make(
         CalendarGroup,
         organization=organization,
         name=name,
         accepts_public_scheduling=accepts_public_scheduling,
+        duration=duration,
     )
     slot_a = CalendarGroupSlot.objects.create(
         organization=organization, group=grp, name="Physicians", order=0, required_count=1
@@ -509,4 +519,64 @@ class TestAmbiguousHeaderValues:
 
         assert response.status_code == status.HTTP_404_NOT_FOUND, response.content
         assert response.json()["error_code"] == "INVALID_CODE"
+        assert not CalendarEvent.objects.filter_by_organization(organization.id).exists()
+
+
+# ---------------------------------------------------------------------------
+# Scenario 7: pinned duration applies to the codeless branch too -- the pin
+# lives on the CalendarGroup, not on a code, so a codeless booking (no
+# credential at all) is constrained by it exactly like a coded one.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestCodelessGroupEventPinnedDuration:
+    def test_pinned_duration_books_at_exact_span_with_no_credential(
+        self,
+        anon_client,
+        public_group,
+        primary_calendar,
+        secondary_calendar,
+    ):
+        public_group.duration = datetime.timedelta(minutes=30)
+        public_group.save()
+        selections = _slot_selections(public_group, primary_calendar, secondary_calendar)
+        payload = _group_booking_payload(
+            selections, end_time=(BOOKING_START + datetime.timedelta(minutes=30)).isoformat()
+        )
+
+        response = _post(anon_client, public_group.id, None, payload)
+
+        assert response.status_code == status.HTTP_201_CREATED, response.content
+
+    def test_pinned_duration_refuses_a_different_span_with_no_credential(
+        self,
+        anon_client,
+        organization,
+        public_group,
+        primary_calendar,
+        secondary_calendar,
+    ):
+        """The pin lives on the ``CalendarGroup``, not on a code -- a codeless
+        booking (no ``X-Booking-Code`` header at all) is constrained by it
+        exactly like a coded one. This is the entire point of the Phase 0
+        rewrite: a codeless booking presents no credential to carry a
+        per-code pin, so leaving the constraint on the code would have made
+        the one path reachable with no credential the one path with no
+        length constraint."""
+        public_group.duration = datetime.timedelta(minutes=30)
+        public_group.save()
+        selections = _slot_selections(public_group, primary_calendar, secondary_calendar)
+        # 45-minute span -- does not match the 30-minute pin.
+        payload = _group_booking_payload(
+            selections, end_time=(BOOKING_START + datetime.timedelta(minutes=45)).isoformat()
+        )
+
+        response = _post(anon_client, public_group.id, None, payload)
+
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+        body = response.json()
+        assert body["error_code"] == "NOT_PERMITTED"
+        assert "30 minute" in body["detail"]
+
         assert not CalendarEvent.objects.filter_by_organization(organization.id).exists()

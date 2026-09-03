@@ -792,10 +792,17 @@ def _group_with_one_slot(
         accepts_public_scheduling=False,
         external_id=f"group-code-cal-{organization.pk}",
     )
+    # A publicly schedulable group must carry a duration --
+    # ``can_perform_group_scheduling`` fails closed (403) for a public group
+    # with ``duration=None``, treating it as misconfigured rather than
+    # unbounded-length. ``_rest_group_booking_payload`` below books exactly
+    # one hour, so that is the pin here.
+    duration = datetime.timedelta(hours=1) if accepts_public_scheduling else None
     group = baker.make(
         CalendarGroup,
         organization=organization,
         accepts_public_scheduling=accepts_public_scheduling,
+        duration=duration,
     )
     slot = CalendarGroupSlot.objects.create(
         organization=organization, group=group, name="Providers", order=0, required_count=1

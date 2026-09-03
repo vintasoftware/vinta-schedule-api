@@ -14821,12 +14821,12 @@ paths:
     post:
       operationId: public_booking_calendar_groups_events_create
       description: |-
-        Resolve the code, then create the grouped event and consume the code atomically.
+        Create the grouped event, resolving and consuming a code only when one is presented.
 
-        Create FIRST, then consume, matching the GraphQL original
+        **Coded**: create FIRST, then consume, matching the GraphQL original
         (``create_calendar_group_event_with_code``) and Phase 1's single-calendar
         endpoint. Both statements run inside the same outer ``transaction.atomic()``
-        block (see step 9 below), so any exception either one raises -- including
+        block below, so any exception either one raises -- including
         ``consume_code``'s ``TokenAlreadyUsedError`` on a lost race -- unwinds the
         whole transaction: the DB outcome (one event, code consumed once) is the
         same regardless of which statement runs first. What create-first actually
@@ -14834,15 +14834,26 @@ paths:
         ``create_event`` call) before either one's outcome is decided, rather than
         the loser being turned away by the row lock before ever reaching the
         provider.
-      summary: Book a grouped event through a calendar group with a booking code
+
+        **Codeless**: no code exists to create-then-consume around, so only the
+        create runs. Organization is derived from the path group itself (there is
+        no token to read it from), and the group-level
+        ``accepts_public_scheduling`` gate inside ``create_grouped_event`` is the
+        entire authorization decision -- it is not restated here.
+      summary: Book a grouped event through a calendar group, with or without a booking
+        code
       parameters:
       - in: header
         name: X-Booking-Code
         schema:
           type: string
-        description: Single-use booking code, minted with the CREATE permission and
-          scoped to a calendar group (not a single calendar).
-        required: true
+        description: 'Single-use booking code, minted with the CREATE permission and
+          scoped to a calendar group (not a single calendar). OPTIONAL on this endpoint
+          only: when omitted, the booking is authorized instead by the path group''s
+          own accepts_public_scheduling flag (codeless public group booking, GraphQL
+          parity with createCalendarGroupEvent). When present, the coded path always
+          wins -- a public group handed a valid group code still books through it
+          and consumes it.'
       - in: path
         name: group_id
         schema:
