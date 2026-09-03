@@ -41,7 +41,6 @@ from calendar_integration.services.dataclasses import (
     CalendarEventAdapterOutputData,
 )
 from organizations.models import Organization
-from public_api.models import SystemUser
 
 
 BOOKING_URL_NAME = "calendar_booking_api:booking-calendar-events-list"
@@ -400,12 +399,10 @@ class TestCreateCalendarEventWithCodeLifecycleRejections:
         organization,
         calendar,
     ):
-        minter = baker.make(SystemUser, organization=organization, is_active=True)
         token, code = permission_service.create_booking_token(
             organization_id=organization.id,
             permissions=[EventManagementPermissions.CREATE],
             calendar_id=calendar.id,
-            minted_by=minter,
         )
         permission_service.revoke_token(organization_id=organization.id, token_id=token.id)
 

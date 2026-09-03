@@ -9,6 +9,7 @@ from dependency_injector.wiring import Provide, inject
 from vinta_audit_logs.types import IdentitySnapshot
 
 from audit_integration.constants import AuditAction
+from calendar_integration.constants import CalendarManagementTokenKind
 from calendar_integration.exceptions import (
     InvalidParameterCombinationError,
     InvalidTokenError,
@@ -705,6 +706,9 @@ class CalendarPermissionService:
             organization_id=organization_id,
             calendar_fk_id=calendar_id,
             membership_user_id=_resolve_token_membership_user_id(user, organization_id),
+            defaults={
+                "kind": CalendarManagementTokenKind.MANAGEMENT_TOKEN,
+            },
         )
 
         token.permissions.all().delete()
@@ -746,6 +750,7 @@ class CalendarPermissionService:
             membership_user_id=_resolve_token_membership_user_id(user, organization_id),
             defaults={
                 "token_hash": hashed_token,
+                "kind": CalendarManagementTokenKind.MANAGEMENT_TOKEN,
             },
         )
 
@@ -787,6 +792,7 @@ class CalendarPermissionService:
             external_attendee_fk_id=external_attendee_id,
             defaults={
                 "token_hash": hashed_token,
+                "kind": CalendarManagementTokenKind.MANAGEMENT_TOKEN,
             },
         )
 
@@ -822,6 +828,7 @@ class CalendarPermissionService:
             external_attendee_fk_id=external_attendee_id,
             defaults={
                 "token_hash": hashed_token,
+                "kind": CalendarManagementTokenKind.MANAGEMENT_TOKEN,
             },
         )
         token.permissions.all().delete()
@@ -859,6 +866,11 @@ class CalendarPermissionService:
         Creates a fresh ``CalendarManagementToken`` with a one-time-use plaintext
         code.  The plaintext code is returned exactly once here and never stored —
         only the hash is persisted.  Callers must pass the plaintext to the client.
+        Always sets ``kind=CalendarManagementTokenKind.BOOKING_CODE`` -- the only
+        call site that does -- which is what makes the resulting token revokable
+        via ``revoke_token`` / ``DELETE /booking-codes/<id>/``, regardless of
+        whether ``minted_by`` or ``minted_by_user`` is supplied at all (a
+        codeless mint with neither is still a revokable booking code).
 
         Scope rules (at most one of ``calendar_id``, ``calendar_group_id``,
         ``event_id`` should be supplied, though ``calendar_id``/``calendar_group_id``
@@ -910,6 +922,7 @@ class CalendarPermissionService:
             organization_id=organization_id,
             token_hash=hashed_token,
             expires_at=expires_at,
+            kind=CalendarManagementTokenKind.BOOKING_CODE,
             minted_by_system_user=minted_by,
             minted_by_membership_user_id=(
                 _resolve_token_membership_user_id(minted_by_user, organization_id)

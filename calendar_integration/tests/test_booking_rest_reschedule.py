@@ -40,7 +40,6 @@ from calendar_integration.models import (
 )
 from calendar_integration.services.calendar_permission_service import CalendarPermissionService
 from organizations.models import Organization, OrganizationMembership
-from public_api.models import SystemUser
 from users.factories import UserFactory
 
 
@@ -532,13 +531,11 @@ class TestRescheduleCalendarEventWithCodeLifecycleRejections:
     def test_revoked_code_returns_revoked(
         self, anon_client, permission_service, organization, calendar, existing_event
     ):
-        minter = baker.make(SystemUser, organization=organization, is_active=True)
         token, code = permission_service.create_booking_token(
             organization_id=organization.id,
             permissions=[EventManagementPermissions.RESCHEDULE],
             calendar_id=calendar.id,
             event_id=existing_event.id,
-            minted_by=minter,
         )
         permission_service.revoke_token(organization_id=organization.id, token_id=token.id)
 

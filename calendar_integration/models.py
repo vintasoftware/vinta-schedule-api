@@ -13,6 +13,7 @@ from encrypted_fields.fields import EncryptedCharField, EncryptedTextField  # ty
 from vinta_orgs.mixins import SingleOrganizationModelMixin
 
 from calendar_integration.constants import (
+    CalendarManagementTokenKind,
     CalendarOrganizationResourceImportStatus,
     CalendarProvider,
     CalendarSyncStatus,
@@ -2051,6 +2052,25 @@ class CalendarManagementToken(SingleOrganizationModelMixin, SafeRelationNullInit
     revoked_at = models.DateTimeField(null=True)
 
     # Booking-code audit / lifecycle columns
+    kind = models.CharField(
+        max_length=20,
+        choices=CalendarManagementTokenKind,
+        default=CalendarManagementTokenKind.MANAGEMENT_TOKEN,
+        db_default=CalendarManagementTokenKind.MANAGEMENT_TOKEN,
+        help_text=(
+            "Explicit discriminator: BOOKING_CODE tokens are single-use booking "
+            "codes, selected by CalendarManagementTokenQuerySet.booking_codes and "
+            "therefore revokable via CalendarPermissionService.revoke_token / "
+            "DELETE /booking-codes/<id>/. Everything else (owner, attendee, "
+            "external-attendee tokens) is MANAGEMENT_TOKEN and never revokable "
+            "through those surfaces. Defaults to MANAGEMENT_TOKEN deliberately: a "
+            "mint path that forgets to set this produces an un-revokable token "
+            "rather than a wrongly-revokable one -- it fails closed. Set "
+            "explicitly by every create_*_token method on "
+            "CalendarPermissionService; the default exists only as a safety net, "
+            "never leaned on by a known call site."
+        ),
+    )
     expires_at = models.DateTimeField(
         null=True,
         blank=True,

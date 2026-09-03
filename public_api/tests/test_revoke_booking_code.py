@@ -12,6 +12,7 @@ import pytest
 from model_bakery import baker
 from rest_framework.test import APIClient
 
+from calendar_integration.constants import CalendarManagementTokenKind
 from calendar_integration.models import (
     Calendar,
     CalendarManagementToken,
@@ -147,6 +148,7 @@ class TestRevokeBookingCode:
             revoked_at=None,
             used_at=None,
             minted_by_system_user=system_user,
+            kind=CalendarManagementTokenKind.BOOKING_CODE,
         )
         baker.make(
             CalendarManagementToken.permissions.field.model,
@@ -204,6 +206,7 @@ class TestRevokeBookingCode:
             revoked_at=original_revoked_at,
             used_at=None,
             minted_by_system_user=system_user,
+            kind=CalendarManagementTokenKind.BOOKING_CODE,
         )
 
         # Revoke it again (it's already revoked)
@@ -517,6 +520,7 @@ class TestRevokeBookingCode:
             revoked_at=None,
             used_at=None,
             minted_by_system_user=system_user,
+            kind=CalendarManagementTokenKind.BOOKING_CODE,
         )
 
         with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:

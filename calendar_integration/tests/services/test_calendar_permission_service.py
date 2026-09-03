@@ -6,7 +6,7 @@ from django.utils import timezone
 
 import pytest
 
-from calendar_integration.constants import EventManagementPermissions
+from calendar_integration.constants import CalendarManagementTokenKind, EventManagementPermissions
 from calendar_integration.exceptions import (
     InvalidParameterCombinationError,
     InvalidTokenError,
@@ -780,6 +780,7 @@ class TestCalendarPermissionServiceTokenCreation:
         assert token.calendar_fk == calendar
         assert token.membership_user_id == user.id
         assert token.organization == organization
+        assert token.kind == CalendarManagementTokenKind.MANAGEMENT_TOKEN
 
         # Check default permissions
         permission_values = list(token.permissions.values_list("permission", flat=True))
@@ -818,6 +819,7 @@ class TestCalendarPermissionServiceTokenCreation:
         assert token.membership_user_id == user.id
         assert token.organization == organization
         assert token.token_hash is not None
+        assert token.kind == CalendarManagementTokenKind.MANAGEMENT_TOKEN
 
         # Check default permissions
         permission_values = list(token.permissions.values_list("permission", flat=True))
@@ -848,6 +850,7 @@ class TestCalendarPermissionServiceTokenCreation:
         assert token.external_attendee_fk == external_attendee
         assert token.organization == organization
         assert token.token_hash is not None
+        assert token.kind == CalendarManagementTokenKind.MANAGEMENT_TOKEN
 
         # Check default permissions
         permission_values = list(token.permissions.values_list("permission", flat=True))
@@ -865,10 +868,118 @@ class TestCalendarPermissionServiceTokenCreation:
         assert token.external_attendee_fk == external_attendee
         assert token.organization == organization
         assert token.token_hash is not None
+        assert token.kind == CalendarManagementTokenKind.MANAGEMENT_TOKEN
 
         # Should only have CREATE permission
         permission_values = list(token.permissions.values_list("permission", flat=True))
         assert permission_values == [EventManagementPermissions.CREATE]
+
+
+class TestCalendarManagementTokenKindDiscriminator:
+    """Phase 7: ``kind`` -- not the pre-Phase-7 ``minted_by_*`` heuristic --
+    decides what ``revoke_token`` may touch.
+
+    The case the heuristic got wrong: a booking code minted with NEITHER
+    ``minted_by`` NOR ``minted_by_user`` (exactly what a codeless booking
+    mints, per Phase 8) must still be classified ``BOOKING_CODE`` and must
+    still be revokable. Every other ``create_*_token`` method must produce
+    ``MANAGEMENT_TOKEN`` and stay un-revokable through ``revoke_token``
+    regardless of who calls it -- Phase 6's privilege-escalation fix.
+    """
+
+    def test_booking_token_with_no_actor_is_booking_code_kind(
+        self, permission_service, organization, calendar
+    ):
+        """create_booking_token with neither minted_by nor minted_by_user is
+        still classified BOOKING_CODE -- the case the pre-Phase-7 heuristic
+        got wrong."""
+        token, _ = permission_service.create_booking_token(
+            organization_id=organization.id,
+            permissions=[EventManagementPermissions.CREATE],
+            calendar_id=calendar.id,
+        )
+
+        assert token.minted_by_membership_user_id is None
+        assert token.minted_by_system_user_id is None
+        assert token.kind == CalendarManagementTokenKind.BOOKING_CODE
+
+    def test_booking_token_with_no_actor_is_revokable(
+        self, permission_service, organization, calendar
+    ):
+        """The actor-less booking code above is revokable via revoke_token --
+        the acceptance criterion Phase 7 exists to satisfy."""
+        token, _ = permission_service.create_booking_token(
+            organization_id=organization.id,
+            permissions=[EventManagementPermissions.CREATE],
+            calendar_id=calendar.id,
+        )
+
+        result = permission_service.revoke_token(organization_id=organization.id, token_id=token.id)
+
+        assert result is True
+        token.refresh_from_db()
+        assert token.revoked_at is not None
+
+    def test_calendar_owner_token_not_revokable(
+        self, permission_service, user, calendar, organization
+    ):
+        """A calendar-owner token is MANAGEMENT_TOKEN and revoke_token must
+        refuse it exactly like a nonexistent id -- Phase 6's
+        privilege-escalation fix, unaffected by the kind swap."""
+        OrganizationMembership.objects.get_or_create(user=user, organization=organization)
+        token = permission_service.create_calendar_owner_token(organization.id, user, calendar.id)
+
+        assert token.kind == CalendarManagementTokenKind.MANAGEMENT_TOKEN
+        with pytest.raises(InvalidTokenError):
+            permission_service.revoke_token(organization_id=organization.id, token_id=token.id)
+
+        token.refresh_from_db()
+        assert token.revoked_at is None
+
+    def test_attendee_token_not_revokable(self, permission_service, user, event, organization):
+        """An attendee token is MANAGEMENT_TOKEN and revoke_token must refuse
+        it exactly like a nonexistent id."""
+        OrganizationMembership.objects.get_or_create(user=user, organization=organization)
+        token = permission_service.create_attendee_token(organization.id, user, event.id)
+
+        assert token.kind == CalendarManagementTokenKind.MANAGEMENT_TOKEN
+        with pytest.raises(InvalidTokenError):
+            permission_service.revoke_token(organization_id=organization.id, token_id=token.id)
+
+        token.refresh_from_db()
+        assert token.revoked_at is None
+
+    def test_external_attendee_update_token_not_revokable(
+        self, permission_service, event, external_attendee, organization
+    ):
+        """An external-attendee update token is MANAGEMENT_TOKEN and
+        revoke_token must refuse it exactly like a nonexistent id."""
+        token = permission_service.create_external_attendee_update_token(
+            organization.id, event.id, external_attendee.id
+        )
+
+        assert token.kind == CalendarManagementTokenKind.MANAGEMENT_TOKEN
+        with pytest.raises(InvalidTokenError):
+            permission_service.revoke_token(organization_id=organization.id, token_id=token.id)
+
+        token.refresh_from_db()
+        assert token.revoked_at is None
+
+    def test_external_attendee_schedule_token_not_revokable(
+        self, permission_service, calendar, external_attendee, organization
+    ):
+        """An external-attendee schedule token is MANAGEMENT_TOKEN and
+        revoke_token must refuse it exactly like a nonexistent id."""
+        token = permission_service.create_external_attendee_schedule_token(
+            organization.id, calendar.id, external_attendee.id
+        )
+
+        assert token.kind == CalendarManagementTokenKind.MANAGEMENT_TOKEN
+        with pytest.raises(InvalidTokenError):
+            permission_service.revoke_token(organization_id=organization.id, token_id=token.id)
+
+        token.refresh_from_db()
+        assert token.revoked_at is None
 
 
 class TestCalendarPermissionServiceConstants:
