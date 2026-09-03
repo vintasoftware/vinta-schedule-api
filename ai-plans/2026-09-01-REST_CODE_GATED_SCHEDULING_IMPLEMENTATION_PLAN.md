@@ -7,7 +7,12 @@
 3. Give the REST API the same **code-gated reads** GraphQL has: available times, availability windows, unavailable windows, calendar bookable slots, group bookable slots, and group range availability — all repeatable, none consuming the code.
 4. Give the REST API a **booking-code minting and revocation** surface for first-party frontends, authenticated with session/JWT + organization membership, authorized owner-or-org-admin, with the mint attributable to the internal user who performed it.
 5. Keep the two surfaces' **security posture identical**: writes discriminate failures through the existing `BookingCodeErrorCode` vocabulary; reads disclose nothing about a code's state.
-6. Let a booking code **pin the event duration**, so a patient handed a 30-minute code cannot book, reschedule into, or shop for a longer slot by editing a request parameter. Enforced in the permission service, so every surface that already honours booking codes inherits it.
+6. Give a patient who booked a **self-service path to reschedule or cancel** their own appointment,
+   without an organization admin minting a code for them by hand.
+7. Let an organization **read and set `accepts_public_scheduling`** on a `CalendarGroup` over REST,
+   and let anyone **discover slots on a public group without a code**, so a codeless booking UI is
+   buildable rather than blind.
+8. Let a booking code **pin the event duration**, so a patient handed a 30-minute code cannot book, reschedule into, or shop for a longer slot by editing a request parameter. Enforced in the permission service, so every surface that already honours booking codes inherits it.
 
 **Non-goals:**
 
@@ -36,6 +41,10 @@
 | **Duration pinning — reads** | On the two code-gated bookable-slots endpoints, a pinned duration **silently overrides** the client's `duration_seconds`. A `400` naming the mismatch would turn those endpoints into an oracle for whether a code pins a duration and what it is, which the read design avoids everywhere else. Silent override also keeps a patient from browsing slots at a length they cannot actually book. The returned proposals' own spans are how a client legitimately discovers the pinned duration. |
 | **Public group addressing** | Codeless booking addresses a `CalendarGroup` by an opaque, non-sequential `public_booking_slug`, never by its integer primary key. Added in Phase 3b after review found that the integer-keyed route was a cross-tenant enumeration oracle: with no `organization_id` anywhere in the path, an anonymous caller could walk `group_id` 1..N and learn from the 404/403/201 split which groups exist in *any* organization and which accept public scheduling. GraphQL's `createCalendarGroupEvent` requires both `organization_id` and `group_id`, so the integer-keyed REST route was a strictly larger probing surface than its own parity target. Throttling was considered and declined; an unguessable identifier removes the oracle outright rather than rate-limiting it. |
 | **Slug covers both branches** | The slug replaces the integer id for coded *and* codeless requests on that route, so the integer PK leaves the public surface entirely. The coded branch still validates the addressed group against the token's group and still answers `403`, never `404`, on a mismatch — that guarantee predates the slug and must survive it. |
+| **Patient management codes** | A successful booking mints a `RESCHEDULE` and a `CANCEL` code bound to the new event and returns both plaintexts **once**, in the create response. A successful reschedule re-issues a fresh pair for the same event, so the chain continues; a cancel ends it. This is what makes the feature usable: without it a patient can book and then never change anything, because minting is owner-or-org-admin and nothing else issues codes. Note the pre-existing external-attendee token (`[UPDATE_SELF_RSVP, RESCHEDULE, CANCEL]`, minted inside `create_event`) is **not** this mechanism — its plaintext is discarded at mint, so that row has never been usable by anyone. |
+| **Explicit booking-code kind** | `CalendarManagementToken` gains an explicit kind discriminator, replacing Phase 6's `minted_by_* IS NOT NULL` heuristic. Forced by the decision above: a management code minted during a **codeless** booking has no user and no system user, so under the heuristic it would be silently un-revokable and `revoke_token` would refuse it — a leaked patient link that could never be killed. The heuristic was recorded as a known fragility at Phase 6 close-out; this is that fragility becoming load-bearing. |
+| **Public-group flag over REST** | `accepts_public_scheduling` is exposed on `CalendarGroupSerializer` under its own name (not GraphQL's inverted `is_private`), readable by any member who can see the group and writable only by an org admin — flipping a group public opens codeless booking, the same class of act as creating the group, which `can_manage_calendar_group` already restricts to admins. |
+| **Codeless discovery is group-aggregated** | The codeless public-group reads never attribute an interval to a specific member calendar. Bookable slots and range availability come from the group-aware service methods; the availability/unavailable **window** reads, which are calendar-scoped everywhere else, are exposed for a group only in aggregate ("the group has availability here"). A per-calendar breakdown on an unauthenticated endpoint would re-leak which practitioner is which — exactly the disclosure Phase 5's BLOCKER closed. `available_calendar_ids` on the range-availability read is retained, because group booking's `slot_selections` genuinely requires those ids. |
 | **Mint endpoint shape** | One `POST /booking-codes/` taking `purpose` (`book` / `reschedule` / `cancel`) plus exactly one of `calendar` / `calendar_group`, plus `event` for the reschedule and cancel purposes. This collapses GraphQL's six `create*BookingCode` mutations into one resource without changing what can be minted — the six combinations are the cross product of two fields. |
 | **Reschedule endpoint decomposition** | Two endpoints (single and group), mirroring GraphQL's two mutations, rather than one that dispatches on token scope. The cross-routing `NOT_PERMITTED` responses ("this code is scoped to a calendar group; use the group endpoint") are part of the GraphQL contract clients already handle. See **Open Questions** for the collapse alternative. |
 | **No feature flag — purely additive surface** | Every endpoint lives at a brand-new path served by brand-new viewsets. No existing route, serializer, permission class, or query path changes behavior; the one schema change is a new nullable column no existing code reads or writes. The repo has no feature-flag mechanism today, and standing one up to gate a surface nothing currently depends on would be larger than the feature. Rollback is reverting the route registration — see **Risk & Rollout Notes**. |
@@ -530,6 +539,110 @@ Acceptance: `POST /booking-codes/` as an org admin or calendar owner returns `20
 ---
 
 *No flag-removal phase: this plan declares no feature flag. See the "no flag — purely additive surface" row in **Guiding Decisions** for the justification, and **Risk & Rollout Notes** for the rollback path that replaces it.*
+
+### Phase 7 — Explicit booking-code kind discriminator
+
+**Goal**: Replace Phase 6's `minted_by_* IS NOT NULL` heuristic with an explicit column, so a code minted with no actor is still a revokable booking code. Ship value: none user-visible on its own; it unblocks Phase 8, which mints codes during codeless bookings.
+
+**Feature flag**: none — a new column plus a swap of one queryset predicate; no reachable behavior changes for existing rows.
+
+Changes:
+
+1. `@calendar_integration/models.py`: add `CalendarManagementToken.kind`, a `CharField` with choices (`BOOKING_CODE` / `MANAGEMENT_TOKEN`), non-null, defaulting to `MANAGEMENT_TOKEN` so any path that forgets to set it fails **closed** — un-revokable is better than wrongly-revokable, and the mint paths are few and explicit.
+2. Migration: add the column nullable, backfill using the existing heuristic (`minted_by_membership_user_id IS NOT NULL OR minted_by_system_user_id IS NOT NULL` → `BOOKING_CODE`, else `MANAGEMENT_TOKEN`), then set non-null with a DB-level default. Same three-step shape and the same deploy-window reasoning as Phase 3b's `0052`/`0053`/`0054` — Render migrates in `buildCommand`, so old code inserts without the column while the migration is already applied.
+3. [querysets.py](../calendar_integration/querysets.py): `booking_codes()` filters on `kind=BOOKING_CODE` instead of the heuristic. Delete the heuristic and the fragility note that documented it.
+4. [calendar_permission_service.py](../calendar_integration/services/calendar_permission_service.py): `create_booking_token` sets `kind=BOOKING_CODE`; every other `create_*_token` sets `MANAGEMENT_TOKEN` explicitly rather than relying on the default.
+5. Revert the twelve test fixtures Phase 6 had to amend: they exist only to satisfy the heuristic and should mint with the explicit kind instead.
+
+Spec use-case: shared scaffolding for Phase 8.
+
+Tests:
+
+- **Integration**: a token minted with no actor at all is still classified `BOOKING_CODE` and is revokable — the case the heuristic got wrong.
+- **Integration**: owner, attendee, and external-attendee tokens are `MANAGEMENT_TOKEN` and remain un-revokable through both the REST endpoint and `revoke_token`, so Phase 6's privilege-escalation fix still holds.
+- **Integration**: the backfill classifies existing rows exactly as the heuristic did — assert over a fixture set covering every `create_*_token` path.
+- **Unit**: the migration applies, reverses, and re-applies; an INSERT omitting the column succeeds (deploy-window safety).
+
+**Suggested AI model**: Tier 3 (IDs in [resources/ai-models.yaml](../.claude/skills/plan-feature/resources/ai-models.yaml)). A three-step migration with a backfill, on a table in the auth path.
+
+**Review models**: reviewer Tier 4 — this column decides what may be revoked. Getting the backfill or the default wrong either resurrects Phase 6's privilege escalation or makes real codes un-revokable. Fixer left on the project default.
+
+**Reusable skills**: `add-migration`.
+
+Acceptance: `booking_codes()` filters on `kind`; an actor-less mint is revokable; owner and attendee tokens are not; the migration applies, reverses, and re-applies; and Phase 6's revoke tests pass unchanged.
+
+---
+
+### Phase 8 — Patient self-service management codes
+
+**Goal**: A patient who books can reschedule or cancel their own appointment without anyone minting a code for them by hand.
+
+**Feature flag**: none — additive fields on responses that already exist in this same unmerged stack.
+
+Changes:
+
+1. [booking_views.py](../calendar_integration/booking_views.py): on a successful create — single-calendar (Phase 1), group coded (Phase 2), and group codeless (Phase 3) — mint a `RESCHEDULE` and a `CANCEL` booking code bound to the new event, scoped to the same calendar or group the booking used, and return both plaintexts in a `management` object on the `201`. Mint inside the existing `transaction.atomic()` so a failed booking issues nothing.
+2. Same on a successful reschedule (single and group): re-issue a fresh pair for the event and return them, so the patient can manage it again. Cancel returns `204` and issues nothing — the chain ends.
+3. Inherit the booking's pinned duration onto the re-issued reschedule code, so a 30-minute appointment cannot be rescheduled into a 60-minute one by using the code the system itself handed out.
+4. Carry `expires_at` from the event rather than leaving it null: a management code for a past appointment is dead weight. Default to the event's end time unless the plan's **Open Questions** resolves otherwise.
+5. [serializers.py](../calendar_integration/serializers.py): a small `BookingManagementCodesSerializer` for the `management` object. Write-only in the sense that it is never echoed on a read — these endpoints have no read.
+6. Regenerate `schema.yml`.
+
+Spec use-case: patient self-service rescheduling and cancellation.
+
+Tests:
+
+- **Integration**: book, then use the returned `reschedule_code` against `POST /public/booking/events/reschedule/` and confirm it works; then use the *re-issued* code from that response to reschedule again, proving the chain continues.
+- **Integration**: book, then use the returned `cancel_code` against `POST /public/booking/events/cancel/` and confirm `204` and deletion.
+- **Integration**: the same for a group booking and for a **codeless** group booking — the codeless case is what forces Phase 7's explicit kind, so assert the issued codes are revokable.
+- **Integration**: a failed booking (slot unavailable) issues no codes and leaves no token rows.
+- **Integration**: a pinned booking's re-issued reschedule code carries the same pin, and refuses a different span.
+- **Integration**: the issued codes are scoped to that event only — they cannot touch a second event on the same calendar.
+
+**Suggested AI model**: Tier 3 (IDs in [resources/ai-models.yaml](../.claude/skills/plan-feature/resources/ai-models.yaml)). Touches five endpoints' success paths inside their transactions, and the re-issue chain has to preserve scope and pin.
+
+**Review models**: reviewer Tier 4 — this hands a credential to an unauthenticated caller on every booking. Over-scoping one (wrong event, wrong calendar, missing pin) is a privilege leak issued automatically, at volume.
+
+**Reusable skills**: `create-rest-endpoint` (for the schema regeneration).
+
+Acceptance: booking returns working reschedule and cancel codes; rescheduling with one returns a fresh pair; a failed booking returns none; and every issued code is bound to exactly that event and revokable.
+
+---
+
+### Phase 9 — Public-group flag and codeless discovery reads
+
+**Goal**: An organization can read and set `accepts_public_scheduling` over REST, and anyone can discover a public group's availability without a code — so a codeless booking UI can show real slots instead of guessing.
+
+**Feature flag**: none — one serializer field plus new read endpoints at new paths.
+
+Changes:
+
+1. [serializers.py](../calendar_integration/serializers.py): add `accepts_public_scheduling` to `CalendarGroupSerializer`. Readable by any member who can see the group; writable only by an org admin. Enforce the write restriction in the serializer or viewset, not by hoping the caller is an admin — a non-admin PATCH must leave it unchanged and say so.
+2. `@calendar_integration/booking_read_views.py`: codeless, slug-addressed public-group reads. All gated on `accepts_public_scheduling`; unknown slug → `404`, non-public group → `403`, mirroring the codeless write's contract from Phase 3:
+   - `GET /public/booking/calendar-groups/<slug>/bookable-slots/`
+   - `POST /public/booking/calendar-groups/<slug>/availability/` (ranges in the body)
+   - `GET /public/booking/calendar-groups/<slug>/availability-windows/` and `.../unavailable-windows/` — **aggregated across the group, never per-calendar** (see the "Codeless discovery is group-aggregated" Guiding Decision). If no coherent non-attributing aggregate exists for a window read, ship the other two and say so rather than leaking a per-calendar breakdown.
+3. These are codeless-only and slug-addressed; the Phase 5 code-gated reads stay token-addressed. Do not conflate the two addressing schemes.
+4. Regenerate `schema.yml`.
+
+Spec use-case: codeless public-group slot discovery, plus REST management of the flag that enables it.
+
+Tests:
+
+- **Integration**: a public group's slots are readable with no credential; a private group returns `403`; an unknown slug returns `404`.
+- **Integration**: the reads return the same data their code-gated Phase 5 counterparts do for the same group.
+- **Integration**: every proposal returned is actually bookable through the Phase 3 codeless write — the read and the write agree.
+- **Integration**: no response attributes an interval to a specific member calendar on the window reads.
+- **Integration**: an org admin can flip `accepts_public_scheduling` and the codeless reads and writes turn on and off accordingly; a non-admin member's attempt leaves it unchanged.
+
+**Suggested AI model**: Tier 3 (IDs in [resources/ai-models.yaml](../.claude/skills/plan-feature/resources/ai-models.yaml)). Four endpoints plus an authorization-sensitive serializer field, and the window aggregation needs a judgement call about what is safe to expose.
+
+**Review models**: reviewer Tier 4 — these are unauthenticated reads on a surface whose whole design constraint is not revealing which calendar is which. Fixer left on the project default.
+
+**Reusable skills**: `create-rest-endpoint`.
+
+Acceptance: an admin can set `accepts_public_scheduling` over REST and a non-admin cannot; a public group's slots, range availability, and aggregated windows are readable with no code; a private group's are not; and no window response names a member calendar.
+
 
 ## 6. Risk & Rollout Notes
 
