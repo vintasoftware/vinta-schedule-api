@@ -718,11 +718,12 @@ class TestCreateGroupEventWithCodePinnedDuration:
         secondary_calendar,
         availability_windows,  # noqa: ARG002
     ):
+        group.duration = datetime.timedelta(minutes=30)
+        group.save()
         _token, code = permission_service.create_booking_token(
             organization_id=organization.id,
             permissions=[EventManagementPermissions.CREATE],
             calendar_group_id=group.id,
-            duration=datetime.timedelta(minutes=30),
         )
         selections = _slot_selections(group, primary_calendar, secondary_calendar)
         payload = _group_booking_payload(
@@ -746,11 +747,12 @@ class TestCreateGroupEventWithCodePinnedDuration:
         """The pin applies to the grouped event's own times, not per member
         calendar -- a multi-slot selection at the wrong span is refused just
         the same as a single-calendar booking."""
+        group.duration = datetime.timedelta(minutes=30)
+        group.save()
         token, code = permission_service.create_booking_token(
             organization_id=organization.id,
             permissions=[EventManagementPermissions.CREATE],
             calendar_group_id=group.id,
-            duration=datetime.timedelta(minutes=30),
         )
         selections = _slot_selections(group, primary_calendar, secondary_calendar)
         # 45-minute span -- does not match the 30-minute pin.

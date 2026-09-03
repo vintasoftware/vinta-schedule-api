@@ -14778,7 +14778,7 @@ paths:
 
         Create FIRST, then consume, matching the GraphQL original
         (``create_calendar_event_with_code``). Both statements run inside the
-        same outer ``transaction.atomic()`` block (see step 8 below), so any
+        same outer ``transaction.atomic()`` block (see step 5 below), so any
         exception either one raises -- including ``consume_code``'s
         ``TokenAlreadyUsedError`` on a lost race -- unwinds the whole
         transaction: the DB outcome (one event, code consumed once) is the
