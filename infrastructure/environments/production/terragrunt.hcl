@@ -9,8 +9,12 @@ locals {
 # One stack for the whole environment: buckets + CDN and the runtime platform,
 # in one state and one Scalr run. Set the Scalr workspace's Working Directory to
 # this folder.
+# The `//` is load-bearing: terragrunt copies everything before it into its
+# cache and then works in the subdirectory after it. Without it only
+# `modules/environment` is copied, and its `../app-platform` /
+# `../s3-cloudfront` module sources resolve to nothing.
 terraform {
-  source = "${dirname(find_in_parent_folders("root.hcl"))}/modules/environment"
+  source = "${dirname(find_in_parent_folders("root.hcl"))}/modules//environment"
 }
 
 # Not applied yet. Read "Before applying production" in infrastructure/README.md
