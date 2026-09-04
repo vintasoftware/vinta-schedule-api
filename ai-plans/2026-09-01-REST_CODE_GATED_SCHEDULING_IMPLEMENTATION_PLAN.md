@@ -678,14 +678,21 @@ If this is revisited, the remedy is small and follows a pattern already in the r
 
 **Rollback.** With no feature flag, rollback is per phase and clean because each phase only adds routes. Reverting a phase's route registration in `booking_urls.py` (or `routes.py` for Phase 6) removes the surface immediately; the viewsets and serializers can stay in the tree harmlessly. The one exception is Phase 0's migration: reverting it drops the constraint, the index, and the column. Codes minted through Phase 6 in the interim keep working in one respect and lose a guarantee in another: `minted_by_membership` is attribution metadata that nothing in the authorization path reads, so dropping it costs only audit detail — but dropping `duration` **silently unpins every code that had a duration**, turning a 30-minute code into an any-length code rather than breaking it. That is a security regression that fails open, so if Phase 0 is ever reverted after Phase 6 has minted pinned codes, revoke those codes first. Revert Phase 6 before Phase 0 regardless, so nothing is writing either column when they disappear.
 
-**Pre-deploy audit required by the fail-closed rule.** A `CalendarGroup` with
-`accepts_public_scheduling=True` and a null `duration` refuses bookings. That is the
-intended failure direction — a misconfigured public group should surface immediately rather than
-quietly accept any length — but it means **existing public groups must be given a duration before
-this deploys**, or their bookings break. Audit them first:
-`CalendarGroup.objects.filter(accepts_public_scheduling=True, duration__isnull=True)`. The invariant
-is enforced on write only, with no DB CHECK constraint, precisely so the migration itself cannot fail
-on such rows.
+**Pre-deploy audit no longer required — migration 0058 backfills it.** A `CalendarGroup` with
+`accepts_public_scheduling=True` and a null `duration` refuses bookings. That is the intended
+failure direction — a misconfigured public group should surface immediately rather than quietly
+accept any length — but it means every pre-existing public group would break on deploy unless it
+already had a duration. Migration `0058_backfill_calendargroup_duration` now closes that gap
+automatically: it sets `duration = timedelta(minutes=30)` on every existing `CalendarGroup` row
+with a null `duration`, public and private alike, so no manual pre-deploy audit is needed. This
+also pins every pre-existing **private** group's coded bookings to exactly 30 minutes, where
+before this migration they were unconstrained by any group-level duration — an accepted trade,
+not an oversight (see the migration's own docstring, and
+`calendar_integration/migrations/_0058_backfill_helpers.py`, for the full reasoning). An
+organization that books other lengths through a private group must set that group's `duration`
+explicitly after this deploys. The invariant itself is still enforced on write only, with no DB
+CHECK constraint, so the migration cannot fail on rows it does not touch (e.g. a group that
+already carries a duration).
 
 **Why the duration correction rewrote history instead of migrating forward.** The per-code pin was
 caught after the whole stack was implemented but before anything merged. Adding `CalendarGroup.duration`
