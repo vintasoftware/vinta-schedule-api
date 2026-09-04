@@ -1,13 +1,13 @@
-# Staging environment-level inputs, merged into every stack under this dir.
+# Staging environment-level inputs, read by root.hcl and by this environment's
+# terragrunt.hcl.
 locals {
   environment = "staging"
 
-  # One Scalr workspace per stack folder -- state does not cross workspaces, so
-  # `storage` and `app` cannot share one. root.hcl looks the folder name up here.
-  scalr_workspaces = {
-    storage = "VintaScheduleStaging"
-    app     = "VintaScheduleStagingApp"
-  }
+  # One workspace per environment: storage and the app platform share a single
+  # Terraform state, so a single Scalr run applies both. This is the workspace
+  # that used to hold the storage-only stack -- its state was renamed under
+  # `module.storage` rather than recreated. See infrastructure/README.md.
+  scalr_workspace = "VintaScheduleStaging"
 
   aws_region = "us-east-1"
 

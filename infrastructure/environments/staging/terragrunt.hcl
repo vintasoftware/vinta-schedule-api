@@ -3,11 +3,18 @@ include "root" {
 }
 
 locals {
-  env = read_terragrunt_config(find_in_parent_folders("env.hcl"))
+  env = read_terragrunt_config("${get_terragrunt_dir()}/env.hcl")
 }
 
+# One stack for the whole environment: buckets + CDN and the runtime platform,
+# in one state and one Scalr run. Set the Scalr workspace's Working Directory to
+# this folder.
+# The `//` is load-bearing: terragrunt copies everything before it into its
+# cache and then works in the subdirectory after it. Without it only
+# `modules/environment` is copied, and its `../app-platform` /
+# `../s3-cloudfront` module sources resolve to nothing.
 terraform {
-  source = "${dirname(find_in_parent_folders("root.hcl"))}/modules/app-platform"
+  source = "${dirname(find_in_parent_folders("root.hcl"))}/modules//environment"
 }
 
 inputs = {
@@ -17,11 +24,26 @@ inputs = {
 
   dns_role_arn      = local.env.locals.dns_role_arn
   route53_zone_name = local.env.locals.route53_zone_name
-  api_domain        = "api.schedule-staging.vintasoftware.com"
+
+  ####################################
+  # Domains
+  ####################################
+
+  api_domain    = "api.schedule-staging.vintasoftware.com"
+  media_domain  = "media.schedule-staging.vintasoftware.com"
+  static_domain = "static.schedule-staging.vintasoftware.com"
+
+  ####################################
+  # Network
+  ####################################
 
   # Private range for this environment only. Production uses 10.30.0.0/16 so the
   # two could be peered later without renumbering either.
   vpc_cidr = "10.20.0.0/16"
+
+  ####################################
+  # Django
+  ####################################
 
   django_settings_module = "vinta_schedule_api.settings.staging"
 
@@ -29,24 +51,32 @@ inputs = {
   site_domain       = "https://schedule-staging.vintasoftware.com"
   frontend_base_url = "https://schedule-staging.vintasoftware.com"
 
+  # The API's own CORS headers.
   cors_allowed_origins = [
+    "https://schedule-staging.vintasoftware.com",
+  ]
+
+  # Direct browser uploads to the media bucket (django-s3direct). Separate knob.
+  storage_cors_allowed_origins = [
     "https://schedule-staging.vintasoftware.com",
   ]
 
   default_from_email = "noreply@schedule-staging.vintasoftware.com"
   default_bcc_emails = ["hugo@vinta.com.br"]
 
-  # Buckets and CloudFront hostnames come from the `storage` stack in this same
-  # environment. The bucket names are left to the module's own default, which
-  # derives the same <project>-<env>-media / -static names that stack creates.
-  media_custom_domain  = "media.schedule-staging.vintasoftware.com"
-  static_custom_domain = "static.schedule-staging.vintasoftware.com"
+  ####################################
+  # CI
+  ####################################
 
   github_repository = local.env.locals.github_repository
   github_deploy_ref = "refs/heads/main"
   # Empty: staging is the first environment applied in this AWS account, so it
   # creates the account's single GitHub OIDC provider. Production reads its ARN.
   github_oidc_provider_arn = ""
+
+  ####################################
+  # Sizing
+  ####################################
 
   # Staging is a single-user-load environment -- one task each, and the smallest
   # database and cache nodes AWS sells.

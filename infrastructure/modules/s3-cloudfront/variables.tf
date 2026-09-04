@@ -12,18 +12,21 @@ variable "media_bucket_name" {
   description = "Explicit media bucket name. Defaults to <project>-<env>-media when empty."
   type        = string
   default     = ""
+  nullable    = false
 }
 
 variable "static_bucket_name" {
   description = "Explicit static bucket name. Defaults to <project>-<env>-static when empty."
   type        = string
   default     = ""
+  nullable    = false
 }
 
 variable "price_class" {
   description = "CloudFront price class."
   type        = string
   default     = "PriceClass_100"
+  nullable    = false
 }
 
 variable "static_domain" {
@@ -45,4 +48,5 @@ variable "cors_allowed_origins" {
   description = "Origins allowed to upload directly to the media bucket (django-s3direct)."
   type        = list(string)
   default     = ["*"]
+  nullable    = false
 }
