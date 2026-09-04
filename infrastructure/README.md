@@ -144,10 +144,10 @@ shell / CI, never committed):
 | `SCALR_TOKEN` | `terraform login <SCALR_HOSTNAME>`, or a CI env var |
 | `SCALR_HOSTNAME` / `SCALR_ENVIRONMENT` | shell env vars, read by `root.hcl` |
 
-**Execution mode matters:**
-- **Remote** (runs execute inside Scalr) → the AWS shell vars MUST live in Scalr.
-- **CLI / local** (`terragrunt apply` on your machine; Scalr stores state only) →
-  AWS creds come from your local shell; set nothing AWS-related in Scalr.
+**These workspaces are VCS-connected and run remotely**, which settles two
+things: the AWS credentials above MUST live in Scalr (nothing reads your local
+shell), and applies are triggered by pushing to this repository rather than
+from your machine — see [Run](#run).
 
 ## Cross-account DNS (Route 53)
 
@@ -251,6 +251,18 @@ two populated states have to be reconciled by hand instead.
 > now fail loudly or not at all. If a folder was already initialised by `tofu`,
 > delete its `.terragrunt-cache` before the next run.
 
+> **Apply happens in Scalr, not from your shell.** The workspaces are connected
+> to this repository, and a VCS-connected workspace refuses a CLI apply:
+>
+> ```
+> Error: Apply not allowed for workspaces with a VCS connection
+> ```
+>
+> So `terragrunt apply` — and anything carrying `-replace` or `-target` — is not
+> how this gets applied. Push the branch and let the workspace run it. What does
+> work locally is `init`, `plan` (it opens a speculative run), `output`, and the
+> `state` subcommands.
+
 ```bash
 export SCALR_HOSTNAME=example.scalr.io
 export SCALR_ENVIRONMENT=<your-scalr-environment>
@@ -258,16 +270,28 @@ terraform login "$SCALR_HOSTNAME"        # stores the API token
 
 cd infrastructure/environments/staging
 terragrunt init
-terragrunt plan
-terragrunt apply
+terragrunt plan                          # speculative run, safe to repeat
 ```
 
-That one apply covers the buckets, the CDN and the runtime platform. Terraform
+One Scalr run covers the buckets, the CDN and the runtime platform. Terraform
 orders them itself: the task role's S3 policy reads the bucket names out of
 `module.storage`, and that dependency edge is what used to be a manual
 apply-storage-first rule.
 
-To work on one half only, target it — `terragrunt apply -target=module.storage`.
+### Forcing one resource to be recreated
+
+`-replace` needs an apply, so it is unavailable here. Drop the resource from
+state instead and let the next Scalr run create it — `state` commands are
+allowed:
+
+```bash
+cd infrastructure/environments/staging
+terragrunt run -- state rm module.app.aws_acm_certificate.api
+```
+
+Nothing in AWS is destroyed by that; the old object is simply no longer
+managed, so delete it by hand afterwards if it costs money or occupies a name
+the new one needs.
 
 ### Provider lock files must cover every platform
 
