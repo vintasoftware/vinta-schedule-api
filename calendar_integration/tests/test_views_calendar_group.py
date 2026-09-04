@@ -186,6 +186,16 @@ class TestCalendarGroupCrud:
         assert response.data["name"] == "Clinic"
         assert {s["name"] for s in response.data["slots"]} == {"Physicians", "Rooms"}
 
+    def test_retrieve_exposes_public_booking_slug(self, auth_client, owned_group):
+        """An org member can read `public_booking_slug` to build a codeless
+        public booking link (Phase 3b) -- it is present and matches the
+        model's own value exactly."""
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        response = auth_client.get(url)
+        _assert_status(response, status.HTTP_200_OK)
+        assert response.data["public_booking_slug"] == owned_group.public_booking_slug
+        assert response.data["public_booking_slug"]
+
     def test_retrieve_not_found_if_user_does_not_own_any_pool_calendar(
         self, auth_client, organization, internal_calendars
     ):
@@ -312,6 +322,39 @@ class TestCalendarGroupCrud:
         )
         assert set(created.slots.values_list("name", flat=True)) == {"Physicians", "Rooms"}
 
+    def test_create_rejects_client_supplied_public_booking_slug(
+        self, auth_client, organization, internal_calendars, user, admin_user
+    ):
+        """`public_booking_slug` is read-only (Phase 3b): a client-supplied
+        value in the create payload is silently ignored, never adopted -- the
+        created group still gets its own, distinct, server-generated slug."""
+        create_calendar_ownership(
+            calendar=internal_calendars["phys_a"],
+            user=user,
+        )
+        url = reverse("api:CalendarGroups-list")
+        payload = {
+            "name": "Slug Hijack Attempt",
+            "description": "",
+            "public_booking_slug": "attacker-chosen-slug",
+            "slots": [
+                {
+                    "name": "Physicians",
+                    "calendar_ids": [internal_calendars["phys_a"].id],
+                    "required_count": 1,
+                    "order": 0,
+                },
+            ],
+        }
+        response = auth_client.post(url, payload, format="json")
+        _assert_status(response, status.HTTP_201_CREATED)
+        created = CalendarGroup.objects.filter_by_organization(organization.id).get(
+            name="Slug Hijack Attempt"
+        )
+        assert created.public_booking_slug != "attacker-chosen-slug"
+        assert created.public_booking_slug
+        assert response.data["public_booking_slug"] == created.public_booking_slug
+
     def test_create_group_rejects_duplicate_slot_name(
         self, auth_client, organization, internal_calendars, user, admin_user
     ):
@@ -358,6 +401,81 @@ class TestCalendarGroupCrud:
         assert set(
             owned_group.slots.get(name="Physicians").calendars.values_list("external_id", flat=True)
         ) == {"phys_a"}
+
+    def test_update_rejects_client_supplied_public_booking_slug(
+        self, auth_client, owned_group, internal_calendars, admin_user
+    ):
+        """`public_booking_slug` is read-only (Phase 3b): attempting to
+        overwrite an existing group's slug via update is silently ignored --
+        the slug an admin already handed out as a booking link must not be
+        able to be invalidated (or hijacked) through this endpoint."""
+        original_slug = owned_group.public_booking_slug
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        payload = {
+            "name": "Clinic Renamed",
+            "description": "New desc",
+            "public_booking_slug": "attacker-chosen-slug",
+            "slots": [
+                {
+                    "name": "Physicians",
+                    "calendar_ids": [internal_calendars["phys_a"].id],
+                    "required_count": 1,
+                    "order": 0,
+                },
+                {
+                    "name": "Rooms",
+                    "calendar_ids": [internal_calendars["room_1"].id],
+                    "required_count": 1,
+                    "order": 1,
+                },
+            ],
+        }
+        response = auth_client.put(url, payload, format="json")
+        _assert_status(response, status.HTTP_200_OK)
+        owned_group.refresh_from_db()
+        assert owned_group.name == "Clinic Renamed"
+        assert owned_group.public_booking_slug == original_slug
+        assert response.data["public_booking_slug"] == original_slug
+
+    def test_partial_update_rejects_client_supplied_public_booking_slug(
+        self, auth_client, owned_group, internal_calendars, admin_user
+    ):
+        """Same guarantee as ``test_update_rejects_client_supplied_public_booking_slug``,
+        exercised through PATCH rather than PUT -- a client-supplied
+        ``public_booking_slug`` must not be able to overwrite the existing
+        slug via a partial update either. ``name``/``slots`` are still
+        included in the payload -- unrelated to the read-only check this test
+        targets, but required because ``CalendarGroupSerializer.update()``
+        reconstructs the full group input regardless of HTTP method (PATCH
+        is not a true partial update on this endpoint), so a payload missing
+        them would 500/wipe slots for reasons this test isn't about."""
+        original_slug = owned_group.public_booking_slug
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        payload = {
+            "name": owned_group.name,
+            "public_booking_slug": "attacker-chosen-slug",
+            "slots": [
+                {
+                    "name": "Physicians",
+                    "calendar_ids": [internal_calendars["phys_a"].id],
+                    "required_count": 1,
+                    "order": 0,
+                },
+                {
+                    "name": "Rooms",
+                    "calendar_ids": [internal_calendars["room_1"].id],
+                    "required_count": 1,
+                    "order": 1,
+                },
+            ],
+        }
+
+        response = auth_client.patch(url, payload, format="json")
+
+        _assert_status(response, status.HTTP_200_OK)
+        owned_group.refresh_from_db()
+        assert owned_group.public_booking_slug == original_slug
+        assert response.data["public_booking_slug"] == original_slug
 
     def test_destroy(self, auth_client, owned_group, admin_user):
         url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})

@@ -2,10 +2,11 @@ import datetime
 import logging
 import zoneinfo
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, Annotated, TypedDict, cast
+from typing import TYPE_CHECKING, Annotated, ClassVar, TypedDict, cast
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Q
+from django.utils import timezone
 
 import django_virtual_models as v
 from allauth.socialaccount.models import SocialAccount
@@ -17,6 +18,7 @@ from calendar_integration.constants import (
     CalendarSyncTriggerSource,
     CalendarType,
     CalendarVisibility,
+    EventManagementPermissions,
     QuotaPeriod,
 )
 from calendar_integration.exceptions import (
@@ -3093,10 +3095,16 @@ class CalendarGroupSerializer(VirtualModelSerializer):
             "name",
             "description",
             "slots",
+            "public_booking_slug",
             "created",
             "modified",
         )
-        read_only_fields = ("id", "created", "modified")
+        # public_booking_slug: read-only so an organization admin can read it
+        # to build a codeless public booking link
+        # (public/booking/calendar-groups/<public_booking_slug>/events/), but
+        # it is never client-settable -- it is generated once, at model
+        # creation, by CalendarGroup's own field default (Phase 3b).
+        read_only_fields = ("id", "created", "modified", "public_booking_slug")
 
     @inject
     def __init__(
@@ -3181,7 +3189,34 @@ class _CalendarGroupSlotSelectionInputSerializer(serializers.Serializer):
     calendar_ids = serializers.ListField(child=serializers.IntegerField())
 
 
-class CalendarGroupEventCreateSerializer(serializers.Serializer):
+class _EndTimeAfterStartTimeSerializerMixin(serializers.Serializer):
+    """Shared ``validate_end_time`` rejecting an ``end_time`` at/before ``start_time``.
+
+    Parses a string ``start_time`` from ``initial_data`` -- at the point
+    ``validate_end_time`` runs, DRF has not yet validated/coerced sibling
+    fields, so ``start_time`` is read from the raw input instead of
+    ``validated_data``. Silently skips the check when ``start_time`` is
+    missing or unparsable -- the field-level validator for ``start_time``
+    surfaces that failure separately.
+    """
+
+    def validate_end_time(self, end_time: datetime.datetime) -> datetime.datetime:
+        start_time = self.initial_data.get("start_time") if self.initial_data else None
+        if start_time:
+            try:
+                start_time_parsed = (
+                    datetime.datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+                    if isinstance(start_time, str)
+                    else start_time
+                )
+            except ValueError:
+                start_time_parsed = None
+            if start_time_parsed and end_time <= start_time_parsed:
+                raise serializers.ValidationError("end_time must be after start_time.")
+        return end_time
+
+
+class CalendarGroupEventCreateSerializer(_EndTimeAfterStartTimeSerializerMixin):
     """Input for booking an event through a CalendarGroup.
 
     On `save()` this delegates to `CalendarGroupService.create_grouped_event`
@@ -3211,21 +3246,6 @@ class CalendarGroupEventCreateSerializer(serializers.Serializer):
     ):
         self.calendar_group_service = calendar_group_service
         super().__init__(*args, **kwargs)
-
-    def validate_end_time(self, end_time: datetime.datetime) -> datetime.datetime:
-        start_time = self.initial_data.get("start_time") if self.initial_data else None
-        if start_time:
-            try:
-                start_time_parsed = (
-                    datetime.datetime.fromisoformat(start_time.replace("Z", "+00:00"))
-                    if isinstance(start_time, str)
-                    else start_time
-                )
-            except ValueError:
-                start_time_parsed = None
-            if start_time_parsed and end_time <= start_time_parsed:
-                raise serializers.ValidationError("end_time must be after start_time.")
-        return end_time
 
     def save(self, **kwargs):
         if not self.calendar_group_service or not self.calendar_group_service.calendar_service:
@@ -3546,3 +3566,166 @@ class ExternalEventChangeRequestSerializer(VirtualModelSerializer):
     def get_resolved_by_user_id(self, obj: ExternalEventChangeRequest) -> int | None:
         """Return the resolver's user id, or ``None`` when unresolved."""
         return obj.resolved_by_user_id  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# Booking-code REST surface (public/booking/) -- Phase 1+
+# ---------------------------------------------------------------------------
+
+
+class _BookingCodeExternalAttendeeSerializer(serializers.Serializer):
+    """External attendee for the unauthenticated booking-code write endpoints.
+
+    Deliberately NOT ``ExternalAttendeeSerializer`` (a full ``VirtualModelSerializer``
+    exposing read-only model fields like ``id`` / ``created`` / ``modified``) -- this
+    is a plain two-field write input, mirroring ``ExternalAttendeeCodeInput`` (the
+    GraphQL input the code-gated mutations already use).
+    """
+
+    email = serializers.EmailField()
+    name = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+class BookingCodeEventCreateSerializer(_EndTimeAfterStartTimeSerializerMixin):
+    """Input for ``POST /public/booking/calendar-events/``.
+
+    Mirrors ``CreateEventWithCodeInput`` (GraphQL) minus its ``code`` field -- the
+    booking code travels as the ``X-Booking-Code`` header instead (see
+    ``calendar_integration.booking_auth``). ``calendar_id`` is never accepted here:
+    it comes strictly from the resolved token, never from client input.
+    """
+
+    title = serializers.CharField()
+    description = serializers.CharField(allow_blank=True, required=False, default="")
+    start_time = serializers.DateTimeField()
+    end_time = serializers.DateTimeField()
+    timezone = serializers.CharField()
+    external_attendee = _BookingCodeExternalAttendeeSerializer()
+
+
+class BookingCodeGroupEventCreateSerializer(_EndTimeAfterStartTimeSerializerMixin):
+    """Input for ``POST /public/booking/calendar-groups/<public_slug>/events/``.
+
+    Mirrors ``CreateGroupEventWithCodeInput`` (GraphQL) minus its ``code`` field --
+    the booking code travels as the ``X-Booking-Code`` header instead (see
+    ``calendar_integration.booking_auth``). The group is never accepted here: on
+    the coded branch it comes strictly from the resolved token's
+    ``calendar_group``, never from client input or the path (Phase 3b: the path
+    carries only ``CalendarGroup.public_booking_slug``, an opaque identifier, and
+    even that is only a routing convenience -- see
+    ``BookingCodeGroupEventViewSet.create``). Reuses
+    ``_CalendarGroupSlotSelectionInputSerializer``, the same slot-selection shape
+    ``CalendarGroupEventCreateSerializer`` already uses for the authenticated
+    group-booking endpoint.
+    """
+
+    title = serializers.CharField()
+    description = serializers.CharField(allow_blank=True, required=False, default="")
+    start_time = serializers.DateTimeField()
+    end_time = serializers.DateTimeField()
+    timezone = serializers.CharField()
+    slot_selections = _CalendarGroupSlotSelectionInputSerializer(many=True)
+    external_attendee = _BookingCodeExternalAttendeeSerializer()
+
+
+class BookingCodeRescheduleSerializer(_EndTimeAfterStartTimeSerializerMixin):
+    """Input for ``POST /public/booking/events/reschedule/`` and
+    ``POST /public/booking/group-events/reschedule/``.
+
+    Mirrors ``RescheduleWithCodeInput`` / ``RescheduleGroupWithCodeInput`` (GraphQL)
+    minus their ``code`` field -- the booking code travels as the ``X-Booking-Code``
+    header instead. Only the new start/end/timezone are accepted: title, description,
+    attendees, and resource allocations are never client-settable here -- the view
+    snapshots them, unchanged, from the existing event so that only the RESCHEDULE
+    permission is required (see ``BookingCodeRescheduleEventViewSet.create``).
+    """
+
+    start_time = serializers.DateTimeField()
+    end_time = serializers.DateTimeField()
+    timezone = serializers.CharField()
+
+
+class BookingCodeCreateSerializer(serializers.Serializer):
+    """Input for ``POST /booking-codes/`` -- the authenticated minting endpoint.
+
+    Collapses GraphQL's six ``create*BookingCode`` mutations into one resource:
+    ``purpose`` x {``calendar``, ``calendar_group``} is the same cross product those
+    six mutations cover, no more and no less. ``purpose`` maps onto the permission(s)
+    the minted token carries:
+
+    - ``book`` -> ``[EventManagementPermissions.CREATE]``
+    - ``reschedule`` -> ``[EventManagementPermissions.RESCHEDULE]``
+    - ``cancel`` -> ``[EventManagementPermissions.CANCEL]``
+
+    ``calendar`` / ``calendar_group`` / ``event`` are plain integer ids, not
+    ``PrimaryKeyRelatedField`` -- object existence and org/authorization checks
+    happen in ``BookingCodeViewSet.create`` so a cross-organization target can be
+    answered ``404`` there rather than a serializer-level ``400``, keeping "target
+    exists but you can't see it" indistinguishable from "target does not exist".
+
+    No ``duration_seconds`` field: duration pinning lives on
+    ``CalendarGroup.duration``, not on the minted token -- there is no
+    per-code duration to set at mint time. A calendar-scoped code carries no
+    duration constraint at all; a calendar-group-scoped code inherits
+    whatever duration (if any) is already set on that group.
+    """
+
+    PURPOSE_BOOK = "book"
+    PURPOSE_RESCHEDULE = "reschedule"
+    PURPOSE_CANCEL = "cancel"
+    PURPOSE_CHOICES = (PURPOSE_BOOK, PURPOSE_RESCHEDULE, PURPOSE_CANCEL)
+
+    #: Kept next to ``PURPOSE_CHOICES`` on purpose -- this is the enum the
+    #: permission it grants, in one place, so the two cannot drift apart the
+    #: way they could when the mapping lived separately in ``views.py``.
+    PURPOSE_PERMISSIONS: ClassVar[dict[str, list[EventManagementPermissions]]] = {
+        PURPOSE_BOOK: [EventManagementPermissions.CREATE],
+        PURPOSE_RESCHEDULE: [EventManagementPermissions.RESCHEDULE],
+        PURPOSE_CANCEL: [EventManagementPermissions.CANCEL],
+    }
+
+    purpose = serializers.ChoiceField(choices=PURPOSE_CHOICES)
+    calendar = serializers.IntegerField(required=False, allow_null=True, default=None)
+    calendar_group = serializers.IntegerField(required=False, allow_null=True, default=None)
+    event = serializers.IntegerField(required=False, allow_null=True, default=None)
+    expires_at = serializers.DateTimeField(required=False, allow_null=True, default=None)
+
+    def validate(self, attrs: dict) -> dict:
+        calendar = attrs.get("calendar")
+        calendar_group = attrs.get("calendar_group")
+        if (calendar is None) == (calendar_group is None):
+            raise serializers.ValidationError(
+                "Exactly one of 'calendar' or 'calendar_group' must be set."
+            )
+
+        purpose = attrs["purpose"]
+        event = attrs.get("event")
+        if purpose == self.PURPOSE_BOOK and event is not None:
+            raise serializers.ValidationError("'event' is forbidden for purpose='book'.")
+        if purpose in (self.PURPOSE_RESCHEDULE, self.PURPOSE_CANCEL) and event is None:
+            raise serializers.ValidationError(f"'event' is required for purpose='{purpose}'.")
+
+        expires_at = attrs.get("expires_at")
+        if expires_at is not None and expires_at <= timezone.now():
+            raise serializers.ValidationError("'expires_at' must be in the future.")
+
+        return attrs
+
+
+class BookingCodeCreateResultSerializer(serializers.Serializer):
+    """One-time response for ``POST /booking-codes/``.
+
+    ``code`` carries the plaintext booking code -- it is generated fresh by
+    ``CalendarPermissionService.create_booking_token`` and never persisted or
+    re-derivable, so this is the only response that will ever expose it. Every
+    field here is read-only: this serializer only ever renders a response, it
+    is never used to validate input.
+    """
+
+    id = serializers.IntegerField(read_only=True)
+    code = serializers.CharField(read_only=True)
+    purpose = serializers.ChoiceField(choices=BookingCodeCreateSerializer.PURPOSE_CHOICES)
+    calendar = serializers.IntegerField(read_only=True, allow_null=True)
+    calendar_group = serializers.IntegerField(read_only=True, allow_null=True)
+    event = serializers.IntegerField(read_only=True, allow_null=True)
+    expires_at = serializers.DateTimeField(read_only=True, allow_null=True)

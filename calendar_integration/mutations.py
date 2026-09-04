@@ -1144,9 +1144,14 @@ class CalendarGroupMutations:
                 error_message="Not found.",
             )
 
+        actor_system_user = getattr(info.context.request, "public_api_system_user", None)
         deps = get_booking_code_mutation_dependencies()
         try:
-            deps.calendar_permission_service.revoke_token(organization_id=org.id, token_id=input.id)
+            deps.calendar_permission_service.revoke_token(
+                organization_id=org.id,
+                token_id=input.id,
+                actor_system_user=actor_system_user,
+            )
         except InvalidTokenError:
             return BookingCodeResult(
                 success=False,

@@ -3,18 +3,23 @@
 Covers revokeBookingCode.
 """
 
+import datetime
+
+from django.contrib.auth import get_user_model
 from django.utils import timezone
 
 import pytest
 from model_bakery import baker
 from rest_framework.test import APIClient
 
+from calendar_integration.constants import CalendarManagementTokenKind
 from calendar_integration.models import (
     Calendar,
     CalendarManagementToken,
     EventManagementPermissions,
 )
-from organizations.models import Organization
+from calendar_integration.services.calendar_permission_service import CalendarPermissionService
+from organizations.models import Organization, OrganizationMembership
 from public_api.constants import PublicAPIResources
 from public_api.models import ResourceAccess
 from public_api.services import PublicAPIAuthService
@@ -88,6 +93,17 @@ def another_org_calendar(another_organization):
     return baker.make(Calendar, organization=another_organization, name="Other Org Calendar")
 
 
+def _make_member(organization: Organization) -> OrganizationMembership:
+    """Create a plain org member, independent of the booking-code system user."""
+    user = get_user_model().objects.create_user(
+        email=f"member-{organization.id}-{OrganizationMembership.objects.count()}@example.com",
+        password="pw",  # noqa: S106
+    )
+    return OrganizationMembership.objects.create(
+        user=user, organization=organization, is_active=True
+    )
+
+
 @pytest.mark.django_db
 class TestRevokeBookingCode:
     """Tests for revokeBookingCode mutation."""
@@ -131,6 +147,8 @@ class TestRevokeBookingCode:
             token_hash="dummy_hash",
             revoked_at=None,
             used_at=None,
+            minted_by_system_user=system_user,
+            kind=CalendarManagementTokenKind.BOOKING_CODE,
         )
         baker.make(
             CalendarManagementToken.permissions.field.model,
@@ -187,6 +205,8 @@ class TestRevokeBookingCode:
             token_hash="dummy_hash",
             revoked_at=original_revoked_at,
             used_at=None,
+            minted_by_system_user=system_user,
+            kind=CalendarManagementTokenKind.BOOKING_CODE,
         )
 
         # Revoke it again (it's already revoked)
@@ -366,3 +386,171 @@ class TestRevokeBookingCode:
             id=token_obj.id
         )
         assert db_token.revoked_at is None
+
+    def test_revoke_cannot_touch_calendar_owner_token(
+        self,
+        organization,
+        calendar,
+        system_user_with_booking_code_resource,
+    ):
+        """A calendar-owner token (create_calendar_owner_token) is not a booking
+        code and must be indistinguishable from a nonexistent id through this
+        mutation -- CalendarPermissionService.revoke_token restricts itself to
+        booking codes via the same discriminator the REST surface uses
+        (CalendarManagementTokenManager.booking_codes_for_organization).
+        """
+        system_user, token, auth_service = system_user_with_booking_code_resource
+        owner_membership = _make_member(organization)
+
+        service = CalendarPermissionService()
+        owner_token = service.create_calendar_owner_token(
+            organization_id=organization.id,
+            user=owner_membership.user,
+            calendar_id=calendar.id,
+        )
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {"input": {"organizationId": organization.id, "id": owner_token.id}},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["revokeBookingCode"]
+        assert result["success"] is False
+        assert result["errorCode"] == "INVALID_CODE"
+        assert result["errorMessage"] == "Not found."
+
+        owner_token.refresh_from_db()
+        assert owner_token.revoked_at is None
+
+        # The owner can still act on their own calendar afterwards.
+        service.initialize_with_user(
+            owner_membership.user,
+            organization_id=organization.id,
+            calendar_id=calendar.id,
+        )
+        assert service.token is not None
+        assert service.token.id == owner_token.id
+
+    def test_revoke_cannot_touch_attendee_token(
+        self,
+        organization,
+        calendar,
+        system_user_with_booking_code_resource,
+    ):
+        """An attendee token (create_attendee_token) is not a booking code and
+        must be indistinguishable from a nonexistent id through this mutation.
+        """
+        from calendar_integration.models import CalendarEvent
+
+        system_user, token, auth_service = system_user_with_booking_code_resource
+        attendee_membership = _make_member(organization)
+
+        event = CalendarEvent.objects.create(
+            organization=organization,
+            calendar_fk=calendar,
+            title="Attendee Event",
+            description="",
+            external_id="attendee-event-1",
+            start_time_tz_unaware=timezone.now(),
+            end_time_tz_unaware=timezone.now() + datetime.timedelta(hours=1),
+            timezone="UTC",
+        )
+
+        service = CalendarPermissionService()
+        attendee_token = service.create_attendee_token(
+            organization_id=organization.id,
+            user=attendee_membership.user,
+            event_id=event.id,
+        )
+
+        response = self._post_mutation(
+            system_user,
+            token,
+            auth_service,
+            {"input": {"organizationId": organization.id, "id": attendee_token.id}},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+
+        result = data["data"]["revokeBookingCode"]
+        assert result["success"] is False
+        assert result["errorCode"] == "INVALID_CODE"
+        assert result["errorMessage"] == "Not found."
+
+        attendee_token.refresh_from_db()
+        assert attendee_token.revoked_at is None
+
+        # The attendee can still act on their own event token afterwards.
+        service.initialize_with_user(
+            attendee_membership.user,
+            organization_id=organization.id,
+            event_id=event.id,
+        )
+        assert service.token is not None
+        assert service.token.id == attendee_token.id
+
+    def test_revoke_audit_entry_names_system_user(
+        self,
+        organization,
+        calendar,
+        system_user_with_booking_code_resource,
+        django_capture_on_commit_callbacks,
+    ):
+        """The GraphQL revoke's audit entry names the acting SystemUser, not
+        the generic system actor."""
+        from unittest.mock import patch
+
+        from di_core.containers import container
+
+        system_user, token, auth_service = system_user_with_booking_code_resource
+
+        token_obj = baker.make(
+            CalendarManagementToken,
+            organization=organization,
+            calendar=calendar,
+            token_hash="dummy_hash",
+            revoked_at=None,
+            used_at=None,
+            minted_by_system_user=system_user,
+            kind=CalendarManagementTokenKind.BOOKING_CODE,
+        )
+
+        with patch("vinta_audit_logs.tasks.persist_audit_record") as mock_task:
+            with django_capture_on_commit_callbacks(execute=True):
+                with container.public_api_auth_service.override(auth_service):
+                    response = self.client.post(
+                        "/graphql/",
+                        data={
+                            "query": REVOKE_BOOKING_CODE_MUTATION,
+                            "variables": {
+                                "input": {"organizationId": organization.id, "id": token_obj.id}
+                            },
+                        },
+                        format="json",
+                        headers={"authorization": f"Bearer {system_user.id}:{token}"},
+                    )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "errors" not in data or len(data.get("errors", [])) == 0
+        assert data["data"]["revokeBookingCode"]["success"] is True
+
+        payloads = [call.args[0] for call in mock_task.delay.call_args_list]
+        token_payloads = [
+            p
+            for p in payloads
+            if p["subject"]["subject_type"] == "calendar_integration.calendarmanagementtoken"
+            and p["action_key"] == "update"
+        ]
+        assert len(token_payloads) == 1
+        payload = token_payloads[0]
+        assert payload["actor"]["identity_type"] == "system_user"
+        assert payload["actor"]["identity_key"] == str(system_user.id)

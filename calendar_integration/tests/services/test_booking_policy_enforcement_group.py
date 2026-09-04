@@ -123,11 +123,19 @@ def _make_service(org: Organization) -> CalendarGroupService:
 
 
 def _make_group(service: CalendarGroupService, *calendars: Calendar) -> CalendarGroup:
-    """Create a single-slot group whose pool contains all provided calendars."""
+    """Create a single-slot group whose pool contains all provided calendars.
+
+    ``duration`` matches ``_BOOKING_START``/``_BOOKING_END`` (1 hour) below --
+    a public group with no duration fails closed in
+    ``CalendarPermissionService.can_perform_group_scheduling``, which would
+    otherwise break every booking test in this file for a reason unrelated
+    to the booking-policy enforcement they're actually testing.
+    """
     return service.create_group(
         CalendarGroupInputData(
             name=f"group-enforce-{_unique()}",
             accepts_public_scheduling=True,
+            duration=datetime.timedelta(hours=1),
             slots=[
                 CalendarGroupSlotInputData(
                     name="Main",

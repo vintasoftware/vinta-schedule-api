@@ -9,6 +9,7 @@ from dependency_injector.wiring import Provide, inject
 from vinta_audit_logs.types import IdentitySnapshot
 
 from audit_integration.constants import AuditAction
+from calendar_integration.constants import CalendarManagementTokenKind
 from calendar_integration.exceptions import (
     InvalidParameterCombinationError,
     InvalidTokenError,
@@ -377,16 +378,94 @@ class CalendarPermissionService:
 
         return required_permissions
 
+    def _group_duration_pin_satisfied(
+        self,
+        group: CalendarGroup,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+    ) -> bool:
+        """Return ``False`` when ``group``'s duration constraint refuses this span.
+
+        Duration pinning lives on ``CalendarGroup``, not on
+        ``CalendarManagementToken``: a codeless public-group booking
+        (``group.accepts_public_scheduling=True``) presents no code, so it
+        inherits no per-code pin. The group being booked is the only place a
+        length constraint can live for that path -- so it lives there for
+        every path, code-gated or not.
+
+        - ``group.duration`` is set: the span must match it exactly.
+        - ``group.duration`` is ``None`` and ``group.accepts_public_scheduling``:
+          FAIL CLOSED -- refuse outright rather than allow any length. A
+          public group with no duration is misconfigured (``CalendarGroupService
+          .create_group`` / ``update_group`` refuse to create one going
+          forward, but a group predating that invariant can still exist at
+          rest) and must surface immediately here rather than silently
+          reopening the unbounded-length hole this whole mechanism exists to
+          close.
+        - ``group.duration`` is ``None`` and the group is NOT publicly
+          schedulable: unaffected -- ``True``. A private group with no
+          duration set is not constrained by this check at all (a
+          group-scoped token/code still has to pass its own scope check
+          elsewhere).
+
+        Called BEFORE the ``accepts_public_scheduling`` short-circuit in
+        ``can_perform_group_scheduling`` -- that clause returns ``True``
+        without reading anything else, so a check placed after it would be
+        silently unenforced on exactly the groups most likely to be publicly
+        bookable.
+        """
+        if group.duration is not None:
+            return (end_time - start_time) == group.duration
+        return not group.accepts_public_scheduling
+
     def can_perform_update(
         self,
         old_event: CalendarEventData,
         new_event: CalendarEventData | None,
+        *,
+        calendar_group_id: int | None = None,
     ) -> bool:
         """
         Check if the token has all the required permissions to perform the update.
+
+        ``calendar_group_id`` identifies the ``CalendarGroup`` the event being
+        updated was booked through (``CalendarEvent.calendar_group_fk_id``),
+        or ``None`` for an event that was not booked through a group. Callers
+        resolve it from the event they already loaded -- it is a plain FK id
+        column, no extra query needed. When set and ``new_event`` is not
+        ``None`` (i.e. this is a reschedule, not a cancellation), the NEW span
+        is checked against that group's duration pin
+        (``_group_duration_pin_satisfied``, including its fail-closed rule for
+        a misconfigured public group). Single-calendar events
+        (``calendar_group_id is None``) carry no duration constraint at all --
+        see ``can_perform_scheduling``'s docstring for why that pin was
+        dropped rather than relocated.
         """
         if not hasattr(self, "token") or self.token is None:
             return False
+
+        # Group-duration guard, checked before anything else: a reschedule of a
+        # grouped event is constrained by the GROUP's pinned duration, not any
+        # per-code pin -- duration pinning lives on CalendarGroup (see
+        # ``_group_duration_pin_satisfied``). Skipped for cancellation
+        # (``new_event is None`` -- no new span to check) and for non-grouped
+        # events (``calendar_group_id is None``).
+        if new_event is not None and calendar_group_id is not None:
+            group = (
+                CalendarGroup.objects.filter_by_organization(self.token.organization_id)
+                .filter(id=calendar_group_id)
+                .first()
+            )
+            # A ``None`` group here would mean the event references a group id
+            # that no longer resolves in this org -- treat that defensively as
+            # a failure rather than silently skipping the check. In practice
+            # this should not happen: CalendarEvent.calendar_group is a
+            # PROTECT FK, so the group cannot have been deleted out from under
+            # a live event.
+            if group is None or not self._group_duration_pin_satisfied(
+                group, new_event.start_time, new_event.end_time
+            ):
+                return False
 
         if old_event.id != self.token.event_fk_id:  # type: ignore
             return False
@@ -414,6 +493,19 @@ class CalendarPermissionService:
            permission, **and** ``calendar_id`` is a member of one of that group's slots.
            This case covers group-booking codes: the code is minted with a group scope,
            and the create call targets the primary calendar of the group.
+
+        Single-calendar codes carry NO duration pin -- there is no
+        ``Calendar.duration``. Duration pinning is a property of the
+        ``CalendarGroup`` being booked (see ``can_perform_group_scheduling`` /
+        ``_group_duration_pin_satisfied``): it exists specifically because a
+        codeless PUBLIC-GROUP booking has no code to pin a length to. A
+        single-calendar booking always requires a code (there is no codeless
+        single-calendar path), so there was never an unconstrained hole here
+        to close. This is a deliberate decision, not an oversight -- an
+        earlier draft of this design pinned duration on the token instead,
+        which is exactly the design that left the codeless group path
+        unconstrained; per-calendar pinning was dropped rather than relocated
+        when that was corrected.
         """
         if calendar_settings.accepts_public_scheduling:
             return True
@@ -444,8 +536,24 @@ class CalendarPermissionService:
     def can_perform_group_scheduling(
         self,
         group: CalendarGroup,
+        *,
+        start_time: datetime.datetime | None = None,
+        end_time: datetime.datetime | None = None,
     ) -> bool:
         """Check if the current context is authorized to book through ``group``.
+
+        ``start_time`` / ``end_time`` are optional and keyword-only: when
+        both are supplied, ``group``'s duration pin is checked
+        (``_group_duration_pin_satisfied``) BEFORE anything else -- including
+        before clause 1 below, which returns ``True`` without reading
+        anything else. Checking the pin after that short-circuit would leave
+        it silently unenforced on exactly the groups most likely to be
+        publicly bookable -- the same ordering hazard
+        ``can_perform_scheduling`` used to guard against for the (now
+        removed) per-calendar-code pin. Omitting ``start_time`` /
+        ``end_time`` (the group-level "can this token/group even book" gate
+        some callers only need) skips the duration check entirely -- it is
+        not a violation to ask the scope question without times in hand.
 
         Authorization is granted when any of the following holds:
 
@@ -457,10 +565,21 @@ class CalendarPermissionService:
 
         Args:
             group: The ``CalendarGroup`` being booked.
+            start_time: Requested event start, for duration-pin enforcement.
+                Omit (with ``end_time``) to check only the group/token scope.
+            end_time: Requested event end, for duration-pin enforcement. Omit
+                (with ``start_time``) to check only the group/token scope.
 
         Returns:
             ``True`` if the booking is authorized; ``False`` otherwise.
         """
+        if (
+            start_time is not None
+            and end_time is not None
+            and not self._group_duration_pin_satisfied(group, start_time, end_time)
+        ):
+            return False
+
         if group.accepts_public_scheduling:
             return True
 
@@ -500,6 +619,27 @@ class CalendarPermissionService:
             return True
         return (
             CalendarOwnership.objects.filter_by_organization(group_slot.organization_id)
+            .filter(membership_user_id=user.id, calendar_fk=calendar)
+            .exists()
+        )
+
+    def can_view_calendar(self, user: User, calendar: Calendar) -> bool:
+        """Return True if `user` may see/act on `calendar` as its owner (or an
+        org admin) -- e.g. mint or revoke a booking code scoped to it.
+
+        Rules, in order:
+          1. Org admins in the calendar's organization can always act on it.
+          2. Otherwise, the user must directly own `calendar` (a
+             ``CalendarOwnership`` row) -- owning some *other* calendar in the
+             organization is not enough.
+
+        Mirrors ``can_view_calendar_group``'s admin-or-participant split, one
+        level down (a single calendar rather than a group).
+        """
+        if user.is_organization_admin(calendar.organization_id):
+            return True
+        return (
+            CalendarOwnership.objects.filter_by_organization(calendar.organization_id)
             .filter(membership_user_id=user.id, calendar_fk=calendar)
             .exists()
         )
@@ -566,6 +706,9 @@ class CalendarPermissionService:
             organization_id=organization_id,
             calendar_fk_id=calendar_id,
             membership_user_id=_resolve_token_membership_user_id(user, organization_id),
+            defaults={
+                "kind": CalendarManagementTokenKind.MANAGEMENT_TOKEN,
+            },
         )
 
         token.permissions.all().delete()
@@ -607,6 +750,7 @@ class CalendarPermissionService:
             membership_user_id=_resolve_token_membership_user_id(user, organization_id),
             defaults={
                 "token_hash": hashed_token,
+                "kind": CalendarManagementTokenKind.MANAGEMENT_TOKEN,
             },
         )
 
@@ -648,6 +792,7 @@ class CalendarPermissionService:
             external_attendee_fk_id=external_attendee_id,
             defaults={
                 "token_hash": hashed_token,
+                "kind": CalendarManagementTokenKind.MANAGEMENT_TOKEN,
             },
         )
 
@@ -683,6 +828,7 @@ class CalendarPermissionService:
             external_attendee_fk_id=external_attendee_id,
             defaults={
                 "token_hash": hashed_token,
+                "kind": CalendarManagementTokenKind.MANAGEMENT_TOKEN,
             },
         )
         token.permissions.all().delete()
@@ -710,6 +856,7 @@ class CalendarPermissionService:
         permissions: list[EventManagementPermissions],
         expires_at: datetime.datetime | None = None,
         minted_by: "SystemUser | None" = None,
+        minted_by_user: User | None = None,
         calendar_id: int | None = None,
         calendar_group_id: int | None = None,
         event_id: int | None = None,
@@ -719,6 +866,11 @@ class CalendarPermissionService:
         Creates a fresh ``CalendarManagementToken`` with a one-time-use plaintext
         code.  The plaintext code is returned exactly once here and never stored —
         only the hash is persisted.  Callers must pass the plaintext to the client.
+        Always sets ``kind=CalendarManagementTokenKind.BOOKING_CODE`` -- the only
+        call site that does -- which is what makes the resulting token revokable
+        via ``revoke_token`` / ``DELETE /booking-codes/<id>/``, regardless of
+        whether ``minted_by`` or ``minted_by_user`` is supplied at all (a
+        codeless mint with neither is still a revokable booking code).
 
         Scope rules (at most one of ``calendar_id``, ``calendar_group_id``,
         ``event_id`` should be supplied, though ``calendar_id``/``calendar_group_id``
@@ -732,9 +884,17 @@ class CalendarPermissionService:
             organization_id: Tenant scope.
             permissions: One or more ``EventManagementPermissions`` to grant.
             expires_at: Optional expiry datetime (UTC).  Pass ``None`` for no expiry.
-            minted_by: The ``SystemUser`` that created this code, for audit.
+            minted_by: The ``SystemUser`` that created this code, for audit. Mutually
+                exclusive with ``minted_by_user``.
+            minted_by_user: The internal ``User`` that created this code through the
+                authenticated REST minting surface, for audit and for
+                ``token.minted_by_membership_user_id``. Mutually exclusive with
+                ``minted_by``.
             calendar_id: Scope to a single calendar (booking or reschedule/cancel).
             calendar_group_id: Scope to a calendar group (group booking or reschedule/cancel).
+                Duration pinning for a group-scoped code, if any, lives on the
+                ``CalendarGroup`` itself (``CalendarGroup.duration``), not on this
+                token -- there is no ``duration`` parameter here.
             event_id: Scope to a specific event (reschedule/cancel codes only).
 
         Returns:
@@ -743,11 +903,15 @@ class CalendarPermissionService:
 
         Raises:
             NoPermissionsSpecifiedError: If ``permissions`` is empty.
+            ValueError: If both ``minted_by`` and ``minted_by_user`` are supplied.
         """
         if len(permissions) == 0:
             raise NoPermissionsSpecifiedError(
                 "At least one permission must be specified to create a booking token."
             )
+
+        if minted_by is not None and minted_by_user is not None:
+            raise ValueError("Pass at most one of minted_by / minted_by_user, not both.")
 
         token_str = generate_long_lived_token()
         hashed_token = hash_long_lived_token(token_str)
@@ -758,7 +922,13 @@ class CalendarPermissionService:
             organization_id=organization_id,
             token_hash=hashed_token,
             expires_at=expires_at,
+            kind=CalendarManagementTokenKind.BOOKING_CODE,
             minted_by_system_user=minted_by,
+            minted_by_membership_user_id=(
+                _resolve_token_membership_user_id(minted_by_user, organization_id)
+                if minted_by_user is not None
+                else None
+            ),
         )
         if calendar_id is not None:
             token.calendar_fk_id = calendar_id
@@ -773,11 +943,15 @@ class CalendarPermissionService:
             token.permissions.create(permission=perm, organization_id=organization_id)
 
         if self.audit_service is not None:
+            # ``minted_by_user`` and ``minted_by`` are mutually exclusive (enforced
+            # above), so at most one is non-None here; ``actor_from_user_or_token``
+            # already handles a ``User`` actor, so no audit-side change was needed.
+            actor_source = minted_by_user if minted_by_user is not None else minted_by
             self._audit_token_write(
                 AuditAction.CREATE,
                 token,
                 organization_id,
-                self.audit_service.actor_from_user_or_token(minted_by, organization_id),
+                self.audit_service.actor_from_user_or_token(actor_source, organization_id),
             )
 
         # Encode as "<id>:<raw>" in base64, matching initialize_with_token's decode logic.
@@ -816,6 +990,15 @@ class CalendarPermissionService:
                 raise ValueError("Invalid token format")
             token_id = token_parts[0]
             token_str = token_parts[1]
+            # ``token_id`` feeds straight into ``.get(id=token_id)`` below. A
+            # non-digit id raises an uncaught ValueError from Django's field
+            # coercion, and an id with more digits than BigAutoField's range
+            # (19 digits) risks a distinguishable DB-level error -- both would
+            # be a 500 rather than the uniform ``InvalidTokenError`` every
+            # other malformed/unknown code produces. Validate here, inside
+            # the same try block, so both join that uniform failure path.
+            if not token_id.isdigit() or len(token_id) > 19:
+                raise ValueError("Invalid token id")
         except (ValueError, UnicodeDecodeError) as e:
             raise InvalidTokenError("Invalid booking code format") from e
 
@@ -906,28 +1089,56 @@ class CalendarPermissionService:
         """
         CalendarManagementToken.objects.consume(token, source_ip)
 
-    def revoke_token(self, organization_id: int, token_id: int) -> bool:
+    def revoke_token(
+        self,
+        organization_id: int,
+        token_id: int,
+        *,
+        actor_user: User | None = None,
+        actor_system_user: "SystemUser | None" = None,
+    ) -> bool:
         """Revoke a booking code by its opaque id (idempotent).
 
-        Fetch the token scoped to the organization, set ``revoked_at`` to
-        the current time if not already set, and save. If the token is already
-        revoked, return True without changing the timestamp (idempotent).
+        Fetch the token scoped to the organization AND restricted to rows
+        minted through a booking-code mint surface
+        (``CalendarManagementTokenManager.booking_codes_for_organization`` /
+        ``CalendarManagementTokenQuerySet.booking_codes``), set ``revoked_at``
+        to the current time if not already set, and save. If the token is
+        already revoked, return True without changing the timestamp
+        (idempotent). A calendar-owner, attendee, or external-attendee token
+        id is indistinguishable from a nonexistent one here -- both raise
+        ``InvalidTokenError`` -- so this method can never be used to revoke
+        anything but a booking code, regardless of what its callers do or
+        fail to check.
+
+        Beyond that kind restriction, this method performs NO authorization
+        -- callers (the REST ``BookingCodeViewSet.destroy`` view, the
+        ``revokeBookingCode`` GraphQL mutation) are responsible for deciding
+        whether the caller may revoke the specific token before calling this.
 
         Args:
             organization_id: Tenant scope.
             token_id: The id of the token to revoke.
+            actor_user: The internal ``User`` performing the revoke, for audit
+                attribution (e.g. the authenticated REST caller). Mutually
+                exclusive with ``actor_system_user``.
+            actor_system_user: The ``SystemUser`` (API token) performing the
+                revoke, for audit attribution (e.g. the authenticated GraphQL
+                caller). Mutually exclusive with ``actor_user``. When neither
+                is supplied (the default), audits as the system actor,
+                matching every pre-existing caller of this method.
 
         Returns:
             True on success (revoked or already-revoked).
 
         Raises:
-            InvalidTokenError: If no token with the given id exists in the
-                organization.
+            InvalidTokenError: If no booking code with the given id exists in
+                the organization.
         """
         try:
-            token = CalendarManagementToken.objects.filter_by_organization(organization_id).get(
-                id=token_id
-            )
+            token = CalendarManagementToken.objects.booking_codes_for_organization(
+                organization_id
+            ).get(id=token_id)
         except CalendarManagementToken.DoesNotExist as e:
             raise InvalidTokenError("Token not found") from e
 
@@ -936,11 +1147,17 @@ class CalendarPermissionService:
             token.save(update_fields=["revoked_at"])
 
             if self.audit_service is not None:
+                actor_source = actor_user if actor_user is not None else actor_system_user
+                actor = (
+                    self.audit_service.actor_from_user_or_token(actor_source, organization_id)
+                    if actor_source is not None
+                    else self.audit_service.system_actor()
+                )
                 self._audit_token_write(
                     AuditAction.UPDATE,
                     token,
                     organization_id,
-                    self.audit_service.system_actor(),
+                    actor,
                     diff={"revoked_at": {"old": None, "new": token.revoked_at.isoformat()}},
                 )
 

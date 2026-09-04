@@ -12,6 +12,7 @@ from dependency_injector.wiring import Provide, inject
 from django_virtual_models import QuerySet
 from graphql import GraphQLError
 
+from calendar_integration.booking_auth import MAX_CODE_GATED_RANGE
 from calendar_integration.constants import CalendarType, ExternalEventChangeRequestStatus
 from calendar_integration.exceptions import (
     InvalidTokenError,
@@ -92,10 +93,6 @@ if TYPE_CHECKING:
 # Uniform error message for all code-gated read failures.  Never disclose whether the
 # code exists, is expired, used, revoked, or bound to the wrong scope.
 _CODE_GATED_ERROR_MESSAGE = "Invalid or expired code."
-
-# Maximum client-controlled datetime range for unauthenticated (code-gated) reads.
-# Prevents amplification / DoS via unbounded recurrence expansion.
-MAX_CODE_GATED_RANGE = datetime.timedelta(days=366)
 
 
 @dataclass
@@ -1422,6 +1419,13 @@ class Query:
         token = _resolve_code_from_deps(deps, code)
 
         # Resolve the bound calendar (calendar-scope or event.calendar fallback).
+        # A token itself scoped to a GROUP must never fall through to
+        # ``event.calendar`` -- for a group booking that always resolves to the
+        # specific staff member's calendar the event landed on, which a group
+        # code must never disclose. See the identical guard in
+        # ``calendar_integration.booking_read_views._resolve_calendar_scope_opaquely``.
+        if token.calendar_group_fk_id is not None:
+            raise GraphQLError(_CODE_GATED_ERROR_MESSAGE)
         calendar = token.calendar
         if calendar is None and token.event is not None:
             calendar = token.event.calendar
@@ -1454,6 +1458,11 @@ class Query:
         deps = get_query_dependencies()
         token = _resolve_code_from_deps(deps, code)
 
+        # A token itself scoped to a GROUP must never fall through to
+        # ``event.calendar`` -- see the identical guard in
+        # ``calendar_integration.booking_read_views._resolve_calendar_scope_opaquely``.
+        if token.calendar_group_fk_id is not None:
+            raise GraphQLError(_CODE_GATED_ERROR_MESSAGE)
         calendar = token.calendar
         if calendar is None and token.event is not None:
             calendar = token.event.calendar
@@ -1494,6 +1503,11 @@ class Query:
         deps = get_query_dependencies()
         token = _resolve_code_from_deps(deps, code)
 
+        # A token itself scoped to a GROUP must never fall through to
+        # ``event.calendar`` -- see the identical guard in
+        # ``calendar_integration.booking_read_views._resolve_calendar_scope_opaquely``.
+        if token.calendar_group_fk_id is not None:
+            raise GraphQLError(_CODE_GATED_ERROR_MESSAGE)
         calendar = token.calendar
         if calendar is None and token.event is not None:
             calendar = token.event.calendar
@@ -1534,6 +1548,11 @@ class Query:
         token = _resolve_code_from_deps(deps, code)
 
         # Resolve the bound group (group-scope or event.calendar_group fallback).
+        # A token itself scoped to a single CALENDAR must never fall through to
+        # ``event.calendar_group`` -- symmetric to the calendar-scoped guard.
+        # See ``calendar_integration.booking_read_views._resolve_group_scope_opaquely``.
+        if token.calendar_fk_id is not None:
+            raise GraphQLError(_CODE_GATED_ERROR_MESSAGE)
         group = token.calendar_group
         if group is None and token.event is not None:
             group = token.event.calendar_group
@@ -1577,7 +1596,12 @@ class Query:
         token = _resolve_code_from_deps(deps, code)
 
         # Resolve the bound calendar (calendar-scope or event.calendar fallback).
-        # Reject group-scoped codes (single/bundle only).
+        # Reject group-scoped codes (single/bundle only). A token itself scoped
+        # to a GROUP must never fall through to ``event.calendar`` -- see the
+        # identical guard in
+        # ``calendar_integration.booking_read_views._resolve_calendar_scope_opaquely``.
+        if token.calendar_group_fk_id is not None:
+            raise GraphQLError(_CODE_GATED_ERROR_MESSAGE)
         calendar = token.calendar
         if calendar is None and token.event is not None:
             calendar = token.event.calendar
@@ -1616,6 +1640,11 @@ class Query:
         deps = get_query_dependencies()
         token = _resolve_code_from_deps(deps, code)
 
+        # A token itself scoped to a single CALENDAR must never fall through to
+        # ``event.calendar_group`` -- symmetric to the calendar-scoped guard.
+        # See ``calendar_integration.booking_read_views._resolve_group_scope_opaquely``.
+        if token.calendar_fk_id is not None:
+            raise GraphQLError(_CODE_GATED_ERROR_MESSAGE)
         group = token.calendar_group
         if group is None and token.event is not None:
             group = token.event.calendar_group

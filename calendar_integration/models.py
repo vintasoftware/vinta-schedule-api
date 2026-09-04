@@ -1,4 +1,5 @@
 import datetime
+import secrets
 import zoneinfo
 from typing import TYPE_CHECKING, Any, ClassVar, Self
 
@@ -12,6 +13,7 @@ from encrypted_fields.fields import EncryptedCharField, EncryptedTextField  # ty
 from vinta_orgs.mixins import SingleOrganizationModelMixin
 
 from calendar_integration.constants import (
+    CalendarManagementTokenKind,
     CalendarOrganizationResourceImportStatus,
     CalendarProvider,
     CalendarSyncStatus,
@@ -304,6 +306,24 @@ class CalendarOwnership(SingleOrganizationModelMixin, SafeRelationNullInitMixin,
         return f"{self.calendar} owned by membership {self.membership_user_id}"
 
 
+def generate_public_booking_slug() -> str:
+    """Generate an opaque, unguessable identifier for a publicly addressed group.
+
+    ``secrets.token_urlsafe(16)`` yields ~128 bits of entropy encoded as ~22
+    URL-safe characters -- long enough that walking the identifier space is
+    infeasible, short enough to sit comfortably in a URL path segment.
+
+    Used as ``CalendarGroup.public_booking_slug``'s default so every group,
+    public or private, gets one at creation time. The slug authorizes
+    nothing by itself -- ``accepts_public_scheduling`` still gates codeless
+    booking -- it only replaces the integer primary key as the identifier the
+    unauthenticated codeless route addresses, closing the cross-tenant
+    enumeration oracle a sequential id would otherwise be (see Phase 3b of
+    the REST_CODE_GATED_SCHEDULING plan).
+    """
+    return secrets.token_urlsafe(16)
+
+
 class CalendarGroup(SingleOrganizationModelMixin, SafeRelationNullInitMixin, BaseModel):
     """
     Aggregates calendars into named slots so a single booking can be made by
@@ -322,6 +342,37 @@ class CalendarGroup(SingleOrganizationModelMixin, SafeRelationNullInitMixin, Bas
             "If true, this group can be booked by external users through public scheduling "
             "links without a scheduling code. If false (default), the group is restricted: "
             "booking requires a token or a single-use scheduling code."
+        ),
+    )
+    duration = models.DurationField(
+        null=True,
+        blank=True,
+        help_text=(
+            "When set, an event booked or rescheduled through this group must span exactly "
+            "this duration. Enforced by CalendarPermissionService. Duration pinning lives "
+            "here rather than on CalendarManagementToken because a codeless public-group "
+            "booking (accepts_public_scheduling=True) presents no code, so it inherits no "
+            "per-code pin -- the group being booked is the only place a length constraint "
+            "can live for that path. A group that accepts public scheduling MUST have this "
+            "set (enforced by CalendarGroupService.create_group / update_group, not a DB "
+            "constraint -- pre-existing public groups with no duration are grandfathered at "
+            "rest and refused at booking time instead, fail-closed, by "
+            "CalendarPermissionService). Null is otherwise unpinned, matching every "
+            "restricted group and every group created before this field existed."
+        ),
+    )
+    public_booking_slug = models.CharField(
+        max_length=32,
+        unique=True,
+        default=generate_public_booking_slug,
+        help_text=(
+            "Opaque, unguessable identifier used to address this group on the "
+            "unauthenticated codeless booking route, instead of the integer primary "
+            "key. Uniqueness is GLOBAL (not scoped to organization) because that "
+            "route carries no organization in its path -- the slug alone must "
+            "identify exactly one group system-wide. Authorizes nothing by itself: "
+            "accepts_public_scheduling still gates codeless booking, and a group "
+            "later flipped to public already has its identifier."
         ),
     )
 
@@ -2001,6 +2052,29 @@ class CalendarManagementToken(SingleOrganizationModelMixin, SafeRelationNullInit
     revoked_at = models.DateTimeField(null=True)
 
     # Booking-code audit / lifecycle columns
+    kind = models.CharField(
+        max_length=20,
+        choices=CalendarManagementTokenKind,
+        default=CalendarManagementTokenKind.MANAGEMENT_TOKEN,
+        db_default=CalendarManagementTokenKind.MANAGEMENT_TOKEN,
+        help_text=(
+            "Explicit discriminator: BOOKING_CODE tokens are single-use booking "
+            "codes, selected by CalendarManagementTokenQuerySet.booking_codes and "
+            "therefore eligible for revocation via CalendarPermissionService.revoke_token "
+            "/ DELETE /booking-codes/<id>/ (the REST surface additionally requires "
+            "owner-or-org-admin). Everything else (owner, attendee, external-attendee "
+            "tokens) is MANAGEMENT_TOKEN and never revokable through those surfaces. "
+            "Defaults to MANAGEMENT_TOKEN deliberately: a mint path that forgets to "
+            "set this produces an un-revokable token rather than a wrongly-revokable "
+            "one -- it fails closed. Set explicitly on creation by every "
+            "create_*_token method on CalendarPermissionService (via "
+            "get_or_create(defaults=...), so only on the CREATE branch -- a "
+            "get_or_create hit on an existing row trusts that row's own kind "
+            "rather than re-asserting it); the column default exists only as a "
+            "safety net for a row inserted with kind omitted entirely, never "
+            "leaned on by a known call site."
+        ),
+    )
     expires_at = models.DateTimeField(
         null=True,
         blank=True,
@@ -2014,6 +2088,21 @@ class CalendarManagementToken(SingleOrganizationModelMixin, SafeRelationNullInit
         related_name="minted_management_tokens",
         help_text="The SystemUser (org token) that minted this booking code, if any.",
     )
+    minted_by_membership = OrganizationMembershipForeignKey(
+        on_delete=models.SET_NULL,
+        related_name="minted_booking_codes",
+        null=True,
+        blank=True,
+        help_text=(
+            "The organization member who minted this booking code through the "
+            "authenticated REST surface, if any. Null for codes minted by a "
+            "SystemUser (see minted_by_system_user) or by internal flows."
+        ),
+    )
+    if TYPE_CHECKING:
+        # Contributed at runtime by ``OrganizationMembershipForeignKey.contribute_to_class``
+        # as a concrete ``BigIntegerField``; declared here so type checkers see it too.
+        minted_by_membership_user_id: int | None
     consumed_source_ip = models.GenericIPAddressField(
         null=True,
         blank=True,
@@ -2050,6 +2139,10 @@ class CalendarManagementToken(SingleOrganizationModelMixin, SafeRelationNullInit
             models.Index(
                 fields=["organization", "membership_user_id"],
                 name="calmgmttoken_org_member_idx",
+            ),
+            models.Index(
+                fields=["organization", "minted_by_membership_user_id"],
+                name="calmgmttoken_org_minter_idx",
             ),
         ]
 

@@ -101,11 +101,17 @@ def _managed_cal(org: Organization) -> Calendar:
 def _make_group_and_slot(
     org: Organization, calendar: Calendar
 ) -> tuple[CalendarGroup, CalendarGroupSlot]:
-    """Create a single-slot group containing *calendar* and return (group, slot)."""
+    """Create a single-slot group containing *calendar* and return (group, slot).
+
+    duration matches ``_START``/``_END`` (1 hour) below -- a public group with
+    no duration fails closed in
+    CalendarPermissionService.can_perform_group_scheduling.
+    """
     group = CalendarGroup.objects.create(
         organization=org,
         name=f"grp-enforce-{_unique()}",
         accepts_public_scheduling=True,
+        duration=datetime.timedelta(hours=1),
     )
     slot = CalendarGroupSlot.objects.create(organization=org, group=group, name="Main", order=0)
     CalendarGroupSlotMembership.objects.create(organization=org, slot=slot, calendar=calendar)

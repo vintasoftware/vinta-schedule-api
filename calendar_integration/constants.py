@@ -129,3 +129,36 @@ class QuotaPeriod(TextChoices):
     DAY = "day", "Day"
     WEEK = "week", "Week"
     MONTH = "month", "Month"
+
+
+class CalendarManagementTokenKind(TextChoices):
+    """Explicit discriminator for what a ``CalendarManagementToken`` row is.
+
+    Replaces the pre-Phase-7 heuristic (``minted_by_membership_user_id IS NOT
+    NULL OR minted_by_system_user_id IS NOT NULL``), which misclassified a
+    booking code minted with no actor at all -- exactly what a codeless
+    booking mints -- as NOT a booking code, making it permanently
+    un-revokable via ``CalendarPermissionService.revoke_token``.
+
+    ``BOOKING_CODE`` -- a single-use booking code, minted through
+    ``CalendarPermissionService.create_booking_token`` (REST
+    ``BookingCodeViewSet`` or one of the six GraphQL ``create*BookingCode``
+    mutations). Selected by ``CalendarManagementTokenQuerySet.booking_codes``,
+    which is what makes it eligible for revocation via ``revoke_token`` /
+    ``DELETE /booking-codes/<id>/`` -- ``kind`` alone is necessary but not
+    sufficient for the REST surface: ``BookingCodeViewSet.destroy`` also
+    requires the caller to be the owner-or-org-admin of the token's target
+    before it actually revokes anything.
+
+    ``MANAGEMENT_TOKEN`` -- everything else: calendar-owner tokens
+    (``create_calendar_owner_token``), attendee tokens
+    (``create_attendee_token``), and external-attendee tokens
+    (``create_external_attendee_update_token`` /
+    ``create_external_attendee_schedule_token``). Never revokable through the
+    booking-code surfaces -- that is Phase 6's privilege-escalation fix, and
+    this discriminator is what keeps it true regardless of who minted the
+    token or whether they set any actor field.
+    """
+
+    BOOKING_CODE = "booking_code", "Booking Code"
+    MANAGEMENT_TOKEN = "management_token", "Management Token"

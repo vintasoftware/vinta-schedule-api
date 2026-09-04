@@ -346,8 +346,15 @@ class CalendarGroupAdmin(admin.ModelAdmin):
     list_display = ("id", "name", "organization", "slot_count", "created")
     list_filter = ("organization", "created")
     search_fields = ("name", "description")
-    readonly_fields = ("created", "modified")
-    fields = ("organization", "name", "description", "created", "modified")
+    readonly_fields = ("created", "modified", "public_booking_slug")
+    fields = (
+        "organization",
+        "name",
+        "description",
+        "public_booking_slug",
+        "created",
+        "modified",
+    )
     inlines: ClassVar = [CalendarGroupSlotInline]
 
     def get_queryset(self, request: HttpRequest):

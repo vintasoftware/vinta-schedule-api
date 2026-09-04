@@ -696,6 +696,93 @@ class TestEventBoundCodeCalendarReads:
 
 
 # ---------------------------------------------------------------------------
+# Group-scoped codes must never leak the specific calendar their event landed
+# on via the ``event.calendar`` / ``event.calendar_group`` fallback.
+# ``CalendarGroupService.create_grouped_event`` always creates the underlying
+# event on a real single primary calendar, so ``token.event.calendar`` is
+# always populated for a grouped booking -- a naive fallback would leak that
+# specific calendar's availability to a patient holding only a group code.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestGroupScopedCodeCannotLeakViaEventFallback:
+    @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+    def test_group_reschedule_code_rejected_on_calendar_field(
+        self,
+        mock_rate_limiter,
+        anon_client,
+        permission_service,
+        organization,
+        calendar_group,
+        group_event,
+    ):
+        """A group reschedule code (``calendar_group_id`` + ``event_id``, no
+        ``calendar_id``) must get the uniform error on a calendar-scoped
+        field, even though ``group_event.calendar`` resolves to a real
+        calendar (mirrors ``CalendarGroupService.create_grouped_event``'s
+        persistence).
+        """
+        mock_rate_limiter.return_value = iter([None])
+        _token, code = permission_service.create_booking_token(
+            organization_id=organization.id,
+            permissions=[EventManagementPermissions.RESCHEDULE],
+            calendar_group_id=calendar_group.id,
+            event_id=group_event.id,
+        )
+
+        data = post_graphql(
+            anon_client,
+            AVAILABLE_TIMES_WITH_CODE,
+            {
+                "code": code,
+                "startDatetime": "2025-09-02T00:00:00Z",
+                "endDatetime": "2025-09-02T23:59:59Z",
+            },
+        )
+
+        assert "errors" in data and len(data["errors"]) > 0
+        assert data["errors"][0]["message"] == "Invalid or expired code."
+
+    @patch("public_api.extensions.OrganizationRateLimiter.on_execute")
+    def test_calendar_reschedule_code_rejected_on_group_field(
+        self,
+        mock_rate_limiter,
+        anon_client,
+        permission_service,
+        organization,
+        calendar,
+        group_event,
+    ):
+        """Symmetric case: a single-calendar reschedule code (``calendar_id``
+        + ``event_id``, no ``calendar_group_id``) must get the uniform error
+        on a group-scoped field, even though ``group_event.calendar_group``
+        resolves to a real group.
+        """
+        mock_rate_limiter.return_value = iter([None])
+        _token, code = permission_service.create_booking_token(
+            organization_id=organization.id,
+            permissions=[EventManagementPermissions.RESCHEDULE],
+            calendar_id=calendar.id,
+            event_id=group_event.id,
+        )
+
+        data = post_graphql(
+            anon_client,
+            CALENDAR_GROUP_BOOKABLE_SLOTS_WITH_CODE,
+            {
+                "code": code,
+                "searchWindowStart": "2025-09-02T00:00:00Z",
+                "searchWindowEnd": "2025-09-02T23:59:59Z",
+                "durationSeconds": 3600,
+            },
+        )
+
+        assert "errors" in data and len(data["errors"]) > 0
+        assert data["errors"][0]["message"] == "Invalid or expired code."
+
+
+# ---------------------------------------------------------------------------
 # Group-code reads
 # ---------------------------------------------------------------------------
 

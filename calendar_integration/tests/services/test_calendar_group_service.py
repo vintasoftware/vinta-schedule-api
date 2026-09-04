@@ -726,6 +726,7 @@ def clinic_group(grouped_service, internal_calendars):
         CalendarGroupInputData(
             name="Clinic Appointments",
             accepts_public_scheduling=True,
+            duration=timedelta(hours=1),
             slots=[
                 CalendarGroupSlotInputData(
                     name="Physicians",
@@ -831,6 +832,7 @@ def test_create_grouped_event_primary_follows_slot_order(
         CalendarGroupInputData(
             name="Rooms-first",
             accepts_public_scheduling=True,
+            duration=timedelta(hours=1),
             slots=[
                 CalendarGroupSlotInputData(
                     name="Rooms",
@@ -923,6 +925,7 @@ def test_create_grouped_event_rejects_underfilled_slot(grouped_service, internal
         CalendarGroupInputData(
             name="Strict",
             accepts_public_scheduling=True,
+            duration=timedelta(hours=1),
             slots=[
                 CalendarGroupSlotInputData(
                     name="Physicians",
@@ -1041,6 +1044,7 @@ def test_create_grouped_event_rejects_slot_from_other_group(
         CalendarGroupInputData(
             name="Other",
             accepts_public_scheduling=True,
+            duration=timedelta(hours=1),
             slots=[
                 CalendarGroupSlotInputData(
                     name="Extra",
@@ -1135,6 +1139,7 @@ def test_create_grouped_event_multi_pick_slot(grouped_service, internal_calendar
         CalendarGroupInputData(
             name="Two-physician",
             accepts_public_scheduling=True,
+            duration=timedelta(hours=1),
             slots=[
                 CalendarGroupSlotInputData(
                     name="Physicians",
@@ -1340,6 +1345,7 @@ def test_create_grouped_event_skips_blocked_time_when_provider_will_sync(
         CalendarGroupInputData(
             name="Two Google",
             accepts_public_scheduling=True,
+            duration=timedelta(hours=1),
             slots=[
                 CalendarGroupSlotInputData(
                     name="Physicians",
@@ -1422,6 +1428,7 @@ def test_create_grouped_event_skips_blocked_time_for_microsoft_pair(organization
         CalendarGroupInputData(
             name="Two MS",
             accepts_public_scheduling=True,
+            duration=timedelta(hours=1),
             slots=[
                 CalendarGroupSlotInputData(
                     name="Physicians",
@@ -1504,6 +1511,7 @@ def test_create_grouped_event_blocks_cross_provider_pair(organization):
         CalendarGroupInputData(
             name="Mixed provider",
             accepts_public_scheduling=True,
+            duration=timedelta(hours=1),
             slots=[
                 CalendarGroupSlotInputData(
                     name="Physicians",
@@ -1579,6 +1587,7 @@ def test_create_grouped_event_still_blocks_resource_calendar_with_provider(
         CalendarGroupInputData(
             name="Doc+Room",
             accepts_public_scheduling=True,
+            duration=timedelta(hours=1),
             slots=[
                 CalendarGroupSlotInputData(name="Physicians", calendar_ids=[primary.id], order=0),
                 CalendarGroupSlotInputData(name="Rooms", calendar_ids=[room.id], order=1),
@@ -1656,6 +1665,7 @@ def test_create_grouped_event_blocks_when_primary_is_internal(organization):
         CalendarGroupInputData(
             name="Internal Primary",
             accepts_public_scheduling=True,
+            duration=timedelta(hours=1),
             slots=[
                 CalendarGroupSlotInputData(
                     name="Physicians",
