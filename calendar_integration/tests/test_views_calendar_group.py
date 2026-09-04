@@ -16,6 +16,7 @@ from calendar_integration.constants import (
     CalendarType,
     EventManagementPermissions,
 )
+from calendar_integration.exceptions import CalendarGroupValidationError
 from calendar_integration.factories import create_calendar_ownership, create_calendar_pool
 from calendar_integration.models import (
     AvailableTime,
@@ -27,6 +28,11 @@ from calendar_integration.models import (
     CalendarGroupSlotMembership,
     CalendarGroupSlotPool,
     CalendarManagementToken,
+)
+from calendar_integration.services.calendar_group_service import CalendarGroupService
+from calendar_integration.services.dataclasses import (
+    CalendarGroupInputData,
+    CalendarGroupSlotInputData,
 )
 from organizations.models import Organization, OrganizationMembership
 from organizations.permission_catalog import GROUP_ORGANIZATION_ADMIN
@@ -639,6 +645,208 @@ class TestCalendarGroupPatch:
         assert set(
             owned_group.slots.get(name="Physicians").calendars.values_list("external_id", flat=True)
         ) == {"phys_a"}
+
+
+@pytest.mark.django_db
+class TestCalendarGroupDuration:
+    """`duration` is the exact length every booking through the group must
+    span. It is writable here because REST is the only client-facing surface
+    that can set it -- the GraphQL group mutations still cannot -- and a group
+    that accepts public scheduling is refused without one."""
+
+    def _slots(self, internal_calendars):
+        return [
+            {
+                "name": "Physicians",
+                "calendar_ids": [internal_calendars["phys_a"].id],
+                "required_count": 1,
+                "order": 0,
+            },
+            {
+                "name": "Rooms",
+                "calendar_ids": [internal_calendars["room_1"].id],
+                "required_count": 1,
+                "order": 1,
+            },
+        ]
+
+    def test_create_accepts_duration(
+        self, auth_client, organization, internal_calendars, admin_user
+    ):
+        url = reverse("api:CalendarGroups-list")
+        response = auth_client.post(
+            url,
+            {
+                "name": "Timed Clinic",
+                "description": "",
+                "duration": "00:30:00",
+                "slots": self._slots(internal_calendars),
+            },
+            format="json",
+        )
+        _assert_status(response, status.HTTP_201_CREATED)
+        created = CalendarGroup.objects.filter_by_organization(organization.id).get(
+            name="Timed Clinic"
+        )
+        assert created.duration == timedelta(minutes=30)
+
+    def test_create_without_duration_leaves_it_null(
+        self, auth_client, organization, internal_calendars, admin_user
+    ):
+        """Unpinned stays the default: every group created before this field
+        existed has a null duration, and omitting it must not invent one."""
+        url = reverse("api:CalendarGroups-list")
+        response = auth_client.post(
+            url,
+            {
+                "name": "Untimed Clinic",
+                "description": "",
+                "slots": self._slots(internal_calendars),
+            },
+            format="json",
+        )
+        _assert_status(response, status.HTTP_201_CREATED)
+        created = CalendarGroup.objects.filter_by_organization(organization.id).get(
+            name="Untimed Clinic"
+        )
+        assert created.duration is None
+
+    def test_retrieve_exposes_duration(self, auth_client, owned_group):
+        owned_group.duration = timedelta(minutes=45)
+        owned_group.save(update_fields=["duration"])
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        response = auth_client.get(url)
+        _assert_status(response, status.HTTP_200_OK)
+        assert response.json()["duration"] == "00:45:00"
+
+    def test_update_sets_duration(self, auth_client, owned_group, internal_calendars, admin_user):
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        response = auth_client.put(
+            url,
+            {
+                "name": owned_group.name,
+                "description": owned_group.description,
+                "duration": "01:00:00",
+                "slots": self._slots(internal_calendars),
+            },
+            format="json",
+        )
+        _assert_status(response, status.HTTP_200_OK)
+        owned_group.refresh_from_db()
+        assert owned_group.duration == timedelta(hours=1)
+
+    def test_update_omitting_duration_leaves_it_unchanged(
+        self, auth_client, owned_group, internal_calendars, admin_user
+    ):
+        """An absent `duration` is the "leave unchanged" case the service's
+        tri-state relies on. A write that never mentions it must not wipe it."""
+        owned_group.duration = timedelta(minutes=30)
+        owned_group.save(update_fields=["duration"])
+
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        response = auth_client.put(
+            url,
+            {
+                "name": "Renamed, same duration",
+                "description": owned_group.description,
+                "slots": self._slots(internal_calendars),
+            },
+            format="json",
+        )
+        _assert_status(response, status.HTTP_200_OK)
+        owned_group.refresh_from_db()
+        assert owned_group.name == "Renamed, same duration"
+        assert owned_group.duration == timedelta(minutes=30)
+
+    def test_explicit_null_duration_is_rejected(
+        self, auth_client, owned_group, internal_calendars, admin_user
+    ):
+        """`None` already means "leave unchanged" to the service, so an
+        accepted null would be a silent no-op. Refuse it instead."""
+        owned_group.duration = timedelta(minutes=30)
+        owned_group.save(update_fields=["duration"])
+
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        response = auth_client.put(
+            url,
+            {
+                "name": owned_group.name,
+                "description": owned_group.description,
+                "duration": None,
+                "slots": self._slots(internal_calendars),
+            },
+            format="json",
+        )
+        _assert_status(response, status.HTTP_400_BAD_REQUEST)
+        assert "duration" in response.data
+        owned_group.refresh_from_db()
+        assert owned_group.duration == timedelta(minutes=30)
+
+    @pytest.mark.parametrize("value", ["00:00:00", "-01:00:00"])
+    def test_non_positive_duration_is_rejected(
+        self, auth_client, owned_group, internal_calendars, admin_user, value
+    ):
+        """A zero or negative length describes no bookable event at all, and
+        the column carries no CHECK constraint to catch it downstream."""
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        response = auth_client.put(
+            url,
+            {
+                "name": owned_group.name,
+                "description": owned_group.description,
+                "duration": value,
+                "slots": self._slots(internal_calendars),
+            },
+            format="json",
+        )
+        _assert_status(response, status.HTTP_400_BAD_REQUEST)
+        assert "duration" in response.data
+        owned_group.refresh_from_db()
+        assert owned_group.duration is None
+
+    def test_duration_set_over_rest_unblocks_making_the_group_public(
+        self, auth_client, owned_group, organization, internal_calendars, admin_user
+    ):
+        """The reason this field is writable at all: a group with no duration
+        cannot be made publicly schedulable, and REST is the only client-facing
+        way to give it one."""
+        service = CalendarGroupService()
+        service.initialize(organization=organization)
+        slots_input = [
+            CalendarGroupSlotInputData(
+                name=slot.name,
+                calendar_ids=list(slot.calendars.values_list("id", flat=True)),
+                order=slot.order,
+            )
+            for slot in owned_group.slots.all().order_by("order")
+        ]
+        go_public = CalendarGroupInputData(
+            name=owned_group.name,
+            description=owned_group.description,
+            slots=slots_input,
+            accepts_public_scheduling=True,
+        )
+
+        with pytest.raises(CalendarGroupValidationError):
+            service.update_group(owned_group.id, go_public)
+
+        url = reverse("api:CalendarGroups-detail", kwargs={"pk": owned_group.id})
+        response = auth_client.put(
+            url,
+            {
+                "name": owned_group.name,
+                "description": owned_group.description,
+                "duration": "00:30:00",
+                "slots": self._slots(internal_calendars),
+            },
+            format="json",
+        )
+        _assert_status(response, status.HTTP_200_OK)
+
+        service.update_group(owned_group.id, go_public)
+        owned_group.refresh_from_db()
+        assert owned_group.accepts_public_scheduling is True
+        assert owned_group.duration == timedelta(minutes=30)
 
 
 @pytest.mark.django_db

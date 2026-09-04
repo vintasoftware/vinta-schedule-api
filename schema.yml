@@ -19192,6 +19192,8 @@ components:
           maxLength: 255
         description:
           type: string
+        duration:
+          type: string
         slots:
           type: array
           items:
@@ -21912,6 +21914,8 @@ components:
           type: string
           maxLength: 255
         description:
+          type: string
+        duration:
           type: string
         slots:
           type: array
