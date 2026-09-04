@@ -1,14 +1,24 @@
 # Infrastructure — AWS via Terragrunt + Scalr
 
-Two stacks per environment, each backed by its own Scalr workspace:
+**One stack per environment, one Scalr workspace per environment.** Each
+environment's `terragrunt.hcl` points at `modules/environment`, which composes
+the two modules below into a single Terraform state — so one Scalr run applies
+all of it:
 
-| Stack | Module | What it owns |
+| Module | Composed as | What it owns |
 |---|---|---|
-| `storage` | `modules/s3-cloudfront` | Media + static S3 buckets, their CloudFront distributions, the signed-URL key pair, and a long-lived IAM user (a leftover from the Render deploy — see [Storage IAM user](#storage-iam-user)). |
-| `app` | `modules/app-platform` | Everything the API itself runs on: VPC, ALB, ECS/Fargate services, RDS, ElastiCache, SQS, Secrets Manager, ECR, and the GitHub Actions deploy role. |
+| `modules/s3-cloudfront` | `module.storage` | Media + static S3 buckets, their CloudFront distributions, the signed-URL key pair, and a long-lived IAM user (a leftover from the Render deploy — see [Storage IAM user](#storage-iam-user)). |
+| `modules/app-platform` | `module.app` | Everything the API itself runs on: VPC, ALB, ECS/Fargate services, RDS, ElastiCache, SQS, Secrets Manager, ECR, and the GitHub Actions deploy role. |
+
+The bucket names and CDN hostnames flow from `module.storage` into `module.app`,
+so the two can no longer disagree and there is no apply-this-one-first rule.
 
 State and runs are backed by [Scalr](https://scalr.io) via the Terraform
 Cloud/Enterprise-compatible `remote` backend.
+
+> Coming from the old two-workspace layout? Read
+> [Migrating the staging workspace](#migrating-the-staging-workspace) before the
+> first apply.
 
 ## Layout
 
@@ -16,17 +26,20 @@ Cloud/Enterprise-compatible `remote` backend.
 infrastructure/
   root.hcl                             # Scalr backend + AWS providers (default + aws.dns)
   modules/
+    environment/                       # composes the two below -- the only root module
     s3-cloudfront/                     # buckets + CDN
     app-platform/                      # the runtime platform
   environments/
     staging/
-      env.hcl                          # region, DNS role, workspace names
-      storage/terragrunt.hcl
-      app/terragrunt.hcl
+      env.hcl                          # region, DNS role, workspace name
+      terragrunt.hcl                   # <- the Scalr working directory
+      .terraform.lock.hcl
     production/
-      env.hcl
-      storage/terragrunt.hcl           # not applied yet
-      app/terragrunt.hcl               # not applied yet
+      env.hcl                          # not applied yet
+      terragrunt.hcl
+      .terraform.lock.hcl
+  scripts/
+    migrate-storage-state.sh           # one-off: two workspaces -> one
 ```
 
 > Only **staging** is applied. The production files exist and are complete, but
@@ -83,23 +96,20 @@ knowing, all handled in `settings/production.py`:
 ## One-time Scalr setup
 
 1. Create a Scalr **environment** (the value for `SCALR_ENVIRONMENT`).
-2. Create one Scalr workspace **per stack**, not per environment — state does not
-   cross workspaces. The names are read from `environments/<env>/env.hcl`
-   (`scalr_workspaces`), so they match whatever you named them in Scalr:
+2. Create one Scalr workspace **per environment**. The name is read from
+   `environments/<env>/env.hcl` (`scalr_workspace`), so it has to match whatever
+   you named it in Scalr:
 
-   | Environment | Stack | Workspace |
-   |---|---|---|
-   | staging | storage | `VintaScheduleStaging` |
-   | staging | app | `VintaScheduleStagingApp` |
-   | production | storage | `VintaScheduleProduction` |
-   | production | app | `VintaScheduleProductionApp` |
+   | Environment | Workspace |
+   |---|---|
+   | staging | `VintaScheduleStaging` |
+   | production | `VintaScheduleProduction` |
 
    Backend type **CLI / Terragrunt**.
-3. Set each workspace's **Working Directory** to its stack folder (the one with a
-   `terragrunt.hcl`), NOT the env folder (which only holds `env.hcl`):
-   - `infrastructure/environments/staging/storage`
-   - `infrastructure/environments/staging/app`
-   - …and the production pair.
+3. Set each workspace's **Working Directory** to the environment folder — the one
+   holding both `terragrunt.hcl` and `env.hcl`:
+   - `infrastructure/environments/staging`
+   - `infrastructure/environments/production`
 4. Configure variables (next section).
 
 ## Variables to configure in Scalr
@@ -115,7 +125,7 @@ needs **AWS credentials**, as **shell (environment) variables** on the workspace
 | `AWS_SECRET_ACCESS_KEY` | deployer secret | yes |
 | `AWS_DEFAULT_REGION` | `us-east-1` (optional; the provider already sets region) | no |
 
-- The **deployer** is an admin/CI IAM principal. The `app` stack needs a wide
+- The **deployer** is an admin/CI IAM principal. The stack needs a wide
   policy: `ec2:*` (VPC, subnets, NAT, security groups), `ecs:*`, `elasticloadbalancing:*`,
   `rds:*`, `elasticache:*`, `sqs:*`, `secretsmanager:*`, `ecr:*`, `logs:*`,
   `ssm:*`, `acm:*`, and the `iam:` actions to create roles, policies and an OIDC
@@ -187,6 +197,43 @@ aws iam put-user-policy --user-name "vinta-schedule-${ENV}-deployer" \
 
 3. Set `dns_role_arn` in each `environments/<env>/env.hcl` to that role's ARN.
 
+## Migrating the staging workspace
+
+Staging was applied while `storage` and `app` were separate root modules, so
+`VintaScheduleStaging` holds the storage resources at top-level addresses
+(`aws_s3_bucket.media`). The composed module knows those same resources as
+`module.storage.aws_s3_bucket.media`, so the state has to be renamed once before
+the first apply of this layout. Nothing in AWS is touched — the rename only
+rewrites addresses inside the state.
+
+```bash
+export SCALR_HOSTNAME=example.scalr.io
+export SCALR_ENVIRONMENT=<your-scalr-environment>
+terraform login "$SCALR_HOSTNAME"
+
+# 1. see what would move (dry run is the default)
+infrastructure/scripts/migrate-storage-state.sh
+
+# 2. move it -- a state backup is written into the environment folder first
+infrastructure/scripts/migrate-storage-state.sh --apply
+
+# 3. check
+cd infrastructure/environments/staging && terragrunt plan
+```
+
+That plan should create the app-platform resources and report **no changes** to
+the buckets, the CloudFront distributions, the signing key or the storage IAM
+user. If it wants to replace any of those, stop and push back the backup the
+script wrote (the script prints the exact command).
+
+Re-running the script against an already-migrated state is a no-op.
+
+Then, in Scalr, point `VintaScheduleStaging`'s **Working Directory** at
+`infrastructure/environments/staging`. The `VintaScheduleStagingApp` workspace
+this repo used to name holds no state — the app stack was never applied through
+it — so it can be deleted. If it turns out to hold state, don't run the script:
+two populated states have to be reconciled by hand instead.
+
 ## Run
 
 > **Terraform version:** the Scalr `remote` backend only accepts Terraform
@@ -199,17 +246,18 @@ export SCALR_HOSTNAME=example.scalr.io
 export SCALR_ENVIRONMENT=<your-scalr-environment>
 terraform login "$SCALR_HOSTNAME"        # stores the API token
 
-cd infrastructure/environments/staging/app
+cd infrastructure/environments/staging
 terragrunt init
 terragrunt plan
 terragrunt apply
 ```
 
-Apply `storage` before `app` the first time. The two stacks share no Terraform
-state, but the `app` stack's task role grants S3 access to bucket names it derives
-the same way `storage` builds them (`<project>-<env>-media` / `-static`), so a
-`storage` stack applied with non-default bucket names needs
-`media_bucket_name` / `static_bucket_name` passed to `app` as well.
+That one apply covers the buckets, the CDN and the runtime platform. Terraform
+orders them itself: the task role's S3 policy reads the bucket names out of
+`module.storage`, and that dependency edge is what used to be a manual
+apply-storage-first rule.
+
+To work on one half only, target it — `terragrunt apply -target=module.storage`.
 
 ### Provider lock files must cover every platform
 
@@ -223,7 +271,7 @@ After any provider version change, re-lock for all platforms and commit the
 result:
 
 ```bash
-cd infrastructure/environments/staging/app
+cd infrastructure/environments/staging
 # `run --` passes the flags through; terragrunt would otherwise reject -platform.
 terragrunt run -- providers lock \
   -platform=linux_amd64 \
@@ -257,10 +305,10 @@ usable. Keys awaiting a value:
 `STRIPE_WEBHOOK_SECRET`, `STRIPE_PUBLISHABLE_KEY`, `AWS_CLOUDFRONT_KEY_ID`,
 `AWS_CLOUDFRONT_KEY`.
 
-The last two come from the `storage` stack:
+The last two come from the storage module, which now lives in the same state:
 
 ```bash
-cd infrastructure/environments/staging/storage
+cd infrastructure/environments/staging
 terragrunt output cloudfront_key_id             # -> AWS_CLOUDFRONT_KEY_ID
 terragrunt output -raw cloudfront_private_key   # -> AWS_CLOUDFRONT_KEY (full PEM)
 ```
@@ -335,9 +383,11 @@ aws ecs update-service --cluster vinta-schedule-staging \
 
 1. **`github_oidc_provider_arn` must be filled in.** An AWS account holds exactly
    one GitHub OIDC provider, and staging already creates it. Copy
-   `terragrunt output github_oidc_provider_arn` from the staging `app` stack into
-   `environments/production/app/terragrunt.hcl`, or the apply fails on a duplicate.
-2. Apply `environments/production/storage` first (it has never been applied).
+   `terragrunt output github_oidc_provider_arn` from staging into
+   `environments/production/terragrunt.hcl`, or the apply fails on a duplicate.
+2. Create the `VintaScheduleProduction` workspace with its working directory set
+   to `infrastructure/environments/production`. Production has never been
+   applied, so there is no state to migrate — unlike staging.
 3. Add a `deploy-production` job to `.github/workflows/main.yml`, pointed at
    `/vinta-schedule/production/deploy` and a `AWS_DEPLOY_ROLE_ARN_PRODUCTION`
    variable. It is deliberately absent today: pushing to `main` should not deploy
@@ -378,6 +428,7 @@ nothing else depends on those keys.
   the generated `SECRET_KEY` / `SALT_KEY` all live in Terraform state — keep the
   Scalr state secured. Rotating `SALT_KEY` makes every already-encrypted field
   unreadable.
-- `cors_allowed_origins` on the storage stack governs direct browser uploads;
-  `cors_allowed_origins` on the app stack governs the API's own CORS headers.
-  They are separate inputs on purpose.
+- `storage_cors_allowed_origins` governs direct browser uploads to the media
+  bucket; `cors_allowed_origins` governs the API's own CORS headers. They are
+  separate inputs on purpose — the app module and the storage module each get
+  their own list.

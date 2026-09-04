@@ -1,9 +1,5 @@
 ########################################
 # Identity
-#
-# `aws_region` and `dns_role_arn` are NOT declared here: root.hcl generates them
-# alongside the two providers (default + aws.dns), and declaring them twice is a
-# Terraform error. Same convention as modules/s3-cloudfront.
 ########################################
 
 variable "project_name" {
@@ -13,6 +9,11 @@ variable "project_name" {
 
 variable "environment" {
   description = "Environment slug (e.g. production, staging)."
+  type        = string
+}
+
+variable "aws_region" {
+  description = "Region every resource in this module is created in. Also the region the containers get as AWS_REGION."
   type        = string
 }
 

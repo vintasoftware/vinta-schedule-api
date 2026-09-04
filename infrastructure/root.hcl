@@ -14,13 +14,13 @@ locals {
   scalr_hostname    = get_env("SCALR_HOSTNAME", "vinta.scalr.io")
   scalr_environment = get_env("SCALR_ENVIRONMENT", "VintaSchedule")
 
-  env = read_terragrunt_config(find_in_parent_folders("env.hcl"))
+  # One stack per environment, so `env.hcl` sits next to the environment's own
+  # terragrunt.hcl instead of a folder above it. `get_terragrunt_dir()` in an
+  # included config resolves to the *child* directory, which is what makes this
+  # read the right environment.
+  env = read_terragrunt_config("${get_terragrunt_dir()}/env.hcl")
 
-  # State is per workspace, so each stack folder needs its own. The folder name
-  # (`storage`, `app`) is the key; `env.hcl` maps it to whatever the workspace was
-  # actually named in Scalr, since the names predate this lookup.
-  stack           = basename(get_terragrunt_dir())
-  scalr_workspace = local.env.locals.scalr_workspaces[local.stack]
+  scalr_workspace = local.env.locals.scalr_workspace
 }
 
 # The `remote` backend needs `workspaces` as a BLOCK, not an argument —
@@ -29,7 +29,7 @@ locals {
 generate "backend" {
   path      = "backend.tf"
   if_exists = "overwrite"
-  contents  = <<-EOF
+  contents  = <<-EOT
     terraform {
       backend "remote" {
         hostname     = "${local.scalr_hostname}"
@@ -40,14 +40,16 @@ generate "backend" {
         }
       }
     }
-  EOF
+  EOT
 }
 
-# Inject the AWS provider into every stack so child terragrunt.hcl files don't repeat it.
+# Inject the AWS providers into the environment module so each environment's
+# terragrunt.hcl doesn't repeat them. `aws_region` and `dns_role_arn` are
+# declared by modules/environment itself.
 generate "provider" {
   path      = "provider.tf"
   if_exists = "overwrite"
-  contents  = <<-EOF
+  contents  = <<-EOT
     provider "aws" {
       region = var.aws_region
 
@@ -70,14 +72,5 @@ generate "provider" {
         role_arn = var.dns_role_arn
       }
     }
-
-    variable "aws_region" {
-      type    = string
-      default = "us-east-1"
-    }
-
-    variable "dns_role_arn" {
-      type = string
-    }
-  EOF
+  EOT
 }
