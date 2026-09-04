@@ -1012,7 +1012,7 @@ class CalendarEventSerializer(VirtualModelSerializer):
     class Meta:
         model = CalendarEvent
         virtual_model = CalendarEventVirtualModel
-        fields = (
+        fields: tuple[str, ...] = (
             "id",
             "provider",
             "title",
