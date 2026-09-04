@@ -7,9 +7,12 @@
 # here removes the ordering rule (storage before app) and the duplication: the
 # bucket names and CDN hostnames now flow from one module to the other.
 #
-# Adding an input: declare it in variables.tf and pass it through below. The
-# defaults deliberately stay in the child modules -- every optional variable
-# here defaults to `null`, which Terraform reads as "use the child's default".
+# Adding an input: declare it in variables.tf, pass it through below, and make
+# sure the child module's variable says `nullable = false`. Optional variables
+# here default to `null` so the defaults can stay in the child modules, and
+# Terraform only swaps an explicit null for the child's default when the child
+# forbids nulls. Without it the null reaches the module body and the plan dies
+# on `var.x is null`.
 
 module "storage" {
   source = "../s3-cloudfront"

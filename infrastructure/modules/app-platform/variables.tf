@@ -34,6 +34,7 @@ variable "availability_zone_count" {
   DESC
   type        = number
   default     = 2
+  nullable    = false
 
   validation {
     condition     = var.availability_zone_count >= 2
@@ -50,6 +51,7 @@ variable "single_nat_gateway" {
   DESC
   type        = bool
   default     = true
+  nullable    = false
 }
 
 ########################################
@@ -74,54 +76,63 @@ variable "db_instance_class" {
   description = "RDS instance class. db.t4g.micro is the smallest Graviton burstable and the cheapest option that still runs this schema."
   type        = string
   default     = "db.t4g.micro"
+  nullable    = false
 }
 
 variable "db_engine_version" {
   description = "Postgres major version. Major-only lets AWS pick the current minor; auto_minor_version_upgrade keeps it patched."
   type        = string
   default     = "17"
+  nullable    = false
 }
 
 variable "db_allocated_storage" {
   description = "Initial gp3 storage in GB. Storage autoscaling grows it up to db_max_allocated_storage."
   type        = number
   default     = 20
+  nullable    = false
 }
 
 variable "db_max_allocated_storage" {
   description = "Ceiling for RDS storage autoscaling, in GB."
   type        = number
   default     = 100
+  nullable    = false
 }
 
 variable "db_multi_az" {
   description = "Multi-AZ doubles the instance cost. Off by default; turn it on for production once the data matters."
   type        = bool
   default     = false
+  nullable    = false
 }
 
 variable "db_backup_retention_days" {
   description = "Automated backup retention. 0 disables backups (and point-in-time recovery)."
   type        = number
   default     = 7
+  nullable    = false
 }
 
 variable "db_deletion_protection" {
   description = "Block `terraform destroy` (and console deletion) of the database."
   type        = bool
   default     = false
+  nullable    = false
 }
 
 variable "db_name" {
   description = "Initial database name."
   type        = string
   default     = "vinta_schedule_api"
+  nullable    = false
 }
 
 variable "db_username" {
   description = "Master username. `postgres` and `admin` are reserved by RDS."
   type        = string
   default     = "vinta_schedule_api"
+  nullable    = false
 }
 
 ########################################
@@ -137,6 +148,7 @@ variable "cache_engine" {
   DESC
   type        = string
   default     = "valkey"
+  nullable    = false
 
   validation {
     condition     = contains(["valkey", "redis"], var.cache_engine)
@@ -148,18 +160,21 @@ variable "cache_engine_version" {
   description = "Engine version for the cache. Must exist for the chosen engine (valkey 8.x / redis 7.x)."
   type        = string
   default     = "8.0"
+  nullable    = false
 }
 
 variable "cache_node_type" {
   description = "ElastiCache node type. cache.t4g.micro is the smallest node AWS sells."
   type        = string
   default     = "cache.t4g.micro"
+  nullable    = false
 }
 
 variable "cache_node_count" {
   description = "Nodes in the replication group. 1 = primary only, no failover, cheapest."
   type        = number
   default     = 1
+  nullable    = false
 }
 
 ########################################
@@ -175,12 +190,14 @@ variable "sqs_visibility_timeout_seconds" {
   DESC
   type        = number
   default     = 900
+  nullable    = false
 }
 
 variable "sqs_max_receive_count" {
   description = "Deliveries before a message is moved to the dead-letter queue. Guards against a poison task looping forever."
   type        = number
   default     = 5
+  nullable    = false
 }
 
 ########################################
@@ -191,54 +208,63 @@ variable "web_cpu" {
   description = "Fargate CPU units for the web task (1024 = 1 vCPU)."
   type        = number
   default     = 512
+  nullable    = false
 }
 
 variable "web_memory" {
   description = "Fargate memory (MiB) for the web task. Must be a pairing Fargate allows for web_cpu."
   type        = number
   default     = 1024
+  nullable    = false
 }
 
 variable "web_desired_count" {
   description = "Web tasks to run. 1 means a deploy or task replacement is a brief gap; 2 makes rolling deploys seamless at double the cost."
   type        = number
   default     = 1
+  nullable    = false
 }
 
 variable "worker_cpu" {
   description = "Fargate CPU units for the Celery worker task."
   type        = number
   default     = 256
+  nullable    = false
 }
 
 variable "worker_memory" {
   description = "Fargate memory (MiB) for the Celery worker task."
   type        = number
   default     = 1024
+  nullable    = false
 }
 
 variable "worker_desired_count" {
   description = "Celery worker tasks to run."
   type        = number
   default     = 1
+  nullable    = false
 }
 
 variable "worker_concurrency" {
   description = "Celery prefork child processes per worker task. Each child is a full Django process -- keep worker_memory ahead of it."
   type        = number
   default     = 2
+  nullable    = false
 }
 
 variable "beat_cpu" {
   description = "Fargate CPU units for the Celery beat task."
   type        = number
   default     = 256
+  nullable    = false
 }
 
 variable "beat_memory" {
   description = "Fargate memory (MiB) for the Celery beat task."
   type        = number
   default     = 512
+  nullable    = false
 }
 
 variable "use_fargate_spot_for_workers" {
@@ -250,42 +276,49 @@ variable "use_fargate_spot_for_workers" {
   DESC
   type        = bool
   default     = true
+  nullable    = false
 }
 
 variable "gunicorn_workers" {
   description = "Gunicorn worker processes in the web container."
   type        = number
   default     = 2
+  nullable    = false
 }
 
 variable "container_port" {
   description = "Port gunicorn binds inside the container; also the ALB target port."
   type        = number
   default     = 8000
+  nullable    = false
 }
 
 variable "health_check_path" {
   description = "Path the ALB target group polls. Must be exempt from SECURE_SSL_REDIRECT (see settings/production.py)."
   type        = string
   default     = "/healthz/"
+  nullable    = false
 }
 
 variable "log_retention_days" {
   description = "CloudWatch Logs retention for every service log group."
   type        = number
   default     = 14
+  nullable    = false
 }
 
 variable "alb_deletion_protection" {
   description = "Block deletion of the load balancer."
   type        = bool
   default     = false
+  nullable    = false
 }
 
 variable "ecr_image_retention_count" {
   description = "Tagged images to keep in ECR before the lifecycle policy expires the oldest."
   type        = number
   default     = 20
+  nullable    = false
 }
 
 ########################################
@@ -330,18 +363,21 @@ variable "default_bcc_emails" {
   description = "DEFAULT_BCC_EMAILS."
   type        = list(string)
   default     = []
+  nullable    = false
 }
 
 variable "media_bucket_name" {
   description = "Media bucket from the storage stack. Defaults to that stack's own naming: <project>-<env>-media."
   type        = string
   default     = ""
+  nullable    = false
 }
 
 variable "static_bucket_name" {
   description = "Static bucket from the storage stack. Defaults to that stack's own naming: <project>-<env>-static."
   type        = string
   default     = ""
+  nullable    = false
 }
 
 variable "media_custom_domain" {
@@ -358,30 +394,35 @@ variable "account_phone_verification_enabled" {
   description = "ACCOUNT_PHONE_VERIFICATION_ENABLED rollout gate."
   type        = bool
   default     = false
+  nullable    = false
 }
 
 variable "default_payment_provider" {
   description = "DEFAULT_PAYMENT_PROVIDER (stripe or mercadopago)."
   type        = string
   default     = "stripe"
+  nullable    = false
 }
 
 variable "billing_default_grace_period_days" {
   description = "BILLING_DEFAULT_GRACE_PERIOD_DAYS fallback dunning window."
   type        = number
   default     = 7
+  nullable    = false
 }
 
 variable "extra_environment" {
   description = "Additional non-secret env vars merged into every container. Later keys win over the module's own."
   type        = map(string)
   default     = {}
+  nullable    = false
 }
 
 variable "extra_secret_keys" {
   description = "Extra keys to seed (empty) in the Secrets Manager secret and inject as container secrets. For env vars added to the app after this module was written."
   type        = list(string)
   default     = []
+  nullable    = false
 }
 
 ########################################
@@ -397,6 +438,7 @@ variable "github_deploy_ref" {
   description = "Git ref whose workflow runs may assume the deploy role. Scoping this to one branch is what stops a pull request from a fork deploying."
   type        = string
   default     = "refs/heads/main"
+  nullable    = false
 }
 
 variable "github_oidc_provider_arn" {
@@ -407,4 +449,5 @@ variable "github_oidc_provider_arn" {
   DESC
   type        = string
   default     = ""
+  nullable    = false
 }

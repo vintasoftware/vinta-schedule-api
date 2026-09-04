@@ -1,9 +1,11 @@
 # Pass-through inputs for the two child modules.
 #
-# Every optional variable defaults to `null`. Terraform treats a `null` module
-# argument as "not set", so the child module's own default applies -- the
-# defaults and their documentation stay in modules/s3-cloudfront and
-# modules/app-platform, and are not duplicated here.
+# Every optional variable defaults to `null`, and every child variable with a
+# default is declared `nullable = false` -- which is what makes Terraform
+# substitute that default when this module passes a null. So the defaults and
+# their documentation live in modules/s3-cloudfront and modules/app-platform
+# and are not duplicated here. Drop the `nullable = false` on the child side
+# and the null arrives verbatim instead.
 
 ########################################
 # Identity + providers
