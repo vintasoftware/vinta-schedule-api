@@ -60,15 +60,16 @@ template. Scoping follows what each service supports:
   ECR, the ECS cluster/services/task-definition families, the log groups, and
   the `vinta-schedule-<env>-*` roles. Nothing here can create or destroy
   anything outside those names.
-- **Read-only calls sit on `Resource: "*"` with an `aws:RequestedRegion`
-  condition.** A list-style `Describe` authorizes against a wildcard ARN rather
-  than the instance you are reading — `rds:DescribeDBInstances` is checked
-  against `db:*` — so ARN-scoping those denies the read no matter what ARN you
-  write. Reads of **IAM, Secrets Manager, SSM and SQS** stay ARN-scoped anyway:
-  those take an explicit identifier so per-ARN works, and reading them is
-  itself sensitive.
-- **All EC2 and ELB actions** are on the same region-conditioned `"*"`, because
-  AWS supports no resource-level permissions for most of them.
+- **Reads are per-service `Describe*` wildcards** on a region-conditioned
+  `"*"`. Two reasons. A list-style `Describe` authorizes against a wildcard ARN
+  rather than the instance you are reading — `rds:DescribeDBInstances` is
+  checked against `db:*` — so ARN-scoping those denies the read whatever ARN
+  you write. And enumerating them does not converge: the AWS provider picks
+  reads per attribute, and ELB alone has 20 `Describe` calls. Reads of **IAM,
+  Secrets Manager, SSM and SQS** stay explicit and ARN-scoped: those take an
+  identifier so per-ARN works, and reading them is itself sensitive.
+- **All EC2 and ELB mutations** are on the same region-conditioned `"*"`,
+  because AWS supports no resource-level permissions for most of them.
 - **`iam:PassRole`** is limited to the two task roles and further conditioned on
   `iam:PassedToService = ecs-tasks.amazonaws.com`.
 - **`iam:CreateServiceLinkedRole`** is conditioned on `iam:AWSServiceName` for
@@ -76,9 +77,11 @@ template. Scoping follows what each service supports:
 - **KMS** is conditioned on `kms:ViaService`, so it only reaches the
   AWS-managed keys behind RDS, ElastiCache, Secrets Manager and SQS.
 
-Two properties are checked against AWS's public service reference
+Three properties are checked against AWS's public service reference
 (`https://servicereference.us-east-1.amazonaws.com/`): every action name
-exists, and no ARN-scoped action lacks resource-level support.
+exists, no ARN-scoped action lacks resource-level support, and every `Describe*`
+wildcard expands only to actions AWS itself flags as reads — so a wildcard can
+never quietly pick up a mutation.
 
 **That verification is necessary but not sufficient**, and the first apply
 proved it. Three gaps only showed up at runtime:
@@ -92,6 +95,10 @@ proved it. Three gaps only showed up at runtime:
   project prefix.
 - `rds:DescribeDBInstances` authorizes against `db:*`, which is what prompted
   the read-only split above.
+- `elasticloadbalancing:DescribeListenerAttributes`, one apply later, is what
+  prompted the wildcards: the hand-written list had 7 of ELB's 20 `Describe`
+  calls, and there was no way to know which of the remaining 13 the provider
+  would reach for next.
 
 So if a plan still hits `AccessDenied`, add the action the error names to the
 matching document and cut a new policy version — don't widen a statement to

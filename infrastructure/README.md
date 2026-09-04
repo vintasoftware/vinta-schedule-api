@@ -200,6 +200,25 @@ aws iam put-user-policy --user-name "vinta-schedule-${ENV}-deployer" \
 
 3. Set `dns_role_arn` in each `environments/<env>/env.hcl` to that role's ARN.
 
+### The api hostname must not already hold a CNAME
+
+Route 53 refuses every other record type at a name that already holds a CNAME,
+and the Render deployment pointed `api.<env>.vintasoftware.com` at a Render
+hostname with exactly that. It blocks both records this stack needs there — the
+CAA that authorizes ACM, and the alias to the ALB:
+
+```
+InvalidChangeBatch: [RRSet of type A with DNS name
+api.schedule-staging.vintasoftware.com. is not permitted because a conflicting
+RRSet of type CNAME with the same DNS name already exists in zone
+vintasoftware.com.]
+```
+
+Delete that CNAME in the DNS account before applying. **Deleting it is the
+cutover**: the hostname stops resolving to Render the moment it goes, and only
+starts resolving to the ALB once the apply writes the alias record — so expect
+the API to be unreachable in between, and do it when that is acceptable.
+
 ## Migrating the staging workspace
 
 Staging was applied while `storage` and `app` were separate root modules, so
