@@ -43,6 +43,16 @@ write routes above. Viewsets live in ``booking_read_views.py``, a sibling
 module to ``booking_views.py`` (which keeps only the five write viewsets),
 split out because a single ``booking_views.py`` covering all eleven
 viewsets would have grown past ~1600 lines -- see Phase 4's tracking note.
+
+Phase 9 (codeless, slug-addressed public-group reads): two more routes
+nested under the same ``calendar-groups/<public_slug>/`` prefix the Phase 3b
+codeless write already uses, addressing the group by the same opaque slug
+rather than a resolved token. Only two of the four reads the plan lists are
+shipped -- ``availability-windows`` / ``unavailable-windows`` are not ported
+to this codeless surface; see the "Codeless, slug-addressed public-group
+reads" section at the bottom of ``booking_read_views.py`` for why. These are
+codeless-only: they carry no ``X-Booking-Code`` handling at all, unlike
+every route registered above.
 """
 
 from django.urls import include, path
@@ -56,6 +66,8 @@ from calendar_integration.booking_read_views import (
     BookingCodeCalendarGroupAvailabilityViewSet,
     BookingCodeCalendarGroupBookableSlotsViewSet,
     BookingCodeUnavailableWindowsViewSet,
+    PublicCalendarGroupAvailabilityViewSet,
+    PublicCalendarGroupBookableSlotsViewSet,
 )
 from calendar_integration.booking_views import (
     BookingCodeCalendarEventViewSet,
@@ -123,6 +135,16 @@ router.register(
     r"calendar-group-availability",
     BookingCodeCalendarGroupAvailabilityViewSet,
     basename="booking-calendar-group-availability",
+)
+router.register(
+    r"calendar-groups/(?P<public_slug>[-a-zA-Z0-9_]+)/bookable-slots",
+    PublicCalendarGroupBookableSlotsViewSet,
+    basename="public-calendar-group-bookable-slots",
+)
+router.register(
+    r"calendar-groups/(?P<public_slug>[-a-zA-Z0-9_]+)/availability",
+    PublicCalendarGroupAvailabilityViewSet,
+    basename="public-calendar-group-availability",
 )
 
 urlpatterns = [
