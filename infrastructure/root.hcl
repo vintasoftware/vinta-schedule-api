@@ -8,6 +8,15 @@
 # AWS credentials for the run come from the Scalr workspace (provider config /
 # shell variables), never from this repo.
 
+# Terragrunt defaults to the `tofu` binary when one is on PATH, and OpenTofu
+# 1.12 refuses to touch a workspace pinned to 1.5.7 ("version mismatch ... you
+# can force ... with -ignore-remote-version"). Use `terraform`, which tfenv
+# resolves to the version in .terraform-version. The constraint turns a
+# too-new binary into a clear error instead of the Scalr backend's "Please
+# downgrade Terraform to <= 1.5.99" at init time.
+terraform_binary             = "terraform"
+terraform_version_constraint = ">= 1.5, <= 1.5.99"
+
 locals {
   project = "vinta-schedule"
 

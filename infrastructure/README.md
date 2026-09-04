@@ -240,6 +240,13 @@ two populated states have to be reconciled by hand instead.
 > `<= 1.5.99` (1.6+ is BSL and rejected). Use **1.5.7** locally — pinned in
 > `infrastructure/.terraform-version`. With tfenv: `tfenv install 1.5.7`. Newer
 > Terraform fails `init` with "Please downgrade Terraform to <= 1.5.99".
+>
+> **Not OpenTofu.** Terragrunt runs `tofu` by default when it finds one on
+> PATH, and OpenTofu 1.12 refuses to write to a workspace pinned at 1.5.7
+> ("version mismatch … `-ignore-remote-version`"). `root.hcl` therefore sets
+> `terraform_binary = "terraform"` and constrains the version, so both traps
+> now fail loudly or not at all. If a folder was already initialised by `tofu`,
+> delete its `.terragrunt-cache` before the next run.
 
 ```bash
 export SCALR_HOSTNAME=example.scalr.io
