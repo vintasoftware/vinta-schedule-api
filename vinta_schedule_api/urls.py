@@ -15,6 +15,7 @@ from vinta_billing.routing import get_extra_patterns as get_payments_extra_patte
 from vinta_billing.routing import get_routes as get_payments_routes
 
 from calendar_integration.routes import routes as calendar_integration_routes
+from common.health_views import healthz
 from legal.routes import routes as legal_routes
 from notifications.routes import routes as notifications_routes
 from organizations.routes import extra_patterns as organizations_extra_patterns
@@ -64,6 +65,9 @@ referenced_frontend_urlpatterns = [
 
 
 urlpatterns = [
+    # Infrastructure, not API: the ALB target group polls this to decide whether a
+    # task stays in rotation. Listed first so no other pattern can shadow it.
+    path("healthz/", healthz, name="healthz"),
     path("auth/", include("accounts.urls")),
     path("auth/", include("allauth.socialaccount.urls")),
     path("auth/", include("allauth.socialaccount.providers.google.urls")),

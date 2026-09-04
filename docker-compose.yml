@@ -21,11 +21,6 @@ services:
     volumes:
       - dbdata:/var/lib/postgresql/18/docker
 
-  broker:
-    image: "rabbitmq:alpine"
-    ports:
-      - "5672:5672"
-
   result:
     image: "redis:alpine"
     ports:
@@ -37,18 +32,21 @@ services:
       - "8000:8000"
     depends_on:
       - db
-      - broker
       - result
       - mailpit
       - floci
 
+  # Idle unless CELERY_TASK_ALWAYS_EAGER=false in .env.docker -- tasks otherwise run
+  # in-process in the api container and nothing is ever published. Turn it off to
+  # exercise the real broker path: this worker then consumes from Floci's SQS, the
+  # same transport the deployed environments use.
   worker:
     <<: *python-service
     command: celery --app=vinta_schedule_api worker --loglevel=info
     depends_on:
       - db
-      - broker
       - result
+      - floci
 
   mailpit:
     image: axllent/mailpit

@@ -20,11 +20,11 @@ Single Django project, multiple installed apps under the repo root:
 - `s3direct_overrides/` — overrides for `django-s3direct`.
 - `vintasend_django_sms_template_renderer/`, `vintasend_twilio/` — vintasend SMS/Twilio glue.
 
-Postgres is the only persistent store. Recurring-event occurrences are calculated dynamically by Postgres functions defined under `calendar_integration/migrations/sql/functions/`, exposed to the ORM via `calendar_integration/database_functions.py`. Celery (with `celery-redbeat`) handles async tasks; `RabbitMQ` is the broker and `Redis` the result backend in dev.
+Postgres is the only persistent store. Recurring-event occurrences are calculated dynamically by Postgres functions defined under `calendar_integration/migrations/sql/functions/`, exposed to the ORM via `calendar_integration/database_functions.py`. Celery (with `celery-redbeat`) handles async tasks and brokers over **Amazon SQS** everywhere -- real SQS when deployed, Floci's emulation locally. Redis (ElastiCache when deployed) is the result backend and redbeat store. Local tasks run eagerly in-process unless `CELERY_TASK_ALWAYS_EAGER=false`.
 
 ## Tech Stack
 
-- **Python 3.14** (`requires-python`, `.python-version`) — the floor is 3.14 because the audit trail's cross-repository id uses `uuid.uuid7`, which the stdlib only gained in 3.14. Also pinned in both Dockerfiles, `.github/workflows/main.yml` (`PYTHON_VERSION`) and `render.yaml`; a bump has to touch all five.
+- **Python 3.14** (`requires-python`, `.python-version`) — the floor is 3.14 because the audit trail's cross-repository id uses `uuid.uuid7`, which the stdlib only gained in 3.14. Also pinned in both Dockerfiles and `.github/workflows/main.yml` (`PYTHON_VERSION`); a bump has to touch all four.
 - **Django 6** (`pyproject.toml`) — primary framework.
 - **Django REST Framework 3.16** + **drf-spectacular** — REST API + OpenAPI schema export (`schema.yml`, `schema-auth.yml`).
 - **Strawberry GraphQL** + **strawberry-graphql-django** — public API at `public_api/`.
@@ -41,8 +41,8 @@ Postgres is the only persistent store. Recurring-event occurrences are calculate
 - **mypy** with `django-stubs` + `djangorestframework-stubs` — typing.
 - **pytest** + **pytest-django** + **pytest-xdist** + **pytest-cov** + **model-bakery** — testing.
 - **pre-commit** — local hooks (`.pre-commit-config.yaml`): ruff, django-upgrade (5.0 target), local eslint/tsc/missing-migrations/spectacular-schema-export.
-- **Docker Compose** (`docker-compose.yml`) — dev runtime: api, db (postgres:alpine), broker (rabbitmq:alpine), result (redis:alpine), floci (local AWS S3 emulator), mailpit.
-- **Render** (`render.yaml`) — production target (not yet deployed).
+- **Docker Compose** (`docker-compose.yml`) — dev runtime: api, worker, db (postgres:alpine), result (redis:alpine), floci (local AWS emulator: S3 + SQS), mailpit. No RabbitMQ: the broker is Floci's SQS, matching the deployed environments.
+- **AWS ECS/Fargate** (`infrastructure/`) — deploy target: Django + Celery worker + beat on Fargate, SQS broker, RDS Postgres, ElastiCache, ALB, S3/CloudFront. Terraform modules applied through Terragrunt + Scalr; see `infrastructure/README.md`. Staging is provisioned; production files exist but are unapplied.
 - **Sentry** — error tracking (`sentry-sdk`); `SENTRY_DSN` env var.
 
 ## Common Commands
@@ -230,7 +230,7 @@ DEFAULT_PAYMENT_PROVIDER
 ```
 
 - `DEFAULT_FROM_EMAIL` (str, default `noreply@localhost`) — From address on every outbound email. `NOTIFICATION_DEFAULT_FROM_EMAIL` (what vintasend's adapters read) defaults to it, so one value covers both Django's own mail (allauth's password reset) and every vintasend notification. Left unset, vintasend falls back to its own `foo@examplo.com` placeholder. In a deployed environment it must be on a domain the SMTP provider is verified to send for.
-- `ACCOUNT_PHONE_VERIFICATION_ENABLED` (bool, default `False`) — per-environment rollout gate for SMS phone verification. Stays off until Twilio approves the messaging profile for that environment; an operator flips it in the environment (Render dashboard / `.env`) with no code change.
+- `ACCOUNT_PHONE_VERIFICATION_ENABLED` (bool, default `False`) — per-environment rollout gate for SMS phone verification. Stays off until Twilio approves the messaging profile for that environment; an operator flips it in the environment (the ECS task definition input in `infrastructure/environments/<env>/app/terragrunt.hcl`, or `.env` locally) with no code change.
 - `MERCADOPAGO_ACCESS_TOKEN` (str, default `""`) — MercadoPago secret API key, used by `vinta_billing`'s `MercadoPagoPaymentAdapter`/`MercadoPagoSubscriptionAdapter` to authenticate every **outbound** call. This — not `MERCADOPAGO_PUBLIC_KEY` — is what `BasePaymentAdapter.is_configured` reports on, and therefore what decides whether a charge through MercadoPago is attempted or refused with `PaymentProviderNotConfiguredError` (HTTP 409).
 - `MERCADOPAGO_WEBHOOK_SECRET` (str, default `""`) — shared secret used to verify MercadoPago's `x-signature` webhook header (`vinta_billing.services.mercadopago_signature`). An empty secret makes signature verification fail closed rather than skip the check.
 - `MERCADOPAGO_PUBLIC_KEY` (str, default `""`) — browser-safe public key used to initialize MercadoPago's payment form. Not a secret; intentionally served on unauthenticated endpoints.
@@ -239,11 +239,24 @@ DEFAULT_PAYMENT_PROVIDER
 - `STRIPE_PUBLISHABLE_KEY` (str, default `""`) — browser-safe public key used to initialize Stripe's payment form. Not a secret; intentionally served on unauthenticated endpoints.
 - `DEFAULT_PAYMENT_PROVIDER` (str, default `"stripe"`) — system-wide default payment provider slug. Must be one of the valid providers in `vinta_billing.constants.PaymentProviders`; `settings/base.py` assembles `VINTA_BILLING["PROVIDERS"]` / `["DEFAULT_PROVIDER"]` from this and the six credential vars above. Read at import time to fail fast on misconfiguration.
 
-Production-only vars (set via Render `envVarGroups`): `SECRET_KEY`, `SENTRY_DSN`, `SMTP_HOST`/`USERNAME`/`PASSWORD`, `ALLOWED_HOSTS`, `SITE_DOMAIN`, `API_DOMAIN`, `DEFAULT_BCC_EMAILS`, AWS bucket / CloudFront settings, `ENABLE_DJANGO_COLLECTSTATIC`, `AUTO_MIGRATE`. Adding a new env var requires updates to both example files and `render.yaml` envVarGroups — see the `add-env-var` skill.
+Deployed-environment vars come from two places, and which one decides where you add a new var:
+
+- **ECS task definition `environment`** — non-secret config, built from Terraform inputs in `infrastructure/modules/app-platform/ecs.tf` (`local.container_environment`). Covers `ALLOWED_HOSTS`, `SITE_DOMAIN`, `API_DOMAIN`, `FRONTEND_BASE_URL`, `CORS_ALLOWED_ORIGINS`, `DEFAULT_FROM_EMAIL`, `DEFAULT_BCC_EMAILS`, the AWS bucket / region / CloudFront-domain settings, and the `CELERY_*` tuning knobs.
+- **One Secrets Manager secret per environment** — every credential, as a flat JSON object; ECS maps each key to its own env var. Covers `SECRET_KEY`, `SALT_KEY`, `DATABASE_URL`, `REDIS_URL`, `SENTRY_DSN`, `SMTP_*`, `GOOGLE_*`, `TWILIO_*`, `STRIPE_*`, `MERCADOPAGO_*`, `AWS_CLOUDFRONT_KEY`/`_ID`. The key list is `local.secret_keys` in `infrastructure/modules/app-platform/secrets.tf`; `extra_secret_keys` adds one without editing the module.
+
+SQS broker vars, set in every environment including local (Floci): `CELERY_BROKER_URL`, `CELERY_TASK_DEFAULT_QUEUE`, `CELERY_SQS_QUEUE_URL`, `CELERY_SQS_IS_SECURE`, `CELERY_SQS_VISIBILITY_TIMEOUT`, `CELERY_SQS_WAIT_TIME_SECONDS`, `CELERY_SQS_POLLING_INTERVAL`. Local-only: `CELERY_TASK_ALWAYS_EAGER`. Deployed-only vars the app reads: `COMMIT_SHA` (set by the deploy, reported to Sentry), and `ECS_CONTAINER_METADATA_URI_V4` (set by ECS itself — `settings/production.py` reads the task's own IP from it and appends it to `ALLOWED_HOSTS`, which is what lets the load balancer health check succeed without `ALLOWED_HOSTS = "*"`).
+
+Adding a new env var requires updates to both example files plus either the Terraform `container_environment` map or the secret key list — see the `add-env-var` skill.
 
 ## Local Storage Emulation — Floci
 
-`docker-compose.yml` runs Floci (free open-source AWS S3 emulator) at `http://localhost:4566`. `make setup` initializes the dev bucket via `scripts/init_floci.py`. Default credentials: `test` / `test`. The `USE_FLOCI` setting (in `local.py`) switches between Floci (dev) and real AWS S3 (production).
+`docker-compose.yml` runs Floci (free open-source AWS emulator) at `http://localhost:4566`. `make setup` initializes the dev bucket **and the Celery SQS queues** via `scripts/init_floci.py`. Default credentials: `test` / `test`. The `USE_FLOCI` setting (in `local.py`) switches between Floci (dev) and real AWS S3 (production).
+
+Floci also backs the Celery broker, so local dev speaks the same transport as staging. `scripts/init_floci.py` gives the local queue the same visibility timeout and redrive policy Terraform gives the real one, and Floci enforces both -- messages really do go invisible, really are redelivered when the timeout lapses, and really land on the DLQ after `maxReceiveCount`.
+
+Tasks run eagerly in-process by default (`CELERY_TASK_ALWAYS_EAGER`, default `True`), so most work needs no broker at all. Setting it to `false` publishes for real and lets the `worker` container consume -- that is the mode for testing anything that depends on at-least-once delivery, retries or task timeouts.
+
+`common/celery_sqs.py` builds the transport options; `settings/base.py` applies them whenever `CELERY_BROKER_URL` starts with `sqs://`, which is what makes one code path serve Floci and real SQS. The only difference is `CELERY_SQS_IS_SECURE=false` locally, because Floci serves plain HTTP.
 
 ## Error Tracking — Sentry
 
@@ -251,14 +264,17 @@ Production-only vars (set via Render `envVarGroups`): `SECRET_KEY`, `SENTRY_DSN`
 
 ## Deployment
 
-Not yet deployed. `render.yaml` is configured for Render (free plan), but no environment has been provisioned. When the first deploy happens:
+AWS ECS/Fargate. Infrastructure lives in `infrastructure/` (Terraform modules driven by Terragrunt, state and runs in Scalr) — `infrastructure/README.md` is the operational reference.
 
 | Environment | Trigger | Notes |
 |---|---|---|
 | development (local) | `make up` | docker-compose stack |
-| production (future) | push to `main` after Render link | `render_build.sh` runs `uv sync`, Django checks, `collectstatic`, `migrate` |
+| staging | push to `main` | `deploy-staging` job in `.github/workflows/main.yml`, after checks + tests |
+| production | none yet | Terragrunt files exist under `environments/production/` but are unapplied, and there is deliberately no deploy job — see *Before applying production* in the infrastructure README |
 
-Celery worker + beat are commented in `render.yaml` (no free Render Worker plan). Uncommenting incurs cost.
+The staging deploy assumes an AWS role over GitHub OIDC (no stored keys), builds and pushes the image to ECR tagged with the commit SHA, registers new task-definition revisions, runs a **release task** (`migrate` then `collectstatic`) and waits for it, and only then rolls the web/worker/beat services. A failed migration stops the deploy before any serving container is replaced. The rollout logic is in `scripts/deploy/ecs_deploy.sh`; everything about the environment (cluster, services, subnets, security groups) is read from an SSM parameter Terraform writes, so renaming a resource does not touch the workflow.
+
+One image serves four roles — web, worker, beat, release — with the ECS task definition overriding `command`. `/healthz/` (`common/health_views.py`) is the ALB health check: no database, no cache, and exempted from `SECURE_SSL_REDIRECT`.
 
 ## Opinionated Settings (carry-overs worth knowing)
 
@@ -380,13 +396,14 @@ pin, and known package gaps); this is the load-bearing summary.
 
 ## Key Documentation
 
-- `README.md` — setup, Docker, Floci, Render, opinionated settings.
+- `README.md` — setup, Docker, Floci, deployment overview, opinionated settings.
 - `docs/README.md`, `docs/glossary.md`, `docs/concepts/` — domain concepts.
 - `docs/billing.md` — where the billing engine lives (`vinta-django-billing`), the
   seams `payments/` configures it with, how to upgrade the pin, and known package gaps.
 - `pyproject.toml` — ruff + mypy + coverage config.
 - `pytest.ini` — pytest config (forced test settings).
-- `render.yaml` — production deploy config.
+- `infrastructure/README.md` — AWS architecture, Scalr setup, secrets, day-to-day ops, cost levers.
+- `scripts/deploy/ecs_deploy.sh` — the deploy rollout (migrations gate the service update).
 - `docker-compose.yml` + `Dockerfile.development` — dev runtime.
 - `.pre-commit-config.yaml` — local hook chain.
 - `ai-plans/` — feature specs and implementation plans (canonical layout).

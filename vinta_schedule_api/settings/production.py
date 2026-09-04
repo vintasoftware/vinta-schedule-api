@@ -1,3 +1,7 @@
+import json
+import logging
+import urllib.request
+
 import sentry_sdk
 from decouple import Csv, config  # type: ignore
 from django_guid.integrations import SentryIntegration as DjangoGUIDSentryIntegration
@@ -13,6 +17,29 @@ SECRET_KEY = config("SECRET_KEY")
 DATABASES["default"]["ATOMIC_REQUESTS"] = True
 
 ALLOWED_HOSTS = config("ALLOWED_HOSTS", cast=Csv())
+
+# On ECS the load balancer health-checks a task by its private IP, so that IP
+# arrives as the Host header -- and Django answers 400 for a host it does not
+# know, which means the target never turns healthy and the service rolls back.
+# Each container therefore adds the address ECS assigned it, read from the task
+# metadata endpoint. This keeps ALLOWED_HOSTS as the real domains instead of the
+# "*" that would otherwise be the only way to make health checks pass.
+_ecs_metadata_uri = config("ECS_CONTAINER_METADATA_URI_V4", default="")
+if _ecs_metadata_uri:
+    try:
+        with urllib.request.urlopen(_ecs_metadata_uri, timeout=2) as _metadata_response:  # noqa: S310
+            _container_metadata = json.load(_metadata_response)
+    except Exception:  # noqa: BLE001 -- a metadata hiccup must not stop the container booting
+        logging.getLogger(__name__).warning(
+            "ECS task metadata unreachable; ALLOWED_HOSTS left as configured. "
+            "Load balancer health checks will fail until it responds."
+        )
+    else:
+        ALLOWED_HOSTS += [
+            address
+            for network in _container_metadata.get("Networks", [])
+            for address in network.get("IPv4Addresses", [])
+        ]
 
 STATIC_ROOT = base_dir_join("staticfiles")
 STATIC_URL = "/static/"
@@ -32,6 +59,10 @@ EMAIL_USE_TLS = True
 SECURE_HSTS_PRELOAD = True
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 SECURE_SSL_REDIRECT = True
+# The load balancer health-checks over plain HTTP, and a 301 counts as unhealthy.
+# Exempting the one infrastructure path costs nothing: it returns a constant and
+# reads no cookie or credential.
+SECURE_REDIRECT_EXEMPT = [r"^healthz/$"]
 SESSION_COOKIE_SECURE = True
 CSRF_COOKIE_SECURE = True
 SECURE_HSTS_SECONDS = config("SECURE_HSTS_SECONDS", default=3600, cast=int)
@@ -43,9 +74,10 @@ X_FRAME_OPTIONS = "DENY"
 
 # Celery
 # Recommended settings for reliability: https://gist.github.com/fjsj/da41321ac96cf28a96235cb20e7236f6
-# Broker: prefer RABBITMQ_URL when provided; otherwise fall back to Redis as the
-# broker (Render has no managed RabbitMQ, and Redis is already provisioned).
-CELERY_BROKER_URL = config("RABBITMQ_URL", default="") or REDIS_URL
+# The SQS case is already configured in base.py, which reads CELERY_BROKER_URL and
+# recognises the scheme. This only adds the fallbacks for an environment that has
+# no SQS queue: RabbitMQ if it has one, otherwise Redis.
+CELERY_BROKER_URL = CELERY_BROKER_URL or config("RABBITMQ_URL", default="") or REDIS_URL
 # Redis result backend is optional; when REDIS_URL is unset, task results are
 # simply not stored (the broker still drives task execution).
 CELERY_RESULT_BACKEND = config("REDIS_URL", default="") or None
@@ -64,8 +96,6 @@ if REDBEAT_REDIS_URL:
     CELERY_BEAT_SCHEDULER = "redbeat.RedBeatScheduler"
     CELERY_REDBEAT_REDIS_URL = REDBEAT_REDIS_URL
 
-
-AWS_REGION = config("AWS_REGION", default="us-east-1")
 
 # Static storage
 AWS_STATIC_BUCKET_NAME = config("AWS_STATIC_BUCKET_NAME")

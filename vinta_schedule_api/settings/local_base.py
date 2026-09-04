@@ -30,8 +30,17 @@ STORAGES = {
 AUTH_PASSWORD_VALIDATORS = []  # allow easy passwords only on local
 
 # Celery
-CELERY_BROKER_URL = config("CELERY_BROKER_URL", default="")
-CELERY_TASK_ALWAYS_EAGER = True
+#
+# CELERY_BROKER_URL and, when it names SQS, the whole transport configuration come
+# from base.py -- local dev points it at Floci, which emulates SQS over plain HTTP.
+#
+# Tasks still run in-process by default, so most work needs no broker or worker at
+# all. Set CELERY_TASK_ALWAYS_EAGER=false in .env to exercise the real path: the
+# `worker` container then picks tasks off Floci's queue over the same transport the
+# deployed environments use, which is where SQS's own behaviour becomes visible --
+# at-least-once delivery, redelivery when the visibility timeout lapses, and a
+# repeatedly-failing task ending up on the dead-letter queue.
+CELERY_TASK_ALWAYS_EAGER = config("CELERY_TASK_ALWAYS_EAGER", cast=bool, default=True)
 CELERY_TASK_EAGER_PROPAGATES = True
 
 # Email settings for mailhog

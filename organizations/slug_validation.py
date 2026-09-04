@@ -82,6 +82,8 @@ _RESERVED_ROUTE_SLUGS: frozenset[str] = frozenset(
         "organization",
         "public",
         "graphql",
+        # The load balancer health check (vinta_schedule_api.urls -> healthz).
+        "healthz",
         "webhooks",
         "webhook",
         "help",

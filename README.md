@@ -58,17 +58,17 @@ notification bridge, and the plan catalog. See
 [`docs/billing.md`](docs/billing.md) for the full picture, including how to
 upgrade the pin and a list of known package gaps.
 
-## Floci S3 Configuration
+## Floci — local S3 and SQS
 
-This project uses [Floci](https://github.com/floci-io/floci) to provide a local AWS S3-compatible service for development instead of MinIO. Floci is a free, open-source AWS emulator that needs no account, auth token, or feature gates, and starts in milliseconds.
+This project uses [Floci](https://github.com/floci-io/floci) to emulate AWS locally instead of MinIO. Floci is a free, open-source AWS emulator that needs no account, auth token, or feature gates, and starts in milliseconds. It backs two things here: **S3** for media and static files, and **SQS** as the Celery broker — the same transport the deployed environments use.
 
 ### Setup
 
-The docker-compose.yml is already configured to use Floci. After running `make up`, you need to initialize the S3 bucket:
+The docker-compose.yml is already configured to use Floci. After running `make up`, initialize the bucket and the queues:
 
 1. **Wait for Floci to be ready** (usually takes a few seconds after `make up`)
 
-2. **Initialize the S3 bucket** using one of these methods:
+2. **Initialize the S3 bucket and SQS queues** using one of these methods:
 
    **Option A: Using the provided script** (run by `make setup`)
    ```bash
@@ -101,77 +101,118 @@ The docker-compose.yml is already configured to use Floci. After running `make u
 - **Secret Key**: `test`
 - **Region**: `us-east-1`
 - **Bucket Name**: `vinta_schedule`
+- **Celery queue**: `vinta-schedule-local-celery` (plus `-dlq`)
 
 The configuration automatically switches between Floci (development) and AWS S3 (production) based on the `USE_FLOCI` setting in your local settings.
+
+### Celery over SQS locally
+
+`scripts/init_floci.py` creates the broker queue and its dead-letter queue with the
+same visibility timeout and redrive policy Terraform gives the real ones, so the
+queue behaves the same in both places.
+
+**Tasks still run in-process by default** (`CELERY_TASK_ALWAYS_EAGER=true`), which
+is what you want for most feature work — no broker, no worker, no queue involved.
+Set it to `false` in your `.env` to exercise the real path:
+
+```bash
+CELERY_TASK_ALWAYS_EAGER=false
+```
+
+Then `make up_with_workers` runs a worker that consumes from Floci over kombu's SQS
+transport. That is where SQS's own behaviour shows up, and it differs from RabbitMQ
+in ways worth seeing before staging does:
+
+- **At-least-once delivery.** A task can run twice; tasks have to tolerate it.
+- **The visibility timeout is the real task timeout.** Acks are late, so a message
+  is deleted only when its task finishes. If the timeout lapses first, SQS hands
+  the same task to another worker. `CELERY_SQS_VISIBILITY_TIMEOUT` is 60s locally
+  (the deployed queues use 900s) so redelivery is quick to observe; the same value
+  configures the queue, so re-run `make setup` after changing it.
+- **Repeated failures land on the dead-letter queue** after 5 deliveries rather
+  than looping forever. Inspect it with
+  `aws --endpoint-url=http://localhost:4566 sqs receive-message --queue-url http://localhost:4566/000000000000/vinta-schedule-local-celery-dlq`.
+- **No `celery inspect`, no flower.** SQS has no fanout exchange, so remote control
+  and task events are off. Logs are the replacement.
+
+RabbitMQ is no longer in `docker-compose.yml`. The settings still accept an
+`amqp://` or `redis://` broker if you point `CELERY_BROKER_URL` at one.
 
 ### Troubleshooting
 
 - **"NoSuchBucket" errors**: Make sure you've run the initialization script after starting the containers
+- **`UndefinedQueueException` from Celery**: the queue named by `CELERY_TASK_DEFAULT_QUEUE` does not exist yet. Run `make setup` (or `python scripts/init_floci.py`). The queue is pinned by URL rather than created on demand, which is deliberate — it is what keeps the deployed task role down to one queue.
 - **Connection errors**: Ensure the Floci container is running with `docker-compose ps`
 - **Access denied**: Floci uses `test`/`test` as default credentials in development
 
 ## Production Deployment
 
-### Setup
+The API runs on **AWS ECS/Fargate**, provisioned by Terraform under
+[`infrastructure/`](infrastructure/) and applied through Terragrunt + Scalr. That
+directory's [README](infrastructure/README.md) is the operational reference —
+architecture, Scalr setup, cross-account DNS, secrets, day-to-day commands and the
+cost levers. What follows is only the short version.
 
-This project comes with an `render.yaml` file, which can be used to create an app on Render.com from a GitHub repository.
+### What runs where
 
-Before deploying, please make sure you've generated an up-to-date `uv.lock` file containing the Python dependencies. This is necessary even if you've used Docker for local runs. Do so by following [these instructions](#setup-the-backend-app).
+| Piece | Where |
+|---|---|
+| Django (gunicorn) | ECS Fargate service behind a public ALB, in private subnets |
+| Celery worker | ECS Fargate service (Fargate Spot), private subnets |
+| Celery beat | ECS Fargate service (Fargate Spot), one task, redbeat scheduler |
+| Broker | Amazon SQS |
+| Database | RDS Postgres, private, TLS enforced |
+| Cache / result backend / redbeat store | ElastiCache, private, TLS + AUTH token |
+| Media + static | S3 behind CloudFront (`infrastructure/modules/s3-cloudfront`) |
+| Credentials | one AWS Secrets Manager secret per environment |
 
-After setting up the project, you can init a repository and push it on GitHub. If your repository is public, you can use the following button:
+Only the load balancer is public. Outbound calls to Google, Microsoft, Stripe,
+MercadoPago and Twilio leave through a NAT gateway.
 
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy)
+### Deploys
 
-If you are in a private repository, access the following link replacing `$YOUR_REPOSITORY_URL$` with your repository link.
+Pushing to `main` runs the `deploy-staging` job in
+[`.github/workflows/main.yml`](.github/workflows/main.yml), after lint, type
+checks and the test suite pass. It:
 
--   `https://render.com/deploy?repo=$YOUR_REPOSITORY_URL$`
+1. assumes an AWS role over GitHub OIDC (no stored access keys),
+2. builds the image and pushes it to ECR tagged with the commit SHA,
+3. registers a new task-definition revision per service,
+4. runs the **release task** — `migrate` then `collectstatic` — and waits for it,
+5. only then points the web, worker and beat services at the new revision, and
+   waits for them to stabilise.
 
-Keep reading to learn how to configure the prompted environment variables.
+Step 4 is the gate: a failed migration stops the deploy before any container
+serving traffic has been replaced. The rollout logic lives in
+[`scripts/deploy/ecs_deploy.sh`](scripts/deploy/ecs_deploy.sh); the workflow only
+supplies the image and the SSM parameter naming the environment.
 
-#### `ALLOWED_HOSTS`
+Production has no deploy job yet — see *Before applying production* in the
+infrastructure README.
 
-Chances are your project name isn't unique in Render, and you'll get a randomized suffix as your full app URL like: `https://vinta_schedule_api-a1b2.onrender.com`.
+### Environment variables
 
-But this will only happen after the first deploy, so you are not able to properly fill `ALLOWED_HOSTS` yet. Simply set it to `*` then fix it later to something like `vinta_schedule_api-a1b2.onrender.com` and your domain name like `example.org`.
+Non-secret configuration is set on the ECS task definitions from Terraform inputs
+(`infrastructure/environments/<env>/app/terragrunt.hcl`). Credentials live in one
+Secrets Manager secret per environment, which ECS resolves key-by-key into
+individual environment variables. Terraform seeds that secret once and then leaves
+its value to operators.
 
-#### `ENABLE_DJANGO_COLLECTSTATIC`
+Note that no `AWS_ACCESS_KEY_ID` is set in the deployed containers: boto3 checks
+the environment before the container credential endpoint, so a static key would
+shadow the ECS task role that grants S3 and SQS access.
 
-Default is 1, meaning the build script will run collectstatic during deploys.
+### Email
 
-#### `AUTO_MIGRATE`
-
-Default is 1, meaning the build script will run collectstatic during deploys.
-
-### Build script
-
-By default, the project will always run the `render_build.sh` script during deployments. This script does the following:
-
-1.  Build the api
-2.  Run Django checks
-3.  Run `collectstatic`
-4.  Run Django migrations
-
-### Celery
-
-As there aren't free plans for Workers in Render.com, the configuration for Celery workers/beat will be commented by default in the `render.yaml`. This means celery won't be available by default.
-
-Uncommenting the worker configuration lines on `render.yaml` will imply in costs.
-
-### SendGrid
-
-To enable sending emails from your application you'll need to have a valid SendGrid account and also a valid verified sender identity. After finishing the validation process you'll be able to generate the API credentials and define the `SENDGRID_USERNAME` and `SENDGRID_PASSWORD` environment variables on Render.com.
-
-These variables are required for your application to work on Render.com since it's pre-configured to automatically email admins when the application is unable to handle errors gracefully.
-
-### Media storage
-
-Media files integration with S3 or similar is not supported yet. Please feel free to contribute!
+`SMTP_HOST` / `SMTP_USERNAME` / `SMTP_PASSWORD` in the app secret configure
+outbound mail. `DEFAULT_FROM_EMAIL` must be on a domain the SMTP provider is
+verified to send for, or mail is rejected or spam-filed.
 
 ### Sentry
 
-[Sentry](https://sentry.io) is already set up on the project. For production, add `SENTRY_DSN` environment variable on Render.com, with your Sentry DSN as the value.
-
-You can test your Sentry configuration by deploying the boilerplate with the sample page and clicking on the corresponding button.
+[Sentry](https://sentry.io) is already set up. Put your DSN in the `SENTRY_DSN`
+key of the app secret. Each deploy tags events with `COMMIT_SHA`, so a stack trace
+names the release it came from.
 
 ## Linting
 
