@@ -2,27 +2,24 @@
   "Version": "2012-10-17",
   "Statement": [
     {
+      "Sid": "Ec2AndElbReads",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:Describe*",
+        "ec2:GetSecurityGroupsForVpc",
+        "elasticloadbalancing:Describe*"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-east-1"
+        }
+      }
+    },
+    {
       "Sid": "VpcAndSecurityGroups",
       "Effect": "Allow",
       "Action": [
-        "ec2:DescribeAccountAttributes",
-        "ec2:DescribeAddresses",
-        "ec2:DescribeAddressesAttribute",
-        "ec2:DescribeAvailabilityZones",
-        "ec2:DescribeInternetGateways",
-        "ec2:DescribeManagedPrefixLists",
-        "ec2:DescribeNatGateways",
-        "ec2:DescribeNetworkInterfaces",
-        "ec2:DescribePrefixLists",
-        "ec2:DescribeRouteTables",
-        "ec2:DescribeSecurityGroupRules",
-        "ec2:DescribeSecurityGroups",
-        "ec2:DescribeSubnets",
-        "ec2:DescribeTags",
-        "ec2:DescribeVpcAttribute",
-        "ec2:DescribeVpcEndpoints",
-        "ec2:DescribeVpcs",
-        "ec2:GetSecurityGroupsForVpc",
         "ec2:CreateTags",
         "ec2:DeleteTags",
         "ec2:CreateVpc",
@@ -71,13 +68,6 @@
       "Sid": "LoadBalancer",
       "Effect": "Allow",
       "Action": [
-        "elasticloadbalancing:DescribeLoadBalancers",
-        "elasticloadbalancing:DescribeLoadBalancerAttributes",
-        "elasticloadbalancing:DescribeListeners",
-        "elasticloadbalancing:DescribeTargetGroups",
-        "elasticloadbalancing:DescribeTargetGroupAttributes",
-        "elasticloadbalancing:DescribeTargetHealth",
-        "elasticloadbalancing:DescribeTags",
         "elasticloadbalancing:CreateLoadBalancer",
         "elasticloadbalancing:DeleteLoadBalancer",
         "elasticloadbalancing:ModifyLoadBalancerAttributes",
@@ -90,6 +80,7 @@
         "elasticloadbalancing:CreateListener",
         "elasticloadbalancing:DeleteListener",
         "elasticloadbalancing:ModifyListener",
+        "elasticloadbalancing:ModifyListenerAttributes",
         "elasticloadbalancing:AddTags",
         "elasticloadbalancing:RemoveTags"
       ],

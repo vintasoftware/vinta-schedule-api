@@ -200,6 +200,39 @@ aws iam put-user-policy --user-name "vinta-schedule-${ENV}-deployer" \
 
 3. Set `dns_role_arn` in each `environments/<env>/env.hcl` to that role's ARN.
 
+### Every hostname here needs its own CAA record
+
+`vintasoftware.com` carries no CAA, but the environment's frontend name does —
+`schedule-staging.vintasoftware.com` is Vercel's, and its CAA lists
+`letsencrypt.org`, `pki.goog`, `sectigo.com` and `globalsign.com`. CAA
+resolution walks up from the hostname and stops at the first name holding one,
+so every name under the frontend inherits a policy that does not authorize
+Amazon, and ACM refuses to issue with `CAA_ERROR`.
+
+Both modules therefore write `0 issue "amazon.com"` at each hostname they
+own — `api` here, `static` and `media` in `modules/s3-cloudfront`. A CAA at the
+exact host is the closest match and wins (RFC 8659), so the frontend's own
+policy is left alone. A new hostname fronted by ACM needs the same record.
+
+### The api hostname must not already hold a CNAME
+
+Route 53 refuses every other record type at a name that already holds a CNAME,
+and the Render deployment pointed `api.<env>.vintasoftware.com` at a Render
+hostname with exactly that. It blocks both records this stack needs there — the
+CAA that authorizes ACM, and the alias to the ALB:
+
+```
+InvalidChangeBatch: [RRSet of type A with DNS name
+api.schedule-staging.vintasoftware.com. is not permitted because a conflicting
+RRSet of type CNAME with the same DNS name already exists in zone
+vintasoftware.com.]
+```
+
+Delete that CNAME in the DNS account before applying. **Deleting it is the
+cutover**: the hostname stops resolving to Render the moment it goes, and only
+starts resolving to the ALB once the apply writes the alias record — so expect
+the API to be unreachable in between, and do it when that is acceptable.
+
 ## Migrating the staging workspace
 
 Staging was applied while `storage` and `app` were separate root modules, so
