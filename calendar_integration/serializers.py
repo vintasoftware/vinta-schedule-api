@@ -1012,7 +1012,7 @@ class CalendarEventSerializer(VirtualModelSerializer):
     class Meta:
         model = CalendarEvent
         virtual_model = CalendarEventVirtualModel
-        fields = (
+        fields: tuple[str, ...] = (
             "id",
             "provider",
             "title",
@@ -3999,3 +3999,59 @@ class BookingCodeCreateResultSerializer(serializers.Serializer):
     calendar_group = serializers.IntegerField(read_only=True, allow_null=True)
     event = serializers.IntegerField(read_only=True, allow_null=True)
     expires_at = serializers.DateTimeField(read_only=True, allow_null=True)
+
+
+# ---------------------------------------------------------------------------
+# Patient self-service management codes -- Phase 8
+# ---------------------------------------------------------------------------
+
+
+class BookingManagementCodesSerializer(serializers.Serializer):
+    """The ``management`` object on a booking-code create/reschedule ``201``.
+
+    ``reschedule_code`` and ``cancel_code`` are plaintext, single-use booking
+    codes minted for the patient's own event (see
+    ``booking_views.mint_management_code_pair``), returned exactly once here
+    -- only their hashes are persisted, so this is the only response that
+    will ever expose them. Never echoed on a read: none of the booking-code
+    viewsets has one.
+
+    Fields are read-only for documentation purposes only (this serializer
+    never validates input, it only renders a nested attribute the view sets
+    on the event instance before serialization -- see
+    ``CalendarEventWithManagementCodesSerializer``).
+    """
+
+    reschedule_code = serializers.CharField(read_only=True)
+    cancel_code = serializers.CharField(read_only=True)
+
+
+class CalendarEventWithManagementCodesSerializer(CalendarEventSerializer):
+    """``CalendarEventSerializer`` plus the self-service ``management`` object.
+
+    Used ONLY to render the ``201`` response of a booking-code create or
+    reschedule viewset (``BookingCodeCalendarEventViewSet``,
+    ``BookingCodeGroupEventViewSet``, ``BookingCodeRescheduleEventViewSet``,
+    ``BookingCodeRescheduleGroupEventViewSet``) -- never for a read, and
+    never for ``get_optimized_queryset``: ``management`` is not a model field
+    or relation, it does not exist on ``CalendarEventVirtualModel``, and
+    django-virtual-models' ``LookupFinder`` would raise
+    ``MissingVirtualModelFieldException`` if this subclass were ever handed
+    to ``get_optimized_queryset`` (it walks every readable field looking for
+    a matching virtual-model entry). Callers therefore build the optimized
+    queryset with the PLAIN ``CalendarEventSerializer`` first, and only use
+    this subclass afterwards, purely to render ``.data`` on the already-
+    fetched instance.
+
+    The view sets ``event.management`` (a plain object carrying
+    ``reschedule_code`` / ``cancel_code``, matching
+    ``BookingManagementCodesSerializer``'s two fields) on the event instance
+    before calling this serializer -- there is nothing in the database for
+    this field to read, ``to_representation`` finds it via a plain
+    ``getattr(instance, "management")``, same as any other declared field.
+    """
+
+    management = BookingManagementCodesSerializer(read_only=True)
+
+    class Meta(CalendarEventSerializer.Meta):
+        fields = (*CalendarEventSerializer.Meta.fields, "management")

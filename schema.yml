@@ -15786,7 +15786,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CalendarEvent'
+                $ref: '#/components/schemas/CalendarEventWithManagementCodes'
           description: ''
   /public/booking/calendar-group-availability/:
     post:
@@ -16087,7 +16087,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CalendarEvent'
+                $ref: '#/components/schemas/CalendarEventWithManagementCodes'
           description: ''
   /public/booking/events/cancel/:
     post:
@@ -16158,7 +16158,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CalendarEvent'
+                $ref: '#/components/schemas/CalendarEventWithManagementCodes'
           description: ''
   /public/booking/group-events/reschedule/:
     post:
@@ -16198,7 +16198,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CalendarEvent'
+                $ref: '#/components/schemas/CalendarEventWithManagementCodes'
           description: ''
   /public/booking/unavailable-windows/:
     get:
@@ -18955,6 +18955,32 @@ components:
       - end_time
       - start_time
       - timezone
+    BookingManagementCodes:
+      type: object
+      description: |-
+        The ``management`` object on a booking-code create/reschedule ``201``.
+
+        ``reschedule_code`` and ``cancel_code`` are plaintext, single-use booking
+        codes minted for the patient's own event (see
+        ``booking_views.mint_management_code_pair``), returned exactly once here
+        -- only their hashes are persisted, so this is the only response that
+        will ever expose them. Never echoed on a read: none of the booking-code
+        viewsets has one.
+
+        Fields are read-only for documentation purposes only (this serializer
+        never validates input, it only renders a nested attribute the view sets
+        on the event instance before serialization -- see
+        ``CalendarEventWithManagementCodesSerializer``).
+      properties:
+        reschedule_code:
+          type: string
+          readOnly: true
+        cancel_code:
+          type: string
+          readOnly: true
+      required:
+      - cancel_code
+      - reschedule_code
     BookingPolicy:
       type: object
       description: |-
@@ -19293,6 +19319,148 @@ components:
           type: integer
       required:
       - target_calendar_id
+    CalendarEventWithManagementCodes:
+      type: object
+      description: |-
+        ``CalendarEventSerializer`` plus the self-service ``management`` object.
+
+        Used ONLY to render the ``201`` response of a booking-code create or
+        reschedule viewset (``BookingCodeCalendarEventViewSet``,
+        ``BookingCodeGroupEventViewSet``, ``BookingCodeRescheduleEventViewSet``,
+        ``BookingCodeRescheduleGroupEventViewSet``) -- never for a read, and
+        never for ``get_optimized_queryset``: ``management`` is not a model field
+        or relation, it does not exist on ``CalendarEventVirtualModel``, and
+        django-virtual-models' ``LookupFinder`` would raise
+        ``MissingVirtualModelFieldException`` if this subclass were ever handed
+        to ``get_optimized_queryset`` (it walks every readable field looking for
+        a matching virtual-model entry). Callers therefore build the optimized
+        queryset with the PLAIN ``CalendarEventSerializer`` first, and only use
+        this subclass afterwards, purely to render ``.data`` on the already-
+        fetched instance.
+
+        The view sets ``event.management`` (a plain object carrying
+        ``reschedule_code`` / ``cancel_code``, matching
+        ``BookingManagementCodesSerializer``'s two fields) on the event instance
+        before calling this serializer -- there is nothing in the database for
+        this field to read, ``to_representation`` finds it via a plain
+        ``getattr(instance, "management")``, same as any other declared field.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        provider:
+          type: string
+          writeOnly: true
+        title:
+          type: string
+          maxLength: 255
+        description:
+          type: string
+        start_time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+        timezone:
+          type: string
+          maxLength: 50
+        created:
+          type: string
+          format: date-time
+          readOnly: true
+        modified:
+          type: string
+          format: date-time
+          readOnly: true
+        external_id:
+          type: string
+          readOnly: true
+        external_attendances:
+          type: array
+          items:
+            $ref: '#/components/schemas/EventExternalAttendance'
+        attendances:
+          type: array
+          items:
+            $ref: '#/components/schemas/EventAttendance'
+        resource_allocations:
+          type: array
+          items:
+            $ref: '#/components/schemas/ResourceAllocation'
+        external_client_identifiers:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExternalClientIdentifier'
+          description: Client-owned (system, identifier) pairs for this event. Omitted
+            on a partial update leaves the stored set untouched; an explicit list
+            (including []) replaces it.
+        group_selections:
+          type: array
+          items:
+            $ref: '#/components/schemas/CalendarEventGroupSelection'
+          readOnly: true
+        recurrence_rule:
+          allOf:
+          - $ref: '#/components/schemas/RecurrenceRule'
+          description: Recurrence rule data for creating recurring events
+        rrule_string:
+          type: string
+          writeOnly: true
+          description: RRULE string for creating recurring events
+        parent_recurring_object_id:
+          type: integer
+          writeOnly: true
+          description: ID of parent event for recurring instances
+        parent_recurring_object:
+          allOf:
+          - $ref: '#/components/schemas/ParentEvent'
+          readOnly: true
+        is_recurring_instance:
+          type: boolean
+          description: True if this is an instance of a recurring event
+          readOnly: true
+        is_recurring:
+          type: boolean
+          description: True if this is a recurring event
+          readOnly: true
+        is_recurring_exception:
+          type: boolean
+          description: True if this object is an exception to the recurrence rule
+            (modified occurrence)
+        recurrence_id:
+          type: string
+          format: date-time
+          nullable: true
+          description: For recurring instances, this identifies which occurrence this
+            is
+        management:
+          allOf:
+          - $ref: '#/components/schemas/BookingManagementCodes'
+          readOnly: true
+        google_calendar_service_account:
+          type: integer
+          writeOnly: true
+        calendar:
+          type: integer
+          writeOnly: true
+      required:
+      - attendances
+      - created
+      - end_time
+      - external_attendances
+      - external_id
+      - group_selections
+      - id
+      - is_recurring
+      - is_recurring_instance
+      - management
+      - modified
+      - parent_recurring_object
+      - resource_allocations
+      - start_time
+      - timezone
+      - title
     CalendarGroup:
       type: object
       properties:

@@ -19,6 +19,7 @@ mixin -- this mixin owns only the shared authentication/permission posture
 and DI wiring, not the helpers themselves.
 """
 
+import dataclasses
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Annotated
 
@@ -68,6 +69,7 @@ from calendar_integration.serializers import (
     BookingCodeGroupEventCreateSerializer,
     BookingCodeRescheduleSerializer,
     CalendarEventSerializer,
+    CalendarEventWithManagementCodesSerializer,
 )
 from calendar_integration.services.bookable_slots_service import BookableSlotsService
 from calendar_integration.services.calendar_group_service import CalendarGroupService
@@ -82,6 +84,89 @@ from calendar_integration.services.dataclasses import (
     ExternalAttendeeInputData,
     ResourceAllocationInputData,
 )
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class ManagementCodePair:
+    """Plaintext RESCHEDULE + CANCEL booking codes minted for one event.
+
+    The view sets this as the ``management`` attribute on the just-created-or-
+    rescheduled ``CalendarEvent`` instance before handing it to
+    ``CalendarEventWithManagementCodesSerializer`` -- that serializer's
+    ``management`` field reads it back via a plain ``getattr(instance,
+    "management")``, so the two field names here (``reschedule_code`` /
+    ``cancel_code``) must keep matching
+    ``BookingManagementCodesSerializer``'s own two fields.
+    """
+
+    reschedule_code: str
+    cancel_code: str
+
+
+def mint_management_code_pair(
+    permission_service: CalendarPermissionService,
+    *,
+    organization_id: int,
+    event: CalendarEvent,
+    calendar_id: int | None = None,
+    calendar_group_id: int | None = None,
+) -> ManagementCodePair:
+    """Mint a fresh RESCHEDULE + CANCEL booking-code pair for ``event``.
+
+    Shared by every code-gated create/reschedule viewset in this module
+    (``BookingCodeCalendarEventViewSet``, ``BookingCodeGroupEventViewSet`` --
+    both its coded and codeless branches --, ``BookingCodeRescheduleEventViewSet``,
+    and ``BookingCodeRescheduleGroupEventViewSet``) instead of repeating the
+    two ``create_booking_token`` calls four times, per the plan's Phase 8
+    body. ``BookingCodeCancelEventViewSet`` never calls this -- a cancel ends
+    the chain, it does not extend it.
+
+    Callers MUST call this from inside the same ``transaction.atomic()``
+    block that creates or updates the event, before that block exits -- a
+    booking that fails (and rolls back) must mint nothing, and a booking
+    whose event row does not survive the transaction must not leave orphan
+    booking-code rows referencing it either.
+
+    Exactly one of ``calendar_id`` / ``calendar_group_id`` must be supplied,
+    matching the SAME scope the booking/reschedule itself used -- never
+    both, and never a wider scope than the operation that produced ``event``
+    had. This endpoint hands a credential to an unauthenticated caller on
+    every booking; over-scoping it here is a privilege leak issued
+    automatically, at volume. Neither parameter is validated as
+    mutually-exclusive here -- every call site below passes exactly one,
+    mirroring the scope it already resolved for the write itself.
+
+    No ``duration`` is passed to ``create_booking_token`` -- there is no such
+    parameter (see that method's own docstring). The constraint lives on
+    ``CalendarGroup.duration``, so a re-issued reschedule code inherits it
+    automatically the next time it is presented, through
+    ``CalendarPermissionService.can_perform_group_scheduling`` /
+    ``can_perform_update`` -- it is not, and cannot be, pinned on the code
+    itself.
+
+    ``expires_at`` is ``event.end_time`` (the GeneratedField, not the naive
+    ``end_time_tz_unaware``) for both codes: a management code for a past
+    appointment is dead weight, so both codes die with the appointment they
+    manage rather than staying valid forever.
+    """
+    expires_at = event.end_time
+    _reschedule_token, reschedule_code = permission_service.create_booking_token(
+        organization_id=organization_id,
+        permissions=[EventManagementPermissions.RESCHEDULE],
+        expires_at=expires_at,
+        calendar_id=calendar_id,
+        calendar_group_id=calendar_group_id,
+        event_id=event.id,
+    )
+    _cancel_token, cancel_code = permission_service.create_booking_token(
+        organization_id=organization_id,
+        permissions=[EventManagementPermissions.CANCEL],
+        expires_at=expires_at,
+        calendar_id=calendar_id,
+        calendar_group_id=calendar_group_id,
+        event_id=event.id,
+    )
+    return ManagementCodePair(reschedule_code=reschedule_code, cancel_code=cancel_code)
 
 
 class BookingCodeViewMixin:
@@ -149,7 +234,7 @@ class BookingCodeCalendarEventViewSet(BookingCodeViewMixin, GenericViewSet):
 
     @extend_schema(
         request=BookingCodeEventCreateSerializer,
-        responses={201: CalendarEventSerializer},
+        responses={201: CalendarEventWithManagementCodesSerializer},
         parameters=[
             OpenApiParameter(
                 name=BOOKING_CODE_HEADER,
@@ -233,6 +318,17 @@ class BookingCodeCalendarEventViewSet(BookingCodeViewMixin, GenericViewSet):
             with transaction.atomic():
                 calendar_service.initialize_without_provider(user_or_token=code, organization=org)
                 event = calendar_service.create_event(token.calendar.id, event_data)
+                # Mint the patient's self-service RESCHEDULE + CANCEL pair, scoped
+                # to the SAME calendar the booking itself used, INSIDE this atomic
+                # block -- a booking that fails below (or that loses the
+                # consume_code race) rolls back and mints nothing. See Phase 8's
+                # "Patient management codes" Guiding Decision.
+                management_codes = mint_management_code_pair(
+                    permission_service,
+                    organization_id=org.id,
+                    event=event,
+                    calendar_id=token.calendar.id,
+                )
                 permission_service.consume_code(token, source_ip)
         # create_event raises OverLimitError at the organization's postpaid
         # event_occurrences allowance (no payment method on file). Unlike the domain
@@ -242,13 +338,21 @@ class BookingCodeCalendarEventViewSet(BookingCodeViewMixin, GenericViewSet):
         # into this vocabulary.
 
         context = self.get_serializer_context()
+        # Build the optimized queryset with the PLAIN CalendarEventSerializer --
+        # see CalendarEventWithManagementCodesSerializer's docstring for why the
+        # "management" field must never reach get_optimized_queryset.
         optimized_event = (
             CalendarEventSerializer(context=context)
             .get_optimized_queryset(CalendarEvent.objects.filter_by_organization(org.id))
             .get(id=event.id)
         )
+        # "management" is not a CalendarEvent model field -- it exists only so
+        # CalendarEventWithManagementCodesSerializer's nested field has
+        # something to getattr() during to_representation(). mypy/django-stubs
+        # has no way to know that, hence the ignore.
+        optimized_event.management = management_codes  # type: ignore[attr-defined]
         return Response(
-            CalendarEventSerializer(optimized_event, context=context).data,
+            CalendarEventWithManagementCodesSerializer(optimized_event, context=context).data,
             status=status.HTTP_201_CREATED,
         )
 
@@ -308,7 +412,7 @@ class BookingCodeGroupEventViewSet(BookingCodeViewMixin, GenericViewSet):
 
     @extend_schema(
         request=BookingCodeGroupEventCreateSerializer,
-        responses={201: CalendarEventSerializer},
+        responses={201: CalendarEventWithManagementCodesSerializer},
         parameters=[
             OpenApiParameter(
                 name=BOOKING_CODE_HEADER,
@@ -518,6 +622,22 @@ class BookingCodeGroupEventViewSet(BookingCodeViewMixin, GenericViewSet):
                     )
                     calendar_group_service.initialize(organization=org)
                     event = calendar_group_service.create_grouped_event(group_event_data)
+                    # Mint the patient's self-service RESCHEDULE + CANCEL pair,
+                    # scoped to the SAME group the booking itself used -- on BOTH
+                    # branches: the codeless branch has no token to bind a
+                    # credential to at all, so this pair is the only way that
+                    # patient can ever manage the appointment they just booked.
+                    # Inside this atomic block, so a rolled-back booking mints
+                    # nothing. `group` is resolved on both branches above (by
+                    # slug on the codeless branch, from the token on the coded
+                    # one) -- always the group the booking actually used, never
+                    # the untrusted path slug directly.
+                    management_codes = mint_management_code_pair(
+                        permission_service,
+                        organization_id=org.id,
+                        event=event,
+                        calendar_group_id=group.id,
+                    )
                     # No code to consume on the codeless branch -- there is none.
                     if token is not None:
                         permission_service.consume_code(token, client_ip_from_request(request))
@@ -550,13 +670,21 @@ class BookingCodeGroupEventViewSet(BookingCodeViewMixin, GenericViewSet):
         # into this vocabulary.
 
         context = self.get_serializer_context()
+        # Build the optimized queryset with the PLAIN CalendarEventSerializer --
+        # see CalendarEventWithManagementCodesSerializer's docstring for why the
+        # "management" field must never reach get_optimized_queryset.
         optimized_event = (
             CalendarEventSerializer(context=context)
             .get_optimized_queryset(CalendarEvent.objects.filter_by_organization(org.id))
             .get(id=event.id)
         )
+        # "management" is not a CalendarEvent model field -- it exists only so
+        # CalendarEventWithManagementCodesSerializer's nested field has
+        # something to getattr() during to_representation(). mypy/django-stubs
+        # has no way to know that, hence the ignore.
+        optimized_event.management = management_codes  # type: ignore[attr-defined]
         return Response(
-            CalendarEventSerializer(optimized_event, context=context).data,
+            CalendarEventWithManagementCodesSerializer(optimized_event, context=context).data,
             status=status.HTTP_201_CREATED,
         )
 
@@ -585,7 +713,7 @@ class BookingCodeRescheduleEventViewSet(BookingCodeViewMixin, GenericViewSet):
 
     @extend_schema(
         request=BookingCodeRescheduleSerializer,
-        responses={201: CalendarEventSerializer},
+        responses={201: CalendarEventWithManagementCodesSerializer},
         parameters=[
             OpenApiParameter(
                 name=BOOKING_CODE_HEADER,
@@ -717,19 +845,37 @@ class BookingCodeRescheduleEventViewSet(BookingCodeViewMixin, GenericViewSet):
             with transaction.atomic():
                 calendar_service.initialize_without_provider(user_or_token=code, organization=org)
                 event = calendar_service.update_event(calendar_id, event_id, event_data)
+                # Re-issue a fresh RESCHEDULE + CANCEL pair, scoped to the SAME
+                # calendar as the just-consumed code, so the patient can manage
+                # the appointment again -- the chain continues. Inside this
+                # atomic block, so a rolled-back reschedule mints nothing.
+                management_codes = mint_management_code_pair(
+                    permission_service,
+                    organization_id=org.id,
+                    event=event,
+                    calendar_id=calendar_id,
+                )
                 permission_service.consume_code(token, source_ip)
         # update_event does not create a new event and therefore does not reach
         # the create-event postpaid metering guard -- there is no OverLimitError
         # for this endpoint to leave unswallowed.
 
         context = self.get_serializer_context()
+        # Build the optimized queryset with the PLAIN CalendarEventSerializer --
+        # see CalendarEventWithManagementCodesSerializer's docstring for why the
+        # "management" field must never reach get_optimized_queryset.
         optimized_event = (
             CalendarEventSerializer(context=context)
             .get_optimized_queryset(CalendarEvent.objects.filter_by_organization(org.id))
             .get(id=event.id)
         )
+        # "management" is not a CalendarEvent model field -- it exists only so
+        # CalendarEventWithManagementCodesSerializer's nested field has
+        # something to getattr() during to_representation(). mypy/django-stubs
+        # has no way to know that, hence the ignore.
+        optimized_event.management = management_codes  # type: ignore[attr-defined]
         return Response(
-            CalendarEventSerializer(optimized_event, context=context).data,
+            CalendarEventWithManagementCodesSerializer(optimized_event, context=context).data,
             status=status.HTTP_201_CREATED,
         )
 
@@ -754,7 +900,7 @@ class BookingCodeRescheduleGroupEventViewSet(BookingCodeViewMixin, GenericViewSe
 
     @extend_schema(
         request=BookingCodeRescheduleSerializer,
-        responses={201: CalendarEventSerializer},
+        responses={201: CalendarEventWithManagementCodesSerializer},
         parameters=[
             OpenApiParameter(
                 name=BOOKING_CODE_HEADER,
@@ -866,6 +1012,22 @@ class BookingCodeRescheduleGroupEventViewSet(BookingCodeViewMixin, GenericViewSe
                         end_time=data["end_time"],
                         tz=data["timezone"],
                     )
+                    # Re-issue a fresh RESCHEDULE + CANCEL pair, scoped to the
+                    # SAME group as the just-consumed code, so the patient can
+                    # manage the appointment again -- the chain continues. No
+                    # duration is passed: the pin lives on token.calendar_group
+                    # (CalendarGroup.duration), so the re-issued reschedule code
+                    # inherits it automatically the next time it is presented,
+                    # through can_perform_group_scheduling / can_perform_update
+                    # -- see mint_management_code_pair's own docstring. Inside
+                    # this atomic block, so a rolled-back reschedule mints
+                    # nothing.
+                    management_codes = mint_management_code_pair(
+                        permission_service,
+                        organization_id=org.id,
+                        event=event,
+                        calendar_group_id=token.calendar_group.id,
+                    )
                     permission_service.consume_code(token, source_ip)
         except CalendarGroupError as exc:
             # Slot outside a group-scoped availability window / quota rule, or an
@@ -876,13 +1038,21 @@ class BookingCodeRescheduleGroupEventViewSet(BookingCodeViewMixin, GenericViewSe
             raise SlotUnavailableAPIException() from exc
 
         context = self.get_serializer_context()
+        # Build the optimized queryset with the PLAIN CalendarEventSerializer --
+        # see CalendarEventWithManagementCodesSerializer's docstring for why the
+        # "management" field must never reach get_optimized_queryset.
         optimized_event = (
             CalendarEventSerializer(context=context)
             .get_optimized_queryset(CalendarEvent.objects.filter_by_organization(org.id))
             .get(id=event.id)
         )
+        # "management" is not a CalendarEvent model field -- it exists only so
+        # CalendarEventWithManagementCodesSerializer's nested field has
+        # something to getattr() during to_representation(). mypy/django-stubs
+        # has no way to know that, hence the ignore.
+        optimized_event.management = management_codes  # type: ignore[attr-defined]
         return Response(
-            CalendarEventSerializer(optimized_event, context=context).data,
+            CalendarEventWithManagementCodesSerializer(optimized_event, context=context).data,
             status=status.HTTP_201_CREATED,
         )
 
