@@ -47,12 +47,23 @@ disclose pin state. Once present, on the group-scoped endpoint a group that
 carries a ``duration`` uses it UNCONDITIONALLY: a wrong or malformed (but
 non-empty) ``duration_seconds`` on a pinned code still produces the exact
 same response as the correct one. See ``_resolve_duration``.
+
+**Phase 9 addendum -- codeless, slug-addressed public-group reads.** Below
+the code-gated section, this module also carries a small, separately-scoped
+set of endpoints that carry no ``X-Booking-Code`` at all: the discovery
+reads for a ``CalendarGroup`` whose ``accepts_public_scheduling`` is
+``True``. These are a **different addressing scheme** (path-based
+``public_slug``, not a header-borne code) and a **different error
+contract** (real ``404``/``403``, not the uniform opaque ``403`` above) --
+see the "Codeless, slug-addressed public-group reads" section below for why,
+and do not conflate the two. They mirror the codeless branch of
+``BookingCodeGroupEventViewSet.create`` in ``booking_views.py`` exactly.
 """
 
 import datetime
 
 from drf_spectacular.utils import OpenApiParameter, extend_schema
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.viewsets import GenericViewSet
@@ -62,7 +73,7 @@ from calendar_integration.booking_auth import (
     resolve_booking_code_opaquely,
     validate_code_gated_range,
 )
-from calendar_integration.booking_exceptions import OpaqueCodeError
+from calendar_integration.booking_exceptions import NotPermittedAPIException, OpaqueCodeError
 from calendar_integration.booking_views import BookingCodeViewMixin
 from calendar_integration.exceptions import CalendarServiceNotInjectedError
 from calendar_integration.models import Calendar, CalendarGroup, CalendarManagementToken
@@ -639,6 +650,269 @@ class BookingCodeCalendarGroupAvailabilityViewSet(BookingCodeViewMixin, GenericV
         org = _resolve_org_opaquely(token)
 
         calendar_group_service.initialize(organization=org)
+        result = calendar_group_service.check_group_availability(group_id=group.id, ranges=ranges)
+
+        payload = [
+            {
+                "start_time": r.start_time,
+                "end_time": r.end_time,
+                "slots": [
+                    {
+                        "slot_id": s.slot_id,
+                        "available_calendar_ids": s.available_calendar_ids,
+                        "required_count": s.required_count,
+                    }
+                    for s in r.slots
+                ],
+            }
+            for r in result
+        ]
+        return Response(CalendarGroupRangeAvailabilitySerializer(payload, many=True).data)
+
+
+# ---------------------------------------------------------------------------
+# Codeless, slug-addressed public-group reads (Phase 9)
+# ---------------------------------------------------------------------------
+#
+# Everything above this line is code-gated: it reads `X-Booking-Code` and
+# resolves scope from the resolved token, per the module docstring's "Scope
+# resolution". The two endpoints below are the opposite: no code exists, so
+# none is read. The group instead comes from the path's `public_slug` --
+# the client's OWN input, exactly like the codeless branch of
+# `BookingCodeGroupEventViewSet.create` in `booking_views.py`, which these
+# mirror. Follow THAT branch's 404/403 split, not the uniform-403 contract
+# above:
+#
+# - Unknown slug -> `404`. The slug is not a secret here (unlike a coded
+#   read's token-bound scope), so disclosing "no such group" tells the
+#   caller nothing it did not already know -- it had to have the slug to
+#   ask in the first place.
+# - A slug that resolves to a real, but non-public
+#   (`accepts_public_scheduling=False`), group -> `403`. The group exists,
+#   but this route is not open to it.
+#
+# Do NOT reuse `resolve_booking_code_opaquely` / `_resolve_group_scope_opaquely`
+# here -- those exist for the opposite contract (one indistinguishable 403,
+# never a 404, because a CODE's scope must stay secret). A group-scoped read
+# down here must also never fall back to resolving one specific member
+# calendar the way the calendar-scoped helpers above do for a token's
+# `.event.calendar` -- there is no such fallback available or wanted on this
+# surface; every read below stays strictly group-level.
+#
+# Window reads (availability-windows / unavailable-windows) are deliberately
+# NOT ported to this codeless surface -- see the "Codeless discovery is
+# group-aggregated" Guiding Decision. That decision requires every group
+# read here to never attribute an interval to a specific member calendar.
+# `find_bookable_slots` and `check_group_availability` (used below) already
+# satisfy that: both compute their answer as a function of every calendar in
+# a slot's pool at once (a slot is "available" only when enough of its pool
+# clears TOGETHER), never surfacing one calendar's own window. There is no
+# equivalent group-level primitive for a continuous availability/busy
+# WINDOW. The calendar-scoped `get_availability_windows_in_range` /
+# `get_unavailable_time_windows_in_range` calls the code-gated section above
+# reuses are inherently single-calendar, and merging several practitioners'
+# windows into one curve is not a query this codebase has anywhere to
+# reuse -- shipping one here would mean inventing new aggregation logic
+# rather than porting an existing service call (see this phase's working
+# method: reuse existing service calls, do not write parallel
+# implementations), and getting the merge wrong is actively unsafe rather
+# than merely incomplete: unioning "any calendar in the pool is free" would
+# offer slots no single combination can actually satisfy (the read and the
+# Phase 3 write would then disagree, which this phase's acceptance
+# criteria explicitly forbid), while intersecting "every calendar in the
+# pool is free" would report the whole group busy solely because ONE
+# calendar is busy -- which is itself a leak about that one calendar, the
+# exact disclosure this design exists to prevent. Per the plan's own escape
+# hatch ("if no coherent non-attributing aggregate exists for a window
+# read, ship the other two and say so"), this module ships only the two
+# group-aggregated reads below and stops there.
+
+
+def _resolve_public_group(public_slug: str) -> CalendarGroup:
+    """Resolve a codeless discovery read's addressed, public-scheduling group.
+
+    Two-step resolution, mirroring ``BookingCodeGroupEventViewSet.create``'s
+    codeless branch (``booking_views.py``) and this phase's stated contract:
+
+    1. Look up ``public_booking_slug`` unscoped -- the organization is not
+       yet known; this lookup is what determines it, so
+       ``filter_by_organization`` cannot run yet. An unknown slug is a real
+       ``404``: the slug is the client's own path input, not a secret the
+       way a code-gated read's token-bound scope is, so confirming
+       non-existence discloses nothing the caller did not already know.
+    2. Require ``accepts_public_scheduling``. A slug that resolves to a
+       real, but non-public, group is a real ``403``: the group exists, but
+       this route is not open to it.
+
+    Does NOT check ``group.duration`` -- callers that need the search
+    duration call ``_resolve_public_group_duration`` next, which folds in
+    the fail-closed null-duration rule.
+    """
+    try:
+        group = (
+            CalendarGroup.objects.unscoped()
+            .select_related("organization")
+            .get(public_booking_slug=public_slug)
+        )
+    except CalendarGroup.DoesNotExist as exc:
+        raise NotFound("Calendar group not found.") from exc
+    if not group.accepts_public_scheduling:
+        raise NotPermittedAPIException("This group does not accept public scheduling.")
+    return group
+
+
+def _resolve_public_group_duration(group: CalendarGroup) -> datetime.timedelta:
+    """Resolve the fixed search duration for a codeless discovery read.
+
+    ``duration_seconds`` is not a query parameter on either endpoint below --
+    the only length a codeless booking can ever have is the group's own
+    pinned duration (see the "Duration -- reads" Guiding Decision), so there
+    is nothing a client could legitimately pass to override it. A public
+    group with no duration configured is a grandfathered misconfiguration
+    (Phase 0's invariant: ``CalendarGroupService.create_group`` /
+    ``update_group`` refuse to set ``accepts_public_scheduling=True`` without
+    one, going forward -- see the "Public implies length-constrained" Guiding
+    Decision) that the write side already refuses to book against, fail
+    closed, inside ``CalendarPermissionService``. Fail closed here too,
+    rather than guessing a length the write side would then reject -- this
+    is what keeps every proposal a codeless read returns actually bookable
+    through the Phase 3 codeless write, which is this phase's own
+    acceptance criterion.
+
+    Applied uniformly to BOTH endpoints below, including range-availability
+    -- that endpoint does not itself consume a duration value (the client
+    names its own ranges), but a group the write side would refuse
+    regardless of the requested span should not report itself as available
+    either; showing slots the write side can never honour would make the
+    read and the write disagree, which this phase's acceptance criteria
+    explicitly forbid.
+    """
+    if group.duration is None:
+        raise NotPermittedAPIException("This group does not accept public scheduling.")
+    return group.duration
+
+
+@extend_schema(tags=["Booking Codes"])
+class PublicCalendarGroupBookableSlotsViewSet(BookingCodeViewMixin, GenericViewSet):
+    """Unauthenticated, codeless read of bookable slots for a public calendar group.
+
+    ``GET /public/booking/calendar-groups/<public_slug>/bookable-slots/`` is
+    the codeless counterpart of ``BookingCodeCalendarGroupBookableSlotsViewSet``
+    above -- no ``X-Booking-Code`` is read or required. The group comes from
+    the path's ``public_slug``; see ``_resolve_public_group`` for the
+    404/403 contract that gates it.
+
+    Duration is NOT a query parameter here -- see
+    ``_resolve_public_group_duration``. The slots this returns are exactly
+    the slots the Phase 3 codeless write (``BookingCodeGroupEventViewSet.create``)
+    will accept: same group id, same duration, same underlying
+    ``find_bookable_slots`` call.
+    """
+
+    pagination_class = None  # returns a bare array, not a paginated page
+    # No natural model-bound queryset (scope comes from the path's slug, not a
+    # URL object keyed by pk) -- set purely to silence drf-spectacular's
+    # "Failed to obtain model through view's queryset" schema-generation warning.
+    queryset = CalendarGroup.objects.none()
+
+    @extend_schema(
+        responses={200: BookableSlotProposalSerializer(many=True)},
+        parameters=[
+            _SEARCH_WINDOW_START_PARAMETER,
+            _SEARCH_WINDOW_END_PARAMETER,
+            _SLOT_STEP_SECONDS_PARAMETER,
+        ],
+        summary="Bookable slot proposals for a public calendar group, no code required",
+    )
+    def list(self, request: Request, *args, **kwargs) -> Response:
+        calendar_group_service = self.calendar_group_service
+        if calendar_group_service is None:
+            raise CalendarServiceNotInjectedError(
+                "calendar_group_service not configured; check the DI container."
+            )
+
+        search_window_start = _parse_datetime_query_param(request, "search_window_start")
+        search_window_end = _parse_datetime_query_param(request, "search_window_end")
+        # No code sits behind this range check -- there is nothing here for a
+        # timing/status oracle to probe -- but the check stays ahead of slug
+        # resolution anyway, for the same reason every other read in this
+        # module orders it first: a malformed/backwards/too-large range is
+        # always a plain 400, never entangled with anything else this action
+        # does.
+        validate_code_gated_range(search_window_start, search_window_end)
+
+        group = _resolve_public_group(kwargs["public_slug"])
+        duration = _resolve_public_group_duration(group)
+        slot_step = _resolve_slot_step(request)
+
+        calendar_group_service.initialize(organization=group.organization)
+        proposals = calendar_group_service.find_bookable_slots(
+            group_id=group.id,
+            search_window_start=search_window_start,
+            search_window_end=search_window_end,
+            duration=duration,
+            slot_step=slot_step,
+        )
+
+        payload = [{"start_time": p.start_time, "end_time": p.end_time} for p in proposals]
+        return Response(BookableSlotProposalSerializer(payload, many=True).data)
+
+
+@extend_schema(tags=["Booking Codes"])
+class PublicCalendarGroupAvailabilityViewSet(BookingCodeViewMixin, GenericViewSet):
+    """Unauthenticated, codeless per-range availability for a public calendar group.
+
+    ``POST /public/booking/calendar-groups/<public_slug>/availability/`` is
+    the codeless counterpart of ``BookingCodeCalendarGroupAvailabilityViewSet``
+    above. ``POST`` for the same reason as that endpoint: it takes a list of
+    ranges. The group comes from the path's ``public_slug``; see
+    ``_resolve_public_group`` for the 404/403 contract that gates it.
+
+    ``available_calendar_ids`` is retained per slot even though this
+    endpoint is otherwise group-aggregated -- group booking's
+    ``slot_selections`` genuinely needs those ids to build a valid create
+    request against the Phase 3 codeless write. See the "Codeless discovery
+    is group-aggregated" Guiding Decision, which calls this retention out
+    explicitly.
+    """
+
+    serializer_class = CalendarGroupAvailabilityQuerySerializer
+    # No natural model-bound queryset (scope comes from the path's slug, not a
+    # URL object keyed by pk) -- set purely to silence drf-spectacular's
+    # "Failed to obtain model through view's queryset" schema-generation warning.
+    queryset = CalendarGroup.objects.none()
+
+    @extend_schema(
+        request=CalendarGroupAvailabilityQuerySerializer,
+        responses={200: CalendarGroupRangeAvailabilitySerializer(many=True)},
+        summary="Per-range availability for a public calendar group, no code required",
+    )
+    def create(self, request: Request, *args, **kwargs) -> Response:
+        calendar_group_service = self.calendar_group_service
+        if calendar_group_service is None:
+            raise CalendarServiceNotInjectedError(
+                "calendar_group_service not configured; check the DI container."
+            )
+
+        # --- structural + range validation before slug resolution -- same
+        # ordering discipline as every other read in this module. Every
+        # range is checked, matching
+        # BookingCodeCalendarGroupAvailabilityViewSet.create above. ---
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        ranges = [(r["start_time"], r["end_time"]) for r in serializer.validated_data["ranges"]]
+        for start_time, end_time in ranges:
+            validate_code_gated_range(start_time, end_time)
+
+        group = _resolve_public_group(kwargs["public_slug"])
+        # check_group_availability does not itself consume a duration value,
+        # but a group the write side would refuse regardless of the
+        # requested span should not report itself as available either -- see
+        # _resolve_public_group_duration's own docstring for why this gate
+        # applies uniformly to both endpoints in this section.
+        _resolve_public_group_duration(group)
+
+        calendar_group_service.initialize(organization=group.organization)
         result = calendar_group_service.check_group_availability(group_id=group.id, ranges=ranges)
 
         payload = [

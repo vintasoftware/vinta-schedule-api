@@ -15913,6 +15913,118 @@ paths:
                 items:
                   $ref: '#/components/schemas/BookableSlotProposal'
           description: ''
+  /public/booking/calendar-groups/{public_slug}/availability/:
+    post:
+      operationId: public_booking_calendar_groups_availability_create
+      description: |-
+        Unauthenticated, codeless per-range availability for a public calendar group.
+
+        ``POST /public/booking/calendar-groups/<public_slug>/availability/`` is
+        the codeless counterpart of ``BookingCodeCalendarGroupAvailabilityViewSet``
+        above. ``POST`` for the same reason as that endpoint: it takes a list of
+        ranges. The group comes from the path's ``public_slug``; see
+        ``_resolve_public_group`` for the 404/403 contract that gates it.
+
+        ``available_calendar_ids`` is retained per slot even though this
+        endpoint is otherwise group-aggregated -- group booking's
+        ``slot_selections`` genuinely needs those ids to build a valid create
+        request against the Phase 3 codeless write. See the "Codeless discovery
+        is group-aggregated" Guiding Decision, which calls this retention out
+        explicitly.
+      summary: Per-range availability for a public calendar group, no code required
+      parameters:
+      - name: limit
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      - name: offset
+        required: false
+        in: query
+        description: The initial index from which to return the results.
+        schema:
+          type: integer
+      - in: path
+        name: public_slug
+        schema:
+          type: string
+          pattern: ^[-a-zA-Z0-9_]+$
+        required: true
+      tags:
+      - Booking Codes
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarGroupAvailabilityQuery'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarGroupAvailabilityQuery'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarGroupAvailabilityQuery'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCalendarGroupRangeAvailabilityList'
+          description: ''
+  /public/booking/calendar-groups/{public_slug}/bookable-slots/:
+    get:
+      operationId: public_booking_calendar_groups_bookable_slots_list
+      description: |-
+        Unauthenticated, codeless read of bookable slots for a public calendar group.
+
+        ``GET /public/booking/calendar-groups/<public_slug>/bookable-slots/`` is
+        the codeless counterpart of ``BookingCodeCalendarGroupBookableSlotsViewSet``
+        above -- no ``X-Booking-Code`` is read or required. The group comes from
+        the path's ``public_slug``; see ``_resolve_public_group`` for the
+        404/403 contract that gates it.
+
+        Duration is NOT a query parameter here -- see
+        ``_resolve_public_group_duration``. The slots this returns are exactly
+        the slots the Phase 3 codeless write (``BookingCodeGroupEventViewSet.create``)
+        will accept: same group id, same duration, same underlying
+        ``find_bookable_slots`` call.
+      summary: Bookable slot proposals for a public calendar group, no code required
+      parameters:
+      - in: path
+        name: public_slug
+        schema:
+          type: string
+          pattern: ^[-a-zA-Z0-9_]+$
+        required: true
+      - in: query
+        name: search_window_end
+        schema:
+          type: string
+        description: End of the search window (ISO 8601).
+        required: true
+      - in: query
+        name: search_window_start
+        schema:
+          type: string
+        description: Start of the search window (ISO 8601).
+        required: true
+      - in: query
+        name: slot_step_seconds
+        schema:
+          type: integer
+        description: Search step, in seconds (default 900 = 15min).
+      tags:
+      - Booking Codes
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BookableSlotProposal'
+          description: ''
   /public/booking/calendar-groups/{public_slug}/events/:
     post:
       operationId: public_booking_calendar_groups_events_create
