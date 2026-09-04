@@ -22,6 +22,7 @@
         "ec2:DescribeVpcAttribute",
         "ec2:DescribeVpcEndpoints",
         "ec2:DescribeVpcs",
+        "ec2:GetSecurityGroupsForVpc",
         "ec2:CreateTags",
         "ec2:DeleteTags",
         "ec2:CreateVpc",

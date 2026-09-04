@@ -7,15 +7,12 @@
       "Action": [
         "ecs:CreateCluster",
         "ecs:DeleteCluster",
-        "ecs:DescribeClusters",
         "ecs:PutClusterCapacityProviders",
         "ecs:CreateService",
         "ecs:UpdateService",
         "ecs:DeleteService",
-        "ecs:DescribeServices",
         "ecs:TagResource",
-        "ecs:UntagResource",
-        "ecs:ListTagsForResource"
+        "ecs:UntagResource"
       ],
       "Resource": [
         "arn:aws:ecs:us-east-1:261390480437:cluster/vinta-schedule-staging",
@@ -24,16 +21,11 @@
       ]
     },
     {
-      "Sid": "EcsTaskDefinitionsNoArnSupport",
+      "Sid": "EcsTaskDefinitions",
       "Effect": "Allow",
       "Action": [
         "ecs:RegisterTaskDefinition",
-        "ecs:DeregisterTaskDefinition",
-        "ecs:DescribeTaskDefinition",
-        "ecs:ListTaskDefinitions",
-        "ecs:ListClusters",
-        "ecs:ListServices",
-        "ecs:ListAccountSettings"
+        "ecs:DeregisterTaskDefinition"
       ],
       "Resource": "*",
       "Condition": {
@@ -48,18 +40,14 @@
       "Action": [
         "ecr:CreateRepository",
         "ecr:DeleteRepository",
-        "ecr:DescribeRepositories",
         "ecr:PutLifecyclePolicy",
-        "ecr:GetLifecyclePolicy",
         "ecr:DeleteLifecyclePolicy",
-        "ecr:GetRepositoryPolicy",
         "ecr:SetRepositoryPolicy",
         "ecr:DeleteRepositoryPolicy",
         "ecr:PutImageScanningConfiguration",
         "ecr:PutImageTagMutability",
         "ecr:TagResource",
-        "ecr:UntagResource",
-        "ecr:ListTagsForResource"
+        "ecr:UntagResource"
       ],
       "Resource": "arn:aws:ecr:us-east-1:261390480437:repository/vinta-schedule-staging"
     },
@@ -69,23 +57,17 @@
       "Action": [
         "rds:CreateDBInstance",
         "rds:DeleteDBInstance",
-        "rds:DescribeDBInstances",
         "rds:ModifyDBInstance",
         "rds:CreateDBSubnetGroup",
         "rds:DeleteDBSubnetGroup",
-        "rds:DescribeDBSubnetGroups",
         "rds:ModifyDBSubnetGroup",
         "rds:CreateDBParameterGroup",
         "rds:DeleteDBParameterGroup",
-        "rds:DescribeDBParameterGroups",
-        "rds:DescribeDBParameters",
         "rds:ModifyDBParameterGroup",
         "rds:ResetDBParameterGroup",
         "rds:CreateDBSnapshot",
-        "rds:DescribeDBSnapshots",
         "rds:AddTagsToResource",
-        "rds:RemoveTagsFromResource",
-        "rds:ListTagsForResource"
+        "rds:RemoveTagsFromResource"
       ],
       "Resource": [
         "arn:aws:rds:us-east-1:261390480437:db:vinta-schedule-staging",
@@ -93,21 +75,6 @@
         "arn:aws:rds:us-east-1:261390480437:pg:vinta-schedule-staging",
         "arn:aws:rds:us-east-1:261390480437:snapshot:vinta-schedule-staging-*"
       ]
-    },
-    {
-      "Sid": "RdsCatalogNoArnSupport",
-      "Effect": "Allow",
-      "Action": [
-        "rds:DescribeDBEngineVersions",
-        "rds:DescribeOrderableDBInstanceOptions",
-        "rds:DescribeAccountAttributes"
-      ],
-      "Resource": "*",
-      "Condition": {
-        "StringEquals": {
-          "aws:RequestedRegion": "us-east-1"
-        }
-      }
     },
     {
       "Sid": "ElastiCache",
@@ -120,30 +87,13 @@
         "elasticache:DeleteCacheSubnetGroup",
         "elasticache:ModifyCacheSubnetGroup",
         "elasticache:AddTagsToResource",
-        "elasticache:RemoveTagsFromResource",
-        "elasticache:ListTagsForResource"
+        "elasticache:RemoveTagsFromResource"
       ],
       "Resource": [
         "arn:aws:elasticache:us-east-1:261390480437:replicationgroup:vinta-schedule-staging",
-        "arn:aws:elasticache:us-east-1:261390480437:subnetgroup:vinta-schedule-staging"
+        "arn:aws:elasticache:us-east-1:261390480437:subnetgroup:vinta-schedule-staging",
+        "arn:aws:elasticache:us-east-1:261390480437:parametergroup:*"
       ]
-    },
-    {
-      "Sid": "ElastiCacheDescribeNoArnSupport",
-      "Effect": "Allow",
-      "Action": [
-        "elasticache:DescribeReplicationGroups",
-        "elasticache:DescribeCacheSubnetGroups",
-        "elasticache:DescribeCacheClusters",
-        "elasticache:DescribeCacheParameterGroups",
-        "elasticache:DescribeEngineDefaultParameters"
-      ],
-      "Resource": "*",
-      "Condition": {
-        "StringEquals": {
-          "aws:RequestedRegion": "us-east-1"
-        }
-      }
     },
     {
       "Sid": "CloudWatchLogGroups",
@@ -155,10 +105,8 @@
         "logs:DeleteRetentionPolicy",
         "logs:TagResource",
         "logs:UntagResource",
-        "logs:ListTagsForResource",
         "logs:TagLogGroup",
-        "logs:UntagLogGroup",
-        "logs:ListTagsLogGroup"
+        "logs:UntagLogGroup"
       ],
       "Resource": [
         "arn:aws:logs:us-east-1:261390480437:log-group:/ecs/vinta-schedule-staging*",
@@ -168,10 +116,39 @@
       ]
     },
     {
-      "Sid": "CloudWatchLogsDescribeNoArnSupport",
+      "Sid": "ReadsThatAuthorizeAgainstWildcardArns",
       "Effect": "Allow",
       "Action": [
-        "logs:DescribeLogGroups"
+        "ecs:DescribeClusters",
+        "ecs:DescribeServices",
+        "ecs:DescribeTaskDefinition",
+        "ecs:ListClusters",
+        "ecs:ListServices",
+        "ecs:ListTaskDefinitions",
+        "ecs:ListAccountSettings",
+        "ecs:ListTagsForResource",
+        "ecr:DescribeRepositories",
+        "ecr:GetLifecyclePolicy",
+        "ecr:GetRepositoryPolicy",
+        "ecr:ListTagsForResource",
+        "rds:DescribeDBInstances",
+        "rds:DescribeDBSubnetGroups",
+        "rds:DescribeDBParameterGroups",
+        "rds:DescribeDBParameters",
+        "rds:DescribeDBSnapshots",
+        "rds:DescribeDBEngineVersions",
+        "rds:DescribeOrderableDBInstanceOptions",
+        "rds:DescribeAccountAttributes",
+        "rds:ListTagsForResource",
+        "elasticache:DescribeReplicationGroups",
+        "elasticache:DescribeCacheSubnetGroups",
+        "elasticache:DescribeCacheClusters",
+        "elasticache:DescribeCacheParameterGroups",
+        "elasticache:DescribeEngineDefaultParameters",
+        "elasticache:ListTagsForResource",
+        "logs:DescribeLogGroups",
+        "logs:ListTagsForResource",
+        "logs:ListTagsLogGroup"
       ],
       "Resource": "*",
       "Condition": {

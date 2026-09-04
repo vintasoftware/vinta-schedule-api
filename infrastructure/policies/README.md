@@ -56,14 +56,19 @@ Every action traces to a resource `modules/app-platform` actually declares —
 the list came from the module's `resource`/`data` blocks, not from a generic
 template. Scoping follows what each service supports:
 
-- **ARN-scoped** (114 actions) wherever the service supports resource-level
-  permissions: RDS, ElastiCache, SQS, Secrets Manager, SSM, ECR, the ECS
-  cluster/services/task-definition families, the log groups, and the
-  `vinta-schedule-<env>-*` roles.
-- **`Resource: "*"` with an `aws:RequestedRegion` condition** for the actions
-  AWS does not support ARNs on — every EC2 and ELB action, plus the `Describe*`
-  and `List*` calls in the other services. The region condition is what keeps
-  the blast radius down.
+- **Mutations are ARN-scoped**: RDS, ElastiCache, SQS, Secrets Manager, SSM,
+  ECR, the ECS cluster/services/task-definition families, the log groups, and
+  the `vinta-schedule-<env>-*` roles. Nothing here can create or destroy
+  anything outside those names.
+- **Read-only calls sit on `Resource: "*"` with an `aws:RequestedRegion`
+  condition.** A list-style `Describe` authorizes against a wildcard ARN rather
+  than the instance you are reading — `rds:DescribeDBInstances` is checked
+  against `db:*` — so ARN-scoping those denies the read no matter what ARN you
+  write. Reads of **IAM, Secrets Manager, SSM and SQS** stay ARN-scoped anyway:
+  those take an explicit identifier so per-ARN works, and reading them is
+  itself sensitive.
+- **All EC2 and ELB actions** are on the same region-conditioned `"*"`, because
+  AWS supports no resource-level permissions for most of them.
 - **`iam:PassRole`** is limited to the two task roles and further conditioned on
   `iam:PassedToService = ecs-tasks.amazonaws.com`.
 - **`iam:CreateServiceLinkedRole`** is conditioned on `iam:AWSServiceName` for
@@ -71,15 +76,26 @@ template. Scoping follows what each service supports:
 - **KMS** is conditioned on `kms:ViaService`, so it only reaches the
   AWS-managed keys behind RDS, ElastiCache, Secrets Manager and SQS.
 
-Both properties were checked against AWS's public service reference
-(`https://servicereference.us-east-1.amazonaws.com/`): all 217 action names
-exist, and no ARN-scoped action lacks resource-level support (which would make
-it deny silently, whatever ARN it names).
+Two properties are checked against AWS's public service reference
+(`https://servicereference.us-east-1.amazonaws.com/`): every action name
+exists, and no ARN-scoped action lacks resource-level support.
 
-That verification is static. AWS occasionally requires a permission its own
-docs omit, so if a plan still hits `AccessDenied`, add the action the error
-names to the matching document and open a new policy version — don't widen a
-statement to `service:*` to move on.
+**That verification is necessary but not sufficient**, and the first apply
+proved it. Three gaps only showed up at runtime:
+
+- `ec2:GetSecurityGroupsForVpc` — ELB calls EC2 on the caller's behalf during
+  `CreateLoadBalancer`. Nothing in the module declares it, so no amount of
+  reading the Terraform source finds it.
+- `elasticache:CreateReplicationGroup` is authorized against the **parameter
+  group** as well as the replication group. The default parameter group is an
+  account-wide name (`default.valkey8`), so that one ARN cannot carry the
+  project prefix.
+- `rds:DescribeDBInstances` authorizes against `db:*`, which is what prompted
+  the read-only split above.
+
+So if a plan still hits `AccessDenied`, add the action the error names to the
+matching document and cut a new policy version — don't widen a statement to
+`service:*` to move on.
 
 ## Production
 
